@@ -884,7 +884,7 @@ describe('ClientSession integration', () => {
   // `loadOlder(10)` over the same history reveals all Runs, so only the
   // run-by-run withhold/page-boundary logic in view.ts mis-segments Runs whose
   // run-start follows their user message. The pagination source (view.ts /
-  // tree.ts / decode-history.ts) is unchanged by this removal. This test only
+  // tree.ts / load-history.ts) is unchanged by this removal. This test only
   // ever passed because the now-removed server-relay `addMessages` flow
   // published run-start BEFORE the user message — an ordering that no longer
   // occurs. The original test is preserved verbatim below (commented out

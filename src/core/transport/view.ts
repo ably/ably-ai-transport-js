@@ -33,8 +33,8 @@ import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
-import { decodeHistory } from './decode-history.js';
 import { parseRunLifecycle } from './headers.js';
+import { loadHistory } from './load-history.js';
 import { nodeKey, type TreeInternal } from './tree.js';
 import type {
   ActiveRun,
@@ -175,7 +175,7 @@ const _normaliseSendInput = <TInput extends CodecInputEvent>(input: TInput | TIn
 
 /**
  * Multiplier applied to the user-supplied Run-unit `loadOlder(limit)`
- * when issuing the first `decodeHistory` page request. `decodeHistory`
+ * when issuing the first `loadHistory` page request. `loadHistory`
  * counts complete domain *messages* per page, not Runs; a typical Run
  * produces ~2 messages (user + assistant). Asking for `limit * factor`
  * messages on the first page reduces extra round-trips when the actual
@@ -996,10 +996,10 @@ export class DefaultView<
   // -------------------------------------------------------------------------
 
   private async _loadFirstPage(limit: number): Promise<void> {
-    // decodeHistory's limit counts complete domain messages per page (not
+    // loadHistory's limit counts complete domain messages per page (not
     // Runs); see `_RUN_TO_MESSAGE_FETCH_FACTOR` for the scaling rationale.
     const messageLimit = limit * _RUN_TO_MESSAGE_FETCH_FACTOR;
-    const firstPage = await decodeHistory(this._channel, { limit: messageLimit }, this._logger);
+    const firstPage = await loadHistory(this._channel, { limit: messageLimit }, this._logger);
     if (this._closed) return;
     await this._revealFromPage(firstPage, limit);
   }
@@ -1060,7 +1060,7 @@ export class DefaultView<
    * message name to run-lifecycle vs. regular wire messages, mirroring the
    * live `client-session._handleMessage` decode loop. Uses a fresh decoder
    * since the session's live decoder maintains its own stream-tracker state.
-   * @param page - The history page returned by `decodeHistory`.
+   * @param page - The history page returned by `loadHistory`.
    */
   private _processHistoryPage(page: HistoryPage): void {
     this._processingHistory = true;

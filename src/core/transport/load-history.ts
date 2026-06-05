@@ -1,11 +1,11 @@
 /**
- * decodeHistory — load conversation history from an Ably channel and return
+ * loadHistory — load conversation history from an Ably channel and return
  * the raw wire messages as a paginated HistoryPage result.
  *
- * Despite the name, this does NOT decode: it pages back through Ably history
- * until `limit` *complete* messages are present, then hands the raw Ably
- * messages (oldest-first) to the caller. The View re-decodes them into the
- * Tree itself, so decode-history only needs a cheap, header-based completion
+ * This does NOT decode: it pages back through Ably history until `limit`
+ * complete messages are present, then hands the raw Ably messages
+ * (oldest-first) to the caller. The View re-decodes them into the Tree
+ * itself, so load-history only needs a cheap, header-based completion
  * counter to decide when to stop paging — the decoder never runs here.
  *
  * The `limit` option controls the number of complete **messages** per page,
@@ -164,7 +164,7 @@ const fetchUntilLimit = async (
 
   const target = state.returnedCount + limit;
   while (state.completedCodecMessageIds.size < target && ablyPage.hasNext()) {
-    state.logger.debug('decodeHistory.fetchUntilLimit(); fetching next page', {
+    state.logger.debug('loadHistory.fetchUntilLimit(); fetching next page', {
       collected: state.rawMessages.length,
       completed: state.completedCodecMessageIds.size,
     });
@@ -238,7 +238,7 @@ const buildResult = (state: HistoryState, limit: number): HistoryPage => {
  * @returns The first page of raw history messages.
  */
 // Spec: AIT-CT11, AIT-CT11b
-export const decodeHistory = async (
+export const loadHistory = async (
   channel: Ably.RealtimeChannel,
   options: LoadHistoryOptions | undefined,
   logger: Logger,
@@ -255,7 +255,7 @@ export const decodeHistory = async (
     logger,
   };
 
-  logger.trace('decodeHistory();', { limit });
+  logger.trace('loadHistory();', { limit });
 
   // Request more Ably messages than the domain limit to account for
   // the many-to-one ratio (multiple wire messages per message).

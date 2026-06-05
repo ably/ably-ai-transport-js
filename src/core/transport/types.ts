@@ -649,7 +649,7 @@ export interface ActiveRun {
 // History / pagination
 // ---------------------------------------------------------------------------
 
-/** A page of raw history wires from the channel. Internal to View/decodeHistory. */
+/** A page of raw history wires from the channel. Internal to View/loadHistory. */
 export interface HistoryPage {
   /** Raw Ably messages that produced this page, in chronological order (oldest first). */
   rawMessages: Ably.InboundMessage[];

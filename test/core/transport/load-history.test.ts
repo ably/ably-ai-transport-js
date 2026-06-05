@@ -1,7 +1,7 @@
 /**
- * decodeHistory unit tests.
+ * loadHistory unit tests.
  *
- * decodeHistory no longer decodes: it pages back through Ably history using a
+ * loadHistory does not decode: it pages back through Ably history using a
  * cheap, header-based completion counter and returns the raw wire messages
  * (oldest-first) for the caller to fold. These tests cover the completion
  * counter (what marks a codec-message-id complete, including across page
@@ -19,7 +19,7 @@ import {
   HEADER_STATUS,
   HEADER_STREAM,
 } from '../../../src/constants.js';
-import { decodeHistory } from '../../../src/core/transport/decode-history.js';
+import { loadHistory } from '../../../src/core/transport/load-history.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 
 const silentLogger = makeLogger({ logLevel: LogLevel.Silent });
@@ -121,7 +121,7 @@ const serialsOf = (msgs: readonly Ably.InboundMessage[]): (string | undefined)[]
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('decodeHistory', () => {
+describe('loadHistory', () => {
   beforeEach(() => {
     serialCounter = 0;
   });
@@ -138,7 +138,7 @@ describe('decodeHistory', () => {
       // Ably delivers newest-first.
       const channel = createMockChannel([[m3, m2, m1]]);
 
-      const page = await decodeHistory(channel, { limit: 3 }, silentLogger);
+      const page = await loadHistory(channel, { limit: 3 }, silentLogger);
 
       // rawMessages are reversed to chronological (oldest first).
       expect(serialsOf(page.rawMessages)).toEqual(serialsOf([m1, m2, m3]));
@@ -150,7 +150,7 @@ describe('decodeHistory', () => {
       const m1 = discreteMsg('u1');
       const channel = createMockChannel([[m2, m1]]);
 
-      const page = await decodeHistory(channel, { limit: 10 }, silentLogger);
+      const page = await loadHistory(channel, { limit: 10 }, silentLogger);
 
       expect(serialsOf(page.rawMessages)).toEqual(serialsOf([m1, m2]));
       expect(page.hasNext()).toBe(false);
@@ -161,7 +161,7 @@ describe('decodeHistory', () => {
       const pageOlder = [discreteMsg('u2'), discreteMsg('u1')];
       const channel = createMockChannel([pageNewest, pageOlder]);
 
-      const page = await decodeHistory(channel, { limit: 3 }, silentLogger);
+      const page = await loadHistory(channel, { limit: 3 }, silentLogger);
 
       // Both pages were fetched; all three wires appear chronologically.
       expect(page.rawMessages).toHaveLength(3);
@@ -174,7 +174,7 @@ describe('decodeHistory', () => {
       const channel = createMockChannel([[m2], [m1]]);
 
       // limit 1 is satisfied by the newest page alone — the older page is not fetched yet.
-      const first = await decodeHistory(channel, { limit: 1 }, silentLogger);
+      const first = await loadHistory(channel, { limit: 1 }, silentLogger);
       expect(serialsOf(first.rawMessages)).toEqual(serialsOf([m2]));
       expect(first.hasNext()).toBe(true);
 
@@ -193,7 +193,7 @@ describe('decodeHistory', () => {
       const channel = createMockChannel([[m4, m3, m2, m1]]);
 
       // A single Ably page already holds 4 completions; limit 2 buffers the rest.
-      const first = await decodeHistory(channel, { limit: 2 }, silentLogger);
+      const first = await loadHistory(channel, { limit: 2 }, silentLogger);
       // All fetched wires are handed over on the first page.
       expect(serialsOf(first.rawMessages)).toEqual(serialsOf([m1, m2, m3, m4]));
       expect(first.hasNext()).toBe(true);
@@ -206,14 +206,14 @@ describe('decodeHistory', () => {
 
     it('returns an empty page when history has no messages', async () => {
       const channel = createMockChannel([[]]);
-      const page = await decodeHistory(channel, { limit: 10 }, silentLogger);
+      const page = await loadHistory(channel, { limit: 10 }, silentLogger);
       expect(page.rawMessages).toEqual([]);
       expect(page.hasNext()).toBe(false);
     });
 
     it('uses the default limit when options is omitted', async () => {
       const channel = createMockChannel([[discreteMsg('u3'), discreteMsg('u2'), discreteMsg('u1')]]);
-      const page = await decodeHistory(channel, undefined, silentLogger);
+      const page = await loadHistory(channel, undefined, silentLogger);
       expect(page.rawMessages).toHaveLength(3);
     });
   });
@@ -228,7 +228,7 @@ describe('decodeHistory', () => {
       const channel = createMockChannel([wires]);
 
       // limit 1 is satisfied by the single completed run; all its wires come back.
-      const page = await decodeHistory(channel, { limit: 1 }, silentLogger);
+      const page = await loadHistory(channel, { limit: 1 }, silentLogger);
       expect(page.rawMessages).toHaveLength(wires.length);
       expect(page.hasNext()).toBe(false);
     });
@@ -241,7 +241,7 @@ describe('decodeHistory', () => {
       const m1 = discreteMsg('u1');
       const channel = createMockChannel([[m2], [m1]]);
 
-      const page = await decodeHistory(channel, { limit: 2 }, silentLogger);
+      const page = await loadHistory(channel, { limit: 2 }, silentLogger);
 
       expect(serialsOf(page.rawMessages)).toEqual(serialsOf([m1, m2]));
       expect(page.hasNext()).toBe(false);
@@ -260,7 +260,7 @@ describe('decodeHistory', () => {
       });
       const channel = createMockChannel([[cancelled]]);
 
-      const page = await decodeHistory(channel, { limit: 1 }, silentLogger);
+      const page = await loadHistory(channel, { limit: 1 }, silentLogger);
       // Counted complete and returned without needing to page further.
       expect(serialsOf(page.rawMessages)).toEqual(serialsOf([cancelled]));
       expect(page.hasNext()).toBe(false);
@@ -274,7 +274,7 @@ describe('decodeHistory', () => {
       const channel = createMockChannel([[lifecycle1, lifecycle2, real]]);
 
       // limit 1 is met by the single real completion; lifecycle wires never count.
-      const page = await decodeHistory(channel, { limit: 1 }, silentLogger);
+      const page = await loadHistory(channel, { limit: 1 }, silentLogger);
       expect(page.rawMessages).toHaveLength(3);
       expect(page.hasNext()).toBe(false);
     });

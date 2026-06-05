@@ -85,6 +85,53 @@ export const buildTransportHeaders = (opts: {
   return h;
 };
 
+/**
+ * Build the transport header set for a run-lifecycle event (run-start,
+ * run-resume, run-suspend, run-end). Single source of truth for lifecycle
+ * header stamping, mirroring {@link buildTransportHeaders} for the
+ * message-carrier path. Every field except `runId`/`runClientId` is optional
+ * and omitted when not provided.
+ *
+ * A resume suppresses the structural `parent` / `forkOf` / `regenerates`
+ * headers — the caller passes them only for a fresh run-start. `reason` is
+ * stamped only on run-end.
+ * @param opts - The lifecycle header values to include.
+ * @param opts.runId - The run's id.
+ * @param opts.runClientId - ClientId of the run initiator (empty string when unknown).
+ * @param opts.parent - Structural parent codec-message-id (fresh run-start only).
+ * @param opts.forkOf - Forked user-prompt codec-message-id (fresh run-start only).
+ * @param opts.regenerates - Regenerated assistant codec-message-id (fresh run-start only).
+ * @param opts.invocationId - Agent-minted invocation id; carried on every lifecycle event.
+ * @param opts.inputClientId - ClientId of the triggering input event.
+ * @param opts.inputCodecMessageId - Codec-message-id of the triggering input event.
+ * @param opts.reason - Terminal reason; stamped on run-end only.
+ * @returns A headers record with the lifecycle headers set.
+ */
+export const buildLifecycleHeaders = (opts: {
+  runId: string;
+  runClientId: string;
+  parent?: string;
+  forkOf?: string;
+  regenerates?: string;
+  invocationId?: string;
+  inputClientId?: string;
+  inputCodecMessageId?: string;
+  reason?: RunEndReason;
+}): Record<string, string> => {
+  const h: Record<string, string> = {
+    [HEADER_RUN_ID]: opts.runId,
+    [HEADER_RUN_CLIENT_ID]: opts.runClientId,
+  };
+  if (opts.reason !== undefined) h[HEADER_RUN_REASON] = opts.reason;
+  if (opts.parent !== undefined) h[HEADER_PARENT] = opts.parent;
+  if (opts.forkOf !== undefined) h[HEADER_FORK_OF] = opts.forkOf;
+  if (opts.regenerates !== undefined) h[HEADER_MSG_REGENERATE] = opts.regenerates;
+  if (opts.invocationId !== undefined) h[HEADER_INVOCATION_ID] = opts.invocationId;
+  if (opts.inputClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.inputClientId;
+  if (opts.inputCodecMessageId !== undefined) h[HEADER_INPUT_CODEC_MESSAGE_ID] = opts.inputCodecMessageId;
+  return h;
+};
+
 /** The four run-lifecycle Ably message names. */
 type RunLifecycleName =
   | typeof EVENT_RUN_START

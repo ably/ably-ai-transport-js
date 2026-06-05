@@ -66,7 +66,7 @@ await fetch('/api/chat', {
 });
 ```
 
-`run.toInvocation()` carries only identifiers (`inputEventId`, `sessionName`, and `runId` only for a continuation) — a fresh run omits `runId`, leaving the agent to mint it. The agent reads the conversation from the channel and mints both the `runId` (for a fresh run) and the `invocationId`, returning them on the response. The streamed output is available immediately from the channel subscription, not from the HTTP response. (With the Vercel `useChat` integration the chat transport issues this POST for you.)
+`run.toInvocation()` carries only the `inputEventId` and `sessionName` — no `runId`, since run identity lives on the channel. The agent reads the conversation from the channel and mints the `invocationId` and the `runId` for a fresh run — or reads a continuation's `runId` off the triggering input event — returning them on the response. The streamed output is available immediately from the channel subscription, not from the HTTP response. (With the Vercel `useChat` integration the chat transport issues this POST for you.)
 
 If you need the agent-minted run id, or to know when the agent has actually picked up the run, await `run.runId`: it resolves to the run id when the agent's `ai-run-start` for this send is observed, and rejects only if the session is closed first. There is no built-in deadline — race it against your own timeout if you want to bound the wait:
 

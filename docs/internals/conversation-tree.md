@@ -54,7 +54,7 @@ The entry point for every inbound channel message. The decoded events arrive spl
 Three message kinds flow through here:
 
 1. **Fresh user prompt**: creates the Run if missing, folds events into the projection.
-2. **Continuation tool-resolution** (`run-continue: 'true'`): routes to the existing Run via `_msgIdToRunId`, folds events.
+2. **Continuation tool-resolution** (carries a `run-id`): routes to the existing Run by that `run-id`, folds events.
 3. **Assistant/agent events**: routes to the existing Run by runId, folds events.
 
 The optimistic send path (client publishing a fresh user-message) calls `applyMessage` with a `undefined` serial. When the server relay arrives, the same Run's startSerial gets promoted from null to a real serial, and the Run re-sorts.

@@ -24,7 +24,7 @@
 import * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import type { CodecMessage } from '../../core/codec/types.js';
+import type { AIMessage } from '../../core/codec/types.js';
 import type { ActiveRun, ClientSession, SendOptions } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
@@ -291,7 +291,7 @@ const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'a
  *   carries its own `transportMessageId` targeting the prior assistant it folds
  *   onto.
  */
-const deriveContinuationInputs = (pairs: CodecMessage<AI.UIMessage>[], messages: AI.UIMessage[]): VercelInput[] => {
+const deriveContinuationInputs = (pairs: AIMessage<AI.UIMessage>[], messages: AI.UIMessage[]): VercelInput[] => {
   const inputs: VercelInput[] = [];
   for (const overlay of messages) {
     if (overlay.role !== 'assistant') continue;
@@ -380,7 +380,7 @@ const deriveContinuationInputs = (pairs: CodecMessage<AI.UIMessage>[], messages:
  * @param domainId - The domain id of the target message.
  * @returns The predecessor's codec-message-id, or undefined.
  */
-const findPredecessorCodecId = (pairs: CodecMessage<AI.UIMessage>[], domainId: string): string | undefined => {
+const findPredecessorCodecId = (pairs: AIMessage<AI.UIMessage>[], domainId: string): string | undefined => {
   const idx = pairs.findIndex((p) => p.message.id === domainId);
   if (idx <= 0) return undefined;
   return pairs[idx - 1]?.transportMessageId;

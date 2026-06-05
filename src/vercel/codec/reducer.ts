@@ -28,7 +28,7 @@
 import type * as AI from 'ai';
 
 import type {
-  CodecMessage,
+  AIMessage,
   ReducerMeta,
   ToolApprovalResponse,
   ToolResult,
@@ -91,7 +91,7 @@ export interface VercelProjection {
    * (the AI SDK stream's `start.messageId` for assistants, the caller's id
    * for user messages) and is never used as an identity key.
    */
-  messages: CodecMessage<AI.UIMessage>[];
+  messages: AIMessage<AI.UIMessage>[];
   /**
    * Per-conflict-key high-water-marks. Maps a codec-derived conflict key
    * (see `_conflictKeyOf`) to the highest `meta.serial` already folded for
@@ -977,4 +977,4 @@ const _foldDataPart = (
  * @param projection - Projection produced by `init` + repeated `fold` calls.
  * @returns The visible messages with their codec-message-ids, in publication order.
  */
-export const getMessages = (projection: VercelProjection): CodecMessage<AI.UIMessage>[] => projection.messages;
+export const getMessages = (projection: VercelProjection): AIMessage<AI.UIMessage>[] => projection.messages;

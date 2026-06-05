@@ -25,7 +25,7 @@ import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
-import type { Codec, CodecInputEvent, CodecMessage, CodecOutputEvent } from '../codec/types.js';
+import type { AIMessage, Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
 import { applyWireMessage } from './decode-fold.js';
 import { loadHistory } from './load-history.js';
 import { nodeKey, type TreeInternal } from './tree.js';
@@ -244,7 +244,7 @@ export class DefaultView<
    * the internal correlation source for parent/branch routing. The public
    * `getMessages()` exposes only the `message` halves.
    */
-  private _lastVisibleMessagePairs: CodecMessage<TMessage>[] = [];
+  private _lastVisibleMessagePairs: AIMessage<TMessage>[] = [];
 
   /** Snapshot of visible flat messages — exposed via getMessages(). */
   private _lastVisibleMessages: TMessage[] = [];
@@ -346,7 +346,7 @@ export class DefaultView<
     return this._lastVisibleMessages;
   }
 
-  getMessagesWithIds(): CodecMessage<TMessage>[] {
+  getMessagesWithIds(): AIMessage<TMessage>[] {
     return this._lastVisibleMessagePairs;
   }
 
@@ -427,8 +427,8 @@ export class DefaultView<
    * @param nodes - The visible nodes (inputs + reply runs) in chronological order.
    * @returns The flat message list, each message paired with its codec-message-id.
    */
-  private _extractMessages(nodes: ConversationNode<TProjection>[]): CodecMessage<TMessage>[] {
-    const messages: CodecMessage<TMessage>[] = [];
+  private _extractMessages(nodes: ConversationNode<TProjection>[]): AIMessage<TMessage>[] {
+    const messages: AIMessage<TMessage>[] = [];
     for (const node of nodes) {
       for (const m of this._codec.getMessages(node.projection)) {
         messages.push(m);

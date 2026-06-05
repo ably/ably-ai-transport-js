@@ -478,7 +478,7 @@ export interface CodecOutputEvent {
  * not be equal.
  * @template TMessage - The codec's per-message domain type.
  */
-export interface CodecMessage<TMessage> {
+export interface AIMessage<TMessage> {
   /** The SDK's codec-message-id for this message — the correlation key. */
   transportMessageId: string;
   /** The domain message, reconstructed verbatim from the source values. */
@@ -515,12 +515,12 @@ export interface Codec<
   createDecoder(): Decoder<TInput, TOutput>;
   /**
    * Extract the per-message list from a projection, each message paired
-   * with its codec-message-id (see {@link CodecMessage}). The SDK uses the
+   * with its codec-message-id (see {@link AIMessage}). The SDK uses the
    * `transportMessageId` to correlate messages — it never reads identity from
    * the message itself — and surfaces `message` to the application
    * unchanged.
    */
-  getMessages(projection: TProjection): CodecMessage<TMessage>[];
+  getMessages(projection: TProjection): AIMessage<TMessage>[];
   /**
    * Wrap a TMessage as the codec's well-known {@link UserMessage} variant,
    * returned as a `TInput` ready to publish on the `ai-input` wire. This is

@@ -29,6 +29,7 @@ import { compareBySerial, getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
+import { evictOldestIfFull } from './internal/bounded-map.js';
 import { Invocation } from './invocation.js';
 import { loadConversation, loadRunProjection } from './load-conversation.js';
 import { pipeStream } from './pipe-stream.js';
@@ -583,18 +584,12 @@ class DefaultAgentSession<
    * @param msg - The raw cancel message (passed to `onCancel`).
    */
   private _bufferDeferredCancel(inputCodecMessageId: string, msg: Ably.InboundMessage): void {
-    if (!this._deferredCancels.has(inputCodecMessageId) && this._deferredCancels.size >= this._inputEventBufferLimit) {
-      const oldestKey = this._deferredCancels.keys().next().value;
-      if (oldestKey !== undefined) {
-        this._deferredCancels.delete(oldestKey);
-        this._logger?.warn(
-          'DefaultAgentSession._bufferDeferredCancel(); deferred-cancel buffer full, dropping oldest',
-          {
-            evictedInputCodecMessageId: oldestKey,
-            limit: this._inputEventBufferLimit,
-          },
-        );
-      }
+    const evicted = evictOldestIfFull(this._deferredCancels, inputCodecMessageId, this._inputEventBufferLimit);
+    if (evicted !== undefined) {
+      this._logger?.warn('DefaultAgentSession._bufferDeferredCancel(); deferred-cancel buffer full, dropping oldest', {
+        evictedInputCodecMessageId: evicted,
+        limit: this._inputEventBufferLimit,
+      });
     }
     this._deferredCancels.set(inputCodecMessageId, msg);
     this._logger?.debug('DefaultAgentSession._bufferDeferredCancel(); buffered early cancel', {
@@ -751,23 +746,16 @@ class DefaultAgentSession<
           if (existing) {
             existing.push(msg);
           } else {
-            if (this._inputEventBuffer.size >= this._inputEventBufferLimit) {
-              // FIFO eviction: drop the oldest event entry (and all its
-              // buffered redeliveries). Clients whose input event was evicted
-              // will fail their lookup with `InputEventNotFound` — this warn
-              // is the only operator-visible signal that capacity caused
-              // the failure.
-              const oldestKey = this._inputEventBuffer.keys().next().value;
-              if (oldestKey !== undefined) {
-                this._inputEventBuffer.delete(oldestKey);
-                this._logger?.warn(
-                  'DefaultAgentSession._handleChannelMessage(); input-event buffer full, dropping oldest entry',
-                  {
-                    evictedEventId: oldestKey,
-                    limit: this._inputEventBufferLimit,
-                  },
-                );
-              }
+            // FIFO eviction: drop the oldest event entry (and all its buffered
+            // redeliveries). Clients whose input event was evicted will fail
+            // their lookup with `InputEventNotFound` — this warn is the only
+            // operator-visible signal that capacity caused the failure.
+            const evicted = evictOldestIfFull(this._inputEventBuffer, eventId, this._inputEventBufferLimit);
+            if (evicted !== undefined) {
+              this._logger?.warn(
+                'DefaultAgentSession._handleChannelMessage(); input-event buffer full, dropping oldest entry',
+                { evictedEventId: evicted, limit: this._inputEventBufferLimit },
+              );
             }
             this._inputEventBuffer.set(eventId, [msg]);
           }

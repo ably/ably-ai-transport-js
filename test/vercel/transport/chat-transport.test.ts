@@ -107,7 +107,7 @@ const createMockSession = (): MockSession => {
     inputEventId: '',
     cancel: vi.fn(),
     optimisticCodecMessageIds: [],
-    toInvocation: () => Invocation.fromJSON({ runId, inputEventId: '', sessionName: 'chat-1' }),
+    toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'chat-1' }),
     enqueue: (chunk: AI.UIMessageChunk) => {
       // Route by the triggering input id — the key the consumer stream opens on.
       treeEmitter.emit('output', {
@@ -255,7 +255,6 @@ describe('createChatTransport', () => {
       expect(postCalls).toHaveLength(1);
       const body = postBody();
       expect(body).toMatchObject({
-        runId: 'run-1',
         sessionName: 'chat-1',
       });
       expect(body.history).toBeUndefined();
@@ -319,7 +318,6 @@ describe('createChatTransport', () => {
 
       // The regenerate run's invocation is POSTed to wake the agent.
       expect(postBody()).toMatchObject({
-        runId: 'run-1',
         sessionName: 'chat-1',
       });
     });
@@ -652,7 +650,7 @@ describe('createChatTransport', () => {
       expect(send).toHaveBeenCalledOnce();
       const body = postBody();
       expect(body.custom).toBe('body');
-      expect(body.runId).toBe('run-1');
+      expect(body.inputEventId).toBe(mockRun.toInvocation().inputEventId);
       expect(postHeaders()['X-Custom']).toBe('header');
     });
 
@@ -697,7 +695,7 @@ describe('createChatTransport', () => {
       expect(regenerate).toHaveBeenCalledOnce();
       const body = postBody();
       expect(body.customBody).toBe('regen');
-      expect(body.runId).toBe('run-1');
+      expect(body.inputEventId).toBe(mockRun.toInvocation().inputEventId);
       expect(postHeaders()['X-Custom-Regen']).toBe('yes');
     });
   });
@@ -728,7 +726,6 @@ describe('createChatTransport', () => {
       // conversation from the channel, so no history/messages are POSTed.
       const body = postBody();
       expect(body).toEqual({
-        runId: 'run-1',
         inputEventId: mockRun.toInvocation().inputEventId,
         sessionName: 'chat-1',
       });

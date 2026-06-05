@@ -1054,9 +1054,8 @@ describe('ClientSession', () => {
     it('carries the run identity and the channel name as sessionName', async () => {
       const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       const invocation = run.toInvocation();
-      // A fresh send omits the run-id (the agent mints it); the pointer carries
+      // The pointer carries no run-id (run identity lives on the channel) —
       // only the input-event-id and the session name.
-      expect(invocation.runId).toBeUndefined();
       expect(invocation.inputEventId).toBe(run.inputEventId);
       // The fixture's session is bound to the 'test-channel' channel.
       expect(invocation.sessionName).toBe('test-channel');

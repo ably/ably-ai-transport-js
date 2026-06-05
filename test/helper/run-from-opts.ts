@@ -42,14 +42,16 @@ export const createRunFromOpts = <TOutput extends CodecOutputEvent, TProjection,
   opts: RunOpts<TOutput>,
 ): Run<TOutput, TProjection, TMessage> => {
   const invocation = Invocation.fromJSON({
-    runId: opts.runId,
     inputEventId: opts.inputEventId ?? '',
     sessionName: 'test',
   });
-  // The agent mints the invocation id; tests pin it deterministically via the
-  // runtime override (defaulting to the historic `${runId}-inv` shape so
-  // assertions on the stamped invocation-id stay stable).
+  // The invocation body no longer carries a run-id. The agent mints a fresh
+  // run-id (or reads a continuation's off the channel); tests pin both the
+  // fresh run-id and the invocation-id deterministically via the runtime
+  // overrides. A continuation test additionally delivers an input event
+  // stamped with the wire run-id, which the agent adopts over runtime.runId.
   return session.createRun(invocation, {
+    runId: opts.runId,
     invocationId: opts.invocationId ?? `${opts.runId}-inv`,
     signal: opts.signal,
     onMessage: opts.onMessage,

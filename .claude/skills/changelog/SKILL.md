@@ -76,6 +76,17 @@ Summary guidance:
   `refactor:`, `docs:`, scoped variants like `fix(transport):`, etc.) and
   rewrite into sentence case.
 - Keep it to one short sentence focused on user-visible impact.
+- **Never reference internal-only artifacts.** The changelog is read by end
+  users of the published package, who have no access to internal trackers.
+  Strip and never emit: Jira ticket or epic ids (e.g. `AIT-815`),
+  specification point ids (e.g. `AIT-CT2a` for this SDK, or `RSA*` / `RTL*`
+  -style points from the general Ably spec), RFC / DR / design-doc ids
+  (e.g. `AITDR-011`, `AITRFC-014`), internal Slack threads, standup notes,
+  or any other internal process reference. These routinely appear in
+  branch-style PR titles (e.g. `Refactor/ait 815 codec split`) — describe
+  the user-visible change instead. The only references that belong are the
+  PR link (`[#NUMBER]`), public API names, exported types, and on-the-wire
+  message / header names.
 - Skip pure CI, lint, formatting, or internal-refactor PRs **if** there
   are substantive user-facing entries. If the release contains only
   internal work, keep the entries so the section is not empty.
@@ -158,6 +169,22 @@ staged. Per `CLAUDE.md`, committing is a human action — use `/commit`
 
 ## Things to watch for
 
+- **No internal references.** The entry must contain no Jira `AIT-*`
+  ticket/epic ids, `AIT-*` / `RSA*`-style spec points, `AITDR-*` /
+  `AITRFC-*` RFC/DR documents, Slack links, or standup references — only
+  public PR links and public API / wire names. Branch-style PR titles
+  (`Refactor/ait 815 ...`) carry the ticket id; strip it.
+- **Describe the NET change since the last release, not intermediate PR
+  states.** Across a release with many incremental PRs a symbol can be
+  added then removed, or renamed then renamed again. Summarise each entry
+  against the net diff from the previous tag to HEAD
+  (`git diff <OLD_VERSION> HEAD -- <public entry points>`), not the cited
+  PR's own before/after. Drop any entry whose subject was both introduced
+  AND removed within the release window (net-zero for an upgrading user),
+  and ensure every renamed/removed symbol name matches HEAD rather than a
+  superseded mid-release name. The same applies to bug fixes: only list a
+  fix if the bug affected functionality that already shipped in the
+  previous release.
 - **Conventional-commit prefix stripping.** "fix(transport): stop leaking
   stream controller" should become "Stop leaking stream controller", not
   retain the prefix or scope.

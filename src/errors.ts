@@ -23,7 +23,7 @@ export enum ErrorCode {
   // 104000 - 104999 are reserved for AI Transport SDK errors
 
   /**
-   * Encoder recovery failed after flush — one or more updateMessage calls
+   * Encoder recovery failed during flush — one or more updateMessage calls
    * could not recover a failed append pipeline.
    */
   EncoderRecoveryFailed = 104000,

@@ -29,13 +29,13 @@ export interface BaseSessionOption<
  *
  * Reads `ClientSessionContext` and applies the standard three-way
  * priority: explicit `session` argument → nearest provider → `undefined`.
- * When `skip` is `true`, returns `undefined` without reading context.
+ * When `skip` is `true`, returns `undefined` regardless of context.
  * When `session` is `null`, returns `undefined` (caller is deferring).
  *
  * Internal — not part of the public API.
  * @param root0 - Options.
  * @param root0.session - Explicit session; takes priority over the nearest provider. `null` to defer.
- * @param root0.skip - When `true`, bypass context and return `undefined` immediately.
+ * @param root0.skip - When `true`, returns `undefined` immediately; context is still read but its value is ignored.
  * @returns The resolved session, or `undefined` if none is available or `skip` is `true`.
  */
 export const useResolvedSession = <
@@ -49,7 +49,7 @@ export const useResolvedSession = <
 }: {
   /** Explicit session; takes priority over the nearest provider. `null` to defer. */
   session?: ClientSession<TInput, TOutput, TProjection, TMessage> | null;
-  /** When `true`, bypass context and return `undefined` immediately. */
+  /** When `true`, return `undefined` immediately (context is still read, but ignored). */
   skip?: boolean;
 } = {}): ClientSession<TInput, TOutput, TProjection, TMessage> | undefined => {
   const { nearest } = useContext(ClientSessionContext);

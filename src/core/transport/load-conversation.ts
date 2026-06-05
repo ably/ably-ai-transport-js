@@ -183,12 +183,13 @@ export const foldInputMessages = <
  * @param opts.channel - The Ably channel to read history from.
  * @param opts.codec - Codec used to decode and fold events.
  * @param opts.runId - Run identifier whose events should be folded.
- * @param opts.signal - AbortSignal that cancels the wait when the run is cancelled.
+ * @param opts.signal - AbortSignal checked once at entry: if already aborted the call throws immediately and no history is fetched. It does not interrupt an in-flight load.
  * @param opts.logger - Optional logger for diagnostic output.
  * @param opts.liveMessages - Raw Ably messages already observed live (e.g. by
  *   the input-event lookup). Folded alongside the history fetch so just-published
  *   client wires don't depend on Ably's history-indexing window.
  * @returns The projection produced by folding all run events in serial order.
+ * @throws {Ably.ErrorInfo} with code ErrorCode.InvalidArgument if `signal` is already aborted at entry (the run was cancelled before loading began).
  */
 export const loadRunProjection = async <
   TInput extends CodecInputEvent,
@@ -246,7 +247,7 @@ interface NodeMeta extends BranchChainNode {
  * @param opts.channel - The Ably channel to read history from.
  * @param opts.codec - Codec used to decode and fold events.
  * @param opts.runId - The current run's id.
- * @param opts.signal - AbortSignal that cancels the load when the run is cancelled.
+ * @param opts.signal - AbortSignal checked once at entry; if already aborted the call throws before any history is fetched. It does not interrupt an in-flight load.
  * @param opts.logger - Optional logger for diagnostic output.
  * @param opts.liveMessages - Wires already observed live, merged into history.
  * @param opts.assistantParentFallback - The current run's input node
@@ -255,6 +256,7 @@ interface NodeMeta extends BranchChainNode {
  * @param opts.pageLimit - Messages requested per history page.
  * @param opts.maxMessages - Stop paging once this many messages are collected.
  * @returns The branch's messages (root-first) and the current run's projection.
+ * @throws {Ably.ErrorInfo} with code ErrorCode.InvalidArgument when `signal` is already aborted at entry.
  */
 export const loadConversation = async <
   TInput extends CodecInputEvent,

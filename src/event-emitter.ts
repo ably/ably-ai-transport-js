@@ -76,8 +76,9 @@ const toAblyLogger = (logger: Logger): unknown => ({
 });
 
 // CAST: Access Ably's internal EventEmitter constructor. Not publicly exported
-// but available to other Ably SDKs. The logger parameter ensures listener
-// exceptions are caught and logged rather than crashing.
+// but available to other Ably SDKs. Ably always catches listener exceptions
+// internally; the logger parameter ensures those caught exceptions are logged
+// rather than silently swallowed.
 const InternalEventEmitter: new <EventsMap>(logger: unknown) => InterfaceEventEmitter<EventsMap> = (
   Ably.Realtime as unknown as { EventEmitter: new <EventsMap>(logger: unknown) => InterfaceEventEmitter<EventsMap> }
 ).EventEmitter;

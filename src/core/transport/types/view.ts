@@ -158,9 +158,11 @@ export interface View<TInput extends CodecInputEvent, TMessage> {
   // --- Run lookup ---
 
   /**
-   * Look up the {@link RunInfo} for the Run that owns
-   * `codecMessageId`. Returns `undefined` when the codec-message-id
-   * hasn't been observed by the view.
+   * Look up the {@link RunInfo} for the Run that owns `codecMessageId`.
+   * For a user input node's codec-message-id, resolves to its
+   * currently-selected reply run. Returns `undefined` when the
+   * codec-message-id hasn't been observed by the view, or when it names
+   * an input node that has no reply run yet.
    * @param codecMessageId - The codec-message-id to look up.
    */
   runOf(codecMessageId: string): RunInfo | undefined;
@@ -223,17 +225,21 @@ export interface View<TInput extends CodecInputEvent, TMessage> {
   send(events: TInput | TInput[], options?: SendOptions): Promise<ActiveRun>;
 
   /**
-   * Regenerate an assistant message. Creates a new run that forks the
-   * target message with no new user inputs. Automatically computes
-   * `target` (the assistant being regenerated), `parent`, and truncated
-   * `history` from this view's branch.
+   * Regenerate an assistant message. Mints a codec `Regenerate` input
+   * carrying `target` (the assistant codec-message-id being regenerated)
+   * and `parent` (the preceding user prompt's codec-message-id), both
+   * auto-computed from this view's branch — there are no new user inputs.
+   * The new reply run is not a `forkOf` fork; it continues the
+   * regenerated message's run, and the message-level replacement (the new
+   * assistant superseding the original) happens at projection-extraction
+   * time.
    */
   regenerate(messageId: string, options?: SendOptions): Promise<ActiveRun>;
 
   /**
    * Edit a user message. Creates a new run that forks the target message
-   * with replacement content. Automatically computes `forkOf`, `parent`,
-   * and `history` from this view's branch.
+   * with replacement content. Automatically computes `forkOf` (the edited
+   * message) and `parent` from this view's branch.
    */
   edit(messageId: string, inputs: TInput | TInput[], options?: SendOptions): Promise<ActiveRun>;
 

@@ -29,10 +29,10 @@ export const HEADER_DISCRETE = 'discrete';
 // Identity headers (used by transport for run correlation)
 // ---------------------------------------------------------------------------
 
-/** Header: run correlation ID. Set on every message in a run. */
+/** Header: run correlation ID. Set on every agent-published message and on continuation client inputs, but omitted from the originating fresh client input (the agent mints the run-id at run-start). */
 export const HEADER_RUN_ID = 'run-id';
 
-/** Header: invocation correlation ID. Set on the client-published user message; identifies a specific invocation under a run. */
+/** Header: invocation correlation ID; identifies a specific invocation under a run. Agent-minted and stamped by the agent on every event it publishes for the invocation — run lifecycle (run-start/resume/suspend/end) and assistant outputs. Never set by the client on its input. */
 export const HEADER_INVOCATION_ID = 'invocation-id';
 
 /**
@@ -50,7 +50,7 @@ export const HEADER_EVENT_ID = 'event-id';
 /** Header: message identity. Assigned per message (user or assistant). Used for optimistic reconciliation on the client. */
 export const HEADER_CODEC_MESSAGE_ID = 'codec-message-id';
 
-/** Header: clientId of the user who initiated the run. Set by the server on stream messages. */
+/** Header: clientId of the user who initiated the run. Stamped by the client on its user input and re-stamped by the agent on the run's lifecycle and stream messages. */
 export const HEADER_RUN_CLIENT_ID = 'run-client-id';
 
 /**

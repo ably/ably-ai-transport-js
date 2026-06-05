@@ -51,9 +51,10 @@ export interface ChatTransportProviderProps extends CoreClientSessionProviderPro
   /** Custom fetch implementation for the invocation POST. Defaults to `globalThis.fetch`. */
   fetch?: typeof globalThis.fetch;
   /**
-   * Optional hooks for customizing chat request construction (e.g. prepareSendMessagesRequest).
+   * Optional transport options for customizing chat request construction (e.g. the `prepareSendMessagesRequest` hook).
    * Must be stable across renders — wrap in `useMemo` or define outside the component.
    * A new object reference triggers ChatTransport recreation.
+   * If this object also sets `api`/`credentials`/`fetch`, the dedicated top-level props of the same name take precedence.
    */
   chatOptions?: ChatTransportOptions;
 }

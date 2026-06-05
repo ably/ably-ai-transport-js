@@ -14,7 +14,7 @@
  * codec-message-id) or routes a run-bearing wire to its reply run (keyed by
  * run-id), folds events into that node's projection, and maintains a secondary
  * `codecMessageId -> nodeKey` index. `applyRunLifecycle()` handles run-start /
- * run-end events.
+ * run-suspend / run-resume / run-end events.
  *
  * Sibling structure: editing a prompt produces a sibling input node linked by
  * {@link InputNode.forkOf}; regenerating a reply produces a sibling reply run
@@ -45,7 +45,7 @@ import type { ConversationNode, InputNode, OutputEvent, RunLifecycleEvent, RunNo
 
 interface InternalNode<TProjection> {
   node: ConversationNode<TProjection>;
-  /** Insertion sequence — tiebreaker for null-startSerial nodes (optimistic). */
+  /** Insertion sequence — tiebreaker for nodes with no sort serial (optimistic). */
   insertSeq: number;
 }
 
@@ -155,16 +155,17 @@ export interface TreeInternal<
   /**
    * Apply a run-lifecycle event.
    *
-   * - `start`: creates the Run (if missing) or sets status to 'active'.
-   *   Tracks the run as active.
+   * - `start`: creates the reply run (if missing) or, for an existing run,
+   *   sets RunNode.status to 'active', promotes startSerial, and backfills
+   *   structural metadata (parent / forkOf / regenerates / invocationId).
    * - `suspend`: sets RunNode.status to 'suspended' and records `endSerial`.
    *   The run stays live so a resume under the same `runId` picks up where it
    *   left off.
    * - `resume`: re-activates an existing suspended Run (status back to
    *   'active') without touching its structure or serials — a pure re-entry
    *   signal. A no-op if the Run is not yet known.
-   * - `end`: sets RunNode.status to the end reason and `endSerial`.
-   *   Untracks the run from active.
+   * - `end`: sets RunNode.status to the terminal reason and records
+   *   `endSerial`.
    *
    * Always emits a 'run' event to subscribers.
    * @param event - Lifecycle event payload, including the channel serial.
@@ -234,9 +235,10 @@ export class DefaultTree<
   private readonly _codecMessageIdToNodeKey = new Map<string, string>();
 
   /**
-   * All nodes sorted by startSerial (lexicographic). Null-startSerial nodes
-   * (optimistic) sort after all serial-bearing nodes, ordered among themselves
-   * by insertion sequence.
+   * All nodes sorted by their sort serial ({@link sortSerial}: `startSerial`
+   * for runs, `serial` for input nodes), lexicographically. Nodes with no sort
+   * serial (optimistic) sort after all serial-bearing nodes, ordered among
+   * themselves by insertion sequence.
    */
   private readonly _sortedNodes: InternalNode<TProjection>[] = [];
 
@@ -286,9 +288,10 @@ export class DefaultTree<
 
   /**
    * Compare two nodes (Run or input) for sorted list ordering.
-   * Serial-bearing nodes sort by startSerial (lexicographic).
-   * Null-startSerial nodes sort after all serial-bearing nodes.
-   * Among null-startSerial nodes, sort by insertion sequence.
+   * Serial-bearing nodes sort by their sort serial (`startSerial` for runs,
+   * `serial` for input nodes), lexicographically.
+   * Nodes with no sort serial sort after all serial-bearing nodes.
+   * Among them, sort by insertion sequence.
    *
    * Optimistic (null-serial) nodes intentionally tail-sort so they reorder
    * into place when the server relay arrives and `applyMessage` promotes

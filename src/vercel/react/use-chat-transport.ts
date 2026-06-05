@@ -92,10 +92,11 @@ export interface ChatTransportHandle {
   /**
    * The chat transport adapter for use with Vercel's `useChat` hook.
    *
-   * A throwing stub when `skip` is `true`, when no matching
-   * {@link ChatTransportProvider} was found in the tree, or when the underlying
-   * {@link ClientSession} construction failed. Check both `chatTransportError`
-   * and `sessionError` before use.
+   * A throwing stub when `skip` is `true` or when no matching
+   * {@link ChatTransportProvider} was found in the tree. When a provider is found
+   * but the underlying {@link ClientSession} failed to construct, this is the real
+   * transport and `sessionError` is set instead. Check `chatTransportError` and
+   * `sessionError` before use.
    */
   chatTransport: ChatTransport;
 
@@ -106,9 +107,10 @@ export interface ChatTransportHandle {
    */
   sessionError?: Ably.ErrorInfo | undefined;
   /**
-   * Set when no matching {@link ChatTransportProvider} was found or when session
-   * construction failed, and `skip` is `false`.
-   * `undefined` when the chat transport resolved successfully or when `skip` is `true`.
+   * Set only when no matching {@link ChatTransportProvider} was found and `skip` is
+   * `false`.
+   * `undefined` when the chat transport resolved successfully (even if session
+   * construction failed — see `sessionError`) or when `skip` is `true`.
    */
   chatTransportError?: Ably.ErrorInfo | undefined;
 }

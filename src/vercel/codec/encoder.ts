@@ -14,7 +14,8 @@
  * The codec event's own discriminator (`kind` for inputs, `type` for
  * outputs) is carried in the codec tier's `type` header so the
  * decoder can dispatch. Stream-tracker state lives inside the encoder
- * core and is shared across both directions.
+ * core; only the output direction (text / reasoning / tool-input chunks)
+ * drives it — inputs are always published as discrete messages.
  */
 
 import * as Ably from 'ably';
@@ -185,7 +186,7 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
             .build();
           await this._core.closeStream(chunk.toolCallId, { name: EVENT_AI_OUTPUT, data: '', codecHeaders: h });
         } catch (error: unknown) {
-          // Only fall through to discrete for "no active stream" — rethrow real failures.
+          // closeStream raises ErrorCode.InvalidArgument when there is no active stream for this id; fall through to a discrete publish in that case and rethrow any other error.
           if (!(error instanceof Ably.ErrorInfo && errorInfoIs(error, ErrorCode.InvalidArgument))) {
             throw error;
           }
@@ -519,6 +520,7 @@ const encodeMessagePayloads = (message: AI.UIMessage): MessagePayload[] => {
   }
 
   if (payloads.length === 0) {
+    // Always emit at least one part so the decoder can reconstruct the codec-message-id and role from headers, even when the user-message carried no encodable parts.
     payloads.push({
       name: EVENT_AI_INPUT,
       data: '',

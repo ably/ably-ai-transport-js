@@ -144,6 +144,11 @@ export const ClientSessionProvider = <
     [channelName, parentContext, slot],
   );
 
+  // Dispose sessions superseded by a channelName change. When channelName
+  // changes, the render path above pushes the now-stale session into
+  // sessionsToDisposeRef and creates a replacement. This effect's cleanup —
+  // which runs on the next channelName change or on unmount — closes every
+  // queued session.
   useEffect(
     () => () => {
       for (const session of sessionsToDisposeRef.current) void session.close();

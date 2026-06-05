@@ -63,7 +63,7 @@ export const applyWireMessage = <TInput extends CodecInputEvent, TOutput extends
  * a standalone projection rather than applying to a tree — used by the agent's
  * conversation reconstruction. The caller owns the decoder so its streaming
  * state can span the messages of a run, and chooses the reducer routing key.
- * @param codec - The reducer used to fold each decoded event.
+ * @param codec - The codec whose inherited Reducer `fold` method folds each decoded event into the projection.
  * @param decoder - The caller-owned codec decoder (reused across a run's wires).
  * @param projection - The projection to fold the message's events into.
  * @param rawMsg - The wire message to decode and fold.

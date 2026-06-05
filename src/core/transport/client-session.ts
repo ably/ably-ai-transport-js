@@ -116,8 +116,9 @@ class DefaultClientSession<
 
   /**
    * Backing settlers for each in-flight run's `ActiveRun.runId` promise.
-   * Resolved with the agent-minted run-id when the matching `ai-run-start` is
-   * observed; rejected if the session closes first. There is no deadline —
+   * Resolved with the agent-minted run-id when the matching `ai-run-start`
+   * (fresh send) or `ai-run-resume` (continuation) is observed; rejected if
+   * the session closes first. There is no deadline —
    * `send()` resolves on publish and does not block on run-start.
    *
    * Keyed by the triggering input's codec-message-id — the handle the client
@@ -303,7 +304,8 @@ class DefaultClientSession<
       }
 
       // Emit ably-message AFTER the apply so View subscribers can find the
-      // owning Run in `_lastVisibleRunIdSet`, which is refreshed by the tree
+      // owning node in `_lastVisibleNodeKeySet` (keyed by run-id for reply runs
+      // and codec-message-id for inputs), which is refreshed by the tree
       // 'update' events the apply triggers.
       this._tree.emitAblyMessage(ablyMessage);
     } catch (error) {
@@ -725,7 +727,7 @@ class DefaultClientSession<
     }
 
     // Best-effort encoder close — flushes any pending stream operations.
-    // The client only uses the discrete path (writeMessages), so this is
+    // The client only uses the discrete input path (publishInput), so this is
     // typically a no-op, but it releases any internal resources cleanly.
     try {
       await this._encoder.close();

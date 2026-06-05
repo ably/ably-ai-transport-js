@@ -19,7 +19,10 @@ import { useResolvedSession } from './internal/use-resolved-session.js';
 
 /** Handle for querying the conversation tree structure. */
 export interface TreeHandle<TProjection> {
-  /** Get a Run by runId, or undefined if not found. */
+  /**
+   * Get the RunNode for `runId`, or undefined if no node is keyed by `runId`
+   * (or the keyed node is an input node, not a reply run).
+   */
   getRunNode: (runId: string) => RunNode<TProjection> | undefined;
   /**
    * Get the node that owns a given codec-message-id, or undefined if not

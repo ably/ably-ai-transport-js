@@ -2,9 +2,9 @@
  * Server-side run state management and lifecycle event publishing.
  *
  * Owns the authoritative run lifecycle. Tracks active runs with their
- * AbortControllers and clientIds. Publishes run-start, run-suspend, and
- * run-end events on the Ably channel so all clients can react to run state
- * changes.
+ * AbortControllers and clientIds. Publishes run-start, run-resume, run-suspend, and
+ * run-end events on the Ably channel so all clients can react to run
+ * state changes.
  */
 
 import type * as Ably from 'ably';
@@ -65,7 +65,13 @@ export interface RunManager {
    * event of the suspending invocation just as run-end is of an ending one.
    */
   suspendRun(runId: string, invocationId?: string, inputClientId?: string, inputCodecMessageId?: string): Promise<void>;
-  /** End a run. Publishes run-end on the channel. Cleans up internal state. */
+  /**
+   * End a run. Publishes run-end on the channel (stamping `reason` as the
+   * run-reason header) and drops the run's active-run entry. Carries the same
+   * per-invocation attribution as {@link suspendRun} (`invocationId`,
+   * `inputClientId`, `inputCodecMessageId`), since run-end is the terminal event
+   * of the ending invocation.
+   */
   endRun(
     runId: string,
     reason: RunEndReason,

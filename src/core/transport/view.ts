@@ -87,7 +87,7 @@ export interface ViewOptions<TInput extends CodecInputEvent, TOutput extends Cod
   tree: TreeInternal<TInput, TOutput, TProjection>;
   /** The Ably channel to load history from. */
   channel: Ably.RealtimeChannel;
-  /** The codec for decoding history messages. */
+  /** The codec used to project messages, mint regenerate inputs, and decode history. */
   codec: Codec<TInput, TOutput, TProjection, TMessage>;
   /** Delegate for executing sends through the session. */
   sendDelegate: SendDelegate<TInput>;
@@ -451,8 +451,10 @@ export class DefaultView<
     this._logger.trace('DefaultView.loadOlder();', { limit });
 
     try {
-      // Drain withheld buffer first (older Runs, released newest-first).
-      // Each Run in the buffer counts as one toward the limit.
+      // Drain withheld buffer first (older nodes, released newest-first). The
+      // buffer holds a union of input + reply nodes, so this splices the newest
+      // `limit` NODES, not `limit` runs. Because an input node travels with the
+      // reply run it precedes, a drain may surface fewer than `limit` runs.
       if (this._withheldBuffer.length > 0) {
         const batch = this._withheldBuffer.splice(-limit, limit);
         this._releaseWithheld(batch);

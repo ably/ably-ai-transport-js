@@ -52,13 +52,13 @@ sequenceDiagram
 
 ### createRun
 
-Synchronous - no channel activity. Creates a `Run` object and registers it for cancel routing immediately, so early cancels (arriving before `start()`) fire the run's `AbortSignal`.
+Synchronous - no channel activity. Creates a `Run` object and registers it under a provisional run-id immediately, so `close()` can abort an in-flight `start()`. A cancel arriving before `start()` resolves the triggering input is buffered (by that input's `codec-message-id`) and fires the run's `AbortSignal` once the input-event lookup completes.
 
 Each run gets its own `AbortController`. If `opts.signal` is provided (typically `req.signal` from the HTTP request), `AbortSignal.any()` composes it with the controller's signal into a single composite signal. The `abortSignal` property exposes this composite signal so the server app can pass it to LLM calls. Either source - an Ably cancel message or the external signal - triggers the same downstream cancellation.
 
 ### start
 
-Publishes the run's opening lifecycle event to the channel via the [RunManager](transport-components.md#runmanager): `ai-run-start` for a fresh run, or `ai-run-resume` when the triggering input is marked a continuation (the agent reads the `run-continue` marker off the input wire during the input-event lookup). The public `start()` call is the same either way — the choice is internal. The agent mints the run id here for a fresh run (`invocation.runId ?? crypto.randomUUID()`) — the client no longer mints it, so a fresh invocation pointer omits it — and stamps the minted `run-id` on `ai-run-start`. A continuation reuses the `run-id` the invocation carried. Must be called before `pipe()`.
+Publishes the run's opening lifecycle event to the channel via the [RunManager](transport-components.md#runmanager): `ai-run-start` for a fresh run, or `ai-run-resume` when the triggering input carries a `run-id` - the agent reads it off the input wire during the input-event lookup, and a `run-id` there marks a continuation re-entering that run. The public `start()` call is the same either way - the choice is internal. Run identity is resolved here, not from the invocation body (which carries no `run-id`): the agent mints a provisional run-id at `createRun` (`runtime.runId ?? crypto.randomUUID()`), and a continuation adopts the existing `run-id` read off the triggering input, re-keying its registration to that id. It stamps the resolved `run-id` on the lifecycle event. Must be called before `pipe()`.
 
 The lifecycle event carries `input-client-id` — the Ably-level publisher `clientId` of the input event that triggered this invocation, read from the wire by the input-event lookup. On a fresh run this typically matches `run-client-id` (the run owner). On a continuation invocation triggered by an input from a non-owner (e.g. a tool-result publish from a different client), the new `input-client-id` reflects whoever published that input while `run-client-id` stays put. See [Client identity](wire-protocol.md#client-identity).
 

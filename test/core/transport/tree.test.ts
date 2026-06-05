@@ -305,14 +305,28 @@ describe('Tree', () => {
       ]);
     });
 
-    it('catches fold errors without aborting the apply', () => {
+    it('isolates a throwing fold per event without aborting the batch or apply', () => {
       apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'ok' }, serial: 's1' });
-      // Folding a throwing event should not crash applyMessage.
+      // A throwing event mid-batch must neither crash applyMessage nor skip the
+      // events folded after it — each fold is isolated.
       expect(() => {
-        apply(tree, { runId: 'R1', codecMessageId: 'm2', parent: 'm1', events: [{ type: 'throw' }], serial: 's2' });
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'm1',
+          events: [
+            { type: 'append-message', message: { id: 'b', content: 'before' } },
+            { type: 'throw' },
+            { type: 'append-message', message: { id: 'c', content: 'after' } },
+          ],
+          serial: 's2',
+        });
       }).not.toThrow();
-      // Earlier message survives.
-      expect(messagesOf(tree, 'R1')).toEqual([{ id: 'a', content: 'ok' }]);
+      // The earlier message and both sides of the throwing event survive.
+      expect(messagesOf(tree, 'R1')).toEqual([
+        { id: 'a', content: 'ok' },
+        { id: 'b', content: 'before' },
+        { id: 'c', content: 'after' },
+      ]);
     });
   });
 

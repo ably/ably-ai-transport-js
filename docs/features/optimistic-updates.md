@@ -1,33 +1,31 @@
 # Optimistic updates
 
-When a user sends a message, it appears in the conversation immediately - before the server acknowledges it. The session inserts the message into the [conversation tree](../internals/conversation-tree.md) optimistically, then reconciles it with the server-assigned identity when the relay arrives from the channel.
+When a user sends a message, it appears in the conversation immediately - before the Ably channel echoes it back. The session inserts the message into the [conversation tree](../internals/conversation-tree.md) optimistically, then reconciles it with the server-assigned serial when the channel echo arrives.
 
-Without optimistic insertion, the user would see a gap between pressing "send" and their message appearing - the round trip to the server plus the relay back through the Ably channel. For a chat UI, that delay feels broken.
+Without optimistic insertion, the user would see a gap between pressing "send" and their message appearing - the publish to Ably plus the echo back down the channel. For a chat UI, that delay feels broken.
 
 ## How it works
 
-The client generates a unique message ID (`msg-id`) for each user message and inserts it into the conversation tree with no [serial](../internals/glossary.md#serial-ably) (Ably's server-assigned ordering identifier). The message is visible via `view.flattenNodes()` immediately. `send()` returns as soon as the message is published to the channel — the core sends no HTTP and does not wait for the agent.
+The session generates a unique `codec-message-id` for each fresh user message and inserts it into the conversation tree as an input node with no [serial](../internals/glossary.md#serial-ably) (Ably's server-assigned ordering identifier). Null-serial nodes tail-sort, so the optimistic message appears at the end of the list. The message is visible via `view.getMessages()` immediately. `send()` returns as soon as the input is published to the channel — the core sends no HTTP and does not wait for the agent.
 
-The server receives the user message and relays it onto the Ably channel, preserving the original `msg-id`. All clients on the channel - including the sender - receive this relay. The sending client recognises its own message by matching the `msg-id` against the set of IDs it optimistically inserted. Instead of creating a duplicate, it updates the existing entry with the server-assigned serial, which moves the message from the end of the list to its correct position in serial order. This process is called [optimistic reconciliation](../internals/glossary.md#optimistic-reconciliation).
+The client publishes the user input directly to the channel via the shared codec encoder, stamping the `codec-message-id` on the message. All clients on the channel - including the sender - receive this message back as the channel echo. The sending client recognises its own message by matching the `codec-message-id` against the input node it optimistically inserted. Instead of creating a duplicate, it promotes the existing node with the server-assigned serial, which moves the message from the end of the list to its correct position in serial order. This process is called [optimistic reconciliation](../internals/glossary.md#optimistic-reconciliation).
 
 ```mermaid
 sequenceDiagram
     participant C as Client
     participant Ch as Ably Channel
-    participant S as Server
 
-    Note over C: generate msg-id, insert into tree (no serial)
+    Note over C: mint codec-message-id, insert input node (no serial)
     C->>C: view.getMessages() includes the optimistic message
-    C->>S: HTTP POST (fire-and-forget)
-    S->>Ch: publish user message (same msg-id, server-assigned serial)
-    Ch->>C: deliver relay
-    Note over C: msg-id matches → reconcile, not duplicate
-    C->>C: tree entry promoted to correct serial position
+    C->>Ch: publish user input (same codec-message-id)
+    Ch->>C: deliver channel echo (server-assigned serial)
+    Note over C: codec-message-id matches → reconcile, not duplicate
+    C->>C: input node promoted to correct serial position
 ```
 
 ## What the developer sees
 
-Optimistic updates are automatic - there is no opt-in or configuration. Every call to `send()`, `edit()`, or `regenerate()` that includes user messages uses the same mechanism.
+Optimistic updates are automatic - there is no opt-in or configuration. `send()` and `edit()` insert fresh user messages optimistically using the same mechanism. `regenerate()` carries no fresh user content (it is a wire-only signal that targets an existing message), so it inserts nothing optimistically — its new reply run appears once the agent's run-start lands.
 
 ```typescript
 const view = session.view;
@@ -43,7 +41,7 @@ In React, `useView()` re-renders immediately after `send()` because the optimist
 ```typescript
 import { useView } from '@ably/ai-transport/react';
 
-const { nodes, send } = useView({ session });
+const { messages, send } = useView({ session });
 
 // After send(), messages updates instantly with the new user message
 await send([userMessage]);
@@ -51,21 +49,21 @@ await send([userMessage]);
 
 ## What happens during reconciliation
 
-When the relay arrives from the channel, two things change on the optimistic entry:
+When the echo arrives from the channel, the optimistic entry changes in two ways:
 
-1. **Serial promotion** - the entry gains a server-assigned serial and moves from the end of the sorted list to its correct position in serial order. In a single-client conversation this is usually the same position. In a [multi-client](multi-client.md) conversation where other clients are sending concurrently, the serial determines the canonical ordering.
+1. **Serial promotion** - the input node gains a server-assigned serial and moves from the end of the sorted list to its correct position in serial order. In a single-client conversation this is usually the same position. In a [multi-client](multi-client.md) conversation where other clients are sending concurrently, the serial determines the canonical ordering.
 
-2. **Message content update** - the server may have modified the message (e.g. the codec could normalise fields). The tree entry is updated with the relayed content.
+2. **Projection fold** - the echoed input events are folded into the node's projection again, keeping the rendered message consistent with the wire form.
 
-Both changes happen inside a single `upsert()` call on the conversation tree. An `update` event fires on the view, and `flattenNodes()` reflects the updated state.
+Serial promotion happens inside the conversation tree's apply path: the input node's serial is set and the node is re-sorted. An `update` event fires on the view, and `getMessages()` reflects the updated state.
 
 ## Server side
 
-No server-side code is needed. The agent session's `run.addMessages()` preserves the `msg-id` from the client's POST body when relaying user messages onto the channel. This is what allows the sending client to match the relay against its optimistic entry. See [Streaming: server](streaming.md#server) for the standard server run flow.
+No server-side code is needed for optimistic updates. The user input is published by the client directly to the channel, carrying its own `codec-message-id`; the channel echo redelivers it to the sender for reconciliation. The agent simply locates the triggering input event by its `event-id` and publishes its run lifecycle events and assistant chunks. See [Streaming: server](streaming.md#server) for the standard server run flow.
 
 ## Multi-message sends
 
-When `send()` receives an array of messages, each gets its own `msg-id` and each is optimistically inserted. The messages are chained - each subsequent message parents off the previous one, forming a linear thread rather than siblings. See [Conversation branching](branching.md) for how parent relationships work.
+When `send()` receives an array of inputs, each fresh user message gets its own `codec-message-id` and each is optimistically inserted. The messages are chained - each subsequent message auto-parents off the previous one, forming a linear thread rather than siblings. See [Conversation branching](branching.md) for how parent relationships work.
 
 ```typescript
 // Both messages appear immediately, chained in order
@@ -74,10 +72,8 @@ const run = await view.send([questionOne, questionTwo]);
 
 ## Edge cases
 
-**POST failure** - if the HTTP POST fails (network error or non-2xx response), the optimistic message remains in the tree but the server never relays it. The error is emitted via `session.on('error')`. The optimistic entry stays with no serial until the session is reset. In practice, the developer should handle the error event and update the UI accordingly.
+**Publish failure** - if publishing the input to the channel fails (network error or missing publish capability), the optimistic input node is rolled back: the session drops it from the tree, but only when it never received a server-assigned serial (i.e. nothing live observed it). A server-acked node is part of the canonical channel state and is kept. The error is emitted via `session.on('error')`. In practice, the developer should handle the error event and update the UI accordingly.
 
-**Multi-client ordering** - in a conversation with multiple clients sending concurrently, optimistic messages appear at the end of the local tree until reconciliation. After reconciliation, the serial determines the canonical order, which may differ from the optimistic insertion order. All clients converge on the same order once relays are reconciled.
+**Multi-client ordering** - in a conversation with multiple clients sending concurrently, optimistic messages appear at the end of the local tree until reconciliation. After reconciliation, the serial determines the canonical order, which may differ from the optimistic insertion order. All clients converge on the same order once echoes are reconciled.
 
-**Cleanup** - the session tracks optimistic message IDs per run. When a [run](../concepts/runs.md) ends (via `ai-run-end` on the channel), the tracking state for that run is cleaned up. This prevents stale message IDs from matching against unrelated messages in future runs.
-
-For the internal implementation details, see [Client session: optimistic reconciliation](../internals/client-session.md#optimistic-reconciliation), [Conversation tree: upsert](../internals/conversation-tree.md#upsert-the-sole-mutation), and [Wire protocol: message identity](../internals/wire-protocol.md#message-identity-msg-id).
+For the internal implementation details, see [Client session: optimistic reconciliation](../internals/client-session.md#optimistic-reconciliation), [Conversation tree: the two mutation entry points](../internals/conversation-tree.md#apply-the-two-mutation-entry-points), and [Wire protocol: message identity](../internals/wire-protocol.md#message-identity-codec-message-id).

@@ -11,15 +11,17 @@ Runs are the unit of cancellation, lifecycle tracking, and concurrent interactio
 The server controls the run lifecycle explicitly:
 
 ```typescript
-import { Invocation } from '@ably/ai-transport';
+import { Invocation, type InvocationData } from '@ably/ai-transport';
 
-const run = session.createRun(Invocation.fromJSON({ runId, clientId }));
+const invocation = Invocation.fromJSON(data as InvocationData);
+const run = session.createRun(invocation, { signal: req.signal });
 
 // 1. Publish run-start event (visible to all clients)
 await run.start();
 
-// 2. Publish user messages to the channel so all clients see them and they persist in history
-await run.addMessages(userMessages);
+// 2. Read the conversation from the channel — the agent does not republish the
+//    user's prompt; it reads it from the input event the client already published
+await run.loadConversation();
 
 // 3. Pipe the LLM response stream through the encoder
 const { reason } = await run.pipe(llmStream);
@@ -28,7 +30,7 @@ const { reason } = await run.pipe(llmStream);
 await run.end(reason);
 ```
 
-`createRun()` is synchronous - it creates the run and registers it for cancel routing, but doesn't touch the channel. This means a cancel signal that arrives before `start()` still fires the run's `AbortSignal`.
+`createRun()` is synchronous - it creates the run and registers it for cancel routing, but doesn't touch the channel. This means a cancel signal that arrives before `start()` still fires the run's `AbortSignal`. The invocation body carries only `inputEventId` and `sessionName` — run identity and the user's prompt both live on the channel. `run.start()` locates the triggering input event (via channel rewind) and opens the run on the channel (`ai-run-start`, or `ai-run-resume` when the input re-enters an existing run). The run id itself is assigned when the run is created, not in `start()`. `run.loadConversation()` hydrates `run.messages` from the channel so you can feed them to the model.
 
 `pipe()` returns a `StreamResult` with a `reason` field:
 
@@ -107,9 +109,9 @@ Use these events to drive your own UI state. The SDK does not summarise channel 
 Multiple runs can be active simultaneously on the same channel. Each run has its own cancel handle and its own lifecycle events, and its outputs are routed by `inputCodecMessageId` on the tree's `output` event (the triggering input's `codec-message-id`, which the client owns from send time before the agent mints the `runId`). The server creates independent runs:
 
 ```typescript
-// Two runs can stream at the same time
-const runA = session.createRun(Invocation.fromJSON({ runId: 'a', clientId: 'user-1' }));
-const runB = session.createRun(Invocation.fromJSON({ runId: 'b', clientId: 'user-2' }));
+// Two runs can stream at the same time, each driven by its own invocation
+const runA = session.createRun(Invocation.fromJSON(invocationA));
+const runB = session.createRun(Invocation.fromJSON(invocationB));
 
 await runA.start();
 await runB.start();
@@ -130,7 +132,7 @@ Each server-side run exposes an `AbortSignal` that fires when the run is cancell
 ```typescript
 import { Invocation } from '@ably/ai-transport';
 
-const run = session.createRun(Invocation.fromJSON({ runId, clientId }), {
+const run = session.createRun(Invocation.fromJSON(data), {
   signal: req.signal, // platform-level cancellation (optional)
   onCancel: async (request) => {
     // Return false to reject the cancel (run continues)
@@ -139,8 +141,9 @@ const run = session.createRun(Invocation.fromJSON({ runId, clientId }), {
   },
   onCancelled: async (write) => {
     // Called after abortSignal fires, before the stream closes.
-    // Use write() to publish final events before the encoder closes, e.g.:
-    // await write({ type: 'text-delta', textDelta: '[generation cancelled]' });
+    // Use write() to publish final outputs before the encoder closes, e.g.
+    // a Vercel text-delta chunk:
+    // await write({ type: 'text-delta', id: 'final', delta: '[generation cancelled]' });
   },
 });
 

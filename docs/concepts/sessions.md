@@ -36,7 +36,7 @@ The invocation POST is a cheap, retryable pointer — it carries only the `input
 
 Both `createAgentSession()` and `createClientSession()` return synchronously and do not touch the channel. Call `await session.connect()` to subscribe to the channel before any session method is used. `connect()` is idempotent - calling it twice returns the same in-flight promise and triggers a single subscribe.
 
-Run lifecycle methods (`run.start`, `run.addMessages`, `run.addEvents`, `run.pipe`, `run.end`) and client write methods (`session.cancel`, `view.send`, etc.) throw `InvalidArgument` until `connect()` resolves. In React, `ClientSessionProvider` and `ChatTransportProvider` call `connect()` on mount, so consumers of `useClientSession`/`useChatTransport` don't need to call it explicitly.
+Run lifecycle methods (`run.start`, `run.addEvents`, `run.pipe`, `run.suspend`, `run.end`) and client write methods (`session.cancel`, `view.send`, etc.) throw `InvalidArgument` until `connect()` resolves. In React, `ClientSessionProvider` and `ChatTransportProvider` call `connect()` on mount, so consumers of `useClientSession`/`useChatTransport` don't need to call it explicitly.
 
 `session.close()` reverses `connect()`: it unsubscribes, tears down listeners, and **detaches the channel the session attached**. It does **not** close the Ably client you passed in - your app owns the client's lifecycle (the React `<AblyProvider>` client, or a per-request client in a serverless agent). Both sessions' `close()` return a promise, so a serverless agent can `await session.close()` for a graceful channel teardown before the function returns.
 
@@ -47,18 +47,23 @@ The agent session manages **runs** - discrete request-response cycles on a share
 ```typescript
 import Ably from 'ably';
 import { streamText } from 'ai';
-import { Invocation } from '@ably/ai-transport';
+import { Invocation, type InvocationData } from '@ably/ai-transport';
 import { createAgentSession } from '@ably/ai-transport/vercel';
 
 const session = createAgentSession({ client: ably, channelName });
 await session.connect();
 
-const run = session.createRun(Invocation.fromJSON({ runId, clientId }));
+// The invocation pointer the client POSTed — `{ inputEventId, sessionName }`.
+const invocationData = (await req.json()) as InvocationData;
+const invocation = Invocation.fromJSON(invocationData);
+const run = session.createRun(invocation);
+
+// start() looks up the triggering input event on the channel (via rewind),
+// reads the user's message and per-run metadata, and publishes `ai-run-start`.
 await run.start();
 
-// Publish user messages to the channel so all clients see them and they persist in history
-await run.addMessages(userMessages);
-
+// Load the conversation the client published to the channel, then prompt the LLM.
+const history = await run.loadConversation();
 const result = streamText({ model, messages: history });
 const { reason } = await run.pipe(result.toUIMessageStream());
 await run.end(reason);
@@ -107,6 +112,7 @@ In React, `ClientSessionProvider` creates the session and `useClientSession` rea
 ```typescript
 import { ClientSessionProvider, useClientSession, useView } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
+import type { VercelInput, VercelProjection } from '@ably/ai-transport/vercel';
 import type * as AI from 'ai';
 
 // In your layout or page component:
@@ -115,18 +121,18 @@ import type * as AI from 'ai';
 </ClientSessionProvider>
 
 // Inside Chat:
-const session = useClientSession<AI.UIMessageChunk, AI.UIMessage>();
-const { nodes, send } = useView(session);
+const { session } = useClientSession<VercelInput, AI.UIMessageChunk, VercelProjection, AI.UIMessage>();
+const { messages, send } = useView({ session });
 ```
 
 ## The codec
 
 The session is parameterized by a `Codec<TInput, TOutput, TProjection, TMessage>` - an interface that translates between domain types and Ably messages. The codec provides:
 
-- **Encoder**: converts domain events into Ably publish/append/update operations
-- **Decoder**: converts Ably messages back into domain events
-- **Accumulator**: builds complete domain messages from a stream of events
-- **Terminal detection**: identifies events that end a stream (finish, error, abort)
+- **Encoder** (`createEncoder`): converts domain events into Ably publish/append/update operations
+- **Decoder** (`createDecoder`): converts Ably messages back into domain events
+- **Reducer** (`init`/`fold`): folds decoded events into an opaque per-node `TProjection`
+- **Message extraction** (`getMessages`): builds complete `TMessage`s from a projection
 
 The generic session layer knows nothing about specific frameworks. For the Vercel AI SDK, `UIMessageCodec` maps between `UIMessageChunk` events and `UIMessage` messages. The Vercel entry point (`@ably/ai-transport/vercel`) pre-binds this codec so you don't need to pass it explicitly.
 

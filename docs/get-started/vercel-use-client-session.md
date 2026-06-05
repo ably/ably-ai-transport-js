@@ -22,6 +22,7 @@ import {
   useView,
 } from '@ably/ai-transport/react';
 import type { ActiveRun } from '@ably/ai-transport';
+import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import type * as AI from 'ai';
 import { useState } from 'react';
@@ -39,29 +40,30 @@ const wakeAgent = (run: ActiveRun) =>
 function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) {
   const [input, setInput] = useState('');
 
-  // Read the session created by ClientSessionProvider
-  const { session } = useClientSession<AI.UIMessageChunk, AI.UIMessage>();
+  // Read the session created by ClientSessionProvider. The generic hooks are
+  // parameterized by <TInput, TOutput, TProjection, TMessage> — bind them to
+  // the Vercel codec's types.
+  const { session } = useClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>();
 
   // useView provides message state, navigation, and write operations
   const {
     messages,
-    nodes,
     hasOlder,
     loading,
     loadOlder,
     send,
     regenerate,
-    hasMessageSiblings,
-    getMessageSiblings,
-    getSelectedMessageSiblingIndex,
-    selectMessageSibling,
+    runOf,
+    branchSelection,
+    selectSibling,
   } = useView({ session, limit: 30 });
 
-  // Read streaming state and the runId-to-cancel off the latest visible Run.
-  // Terminal statuses ('complete' / 'cancelled') hide the Stop button.
-  const latest = nodes.at(-1);
-  const latestRunId = latest?.runId;
-  const latestStatus = latest?.status;
+  // Read streaming state and the runId-to-cancel off the Run that owns the
+  // latest visible message. Terminal statuses ('complete' / 'cancelled') hide
+  // the Stop button.
+  const latestRun = runOf(messages.at(-1)?.id ?? '');
+  const latestRunId = latestRun?.runId;
+  const latestStatus = latestRun?.status;
   const isStreaming = latestRunId !== undefined && latestStatus !== 'complete' && latestStatus !== 'cancelled';
 
   const handleSend = async () => {
@@ -73,7 +75,6 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
       id: crypto.randomUUID(),
       role: 'user',
       parts: [{ type: 'text', text }],
-      createdAt: new Date(),
     };
     // Compose the user message into a codec input, then send(). send()
     // publishes the input on the channel and returns the run; then POST the
@@ -100,15 +101,16 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
             part.type === 'text' ? <span key={i}>{part.text}</span> : null
           ))}
 
-          {/* Branch navigation: codec-message-id-keyed sibling controls */}
-          {hasMessageSiblings(codecMessageId) && (() => {
-            const idx = getSelectedMessageSiblingIndex(codecMessageId);
-            const count = getMessageSiblings(codecMessageId).length;
+          {/* Branch navigation: branchSelection() returns the sibling bundle
+              anchored at this message's codec-message-id. */}
+          {(() => {
+            const branch = branchSelection(codecMessageId);
+            if (!branch.hasSiblings) return null;
             return (
               <span>
-                {idx + 1} / {count}
-                <button onClick={() => selectMessageSibling(codecMessageId, idx - 1)}>prev</button>
-                <button onClick={() => selectMessageSibling(codecMessageId, idx + 1)}>next</button>
+                {branch.index + 1} / {branch.siblings.length}
+                <button onClick={() => selectSibling(codecMessageId, branch.index - 1)}>prev</button>
+                <button onClick={() => selectSibling(codecMessageId, branch.index + 1)}>next</button>
               </span>
             );
           })()}
@@ -164,16 +166,16 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
 
 ## Key differences from the useChat path
 
-|                       | useChat path                              | Generic hooks path                                                         |
-| --------------------- | ----------------------------------------- | -------------------------------------------------------------------------- |
-| **Message state**     | Managed by `useChat()`                    | Managed by `useView()`                                                     |
-| **Send**              | `sendMessage({ text })`                   | `send(codec.createUserMessage(uiMessage))` - you construct the `UIMessage` |
-| **Regenerate**        | `regenerate({ messageId })`               | `regenerate(messageId)`                                                    |
-| **Edit**              | Not built into `useChat()`                | `edit(messageId, codec.createUserMessage(newMessage))`                     |
-| **Branch navigation** | Not available                             | `view.hasMessageSiblings()`, `view.selectMessageSibling()` via `useView()` |
-| **Stop**              | `stop()` from `useChat()`                 | `session.cancel(runId)` — read the runId off the latest visible node       |
-| **Observer sync**     | Requires `useMessageSync()`               | Built-in - `useView()` includes all clients                                |
-| **Hooks needed**      | `useChatTransport()` + `useMessageSync()` | Individual hooks per operation                                             |
+|                       | useChat path                              | Generic hooks path                                                              |
+| --------------------- | ----------------------------------------- | ------------------------------------------------------------------------------- |
+| **Message state**     | Managed by `useChat()`                    | Managed by `useView()`                                                          |
+| **Send**              | `sendMessage({ text })`                   | `send(codec.createUserMessage(uiMessage))` - you construct the `UIMessage`      |
+| **Regenerate**        | `regenerate({ messageId })`               | `regenerate(messageId)`                                                         |
+| **Edit**              | Not built into `useChat()`                | `edit(messageId, codec.createUserMessage(newMessage))`                          |
+| **Branch navigation** | Not available                             | `view.branchSelection()`, `view.selectSibling()` via `useView()`                |
+| **Stop**              | `stop()` from `useChat()`                 | `session.cancel(runId)` — resolve the runId via `runOf()` on the latest message |
+| **Observer sync**     | Requires `useMessageSync()`               | Built-in - `useView()` includes all clients                                     |
+| **Hooks needed**      | `useChatTransport()` + `useMessageSync()` | Individual hooks per operation                                                  |
 
 Use the **useChat path** when you want the simplest integration and Vercel's `useChat()` handles your needs. Use the **generic hooks path** when you need conversation branching UI, custom message construction, or tighter control over session operations.
 

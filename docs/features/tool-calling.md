@@ -8,10 +8,10 @@ Without a durable transport layer, tool call sequences break on disconnection. A
 
 Tools are defined in the AI SDK's `tool()` format and passed to `streamText()`. AI Transport handles two execution models:
 
-| Model               | Where it runs                       | How the result is published                                                                                                                             |
-| ------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Server-executed** | Inside `streamText()` on the server | Automatically - the AI SDK calls `execute`, and the result streams through `run.pipe()`                                                                 |
-| **Client-executed** | In the browser (or any client)      | The client sends the result via [`view.update()`](../reference/react-hooks.md#useview) which amends the assistant message and starts a continuation run |
+| Model               | Where it runs                       | How the result is published                                                                                                                                                           |
+| ------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Server-executed** | Inside `streamText()` on the server | Automatically - the AI SDK calls `execute`, and the result streams through `run.pipe()`                                                                                               |
+| **Client-executed** | In the browser (or any client)      | The client sends a `tool-result` input via [`view.send()`](../reference/react-hooks.md#useview), which amends the suspended assistant message and continues the run under its `runId` |
 
 Tool events flow through the codec like any other streaming content. The Vercel codec maps tool lifecycle to these wire events:
 
@@ -29,21 +29,24 @@ Tool events flow through the codec like any other streaming content. The Vercel 
 Define tools with an `execute` function. The AI SDK calls them automatically during `streamText()` and the results stream to all clients via the encoder:
 
 ```typescript
-import { streamText } from 'ai';
+import { streamText, convertToModelMessages } from 'ai';
 import { z } from 'zod';
-import { Invocation } from '@ably/ai-transport';
-import { createAgentSession } from '@ably/ai-transport/vercel';
+import { Invocation, type InvocationData } from '@ably/ai-transport';
+import { createAgentSession, vercelRunOutcome } from '@ably/ai-transport/vercel';
 
-const session = createAgentSession({ client: ably, channelName });
+const data = (await req.json()) as InvocationData;
+const invocation = Invocation.fromJSON(data);
+
+const session = createAgentSession({ client: ably, channelName: invocation.sessionName });
 await session.connect();
-const run = session.createRun(Invocation.fromJSON({ runId, clientId }));
+const run = session.createRun(invocation, { signal: req.signal });
 
 await run.start();
-await run.addMessages(userMessages, { clientId });
+await run.loadConversation();
 
 const result = streamText({
   model,
-  messages: conversationHistory,
+  messages: await convertToModelMessages(run.messages),
   tools: {
     getWeather: {
       description: 'Get the current weather for a location.',
@@ -59,8 +62,13 @@ const result = streamText({
   abortSignal: run.abortSignal,
 });
 
-const { reason } = await run.pipe(result.toUIMessageStream());
-await run.end(reason);
+const pipeResult = await run.pipe(result.toUIMessageStream());
+const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
+if (outcome === 'suspend') {
+  await run.suspend();
+} else {
+  await run.end(outcome);
+}
 ```
 
 The model decides to call `getWeather`, the AI SDK executes it on the server, and the encoder publishes both the tool input (streamed) and tool output (discrete) to the channel. All clients see the tool call and result appear in the assistant message's parts.
@@ -95,7 +103,7 @@ const tools = {
 Watch for tool parts in the `input-available` state, execute the browser API, then publish the result back to the channel:
 
 ```typescript
-import type { EventsNode } from '@ably/ai-transport';
+import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
 // 1. Find the pending tool call in the assistant message. Walk the flat
 //    list paired with codec-message-ids so we can address the result back to
@@ -111,20 +119,24 @@ const assistant = view
       ),
   );
 
+const toolPart = assistant?.message.parts.find(
+  (p) => p.type === 'dynamic-tool' && p.toolName === 'getLocation' && p.state === 'input-available',
+);
+
 // 2. Resolve the owning Run so the continuation reuses its runId
-const metadata = view.getMessageMetadata(assistant.codecMessageId);
-const runId = metadata?.runId;
+const run = view.runOf(assistant.codecMessageId);
+const runId = run?.runId;
 
 // 3. Execute the browser API
 const position = await new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject));
 
 // 4. Send a continuation `tool-result` input under the existing runId.
-//    `codecMessageId` addresses the assistant message holding the tool call,
-//    so the reducer folds the result onto it. The codec-supplied payload
-//    carries the domain-specific fields (`toolCallId`, `output`). Routing
-//    lives on the input itself - no wrapper object.
+//    The codec-message-id (`assistant.codecMessageId`) addresses the assistant
+//    message holding the tool call, so the reducer folds the result onto it. The
+//    codec-supplied payload carries the domain-specific fields (`toolCallId`,
+//    `output`). Routing lives on the input itself - no wrapper object.
 await view.send(
-  codec.createToolResult(assistant.codecMessageId, {
+  UIMessageCodec.createToolResult(assistant.codecMessageId, {
     toolCallId: toolPart.toolCallId,
     output: {
       latitude: position.coords.latitude,
@@ -144,50 +156,52 @@ Client tool resolutions are `tool-result` (or `tool-result-error`) inputs - they
 When multiple clients share a channel, only the client that initiated the run should execute client-side tools. The `run-client-id` header on each message identifies which client started the run. Compare it against the local `clientId` to skip observer tool calls:
 
 ```typescript
-const metadata = view.getMessageMetadata(assistant.id);
-if (metadata?.clientId && metadata.clientId !== myClientId) {
+const run = view.runOf(assistant.codecMessageId);
+if (run?.clientId && run.clientId !== myClientId) {
   // This tool call was triggered by another client - skip execution.
   // That client will publish the result, and we'll see it via the channel.
   return;
 }
 ```
 
-Observer clients see the tool call arrive (the assistant message streams normally) and see the result appear when the server publishes the events. No special handling is needed on the observer side.
+Observer clients see the tool call arrive (the assistant message streams normally) and see the result appear when the initiating client publishes its `tool-result` input and the run resumes. No special handling is needed on the observer side.
 
 ## Server-side tool result events
 
 For tool calls that require server-mediated approval workflows or deferred execution, the server can publish tool results targeting a previous run's message using `run.addEvents()`:
 
 ```typescript
-const run = session.createRun(Invocation.fromJSON({ runId, clientId }));
+const run = session.createRun(invocation, { signal: req.signal });
 await run.start();
 
-// Publish the tool result targeting a message from a previous run
+// Publish the tool result targeting a message from a previous run.
+// `codecMessageId` addresses the assistant message holding the tool call;
+// `events` are `UIMessageChunk`s applied to it.
 await run.addEvents([
   {
     kind: 'event',
-    msgId: previousAssistantMsgId,
+    codecMessageId: previousAssistantCodecMessageId,
     events: [{ type: 'tool-output-available', toolCallId, output: result }],
   },
 ]);
 
 // Continue streaming with the tool result in history
-const response = streamText({ model, messages: updatedHistory, tools });
-await run.pipe(response.toUIMessageStream());
-await run.end(reason);
+const response = streamText({ model, messages: await convertToModelMessages(run.messages), tools });
+const pipeResult = await run.pipe(response.toUIMessageStream());
+await run.end(pipeResult.reason);
 ```
 
 ## History and persistence
 
 Tool call events persist in Ably channel history. When a client loads history, the decoder reconstructs tool parts with their final state - including cross-run events. A tool that was called, executed, and resolved in a previous session appears with `state: 'output-available'` and the full output.
 
-Cross-run events (from `view.update()` or server-side `run.addEvents()`) are stored in history with `amend` header identifying the target message. The history decoder detects these and routes them to the correct message's accumulator, so the tool part state is reconstructed correctly.
+Cross-run events (from a client `tool-result` input via `view.send()`, or server-side `run.addEvents()`) carry the `codec-message-id` of the message they target. When loading history, the SDK routes these amend events to the correct message and folds them through the codec's reducer, so the tool part state is reconstructed correctly.
 
 To avoid re-executing client tools after a page refresh, check whether the tool call already has a follow-up assistant message (which means the model already consumed the result):
 
 ```typescript
-const hasFollowUp = nodes.slice(i + 1).some((n) => n.message.role === 'assistant');
+const hasFollowUp = messages.slice(i + 1).some((m) => m.role === 'assistant');
 if (hasFollowUp) continue; // Already resolved in a previous session
 ```
 
-See [Streaming](streaming.md) for how tool input deltas are encoded as message appends. See [Branching](branching.md) for how tool calls interact with conversation forks. See [React hooks reference](../reference/react-hooks.md#useview) for the `update` API on `ViewHandle`.
+See [Streaming](streaming.md) for how tool input deltas are encoded as message appends. See [Branching](branching.md) for how tool calls interact with conversation forks. See [React hooks reference](../reference/react-hooks.md#useview) for the `send` API on `ViewHandle`.

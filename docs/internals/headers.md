@@ -64,28 +64,33 @@ const pm = r.providerMetadata(); // AI.ProviderMetadata | undefined
 
 ## Low-level utilities
 
-These are used internally by `headerWriter` / `headerReader` and by the transport layer. Codec implementations should prefer the typed reader/writer over calling these directly.
+These back `headerReader` / `headerWriter` and the transport layer. Codec implementations should prefer the typed reader/writer over calling these directly.
 
 | Function                            | Purpose                                                                                                         |
 | ----------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `getTransportHeaders(msg)`          | Extract `extras.ai.transport` from an Ably `InboundMessage`. Returns `{}` if absent.                            |
 | `getCodecHeaders(msg)`              | Extract `extras.ai.codec` from an Ably `InboundMessage`. Returns `{}` if absent.                                |
-| `mergeHeaders(base, overrides)`     | Shallow merge of two header records (overrides win).                                                            |
-| `domainHeaders(entries)`            | Build a domain headers record from unprefixed key-value pairs.                                                  |
+| `mergeHeaders(base, overrides)`     | Shallow merge of two header records into a new object (overrides win).                                          |
 | `getDomainHeader(headers, key)`     | Read a single domain header by unprefixed key.                                                                  |
 | `setIfPresent(headers, key, value)` | Set a header if the value is defined - strings directly, booleans/numbers stringified, objects JSON-serialized. |
 | `parseJson(value)`                  | Parse a JSON string, returning undefined on failure.                                                            |
-| `parseBool(value)`                  | Parse `"true"` / `"false"`, returning undefined if absent.                                                      |
+| `parseBool(value)`                  | Parse `"true"` / `"false"` (any other string is `false`), returning undefined if absent.                        |
 | `stripUndefined(obj)`               | Remove undefined-valued keys from an object. Used to build chunk literals with optional fields.                 |
 
 ## Header merge order
 
-When the [encoder](encoder.md#header-merging) publishes a message, headers are merged in priority order (later wins):
+When the [encoder](encoder.md#header-merging) publishes a message, it builds two independent tiers — the transport tier and the codec tier — that never merge into one another.
+
+The **transport tier** (`_buildTransport`) is merged in priority order (later wins):
 
 1. **Default extras** - encoder-level defaults from construction
 2. **Per-write overrides** - headers passed to individual write calls
-3. **Codec headers** - domain-specific headers from the payload
+3. **Payload transport headers** - transport-tier headers the codec stamps on the payload (`payload.transportHeaders`, e.g. `role`, `status`)
 
-After merging, the `onMessage` hook runs as a post-processing step for transport-level stamping (run IDs, role, parent).
+If `WriteOptions.messageId` is set, the encoder then stamps it as `codec-message-id` on the transport tier.
+
+The **codec tier** (`payload.codecHeaders`) is a separate tier taken verbatim and omitted from the wire entirely when empty. It is never merged into the transport priority chain.
+
+The `onMessage` hook is a generic, optional message-mutation callback (default noop) invoked once on the fully built `Ably.Message`; it does not perform transport stamping. Transport headers (run IDs, role, parent) come from `payload.transportHeaders` (produced by `buildTransportHeaders`), set while building the transport tier.
 
 See [Wire protocol](wire-protocol.md) for the complete header specification. See [Encoder](encoder.md#header-merging) for the merge implementation. See [Transport components: buildTransportHeaders](transport-components.md#buildtransportheaders) for the transport header builder.

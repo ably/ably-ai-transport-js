@@ -52,6 +52,7 @@ Use the generic React hooks directly. You manage message state through the sessi
 ```tsx
 import { ClientSessionProvider, useClientSession, useView } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
+import type { VercelInput, VercelProjection } from '@ably/ai-transport/vercel';
 import type * as AI from 'ai';
 
 // Wrap your component tree with ClientSessionProvider
@@ -64,23 +65,14 @@ import type * as AI from 'ai';
 </ClientSessionProvider>;
 
 // Inside ChatInner:
-const { session } = useClientSession<AI.UIMessageChunk, AI.UIMessage>();
-const {
-  nodes,
-  hasOlder,
-  loading,
-  loadOlder,
-  send,
-  regenerate,
-  edit,
-  select,
-  getSelectedIndex,
-  getSiblings,
-  hasSiblings,
-} = useView({ session, limit: 30 });
+const { session } = useClientSession<VercelInput, AI.UIMessageChunk, VercelProjection, AI.UIMessage>();
+const { messages, hasOlder, loading, loadOlder, send, regenerate, edit, branchSelection, selectSibling } = useView({
+  session,
+  limit: 30,
+});
 ```
 
-This path gives you conversation branching UI (sibling navigation), write operations, and direct access to the view state. Unlike the `useChat` path, `ClientSessionProvider` does not POST anything — the session only publishes on the channel. Wake the agent yourself by POSTing `run.toInvocation().toJSON()` to your endpoint from the value `send`/`regenerate`/`edit` returns.
+This path gives you conversation branching UI (sibling navigation via `branchSelection`/`selectSibling`), write operations, and direct access to the view state. Unlike the `useChat` path, `ClientSessionProvider` does not POST anything — the session only publishes on the channel. Wake the agent yourself by POSTing `run.toInvocation().toJSON()` to your endpoint from the `ActiveRun` that `send`/`regenerate`/`edit` returns.
 
 ### When to use which
 
@@ -88,16 +80,16 @@ This path gives you conversation branching UI (sibling navigation), write operat
 | -------------------------------------------------------- | --------------------------------------------- |
 | You want the simplest integration                        | You need conversation branching UI            |
 | `useChat()`'s message state management is sufficient     | You need custom message construction          |
-| You don't need edit or branch navigation                 | You need `edit()` or `view.select()`          |
+| You don't need edit or branch navigation                 | You need `edit()` or `selectSibling()`        |
 | You're already using `useChat()` and adding AI Transport | You're building a custom chat UI from scratch |
 
 ## Entry points
 
-| Import                            | What you get                                                                                                               |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `@ably/ai-transport/vercel`       | `UIMessageCodec`, `createAgentSession()`, `createClientSession()`, `createChatTransport()` - all pre-bound to Vercel types |
-| `@ably/ai-transport/vercel/react` | `ChatTransportProvider`, `useChatTransport()`, `useMessageSync()`, plus all generic hooks pre-bound to Vercel types        |
-| `@ably/ai-transport/react`        | Generic hooks (`useView`, `useTree`, `useClientSession`, etc.) - work with any codec including `UIMessageCodec`            |
+| Import                            | What you get                                                                                                                                     |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@ably/ai-transport/vercel`       | `UIMessageCodec`, `createAgentSession()`, `createClientSession()`, `createChatTransport()`, `vercelRunOutcome()` - all pre-bound to Vercel types |
+| `@ably/ai-transport/vercel/react` | `ChatTransportProvider`, `useChatTransport()`, `useMessageSync()`, plus all generic hooks pre-bound to Vercel types                              |
+| `@ably/ai-transport/react`        | Generic hooks (`useView`, `useTree`, `useClientSession`, etc.) - work with any codec including `UIMessageCodec`                                  |
 
 The Vercel entry points are convenience wrappers. `createAgentSession()` from `/vercel` is the same as the core `createAgentSession()` with `UIMessageCodec` pre-bound - you don't pass a `codec` option.
 
@@ -107,41 +99,52 @@ The server code is the same for both client paths. Use `createAgentSession()` fr
 
 ```typescript
 import { Invocation } from '@ably/ai-transport';
-import { createAgentSession } from '@ably/ai-transport/vercel';
+import type { InvocationData } from '@ably/ai-transport';
+import { createAgentSession, vercelRunOutcome } from '@ably/ai-transport/vercel';
 import { streamText, convertToModelMessages } from 'ai';
 
-const session = createAgentSession({ client: ably, channelName });
+// The client POSTs `run.toInvocation().toJSON()` — an { inputEventId, sessionName }
+// pointer. Rehydrate it into an Invocation.
+const data = (await req.json()) as InvocationData;
+const invocation = Invocation.fromJSON(data);
+
+const session = createAgentSession({ client: ably, channelName: invocation.sessionName });
 await session.connect();
-const run = session.createRun(Invocation.fromJSON({ runId, clientId, parent, forkOf }));
+const run = session.createRun(invocation, { signal: req.signal });
 
 await run.start();
-
-// Publish user messages to the channel so all clients see them and they persist in history
-await run.addMessages(userMessages, { clientId });
+// Replay the conversation from the channel — the user messages were already
+// published by the client, so the agent reads them back rather than republishing.
+await run.loadConversation();
 
 const result = streamText({
   model: yourModel,
-  messages: await convertToModelMessages(allMessages),
+  messages: await convertToModelMessages(run.messages),
   abortSignal: run.abortSignal,
 });
 
-const { reason } = await run.pipe(result.toUIMessageStream());
-await run.end(reason);
+const pipeResult = await run.pipe(result.toUIMessageStream());
+const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
+if (outcome === 'suspend') {
+  await run.suspend();
+} else {
+  await run.end(outcome);
+}
 session.close();
 ```
 
-`result.toUIMessageStream()` produces a `ReadableStream<UIMessageChunk>` - the codec knows how to encode these chunks as Ably messages (message appends for text/reasoning, discrete messages for lifecycle events).
+`result.toUIMessageStream()` produces a `ReadableStream<UIMessageChunk>` - the codec knows how to encode these chunks as Ably messages (message appends for text/reasoning, discrete messages for lifecycle events). `vercelRunOutcome()` translates the pipe result and Vercel's `finishReason` into either a `RunEndReason` to pass to `run.end()` or the `'suspend'` sentinel — `'tool-calls'` means the LLM requested tools that need client input, so the run suspends rather than ending.
 
 ## Codec details
 
 `UIMessageCodec` maps between Vercel AI SDK types and Ably messages:
 
-| UIMessageChunk type | Ably encoding                                   |
-| ------------------- | ----------------------------------------------- |
-| `text-delta`        | Message append (text accumulation)              |
-| `reasoning-delta`   | Message append (reasoning accumulation)         |
-| `finish`            | Discrete message (closes the stream)            |
-| `error`             | Discrete message (closes the stream with error) |
+| UIMessageChunk type | Ably encoding                            |
+| ------------------- | ---------------------------------------- |
+| `text-delta`        | Message append (text accumulation)       |
+| `reasoning-delta`   | Message append (reasoning accumulation)  |
+| `finish`            | Discrete message (lifecycle event)       |
+| `error`             | Discrete message (error lifecycle event) |
 
 The codec handles the full `UIMessageChunk` union. On the decode side, it reconstructs `UIMessage` objects with the correct `parts` array (text, reasoning) from the streamed chunks.
 

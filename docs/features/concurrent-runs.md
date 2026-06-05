@@ -13,9 +13,12 @@ Each call to `view.send()`, `view.regenerate()`, or `view.edit()` on the client 
 const runA = await view.send(messageA);
 const runB = await view.send(messageB);
 
+// runId is minted by the agent, so it resolves asynchronously
+const runAId = await runA.runId;
+
 // Outputs for each run are keyed by runId on the tree's output event
 session.tree.on('output', (event) => {
-  if (event.runId === runA.runId) {
+  if (event.runId === runAId) {
     /* run A's chunks */
   }
 });
@@ -31,19 +34,20 @@ The server handles each run independently:
 ```typescript
 import { Invocation } from '@ably/ai-transport';
 
-// Each HTTP POST creates its own run
-const run = session.createRun(Invocation.fromJSON({ runId, clientId }));
+// Each HTTP POST creates its own run from the invocation body
+const invocation = Invocation.fromJSON(await req.json());
+const run = session.createRun(invocation, { signal: req.signal });
 await run.start();
 
-// Publish user messages to the channel so all clients see them and they persist in history
-await run.addMessages(userMessages, { clientId });
+// Load the conversation the triggering input produced from the channel
+const messages = await run.loadConversation();
 
 const result = streamText({ model, messages, abortSignal: run.abortSignal });
 const { reason } = await run.pipe(result.toUIMessageStream());
 await run.end(reason);
 ```
 
-Multiple runs can stream on the same channel at the same time. Each `ai-cancel` carries `run-id` and the session routes it to that one run.
+Multiple runs can stream on the same channel at the same time. The agent routes each `ai-cancel` to its target run — by `run-id` for a known run, or by the triggering input's `codec-message-id` for a fresh send whose run-id has not yet been minted.
 
 ## Observing run lifecycle
 

@@ -1,6 +1,6 @@
 # Chat transport
 
-The chat transport (`src/vercel/transport/chat-transport.ts`) is a thin adapter that wraps a core [ClientSession](client-session.md) to satisfy the `ChatTransport` interface that Vercel's `useChat()` hook expects. It maps Vercel's `sendMessages()` / `reconnectToStream()` contract to the session's default [view](client-session.md)'s `send()` and the session's `cancel()`.
+The chat transport (`src/vercel/transport/chat-transport.ts`) is a thin adapter that wraps a core [ClientSession](client-session.md) to satisfy the `ChatTransport` interface that Vercel's `useChat()` hook expects. It maps Vercel's `sendMessages()` / `reconnectToStream()` contract to the session's default [view](client-session.md)'s `send()` / `regenerate()` and to per-run cancellation via the `ActiveRun` handle.
 
 The core session is a pure Ably-channel transport — it never sends HTTP. `useChat`'s contract, however, is request-driven: calling `sendMessages` is expected to trigger the backend. So the chat transport is the one place that issues the agent-invocation POST, keeping `useChat` a drop-in transport while the generic core stays HTTP-free.
 
@@ -8,22 +8,28 @@ The core session is a pure Ably-channel transport — it never sends HTTP. `useC
 
 Vercel's `useChat()` manages message state internally. When the user submits a message or requests regeneration, `useChat()` calls `sendMessages()` with the full message array and a `trigger` field. The adapter must:
 
-1. Determine which messages are new vs history
-2. Compute fork metadata for regeneration
-3. Delegate to the core session's `send()` to publish on the channel
+1. Disambiguate the mode (new message, edit, continuation, regeneration) and determine which messages are new vs history
+2. Compute fork metadata for edits and fork-on-unresolved-tool (regeneration's fork metadata is derived by `View.regenerate`)
+3. Delegate to the view's `send()` / `regenerate()` to publish on the channel
 4. POST the run's invocation pointer to wake the agent
 5. Build a per-run `ReadableStream` from the session tree's events and return it so `useChat` can drive status and callbacks
 
 ## sendMessages
 
-The adapter splits the message array based on `trigger`:
+useChat calls `sendMessages` in several distinct modes. The adapter disambiguates by `(trigger, last-message role)` and whether `messageId` is set, then splits the message array accordingly:
 
-| Trigger              | New messages          | History              | Fork metadata                                                |
-| -------------------- | --------------------- | -------------------- | ------------------------------------------------------------ |
-| `submit-message`     | Last message in array | Everything before it | None                                                         |
-| `regenerate-message` | None (empty array)    | Entire array         | `forkOf` = messageId, `parent` = tree parent of that message |
+| Mode                                                       | New messages          | History              | Fork metadata                                                                        |
+| ---------------------------------------------------------- | --------------------- | -------------------- | ------------------------------------------------------------------------------------ |
+| `submit-message`, last is user, no `messageId`             | Last message in array | Everything before it | None (unless fork-on-unresolved-tool, see below)                                     |
+| `submit-message`, last is user, `messageId` set (edit)     | Last message in array | Everything before it | `forkOf` = `messageId`'s codec-message-id, `parent` = predecessor's codec-message-id |
+| `submit-message`, last is assistant in tree (continuation) | None (empty array)    | Entire array         | None; reuses the assistant's `runId`                                                 |
+| `regenerate-message`                                       | None (empty array)    | Entire array         | Derived by `View.regenerate` from the tree, not precomputed here                     |
 
-For regeneration, the adapter looks up the target message in the [conversation tree](conversation-tree.md) to compute the correct `forkOf` and `parent` values using the tree's `codec-message-id` (not the `UIMessage.id`).
+For **edit** and **fork-on-unresolved-tool**, the adapter looks up the target in the [conversation tree](conversation-tree.md) (via `view.getMessagesWithIds()`) to compute `forkOf` and `parent` using the tree's `codec-message-id` (not the `UIMessage.id`). For **regeneration**, the adapter does NOT precompute fork metadata — it routes the target's codec-message-id through `view.regenerate()`, which derives `forkOf`/`parent` from the tree itself.
+
+A **continuation** (a `submit-message` whose last message is an assistant already in the tree) covers useChat's auto-submit after a tool result and multi-step tool use. It publishes no new message; instead the adapter walks useChat's overlay against the tree and synthesizes the `tool-result` / `tool-result-error` / `tool-approval-response` inputs for any tool parts the user resolved, then sends them via `view.send` reusing the suspended assistant's `runId`.
+
+A **fork-on-unresolved-tool** occurs when the user sends a fresh message while the preceding assistant still holds an unresolved tool call (`input-streaming`, `input-available`, or `approval-requested`). The new message forks off that assistant onto a sibling branch so the dangling tool call never reaches the LLM.
 
 ### Waking the agent (the invocation POST)
 
@@ -45,15 +51,15 @@ Correlation does not rely on the domain `UIMessage.id`. The SDK keys every messa
 
 ### Abort signal
 
-When `useChat()` provides an `abortSignal` (e.g. the user clicks stop), the adapter wires it to `session.cancel(runId)` for the run produced by the just-issued send and closes that run's per-run stream so `useChat`'s reader ends immediately without waiting for the agent's run-end round-trip. The abort listener closes over the `runId` returned by `send` / `regenerate`, so each stop fires exactly one cancel scoped to its originating send. (Because `useChat` enables Stop synchronously, the adapter also handles an already-aborted signal — firing the cancel directly rather than via the `abort` listener, which would never fire.)
+When `useChat()` provides an `abortSignal` (e.g. the user clicks stop), the adapter wires it to `run.cancel()` on the `ActiveRun` returned by the just-issued send and closes that run's per-run stream so `useChat`'s reader ends immediately without waiting for the agent's run-end round-trip. The abort listener closes over the `ActiveRun` returned by `view.send` / `view.regenerate` (whose `runId` resolves once the agent mints it), so each stop fires exactly one cancel scoped to its originating send. (Because `useChat` enables Stop synchronously, the adapter also handles an already-aborted signal — firing the cancel directly rather than via the `abort` listener, which would never fire.)
 
 ## reconnectToStream
 
-Returns `null`. The core session's observer mode handles in-progress streams automatically - the channel subscription is established before attach, so on reconnect the [decoder's first-contact](decoder.md#first-contact) mechanism reconstructs stream state from the next server append.
+Returns `null`. The core session's observer mode handles in-progress streams automatically - the channel subscription is established before attach, so on reconnect the [decoder's first-contact](decoder.md#update-handling-first-contact-vs-prefix-match) mechanism reconstructs stream state from the next server append.
 
 ## close
 
-Delegates directly to `session.close(options)`.
+Delegates directly to `session.close()`.
 
 ## ChatTransportOptions
 
@@ -66,14 +72,14 @@ Delegates directly to `session.close(options)`.
 
 The `SendMessagesRequestContext` provides:
 
-| Field       | Type                                       | Description                                      |
-| ----------- | ------------------------------------------ | ------------------------------------------------ |
-| `chatId`    | `string?`                                  | Chat session ID from `useChat()`                 |
-| `trigger`   | `'submit-message' \| 'regenerate-message'` | What triggered the request                       |
-| `messageId` | `string?`                                  | Target message ID for regeneration               |
-| `history`   | `UIMessage[]`                              | Previous messages (context for the LLM)          |
-| `messages`  | `UIMessage[]`                              | New messages being sent (empty for regeneration) |
-| `forkOf`    | `string?`                                  | The message ID of the message being forked       |
-| `parent`    | `string \| null?`                          | The message ID of the predecessor in the thread  |
+| Field       | Type                                       | Description                                                              |
+| ----------- | ------------------------------------------ | ------------------------------------------------------------------------ |
+| `chatId`    | `string?`                                  | Chat session ID from `useChat()`                                         |
+| `trigger`   | `'submit-message' \| 'regenerate-message'` | What triggered the request                                               |
+| `messageId` | `string?`                                  | Target message ID for edit or regeneration; undefined for a new message  |
+| `history`   | `UIMessage[]`                              | Previous messages (context for the LLM)                                  |
+| `messages`  | `UIMessage[]`                              | New messages being sent (empty for regeneration)                         |
+| `forkOf`    | `string?`                                  | The codec-message-id of the message being forked (regenerated or edited) |
+| `parent`    | `string?`                                  | The codec-message-id of the predecessor in the conversation thread       |
 
 See [Client session](client-session.md) for the core session that this adapter wraps. See [Vercel AI SDK framework guide](../frameworks/vercel-ai-sdk.md) for the integration paths. See [Vercel codec](vercel-codec.md) for how events are encoded/decoded.

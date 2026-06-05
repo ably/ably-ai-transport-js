@@ -190,7 +190,7 @@ describe('AgentSession integration', () => {
     // invocation. A second invocation triggered by an input from a
     // different publisher stamps the new value while `runClientId` (the
     // run owner) stays the same. The continuation is materialised as an
-    // `ai-run-resume` (the triggering input carried `run-continue: 'true'`),
+    // `ai-run-resume` (the triggering input carried a wire run-id),
     // not a second `ai-run-start`.
     const channelName = uniqueChannelName('st-input-client-id');
     const serverClient = ablyRealtimeClient();
@@ -242,8 +242,9 @@ describe('AgentSession integration', () => {
      * @param opts.invocationId - Invocation identifier the agent uses.
      * @param opts.codecMessageId - `codec-message-id` for the published input.
      * @param opts.streamArgs - Forwarded to `textResponseStream` for the agent's reply.
-     * @param opts.continuation - When true, marks the input `run-continue` so the
+     * @param opts.continuation - When true, stamps the run-id on the input wire so the
      *   agent re-enters the run and publishes `ai-run-resume` rather than `ai-run-start`.
+     *   A fresh send carries no wire run-id (the agent mints it on run-start).
      */
     const runWithInput = async (opts: {
       publisher: Ably.Realtime;
@@ -257,10 +258,11 @@ describe('AgentSession integration', () => {
       const publisherChannel = opts.publisher.channels.get(channelName);
       const headers = buildTransportHeaders({
         role: 'user',
-        runId: opts.runId,
+        // A continuation stamps the reused run-id on the wire; a fresh send
+        // carries none, signalling the agent to mint one and open the run.
+        ...(opts.continuation ? { runId: opts.runId } : {}),
         codecMessageId: opts.codecMessageId,
         inputEventId,
-        ...(opts.continuation ? { runContinue: true } : {}),
       });
       const encoder = UIMessageCodec.createEncoder(publisherChannel, { extras: { headers } });
       const userInput = UIMessageCodec.createUserMessage({
@@ -307,7 +309,7 @@ describe('AgentSession integration', () => {
     await twoEnds;
 
     // The fresh first invocation opens the run with ai-run-start; the
-    // continuation (inv-b, input marked run-continue) re-enters it with
+    // continuation (inv-b, input carries the wire run-id) re-enters it with
     // ai-run-resume.
     const startMsgs = lifecycleMessages.filter((m) => m.name === EVENT_RUN_START);
     const resumeMsgs = lifecycleMessages.filter((m) => m.name === EVENT_RUN_RESUME);

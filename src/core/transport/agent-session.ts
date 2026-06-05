@@ -25,7 +25,6 @@ import {
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_RUN_CLIENT_ID,
-  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
@@ -1076,12 +1075,14 @@ class DefaultAgentSession<
     };
 
     // Per-run metadata resolved from the input-event lookup result. The first
-    // matched wire message's headers carry the run's `clientId`, `parent`,
-    // `forkOf`, and continuation flag; its Ably-level publisher `clientId`
-    // becomes the `inputClientId` re-stamped on the agent's own publishes.
-    // Captured separately from `viewMessages` because tool-resolution wire
-    // messages (`tool-output-available` etc.) decode to chunks and produce
-    // zero MessageNodes — the metadata still needs to surface.
+    // matched wire message's headers carry the run's `clientId`, `parent`, and
+    // `forkOf`, and — for a continuation — the `run-id` it re-enters (a fresh
+    // input carries none; the client stamps a run-id only when re-entering a
+    // run it already knows). Its Ably-level publisher `clientId` becomes the
+    // `inputClientId` re-stamped on the agent's own publishes. Captured
+    // separately from `viewMessages` because tool-resolution wire messages
+    // (`tool-output-available` etc.) decode to chunks and produce zero
+    // MessageNodes — the metadata still needs to surface.
     let resolvedClientId: string | undefined;
     let resolvedInputClientId: string | undefined;
     let resolvedParent: string | undefined;
@@ -1216,10 +1217,12 @@ class DefaultAgentSession<
         }
 
         // Resolve per-run metadata from the first matched wire message's
-        // headers — they carry `clientId`, `parent`, `forkOf`, and the
-        // continuation flag. Continuations of a suspended run pick up the
-        // suspended assistant's parent in the same headers (the continuation
-        // wire message parents off the assistant). Fall back to the first
+        // headers — they carry `clientId`, `parent`, and `forkOf`.
+        // Continuations of a suspended run pick up the suspended assistant's
+        // parent in the same headers (the continuation wire message parents off
+        // the assistant). A `run-id` on the triggering input marks a
+        // continuation (re-entry via `ai-run-resume`); a fresh input carries
+        // none and opens the run with `ai-run-start`. Fall back to the first
         // MessageNode's headers for the legacy pre-populated path where the
         // lookup ran with `viewMessages` already populated and no
         // `firstHeaders` was captured.
@@ -1230,7 +1233,7 @@ class DefaultAgentSession<
           resolvedForkOf = sourceHeaders[HEADER_FORK_OF];
           resolvedRegenerates = sourceHeaders[HEADER_MSG_REGENERATE];
           resolvedInputCodecMessageId = sourceHeaders[HEADER_CODEC_MESSAGE_ID];
-          resolvedContinuation = sourceHeaders[HEADER_RUN_CONTINUE] === 'true';
+          resolvedContinuation = sourceHeaders[HEADER_RUN_ID] !== undefined;
         }
 
         // Compute the reply run's structural-parent fallback now that the

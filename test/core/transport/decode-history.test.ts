@@ -18,7 +18,6 @@ import {
   HEADER_INVOCATION_ID,
   HEADER_PARENT,
   HEADER_ROLE,
-  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
   HEADER_STATUS,
   HEADER_STREAM,
@@ -496,7 +495,7 @@ describe('decodeHistory', () => {
       );
 
       // Option X continuation tool-resolution wire: same codec-message-id, role=user,
-      // parent=self, run-continue=true. Different invocation.
+      // parent=self. Different invocation.
       const continuationAmend = withEvents(
         ablyMsg({
           action: 'message.create',
@@ -505,7 +504,6 @@ describe('decodeHistory', () => {
             [HEADER_CODEC_MESSAGE_ID]: 'asst-1',
             [HEADER_ROLE]: 'user',
             [HEADER_PARENT]: 'asst-1',
-            [HEADER_RUN_CONTINUE]: 'true',
             [HEADER_INVOCATION_ID]: 'inv-continuation',
             [HEADER_STREAM]: 'false',
             [HEADER_DISCRETE]: 'true',

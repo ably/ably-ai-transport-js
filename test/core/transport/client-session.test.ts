@@ -28,7 +28,6 @@ import {
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
-  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
 } from '../../../src/constants.js';
@@ -335,7 +334,9 @@ const ackPendingSend = async (
   if (!publishedHeaders) throw new Error('no user-message publish observed');
 
   const codecMessageId = publishedHeaders[HEADER_CODEC_MESSAGE_ID] ?? '';
-  const runContinue = publishedHeaders[HEADER_RUN_CONTINUE] === 'true';
+  // A continuation's published input carries a run-id on the wire; a fresh send
+  // does not. Mirror the agent's decision: run-id present => re-enter the run.
+  const isContinuation = publishedHeaders[HEADER_RUN_ID] !== undefined;
   // Fresh sends carry NO run-id on the wire — the agent mints it on run-start.
   // A continuation reuses the run-id the client passed via options.runId, which
   // it stamps on the continuation input wire. Mirror that here.
@@ -345,13 +346,13 @@ const ackPendingSend = async (
   // sequential acks under the same runId produce different invocation-ids,
   // mirroring the agent.
   const invocationId = `inv-${codecMessageId}`;
-  // Mirror the agent: a continuation (the input carried `run-continue`) re-enters
+  // Mirror the agent: a continuation (the input carried a wire run-id) re-enters
   // the run via ai-run-resume; a fresh send opens it via ai-run-start. Both
   // thread the triggering input's codec-message-id back as
   // `input-codec-message-id`, the handle the client's `started` resolves on.
   simulateMessage(
     channel,
-    ablyMsg(runContinue ? EVENT_RUN_RESUME : EVENT_RUN_START, {
+    ablyMsg(isContinuation ? EVENT_RUN_RESUME : EVENT_RUN_START, {
       [HEADER_RUN_ID]: runId,
       [HEADER_RUN_CLIENT_ID]: 'client-1',
       [HEADER_INVOCATION_ID]: invocationId,
@@ -758,7 +759,7 @@ describe('ClientSession', () => {
       await expect(cont.runId).resolves.toBe(runId);
     });
 
-    it('publishes the continuation user-message with HEADER_RUN_ID and HEADER_RUN_CONTINUE', async () => {
+    it('publishes the continuation user-message with HEADER_RUN_ID', async () => {
       await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       const { runId } = await ackPendingSend(fix.channel, fix.codec);
       const enc = fix.codec.lastEncoder();
@@ -777,8 +778,6 @@ describe('ClientSession', () => {
       // The continuation input carries no invocation-id — the agent mints one
       // per HTTP request when it wakes for the continuation.
       expect(headers?.[HEADER_INVOCATION_ID]).toBeUndefined();
-      // Continuation publishes carry HEADER_RUN_CONTINUE='true' on the wire.
-      expect(headers?.['run-continue']).toBe('true');
       // Continuation user-messages publish as role:'user'.
       expect(headers?.[HEADER_ROLE]).toBe('user');
       // No amend header — the old amend header is gone from the wire.
@@ -812,18 +811,19 @@ describe('ClientSession', () => {
       expect(cont.inputEventId).toBe(stampedId);
     });
 
-    it('continuation publishes carry HEADER_RUN_CONTINUE=true while fresh sends do not', async () => {
+    it('continuation publishes carry HEADER_RUN_ID while fresh sends do not', async () => {
       await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       const enc = fix.codec.lastEncoder();
       const freshHeaders = enc?.publishCalls.at(-1)?.opts?.extras?.headers;
-      expect(freshHeaders?.['run-continue']).toBeUndefined();
       // Fresh sends carry no run-id on the wire — the agent mints it.
       expect(freshHeaders?.[HEADER_RUN_ID]).toBeUndefined();
       const { runId } = await ackPendingSend(fix.channel, fix.codec);
 
       await fix.session.view.sendInput([{ kind: 'user-message', text: 'more' }], { runId });
       const contHeaders = enc?.publishCalls.at(-1)?.opts?.extras?.headers;
-      expect(contHeaders?.['run-continue']).toBe('true');
+      // The continuation stamps the reused run-id on the wire — this is what
+      // signals the agent to re-enter the run via ai-run-resume.
+      expect(contHeaders?.[HEADER_RUN_ID]).toBe(runId);
     });
 
     it('rejects an empty send (no inputs to publish)', async () => {

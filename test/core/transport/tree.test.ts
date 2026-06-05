@@ -8,7 +8,6 @@ import {
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
-  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
 } from '../../../src/constants.js';
 import type { Codec, CodecInputEvent } from '../../../src/core/codec/types.js';
@@ -80,7 +79,6 @@ interface ApplyOpts {
   role?: string;
   invocationId?: string;
   clientId?: string;
-  runContinue?: boolean;
   inputCodecMessageId?: string;
   serial?: string;
   message?: TestMessage;
@@ -99,7 +97,6 @@ const apply = (tree: TreeInternal<TestInput, TestOutput, TestProjection>, opts: 
   if (opts.role) h[HEADER_ROLE] = opts.role;
   if (opts.invocationId) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.clientId) h[HEADER_RUN_CLIENT_ID] = opts.clientId;
-  if (opts.runContinue) h[HEADER_RUN_CONTINUE] = 'true';
   if (opts.inputCodecMessageId) h[HEADER_INPUT_CODEC_MESSAGE_ID] = opts.inputCodecMessageId;
 
   const events: TreeEvent[] = opts.events ?? (opts.message ? [{ type: 'append-message', message: opts.message }] : []);
@@ -298,7 +295,6 @@ describe('Tree', () => {
         runId: 'R1',
         codecMessageId: 'm1',
         role: 'user',
-        runContinue: true,
         message: { id: 'a', content: 'amended' },
         serial: 's2',
       });

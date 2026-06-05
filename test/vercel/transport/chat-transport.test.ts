@@ -1227,7 +1227,7 @@ describe('createChatTransport', () => {
 
       // chat-transport passes tool-resolution inputs to view.send.
       // Each input carries `codecMessageId` so the SDK stamps the wire
-      // HEADER_CODEC_MESSAGE_ID to 'a1' — the reducer's direct-fold path
+      // HEADER_TRANSPORT_MESSAGE_ID to 'a1' — the reducer's direct-fold path
       // then matches by codec-message-id and folds onto the existing
       // assistant without a cross-message redirect.
       expect(input).toHaveLength(1);

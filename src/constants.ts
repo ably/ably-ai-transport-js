@@ -48,7 +48,7 @@ export const HEADER_INVOCATION_ID = 'invocation-id';
 export const HEADER_EVENT_ID = 'event-id';
 
 /** Header: message identity. Assigned per message (user or assistant). Used for optimistic reconciliation on the client. */
-export const HEADER_CODEC_MESSAGE_ID = 'codec-message-id';
+export const HEADER_TRANSPORT_MESSAGE_ID = 'transport-message-id';
 
 /** Header: clientId of the user who initiated the run. Set by the server on stream messages. */
 export const HEADER_RUN_CLIENT_ID = 'run-client-id';
@@ -99,16 +99,16 @@ export const HEADER_MSG_REGENERATE = 'msg-regenerate';
 export const HEADER_RUN_REASON = 'run-reason';
 
 /**
- * Header: the `codec-message-id` of the input event that triggered the run.
+ * Header: the `transport-message-id` of the input event that triggered the run.
  * The triggering input is the one whose `event-id` matches the invocation's
  * `inputEventId` (the last input of the originating send). The agent
  * re-stamps it on every event it publishes for the invocation (run
  * lifecycle + assistant outputs), mirroring `input-client-id`. This is the
- * codec-message-id the client owns at send time, so it lets the client
+ * transport-message-id the client owns at send time, so it lets the client
  * correlate any of those events back to the originating input without
  * depending on a client-minted run-id or invocation-id.
  */
-export const HEADER_INPUT_CODEC_MESSAGE_ID = 'input-codec-message-id';
+export const HEADER_INPUT_TRANSPORT_MESSAGE_ID = 'input-transport-message-id';
 
 // ---------------------------------------------------------------------------
 // Run-end error headers (set on `ai-run-end` when `run-reason: error`)

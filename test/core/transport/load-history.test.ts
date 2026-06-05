@@ -13,11 +13,11 @@ import type * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_DISCRETE,
   HEADER_RUN_ID,
   HEADER_STATUS,
   HEADER_STREAM,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../../src/constants.js';
 import { loadHistory } from '../../../src/core/transport/load-history.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
@@ -53,7 +53,7 @@ const ablyMsg = (opts: MsgOpts = {}): Ably.InboundMessage =>
 const discreteMsg = (codecMessageId: string, extraHeaders: Record<string, string> = {}): Ably.InboundMessage =>
   ablyMsg({
     headers: {
-      [HEADER_CODEC_MESSAGE_ID]: codecMessageId,
+      [HEADER_TRANSPORT_MESSAGE_ID]: codecMessageId,
       [HEADER_STREAM]: 'false',
       [HEADER_DISCRETE]: 'true',
       ...extraHeaders,
@@ -67,7 +67,7 @@ const streamingRun = (runId: string, codecMessageId: string, deltaCount: number)
   const serial = nextSerial();
   const baseHeaders = {
     [HEADER_RUN_ID]: runId,
-    [HEADER_CODEC_MESSAGE_ID]: codecMessageId,
+    [HEADER_TRANSPORT_MESSAGE_ID]: codecMessageId,
     [HEADER_STREAM]: 'true',
   };
 
@@ -253,7 +253,7 @@ describe('loadHistory', () => {
         action: 'message.append',
         headers: {
           [HEADER_RUN_ID]: 'T1',
-          [HEADER_CODEC_MESSAGE_ID]: 'asst-cancel',
+          [HEADER_TRANSPORT_MESSAGE_ID]: 'asst-cancel',
           [HEADER_STREAM]: 'true',
           [HEADER_STATUS]: 'cancelled',
         },

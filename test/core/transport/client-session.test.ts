@@ -18,18 +18,18 @@ import {
   EVENT_RUN_RESUME,
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
-  HEADER_INPUT_CODEC_MESSAGE_ID,
+  HEADER_INPUT_TRANSPORT_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../../src/constants.js';
 import type {
   ChannelWriter,
@@ -333,7 +333,7 @@ const ackPendingSend = async (
   }
   if (!publishedHeaders) throw new Error('no user-message publish observed');
 
-  const codecMessageId = publishedHeaders[HEADER_CODEC_MESSAGE_ID] ?? '';
+  const codecMessageId = publishedHeaders[HEADER_TRANSPORT_MESSAGE_ID] ?? '';
   // A continuation's published input carries a run-id on the wire; a fresh send
   // does not. Mirror the agent's decision: run-id present => re-enter the run.
   const isContinuation = publishedHeaders[HEADER_RUN_ID] !== undefined;
@@ -356,7 +356,7 @@ const ackPendingSend = async (
       [HEADER_RUN_ID]: runId,
       [HEADER_RUN_CLIENT_ID]: 'client-1',
       [HEADER_INVOCATION_ID]: invocationId,
-      [HEADER_INPUT_CODEC_MESSAGE_ID]: codecMessageId,
+      [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: codecMessageId,
     }),
   );
   return { runId, invocationId, codecMessageId };
@@ -592,8 +592,8 @@ describe('ClientSession', () => {
       expect(userPublishes).toHaveLength(2);
 
       // First entry used the supplied codecMessageId; second fell back to a fresh UUID.
-      expect(userPublishes[0]?.opts?.extras?.headers?.[HEADER_CODEC_MESSAGE_ID]).toBe('target-a');
-      const secondMsgId = userPublishes[1]?.opts?.extras?.headers?.[HEADER_CODEC_MESSAGE_ID];
+      expect(userPublishes[0]?.opts?.extras?.headers?.[HEADER_TRANSPORT_MESSAGE_ID]).toBe('target-a');
+      const secondMsgId = userPublishes[1]?.opts?.extras?.headers?.[HEADER_TRANSPORT_MESSAGE_ID];
       expect(secondMsgId).toBeDefined();
       expect(secondMsgId).not.toBe('target-a');
     });
@@ -694,7 +694,7 @@ describe('ClientSession', () => {
           (c) => c.direction === 'input' && 'kind' in c.event && c.event.kind === 'user-message',
         ) ?? [];
       expect(userPublishes).toHaveLength(2);
-      const firstMsgId = userPublishes[0]?.opts?.extras?.headers?.[HEADER_CODEC_MESSAGE_ID];
+      const firstMsgId = userPublishes[0]?.opts?.extras?.headers?.[HEADER_TRANSPORT_MESSAGE_ID];
       const secondParent = userPublishes[1]?.opts?.extras?.headers?.[HEADER_PARENT];
       expect(secondParent).toBe(firstMsgId);
     });
@@ -978,7 +978,7 @@ describe('ClientSession', () => {
           [HEADER_RUN_ID]: 'agent-minted-run-id',
           [HEADER_RUN_CLIENT_ID]: 'client-1',
           [HEADER_INVOCATION_ID]: 'agent-minted-invocation-id',
-          [HEADER_INPUT_CODEC_MESSAGE_ID]: triggerCodecMessageId ?? '',
+          [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: triggerCodecMessageId ?? '',
         }),
       );
 
@@ -1000,7 +1000,7 @@ describe('ClientSession', () => {
         ablyMsg(EVENT_RUN_RESUME, {
           [HEADER_RUN_ID]: runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_INPUT_CODEC_MESSAGE_ID]: triggerCodecMessageId ?? '',
+          [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: triggerCodecMessageId ?? '',
         }),
       );
 
@@ -1028,7 +1028,7 @@ describe('ClientSession', () => {
         ablyMsg(EVENT_RUN_START, {
           [HEADER_RUN_ID]: 'unrelated-run-id',
           [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_INPUT_CODEC_MESSAGE_ID]: 'unrelated-codec-message-id',
+          [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: 'unrelated-codec-message-id',
         }),
       );
 
@@ -1198,7 +1198,7 @@ describe('ClientSession', () => {
       expect(fresh.regenerates).toBeUndefined();
     });
 
-    it('converges optimistic insert and echo into a single tree node when UIMessage.id differs from wire HEADER_CODEC_MESSAGE_ID', async () => {
+    it('converges optimistic insert and echo into a single tree node when UIMessage.id differs from wire HEADER_TRANSPORT_MESSAGE_ID', async () => {
       // Regression: under Vercel's codec the projection's UIMessage.id is the
       // domain id (codec-messageId, e.g. useChat's local id) while the wire
       // `codec-message-id` is the optimistic tree codecMessageId. The session must fold
@@ -1252,7 +1252,7 @@ describe('ClientSession', () => {
       // projection's UIMessage id is `domain-hi` (from our custom fold).
       await s.view.send({ kind: 'user-message', text: 'hi' });
       const lastPublish = customCodec.lastEncoder()?.publishCalls.at(-1);
-      const optimisticMsgId = lastPublish?.opts?.extras?.headers?.[HEADER_CODEC_MESSAGE_ID];
+      const optimisticMsgId = lastPublish?.opts?.extras?.headers?.[HEADER_TRANSPORT_MESSAGE_ID];
       const runId = lastPublish?.opts?.extras?.headers?.[HEADER_RUN_ID];
       expect(optimisticMsgId).toBeDefined();
       if (!optimisticMsgId) throw new Error('expected optimistic codecMessageId on publish');
@@ -1268,7 +1268,7 @@ describe('ClientSession', () => {
             [HEADER_RUN_ID]: runId ?? '',
             [HEADER_RUN_CLIENT_ID]: 'client-1',
             [HEADER_ROLE]: 'user',
-            [HEADER_CODEC_MESSAGE_ID]: optimisticMsgId,
+            [HEADER_TRANSPORT_MESSAGE_ID]: optimisticMsgId,
           },
           undefined,
           'message.create',
@@ -1310,7 +1310,7 @@ describe('ClientSession', () => {
           {
             [HEADER_RUN_ID]: 'run-A',
             [HEADER_RUN_CLIENT_ID]: 'someone-else',
-            [HEADER_CODEC_MESSAGE_ID]: 'm-1',
+            [HEADER_TRANSPORT_MESSAGE_ID]: 'm-1',
           },
           undefined,
           'message.create',
@@ -1357,7 +1357,7 @@ describe('ClientSession', () => {
         ablyMsg('text', {
           [HEADER_RUN_ID]: runId,
           [HEADER_INVOCATION_ID]: invocationId,
-          [HEADER_CODEC_MESSAGE_ID]: 'a-1',
+          [HEADER_TRANSPORT_MESSAGE_ID]: 'a-1',
         }),
       );
       decoder.queue.push({ type: 'finish' });
@@ -1366,7 +1366,7 @@ describe('ClientSession', () => {
         ablyMsg('text', {
           [HEADER_RUN_ID]: runId,
           [HEADER_INVOCATION_ID]: invocationId,
-          [HEADER_CODEC_MESSAGE_ID]: 'a-1',
+          [HEADER_TRANSPORT_MESSAGE_ID]: 'a-1',
         }),
       );
 
@@ -1388,7 +1388,7 @@ describe('ClientSession', () => {
         ablyMsg('noop', {
           [HEADER_RUN_ID]: 'run-Z',
           [HEADER_RUN_CLIENT_ID]: 'other',
-          [HEADER_CODEC_MESSAGE_ID]: 'm-z',
+          [HEADER_TRANSPORT_MESSAGE_ID]: 'm-z',
         }),
       );
       // fold should not have been called (no events)
@@ -1624,7 +1624,7 @@ describe('ClientSession', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Same-run message routing — successive wire messages routed by HEADER_CODEC_MESSAGE_ID
+  // Same-run message routing — successive wire messages routed by HEADER_TRANSPORT_MESSAGE_ID
   // -------------------------------------------------------------------------
 
   describe('same-run message routing', () => {
@@ -1644,19 +1644,19 @@ describe('ClientSession', () => {
         ablyMsg('text', {
           [HEADER_RUN_ID]: 'run-A',
           [HEADER_RUN_CLIENT_ID]: 'other',
-          [HEADER_CODEC_MESSAGE_ID]: 'm-1',
+          [HEADER_TRANSPORT_MESSAGE_ID]: 'm-1',
         }),
       );
 
       // Follow-up message targeting m-1 from the SAME run — encoder stamps
-      // HEADER_CODEC_MESSAGE_ID = 'm-1', so the reducer folds with meta.messageId === 'm-1'.
+      // HEADER_TRANSPORT_MESSAGE_ID = 'm-1', so the reducer folds with meta.messageId === 'm-1'.
       fix.decoder.queue.push({ type: 'text', text: '-extended' });
       simulateMessage(
         fix.channel,
         ablyMsg('text', {
           [HEADER_RUN_ID]: 'run-A',
           [HEADER_RUN_CLIENT_ID]: 'other',
-          [HEADER_CODEC_MESSAGE_ID]: 'm-1',
+          [HEADER_TRANSPORT_MESSAGE_ID]: 'm-1',
         }),
       );
 
@@ -1666,7 +1666,7 @@ describe('ClientSession', () => {
       // CAST: tuple shape comes from vi.mocked
       const firstCall = calls[0] as unknown as [TestProjection, TestEvent, ReducerMeta];
       const secondCall = calls[1] as unknown as [TestProjection, TestEvent, ReducerMeta];
-      // Both events routed under HEADER_CODEC_MESSAGE_ID = 'm-1'
+      // Both events routed under HEADER_TRANSPORT_MESSAGE_ID = 'm-1'
       expect(firstCall[2].messageId).toBe('m-1');
       expect(secondCall[2].messageId).toBe('m-1');
       // Both folded into the SAME projection (observer for run-A)
@@ -1696,7 +1696,7 @@ describe('ClientSession', () => {
         ablyMsg('text', {
           [HEADER_RUN_ID]: 'run-B',
           [HEADER_RUN_CLIENT_ID]: 'other',
-          [HEADER_CODEC_MESSAGE_ID]: 'm-1',
+          [HEADER_TRANSPORT_MESSAGE_ID]: 'm-1',
         }),
       );
 
@@ -1737,7 +1737,7 @@ describe('ClientSession', () => {
       const run = await fix.session.view.send({ kind: 'user-message', text: 'hi' });
       await run.cancel();
       const headers = cancelHeadersOf(fix.channel);
-      expect(headers?.[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe(run.inputCodecMessageId);
+      expect(headers?.[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe(run.inputCodecMessageId);
       // No run-id was ever minted client-side for a fresh send.
       expect(headers?.[HEADER_RUN_ID]).toBeUndefined();
       expect(headers?.[HEADER_EVENT_ID]).toBeDefined();
@@ -1748,7 +1748,7 @@ describe('ClientSession', () => {
       await run.cancel();
       const headers = cancelHeadersOf(fix.channel);
       expect(headers?.[HEADER_RUN_ID]).toBe('run-cont');
-      expect(headers?.[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe(run.inputCodecMessageId);
+      expect(headers?.[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe(run.inputCodecMessageId);
     });
 
     it('cancel is a no-op after close', async () => {
@@ -1972,7 +1972,7 @@ describe('ClientSession', () => {
       expect(headers?.['msg-regenerate']).toBe('asst-1');
       expect(headers?.[HEADER_FORK_OF]).toBeUndefined();
       expect(headers?.[HEADER_EVENT_ID]).toBeDefined();
-      expect(headers?.[HEADER_CODEC_MESSAGE_ID]).toBeDefined();
+      expect(headers?.[HEADER_TRANSPORT_MESSAGE_ID]).toBeDefined();
     });
 
     it('mints a fresh event-id for the regenerate input and surfaces it on the ActiveRun', async () => {
@@ -2020,7 +2020,7 @@ describe('ClientSession', () => {
         ablyMsg('text', {
           [HEADER_RUN_ID]: 'run-E',
           [HEADER_RUN_CLIENT_ID]: 'other',
-          [HEADER_CODEC_MESSAGE_ID]: 'm-e',
+          [HEADER_TRANSPORT_MESSAGE_ID]: 'm-e',
         }),
       );
 
@@ -2042,7 +2042,7 @@ describe('ClientSession', () => {
         ablyMsg('text', {
           [HEADER_RUN_ID]: 'run-E',
           [HEADER_RUN_CLIENT_ID]: 'other',
-          [HEADER_CODEC_MESSAGE_ID]: 'm-e2',
+          [HEADER_TRANSPORT_MESSAGE_ID]: 'm-e2',
         }),
       );
       // A new observer projection was created (one extra init); fold ran.

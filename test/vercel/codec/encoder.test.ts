@@ -5,11 +5,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EVENT_AI_INPUT,
   EVENT_AI_OUTPUT,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_DISCRETE,
   HEADER_STATUS,
   HEADER_STREAM,
   HEADER_STREAM_ID,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../../src/constants.js';
 import type { ChannelWriter } from '../../../src/core/codec/types.js';
 import { createEncoder } from '../../../src/vercel/codec/encoder.js';
@@ -278,11 +278,11 @@ describe('Vercel encoder', () => {
       await encoder.publishOutput({ type: 'text-start', id: 'txt-1' }, perWrite);
 
       const startMsg = firstPublish(writer);
-      expect(headersOf(startMsg)[HEADER_CODEC_MESSAGE_ID]).toBe('msg-1');
+      expect(headersOf(startMsg)[HEADER_TRANSPORT_MESSAGE_ID]).toBe('msg-1');
 
       const second = writer.publishCalls[1];
       if (!second || Array.isArray(second)) throw new Error('expected single-message second publish');
-      expect(headersOf(second)[HEADER_CODEC_MESSAGE_ID]).toBe('msg-1');
+      expect(headersOf(second)[HEADER_TRANSPORT_MESSAGE_ID]).toBe('msg-1');
     });
 
     it('encodes finish-step', async () => {
@@ -621,10 +621,10 @@ describe('Vercel encoder', () => {
       expect(headersOf(msg).toolCallId).toBe('tc-1');
       expect(headersOf(msg).approved).toBe('true');
       expect(headersOf(msg).reason).toBe('looks good');
-      // HEADER_CODEC_MESSAGE_ID comes from perWrite.messageId — the continuation's
+      // HEADER_TRANSPORT_MESSAGE_ID comes from perWrite.messageId — the continuation's
       // own new wire id. The reducer routes to the original assistant by
       // toolCallId, not by codec-message-id.
-      expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBe('continuation-codec-message-id');
+      expect(headersOf(msg)[HEADER_TRANSPORT_MESSAGE_ID]).toBe('continuation-codec-message-id');
       // No HEADER_AMEND on the wire — the amend concept has been retired.
       expect(headersOf(msg).amend).toBeUndefined();
     });
@@ -649,7 +649,7 @@ describe('Vercel encoder', () => {
           messageId: 'regen-codec-message-id',
           extras: {
             headers: {
-              [HEADER_CODEC_MESSAGE_ID]: 'regen-codec-message-id',
+              [HEADER_TRANSPORT_MESSAGE_ID]: 'regen-codec-message-id',
               'event-id': 'prompt-1',
               role: 'user',
               parent: 'user-U1',
@@ -665,7 +665,7 @@ describe('Vercel encoder', () => {
       expect(headersOf(msg).type).toBe('regenerate');
       expect(msg.data).toBe('');
       const headers = headersOf(msg);
-      expect(headers[HEADER_CODEC_MESSAGE_ID]).toBe('regen-codec-message-id');
+      expect(headers[HEADER_TRANSPORT_MESSAGE_ID]).toBe('regen-codec-message-id');
       expect(headers['event-id']).toBe('prompt-1');
       expect(headers.role).toBe('user');
       expect(headers.parent).toBe('user-U1');
@@ -680,7 +680,7 @@ describe('Vercel encoder', () => {
       const encoder = createEncoder(writer);
       // Client-published continuation tool results are first-class
       // VercelInputs and ride the `ai-input` wire (NOT `ai-output`).
-      // HEADER_CODEC_MESSAGE_ID targets the assistant whose tool call
+      // HEADER_TRANSPORT_MESSAGE_ID targets the assistant whose tool call
       // this result corresponds to.
       await encoder.publishInput(
         {
@@ -696,7 +696,7 @@ describe('Vercel encoder', () => {
       expect(msg.name).toBe(EVENT_AI_INPUT);
       expect(headersOf(msg).type).toBe('tool-result');
       expect(headersOf(msg).toolCallId).toBe('tc-1');
-      expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBe('continuation-codec-message-id');
+      expect(headersOf(msg)[HEADER_TRANSPORT_MESSAGE_ID]).toBe('continuation-codec-message-id');
       expect(headersOf(msg).amend).toBeUndefined();
       // CAST: data is unknown — we know the encoder shape from above.
       const data = msg.data as { output: unknown };
@@ -719,7 +719,7 @@ describe('Vercel encoder', () => {
       expect(msg.name).toBe(EVENT_AI_INPUT);
       expect(headersOf(msg).type).toBe('tool-result-error');
       expect(headersOf(msg).toolCallId).toBe('tc-1');
-      expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBe('continuation-codec-message-id');
+      expect(headersOf(msg)[HEADER_TRANSPORT_MESSAGE_ID]).toBe('continuation-codec-message-id');
       expect(headersOf(msg).amend).toBeUndefined();
       // CAST: data is unknown — we know the encoder shape from above.
       const data = msg.data as { message: string };
@@ -748,7 +748,7 @@ describe('Vercel encoder', () => {
       expect(msg.name).toBe(EVENT_AI_OUTPUT);
       expect(headersOf(msg).type).toBe('tool-output-available');
       expect(headersOf(msg).toolCallId).toBe('tc-1');
-      expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBe('msg-1');
+      expect(headersOf(msg)[HEADER_TRANSPORT_MESSAGE_ID]).toBe('msg-1');
       // CAST: data is unknown — we know the encoder shape from above.
       const data = msg.data as { output: unknown };
       expect(data.output).toEqual({ temp: 72 });

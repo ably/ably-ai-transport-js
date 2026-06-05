@@ -18,7 +18,7 @@
 
 import * as Ably from 'ably';
 
-import { EVENT_RUN_START, HEADER_CODEC_MESSAGE_ID, HEADER_PARENT, HEADER_RUN_ID } from '../../constants.js';
+import { EVENT_RUN_START, HEADER_PARENT, HEADER_RUN_ID, HEADER_TRANSPORT_MESSAGE_ID } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { compareBySerial, getTransportHeaders } from '../../utils.js';
@@ -128,7 +128,7 @@ export const foldRunMessages = <
     const h = getTransportHeaders(msg);
     if (h[HEADER_RUN_ID] !== runId) continue;
     if (isRunLifecycleName(msg.name)) continue;
-    const codecMsgId = h[HEADER_CODEC_MESSAGE_ID];
+    const codecMsgId = h[HEADER_TRANSPORT_MESSAGE_ID];
     if (truncateAt !== undefined && codecMsgId === truncateAt) break;
     projection = foldMessageInto(codec, decoder, projection, msg, codecMsgId ?? '');
     folded++;
@@ -161,7 +161,7 @@ export const foldInputMessages = <
   for (const msg of sortedMessages) {
     const h = getTransportHeaders(msg);
     if (h[HEADER_RUN_ID] !== undefined) continue;
-    if (h[HEADER_CODEC_MESSAGE_ID] !== codecMessageId) continue;
+    if (h[HEADER_TRANSPORT_MESSAGE_ID] !== codecMessageId) continue;
     projection = foldMessageInto(codec, decoder, projection, msg, codecMessageId);
   }
   return projection;
@@ -294,7 +294,7 @@ export const loadConversation = async <
   for (const msg of sortedMessages) {
     if (isRunLifecycleName(msg.name)) continue;
     const h = getTransportHeaders(msg);
-    const cid = h[HEADER_CODEC_MESSAGE_ID];
+    const cid = h[HEADER_TRANSPORT_MESSAGE_ID];
     if (cid === undefined) continue;
     const msgRunId = h[HEADER_RUN_ID];
     if (msgRunId !== undefined) runIdToCodecMessageId.set(msgRunId, cid);

@@ -5,10 +5,9 @@ import {
   EVENT_RUN_RESUME,
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
-  HEADER_INPUT_CODEC_MESSAGE_ID,
+  HEADER_INPUT_TRANSPORT_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
@@ -16,6 +15,7 @@ import {
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../../src/constants.js';
 import {
   buildLifecycleHeaders,
@@ -33,7 +33,7 @@ describe('buildTransportHeaders', () => {
 
     expect(headers[HEADER_ROLE]).toBe('user');
     expect(headers[HEADER_RUN_ID]).toBe('run-1');
-    expect(headers[HEADER_CODEC_MESSAGE_ID]).toBe('msg-1');
+    expect(headers[HEADER_TRANSPORT_MESSAGE_ID]).toBe('msg-1');
   });
 
   it('includes runClientId when provided', () => {
@@ -102,7 +102,7 @@ describe('buildTransportHeaders', () => {
       inputCodecMessageId: 'trigger-msg',
     });
 
-    expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
+    expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('trigger-msg');
   });
 
   it('includes regenerates as msg-regenerate when provided', () => {
@@ -127,7 +127,7 @@ describe('buildTransportHeaders', () => {
     expect(headers).not.toHaveProperty(HEADER_PARENT);
     expect(headers).not.toHaveProperty(HEADER_FORK_OF);
     expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
-    expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
+    expect(headers).not.toHaveProperty(HEADER_INPUT_TRANSPORT_MESSAGE_ID);
     expect(headers).not.toHaveProperty(HEADER_MSG_REGENERATE);
   });
 });
@@ -160,7 +160,7 @@ describe('buildLifecycleHeaders', () => {
     expect(headers[HEADER_MSG_REGENERATE]).toBe('g');
     expect(headers[HEADER_INVOCATION_ID]).toBe('inv-1');
     expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
-    expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger');
+    expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('trigger');
   });
 
   it('omits every optional header when not provided', () => {
@@ -171,7 +171,7 @@ describe('buildLifecycleHeaders', () => {
     expect(headers).not.toHaveProperty(HEADER_MSG_REGENERATE);
     expect(headers).not.toHaveProperty(HEADER_INVOCATION_ID);
     expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
-    expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
+    expect(headers).not.toHaveProperty(HEADER_INPUT_TRANSPORT_MESSAGE_ID);
   });
 
   it('stamps empty-string correlation values (distinguished from omitted)', () => {

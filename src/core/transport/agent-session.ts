@@ -14,14 +14,14 @@ import * as Ably from 'ably';
 
 import {
   EVENT_CANCEL,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
-  HEADER_INPUT_CODEC_MESSAGE_ID,
+  HEADER_INPUT_TRANSPORT_MESSAGE_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
@@ -153,7 +153,7 @@ const lookupInputEvents = async <
   const decode = (m: Ably.InboundMessage): MessageNode<TMessage>[] => {
     const decoder = codec.createDecoder();
     const headers = getTransportHeaders(m);
-    const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID] ?? '';
+    const codecMessageId = headers[HEADER_TRANSPORT_MESSAGE_ID] ?? '';
     const { inputs, outputs } = decoder.decode(m);
     const events: (TInput | TOutput)[] = [...inputs, ...outputs];
     let projection = codec.init();
@@ -538,7 +538,7 @@ class DefaultAgentSession<
   private async _handleCancelMessage(msg: Ably.InboundMessage): Promise<void> {
     const headers = getTransportHeaders(msg);
     const runId = headers[HEADER_RUN_ID];
-    const inputCodecMessageId = headers[HEADER_INPUT_CODEC_MESSAGE_ID];
+    const inputCodecMessageId = headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID];
 
     // Malformed cancel: drop with warn. A cancel must identify its target by
     // `run-id` (a continuation, whose run-id the client knows) and/or by
@@ -1011,7 +1011,7 @@ class DefaultAgentSession<
           resolvedParent = sourceHeaders[HEADER_PARENT];
           resolvedForkOf = sourceHeaders[HEADER_FORK_OF];
           resolvedRegenerates = sourceHeaders[HEADER_MSG_REGENERATE];
-          resolvedInputCodecMessageId = sourceHeaders[HEADER_CODEC_MESSAGE_ID];
+          resolvedInputCodecMessageId = sourceHeaders[HEADER_TRANSPORT_MESSAGE_ID];
 
           // The triggering input's run-id (if any) IS this run's identity.
           // Present → a continuation re-entering that run: adopt the id,

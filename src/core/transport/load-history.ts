@@ -21,7 +21,7 @@
 
 import type * as Ably from 'ably';
 
-import { HEADER_CODEC_MESSAGE_ID, HEADER_DISCRETE, HEADER_STATUS, HEADER_STREAM } from '../../constants.js';
+import { HEADER_DISCRETE, HEADER_STATUS, HEADER_STREAM, HEADER_TRANSPORT_MESSAGE_ID } from '../../constants.js';
 import type { Logger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
 import type { HistoryPage, LoadHistoryOptions } from './types.js';
@@ -104,7 +104,7 @@ interface HistoryState {
  * - `message.delete`: clears the tracker, doesn't produce output.
  *
  * Amend-class wire messages (events targeting an existing message via
- * `HEADER_CODEC_MESSAGE_ID`) flow through the same counter — the Sets naturally
+ * `HEADER_TRANSPORT_MESSAGE_ID`) flow through the same counter — the Sets naturally
  * dedup so a tool-output amend on an already-seen codec-message-id is idempotent.
  *
  * Known edge case: if Ably history is truncated and a terminal survives
@@ -117,7 +117,7 @@ interface HistoryState {
 const countNewCompletions = (state: HistoryState, newMessages: readonly Ably.InboundMessage[]): void => {
   for (const msg of newMessages) {
     const headers = getTransportHeaders(msg);
-    const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
+    const codecMessageId = headers[HEADER_TRANSPORT_MESSAGE_ID];
     if (!codecMessageId) continue;
 
     const action = msg.action;

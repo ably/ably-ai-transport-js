@@ -10,7 +10,7 @@
 import type * as Ably from 'ably';
 import { describe, expect, it } from 'vitest';
 
-import { EVENT_RUN_END, EVENT_RUN_START, HEADER_CODEC_MESSAGE_ID, HEADER_RUN_ID } from '../../../src/constants.js';
+import { EVENT_RUN_END, EVENT_RUN_START, HEADER_RUN_ID, HEADER_TRANSPORT_MESSAGE_ID } from '../../../src/constants.js';
 import type { Codec, Decoder, Regenerate, UserMessage } from '../../../src/core/codec/types.js';
 import { foldInputMessages, foldRunMessages, withLiveMessages } from '../../../src/core/transport/load-conversation.js';
 
@@ -77,9 +77,9 @@ describe('withLiveMessages', () => {
 describe('foldRunMessages', () => {
   it('folds only wires stamped with the given run-id', () => {
     const sorted = [
-      msg({ headers: { [HEADER_RUN_ID]: 'R1', [HEADER_CODEC_MESSAGE_ID]: 'a' }, serial: 's1' }),
-      msg({ headers: { [HEADER_RUN_ID]: 'R2', [HEADER_CODEC_MESSAGE_ID]: 'b' }, serial: 's2' }),
-      msg({ headers: { [HEADER_RUN_ID]: 'R1', [HEADER_CODEC_MESSAGE_ID]: 'c' }, serial: 's3' }),
+      msg({ headers: { [HEADER_RUN_ID]: 'R1', [HEADER_TRANSPORT_MESSAGE_ID]: 'a' }, serial: 's1' }),
+      msg({ headers: { [HEADER_RUN_ID]: 'R2', [HEADER_TRANSPORT_MESSAGE_ID]: 'b' }, serial: 's2' }),
+      msg({ headers: { [HEADER_RUN_ID]: 'R1', [HEADER_TRANSPORT_MESSAGE_ID]: 'c' }, serial: 's3' }),
     ];
     const { projection, folded } = foldRunMessages(testCodec, sorted, 'R1');
     expect(folded).toBe(2);
@@ -89,7 +89,7 @@ describe('foldRunMessages', () => {
   it('skips run-lifecycle events even when stamped with the run-id', () => {
     const sorted = [
       msg({ name: EVENT_RUN_START, headers: { [HEADER_RUN_ID]: 'R1' }, serial: 's1' }),
-      msg({ headers: { [HEADER_RUN_ID]: 'R1', [HEADER_CODEC_MESSAGE_ID]: 'a' }, serial: 's2' }),
+      msg({ headers: { [HEADER_RUN_ID]: 'R1', [HEADER_TRANSPORT_MESSAGE_ID]: 'a' }, serial: 's2' }),
       msg({ name: EVENT_RUN_END, headers: { [HEADER_RUN_ID]: 'R1' }, serial: 's3' }),
     ];
     const { projection, folded } = foldRunMessages(testCodec, sorted, 'R1');
@@ -99,9 +99,9 @@ describe('foldRunMessages', () => {
 
   it('stops before the truncateAt codec-message-id (exclusive)', () => {
     const sorted = [
-      msg({ headers: { [HEADER_RUN_ID]: 'R1', [HEADER_CODEC_MESSAGE_ID]: 'a' }, serial: 's1' }),
-      msg({ headers: { [HEADER_RUN_ID]: 'R1', [HEADER_CODEC_MESSAGE_ID]: 'b' }, serial: 's2' }),
-      msg({ headers: { [HEADER_RUN_ID]: 'R1', [HEADER_CODEC_MESSAGE_ID]: 'c' }, serial: 's3' }),
+      msg({ headers: { [HEADER_RUN_ID]: 'R1', [HEADER_TRANSPORT_MESSAGE_ID]: 'a' }, serial: 's1' }),
+      msg({ headers: { [HEADER_RUN_ID]: 'R1', [HEADER_TRANSPORT_MESSAGE_ID]: 'b' }, serial: 's2' }),
+      msg({ headers: { [HEADER_RUN_ID]: 'R1', [HEADER_TRANSPORT_MESSAGE_ID]: 'c' }, serial: 's3' }),
     ];
     const { projection, folded } = foldRunMessages(testCodec, sorted, 'R1', 'b');
     expect(folded).toBe(1);
@@ -112,13 +112,13 @@ describe('foldRunMessages', () => {
 describe('foldInputMessages', () => {
   it('folds only run-less wires matching the codec-message-id', () => {
     const sorted = [
-      msg({ headers: { [HEADER_CODEC_MESSAGE_ID]: 'u1' }, serial: 's1' }),
+      msg({ headers: { [HEADER_TRANSPORT_MESSAGE_ID]: 'u1' }, serial: 's1' }),
       // Same codec-message-id but run-bearing — belongs to a reply run, not the input node.
-      msg({ headers: { [HEADER_RUN_ID]: 'R1', [HEADER_CODEC_MESSAGE_ID]: 'u1' }, serial: 's2' }),
+      msg({ headers: { [HEADER_RUN_ID]: 'R1', [HEADER_TRANSPORT_MESSAGE_ID]: 'u1' }, serial: 's2' }),
       // Different input node.
-      msg({ headers: { [HEADER_CODEC_MESSAGE_ID]: 'u2' }, serial: 's3' }),
+      msg({ headers: { [HEADER_TRANSPORT_MESSAGE_ID]: 'u2' }, serial: 's3' }),
       // An amend on the same input node folds in too.
-      msg({ headers: { [HEADER_CODEC_MESSAGE_ID]: 'u1' }, serial: 's4' }),
+      msg({ headers: { [HEADER_TRANSPORT_MESSAGE_ID]: 'u1' }, serial: 's4' }),
     ];
     const projection = foldInputMessages(testCodec, sorted, 'u1');
     expect(testCodec.getMessages(projection).map((m) => m.message.id)).toEqual(['u1', 'u1']);

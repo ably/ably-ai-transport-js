@@ -20,7 +20,7 @@
 
 import * as Ably from 'ably';
 
-import { HEADER_CODEC_MESSAGE_ID, HEADER_RUN_ID } from '../../constants.js';
+import { HEADER_RUN_ID, HEADER_TRANSPORT_MESSAGE_ID } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
@@ -1201,7 +1201,7 @@ export class DefaultView<
   private _onTreeAblyMessage(msg: Ably.InboundMessage): void {
     // Re-emit only if the message corresponds to a visible Run
     const headers = getTransportHeaders(msg);
-    const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
+    const codecMessageId = headers[HEADER_TRANSPORT_MESSAGE_ID];
     const runId = headers[HEADER_RUN_ID];
 
     if (!codecMessageId && !runId) {

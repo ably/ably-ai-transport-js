@@ -21,16 +21,16 @@ import * as Ably from 'ably';
 import {
   EVENT_CANCEL,
   EVENT_RUN_END,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
   HEADER_EVENT_ID,
-  HEADER_INPUT_CODEC_MESSAGE_ID,
+  HEADER_INPUT_TRANSPORT_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
@@ -178,7 +178,7 @@ class DefaultClientSession<
       for (const msg of options.messages) {
         const codecMessageId = crypto.randomUUID();
         const seedHeaders: Record<string, string> = {
-          [HEADER_CODEC_MESSAGE_ID]: codecMessageId,
+          [HEADER_TRANSPORT_MESSAGE_ID]: codecMessageId,
           [HEADER_ROLE]: 'user',
         };
         if (prevMsgId) seedHeaders[HEADER_PARENT] = prevMsgId;
@@ -291,7 +291,7 @@ class DefaultClientSession<
       // field's JSDoc). Every send carries at least one input, so the agent
       // always echoes it.
       if (event && (event.type === 'start' || event.type === 'resume')) {
-        const startedKey = getTransportHeaders(ablyMessage)[HEADER_INPUT_CODEC_MESSAGE_ID];
+        const startedKey = getTransportHeaders(ablyMessage)[HEADER_INPUT_TRANSPORT_MESSAGE_ID];
         if (startedKey !== undefined) {
           const pending = this._pendingRunStarts.get(startedKey);
           if (pending) {
@@ -681,7 +681,8 @@ class DefaultClientSession<
       [HEADER_EVENT_ID]: crypto.randomUUID(),
     };
     if (target.runId !== undefined) headers[HEADER_RUN_ID] = target.runId;
-    if (target.inputCodecMessageId !== undefined) headers[HEADER_INPUT_CODEC_MESSAGE_ID] = target.inputCodecMessageId;
+    if (target.inputCodecMessageId !== undefined)
+      headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID] = target.inputCodecMessageId;
 
     await this._channel.publish({
       name: EVENT_CANCEL,

@@ -15,15 +15,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EVENT_CANCEL,
   EVENT_RUN_START,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
-  HEADER_INPUT_CODEC_MESSAGE_ID,
+  HEADER_INPUT_TRANSPORT_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_ID,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../../src/constants.js';
 import type {
   ChannelWriter,
@@ -299,7 +299,7 @@ const codecWithFunctionalDecoder = (): Codec<TestInput, TestOutput, TestProjecti
   createDecoder: vi.fn(() => ({
     decode: (m: Ably.InboundMessage) => {
       const hdrs = (m.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport ?? {};
-      const id = hdrs[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
+      const id = hdrs[HEADER_TRANSPORT_MESSAGE_ID] ?? 'unknown';
       // A regenerate carrier is a wire-only signal — it decodes to zero events
       // (no MessageNode), so the agent's structural parent falls back to the
       // wire's own `parent` (the original user prompt). Every other inbound
@@ -359,7 +359,7 @@ const deliverInputEvent = (ch: MockChannel, opts: DeliverInputEventOpts): void =
   const headers: Record<string, string> = {
     [HEADER_ROLE]: 'user',
     [HEADER_INVOCATION_ID]: opts.invocationId,
-    [HEADER_CODEC_MESSAGE_ID]: opts.codecMessageId,
+    [HEADER_TRANSPORT_MESSAGE_ID]: opts.codecMessageId,
     // Always stamp a event-id — the agent dispatcher routes input-event
     // messages by `event-id`, not by role, so without one the
     // synthetic message wouldn't reach the buffer/lookup path. Tests that
@@ -685,7 +685,7 @@ describe('AgentSession', () => {
       const startMsg = channel.publishCalls.find((m) => m.name === 'ai-run-start');
       const headers = (startMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
       expect(headers?.['input-client-id']).toBe('user-b');
-      expect(headers?.['input-codec-message-id']).toBe('m-icid-start');
+      expect(headers?.['input-transport-message-id']).toBe('m-icid-start');
     });
 
     it('end() stamps input attribution from the triggering input event', async () => {
@@ -708,7 +708,7 @@ describe('AgentSession', () => {
       const endMsg = channel.publishCalls.find((m) => m.name === 'ai-run-end');
       const headers = (endMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
       expect(headers?.['input-client-id']).toBe('user-b');
-      expect(headers?.['input-codec-message-id']).toBe('m-icid-end');
+      expect(headers?.['input-transport-message-id']).toBe('m-icid-end');
     });
 
     it('start() is idempotent (subsequent calls are no-ops)', async () => {
@@ -764,7 +764,7 @@ describe('AgentSession', () => {
         ?.transport;
       expect(headers?.['invocation-id']).toBe(invocationId);
       expect(headers?.['input-client-id']).toBe('user-b');
-      expect(headers?.['input-codec-message-id']).toBe('m-icid-suspend');
+      expect(headers?.['input-transport-message-id']).toBe('m-icid-suspend');
     });
 
     it('suspend() throws if run not started', async () => {
@@ -789,16 +789,16 @@ describe('AgentSession', () => {
   // -------------------------------------------------------------------------
 
   describe('addEvents', () => {
-    it('creates encoder with HEADER_CODEC_MESSAGE_ID pointing at the target codec-message-id', async () => {
+    it('creates encoder with HEADER_TRANSPORT_MESSAGE_ID pointing at the target codec-message-id', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
       await run.addEvents([{ kind: 'event', codecMessageId: 'target-msg-1', events: [{ type: 'tool-output' }] }]);
 
       const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
       expect(headers[HEADER_ROLE]).toBe('assistant');
-      // HEADER_CODEC_MESSAGE_ID = target's id so the reducer routes the events onto
+      // HEADER_TRANSPORT_MESSAGE_ID = target's id so the reducer routes the events onto
       // the existing message via its standard per-message-id fold path.
-      expect(headers[HEADER_CODEC_MESSAGE_ID]).toBe('target-msg-1');
+      expect(headers[HEADER_TRANSPORT_MESSAGE_ID]).toBe('target-msg-1');
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
       expect(headers[HEADER_INVOCATION_ID]).toBe('run-1-inv');
     });
@@ -822,7 +822,7 @@ describe('AgentSession', () => {
 
       const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
       expect(headers['input-client-id']).toBe('user-b');
-      expect(headers['input-codec-message-id']).toBe('m-icid-ae');
+      expect(headers['input-transport-message-id']).toBe('m-icid-ae');
     });
 
     it('calls encoder.publishOutput per event', async () => {
@@ -859,11 +859,11 @@ describe('AgentSession', () => {
       ]);
       // Two nodes → two encoders
       expect(codec.encoderCalls.length - before).toBe(2);
-      // Each encoder stamps HEADER_CODEC_MESSAGE_ID = its target id
+      // Each encoder stamps HEADER_TRANSPORT_MESSAGE_ID = its target id
       const first = codec.encoderCalls[before]?.opts?.extras?.headers ?? {};
       const second = codec.encoderCalls[before + 1]?.opts?.extras?.headers ?? {};
-      expect(first[HEADER_CODEC_MESSAGE_ID]).toBe('target-1');
-      expect(second[HEADER_CODEC_MESSAGE_ID]).toBe('target-2');
+      expect(first[HEADER_TRANSPORT_MESSAGE_ID]).toBe('target-1');
+      expect(second[HEADER_TRANSPORT_MESSAGE_ID]).toBe('target-2');
     });
 
     it('closes each encoder after publishing all events', async () => {
@@ -929,7 +929,7 @@ describe('AgentSession', () => {
 
       const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
       expect(headers['input-client-id']).toBe('user-b');
-      expect(headers['input-codec-message-id']).toBe('m-icid-pipe');
+      expect(headers['input-transport-message-id']).toBe('m-icid-pipe');
     });
 
     it('publishes each stream event through encoder.publishOutput', async () => {
@@ -1158,7 +1158,7 @@ describe('AgentSession', () => {
       // resolved the input → run linkage yet). It is buffered by the input
       // codec-message-id. Cancel handling is dispatched fire-and-forget, so
       // flush microtasks to guarantee it lands in the buffer before start().
-      simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: inputCodecMessageId });
+      simulateCancel(ch, { [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: inputCodecMessageId });
       await new Promise((r) => setTimeout(r, 5));
 
       // start() runs the lookup; delivering the input resolves the linkage and
@@ -1198,7 +1198,7 @@ describe('AgentSession', () => {
       // fresh-send cancel takes.
       simulateCancel(ch, {
         [HEADER_RUN_ID]: continuationRunId,
-        [HEADER_INPUT_CODEC_MESSAGE_ID]: inputCodecMessageId,
+        [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: inputCodecMessageId,
       });
       await new Promise((r) => setTimeout(r, 5));
 
@@ -1236,7 +1236,7 @@ describe('AgentSession', () => {
         onCancel,
       });
 
-      simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: inputCodecMessageId });
+      simulateCancel(ch, { [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: inputCodecMessageId });
       await new Promise((r) => setTimeout(r, 5));
 
       const startPromise = run.start();
@@ -1267,7 +1267,7 @@ describe('AgentSession', () => {
         onCancel: async () => false,
       });
 
-      simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: inputCodecMessageId });
+      simulateCancel(ch, { [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: inputCodecMessageId });
       await new Promise((r) => setTimeout(r, 5));
 
       const startPromise = run.start();
@@ -1302,7 +1302,7 @@ describe('AgentSession', () => {
 
       // Cancel arrives AFTER start() resolved the input → run linkage; it
       // matches via the reverse index without any run-id.
-      simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: inputCodecMessageId });
+      simulateCancel(ch, { [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: inputCodecMessageId });
       await new Promise((r) => setTimeout(r, 5));
 
       expect(run.abortSignal.aborted).toBe(true);
@@ -1324,8 +1324,8 @@ describe('AgentSession', () => {
 
       // Two early cancels for different inputs; the buffer holds one, so the
       // first is evicted.
-      simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: 'm-old' });
-      simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: 'm-new' });
+      simulateCancel(ch, { [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: 'm-old' });
+      simulateCancel(ch, { [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: 'm-new' });
       // Cancel handling is dispatched fire-and-forget; let the microtasks run.
       await new Promise((r) => setTimeout(r, 5));
 
@@ -1364,7 +1364,7 @@ describe('AgentSession', () => {
       const { session: s, ch } = lookupSession();
       await s.connect();
 
-      simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: 'm-stale' });
+      simulateCancel(ch, { [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: 'm-stale' });
       await new Promise((r) => setTimeout(r, 5));
       s.close();
 
@@ -1406,7 +1406,7 @@ describe('AgentSession', () => {
       await startPromise;
       await run.end('complete');
 
-      simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: inputCodecMessageId });
+      simulateCancel(ch, { [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: inputCodecMessageId });
       await new Promise((r) => setTimeout(r, 5));
 
       // No throw, no abort attempt against a non-existent registration.
@@ -2279,7 +2279,7 @@ const makeContentMsg = (runId: string, codecMsgId: string, serial?: string): Abl
   ({
     name: 'text',
     serial: serial ?? `s-${codecMsgId}`,
-    extras: { ai: { transport: { [HEADER_RUN_ID]: runId, [HEADER_CODEC_MESSAGE_ID]: codecMsgId } } },
+    extras: { ai: { transport: { [HEADER_RUN_ID]: runId, [HEADER_TRANSPORT_MESSAGE_ID]: codecMsgId } } },
   }) as unknown as Ably.InboundMessage;
 
 /**
@@ -2317,7 +2317,7 @@ const makeInputMsg = (
   serial: string,
   opts?: { parent?: string; forkOf?: string },
 ): Ably.InboundMessage => {
-  const headers: Record<string, string> = { [HEADER_ROLE]: 'user', [HEADER_CODEC_MESSAGE_ID]: codecMsgId };
+  const headers: Record<string, string> = { [HEADER_ROLE]: 'user', [HEADER_TRANSPORT_MESSAGE_ID]: codecMsgId };
   if (opts?.parent !== undefined) headers[HEADER_PARENT] = opts.parent;
   if (opts?.forkOf !== undefined) headers[HEADER_FORK_OF] = opts.forkOf;
   return {

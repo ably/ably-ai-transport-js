@@ -25,13 +25,13 @@ import {
   EVENT_RUN_END,
   EVENT_RUN_RESUME,
   EVENT_RUN_START,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_INPUT_CLIENT_ID,
-  HEADER_INPUT_CODEC_MESSAGE_ID,
+  HEADER_INPUT_TRANSPORT_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_ROLE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../../src/constants.js';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
 import { buildTransportHeaders } from '../../../src/core/transport/headers.js';
@@ -98,7 +98,7 @@ const collectUntil = (
     allInputs.push(...inputs);
     allOutputs.push(...outputs);
     const headers = getHeaders(msg);
-    const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
+    const codecMessageId = headers[HEADER_TRANSPORT_MESSAGE_ID];
     for (const input of inputs) {
       projection = UIMessageCodec.fold(projection, input, { serial: msg.serial ?? '', messageId: codecMessageId });
     }
@@ -179,7 +179,7 @@ describe('AgentSession integration', () => {
       const headers = getHeaders(streamMsg);
       expect(headers[HEADER_ROLE]).toBe('assistant');
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
-      expect(headers[HEADER_CODEC_MESSAGE_ID]).toBeDefined();
+      expect(headers[HEADER_TRANSPORT_MESSAGE_ID]).toBeDefined();
     }
   });
 
@@ -330,8 +330,8 @@ describe('AgentSession integration', () => {
     // of the invocation (run-start / run-resume, run-end, assistant outputs),
     // mirroring input-client-id, so the client can correlate any of them back
     // to the originating input by the id it owns at send time.
-    expect(getHeaders(startA)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('m-user-a');
-    expect(getHeaders(resumeB)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('m-user-b');
+    expect(getHeaders(startA)[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('m-user-a');
+    expect(getHeaders(resumeB)[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('m-user-b');
 
     const endA = endMsgs.find((m) => getHeaders(m)[HEADER_INVOCATION_ID] === 'inv-a');
     const endB = endMsgs.find((m) => getHeaders(m)[HEADER_INVOCATION_ID] === 'inv-b');
@@ -340,8 +340,8 @@ describe('AgentSession integration', () => {
     if (!endA || !endB) return;
     expect(getHeaders(endA)[HEADER_INPUT_CLIENT_ID]).toBe('user-a');
     expect(getHeaders(endB)[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
-    expect(getHeaders(endA)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('m-user-a');
-    expect(getHeaders(endB)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('m-user-b');
+    expect(getHeaders(endA)[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('m-user-a');
+    expect(getHeaders(endB)[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('m-user-b');
 
     // Assistant outputs of each invocation also carry the input event's
     // publisher id. Both invocations share `runId`, so we partition by
@@ -357,8 +357,8 @@ describe('AgentSession integration', () => {
     if (!assistantA || !assistantB) return;
     expect(getHeaders(assistantA)[HEADER_INPUT_CLIENT_ID]).toBe('user-a');
     expect(getHeaders(assistantB)[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
-    expect(getHeaders(assistantA)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('m-user-a');
-    expect(getHeaders(assistantB)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('m-user-b');
+    expect(getHeaders(assistantA)[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('m-user-a');
+    expect(getHeaders(assistantB)[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('m-user-b');
     // ...and the continuing invocation's invocation-id: outputs published after
     // the run-resume carry inv-b, not the run-opening inv-a. The agent stamps
     // invocation-id from the per-invocation createRun, so a resume threads the
@@ -479,7 +479,7 @@ describe('AgentSession integration', () => {
     await subChannel.subscribe((msg) => {
       const { inputs, outputs } = decoder.decode(msg);
       const headers = getHeaders(msg);
-      const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
+      const codecMessageId = headers[HEADER_TRANSPORT_MESSAGE_ID];
       for (const event of inputs) {
         projection = UIMessageCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: codecMessageId });
       }
@@ -733,14 +733,14 @@ describe('AgentSession integration', () => {
     expect(textStartMsg).toBeDefined();
     if (textStartMsg) {
       const textHeaders = getHeaders(textStartMsg);
-      expect(textHeaders[HEADER_CODEC_MESSAGE_ID]).not.toBe('target-codec-message-id');
+      expect(textHeaders[HEADER_TRANSPORT_MESSAGE_ID]).not.toBe('target-codec-message-id');
     }
 
     const toolMsg = rawMessages.find((m) => isToolOutputAvailable(m));
     expect(toolMsg).toBeDefined();
     if (toolMsg) {
       const toolHeaders = getHeaders(toolMsg);
-      expect(toolHeaders[HEADER_CODEC_MESSAGE_ID]).toBe('target-codec-message-id');
+      expect(toolHeaders[HEADER_TRANSPORT_MESSAGE_ID]).toBe('target-codec-message-id');
     }
 
     await run.end('complete');

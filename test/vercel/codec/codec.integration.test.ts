@@ -15,7 +15,7 @@ import type * as Ably from 'ably';
 import type * as AI from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { EVENT_AI_INPUT, EVENT_AI_OUTPUT, HEADER_CODEC_MESSAGE_ID, HEADER_RUN_ID } from '../../../src/constants.js';
+import { EVENT_AI_INPUT, EVENT_AI_OUTPUT, HEADER_RUN_ID, HEADER_TRANSPORT_MESSAGE_ID } from '../../../src/constants.js';
 import { getCodecHeaders, getTransportHeaders } from '../../../src/utils.js';
 import {
   UIMessageCodec,
@@ -39,7 +39,7 @@ const stampHeaders = (runId: string, messageId: string) => (msg: Ably.Message) =
   const transport = (msg.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
   if (transport) {
     transport[HEADER_RUN_ID] = runId;
-    transport[HEADER_CODEC_MESSAGE_ID] = messageId;
+    transport[HEADER_TRANSPORT_MESSAGE_ID] = messageId;
   }
 };
 
@@ -51,7 +51,7 @@ const stampHeaders = (runId: string, messageId: string) => (msg: Ably.Message) =
 const metaOf = (msg: Ably.InboundMessage): { serial: string; messageId?: string } => {
   // codec-message-id is a transport-tier header.
   const headers = getTransportHeaders(msg);
-  const messageId = headers[HEADER_CODEC_MESSAGE_ID];
+  const messageId = headers[HEADER_TRANSPORT_MESSAGE_ID];
   return messageId === undefined ? { serial: msg.serial ?? '' } : { serial: msg.serial ?? '', messageId };
 };
 

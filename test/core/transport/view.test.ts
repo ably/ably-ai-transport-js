@@ -6,12 +6,12 @@ import {
   EVENT_RUN_RESUME,
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_FORK_OF,
   HEADER_INVOCATION_ID,
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_ID,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../../src/constants.js';
 import type { Codec, CodecInputEvent, ReducerMeta } from '../../../src/core/codec/types.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
@@ -125,7 +125,7 @@ interface ApplyOpts {
 
 const apply = (tree: DefaultTree<TestInput, TestOutput, TestProjection>, opts: ApplyOpts): void => {
   const h: Record<string, string> = { [HEADER_RUN_ID]: opts.runId };
-  if (opts.codecMessageId) h[HEADER_CODEC_MESSAGE_ID] = opts.codecMessageId;
+  if (opts.codecMessageId) h[HEADER_TRANSPORT_MESSAGE_ID] = opts.codecMessageId;
   if (opts.parent) h[HEADER_PARENT] = opts.parent;
   if (opts.forkOf) h[HEADER_FORK_OF] = opts.forkOf;
   if (opts.regenerates) h['msg-regenerate'] = opts.regenerates;
@@ -155,7 +155,7 @@ interface ApplyInputOpts {
  */
 const applyInput = (tree: DefaultTree<TestInput, TestOutput, TestProjection>, opts: ApplyInputOpts): void => {
   const h: Record<string, string> = {
-    [HEADER_CODEC_MESSAGE_ID]: opts.codecMessageId,
+    [HEADER_TRANSPORT_MESSAGE_ID]: opts.codecMessageId,
     [HEADER_ROLE]: 'user',
   };
   if (opts.parent) h[HEADER_PARENT] = opts.parent;
@@ -185,7 +185,7 @@ const makePage = (
 const linearChainHeaders = (i: number): Record<string, string> => {
   const h: Record<string, string> = {
     [HEADER_RUN_ID]: `R${String(i)}`,
-    [HEADER_CODEC_MESSAGE_ID]: `mh${String(i)}`,
+    [HEADER_TRANSPORT_MESSAGE_ID]: `mh${String(i)}`,
   };
   if (i > 0) h[HEADER_PARENT] = `mh${String(i - 1)}`;
   return h;
@@ -1550,7 +1550,7 @@ describe('DefaultView', () => {
         { inputs: [], outputs: [{ type: 'append-message', message: { id: 'x', content: 'noop' } }] },
         {
           [HEADER_RUN_ID]: 'R1',
-          [HEADER_CODEC_MESSAGE_ID]: 'm-noop',
+          [HEADER_TRANSPORT_MESSAGE_ID]: 'm-noop',
         },
       );
 
@@ -1657,7 +1657,7 @@ describe('DefaultView', () => {
       const rawMsg = {
         name: 'fake',
         serial: 's0',
-        extras: { ai: { transport: { [HEADER_RUN_ID]: 'R0', [HEADER_CODEC_MESSAGE_ID]: 'mh1' } } },
+        extras: { ai: { transport: { [HEADER_RUN_ID]: 'R0', [HEADER_TRANSPORT_MESSAGE_ID]: 'mh1' } } },
       } as unknown as Ably.InboundMessage;
 
       // The View's _processHistoryPage uses page.rawMessages and decodes
@@ -1679,7 +1679,7 @@ describe('DefaultView', () => {
       const rawMsg = {
         name: 'fake',
         serial: 's0',
-        extras: { ai: { transport: { [HEADER_RUN_ID]: 'R0', [HEADER_CODEC_MESSAGE_ID]: 'mh1' } } },
+        extras: { ai: { transport: { [HEADER_RUN_ID]: 'R0', [HEADER_TRANSPORT_MESSAGE_ID]: 'mh1' } } },
       } as unknown as Ably.InboundMessage;
       const decodeSpy = vi.fn(() => ({
         inputs: [],
@@ -1727,7 +1727,7 @@ describe('DefaultView', () => {
       codec.createDecoder = vi.fn(() => ({
         decode: (msg: Ably.InboundMessage) => {
           const id =
-            (msg.extras as { ai: { transport: Record<string, string> } }).ai.transport[HEADER_CODEC_MESSAGE_ID] ??
+            (msg.extras as { ai: { transport: Record<string, string> } }).ai.transport[HEADER_TRANSPORT_MESSAGE_ID] ??
             'unknown';
           return {
             inputs: [],
@@ -1779,7 +1779,7 @@ describe('DefaultView', () => {
       codec.createDecoder = vi.fn(() => ({
         decode: (msg: Ably.InboundMessage) => {
           const id =
-            (msg.extras as { ai: { transport: Record<string, string> } }).ai.transport[HEADER_CODEC_MESSAGE_ID] ??
+            (msg.extras as { ai: { transport: Record<string, string> } }).ai.transport[HEADER_TRANSPORT_MESSAGE_ID] ??
             'unknown';
           return {
             inputs: [],
@@ -1819,8 +1819,8 @@ describe('DefaultView', () => {
       // Simulate a Run R-multi whose messages appear across two channel
       // pages: page1 has the first wire, page2 (via .next()) has the
       // second wire. The Tree folds both into the same RunNode.
-      const headersA = { [HEADER_RUN_ID]: 'R-multi', [HEADER_CODEC_MESSAGE_ID]: 'm-multi-a' };
-      const headersB = { [HEADER_RUN_ID]: 'R-multi', [HEADER_CODEC_MESSAGE_ID]: 'm-multi-b' };
+      const headersA = { [HEADER_RUN_ID]: 'R-multi', [HEADER_TRANSPORT_MESSAGE_ID]: 'm-multi-a' };
+      const headersB = { [HEADER_RUN_ID]: 'R-multi', [HEADER_TRANSPORT_MESSAGE_ID]: 'm-multi-b' };
       const rawA = {
         name: 'fake',
         serial: 's01',
@@ -1835,7 +1835,8 @@ describe('DefaultView', () => {
       codec.createDecoder = vi.fn(() => ({
         decode: (msg: Ably.InboundMessage) => {
           const id =
-            (msg.extras as { ai: { transport: Record<string, string> } }).ai.transport[HEADER_CODEC_MESSAGE_ID] ?? '?';
+            (msg.extras as { ai: { transport: Record<string, string> } }).ai.transport[HEADER_TRANSPORT_MESSAGE_ID] ??
+            '?';
           return {
             inputs: [],
             outputs: [{ type: 'append-message' as const, message: { id, content: id } }],

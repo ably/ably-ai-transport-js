@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_FORK_OF,
-  HEADER_INPUT_CODEC_MESSAGE_ID,
+  HEADER_INPUT_TRANSPORT_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../../src/constants.js';
 import type { Codec, CodecInputEvent, Regenerate, UserMessage } from '../../../src/core/codec/types.js';
 import type { TreeInternal } from '../../../src/core/transport/tree.js';
@@ -91,14 +91,14 @@ type TreeEvent = TestInput | TestOutput;
 
 const apply = (tree: TreeInternal<TestInput, TestOutput, TestProjection>, opts: ApplyOpts): void => {
   const h: Record<string, string> = { [HEADER_RUN_ID]: opts.runId };
-  if (opts.codecMessageId) h[HEADER_CODEC_MESSAGE_ID] = opts.codecMessageId;
+  if (opts.codecMessageId) h[HEADER_TRANSPORT_MESSAGE_ID] = opts.codecMessageId;
   if (opts.parent) h[HEADER_PARENT] = opts.parent;
   if (opts.forkOf) h[HEADER_FORK_OF] = opts.forkOf;
   if (opts.regenerates) h['msg-regenerate'] = opts.regenerates;
   if (opts.role) h[HEADER_ROLE] = opts.role;
   if (opts.invocationId) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.clientId) h[HEADER_RUN_CLIENT_ID] = opts.clientId;
-  if (opts.inputCodecMessageId) h[HEADER_INPUT_CODEC_MESSAGE_ID] = opts.inputCodecMessageId;
+  if (opts.inputCodecMessageId) h[HEADER_INPUT_TRANSPORT_MESSAGE_ID] = opts.inputCodecMessageId;
 
   const events: TreeEvent[] = opts.events ?? (opts.message ? [{ type: 'append-message', message: opts.message }] : []);
   const inputs = events.filter((e): e is TestInput => 'kind' in e);
@@ -116,7 +116,7 @@ const applyInput = (
   tree: TreeInternal<TestInput, TestOutput, TestProjection>,
   opts: { codecMessageId: string; parent?: string; forkOf?: string; message: TestMessage; serial?: string },
 ): void => {
-  const h: Record<string, string> = { [HEADER_CODEC_MESSAGE_ID]: opts.codecMessageId, [HEADER_ROLE]: 'user' };
+  const h: Record<string, string> = { [HEADER_TRANSPORT_MESSAGE_ID]: opts.codecMessageId, [HEADER_ROLE]: 'user' };
   if (opts.parent) h[HEADER_PARENT] = opts.parent;
   if (opts.forkOf) h[HEADER_FORK_OF] = opts.forkOf;
   tree.applyMessage({ inputs: [{ kind: 'append-input', message: opts.message }], outputs: [] }, h, opts.serial);

@@ -24,10 +24,10 @@ import type * as AI from 'ai';
 import {
   EVENT_AI_INPUT,
   EVENT_AI_OUTPUT,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_DISCRETE,
   HEADER_ROLE,
   HEADER_RUN_ID,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../constants.js';
 import type { DecoderCore, DecoderCoreHooks, DecoderCoreOptions } from '../../core/codec/decoder.js';
 import { createDecoderCore } from '../../core/codec/decoder.js';
@@ -594,7 +594,7 @@ const decodeAiInputPayload = (codecType: string, input: MessagePayload, r: Verce
     return decodeDiscreteMessagePart(input);
   }
 
-  const codecMessageId = input.transportHeaders?.[HEADER_CODEC_MESSAGE_ID] ?? '';
+  const codecMessageId = input.transportHeaders?.[HEADER_TRANSPORT_MESSAGE_ID] ?? '';
 
   switch (codecType) {
     case 'tool-result': {

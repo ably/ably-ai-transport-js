@@ -12,11 +12,11 @@
 import * as Ably from 'ably';
 
 import {
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_DISCRETE,
   HEADER_STATUS,
   HEADER_STREAM,
   HEADER_STREAM_ID,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
@@ -448,7 +448,7 @@ class DefaultEncoderCore implements EncoderCore {
     const callerHeaders = mergeHeaders(this._defaultExtras?.headers, opts?.extras?.headers);
     const transport = { ...callerHeaders, ...payloadTransport };
     if (opts?.messageId !== undefined) {
-      transport[HEADER_CODEC_MESSAGE_ID] = opts.messageId;
+      transport[HEADER_TRANSPORT_MESSAGE_ID] = opts.messageId;
     }
     return transport;
   }

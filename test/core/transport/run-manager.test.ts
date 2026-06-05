@@ -8,7 +8,7 @@ import {
   EVENT_RUN_SUSPEND,
   HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
-  HEADER_INPUT_CODEC_MESSAGE_ID,
+  HEADER_INPUT_TRANSPORT_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
@@ -109,7 +109,7 @@ describe('RunManager', () => {
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
       expect(headers[HEADER_INVOCATION_ID]).toBe('inv-2');
       expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
-      expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
+      expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('trigger-msg');
     });
 
     it('omits structural metadata (parent/forkOf/regenerates) on a resume', async () => {
@@ -177,7 +177,7 @@ describe('RunManager', () => {
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
       const headers = headersOf(channel.publishCalls.at(0)!);
-      expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
+      expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('trigger-msg');
     });
 
     it('omits input-codec-message-id when inputCodecMessageId is unset', async () => {
@@ -185,7 +185,7 @@ describe('RunManager', () => {
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
       const headers = headersOf(channel.publishCalls.at(0)!);
-      expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
+      expect(headers).not.toHaveProperty(HEADER_INPUT_TRANSPORT_MESSAGE_ID);
     });
   });
 
@@ -245,7 +245,7 @@ describe('RunManager', () => {
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
       const headers = headersOf(channel.publishCalls.at(1)!);
-      expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
+      expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('trigger-msg');
     });
 
     it('omits input-codec-message-id when inputCodecMessageId is unset', async () => {
@@ -254,7 +254,7 @@ describe('RunManager', () => {
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
       const headers = headersOf(channel.publishCalls.at(1)!);
-      expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
+      expect(headers).not.toHaveProperty(HEADER_INPUT_TRANSPORT_MESSAGE_ID);
     });
   });
 
@@ -292,7 +292,7 @@ describe('RunManager', () => {
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
       const headers = headersOf(channel.publishCalls.at(1)!);
       expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
-      expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
+      expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('trigger-msg');
     });
 
     it('omits input attribution when not provided', async () => {
@@ -302,7 +302,7 @@ describe('RunManager', () => {
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
       const headers = headersOf(channel.publishCalls.at(1)!);
       expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
-      expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
+      expect(headers).not.toHaveProperty(HEADER_INPUT_TRANSPORT_MESSAGE_ID);
     });
 
     it('drops the run from the active set so a cancel during suspension is a no-op', async () => {

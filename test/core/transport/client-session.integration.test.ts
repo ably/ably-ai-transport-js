@@ -23,12 +23,12 @@ import {
   EVENT_CANCEL,
   EVENT_RUN_END,
   EVENT_RUN_START,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../../src/constants.js';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
 import { createClientSession } from '../../../src/core/transport/client-session.js';
@@ -1248,7 +1248,9 @@ describe('ClientSession integration', () => {
       const page = await channel.history({ limit: 10, direction: 'backwards' });
       found = page.items.find((m) => {
         const headers = getHeaders(m);
-        return headers[HEADER_ROLE] === 'user' && headers[HEADER_CODEC_MESSAGE_ID] === activeRun.inputCodecMessageId;
+        return (
+          headers[HEADER_ROLE] === 'user' && headers[HEADER_TRANSPORT_MESSAGE_ID] === activeRun.inputCodecMessageId
+        );
       });
     }
     expect(found).toBeDefined();

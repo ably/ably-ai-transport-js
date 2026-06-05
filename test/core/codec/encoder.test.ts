@@ -2,11 +2,11 @@ import type * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_DISCRETE,
   HEADER_STATUS,
   HEADER_STREAM,
   HEADER_STREAM_ID,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../../src/constants.js';
 import { createEncoderCore } from '../../../src/core/codec/encoder.js';
 import type { ChannelWriter, MessagePayload, StreamPayload } from '../../../src/core/codec/types.js';
@@ -548,7 +548,7 @@ describe('createEncoderCore', () => {
       await core.publishDiscrete(payload(), { messageId: 'msg-1' });
 
       const msg = first(writer.publishCalls) as Ably.Message;
-      expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBe('msg-1');
+      expect(headersOf(msg)[HEADER_TRANSPORT_MESSAGE_ID]).toBe('msg-1');
     });
 
     it('stamps codec-message-id on streamed messages via persistent headers', async () => {
@@ -556,12 +556,12 @@ describe('createEncoderCore', () => {
       await core.startStream('s-1', streamPayload(), { messageId: 'msg-2' });
 
       const startMsg = first(writer.publishCalls) as Ably.Message;
-      expect(headersOf(startMsg)[HEADER_CODEC_MESSAGE_ID]).toBe('msg-2');
+      expect(headersOf(startMsg)[HEADER_TRANSPORT_MESSAGE_ID]).toBe('msg-2');
 
       // Appends carry persistent headers, so should include codec-message-id
       core.appendStream('s-1', 'delta');
       const appendMsg = first(writer.appendCalls);
-      expect(headersOf(appendMsg)[HEADER_CODEC_MESSAGE_ID]).toBe('msg-2');
+      expect(headersOf(appendMsg)[HEADER_TRANSPORT_MESSAGE_ID]).toBe('msg-2');
     });
 
     it('does not stamp codec-message-id when messageId is not provided', async () => {
@@ -569,7 +569,7 @@ describe('createEncoderCore', () => {
       await core.publishDiscrete(payload());
 
       const msg = first(writer.publishCalls) as Ably.Message;
-      expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBeUndefined();
+      expect(headersOf(msg)[HEADER_TRANSPORT_MESSAGE_ID]).toBeUndefined();
     });
   });
 });

@@ -24,15 +24,15 @@
 import type * as Ably from 'ably';
 
 import {
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_FORK_OF,
-  HEADER_INPUT_CODEC_MESSAGE_ID,
+  HEADER_INPUT_TRANSPORT_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../constants.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
@@ -667,7 +667,7 @@ export class DefaultTree<
     serial?: string,
   ): void {
     const wireRunId = headers[HEADER_RUN_ID];
-    const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
+    const codecMessageId = headers[HEADER_TRANSPORT_MESSAGE_ID];
 
     // Classify: with NO run-id, a user message carrying a codec-message-id and
     // at least one input event forms an INPUT node keyed by that
@@ -778,10 +778,10 @@ export class DefaultTree<
     headers: Record<string, string>,
     serial: string | undefined,
   ): void {
-    const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
+    const codecMessageId = headers[HEADER_TRANSPORT_MESSAGE_ID];
     // The triggering input's codec-message-id (the agent's echo), surfaced on
     // the `output` event as the stream's causal routing key.
-    const inputCodecMessageId = headers[HEADER_INPUT_CODEC_MESSAGE_ID];
+    const inputCodecMessageId = headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID];
     // Fold inputs first, then outputs, preserving wire order.
     const all: (TInput | TOutput)[] = [...events.inputs, ...events.outputs];
     const outputs = events.outputs;

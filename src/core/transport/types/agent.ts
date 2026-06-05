@@ -6,7 +6,7 @@ import type { Logger } from '../../../logger.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent, WriteOptions } from '../../codec/types.js';
 import type { Invocation } from '../invocation.js';
 import type { CancelRequest, RunEndReason } from './shared.js';
-import type { MessageNode } from './tree-types.js';
+import type { MessageNode } from './tree.js';
 
 // ---------------------------------------------------------------------------
 // Agent session options

@@ -27,9 +27,6 @@ export type {
   View,
 } from './types.js';
 
-// Internal tree interface (consumed by View implementations)
-export type { TreeInternal } from './tree.js';
-
 // Invocation
 export type { InvocationData } from './invocation.js';
 export { Invocation } from './invocation.js';

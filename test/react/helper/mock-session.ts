@@ -118,8 +118,7 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
   const edit = vi.fn(() => Promise.resolve(mockRun));
 
   const view: View<CodecInputEvent, string> = {
-    getMessages: vi.fn(() => initialMessages),
-    getMessagesWithIds: vi.fn(() => initialMessages.map((m) => ({ transportMessageId: m, message: m }))),
+    messages: initialMessages.map((m) => ({ transportMessageId: m, message: m })),
     runs: vi.fn(() => []),
     hasOlder: vi.fn(() => false),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly

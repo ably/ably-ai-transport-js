@@ -5,7 +5,7 @@
  * which Runs are visible to the UI. New live Runs appear immediately; older
  * Runs are revealed progressively via `loadOlder()`.
  *
- * `getMessages()` reads the Tree's visible node chain (input nodes + reply
+ * `messages` reads the Tree's visible node chain (input nodes + reply
  * runs, with sibling selection applied) and concatenates each node's
  * `codec.getMessages(node.projection)` to produce the flat TMessage[] the UI
  * renders.
@@ -240,14 +240,11 @@ export class DefaultView<
   private _lastVisibleProjections: TProjection[] = [];
 
   /**
-   * Snapshot of the visible flat message chain with codec-message-ids —
-   * the internal correlation source for parent/branch routing. The public
-   * `getMessages()` exposes only the `message` halves.
+   * Snapshot of the visible flat message chain — each entry pairs a domain
+   * message with its SDK-side transport id. Exposed publicly via
+   * {@link messages}.
    */
   private _lastVisibleMessagePairs: AIMessage<TMessage>[] = [];
-
-  /** Snapshot of visible flat messages — exposed via getMessages(). */
-  private _lastVisibleMessages: TMessage[] = [];
 
   /** Cached visible node-key Set — for O(1) lookup in event scoping. */
   private _lastVisibleNodeKeySet = new Set<string>();
@@ -266,7 +263,7 @@ export class DefaultView<
 
   /**
    * Cached result of the last flat-nodes computation. Drives the visible
-   * message snapshot exposed via `getMessages()`; refreshed by
+   * message snapshot exposed via `messages`; refreshed by
    * `_computeFlatNodes()` on structural changes, selection changes,
    * and history reveal.
    */
@@ -334,7 +331,6 @@ export class DefaultView<
     // no-op for unchanged hook consumers.
     this._lastVisibleProjections = this._cachedNodes.map((n) => n.projection);
     this._lastVisibleMessagePairs = this._extractMessages(this._cachedNodes);
-    this._lastVisibleMessages = this._lastVisibleMessagePairs.map((p) => p.message);
     this._emitter.emit('update');
   }
 
@@ -342,11 +338,7 @@ export class DefaultView<
   // Public query methods
   // -------------------------------------------------------------------------
 
-  getMessages(): TMessage[] {
-    return this._lastVisibleMessages;
-  }
-
-  getMessagesWithIds(): AIMessage<TMessage>[] {
+  get messages(): AIMessage<TMessage>[] {
     return this._lastVisibleMessagePairs;
   }
 
@@ -1093,7 +1085,6 @@ export class DefaultView<
     this._lastVisibleNodeKeySet = new Set(this._lastVisibleNodeKeys);
     this._lastVisibleProjections = resolved.map((n) => n.projection);
     this._lastVisibleMessagePairs = this._extractMessages(resolved);
-    this._lastVisibleMessages = this._lastVisibleMessagePairs.map((p) => p.message);
   }
 
   private _onTreeUpdate(): void {

@@ -146,13 +146,11 @@ const createMockSession = (): MockSession => {
   const regenerate = vi.fn(() => Promise.resolve(mockRun));
 
   // CAST: mock object satisfies the subset of View methods used by chat-transport tests
-  const getMessages = vi.fn((): AI.UIMessage[] => []);
   const view = {
-    getMessages,
-    // Derive the codec-message-id pairs from whatever `getMessages` is
-    // stubbed to return. These tests use fixtures where `message.id` equals
-    // the codec-message-id; the divergent-id case is covered separately.
-    getMessagesWithIds: vi.fn(() => getMessages().map((m) => ({ transportMessageId: m.id, message: m }))),
+    // Pair-shape snapshot — tests assign to `view.messages` directly to
+    // drive the pair list. Tests that don't differentiate the wire id from
+    // the domain id can assign `[].map((m) => ({ transportMessageId: m.id, message: m }))`.
+    messages: [] as { transportMessageId: string; message: AI.UIMessage }[],
     runs: vi.fn(() => []),
     hasOlder: vi.fn(() => false),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
@@ -233,7 +231,7 @@ describe('createChatTransport', () => {
       const m2 = makeMessage('2');
       const m3 = makeMessage('3');
 
-      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([m1, m2, m3]);
+      view.messages = [m1, m2, m3].map((m) => ({ transportMessageId: m.id, message: m }));
 
       const streamPromise = chat.sendMessages({
         trigger: 'submit-message',
@@ -303,7 +301,7 @@ describe('createChatTransport', () => {
       const m2 = makeMessage('m2-id', 'assistant');
       // The regenerate target must be resolvable in the visible view so the
       // transport can route by its codec-message-id (here id == codec id).
-      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([m1, m2]);
+      view.messages = [m1, m2].map((m) => ({ transportMessageId: m.id, message: m }));
 
       const streamPromise = chat.sendMessages({
         trigger: 'regenerate-message',
@@ -333,13 +331,13 @@ describe('createChatTransport', () => {
 
       const m1 = makeMessage('1');
       const m2 = makeMessage('a2', 'assistant');
-      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([m1, m2]);
+      view.messages = [m1, m2].map((m) => ({ transportMessageId: m.id, message: m }));
       // useChat references the assistant by its domain id 'a2'; the transport
       // must regenerate by its codec-message-id 'codec-a2'.
-      (view.getMessagesWithIds as ReturnType<typeof vi.fn>).mockReturnValue([
+      view.messages = [
         { transportMessageId: 'codec-1', message: m1 },
         { transportMessageId: 'codec-a2', message: m2 },
-      ]);
+      ];
 
       const streamPromise = chat.sendMessages({
         trigger: 'regenerate-message',
@@ -386,7 +384,7 @@ describe('createChatTransport', () => {
       // covered by the test below.
       const previousUser = makeMessage('parent-codec-message-id');
       const edited = makeMessage('edit-target-id');
-      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([previousUser, edited]);
+      view.messages = [previousUser, edited].map((m) => ({ transportMessageId: m.id, message: m }));
 
       const chat = createChatTransport(session);
 
@@ -411,12 +409,12 @@ describe('createChatTransport', () => {
 
       const previousUser = makeMessage('u1');
       const edited = makeMessage('edit-target-id');
-      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([previousUser, edited]);
+      view.messages = [previousUser, edited].map((m) => ({ transportMessageId: m.id, message: m }));
       // Domain ids differ from the codec-message-ids the transport must route on.
-      (view.getMessagesWithIds as ReturnType<typeof vi.fn>).mockReturnValue([
+      view.messages = [
         { transportMessageId: 'codec-prev', message: previousUser },
         { transportMessageId: 'codec-edit', message: edited },
-      ]);
+      ];
 
       const chat = createChatTransport(session);
       const streamPromise = chat.sendMessages({
@@ -436,7 +434,7 @@ describe('createChatTransport', () => {
 
     it('leaves forkOf undefined when the edit target is not in the visible tree', async () => {
       const { session, send, view, mockRun } = createMockSession();
-      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([]);
+      view.messages = [];
 
       const chat = createChatTransport(session);
 
@@ -464,7 +462,7 @@ describe('createChatTransport', () => {
       const m1 = makeMessage('1');
       const edited = makeMessage('2');
 
-      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([m1, edited]);
+      view.messages = [m1, edited].map((m) => ({ transportMessageId: m.id, message: m }));
 
       const chat = createChatTransport(session);
 
@@ -731,7 +729,7 @@ describe('createChatTransport', () => {
       const m1 = makeMessage('1');
       const m2 = makeMessage('2');
       // The regenerate target must be resolvable in the visible view.
-      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([m1, m2]);
+      view.messages = [m1, m2].map((m) => ({ transportMessageId: m.id, message: m }));
 
       const streamPromise = chat.sendMessages({
         trigger: 'regenerate-message',
@@ -774,7 +772,7 @@ describe('createChatTransport', () => {
       const m1 = makeMessage('1');
       const m2 = makeMessage('2');
       const m3 = makeMessage('3');
-      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([m1, m2, m3]);
+      view.messages = [m1, m2, m3].map((m) => ({ transportMessageId: m.id, message: m }));
 
       const chat = createChatTransport(session);
 
@@ -985,7 +983,7 @@ describe('createChatTransport', () => {
       });
       const user2 = makeMessage('u2');
 
-      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([user1, assistant]);
+      view.messages = [user1, assistant].map((m) => ({ transportMessageId: m.id, message: m }));
 
       const chat = createChatTransport(session);
       const streamPromise = chat.sendMessages({
@@ -1019,7 +1017,7 @@ describe('createChatTransport', () => {
       });
       const user2 = makeMessage('u2');
 
-      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([user1, assistant]);
+      view.messages = [user1, assistant].map((m) => ({ transportMessageId: m.id, message: m }));
 
       const chat = createChatTransport(session);
       const streamPromise = chat.sendMessages({
@@ -1050,7 +1048,7 @@ describe('createChatTransport', () => {
       });
       const user2 = makeMessage('u2');
 
-      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([user1, assistant]);
+      view.messages = [user1, assistant].map((m) => ({ transportMessageId: m.id, message: m }));
 
       const chat = createChatTransport(session);
       const streamPromise = chat.sendMessages({
@@ -1082,7 +1080,7 @@ describe('createChatTransport', () => {
       });
       const user2 = makeMessage('u2');
 
-      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([user1, assistant]);
+      view.messages = [user1, assistant].map((m) => ({ transportMessageId: m.id, message: m }));
 
       const chat = createChatTransport(session);
       const streamPromise = chat.sendMessages({
@@ -1115,7 +1113,7 @@ describe('createChatTransport', () => {
       });
       const user2 = makeMessage('u2');
 
-      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([user1, assistant]);
+      view.messages = [user1, assistant].map((m) => ({ transportMessageId: m.id, message: m }));
 
       const chat = createChatTransport(session);
       const streamPromise = chat.sendMessages({
@@ -1147,7 +1145,7 @@ describe('createChatTransport', () => {
       });
       const edited = makeMessage('u2');
 
-      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([user1, assistant, edited]);
+      view.messages = [user1, assistant, edited].map((m) => ({ transportMessageId: m.id, message: m }));
 
       const chat = createChatTransport(session);
       const streamPromise = chat.sendMessages({
@@ -1201,7 +1199,7 @@ describe('createChatTransport', () => {
         ],
       };
 
-      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([user1, treeAssistant]);
+      view.messages = [user1, treeAssistant].map((m) => ({ transportMessageId: m.id, message: m }));
       // Continuation flow calls runOf(lastMessage.id) to find the runId.
       (view.runOf as ReturnType<typeof vi.fn>).mockReturnValue({
         runId: 'run-a1',
@@ -1264,11 +1262,11 @@ describe('createChatTransport', () => {
         ],
       };
 
-      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([user1, treeAssistant]);
-      (view.getMessagesWithIds as ReturnType<typeof vi.fn>).mockReturnValue([
+      view.messages = [user1, treeAssistant].map((m) => ({ transportMessageId: m.id, message: m }));
+      view.messages = [
         { transportMessageId: 'codec-u1', message: user1 },
         { transportMessageId: 'codec-a1', message: treeAssistant },
-      ]);
+      ];
       // runOf resolves the runId ONLY when queried by the codec-message-id —
       // a lookup by the domain id 'a1' would miss and leave runId unset.
       (view.runOf as ReturnType<typeof vi.fn>).mockImplementation((id: string) =>
@@ -1322,7 +1320,7 @@ describe('createChatTransport', () => {
         ],
       };
 
-      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([user1, treeAssistant]);
+      view.messages = [user1, treeAssistant].map((m) => ({ transportMessageId: m.id, message: m }));
       (view.runOf as ReturnType<typeof vi.fn>).mockReturnValue({
         runId: 'run-a1',
         clientId: '',

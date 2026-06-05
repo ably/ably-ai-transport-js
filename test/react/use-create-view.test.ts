@@ -31,7 +31,7 @@ describe('useCreateView', () => {
 
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
     expect(mock.session.createView).toHaveBeenCalledOnce();
-    expect(result.current.messages).toEqual(['hello']);
+    expect(result.current.messages).toEqual([{ transportMessageId: 'hello', message: 'hello' }]);
   });
 
   it('closes the view on unmount', () => {
@@ -56,7 +56,7 @@ describe('useCreateView', () => {
       initialProps: { session: mock1.session },
     });
 
-    expect(result.current.messages).toEqual(['first']);
+    expect(result.current.messages).toEqual([{ transportMessageId: 'first', message: 'first' }]);
 
     act(() => {
       rerender({ session: mock2.session });
@@ -64,7 +64,7 @@ describe('useCreateView', () => {
 
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
     expect(mock1.view.close).toHaveBeenCalledOnce();
-    expect(result.current.messages).toEqual(['second']);
+    expect(result.current.messages).toEqual([{ transportMessageId: 'second', message: 'second' }]);
   });
 
   it('closes the view and returns empty handle when session changes to undefined', () => {
@@ -77,7 +77,7 @@ describe('useCreateView', () => {
       initialProps,
     });
 
-    expect(result.current.messages).toEqual(['hello']);
+    expect(result.current.messages).toEqual([{ transportMessageId: 'hello', message: 'hello' }]);
 
     act(() => {
       rerender({ session: undefined });
@@ -126,6 +126,6 @@ describe('useCreateView', () => {
 
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
     expect(mock.session.createView).toHaveBeenCalledOnce();
-    expect(result.current.messages).toEqual(['hello']);
+    expect(result.current.messages).toEqual([{ transportMessageId: 'hello', message: 'hello' }]);
   });
 });

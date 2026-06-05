@@ -2,7 +2,7 @@
 
 import type * as Ably from 'ably';
 
-import type { AIMessage,CodecInputEvent } from '../../codec/types.js';
+import type { AIMessage, CodecInputEvent } from '../../codec/types.js';
 import type { ActiveRun, SendOptions } from './client.js';
 import type { RunEndReason } from './shared.js';
 import type { RunLifecycleEvent } from './tree.js';
@@ -114,21 +114,16 @@ export interface BranchSelection<TMessage> {
  */
 export interface View<TInput extends CodecInputEvent, TMessage> {
   /**
-   * The visible domain messages along the selected branch. Computed by
-   * walking the visible Run chain (newest to root) and concatenating
-   * each Run's `codec.getMessages(projection)` in chronological order.
+   * The visible messages along the selected branch, each paired with its
+   * SDK-side transport id (see {@link AIMessage}). Render code
+   * destructures `{ message }` and uses `message.id` as the React key;
+   * routing reads `transportMessageId` directly when calling APIs like
+   * {@link runOf}, {@link branchSelection}, {@link regenerate}, or
+   * {@link edit}. Computed by walking the visible Run chain (newest to
+   * root) and concatenating each Run's `codec.getMessages(projection)` in
+   * chronological order.
    */
-  getMessages(): TMessage[];
-
-  /**
-   * The same visible messages as {@link getMessages}, in the same order,
-   * but each paired with its codec-message-id (see {@link AIMessage}).
-   * Use this when correlating a rendered message back to the transport —
-   * e.g. routing a continuation input or resolving a regenerate/edit
-   * target — so correlation keys on the SDK's codec-message-id rather than
-   * the domain `message.id`, which the SDK never treats as an identity.
-   */
-  getMessagesWithIds(): AIMessage<TMessage>[];
+  messages: AIMessage<TMessage>[];
 
   /**
    * Snapshot of the visible Runs along the selected branch, in
@@ -151,7 +146,7 @@ export interface View<TInput extends CodecInputEvent, TMessage> {
    *
    * The pagination unit is the **Run**, not the message. A single Run
    * typically contributes more than one message to the flat list returned
-   * by {@link View.getMessages} (e.g. a user prompt + assistant reply
+   * by {@link View.messages} (e.g. a user prompt + assistant reply
    * pair). Revealing `limit` Runs may add 1..N messages each to the
    * visible window.
    * @param limit - Maximum number of older Runs to reveal. Defaults to 100.

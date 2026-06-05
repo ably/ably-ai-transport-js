@@ -22,23 +22,32 @@ describe('useView', () => {
   it('returns initial messages from view on mount', () => {
     const mock = createMockSession(['hello', 'world']);
     const { result } = renderHook(() => useView({ session: mock.session }));
-    expect(result.current.messages).toEqual(['hello', 'world']);
+    expect(result.current.messages).toEqual([
+      { transportMessageId: 'hello', message: 'hello' },
+      { transportMessageId: 'world', message: 'world' },
+    ]);
   });
 
   it('updates messages when view emits update', () => {
     const mock = createMockSession(['hello']);
     const { result } = renderHook(() => useView({ session: mock.session }));
-    expect(result.current.messages).toEqual(['hello']);
+    expect(result.current.messages).toEqual([{ transportMessageId: 'hello', message: 'hello' }]);
 
     // Mutate mock to return a new message list.
-    (mock.view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue(['hello', 'world']);
+    mock.view.messages = [
+      { transportMessageId: 'hello', message: 'hello' },
+      { transportMessageId: 'world', message: 'world' },
+    ];
     (mock.view.hasOlder as ReturnType<typeof vi.fn>).mockReturnValue(true);
 
     act(() => {
       mock.emitTree('update');
     });
 
-    expect(result.current.messages).toEqual(['hello', 'world']);
+    expect(result.current.messages).toEqual([
+      { transportMessageId: 'hello', message: 'hello' },
+      { transportMessageId: 'world', message: 'world' },
+    ]);
     expect(result.current.hasOlder).toBe(true);
   });
 
@@ -87,17 +96,20 @@ describe('useView', () => {
 
   it('unsubscribes on unmount', () => {
     const mock = createMockSession(['hello']);
-    const { unmount } = renderHook(() => useView({ session: mock.session }));
+    const { result, unmount } = renderHook(() => useView({ session: mock.session }));
 
-    const callCountBefore = (mock.view.getMessages as ReturnType<typeof vi.fn>).mock.calls.length;
+    const messagesBefore = result.current.messages;
 
     unmount();
 
+    // Mutate the mock and emit; the unsubscribed hook should not re-render,
+    // so the captured handle still references the pre-unmount messages.
+    mock.view.messages = [{ transportMessageId: 'world', message: 'world' }];
     act(() => {
       mock.emitTree('update');
     });
 
-    expect((mock.view.getMessages as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callCountBefore);
+    expect(result.current.messages).toBe(messagesBefore);
   });
 
   it('subscribes to a view directly when view prop is provided', () => {
@@ -105,7 +117,7 @@ describe('useView', () => {
 
     const { result } = renderHook(() => useView({ view: mock.view }));
 
-    expect(result.current.messages).toEqual(['hello']);
+    expect(result.current.messages).toEqual([{ transportMessageId: 'hello', message: 'hello' }]);
   });
 
   it('uses nearest session from context when session and view are omitted', () => {
@@ -124,7 +136,7 @@ describe('useView', () => {
 
     const { result } = renderHook(() => useView(), { wrapper });
 
-    expect(result.current.messages).toEqual(['hello']);
+    expect(result.current.messages).toEqual([{ transportMessageId: 'hello', message: 'hello' }]);
   });
 
   // ---------------------------------------------------------------------------

@@ -171,8 +171,7 @@ const createMockSession = () => {
 
   const view = {
     flattenNodes: vi.fn(() => []),
-    getMessages: vi.fn(() => []),
-    getMessagesWithIds: vi.fn(() => []),
+    messages: [] as { transportMessageId: string; message: AI.UIMessage }[],
     getNodeByTransportMessageId: vi.fn(),
     send: send,
     regenerate: vi.fn(),
@@ -192,8 +191,7 @@ const createMockSession = () => {
     regenerate: vi.fn(),
     edit: vi.fn(),
     on: vi.fn(sessionEmitter.on),
-    getMessages: vi.fn(() => []),
-    getMessagesWithIds: vi.fn(() => []),
+    messages: [] as { transportMessageId: string; message: AI.UIMessage }[],
     getAblyMessages: vi.fn(() => []),
     history: vi.fn(),
   } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
@@ -211,8 +209,7 @@ const createMultiRunMockSession = () => {
 
   const view = {
     flattenNodes: vi.fn(() => []),
-    getMessages: vi.fn(() => []),
-    getMessagesWithIds: vi.fn(() => []),
+    messages: [] as { transportMessageId: string; message: AI.UIMessage }[],
     getNodeByTransportMessageId: vi.fn(),
     send: send,
     regenerate: vi.fn(),
@@ -232,8 +229,7 @@ const createMultiRunMockSession = () => {
     regenerate: vi.fn(),
     edit: vi.fn(),
     on: vi.fn(sessionEmitter.on),
-    getMessages: vi.fn(() => []),
-    getMessagesWithIds: vi.fn(() => []),
+    messages: [] as { transportMessageId: string; message: AI.UIMessage }[],
     getAblyMessages: vi.fn(() => []),
     history: vi.fn(),
   } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;

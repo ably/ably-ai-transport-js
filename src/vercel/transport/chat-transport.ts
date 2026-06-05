@@ -444,7 +444,7 @@ export const createChatTransport = (
     // locate a message in the tree, then route every transport operation by
     // the message's codec-message-id (the SDK never correlates on the domain
     // id, which may differ from the codec-message-id).
-    const pairs = session.view.getMessagesWithIds();
+    const pairs = session.view.messages;
     const codecIdByDomainId = new Map(pairs.map((p) => [p.message.id, p.transportMessageId]));
     const codecIdOf = (domainId: string): string | undefined => codecIdByDomainId.get(domainId);
 

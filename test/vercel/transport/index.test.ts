@@ -83,8 +83,8 @@ describe('Vercel createClientSession', () => {
     const channel = createMockChannel();
     const session = createClientSession({ client: createMockClient(channel), channelName: 'test-channel' });
 
-    // view.getMessages works without error — proves the codec is wired up
-    expect(session.view.getMessages()).toEqual([]);
+    // view.messages reads without error — proves the codec is wired up
+    expect(session.view.messages).toEqual([]);
 
     await session.close();
   });

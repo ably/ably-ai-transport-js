@@ -102,18 +102,20 @@ const collectRunOutputs = async (session: ClientSessionT, runId: string, timeout
 
 const waitForMessages = async (ct: ClientSessionT, expected: number, timeout = 10_000): Promise<void> =>
   new Promise<void>((resolve, reject) => {
-    if (ct.view.getMessages().length >= expected) {
+    if (ct.view.messages.map((p) => p.message).length >= expected) {
       resolve();
       return;
     }
     const timer = setTimeout(() => {
       unsub();
       reject(
-        new Error(`timed out waiting for ${String(expected)} messages (got ${String(ct.view.getMessages().length)})`),
+        new Error(
+          `timed out waiting for ${String(expected)} messages (got ${String(ct.view.messages.map((p) => p.message).length)})`,
+        ),
       );
     }, timeout);
     const unsub = ct.view.on('update', () => {
-      if (ct.view.getMessages().length >= expected) {
+      if (ct.view.messages.map((p) => p.message).length >= expected) {
         clearTimeout(timer);
         unsub();
         resolve();
@@ -436,7 +438,7 @@ describe('ClientSession integration', () => {
     expect(types).toContain('finish');
 
     await waitForMessages(clientSession, 2);
-    const messages = clientSession.view.getMessages();
+    const messages = clientSession.view.messages.map((p) => p.message);
     expect(messages.length).toBeGreaterThanOrEqual(2);
 
     const userMsg = messages.find((m) => m.role === 'user');
@@ -615,7 +617,7 @@ describe('ClientSession integration', () => {
 
     await clientSession.view.loadOlder(10);
 
-    const messages = clientSession.view.getMessages();
+    const messages = clientSession.view.messages.map((p) => p.message);
     expect(messages.length).toBeGreaterThanOrEqual(1);
 
     const asstMsg = messages.find((m) => m.role === 'assistant');
@@ -667,7 +669,7 @@ describe('ClientSession integration', () => {
     const nodes = clientSession.view.runs();
     expect(nodes.map((n) => n.runId)).toEqual(['run-turn-1', 'run-turn-2', 'run-turn-3']);
 
-    const messages = clientSession.view.getMessages();
+    const messages = clientSession.view.messages.map((p) => p.message);
     expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant', 'user', 'assistant']);
 
     // Per-message text content verifies cross-Run concatenation order.
@@ -728,7 +730,7 @@ describe('ClientSession integration', () => {
     // Default selection at the fork is the latest sibling — run-t2-edit.
     const nodesDefault = clientSession.view.runs();
     expect(nodesDefault.map((n) => n.runId)).toEqual(['run-t1', 'run-t2-edit']);
-    const messagesDefault = clientSession.view.getMessages();
+    const messagesDefault = clientSession.view.messages.map((p) => p.message);
     expect(messagesDefault.map((m) => m.id)).toEqual(['u1', 'a1', 'u2-edit', 'a2-edit']);
 
     // The fork point exposes two siblings. In the two-node model an edit is a
@@ -746,7 +748,7 @@ describe('ClientSession integration', () => {
 
     const nodesOriginal = clientSession.view.runs();
     expect(nodesOriginal.map((n) => n.runId)).toEqual(['run-t1', 'run-t2']);
-    const messagesOriginal = clientSession.view.getMessages();
+    const messagesOriginal = clientSession.view.messages.map((p) => p.message);
     expect(messagesOriginal.map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2']);
   });
 
@@ -796,7 +798,7 @@ describe('ClientSession integration', () => {
     await clientSession.view.loadOlder(10);
 
     // Default selection picks the newest regenerator.
-    const messagesDefault = clientSession.view.getMessages();
+    const messagesDefault = clientSession.view.messages.map((p) => p.message);
     const asstDefault = messagesDefault.find((m) => m.role === 'assistant' && m.id !== 'a1');
     const asstTextDefault = asstDefault?.parts.find((p): p is AI.TextUIPart => p.type === 'text')?.text;
     expect(asstTextDefault).toBe('r2-regen');
@@ -811,7 +813,7 @@ describe('ClientSession integration', () => {
     // Navigate back to the original assistant.
     clientSession.view.selectSibling('a2', 0);
 
-    const messagesOriginal = clientSession.view.getMessages();
+    const messagesOriginal = clientSession.view.messages.map((p) => p.message);
     const asstOriginal = messagesOriginal.find((m) => m.role === 'assistant' && m.id !== 'a1');
     const asstTextOriginal = asstOriginal?.parts.find((p): p is AI.TextUIPart => p.type === 'text')?.text;
     expect(asstTextOriginal).toBe('r2-original');
@@ -867,8 +869,8 @@ describe('ClientSession integration', () => {
       await waitForMessages(clientSession, 2);
       await waitForMessages(observer, 2);
 
-      const aMessages = clientSession.view.getMessages();
-      const bMessages = observer.view.getMessages();
+      const aMessages = clientSession.view.messages.map((p) => p.message);
+      const bMessages = observer.view.messages.map((p) => p.message);
 
       expect(aMessages.map((m) => m.role)).toEqual(['user', 'assistant']);
       expect(bMessages.map((m) => m.role)).toEqual(['user', 'assistant']);
@@ -979,7 +981,7 @@ describe('ClientSession integration', () => {
     expect(clientSession.view.hasOlder()).toBe(false);
 
     // Final view: 6 turns x (user + assistant) = 12 messages, fully ordered.
-    const messages = clientSession.view.getMessages();
+    const messages = clientSession.view.messages.map((p) => p.message);
     expect(messages).toHaveLength(12);
     expect(messages.map((m) => m.role)).toEqual([
       'user',
@@ -1045,7 +1047,7 @@ describe('ClientSession integration', () => {
         reject(new Error('timed out waiting for dynamic-tool input-available via view update'));
       }, 5000);
       const unsub = sessionRef.view.on('update', () => {
-        for (const m of sessionRef.view.getMessages()) {
+        for (const m of sessionRef.view.messages.map((p) => p.message)) {
           if (m.role !== 'assistant') continue;
           for (const part of m.parts) {
             if (part.type !== 'dynamic-tool') continue;
@@ -1187,7 +1189,7 @@ describe('ClientSession integration', () => {
     // runOf keys on the codec-message-id, which is independent of the domain
     // message.id after the decoupling, so look the run up via the
     // codec-message-id paired with each message by getMessagesWithIds().
-    const pairs = clientSession.view.getMessagesWithIds();
+    const pairs = clientSession.view.messages;
     const userPair = pairs.find((p) => p.message.role === 'user');
     const asstPair = pairs.find((p) => p.message.role === 'assistant');
 
@@ -1785,7 +1787,7 @@ describe('ClientSession integration', () => {
     // the codec-message-id from `getMessagesWithIds()` (via `runOf`) rather
     // than by `message.id`. The user prompt ids stay client-owned and stable.
     await waitForMessages(clientSession, 4);
-    const pairs = clientSession.view.getMessagesWithIds();
+    const pairs = clientSession.view.messages;
 
     const userA = pairs.find((p) => p.message.id === 'user-conc-a')?.message;
     const userB = pairs.find((p) => p.message.id === 'user-conc-b')?.message;

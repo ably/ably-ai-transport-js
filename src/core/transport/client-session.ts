@@ -21,9 +21,6 @@ import * as Ably from 'ably';
 import {
   EVENT_CANCEL,
   EVENT_RUN_END,
-  EVENT_RUN_RESUME,
-  EVENT_RUN_START,
-  EVENT_RUN_SUSPEND,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
@@ -42,7 +39,8 @@ import { LogLevel, makeLogger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import type { CodecInputEvent, CodecOutputEvent, Decoder, Encoder } from '../codec/types.js';
-import { buildTransportHeaders, parseRunLifecycle } from './headers.js';
+import { applyWireMessage } from './decode-fold.js';
+import { buildTransportHeaders } from './headers.js';
 import { Invocation } from './invocation.js';
 import type { DefaultTree } from './tree.js';
 import { createTree } from './tree.js';
@@ -265,61 +263,15 @@ class DefaultClientSession<
 
     try {
       // Spec: AIT-CT16a
-      // --- Run lifecycle events from the agent ---
-      if (ablyMessage.name === EVENT_RUN_START || ablyMessage.name === EVENT_RUN_RESUME) {
-        const headers = getTransportHeaders(ablyMessage);
-        const event = parseRunLifecycle(ablyMessage.name, headers, ablyMessage.serial);
-        if (event) {
-          this._tree.applyRunLifecycle(event);
-          // Resolve the pending `runId` promise for this run-start (a fresh
-          // start) or run-resume (a continuation re-entering an existing run).
-          // Key by the echoed `input-codec-message-id` — the mirror of the
-          // arming key on `_pendingRunStarts` (see that field's JSDoc). Every
-          // send carries at least one input, so the agent always echoes it.
-          const startedKey = headers[HEADER_INPUT_CODEC_MESSAGE_ID];
-          if (startedKey !== undefined) {
-            const pending = this._pendingRunStarts.get(startedKey);
-            if (pending) {
-              this._pendingRunStarts.delete(startedKey);
-              // Resolve the run handle's `runId` promise with the agent-minted id.
-              pending.resolve(event.runId);
-            }
-          }
-        }
-        this._tree.emitAblyMessage(ablyMessage);
-        return;
-      }
-
-      if (ablyMessage.name === EVENT_RUN_SUSPEND) {
-        const headers = getTransportHeaders(ablyMessage);
-        const runId = headers[HEADER_RUN_ID];
-        if (runId) {
-          // A suspend keeps the run live in the Tree (status 'suspended') so a
-          // continuation that reuses the runId picks up where it left off. The
-          // `run` event fires so consumers can react. No pending-run-start
-          // tracker is outstanding here — the agent only suspends after it has
-          // published run-start.
-          const event = parseRunLifecycle(EVENT_RUN_SUSPEND, headers, ablyMessage.serial);
-          if (event) this._tree.applyRunLifecycle(event);
-        }
-        this._tree.emitAblyMessage(ablyMessage);
-        return;
-      }
-
+      // Live-only: surface an agent error carried on a run-end BEFORE applying
+      // it, preserving the original 'error'-before-tree-'run' emit ordering.
+      // Consumers that expose a per-run stream (e.g. the Vercel ChatTransport)
+      // error their stream off this event. The agent only publishes run-end
+      // after run-start, so no pending-run-start tracker is outstanding.
       if (ablyMessage.name === EVENT_RUN_END) {
         const headers = getTransportHeaders(ablyMessage);
-        const runId = headers[HEADER_RUN_ID];
-        const invocationId = headers[HEADER_INVOCATION_ID];
         // CAST: agent always writes a valid RunEndReason; default to 'complete' for robustness
         const reason = (headers[HEADER_RUN_REASON] ?? 'complete') as RunEndReason;
-
-        // When reason is 'error' the agent surfaces a mid-run failure
-        // via the error-code / error-message headers.
-        // Reify the error and emit the session error event. Consumers that
-        // expose a per-run stream (e.g. the Vercel ChatTransport) error their
-        // stream off this event. The agent only publishes `run-end` after it
-        // has published `run-start`, so no pending-run-start tracker is
-        // outstanding at this point.
         if (reason === 'error') {
           const codeRaw = headers[HEADER_ERROR_CODE];
           const parsedCode = codeRaw === undefined ? Number.NaN : Number(codeRaw);
@@ -328,47 +280,38 @@ class DefaultClientSession<
           const statusCode = code >= 10000 && code < 60000 ? Math.floor(code / 100) : 500;
           const errInfo = new Ably.ErrorInfo(message, code, statusCode);
           this._logger.error('ClientSession._handleMessage(); agent error received', {
-            runId,
-            invocationId,
+            runId: headers[HEADER_RUN_ID],
+            invocationId: headers[HEADER_INVOCATION_ID],
             code,
           });
           this._emitter.emit('error', errInfo);
         }
+      }
 
-        if (runId) {
-          // Every run-end is applied unconditionally. Concurrent work always
-          // runs under distinct run-ids, and a resume/continuation is
-          // sequential (the prior invocation's terminal event is seen before
-          // the next invocation starts), so there is never a competing run-end
-          // for the same run-id that we'd need to disambiguate by invocation.
-          //
-          // run-end is terminal (complete / cancelled / error); a run that
-          // merely pauses awaiting input arrives as a separate ai-run-suspend
-          // and keeps the run live in the Tree.
-          const event = parseRunLifecycle(EVENT_RUN_END, headers, ablyMessage.serial);
-          if (event) this._tree.applyRunLifecycle(event);
+      // Reconstruct the tree via the shared decode-fold engine — the same path
+      // the View's history replay uses, so the live loop can't drift from it.
+      const event = applyWireMessage(this._tree, this._decoder, ablyMessage);
+
+      // Live-only: resolve the pending `runId` promise on a fresh run-start or
+      // a continuation run-resume. Key by the echoed `input-codec-message-id`
+      // — the mirror of the arming key on `_pendingRunStarts` (see that
+      // field's JSDoc). Every send carries at least one input, so the agent
+      // always echoes it.
+      if (event && (event.type === 'start' || event.type === 'resume')) {
+        const startedKey = getTransportHeaders(ablyMessage)[HEADER_INPUT_CODEC_MESSAGE_ID];
+        if (startedKey !== undefined) {
+          const pending = this._pendingRunStarts.get(startedKey);
+          if (pending) {
+            this._pendingRunStarts.delete(startedKey);
+            // Resolve the run handle's `runId` promise with the agent-minted id.
+            pending.resolve(event.runId);
+          }
         }
-        this._tree.emitAblyMessage(ablyMessage);
-        return;
       }
 
-      // --- Codec-decoded events ---
-      const { inputs, outputs } = this._decoder.decode(ablyMessage);
-      const headers = getTransportHeaders(ablyMessage);
-      const serial = ablyMessage.serial;
-      const runId = headers[HEADER_RUN_ID];
-
-      // Fold into the Tree's per-Run projection. The Tree's `output` event
-      // (emitted after the fold) carries these outputs to any consumer that
-      // builds a stream from them (e.g. the Vercel ChatTransport); the session
-      // no longer routes outputs itself.
-      if (inputs.length > 0 || outputs.length > 0 || runId) {
-        this._tree.applyMessage({ inputs, outputs }, headers, serial);
-      }
-
-      // Emit ably-message AFTER applyMessage so View subscribers can find
-      // the owning Run in `_lastVisibleRunIdSet`, which is refreshed by the
-      // tree 'update' events that applyMessage triggers.
+      // Emit ably-message AFTER the apply so View subscribers can find the
+      // owning Run in `_lastVisibleRunIdSet`, which is refreshed by the tree
+      // 'update' events the apply triggers.
       this._tree.emitAblyMessage(ablyMessage);
     } catch (error) {
       const cause = error instanceof Ably.ErrorInfo ? error : undefined;

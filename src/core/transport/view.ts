@@ -20,20 +20,13 @@
 
 import * as Ably from 'ably';
 
-import {
-  EVENT_RUN_END,
-  EVENT_RUN_RESUME,
-  EVENT_RUN_START,
-  EVENT_RUN_SUSPEND,
-  HEADER_CODEC_MESSAGE_ID,
-  HEADER_RUN_ID,
-} from '../../constants.js';
+import { HEADER_CODEC_MESSAGE_ID, HEADER_RUN_ID } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
-import { parseRunLifecycle } from './headers.js';
+import { applyWireMessage } from './decode-fold.js';
 import { loadHistory } from './load-history.js';
 import { nodeKey, type TreeInternal } from './tree.js';
 import type {
@@ -1065,31 +1058,15 @@ export class DefaultView<
   private _processHistoryPage(page: HistoryPage): void {
     this._processingHistory = true;
     try {
+      // Reconstruct the tree via the shared decode-fold engine — the same path
+      // the client's live loop uses, so history replay can't drift from it.
       const decoder = this._codec.createDecoder();
       for (const rawMsg of page.rawMessages) {
-        const headers = getTransportHeaders(rawMsg);
-        const serial = rawMsg.serial;
-
-        if (
-          rawMsg.name === EVENT_RUN_START ||
-          rawMsg.name === EVENT_RUN_SUSPEND ||
-          rawMsg.name === EVENT_RUN_RESUME ||
-          rawMsg.name === EVENT_RUN_END
-        ) {
-          const event = parseRunLifecycle(rawMsg.name, headers, serial);
-          if (event) this._tree.applyRunLifecycle(event);
-          continue;
-        }
-
-        const { inputs, outputs } = decoder.decode(rawMsg);
-        // Live-path predicate: apply any message that carries decoded events or
-        // a run-id. Run-less user input wires (no run-id) now form input nodes,
-        // so the old run-id-only gate would have dropped them on replay.
-        if (inputs.length > 0 || outputs.length > 0 || headers[HEADER_RUN_ID]) {
-          this._tree.applyMessage({ inputs, outputs }, headers, serial);
-        }
+        applyWireMessage(this._tree, decoder, rawMsg);
       }
 
+      // Emit ably-message in a batch AFTER the whole page is applied, so a
+      // subscriber resolving the owning Run sees the fully-rebuilt tree.
       for (const msg of page.rawMessages) {
         this._tree.emitAblyMessage(msg);
       }

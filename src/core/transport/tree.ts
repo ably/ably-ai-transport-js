@@ -799,54 +799,28 @@ export class DefaultTree<
   applyRunLifecycle(event: RunLifecycleEvent): void {
     this._logger.trace('DefaultTree.applyRunLifecycle();', { type: event.type, runId: event.runId });
     // Structural channel: emit `update` only when the lifecycle event changes
-    // the tree shape (a new Run, startSerial promotion, or structural-metadata
-    // backfill on run-start). A run-end only mutates status/endSerial on an
-    // existing node — content, not structure — so it emits no `update`.
+    // the tree shape. Only run-start can do that (a new Run, startSerial
+    // promotion, or structural-metadata backfill); suspend/resume/end mutate
+    // status/endSerial on an existing node — content, not structure — so the
+    // conditional naturally never fires for them.
     const structuralBefore = this._structuralVersion;
-    if (event.type === 'start') {
-      this._applyRunStart(event);
-      this._emitter.emit('run', event);
-      if (this._structuralVersion !== structuralBefore) this._emitter.emit('update');
-      return;
-    }
-
-    if (event.type === 'suspend') {
-      // A suspend pauses the run without ending it: mark the node 'suspended'
-      // and record the serial it paused at, but keep the Run live so a resume
-      // under the same runId resumes it. Status/endSerial are content, not
-      // structure, so no 'update' is emitted (mirrors run-end).
-      const run = this._nodeIndex.get(event.runId);
-      if (run?.node.kind === 'run') {
-        run.node.status = 'suspended';
-        run.node.endSerial = event.serial;
+    switch (event.type) {
+      case 'start': {
+        this._applyRunStart(event);
+        break;
       }
-      this._emitter.emit('run', event);
-      return;
-    }
-
-    if (event.type === 'resume') {
-      // A resume re-enters an already-started run: flip a suspended run back
-      // to 'active'. Pure re-entry — it carries no parent/forkOf and does not
-      // promote startSerial (the original run-start owns the run's structure).
-      // Only a suspended run resumes: a no-op when the run isn't known (e.g. a
-      // resume replayed from a newer history page before its run-start) and a
-      // no-op for an already-active or terminal (complete/cancelled/error) run —
-      // a stray resume must never resurrect a run that has ended. Status is
-      // content, not structure, so no 'update' is emitted (mirrors
-      // run-end / run-suspend).
-      const run = this._nodeIndex.get(event.runId);
-      if (run?.node.kind === 'run' && run.node.status === 'suspended') {
-        run.node.status = 'active';
+      case 'suspend': {
+        this._applyRunSuspend(event);
+        break;
       }
-      this._emitter.emit('run', event);
-      return;
-    }
-
-    // run-end (event.type === 'end')
-    const run = this._nodeIndex.get(event.runId);
-    if (run?.node.kind === 'run') {
-      run.node.status = event.reason;
-      run.node.endSerial = event.serial;
+      case 'resume': {
+        this._applyRunResume(event);
+        break;
+      }
+      case 'end': {
+        this._applyRunEnd(event);
+        break;
+      }
     }
     this._emitter.emit('run', event);
     if (this._structuralVersion !== structuralBefore) this._emitter.emit('update');
@@ -916,6 +890,55 @@ export class DefaultTree<
       this._indexReplyRun(run.node, event.runId);
       this._insertSortedNode(run);
       this._structuralVersion++;
+    }
+  }
+
+  /**
+   * Apply a run-suspend lifecycle event: pause the run without ending it —
+   * mark the node 'suspended' and record the serial it paused at, but keep the
+   * Run live so a resume under the same runId resumes it. Status/endSerial are
+   * content, not structure, so this never mutates `_structuralVersion`; the
+   * caller owns the emits.
+   * @param event - The run-suspend lifecycle event.
+   */
+  private _applyRunSuspend(event: RunLifecycleEvent & { type: 'suspend' }): void {
+    const run = this._nodeIndex.get(event.runId);
+    if (run?.node.kind === 'run') {
+      run.node.status = 'suspended';
+      run.node.endSerial = event.serial;
+    }
+  }
+
+  /**
+   * Apply a run-resume lifecycle event: re-enter an already-started run by
+   * flipping a suspended run back to 'active'. Pure re-entry — it carries no
+   * parent/forkOf and does not promote startSerial (the original run-start owns
+   * the run's structure). Only a suspended run resumes: a no-op when the run
+   * isn't known (e.g. a resume replayed from a newer history page before its
+   * run-start) and a no-op for an already-active or terminal
+   * (complete/cancelled/error) run — a stray resume must never resurrect a run
+   * that has ended. The caller owns the emits.
+   * @param event - The run-resume lifecycle event.
+   */
+  private _applyRunResume(event: RunLifecycleEvent & { type: 'resume' }): void {
+    const run = this._nodeIndex.get(event.runId);
+    if (run?.node.kind === 'run' && run.node.status === 'suspended') {
+      run.node.status = 'active';
+    }
+  }
+
+  /**
+   * Apply a run-end lifecycle event: record the terminal reason as the node's
+   * status and the serial it ended at. Status/endSerial are content, not
+   * structure, so this never mutates `_structuralVersion`; the caller owns the
+   * emits.
+   * @param event - The run-end lifecycle event.
+   */
+  private _applyRunEnd(event: RunLifecycleEvent & { type: 'end' }): void {
+    const run = this._nodeIndex.get(event.runId);
+    if (run?.node.kind === 'run') {
+      run.node.status = event.reason;
+      run.node.endSerial = event.serial;
     }
   }
 

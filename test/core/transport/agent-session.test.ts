@@ -2884,7 +2884,7 @@ const viewMessageIds = (wiresOldestFirst: Ably.InboundMessage[]): string[] => {
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     vi.fn(() =>
       Promise.resolve({
-        key: 'k',
+        inputCodecMessageId: 'k',
         runId: Promise.resolve('r'),
         inputEventId: '',
         invocationId: 'inv',

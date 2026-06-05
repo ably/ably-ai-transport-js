@@ -610,16 +610,16 @@ class DefaultClientSession<
     await publishPromise;
 
     return {
-      key: startedKey,
+      inputCodecMessageId: startedKey,
       runId: runIdPromise,
       inputEventId: triggerInputEventId,
       // The agent mints the run-id, so a fresh run has none until run-start.
       // Cancel synchronously by the triggering input's codec-message-id (the
-      // handle the client owns at send time, = `key`): the agent resolves it
-      // to the run once its input-event lookup completes, and buffers a cancel
-      // that arrives before then so an early cancel is honoured rather than
-      // dropped. A continuation additionally carries its known run-id so the
-      // agent can match the run directly.
+      // handle the client owns at send time, = `inputCodecMessageId`): the
+      // agent resolves it to the run once its input-event lookup completes, and
+      // buffers a cancel that arrives before then so an early cancel is honoured
+      // rather than dropped. A continuation additionally carries its known
+      // run-id so the agent can match the run directly.
       cancel: async () => {
         await this._publishCancel({
           inputCodecMessageId: startedKey,
@@ -650,9 +650,9 @@ class DefaultClientSession<
    * - `runId` — a continuation, whose run-id the caller already knows.
    * - `inputCodecMessageId` — a fresh send, whose run-id the agent mints at
    *   run-start. The client can only key the cancel by the triggering input's
-   *   codec-message-id (the `ActiveRun.key`) it owns at send time; the agent
-   *   resolves it to the run once its input-event lookup completes, buffering
-   *   a cancel that arrives before then.
+   *   codec-message-id (the `ActiveRun.inputCodecMessageId`) it owns at send
+   *   time; the agent resolves it to the run once its input-event lookup
+   *   completes, buffering a cancel that arrives before then.
    *
    * Both may be present (a continuation knows its run-id AND published an
    * input). An `event-id` is always stamped so channel rewind redelivers the

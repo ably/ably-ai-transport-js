@@ -47,15 +47,15 @@ The client creates runs implicitly when you call `view.send()`, `view.regenerate
 ```typescript
 const run = await view.send(userMessage);
 
-// run.key    - the triggering input's codec-message-id; the synchronous routing
-//              handle the client owns the moment it publishes
+// run.inputCodecMessageId - the triggering input's codec-message-id; the
+//              synchronous routing handle the client owns the moment it publishes
 // run.runId  - a promise; resolves to the agent-minted run id once ai-run-start
 //              is observed on the channel
 // run.cancel() - cancel this specific run
 // run.toInvocation() - the pointer to POST to your agent endpoint
 ```
 
-The returned `ActiveRun` gives you the run's identity and a cancel handle. The agent mints the run id now, so it is not known synchronously: `run.runId` is a promise that resolves once the agent's `ai-run-start` is observed. The synchronous handle is `run.key` — the triggering input's `codec-message-id`, which the client owns the instant it publishes and which keys stream routing and cancellation. `send()` resolves as soon as your input is published to the channel — it does **not** send HTTP or block on the agent. Decoded outputs are observed on the conversation tree's `output` event (or, more usually, via the view) — see [Token streaming](../features/streaming.md). To wake a serverless agent, POST the run's invocation pointer to your endpoint yourself:
+The returned `ActiveRun` gives you the run's identity and a cancel handle. The agent mints the run id now, so it is not known synchronously: `run.runId` is a promise that resolves once the agent's `ai-run-start` is observed. The synchronous handle is `run.inputCodecMessageId` — the triggering input's `codec-message-id`, which the client owns the instant it publishes and which keys stream routing and cancellation. `send()` resolves as soon as your input is published to the channel — it does **not** send HTTP or block on the agent. Decoded outputs are observed on the conversation tree's `output` event (or, more usually, via the view) — see [Token streaming](../features/streaming.md). To wake a serverless agent, POST the run's invocation pointer to your endpoint yourself:
 
 ```typescript
 const run = await view.send(userMessage);

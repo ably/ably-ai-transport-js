@@ -80,13 +80,13 @@ This is the primary consumption path. In React, the `useView()` hook handles the
 
 ### The output event
 
-For per-event granularity, subscribe to the tree's `output` event. Every decoded run output — for any run, own or observed — surfaces here carrying the raw `TOutput` events (for the Vercel codec, `UIMessageChunk`s). Each event is routed by `inputCodecMessageId` — the triggering input's `codec-message-id`, which `run.key` gives you synchronously (the agent mints the `runId` now, so `event.runId` may not yet be known):
+For per-event granularity, subscribe to the tree's `output` event. Every decoded run output — for any run, own or observed — surfaces here carrying the raw `TOutput` events (for the Vercel codec, `UIMessageChunk`s). Each event is routed by `inputCodecMessageId` — the triggering input's `codec-message-id`, which `run.inputCodecMessageId` gives you synchronously (the agent mints the `runId` now, so `event.runId` may not yet be known):
 
 ```typescript
 // Per-event consumption - most apps use the view instead
 const run = await view.send(userMessage);
 const unsubscribe = session.tree.on('output', (event) => {
-  if (event.inputCodecMessageId !== run.key) return;
+  if (event.inputCodecMessageId !== run.inputCodecMessageId) return;
   for (const chunk of event.events) {
     // chunk is a UIMessageChunk (text-delta, finish, etc.)
   }

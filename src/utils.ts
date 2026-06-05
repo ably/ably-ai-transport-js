@@ -185,7 +185,7 @@ export interface DomainHeaderReader {
   str(key: string): string | undefined;
   /** Read a domain header as a string, falling back to a default if absent. */
   strOr(key: string, fallback: string): string;
-  /** Read a domain header as a boolean ("true"/"false"), or undefined if absent. */
+  /** Read a domain header as a boolean: `true` only for the exact string "true", `false` for any other present value, or undefined if absent. */
   bool(key: string): boolean | undefined;
   /** Read a domain header as parsed JSON, or undefined if absent or invalid. */
   json(key: string): unknown;

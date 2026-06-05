@@ -143,10 +143,22 @@ export const consoleLogger = (message: string, level: LogLevel, context?: LogCon
  * Options for creating a logger.
  */
 export interface LoggerOptions {
+  /**
+   * The handler that receives formatted log messages. Defaults to {@link consoleLogger} when omitted.
+   */
   logHandler?: LogHandler;
+  /**
+   * The minimum level to emit; messages below this level are suppressed. Must be a valid {@link LogLevel}, otherwise logger creation throws.
+   */
   logLevel: LogLevel;
 }
 
+/**
+ * Creates a {@link Logger} from the given options.
+ * @param options The handler and minimum level for the logger.
+ * @returns A logger that filters by level and delegates to the handler.
+ * @throws {@link Ably.ErrorInfo} with {@link ErrorCode.InvalidArgument} if `options.logLevel` is not a recognised {@link LogLevel}.
+ */
 export const makeLogger = (options: LoggerOptions): Logger => {
   const logHandler = options.logHandler ?? consoleLogger;
 
@@ -218,7 +230,8 @@ class DefaultLogger implements Logger {
   }
 
   withContext(context: LogContext): Logger {
-    // Get the original log level by finding the key in logLevelNumberMap that matches this._levelNumber
+    // Get the original log level by finding the key in logLevelNumberMap that matches this._levelNumber.
+    // The Error fallback is defensive and unreachable in practice: _levelNumber always originates from the map.
     const originalLevel =
       [...logLevelNumberMap.entries()].find(([, value]) => value === this._levelNumber)?.[0] ?? LogLevel.Error;
 

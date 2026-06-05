@@ -292,7 +292,11 @@ export interface Run<TOutput extends CodecOutputEvent, TProjection, TMessage> {
    */
   readonly messages: TMessage[];
 
-  /** Publish run-start event to the channel. Must be called before pipe. */
+  /**
+   * Publish the run's opening lifecycle event to the channel (run-start, or
+   * run-resume for a continuation). Must be called before any other run method
+   * (pipe, addEvents, suspend, end).
+   */
   start(): Promise<void>;
 
   /**
@@ -369,10 +373,14 @@ export interface Run<TOutput extends CodecOutputEvent, TProjection, TMessage> {
 /** Server-side session that manages run lifecycles over an Ably channel. */
 export interface AgentSession<TOutput extends CodecOutputEvent, TProjection, TMessage> {
   /**
-   * Subscribe to the cancel channel and (implicitly) attach. Idempotent —
-   * subsequent calls return the same promise. All run methods (`start`,
-   * `addEvents`, `pipe`, `end`) throw `InvalidArgument`
-   * until `connect()` resolves.
+   * Subscribe (unfiltered) to the shared channel and (implicitly) attach. The
+   * subscribe is deliberately unfiltered so channel-rewind-replayed input
+   * events also reach the dispatcher, which routes by name (cancel vs. input
+   * event). Idempotent — subsequent calls return the same promise. All run
+   * methods (`start`, `addEvents`, `pipe`, `loadProjection`,
+   * `loadConversation`, `suspend`, `end`) throw `InvalidArgument` until
+   * `connect()` has been *called*; once it has, they await the in-flight
+   * connect promise rather than throwing.
    */
   connect(): Promise<void>;
 

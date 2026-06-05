@@ -76,8 +76,9 @@ export interface SendOptions {
    */
   runId?: string;
   /**
-   * Override the `inputEventId` for this send. Useful for deterministic
-   * identification (tests). Defaults to `crypto.randomUUID()`.
+   * Currently non-functional: the send path always mints each input's
+   * `inputEventId` with `crypto.randomUUID()` (no override is read), so a
+   * value supplied here has no effect.
    */
   inputEventId?: string;
 }
@@ -111,7 +112,9 @@ export interface ActiveRun {
    * to learn it (this also tells you the agent has picked up the run). There is
    * no built-in deadline — race it against your own timeout if you need one.
    * Rejects only if the session is closed before run-start arrives. A
-   * continuation resolves immediately with the run-id the client already knows.
+   * continuation does not resolve any sooner: its run-id promise resolves when
+   * the agent's run-resume (`event.type === 'resume'`) for this send is observed
+   * on the channel, not synchronously from the run-id the caller passed in.
    */
   runId: Promise<string>;
   /**
@@ -131,15 +134,18 @@ export interface ActiveRun {
    */
   cancel(): Promise<void>;
   /**
-   * The codec-message-ids of optimistically inserted user messages, in order.
-   * Present when the send included user messages (edit); empty for
-   * regeneration (no user messages to insert optimistically).
+   * The codec-message-id of every input in this send, in input order. Includes
+   * wire-only inputs (regenerate, tool resolutions), which are NOT folded into
+   * the local projection — so an entry here does not by itself mean an
+   * optimistic insert occurred.
    */
   optimisticCodecMessageIds: string[];
   /**
-   * Build the {@link Invocation} pointer for this run — `inputEventId`, the
-   * session's channel name as `sessionName`, and `runId` only for a
-   * continuation (a fresh run omits it, leaving the agent to mint it). The
+   * Build the {@link Invocation} pointer for this run — only `inputEventId` and
+   * the session's channel name as `sessionName`. The body carries no run-id: a
+   * fresh run's run-id is minted by the agent, and a continuation's run-id is
+   * read off the triggering input event's wire headers, so run identity always
+   * lives on the channel rather than the invocation body. The
    * application POSTs `run.toInvocation().toJSON()` to its agent endpoint to
    * wake the agent; the agent rebuilds it via {@link Invocation.fromJSON} and
    * mints the `invocationId` (and a fresh `runId`) itself. The conversation
@@ -167,9 +173,9 @@ export interface ClientSession<
 
   /**
    * Subscribe to the channel and (implicitly) attach. Idempotent —
-   * subsequent calls return the same promise. `send()`, `regenerate()`,
-   * `edit()`, `update()`, and `cancel()`
-   * throw `InvalidArgument` until `connect()` resolves.
+   * subsequent calls return the same promise. The View's write operations
+   * (`send()`, `regenerate()`, `edit()`) and this session's `cancel()` throw
+   * `InvalidArgument` until `connect()` resolves.
    */
   connect(): Promise<void>;
 
@@ -181,12 +187,14 @@ export interface ClientSession<
    */
   createView(): View<TInput, TMessage>;
 
-  /** Cancel the specified run. Publishes a cancel message and closes the local stream. */
+  /** Cancel the specified run by publishing an `ai-cancel` signal on the channel. The core does not own a per-run stream; closing any consumer-built stream is the responsibility of the layer that built it (e.g. the Vercel ChatTransport). */
   cancel(runId: string): Promise<void>;
 
   /**
    * Subscribe to non-fatal session errors. These indicate something went
    * wrong but the session is still operational. Returns an unsubscribe function.
+   * Once the session is CLOSED this is a no-op: the handler is not registered and
+   * the returned function does nothing.
    */
   on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void;
 

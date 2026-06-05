@@ -12,13 +12,20 @@
  *   passes the truncated array with messageId set
  * - regenerate-message: truncates after the target, passes the truncated array
  *
- * The adapter uses `trigger` to determine the history/messages split:
- * - submit-message: last message is new (publish to channel), rest is history
+ * The adapter uses `(trigger, last-message role)` to determine the
+ * history/messages split:
+ * - submit-message + last message is a user message: that last message is new
+ *   (publish to channel), rest is history. A new submit and an edit both take
+ *   this path — an edit just carries a messageId.
+ * - submit-message + last message is an assistant already in the tree
+ *   (continuation): no new messages, entire array is history
  * - regenerate-message: no new messages, entire array is history
  *
- * When messageId is set (edit or regeneration), the adapter computes fork
- * metadata (forkOf/parent) from the conversation tree so the server can
- * place the response on the correct branch.
+ * For an edit (submit-message with messageId) and for forking off an
+ * unresolved tool call, the adapter computes fork metadata (forkOf/parent)
+ * from the conversation tree so the server can place the response on the
+ * correct branch. Regeneration fork metadata is NOT computed here —
+ * `View.regenerate` derives forkOf/parent from the tree itself.
  */
 
 import * as Ably from 'ably';
@@ -55,9 +62,9 @@ export interface SendMessagesRequestContext {
   messageId?: string;
   /** Previous messages in the conversation (context for the LLM). */
   history: AI.UIMessage[];
-  /** The new message(s) being sent (to publish to the channel). Empty for regeneration. */
+  /** The new message(s) being sent (to publish to the channel). Empty for regeneration and for continuations (an auto-submit where the last message is an already-tracked assistant). */
   messages: AI.UIMessage[];
-  /** The codec-message-id of the message being forked (regenerated or edited). */
+  /** The codec-message-id of the message being forked — the edited user message, or the preceding assistant when forking off an unresolved tool call. Undefined for regeneration (View.regenerate derives it) and fresh sends. */
   forkOf?: string;
   /** The codec-message-id of the predecessor in the conversation thread. */
   parent?: string;

@@ -26,7 +26,7 @@ export interface UseViewOptions<
 > extends BaseSessionOption<TInput, TOutput, TProjection, TMessage> {
   /** A specific {@link View} to subscribe to directly. Takes priority over `session`. */
   view?: View<TInput, TMessage> | null;
-  /** Maximum number of older messages to load per page. When provided, auto-loads on mount. */
+  /** Maximum number of older Runs to reveal per page (the pagination unit is the Run, not the message). When provided, auto-loads the first page on mount. */
   limit?: number;
   /** When `true`, skip all subscriptions and return an empty handle immediately. */
   skip?: boolean;
@@ -46,7 +46,7 @@ export interface ViewHandle<TInput extends CodecInputEvent, TMessage> {
    * identity the domain `message` may carry. See {@link View.getMessages}.
    */
   messages: CodecMessage<TMessage>[];
-  /** Whether there are older messages that can be revealed via `loadOlder`. */
+  /** Whether there are older Runs that can be revealed via `loadOlder`. */
   hasOlder: boolean;
   /** Whether a page load is currently in progress. */
   loading: boolean;
@@ -58,7 +58,7 @@ export interface ViewHandle<TInput extends CodecInputEvent, TMessage> {
   loadError: Ably.ErrorInfo | undefined;
   /**
    * Load older messages into the view. No-op if already loading.
-   * On failure, `error` is set; on success, `error` is cleared.
+   * On failure, `loadError` is set; on success, `loadError` is cleared.
    */
   loadOlder: () => Promise<void>;
   /**
@@ -90,11 +90,20 @@ export interface ViewHandle<TInput extends CodecInputEvent, TMessage> {
    * `codecMessageId` isn't a branch anchor. See {@link View.selectSibling}.
    */
   selectSibling: (codecMessageId: string, index: number) => void;
-  /** Send one or more TInputs on the channel and fire a POST. See {@link View.send}. */
+  /**
+   * Send one or more TInputs on the channel and fire a POST. See {@link View.send}.
+   * @throws Ably.ErrorInfo with code {@link ErrorCode.InvalidArgument} when no view is resolved (before the session is available, or when `skip` is `true`).
+   */
   send: (events: TInput | TInput[], options?: SendOptions) => Promise<ActiveRun>;
-  /** Regenerate an assistant message, using this view's branch for history. */
+  /**
+   * Regenerate an assistant message, using this view's branch for history.
+   * @throws Ably.ErrorInfo with code {@link ErrorCode.InvalidArgument} when no view is resolved (before the session is available, or when `skip` is `true`).
+   */
   regenerate: (messageId: string, options?: SendOptions) => Promise<ActiveRun>;
-  /** Edit a user message, forking from this view's branch. */
+  /**
+   * Edit a user message, forking from this view's branch.
+   * Rejects with an `Ably.ErrorInfo` (code {@link ErrorCode.InvalidArgument}) if no view is resolved — e.g. before the session is available, or when `skip` is `true`.
+   */
   edit: (messageId: string, inputs: TInput | TInput[], options?: SendOptions) => Promise<ActiveRun>;
 }
 
@@ -119,7 +128,7 @@ const EMPTY_BRANCH_SELECTION: BranchSelection<never> = {
  * @param props - Options for selecting the view source and configuring auto-load.
  * @param props.session - Client session whose default view to subscribe to; defaults to the nearest provider.
  * @param props.view - A specific {@link View} to subscribe to directly. Takes priority over `session`.
- * @param props.limit - Max older messages per page; when provided, auto-loads on mount.
+ * @param props.limit - Max older Runs to reveal per page; when provided, auto-loads the first page on mount.
  * @param props.skip - When `true`, skip all subscriptions and return an empty handle.
  * @returns A {@link ViewHandle} with messages, pagination state, navigation, write operations, and loadOlder.
  */

@@ -56,9 +56,9 @@ export interface DecoderCoreHooks<TEvent> {
   buildEndEvents(tracker: StreamTrackerState, closingCodecHeaders: Record<string, string>): TEvent[];
 
   /**
-   * Decode a discrete message (message.create where stream is "false",
-   * or a non-streamable first-contact update). Handles user messages, tool
-   * lifecycle, data-*, etc.
+   * Decode a discrete message (a `message.create` whose stream header is not
+   * "true", or a non-streamable first-contact update). Handles user messages,
+   * tool lifecycle, data-*, etc.
    */
   decodeDiscrete(input: MessagePayload): TEvent[];
 }

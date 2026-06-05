@@ -157,7 +157,7 @@ export interface ReducerMeta {
   /**
    * Optional `codec-message-id` from the inbound Ably message. Reducers use this
    * to route an event to a target message within the projection (e.g. to
-   * amend an existing message in the same Run).
+   * amend an existing assistant message addressed by its codec-message-id).
    */
   messageId?: string;
 }
@@ -178,8 +178,9 @@ export interface ReducerMeta {
  */
 export interface Reducer<TEvent, TProjection> {
   /**
-   * Build an empty initial projection. Called once per Run before any events
-   * are folded.
+   * Build an empty initial projection. Called once per conversation node — a
+   * Run node or a run-less input node — before any of that node's events are
+   * folded.
    */
   init(): TProjection;
   /**
@@ -230,7 +231,9 @@ export interface Encoder<TInput extends CodecInputEvent, TOutput extends CodecOu
   publishOutput(output: TOutput, options?: WriteOptions): Promise<void>;
   /**
    * Cancel any in-progress streams and emit a codec-specific cancel signal.
-   * Idempotent — safe to call after `cancel` or `close`.
+   * Idempotent across repeated calls — a second `cancel` is a no-op. Must not
+   * be called after `close`; doing so throws because the encoder is already
+   * closed.
    * @param reason - Optional reason string for the cancellation (e.g. 'cancelled').
    */
   cancel(reason?: string): Promise<void>;
@@ -490,14 +493,15 @@ export interface CodecMessage<TMessage> {
 // ---------------------------------------------------------------------------
 
 /**
- * The codec describes the wire and folds events into a per-Run projection.
+ * The codec describes the wire and folds events into a per-node projection.
  *
  * Type parameters:
  * - `TInput` — the union of input variants the client publishes on the
  *   `ai-input` wire. Every variant extends {@link CodecInputEvent}.
  * - `TOutput` — the union of output variants the agent publishes on the
  *   `ai-output` wire. Every variant extends {@link CodecOutputEvent}.
- * - `TProjection` — the opaque per-Run state the reducer folds events into.
+ * - `TProjection` — the opaque per-node state the reducer folds events into
+ *   (one projection per node, whether a RunNode or a run-less input node).
  *   The SDK never inspects it directly; use {@link Codec.getMessages} to
  *   extract messages for the conversation Tree.
  * - `TMessage` — the per-message shape consumed by the Tree. Returned from

@@ -607,10 +607,10 @@ const decodeAiInputPayload = (codecType: string, input: MessagePayload, r: Verce
       return decodeClientToolApprovalResponse(codecMessageId, r);
     }
     case 'regenerate': {
-      // Wire-only signal — carries `parent` / `target` on transport headers,
-      // no domain payload. The agent's input-event lookup reads transport
-      // headers directly from the inbound Ably message; no projection
-      // fold is needed here.
+      // Wire-only signal — carries `parent` / `msg-regenerate` on transport
+      // headers, no domain payload. The agent's input-event lookup reads
+      // transport headers directly from the inbound Ably message; no
+      // projection fold is needed here.
       return [];
     }
     default: {

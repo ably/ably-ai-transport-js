@@ -80,13 +80,16 @@ export interface EncoderCore {
 
   /**
    * Append data to an in-flight streamed message. Fire-and-forget: errors are
-   * collected internally and surfaced by {@link closeStream} or {@link close}.
+   * collected internally and surfaced by {@link closeStream}, {@link cancelStream},
+   * {@link cancelAllStreams} or {@link close}.
+   * @throws {Ably.ErrorInfo} InvalidArgument if there is no active stream for `streamId` or the core is closed.
    */
   appendStream(streamId: string, data: string): void;
 
   /**
    * Close a streamed message with status:complete. Flushes all pending
    * appends for recovery before returning. Repeats persistent and payload headers.
+   * @throws {Ably.ErrorInfo} InvalidArgument if there is no active stream for `streamId`, or the encoder has been closed; EncoderRecoveryFailed if a failed append cannot be recovered during the flush.
    */
   closeStream(streamId: string, payload: StreamPayload): Promise<void>;
 

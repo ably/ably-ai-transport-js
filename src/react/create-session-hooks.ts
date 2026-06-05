@@ -49,9 +49,9 @@ export interface SessionHooks<TInput extends CodecInputEvent, TOutput extends Co
   /**
    * Read the session from context. No type params needed.
    *
-   * Returns `{ session, sessionError }`. When no provider is found,
-   * `sessionError` is set and `session` is a stub that throws on access —
-   * the hook never throws during render.
+   * Returns `{ session, sessionError }`. When no provider is found (or session
+   * construction failed), `sessionError` is set and `session` is a stub that
+   * throws on access — the hook never throws during render.
    *
    * Pass `onError` to subscribe to post-construction session errors
    * (e.g. send failures, channel continuity loss) without wiring
@@ -66,7 +66,7 @@ export interface SessionHooks<TInput extends CodecInputEvent, TOutput extends Co
     onError?: (error: Ably.ErrorInfo) => void;
   }) => ClientSessionHandle<TInput, TOutput, TProjection, TMessage>;
   /**
-   * Subscribe to the nearest session's view and return the visible node list with pagination.
+   * Subscribe to the nearest session's view and return the visible message list with pagination.
    * Pass `session` to use a session's default view, `view` to subscribe to a specific view
    * directly. Pass `limit` to auto-load on mount. Pass `skip: true` for an empty handle.
    */

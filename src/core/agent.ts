@@ -53,7 +53,7 @@ const injectAgents = (
  * Sets `options.agents['ai-transport-js'] = VERSION`. When the codec carries
  * an internal `adapterTag` field (via {@link AdapterTagHolder}), also sets
  * `options.agents[adapterTag] = VERSION`.
- * Idempotent — repeated calls with the same client produce the same key/value.
+ * Idempotent — repeated calls with the same client and codec produce the same keys/values.
  * Spec: AIT-CT1a, AIT-CT1a2, AIT-CT1a3, AIT-ST1a, AIT-ST1a2, AIT-ST1a3.
  * @param client - The Ably Realtime client to register on.
  * @param codec - The codec instance; cast to {@link AdapterTagHolder} to detect an optional identifier.

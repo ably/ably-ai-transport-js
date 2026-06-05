@@ -49,7 +49,7 @@ const abortSignalToPromise = (signal: AbortSignal | undefined): { promise: Promi
  * @param onCancelled - Optional callback invoked when the stream is cancelled, before the stream ends.
  * @param resolveWriteOptions - Optional per-output hook returning {@link WriteOptions} overrides to pass to `encoder.publishOutput`.
  * @param logger - Optional logger for diagnostic output.
- * @returns The reason the pipe ended.
+ * @returns A {@link StreamResult}: `reason` is why the pipe ended, and `error` holds the caught error when `reason` is `'error'`.
  */
 export const pipeStream = async <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent>(
   stream: ReadableStream<TOutput>,

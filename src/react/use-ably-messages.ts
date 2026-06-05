@@ -33,7 +33,7 @@ export interface UseAblyMessagesOptions<
  * @param props - Options including optional `session` and `skip`.
  * @param props.session - Session to subscribe to; defaults to the nearest provider.
  * @param props.skip - When `true`, skip all subscriptions and return an empty array.
- * @returns The accumulated raw Ably messages in chronological order.
+ * @returns The accumulated raw Ably messages in event-arrival order — older history messages loaded later are appended after the live messages already present, so this is not strictly chronological.
  */
 export const useAblyMessages = <
   TInput extends CodecInputEvent,

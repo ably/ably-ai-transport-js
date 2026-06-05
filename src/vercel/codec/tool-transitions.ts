@@ -2,7 +2,7 @@
  * Shared tool part transition logic for the Vercel AI SDK codec.
  *
  * Keeps the tool output state transition logic in one place, reusable by the
- * accumulator and any other callers.
+ * Vercel codec reducer and any other callers.
  */
 
 import type * as AI from 'ai';

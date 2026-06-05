@@ -7,7 +7,7 @@
  *
  * The session exposes a single factory method — `createRun()` — which returns
  * a Run object with explicit lifecycle methods: start(), pipe(), addEvents(),
- * and end().
+ * suspend(), and end() (suspend() and end() are both terminal).
  */
 
 import * as Ably from 'ably';

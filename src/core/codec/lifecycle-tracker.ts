@@ -46,8 +46,9 @@ export interface PhaseConfig<TEvent> {
 export interface LifecycleTracker<TEvent> {
   /**
    * Ensure all configured phases have been emitted for the given scope.
-   * Returns synthetic events for any phases not yet marked as emitted,
-   * then marks them. Returns an empty array if all phases are current.
+   * Synthesizes and returns the events for any phases not yet marked as
+   * emitted, marking each as emitted so it is not synthesized again.
+   * Returns an empty array if all phases are already emitted.
    * @param scopeId - The scope to check (e.g. run ID).
    * @param context - Key-value pairs passed through to phase build functions.
    * @returns Synthetic events for missing phases, in configuration order.

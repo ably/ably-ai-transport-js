@@ -10,7 +10,8 @@
  *
  * The `limit` option controls the number of complete **messages** per page,
  * not the number of Ably wire messages fetched. A message is complete when
- * its terminal wire (finish/cancel/error) has been seen. Runs that span a
+ * its terminal wire signal — `status: "complete"` / `"cancelled"`, or a
+ * `discrete` create — has been seen. Runs that span a
  * page boundary are handled by the counter requiring both a start and a
  * terminal signal before counting a message complete.
  *

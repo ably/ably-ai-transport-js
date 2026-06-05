@@ -93,7 +93,7 @@ export interface ClientSessionHandle<
  * created when the session resolves and removed on unmount.
  * @param props - Hook options.
  * @param props.channelName - Look up a specific provider by channel name; omit for the nearest.
- * @param props.skip - When `true`, return the stub session immediately without reading context.
+ * @param props.skip - When `true`, return the stub session immediately without resolving a provider slot.
  * @param props.onError - Called whenever the resolved session emits an error event.
  * @returns `{ session, sessionError }`.
  */
@@ -130,7 +130,7 @@ export const useClientSession = <
 
   // Compute the session for the onError subscription *before* any conditional
   // returns to satisfy React's rules of hooks (no hooks in branches).
-  // Erased generics — this ref is only used in the useEffect below.
+  // Erased generics — this local is only used in the useEffect below.
   const resolvedForEffect: ClientSession<CodecInputEvent, CodecOutputEvent, unknown, unknown> | undefined = skip
     ? undefined
     : channelName === undefined

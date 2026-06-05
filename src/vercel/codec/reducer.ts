@@ -341,8 +341,9 @@ const _foldUserMessage = (state: VercelProjection, message: AI.UIMessage, meta: 
 /**
  * Fold a client-published `ToolResult`. The input carries
  * `codecMessageId` pointing at the assistant whose `dynamic-tool` part
- * holds the matching `toolCallId`. If the assistant is present, fold
- * directly; otherwise pend until the assistant arrives.
+ * holds the matching `toolCallId`. If the assistant and its matching
+ * `dynamic-tool` part are both present, fold directly; otherwise pend
+ * until that tool part arrives.
  * @param state - Projection to fold into.
  * @param event - The tool-result input (codecMessageId + domain payload).
  * @param meta - Transport-derived metadata.

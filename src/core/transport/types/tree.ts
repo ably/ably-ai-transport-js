@@ -84,6 +84,10 @@ export type RunLifecycleEvent =
        * optimistic local event. The Tree reads it to set the Run's endSerial.
        */
       serial: string | undefined;
+      /**
+       * Why the run ended — the terminal reason the Tree records as the
+       * RunNode's status: `complete`, `cancelled`, or `error`.
+       */
       reason: RunEndReason;
     });
 
@@ -103,7 +107,7 @@ export interface MessageNode<TMessage> {
   parentId: string | undefined;
   /** The codec-message-id this node forks from (fork-of), or undefined if first version. */
   forkOf: string | undefined;
-  /** Full Ably headers for this message. */
+  /** The transport-tier headers (`extras.ai.transport`) for this message: the run/stream/identity/branching headers set and read by the transport layer. Codec-tier headers (`extras.ai.codec`) are not included. */
   headers: Record<string, string>;
   /**
    * Ably serial for this message. Lexicographically comparable for total order.

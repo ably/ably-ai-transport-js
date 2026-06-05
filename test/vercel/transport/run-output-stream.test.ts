@@ -48,7 +48,7 @@ const makeEmitter = (): {
 interface MockSession {
   session: VercelSession;
   /** Emit a Tree `output` event, optionally carrying a triggering input-codec-message-id. */
-  output: (runId: string, events: VercelOutput[], inputCodecMessageId?: string) => void;
+  output: (runId: string, events: VercelOutput[], inputTransportMessageId?: string) => void;
   /** Emit a Tree `run` run-end event with the given reason. */
   runEnd: (runId: string, reason: string) => void;
   /** Emit a Tree `run` run-suspend event. */
@@ -69,8 +69,8 @@ const createMockSession = (): MockSession => {
 
   return {
     session,
-    output: (runId, events, inputCodecMessageId) => {
-      treeEmitter.emit('output', { runId, inputCodecMessageId, codecMessageId: 'm-1', serial: 's-1', events });
+    output: (runId, events, inputTransportMessageId) => {
+      treeEmitter.emit('output', { runId, inputTransportMessageId, transportMessageId: 'm-1', serial: 's-1', events });
     },
     runEnd: (runId, reason) => {
       treeEmitter.emit('run', {

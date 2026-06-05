@@ -98,12 +98,12 @@ const collectUntil = (
     allInputs.push(...inputs);
     allOutputs.push(...outputs);
     const headers = getHeaders(msg);
-    const codecMessageId = headers[HEADER_TRANSPORT_MESSAGE_ID];
+    const transportMessageId = headers[HEADER_TRANSPORT_MESSAGE_ID];
     for (const input of inputs) {
-      projection = UIMessageCodec.fold(projection, input, { serial: msg.serial ?? '', messageId: codecMessageId });
+      projection = UIMessageCodec.fold(projection, input, { serial: msg.serial ?? '', messageId: transportMessageId });
     }
     for (const output of outputs) {
-      projection = UIMessageCodec.fold(projection, output, { serial: msg.serial ?? '', messageId: codecMessageId });
+      projection = UIMessageCodec.fold(projection, output, { serial: msg.serial ?? '', messageId: transportMessageId });
     }
     if (predicate(outputs)) resolve();
   });
@@ -240,7 +240,7 @@ describe('AgentSession integration', () => {
      * @param opts.publisher - Ably Realtime client that publishes the input event.
      * @param opts.runId - Run identifier the agent uses.
      * @param opts.invocationId - Invocation identifier the agent uses.
-     * @param opts.codecMessageId - `codec-message-id` for the published input.
+     * @param opts.transportMessageId - `codec-message-id` for the published input.
      * @param opts.streamArgs - Forwarded to `textResponseStream` for the agent's reply.
      * @param opts.continuation - When true, stamps the run-id on the input wire so the
      *   agent re-enters the run and publishes `ai-run-resume` rather than `ai-run-start`.
@@ -250,7 +250,7 @@ describe('AgentSession integration', () => {
       publisher: Ably.Realtime;
       runId: string;
       invocationId: string;
-      codecMessageId: string;
+      transportMessageId: string;
       streamArgs: [string, string, string];
       continuation?: boolean;
     }): Promise<void> => {
@@ -261,12 +261,12 @@ describe('AgentSession integration', () => {
         // A continuation stamps the reused run-id on the wire; a fresh send
         // carries none, signalling the agent to mint one and open the run.
         ...(opts.continuation ? { runId: opts.runId } : {}),
-        codecMessageId: opts.codecMessageId,
+        transportMessageId: opts.transportMessageId,
         inputEventId,
       });
       const encoder = UIMessageCodec.createEncoder(publisherChannel, { extras: { headers } });
       const userInput = UIMessageCodec.createUserMessage({
-        id: opts.codecMessageId,
+        id: opts.transportMessageId,
         role: 'user',
         parts: [{ type: 'text', text: 'hi' }],
       });
@@ -289,7 +289,7 @@ describe('AgentSession integration', () => {
       publisher: publisherA,
       runId,
       invocationId: 'inv-a',
-      codecMessageId: 'm-user-a',
+      transportMessageId: 'm-user-a',
       streamArgs: ['msg-a', 'text-a', 'first reply'],
     });
 
@@ -301,7 +301,7 @@ describe('AgentSession integration', () => {
       publisher: publisherB,
       runId,
       invocationId: 'inv-b',
-      codecMessageId: 'm-user-b',
+      transportMessageId: 'm-user-b',
       streamArgs: ['msg-b', 'text-b', 'second reply'],
       continuation: true,
     });
@@ -479,12 +479,18 @@ describe('AgentSession integration', () => {
     await subChannel.subscribe((msg) => {
       const { inputs, outputs } = decoder.decode(msg);
       const headers = getHeaders(msg);
-      const codecMessageId = headers[HEADER_TRANSPORT_MESSAGE_ID];
+      const transportMessageId = headers[HEADER_TRANSPORT_MESSAGE_ID];
       for (const event of inputs) {
-        projection = UIMessageCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: codecMessageId });
+        projection = UIMessageCodec.fold(projection, event, {
+          serial: msg.serial ?? '',
+          messageId: transportMessageId,
+        });
       }
       for (const event of outputs) {
-        projection = UIMessageCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: codecMessageId });
+        projection = UIMessageCodec.fold(projection, event, {
+          serial: msg.serial ?? '',
+          messageId: transportMessageId,
+        });
       }
       if (outputs.some((e) => e.type === 'finish')) {
         finishCount++;
@@ -775,7 +781,7 @@ describe('AgentSession integration', () => {
     await session.connect();
 
     const runId = crypto.randomUUID();
-    const codecMessageId = crypto.randomUUID();
+    const transportMessageId = crypto.randomUUID();
     const text = 'Live arrival';
 
     const inputEventId = crypto.randomUUID();
@@ -796,10 +802,10 @@ describe('AgentSession integration', () => {
     // a few hundred ms is safe.
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
     const publisherChannel = publisherClient.channels.get(channelName);
-    const headers = buildTransportHeaders({ role: 'user', runId, codecMessageId, inputEventId });
+    const headers = buildTransportHeaders({ role: 'user', runId, transportMessageId, inputEventId });
     const encoder = UIMessageCodec.createEncoder(publisherChannel, { extras: { headers } });
     const userInput = UIMessageCodec.createUserMessage({
-      id: codecMessageId,
+      id: transportMessageId,
       role: 'user',
       parts: [{ type: 'text', text }],
     });
@@ -809,7 +815,7 @@ describe('AgentSession integration', () => {
 
     expect(serverRun.view.messages).toHaveLength(1);
     const found = serverRun.view.messages[0];
-    expect(found?.codecMessageId).toBe(codecMessageId);
+    expect(found?.transportMessageId).toBe(transportMessageId);
     expect(found?.message.parts[0]).toEqual({ type: 'text', text });
 
     await serverRun.end('complete');

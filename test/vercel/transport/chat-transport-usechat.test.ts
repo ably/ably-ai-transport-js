@@ -105,12 +105,12 @@ const makeEmitter = (): MockEmitter => {
 interface MockRun {
   stream: ReadableStream<AI.UIMessageChunk>;
   /** The triggering input's codec-message-id — the synchronous stream routing key. */
-  inputCodecMessageId: string;
+  inputTransportMessageId: string;
   runId: Promise<string>;
   inputEventId: string;
   cancel: ReturnType<typeof vi.fn>;
   /** The optimistic input codec-message-ids the stream may key on (empty in these mocks). */
-  optimisticCodecMessageIds: string[];
+  optimisticTransportMessageIds: string[];
   /** Build the run's invocation pointer (the transport POSTs this to wake the agent). */
   toInvocation: () => Invocation;
   /** Emit a chunk as a Tree `output` event for this run (drives the consumer stream). */
@@ -122,19 +122,19 @@ interface MockRun {
 const createMockRun = (runId: string, treeEmit: MockEmitter['emit']): MockRun => {
   // The consumer stream routes purely by the triggering input's codec-message-id
   // (the agent mints the run-id separately); key it per run.
-  const inputCodecMessageId = `${runId}-input`;
+  const inputTransportMessageId = `${runId}-input`;
   return {
     // Inert placeholder — the transport builds its own stream from Tree events.
     // eslint-disable-next-line @typescript-eslint/no-empty-function -- inert placeholder stream
     stream: new ReadableStream<AI.UIMessageChunk>({ start: () => {} }),
-    inputCodecMessageId,
+    inputTransportMessageId,
     runId: Promise.resolve(runId),
     inputEventId: '',
     cancel: vi.fn(),
-    optimisticCodecMessageIds: [],
+    optimisticTransportMessageIds: [],
     toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'chat-1' }),
     enqueue: (chunk: AI.UIMessageChunk) => {
-      treeEmit('output', { runId, inputCodecMessageId, codecMessageId: 'm-1', serial: 's-1', events: [chunk] });
+      treeEmit('output', { runId, inputTransportMessageId, transportMessageId: 'm-1', serial: 's-1', events: [chunk] });
     },
     close: () => {
       treeEmit('run', {
@@ -156,7 +156,7 @@ const createMockTree = (treeEmitter: MockEmitter) =>
     getSelectedIndex: vi.fn(() => 0),
     select: vi.fn(),
     getRunNode: vi.fn(),
-    getNodeByCodecMessageId: vi.fn(),
+    getNodeByTransportMessageId: vi.fn(),
     on: vi.fn(treeEmitter.on),
   }) as unknown as Tree<VercelOutput, VercelProjection>;
 
@@ -173,7 +173,7 @@ const createMockSession = () => {
     flattenNodes: vi.fn(() => []),
     getMessages: vi.fn(() => []),
     getMessagesWithIds: vi.fn(() => []),
-    getNodeByCodecMessageId: vi.fn(),
+    getNodeByTransportMessageId: vi.fn(),
     send: send,
     regenerate: vi.fn(),
     edit: vi.fn(),
@@ -213,7 +213,7 @@ const createMultiRunMockSession = () => {
     flattenNodes: vi.fn(() => []),
     getMessages: vi.fn(() => []),
     getMessagesWithIds: vi.fn(() => []),
-    getNodeByCodecMessageId: vi.fn(),
+    getNodeByTransportMessageId: vi.fn(),
     send: send,
     regenerate: vi.fn(),
     edit: vi.fn(),

@@ -94,19 +94,19 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
 
   const tree: Tree<CodecOutputEvent, unknown> = {
     getRunNode: vi.fn(),
-    getNodeByCodecMessageId: vi.fn(),
+    getNodeByTransportMessageId: vi.fn(),
     getSiblingNodes: vi.fn(() => []),
     on: makeTreeOn(treeHandlers),
   };
 
   const mockRun = {
     stream: new ReadableStream(),
-    inputCodecMessageId: 'input-1',
+    inputTransportMessageId: 'input-1',
     runId: Promise.resolve('run-1'),
     inputEventId: '',
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     cancel: vi.fn(() => Promise.resolve()),
-    optimisticCodecMessageIds: [] as string[],
+    optimisticTransportMessageIds: [] as string[],
     toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'mock-session' }),
   };
 
@@ -119,7 +119,7 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
 
   const view: View<CodecInputEvent, string> = {
     getMessages: vi.fn(() => initialMessages),
-    getMessagesWithIds: vi.fn(() => initialMessages.map((m) => ({ codecMessageId: m, message: m }))),
+    getMessagesWithIds: vi.fn(() => initialMessages.map((m) => ({ transportMessageId: m, message: m }))),
     runs: vi.fn(() => []),
     hasOlder: vi.fn(() => false),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly

@@ -22,7 +22,7 @@ const makeMessage = (id: string, role: AI.UIMessage['role'] = 'user'): AI.UIMess
 
 const makeNode = (m: AI.UIMessage) => ({
   message: m,
-  codecMessageId: m.id,
+  transportMessageId: m.id,
   parentId: undefined,
   forkOf: undefined,
   headers: {},

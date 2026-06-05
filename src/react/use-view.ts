@@ -55,11 +55,11 @@ export interface ViewHandle<TInput extends CodecInputEvent, TMessage> {
    */
   loadOlder: () => Promise<void>;
   /**
-   * Look up the {@link RunInfo} for the Run that owns `codecMessageId`.
+   * Look up the {@link RunInfo} for the Run that owns `transportMessageId`.
    * Returns `undefined` when the codec-message-id hasn't been observed.
    * See {@link View.runOf}.
    */
-  runOf: (codecMessageId: string) => RunInfo | undefined;
+  runOf: (transportMessageId: string) => RunInfo | undefined;
   /**
    * Direct lookup by runId. Returns `undefined` when the Run hasn't been
    * observed. See {@link View.run}.
@@ -67,16 +67,16 @@ export interface ViewHandle<TInput extends CodecInputEvent, TMessage> {
   run: (runId: string) => RunInfo | undefined;
   /**
    * Resolve the {@link BranchSelection} bundle anchored at
-   * `codecMessageId`. Always returns a safe object — see
+   * `transportMessageId`. Always returns a safe object — see
    * {@link BranchSelection}. See {@link View.branchSelection}.
    */
-  branchSelection: (codecMessageId: string) => BranchSelection<TMessage>;
+  branchSelection: (transportMessageId: string) => BranchSelection<TMessage>;
   /**
-   * Select a sibling at the branch point anchored at `codecMessageId`.
+   * Select a sibling at the branch point anchored at `transportMessageId`.
    * `index` is clamped to `[0, siblings.length - 1]`. Silent no-op when
-   * `codecMessageId` isn't a branch anchor. See {@link View.selectSibling}.
+   * `transportMessageId` isn't a branch anchor. See {@link View.selectSibling}.
    */
-  selectSibling: (codecMessageId: string, index: number) => void;
+  selectSibling: (transportMessageId: string, index: number) => void;
   /** Send one or more TInputs on the channel and fire a POST. See {@link View.send}. */
   send: (events: TInput | TInput[], options?: SendOptions) => Promise<ActiveRun>;
   /** Regenerate an assistant message, using this view's branch for history. */
@@ -182,7 +182,7 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
 
   // Run lookups
   const runOf = useCallback(
-    (codecMessageId: string): RunInfo | undefined => resolvedView?.runOf(codecMessageId),
+    (transportMessageId: string): RunInfo | undefined => resolvedView?.runOf(transportMessageId),
     [resolvedView],
   );
 
@@ -190,17 +190,17 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
 
   // Branch navigation
   const branchSelection = useCallback(
-    (codecMessageId: string): BranchSelection<TMessage> =>
+    (transportMessageId: string): BranchSelection<TMessage> =>
       // CAST: `EMPTY_BRANCH_SELECTION` is typed `BranchSelection<never>`; `never` is
       // assignable to any `TMessage`, so the empty bundle is a valid fallback for
       // the not-yet-resolved view case.
-      resolvedView?.branchSelection(codecMessageId) ?? (EMPTY_BRANCH_SELECTION as BranchSelection<TMessage>),
+      resolvedView?.branchSelection(transportMessageId) ?? (EMPTY_BRANCH_SELECTION as BranchSelection<TMessage>),
     [resolvedView],
   );
 
   const selectSibling = useCallback(
-    (codecMessageId: string, index: number) => {
-      resolvedView?.selectSibling(codecMessageId, index);
+    (transportMessageId: string, index: number) => {
+      resolvedView?.selectSibling(transportMessageId, index);
     },
     [resolvedView],
   );

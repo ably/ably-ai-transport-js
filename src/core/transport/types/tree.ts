@@ -98,7 +98,7 @@ export interface MessageNode<TMessage> {
   /** The domain message. */
   message: TMessage;
   /** The codec-message-id of this node — primary key in the tree. */
-  codecMessageId: string;
+  transportMessageId: string;
   /** Parent node's codec-message-id (parent), or undefined for root messages. */
   parentId: string | undefined;
   /** The codec-message-id this node forks from (fork-of), or undefined if first version. */
@@ -122,7 +122,7 @@ export interface MessageNode<TMessage> {
  * when it needs to render messages for that Run.
  *
  * A regenerate is a sibling reply run: it shares its input-node parent
- * ({@link parentCodecMessageId}) with the original reply, so same-parent reply
+ * ({@link parentTransportMessageId}) with the original reply, so same-parent reply
  * runs form the regenerate group with no `forkOf` involved. (Editing a prompt
  * instead produces a sibling {@link InputNode} via that node's `forkOf`.)
  */
@@ -138,7 +138,7 @@ export interface RunNode<TProjection> {
    * the agent replied to. The Tree uses it for kind-blind reachability and to
    * build the input→reply edge. `undefined` for the root Run.
    */
-  parentCodecMessageId: string | undefined;
+  parentTransportMessageId: string | undefined;
   /**
    * The node key of the node this Run replaces, or `undefined` if this Run is
    * not a fork. Populated when the wire's `fork-of` header points at a
@@ -156,10 +156,10 @@ export interface RunNode<TProjection> {
    *
    * A regenerate run parents at the SAME input node as the reply it
    * regenerates, so it joins that input's reply runs as a same-parent sibling;
-   * the message named by `regeneratesCodecMessageId` is replaced by this Run's
+   * the message named by `regeneratesTransportMessageId` is replaced by this Run's
    * content when the View materialises the chain into messages (Spec: AIT-CT13d).
    */
-  regeneratesCodecMessageId: string | undefined;
+  regeneratesTransportMessageId: string | undefined;
   /**
    * Identity of the Ably client that started this Run, sourced from the
    * `run-client-id` wire header (or the run-start lifecycle event's
@@ -209,14 +209,14 @@ export interface InputNode<TProjection> {
   /** Discriminator — identifies this as an input node within {@link ConversationNode}. */
   kind: 'input';
   /** The codec-message-id of this input — primary key in the tree. */
-  codecMessageId: string;
+  transportMessageId: string;
   /**
    * The codec-message-id of the node this input hangs off (its structural
    * parent — the immediately preceding reply run on this chain), or `undefined`
    * for the first input in a conversation. Used for kind-blind tree
-   * reachability alongside {@link RunNode.parentCodecMessageId}.
+   * reachability alongside {@link RunNode.parentTransportMessageId}.
    */
-  parentCodecMessageId: string | undefined;
+  parentTransportMessageId: string | undefined;
   /**
    * The codec-message-id this input forks from when it is an edit of an earlier
    * prompt, or `undefined` if it is the first version. Sibling input nodes
@@ -246,7 +246,7 @@ export interface OutputEvent<TOutput extends CodecOutputEvent> {
    * The runId the outputs were folded into, or `undefined` when the fold was
    * into a user input node (which carries no run-id — the agent mints run-ids).
    * An input fold always has empty {@link events}; consumers route by
-   * {@link inputCodecMessageId}, not this.
+   * {@link inputTransportMessageId}, not this.
    */
   runId: string | undefined;
   /**
@@ -258,12 +258,12 @@ export interface OutputEvent<TOutput extends CodecOutputEvent> {
    * the run's own identity. `undefined` when the carrying message had no such
    * header — e.g. a purely-optimistic local fold with no wire echo yet.
    */
-  inputCodecMessageId: string | undefined;
+  inputTransportMessageId: string | undefined;
   /**
    * The `codec-message-id` the outputs were published under, or `undefined`
    * when the message carried none.
    */
-  codecMessageId: string | undefined;
+  transportMessageId: string | undefined;
   /**
    * Ably channel serial of the message that carried the outputs, or
    * `undefined` for an optimistic local fold (no serial assigned yet).
@@ -295,11 +295,11 @@ export interface Tree<TOutput extends CodecOutputEvent, TProjection> {
 
   /**
    * Get the node that owns a given codec-message-id (via the Tree's
-   * codecMessageId index), or undefined if the codec-message-id hasn't been
+   * transportMessageId index), or undefined if the codec-message-id hasn't been
    * observed. The result is a {@link ConversationNode} union: narrow on `kind`
    * (`'input'` vs `'run'`) before reading kind-specific fields.
    */
-  getNodeByCodecMessageId(codecMessageId: string): ConversationNode<TProjection> | undefined;
+  getNodeByTransportMessageId(transportMessageId: string): ConversationNode<TProjection> | undefined;
 
   /**
    * Get the sibling group (both kinds) the node keyed by `key` belongs to:
@@ -308,7 +308,7 @@ export interface Tree<TOutput extends CodecOutputEvent, TProjection> {
    * serial; a single-element array when the node has no siblings. Empty when
    * `key` is unknown. Narrow each node on `kind` before reading kind-specific
    * fields.
-   * @param key - The node key ({@link RunNode.runId} or {@link InputNode.codecMessageId}).
+   * @param key - The node key ({@link RunNode.runId} or {@link InputNode.transportMessageId}).
    * @returns The ordered sibling nodes.
    */
   getSiblingNodes(key: string): ConversationNode<TProjection>[];

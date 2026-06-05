@@ -13,7 +13,7 @@
  * classifies a run-less user input into an input node (keyed by
  * codec-message-id) or routes a run-bearing wire to its reply run (keyed by
  * run-id), folds events into that node's projection, and maintains a secondary
- * `codecMessageId -> nodeKey` index. `applyRunLifecycle()` handles run-start /
+ * `transportMessageId -> nodeKey` index. `applyRunLifecycle()` handles run-start /
  * run-end events.
  *
  * Sibling structure: editing a prompt produces a sibling input node linked by
@@ -51,12 +51,12 @@ interface InternalNode<TProjection> {
 
 /**
  * The primary key a node is indexed under: a reply run's `runId`, or an input
- * node's `codecMessageId` (the client owns it before the agent mints a runId).
+ * node's `transportMessageId` (the client owns it before the agent mints a runId).
  * @param node - The node to key.
  * @returns The node's primary key.
  */
 export const nodeKey = <TProjection>(node: ConversationNode<TProjection>): string =>
-  node.kind === 'run' ? node.runId : node.codecMessageId;
+  node.kind === 'run' ? node.runId : node.transportMessageId;
 
 /**
  * The serial a node sorts by: a reply run's `startSerial`, an input node's
@@ -124,10 +124,10 @@ export interface TreeInternal<
    * The reply runs parented at an input node (its codec-message-id), in
    * iteration order. Empty when none have been observed. Used to resolve a
    * user prompt to its reply run(s).
-   * @param inputCodecMessageId - The input node's codec-message-id.
+   * @param inputTransportMessageId - The input node's codec-message-id.
    * @returns The reply runs parented at that input.
    */
-  getReplyRuns(inputCodecMessageId: string): RunNode<TProjection>[];
+  getReplyRuns(inputTransportMessageId: string): RunNode<TProjection>[];
 
   /**
    * Apply an inbound channel message to the tree.
@@ -176,7 +176,7 @@ export interface TreeInternal<
    * key is a {@link nodeKey} — a runId (reply run) or an input node's
    * codec-message-id — so the result is a {@link ConversationNode} union:
    * narrow on `kind` before reading kind-specific fields. Pairs with
-   * {@link getNodeByCodecMessageId}, which resolves an arbitrary owned
+   * {@link getNodeByTransportMessageId}, which resolves an arbitrary owned
    * codec-message-id (including an assistant message's) to its node.
    * @param key - The node key to look up.
    * @returns The node, or undefined if not found.
@@ -231,7 +231,7 @@ export class DefaultTree<
    * continuation amend wires to existing nodes, and backs UI lookups that hold
    * a codec-message-id.
    */
-  private readonly _codecMessageIdToNodeKey = new Map<string, string>();
+  private readonly _transportMessageIdToNodeKey = new Map<string, string>();
 
   /**
    * All nodes sorted by startSerial (lexicographic). Null-startSerial nodes
@@ -242,7 +242,7 @@ export class DefaultTree<
 
   /**
    * Parent index: parent node key (the key its children's
-   * `parentCodecMessageId` resolves to) to the set of child node keys. Root
+   * `parentTransportMessageId` resolves to) to the set of child node keys. Root
    * nodes (no parent) are indexed under the key `undefined`. Kind-blind — a
    * reply run and an input node parent off each other through the same index.
    */
@@ -354,11 +354,15 @@ export class DefaultTree<
    * for reply runs — is the caller's responsibility.
    * @param key - The node's primary key ({@link nodeKey}).
    * @param entry - The internal node to insert.
-   * @param parentCodecMessageId - The node's structural parent, or undefined for a root.
+   * @param parentTransportMessageId - The node's structural parent, or undefined for a root.
    */
-  private _insertNode(key: string, entry: InternalNode<TProjection>, parentCodecMessageId: string | undefined): void {
+  private _insertNode(
+    key: string,
+    entry: InternalNode<TProjection>,
+    parentTransportMessageId: string | undefined,
+  ): void {
     this._nodeIndex.set(key, entry);
-    this._addToParentIndex(parentCodecMessageId, key);
+    this._addToParentIndex(parentTransportMessageId, key);
     this._insertSortedNode(entry);
     this._structuralVersion++;
   }
@@ -415,7 +419,7 @@ export class DefaultTree<
   /**
    * Resolve a node's structural parent to the parent node's key
    * ({@link nodeKey}), or undefined for a root. The parent is named by a
-   * codec-message-id (`parentCodecMessageId`); this maps it through the
+   * codec-message-id (`parentTransportMessageId`); this maps it through the
    * codec-message-id index to the owning node's key (a runId for a reply run,
    * a codec-message-id for an input node). Returns undefined when the parent
    * hasn't been observed yet (the node is treated as a root until it arrives).
@@ -423,8 +427,10 @@ export class DefaultTree<
    * @returns The parent node's key, or undefined.
    */
   private _parentKeyOf(node: ConversationNode<TProjection>): string | undefined {
-    const parentCodecMessageId = node.parentCodecMessageId;
-    return parentCodecMessageId === undefined ? undefined : this._codecMessageIdToNodeKey.get(parentCodecMessageId);
+    const parentTransportMessageId = node.parentTransportMessageId;
+    return parentTransportMessageId === undefined
+      ? undefined
+      : this._transportMessageIdToNodeKey.get(parentTransportMessageId);
   }
 
   // -------------------------------------------------------------------------
@@ -444,7 +450,10 @@ export class DefaultTree<
     while (current.forkOf !== undefined) {
       if (visited.has(current.forkOf)) break;
       const forkTarget = this._nodeIndex.get(current.forkOf);
-      if (forkTarget?.node.kind !== 'input' || forkTarget.node.parentCodecMessageId !== current.parentCodecMessageId) {
+      if (
+        forkTarget?.node.kind !== 'input' ||
+        forkTarget.node.parentTransportMessageId !== current.parentTransportMessageId
+      ) {
         break;
       }
       current = forkTarget.node;
@@ -487,11 +496,11 @@ export class DefaultTree<
       original = this._inputGroupRoot(original);
     }
 
-    // `_parentIndex` is keyed by the raw structural `parentCodecMessageId` (not
+    // `_parentIndex` is keyed by the raw structural `parentTransportMessageId` (not
     // the resolved parent node key) so a run observed before its input node
     // still files/groups correctly — the parent codec-message-id is known at
     // creation, the resolved key may not be.
-    const parentKey = original.parentCodecMessageId;
+    const parentKey = original.parentTransportMessageId;
     const siblings: InternalNode<TProjection>[] = [];
     const candidateKeys = this._parentIndex.get(parentKey);
     if (candidateKeys) {
@@ -525,7 +534,7 @@ export class DefaultTree<
    */
   private _isSiblingOf(node: ConversationNode<TProjection>, original: ConversationNode<TProjection>): boolean {
     if (node.kind !== original.kind) return false;
-    if (node.parentCodecMessageId !== original.parentCodecMessageId) return false;
+    if (node.parentTransportMessageId !== original.parentTransportMessageId) return false;
     // Same-parent reply runs are regenerate siblings — no fork-of needed.
     if (node.kind === 'run') return true;
     // Input nodes: must be forkOf-linked to the original (edit versions).
@@ -635,14 +644,14 @@ export class DefaultTree<
     return this._nodeIndex.get(key)?.node;
   }
 
-  getNodeByCodecMessageId(codecMessageId: string): ConversationNode<TProjection> | undefined {
-    this._logger.trace('DefaultTree.getNodeByCodecMessageId();', { codecMessageId });
-    const key = this._codecMessageIdToNodeKey.get(codecMessageId);
+  getNodeByTransportMessageId(transportMessageId: string): ConversationNode<TProjection> | undefined {
+    this._logger.trace('DefaultTree.getNodeByTransportMessageId();', { transportMessageId });
+    const key = this._transportMessageIdToNodeKey.get(transportMessageId);
     return key === undefined ? undefined : this._nodeIndex.get(key)?.node;
   }
 
-  getReplyRuns(inputCodecMessageId: string): RunNode<TProjection>[] {
-    const runIds = this._replyRunsByInput.get(inputCodecMessageId);
+  getReplyRuns(inputTransportMessageId: string): RunNode<TProjection>[] {
+    const runIds = this._replyRunsByInput.get(inputTransportMessageId);
     if (!runIds) return [];
     const result: RunNode<TProjection>[] = [];
     for (const runId of runIds) {
@@ -667,22 +676,22 @@ export class DefaultTree<
     serial?: string,
   ): void {
     const wireRunId = headers[HEADER_RUN_ID];
-    const codecMessageId = headers[HEADER_TRANSPORT_MESSAGE_ID];
+    const transportMessageId = headers[HEADER_TRANSPORT_MESSAGE_ID];
 
     // Classify: with NO run-id, a user message carrying a codec-message-id and
     // at least one input event forms an INPUT node keyed by that
     // codec-message-id — the client owns it; the agent mints the reply run-id
     // separately. Everything else needs a run-id to route to a reply run.
     // Capturing the id (not a boolean) narrows it to `string` for the input path.
-    const inputNodeCodecMessageId =
+    const inputNodeTransportMessageId =
       wireRunId === undefined &&
-      codecMessageId !== undefined &&
+      transportMessageId !== undefined &&
       headers[HEADER_ROLE] === 'user' &&
       events.inputs.length > 0
-        ? codecMessageId
+        ? transportMessageId
         : undefined;
 
-    if (wireRunId === undefined && inputNodeCodecMessageId === undefined) {
+    if (wireRunId === undefined && inputNodeTransportMessageId === undefined) {
       this._logger.warn('Tree.applyMessage(); message has no run-id and is not a user input; skipping');
       return;
     }
@@ -695,7 +704,7 @@ export class DefaultTree<
     // run is created later by run-start, and any regenerate / parent
     // information the wire carried is reread from the run-start headers.
     // Skipping here avoids a phantom node that would inflate sibling counts.
-    const existingKey = inputNodeCodecMessageId ?? wireRunId;
+    const existingKey = inputNodeTransportMessageId ?? wireRunId;
     if (all.length === 0 && existingKey !== undefined && !this._nodeIndex.has(existingKey)) {
       return;
     }
@@ -706,8 +715,8 @@ export class DefaultTree<
     // `output` instead, so they leave `_structuralVersion` untouched.
     const structuralBefore = this._structuralVersion;
 
-    if (inputNodeCodecMessageId !== undefined) {
-      this._applyInputMessage(inputNodeCodecMessageId, headers, serial, all);
+    if (inputNodeTransportMessageId !== undefined) {
+      this._applyInputMessage(inputNodeTransportMessageId, headers, serial, all);
     } else if (wireRunId !== undefined) {
       this._applyRunMessage(wireRunId, events, headers, serial);
     }
@@ -720,39 +729,39 @@ export class DefaultTree<
    * input node keyed by its codec-message-id, fold the input events into its
    * own projection, and emit an `output` event (with empty outputs — input
    * folds carry none) so the View observes the optimistic insert.
-   * @param codecMessageId - The input node's codec-message-id (its primary key).
+   * @param transportMessageId - The input node's codec-message-id (its primary key).
    * @param headers - Transport headers from the inbound Ably message.
    * @param serial - Ably channel serial; undefined for an optimistic insert.
    * @param all - The decoded input events to fold, in wire order.
    */
   private _applyInputMessage(
-    codecMessageId: string,
+    transportMessageId: string,
     headers: Record<string, string>,
     serial: string | undefined,
     all: (TInput | TOutput)[],
   ): void {
-    let entry = this._nodeIndex.get(codecMessageId);
+    let entry = this._nodeIndex.get(transportMessageId);
     if (!entry) {
-      entry = this._createInputNodeFromHeaders(codecMessageId, headers, serial);
-      this._insertNode(codecMessageId, entry, entry.node.parentCodecMessageId);
-      this._codecMessageIdToNodeKey.set(codecMessageId, codecMessageId);
-      this._logger.debug('Tree.applyMessage(); created input node', { codecMessageId });
+      entry = this._createInputNodeFromHeaders(transportMessageId, headers, serial);
+      this._insertNode(transportMessageId, entry, entry.node.parentTransportMessageId);
+      this._transportMessageIdToNodeKey.set(transportMessageId, transportMessageId);
+      this._logger.debug('Tree.applyMessage(); created input node', { transportMessageId });
     } else if (entry.node.kind === 'input' && serial && !entry.node.serial) {
       // Promote optimistic serial when the relay/echo arrives.
-      this._logger.debug('Tree.applyMessage(); promoting input serial', { codecMessageId, serial });
+      this._logger.debug('Tree.applyMessage(); promoting input serial', { transportMessageId, serial });
       entry.node.serial = serial;
       this._promoteSerial(entry);
     }
 
-    this._foldInto(entry, all, serial, codecMessageId);
+    this._foldInto(entry, all, serial, transportMessageId);
 
     // An input node owns no agent outputs; the event still fires (empty
     // outputs) so consumers observe the projection change. It has no run-id —
     // the causal routing key is the input's own codec-message-id.
     this._emitter.emit('output', {
       runId: undefined,
-      inputCodecMessageId: codecMessageId,
-      codecMessageId,
+      inputTransportMessageId: transportMessageId,
+      transportMessageId,
       serial,
       events: [],
     });
@@ -778,10 +787,10 @@ export class DefaultTree<
     headers: Record<string, string>,
     serial: string | undefined,
   ): void {
-    const codecMessageId = headers[HEADER_TRANSPORT_MESSAGE_ID];
+    const transportMessageId = headers[HEADER_TRANSPORT_MESSAGE_ID];
     // The triggering input's codec-message-id (the agent's echo), surfaced on
     // the `output` event as the stream's causal routing key.
-    const inputCodecMessageId = headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID];
+    const inputTransportMessageId = headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID];
     // Fold inputs first, then outputs, preserving wire order.
     const all: (TInput | TOutput)[] = [...events.inputs, ...events.outputs];
     const outputs = events.outputs;
@@ -791,15 +800,15 @@ export class DefaultTree<
     // Reconcile an optimistic insert with its serial-bearing echo by
     // codec-message-id rather than the wire run-id (kept for assistant content
     // that pins a codec-message-id before its run-id is indexed).
-    if (!run && codecMessageId !== undefined) {
-      const indexedKey = this._codecMessageIdToNodeKey.get(codecMessageId);
+    if (!run && transportMessageId !== undefined) {
+      const indexedKey = this._transportMessageIdToNodeKey.get(transportMessageId);
       const indexed = indexedKey === undefined ? undefined : this._nodeIndex.get(indexedKey);
       if (indexed?.node.kind === 'run' && indexed.node.startSerial === undefined) run = indexed;
     }
 
     if (!run) {
       run = this._createRunFromHeaders(wireRunId, headers, serial);
-      this._insertNode(wireRunId, run, run.node.parentCodecMessageId);
+      this._insertNode(wireRunId, run, run.node.parentTransportMessageId);
       this._indexReplyRun(run.node, wireRunId);
       this._logger.debug('Tree.applyMessage(); created new Run', { runId: wireRunId });
     } else if (serial && run.node.kind === 'run' && !run.node.startSerial) {
@@ -811,24 +820,30 @@ export class DefaultTree<
 
     // Index the codec-message-id against the node that actually owns it.
     const ownerKey = nodeKey(run.node);
-    if (codecMessageId) this._codecMessageIdToNodeKey.set(codecMessageId, ownerKey);
+    if (transportMessageId) this._transportMessageIdToNodeKey.set(transportMessageId, ownerKey);
 
-    this._foldInto(run, all, serial, codecMessageId);
+    this._foldInto(run, all, serial, transportMessageId);
 
-    this._emitter.emit('output', { runId: ownerKey, inputCodecMessageId, codecMessageId, serial, events: outputs });
+    this._emitter.emit('output', {
+      runId: ownerKey,
+      inputTransportMessageId,
+      transportMessageId,
+      serial,
+      events: outputs,
+    });
   }
 
   /**
    * Record a reply run against its input-node parent (the reverse edge powering
    * `getReplyRuns` and regenerate sibling grouping). A reply run's
-   * `parentCodecMessageId` is its input node's codec-message-id (the master
+   * `parentTransportMessageId` is its input node's codec-message-id (the master
    * invariant), so no resolution is needed.
    * @param node - The reply run node.
    * @param runId - The run's id.
    */
   private _indexReplyRun(node: ConversationNode<TProjection>, runId: string): void {
-    if (node.parentCodecMessageId === undefined) return;
-    addToSetMap(this._replyRunsByInput, node.parentCodecMessageId, runId);
+    if (node.parentTransportMessageId === undefined) return;
+    addToSetMap(this._replyRunsByInput, node.parentTransportMessageId, runId);
   }
 
   applyRunLifecycle(event: RunLifecycleEvent): void {
@@ -889,22 +904,22 @@ export class DefaultTree<
       // carries no structural metadata), so it is unconditionally
       // authoritative here. `parent` is the run's STRUCTURAL parent (its
       // input node) — reachability and the reply→input edge read it.
-      if (node.parentCodecMessageId === undefined && event.parent !== undefined) {
-        node.parentCodecMessageId = event.parent;
+      if (node.parentTransportMessageId === undefined && event.parent !== undefined) {
+        node.parentTransportMessageId = event.parent;
         this._removeFromParentIndex(undefined, event.runId);
-        this._addToParentIndex(node.parentCodecMessageId, event.runId);
+        this._addToParentIndex(node.parentTransportMessageId, event.runId);
         this._indexReplyRun(node, event.runId);
         this._structuralVersion++;
       }
       if (node.forkOf === undefined && event.forkOf !== undefined) {
-        const forkOfKey = this._codecMessageIdToNodeKey.get(event.forkOf);
+        const forkOfKey = this._transportMessageIdToNodeKey.get(event.forkOf);
         if (forkOfKey !== undefined && forkOfKey !== event.runId) {
           node.forkOf = forkOfKey;
           this._structuralVersion++;
         }
       }
-      if (node.regeneratesCodecMessageId === undefined && event.regenerates !== undefined) {
-        node.regeneratesCodecMessageId = event.regenerates;
+      if (node.regeneratesTransportMessageId === undefined && event.regenerates !== undefined) {
+        node.regeneratesTransportMessageId = event.regenerates;
         this._structuralVersion++;
       }
       // Adopt the agent-minted invocation-id onto the optimistic node. The
@@ -918,7 +933,7 @@ export class DefaultTree<
       }
     } else if (!existing) {
       const run = this._createRunFromLifecycle(event);
-      this._insertNode(event.runId, run, run.node.parentCodecMessageId);
+      this._insertNode(event.runId, run, run.node.parentTransportMessageId);
       this._indexReplyRun(run.node, event.runId);
     }
   }
@@ -978,14 +993,14 @@ export class DefaultTree<
 
     this._logger.debug('Tree.delete();', { key });
 
-    this._removeFromParentIndex(entry.node.parentCodecMessageId, key);
+    this._removeFromParentIndex(entry.node.parentTransportMessageId, key);
     this._removeSortedNode(entry);
     this._nodeIndex.delete(key);
     // Drop the reply→input reverse edge.
-    if (entry.node.kind === 'run' && entry.node.parentCodecMessageId !== undefined) {
-      deleteFromSetMap(this._replyRunsByInput, entry.node.parentCodecMessageId, key);
+    if (entry.node.kind === 'run' && entry.node.parentTransportMessageId !== undefined) {
+      deleteFromSetMap(this._replyRunsByInput, entry.node.parentTransportMessageId, key);
     }
-    // _codecMessageIdToNodeKey entries pointing at this node linger but are
+    // _transportMessageIdToNodeKey entries pointing at this node linger but are
     // harmless; they'll be overwritten if the node is re-created and remain
     // dangling otherwise. Cleanup not worth the index walk.
 
@@ -1013,11 +1028,11 @@ export class DefaultTree<
     const forkOfMsgId = headers[HEADER_FORK_OF];
     return this._buildRunNode({
       runId,
-      parentCodecMessageId: headers[HEADER_PARENT],
+      parentTransportMessageId: headers[HEADER_PARENT],
       // forkOf is resolved to the fork target's node key (an input node's
       // codec-message-id, or a run's id) — the same space `_isSiblingOf` walks.
-      forkOf: forkOfMsgId ? this._codecMessageIdToNodeKey.get(forkOfMsgId) : undefined,
-      regeneratesCodecMessageId: headers[HEADER_MSG_REGENERATE],
+      forkOf: forkOfMsgId ? this._transportMessageIdToNodeKey.get(forkOfMsgId) : undefined,
+      regeneratesTransportMessageId: headers[HEADER_MSG_REGENERATE],
       clientId: headers[HEADER_RUN_CLIENT_ID] ?? '',
       invocationId: headers[HEADER_INVOCATION_ID] ?? '',
       startSerial: serial,
@@ -1030,9 +1045,9 @@ export class DefaultTree<
    * RunNode literal and stamp an insert sequence.
    * @param params - The resolved run fields.
    * @param params.runId - The run's id (its primary key).
-   * @param params.parentCodecMessageId - Structural parent codec-message-id, or undefined for a root.
+   * @param params.parentTransportMessageId - Structural parent codec-message-id, or undefined for a root.
    * @param params.forkOf - The resolved fork target's node key (already mapped through the codec-message-id index), or undefined.
-   * @param params.regeneratesCodecMessageId - The codec-message-id this run regenerates, or undefined.
+   * @param params.regeneratesTransportMessageId - The codec-message-id this run regenerates, or undefined.
    * @param params.clientId - The publishing client's id.
    * @param params.invocationId - The agent invocation id.
    * @param params.startSerial - Ably channel serial; undefined for optimistic inserts.
@@ -1040,9 +1055,9 @@ export class DefaultTree<
    */
   private _buildRunNode(params: {
     runId: string;
-    parentCodecMessageId: string | undefined;
+    parentTransportMessageId: string | undefined;
     forkOf: string | undefined;
-    regeneratesCodecMessageId: string | undefined;
+    regeneratesTransportMessageId: string | undefined;
     clientId: string;
     invocationId: string;
     startSerial: string | undefined;
@@ -1050,9 +1065,9 @@ export class DefaultTree<
     const node: RunNode<TProjection> = {
       kind: 'run',
       runId: params.runId,
-      parentCodecMessageId: params.parentCodecMessageId,
+      parentTransportMessageId: params.parentTransportMessageId,
       forkOf: params.forkOf,
-      regeneratesCodecMessageId: params.regeneratesCodecMessageId,
+      regeneratesTransportMessageId: params.regeneratesTransportMessageId,
       clientId: params.clientId,
       invocationId: params.invocationId,
       status: 'active',
@@ -1066,21 +1081,21 @@ export class DefaultTree<
 
   /**
    * Build a fresh InputNode from a run-less user input wire's headers.
-   * @param codecMessageId - The input's codec-message-id (its primary key).
+   * @param transportMessageId - The input's codec-message-id (its primary key).
    * @param headers - Transport headers from the inbound Ably message.
    * @param serial - Ably channel serial; undefined for optimistic inserts.
    * @returns A newly-allocated internal input node ready for insertion.
    */
   private _createInputNodeFromHeaders(
-    codecMessageId: string,
+    transportMessageId: string,
     headers: Record<string, string>,
     serial: string | undefined,
   ): InternalNode<TProjection> {
     const forkOfMsgId = headers[HEADER_FORK_OF];
     const node: InputNode<TProjection> = {
       kind: 'input',
-      codecMessageId,
-      parentCodecMessageId: headers[HEADER_PARENT],
+      transportMessageId,
+      parentTransportMessageId: headers[HEADER_PARENT],
       // An edit's fork-of names the original prompt's codec-message-id, which
       // IS that input node's key — no resolution needed.
       forkOf: forkOfMsgId,
@@ -1101,9 +1116,9 @@ export class DefaultTree<
     const forkOfMsgId = event.forkOf;
     return this._buildRunNode({
       runId: event.runId,
-      parentCodecMessageId: event.parent,
-      forkOf: forkOfMsgId ? this._codecMessageIdToNodeKey.get(forkOfMsgId) : undefined,
-      regeneratesCodecMessageId: event.regenerates,
+      parentTransportMessageId: event.parent,
+      forkOf: forkOfMsgId ? this._transportMessageIdToNodeKey.get(forkOfMsgId) : undefined,
+      regeneratesTransportMessageId: event.regenerates,
       clientId: event.clientId,
       invocationId: event.invocationId,
       startSerial: event.serial,

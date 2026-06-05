@@ -216,7 +216,7 @@ const createMockCodec = (overrides?: { encoderFactory?: () => MockEncoder }): Mo
     init: vi.fn((): TestProjection => ({ messages: [] })),
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- reducer signature; event/meta unused by this stub
     fold: vi.fn((state: TestProjection, _event: TestInput | TestOutput, _meta: ReducerMeta) => state),
-    getMessages: vi.fn((p: TestProjection) => p.messages.map((m) => ({ codecMessageId: m.id, message: m }))),
+    getMessages: vi.fn((p: TestProjection) => p.messages.map((m) => ({ transportMessageId: m.id, message: m }))),
     createUserMessage: vi.fn((m: TestMessage) => ({ kind: 'user-message' as const, message: m })),
     createRegenerate: vi.fn(
       (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }) as const,
@@ -279,7 +279,7 @@ const captureWarnLogger = (): {
  * emits a `user-message` event carrying that id; `fold` appends it to the
  * projection's `messages` list so `getMessages` returns one message per
  * inbound Ably message.
- * @returns A codec that decodes each inbound message into a single message whose id reflects the inbound codecMessageId header.
+ * @returns A codec that decodes each inbound message into a single message whose id reflects the inbound transportMessageId header.
  */
 const codecWithFunctionalDecoder = (): Codec<TestInput, TestOutput, TestProjection, TestMessage> => ({
   init: (): TestProjection => ({ messages: [] }),
@@ -292,7 +292,7 @@ const codecWithFunctionalDecoder = (): Codec<TestInput, TestOutput, TestProjecti
     }
     return state;
   },
-  getMessages: (p: TestProjection) => p.messages.map((m) => ({ codecMessageId: m.id, message: m })),
+  getMessages: (p: TestProjection) => p.messages.map((m) => ({ transportMessageId: m.id, message: m })),
   createUserMessage: (m: TestMessage) => ({ kind: 'user-message' as const, message: m }),
   createRegenerate: (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }),
   createEncoder: vi.fn(() => createMockEncoder()),
@@ -322,7 +322,7 @@ interface DeliverInputEventOpts {
   /** Optional run-id header. */
   runId?: string;
   /** The codec-message-id header. */
-  codecMessageId: string;
+  transportMessageId: string;
   /** Ably serial (used for dedup and sort assertions). */
   serial: string;
   /** Optional Ably message name; defaults to 'text'. */
@@ -359,13 +359,13 @@ const deliverInputEvent = (ch: MockChannel, opts: DeliverInputEventOpts): void =
   const headers: Record<string, string> = {
     [HEADER_ROLE]: 'user',
     [HEADER_INVOCATION_ID]: opts.invocationId,
-    [HEADER_TRANSPORT_MESSAGE_ID]: opts.codecMessageId,
+    [HEADER_TRANSPORT_MESSAGE_ID]: opts.transportMessageId,
     // Always stamp a event-id — the agent dispatcher routes input-event
     // messages by `event-id`, not by role, so without one the
     // synthetic message wouldn't reach the buffer/lookup path. Tests that
     // care about the specific id supply it via `opts.inputEventId`; otherwise
     // we derive a unique value from the codec-message-id.
-    [HEADER_EVENT_ID]: opts.inputEventId ?? `p-${opts.codecMessageId}`,
+    [HEADER_EVENT_ID]: opts.inputEventId ?? `p-${opts.transportMessageId}`,
   };
   if (opts.runId) headers[HEADER_RUN_ID] = opts.runId;
   if (opts.runClientId) headers['run-client-id'] = opts.runClientId;
@@ -588,7 +588,7 @@ describe('AgentSession', () => {
       deliverInputEvent(ch, {
         invocationId,
         runId,
-        codecMessageId: 'm-cont',
+        transportMessageId: 'm-cont',
         serial: 's-cont',
         inputEventId,
       });
@@ -611,7 +611,7 @@ describe('AgentSession', () => {
       // Regenerate is a Run-level continuation, not a fork: the agent
       // re-stamps the `msg-regenerate` it observed on the input-event
       // wire onto run-start so the client Tree can record the
-      // regeneratesCodecMessageId for message-level replacement.
+      // regeneratesTransportMessageId for message-level replacement.
       const ch = createMockChannel();
       const c = codecWithFunctionalDecoder();
       const s = createAgentSession({
@@ -632,7 +632,7 @@ describe('AgentSession', () => {
       // run-start. The run's identity is pinned via createRunFromOpts above.
       deliverInputEvent(ch, {
         invocationId,
-        codecMessageId: 'm-regen',
+        transportMessageId: 'm-regen',
         serial: 's-regen',
         inputEventId,
         parent: 'orig-user',
@@ -675,7 +675,7 @@ describe('AgentSession', () => {
       // createRunFromOpts above.
       deliverInputEvent(channel, {
         invocationId,
-        codecMessageId: 'm-icid-start',
+        transportMessageId: 'm-icid-start',
         serial: 's-icid-start',
         inputEventId,
         publisherClientId: 'user-b',
@@ -697,7 +697,7 @@ describe('AgentSession', () => {
       deliverInputEvent(channel, {
         invocationId,
         runId,
-        codecMessageId: 'm-icid-end',
+        transportMessageId: 'm-icid-end',
         serial: 's-icid-end',
         inputEventId,
         publisherClientId: 'user-b',
@@ -751,7 +751,7 @@ describe('AgentSession', () => {
       deliverInputEvent(channel, {
         invocationId,
         runId,
-        codecMessageId: 'm-icid-suspend',
+        transportMessageId: 'm-icid-suspend',
         serial: 's-icid-suspend',
         inputEventId,
         publisherClientId: 'user-b',
@@ -792,7 +792,7 @@ describe('AgentSession', () => {
     it('creates encoder with HEADER_TRANSPORT_MESSAGE_ID pointing at the target codec-message-id', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
-      await run.addEvents([{ kind: 'event', codecMessageId: 'target-msg-1', events: [{ type: 'tool-output' }] }]);
+      await run.addEvents([{ kind: 'event', transportMessageId: 'target-msg-1', events: [{ type: 'tool-output' }] }]);
 
       const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
       expect(headers[HEADER_ROLE]).toBe('assistant');
@@ -812,13 +812,13 @@ describe('AgentSession', () => {
       deliverInputEvent(channel, {
         invocationId,
         runId,
-        codecMessageId: 'm-icid-ae',
+        transportMessageId: 'm-icid-ae',
         serial: 's-icid-ae',
         inputEventId,
         publisherClientId: 'user-b',
       });
       await startPromise;
-      await run.addEvents([{ kind: 'event', codecMessageId: 'target-1', events: [{ type: 'ev' }] }]);
+      await run.addEvents([{ kind: 'event', transportMessageId: 'target-1', events: [{ type: 'ev' }] }]);
 
       const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
       expect(headers['input-client-id']).toBe('user-b');
@@ -831,7 +831,7 @@ describe('AgentSession', () => {
       await run.addEvents([
         {
           kind: 'event',
-          codecMessageId: 'target-1',
+          transportMessageId: 'target-1',
           events: [{ type: 'ev-a' }, { type: 'ev-b' }, { type: 'ev-c' }],
         },
       ]);
@@ -844,7 +844,7 @@ describe('AgentSession', () => {
     it('throws if run not started', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await expect(
-        run.addEvents([{ kind: 'event', codecMessageId: 'target-1', events: [{ type: 'ev' }] }]),
+        run.addEvents([{ kind: 'event', transportMessageId: 'target-1', events: [{ type: 'ev' }] }]),
       ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
 
@@ -854,8 +854,8 @@ describe('AgentSession', () => {
       // Reset counts after start (start publishes run-start, no encoder)
       const before = codec.encoderCalls.length;
       await run.addEvents([
-        { kind: 'event', codecMessageId: 'target-1', events: [{ type: 'ev-1' }] },
-        { kind: 'event', codecMessageId: 'target-2', events: [{ type: 'ev-2' }] },
+        { kind: 'event', transportMessageId: 'target-1', events: [{ type: 'ev-1' }] },
+        { kind: 'event', transportMessageId: 'target-2', events: [{ type: 'ev-2' }] },
       ]);
       // Two nodes → two encoders
       expect(codec.encoderCalls.length - before).toBe(2);
@@ -869,7 +869,7 @@ describe('AgentSession', () => {
     it('closes each encoder after publishing all events', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
-      await run.addEvents([{ kind: 'event', codecMessageId: 'target-1', events: [{ type: 'ev-1' }] }]);
+      await run.addEvents([{ kind: 'event', transportMessageId: 'target-1', events: [{ type: 'ev-1' }] }]);
       const enc = codec.lastEncoder();
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock check
       expect(enc?.close).toHaveBeenCalled();
@@ -888,7 +888,7 @@ describe('AgentSession', () => {
       const run = createRunFromOpts(failSession, { runId: 'run-1' });
       await run.start();
       await expect(
-        run.addEvents([{ kind: 'event', codecMessageId: 'target-1', events: [{ type: 'ev' }] }]),
+        run.addEvents([{ kind: 'event', transportMessageId: 'target-1', events: [{ type: 'ev' }] }]),
       ).rejects.toBeErrorInfoWithCode(ErrorCode.RunLifecycleError);
       failSession.close();
     });
@@ -919,7 +919,7 @@ describe('AgentSession', () => {
       deliverInputEvent(channel, {
         invocationId,
         runId,
-        codecMessageId: 'm-icid-pipe',
+        transportMessageId: 'm-icid-pipe',
         serial: 's-icid-pipe',
         inputEventId,
         publisherClientId: 'user-b',
@@ -964,7 +964,7 @@ describe('AgentSession', () => {
       // but if the assistant wire arrives before run-start on the client
       // (history pagination boundary or out-of-order delivery), the Tree
       // creates the Run from headers and needs `msg-regenerate` on
-      // the assistant wire to populate `RunNode.regeneratesCodecMessageId`.
+      // the assistant wire to populate `RunNode.regeneratesTransportMessageId`.
       // Mirrors how the agent echoes `fork-of` for edit runs.
       const ch = createMockChannel();
       const base = codecWithFunctionalDecoder();
@@ -992,7 +992,7 @@ describe('AgentSession', () => {
       deliverInputEvent(ch, {
         invocationId,
         runId,
-        codecMessageId: 'm-rg',
+        transportMessageId: 'm-rg',
         serial: 's-rg',
         inputEventId,
         parent: 'orig-user',
@@ -1038,7 +1038,7 @@ describe('AgentSession', () => {
       const invocationId = 'inv-pp';
       const run = createRunFromOpts(s, { runId, invocationId, inputEventId: 'p-u1' });
       const startPromise = run.start();
-      deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'user-1', serial: '01', inputEventId: 'p-u1' });
+      deliverInputEvent(ch, { invocationId, runId, transportMessageId: 'user-1', serial: '01', inputEventId: 'p-u1' });
       await startPromise;
 
       await run.pipe(streamOf({ type: 'text', text: 'reply' }));
@@ -1151,14 +1151,14 @@ describe('AgentSession', () => {
       await s.connect();
 
       const inputEventId = 'p-early';
-      const inputCodecMessageId = 'm-early';
+      const inputTransportMessageId = 'm-early';
       const run = createRunFromOpts(s, { runId: 'run-early', invocationId: 'inv-early', inputEventId });
 
       // Cancel arrives BEFORE the run is known (its input-event lookup hasn't
       // resolved the input → run linkage yet). It is buffered by the input
       // codec-message-id. Cancel handling is dispatched fire-and-forget, so
       // flush microtasks to guarantee it lands in the buffer before start().
-      simulateCancel(ch, { [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: inputCodecMessageId });
+      simulateCancel(ch, { [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: inputTransportMessageId });
       await new Promise((r) => setTimeout(r, 5));
 
       // start() runs the lookup; delivering the input resolves the linkage and
@@ -1166,7 +1166,7 @@ describe('AgentSession', () => {
       const startPromise = run.start();
       deliverInputEvent(ch, {
         invocationId: 'inv-early',
-        codecMessageId: inputCodecMessageId,
+        transportMessageId: inputTransportMessageId,
         serial: 's-early',
         inputEventId,
       });
@@ -1181,7 +1181,7 @@ describe('AgentSession', () => {
       await s.connect();
 
       const inputEventId = 'p-cont-early';
-      const inputCodecMessageId = 'm-cont-early';
+      const inputTransportMessageId = 'm-cont-early';
       const continuationRunId = 'run-cont-existing';
       // Build the run directly with no `runtime.runId` so the agent mints a
       // provisional run-id — mirroring production, where it differs from the
@@ -1198,7 +1198,7 @@ describe('AgentSession', () => {
       // fresh-send cancel takes.
       simulateCancel(ch, {
         [HEADER_RUN_ID]: continuationRunId,
-        [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: inputCodecMessageId,
+        [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: inputTransportMessageId,
       });
       await new Promise((r) => setTimeout(r, 5));
 
@@ -1209,7 +1209,7 @@ describe('AgentSession', () => {
       deliverInputEvent(ch, {
         invocationId: 'inv-cont-early',
         runId: continuationRunId,
-        codecMessageId: inputCodecMessageId,
+        transportMessageId: inputTransportMessageId,
         serial: 's-cont-early',
         inputEventId,
       });
@@ -1226,7 +1226,7 @@ describe('AgentSession', () => {
       await s.connect();
 
       const inputEventId = 'p-onc';
-      const inputCodecMessageId = 'm-onc';
+      const inputTransportMessageId = 'm-onc';
       // eslint-disable-next-line @typescript-eslint/require-await -- mock
       const onCancel = vi.fn(async () => true);
       const run = createRunFromOpts(s, {
@@ -1236,13 +1236,13 @@ describe('AgentSession', () => {
         onCancel,
       });
 
-      simulateCancel(ch, { [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: inputCodecMessageId });
+      simulateCancel(ch, { [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: inputTransportMessageId });
       await new Promise((r) => setTimeout(r, 5));
 
       const startPromise = run.start();
       deliverInputEvent(ch, {
         invocationId: 'inv-onc',
-        codecMessageId: inputCodecMessageId,
+        transportMessageId: inputTransportMessageId,
         serial: 's-onc',
         inputEventId,
       });
@@ -1258,7 +1258,7 @@ describe('AgentSession', () => {
       await s.connect();
 
       const inputEventId = 'p-deny';
-      const inputCodecMessageId = 'm-deny';
+      const inputTransportMessageId = 'm-deny';
       const run = createRunFromOpts(s, {
         runId: 'run-deny',
         invocationId: 'inv-deny',
@@ -1267,13 +1267,13 @@ describe('AgentSession', () => {
         onCancel: async () => false,
       });
 
-      simulateCancel(ch, { [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: inputCodecMessageId });
+      simulateCancel(ch, { [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: inputTransportMessageId });
       await new Promise((r) => setTimeout(r, 5));
 
       const startPromise = run.start();
       deliverInputEvent(ch, {
         invocationId: 'inv-deny',
-        codecMessageId: inputCodecMessageId,
+        transportMessageId: inputTransportMessageId,
         serial: 's-deny',
         inputEventId,
       });
@@ -1288,13 +1288,13 @@ describe('AgentSession', () => {
       await s.connect();
 
       const inputEventId = 'p-live';
-      const inputCodecMessageId = 'm-live';
+      const inputTransportMessageId = 'm-live';
       const run = createRunFromOpts(s, { runId: 'run-live', invocationId: 'inv-live', inputEventId });
 
       const startPromise = run.start();
       deliverInputEvent(ch, {
         invocationId: 'inv-live',
-        codecMessageId: inputCodecMessageId,
+        transportMessageId: inputTransportMessageId,
         serial: 's-live',
         inputEventId,
       });
@@ -1302,7 +1302,7 @@ describe('AgentSession', () => {
 
       // Cancel arrives AFTER start() resolved the input → run linkage; it
       // matches via the reverse index without any run-id.
-      simulateCancel(ch, { [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: inputCodecMessageId });
+      simulateCancel(ch, { [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: inputTransportMessageId });
       await new Promise((r) => setTimeout(r, 5));
 
       expect(run.abortSignal.aborted).toBe(true);
@@ -1339,7 +1339,7 @@ describe('AgentSession', () => {
       const evictedStart = evicted.start();
       deliverInputEvent(ch, {
         invocationId: 'inv-old',
-        codecMessageId: 'm-old',
+        transportMessageId: 'm-old',
         serial: 's-old',
         inputEventId: 'p-old',
       });
@@ -1350,7 +1350,7 @@ describe('AgentSession', () => {
       const retainedStart = retained.start();
       deliverInputEvent(ch, {
         invocationId: 'inv-new',
-        codecMessageId: 'm-new',
+        transportMessageId: 'm-new',
         serial: 's-new',
         inputEventId: 'p-new',
       });
@@ -1380,7 +1380,7 @@ describe('AgentSession', () => {
       const startPromise = run.start();
       deliverInputEvent(ch, {
         invocationId: 'inv-fresh',
-        codecMessageId: 'm-stale',
+        transportMessageId: 'm-stale',
         serial: 's-fresh',
         inputEventId: 'p-fresh',
       });
@@ -1394,19 +1394,19 @@ describe('AgentSession', () => {
       await s.connect();
 
       const inputEventId = 'p-ended';
-      const inputCodecMessageId = 'm-ended';
+      const inputTransportMessageId = 'm-ended';
       const run = createRunFromOpts(s, { runId: 'run-ended', invocationId: 'inv-ended', inputEventId });
       const startPromise = run.start();
       deliverInputEvent(ch, {
         invocationId: 'inv-ended',
-        codecMessageId: inputCodecMessageId,
+        transportMessageId: inputTransportMessageId,
         serial: 's-ended',
         inputEventId,
       });
       await startPromise;
       await run.end('complete');
 
-      simulateCancel(ch, { [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: inputCodecMessageId });
+      simulateCancel(ch, { [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: inputTransportMessageId });
       await new Promise((r) => setTimeout(r, 5));
 
       // No throw, no abort attempt against a non-existent registration.
@@ -1641,12 +1641,12 @@ describe('AgentSession', () => {
       const startPromise = run.start();
 
       // Deliver with a duplicate to assert dedup.
-      deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', inputEventId: 'p-a' });
-      deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', inputEventId: 'p-a' });
+      deliverInputEvent(ch, { invocationId, runId, transportMessageId: 'a', serial: '01', inputEventId: 'p-a' });
+      deliverInputEvent(ch, { invocationId, runId, transportMessageId: 'a', serial: '01', inputEventId: 'p-a' });
 
       await startPromise;
       expect(run.view.messages).toHaveLength(1);
-      expect(run.view.messages[0]?.codecMessageId).toBe('a');
+      expect(run.view.messages[0]?.transportMessageId).toBe('a');
       s.close();
     });
 
@@ -1687,14 +1687,20 @@ describe('AgentSession', () => {
       const runId = 'r-drain';
       const invocationId = 'inv-drain';
       // Pre-buffer the trigger event before any listener is registered.
-      deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'first', serial: '01', inputEventId: 'p-first' });
+      deliverInputEvent(ch, {
+        invocationId,
+        runId,
+        transportMessageId: 'first',
+        serial: '01',
+        inputEventId: 'p-first',
+      });
 
       const run = createRunFromOpts(s, { runId, invocationId, inputEventId: 'p-first' });
       const startPromise = run.start();
 
       // start() should resolve immediately by draining the buffer.
       await startPromise;
-      expect(run.view.messages.map((m) => m.codecMessageId)).toEqual(['first']);
+      expect(run.view.messages.map((m) => m.transportMessageId)).toEqual(['first']);
       s.close();
     });
 
@@ -1727,7 +1733,7 @@ describe('AgentSession', () => {
       deliverInputEvent(ch, {
         invocationId,
         runId,
-        codecMessageId: 'm-cont',
+        transportMessageId: 'm-cont',
         serial: 's-cont',
         inputEventId,
       });
@@ -1756,12 +1762,12 @@ describe('AgentSession', () => {
       const runId = 'r-buf';
       const invocationId = 'inv-buf';
       // Arrives before any lookup is registered — buffered by event-id.
-      deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', inputEventId: 'p-a' });
+      deliverInputEvent(ch, { invocationId, runId, transportMessageId: 'a', serial: '01', inputEventId: 'p-a' });
 
       const run = createRunFromOpts(s, { runId, invocationId, inputEventId: 'p-a' });
       await run.start();
 
-      expect(run.view.messages.map((m) => m.codecMessageId)).toEqual(['a']);
+      expect(run.view.messages.map((m) => m.transportMessageId)).toEqual(['a']);
       s.close();
     });
 
@@ -1786,13 +1792,13 @@ describe('AgentSession', () => {
       deliverInputEvent(ch, {
         invocationId: 'inv-DIFFERENT',
         runId: 'r-route',
-        codecMessageId: 'a',
+        transportMessageId: 'a',
         serial: '01',
         inputEventId: 'p-a',
       });
 
       await startPromise;
-      expect(run.view.messages.map((m) => m.codecMessageId)).toEqual(['a']);
+      expect(run.view.messages.map((m) => m.transportMessageId)).toEqual(['a']);
       s.close();
     });
 
@@ -1802,7 +1808,7 @@ describe('AgentSession', () => {
       const codec: Codec<TestInput, TestOutput, TestProjection, TestMessage> = {
         init: (): TestProjection => ({ messages: [] }),
         fold: (state: TestProjection): TestProjection => state,
-        getMessages: (p: TestProjection) => p.messages.map((m) => ({ codecMessageId: m.id, message: m })),
+        getMessages: (p: TestProjection) => p.messages.map((m) => ({ transportMessageId: m.id, message: m })),
         createUserMessage: (m: TestMessage) => ({ kind: 'user-message' as const, message: m }),
         createRegenerate: (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }),
         createEncoder: vi.fn(() => createMockEncoder()),
@@ -1824,7 +1830,7 @@ describe('AgentSession', () => {
       const invocationId = 'inv-bad';
       const run = createRunFromOpts(s, { runId, invocationId, inputEventId: 'p-a' });
       const startPromise = run.start();
-      deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', inputEventId: 'p-a' });
+      deliverInputEvent(ch, { invocationId, runId, transportMessageId: 'a', serial: '01', inputEventId: 'p-a' });
 
       const rejection = await startPromise.catch((error: unknown) => error);
       expect(rejection).toBeErrorInfoWithCode(ErrorCode.InputEventNotFound);
@@ -1874,12 +1880,12 @@ describe('AgentSession', () => {
       for (let i = 0; i < 200; i++) {
         deliverInputEvent(ch, {
           invocationId: `inv-${String(i)}`,
-          codecMessageId: `m${String(i)}`,
+          transportMessageId: `m${String(i)}`,
           serial: `s${String(i)}`,
         });
       }
       warn.mockClear();
-      deliverInputEvent(ch, { invocationId: 'inv-overflow', codecMessageId: 'm-over', serial: 's-over' });
+      deliverInputEvent(ch, { invocationId: 'inv-overflow', transportMessageId: 'm-over', serial: 's-over' });
 
       const evictCalls = warn.mock.calls.filter(
         (call) => typeof call[0] === 'string' && call[0].includes('input-event buffer full'),
@@ -1909,7 +1915,7 @@ describe('AgentSession', () => {
       for (let i = 0; i < 3; i++) {
         deliverInputEvent(ch, {
           invocationId: `inv-${String(i)}`,
-          codecMessageId: `m${String(i)}`,
+          transportMessageId: `m${String(i)}`,
           serial: `s${String(i)}`,
         });
       }
@@ -1919,7 +1925,7 @@ describe('AgentSession', () => {
       expect(evictCalls).toHaveLength(0);
 
       // The 4th distinct event-id must evict `p-m0` and log limit=3.
-      deliverInputEvent(ch, { invocationId: 'inv-3', codecMessageId: 'm3', serial: 's3' });
+      deliverInputEvent(ch, { invocationId: 'inv-3', transportMessageId: 'm3', serial: 's3' });
       evictCalls = warn.mock.calls.filter(
         (call) => typeof call[0] === 'string' && call[0].includes('input-event buffer full'),
       );
@@ -2040,13 +2046,13 @@ describe('Run.messages', () => {
     deliverInputEvent(ch, {
       invocationId: 'inv-1',
       runId: 'run-1',
-      codecMessageId: 'user-new',
+      transportMessageId: 'user-new',
       serial: 's-1',
       inputEventId: 'p-fresh',
     });
     await startPromise;
 
-    // The functional decoder produces { id: codecMessageId, content: codecMessageId }.
+    // The functional decoder produces { id: transportMessageId, content: transportMessageId }.
     expect(run.messages).toEqual([{ id: 'user-new', content: 'user-new' }]);
     session.close();
   });
@@ -2071,7 +2077,7 @@ describe('Run.messages', () => {
     deliverInputEvent(ch, {
       invocationId: 'inv-cont',
       runId: 'run-1',
-      codecMessageId: 'm-cont',
+      transportMessageId: 'm-cont',
       serial: 's-cont',
       inputEventId: 'p-cont',
     });
@@ -2102,7 +2108,7 @@ describe('Run.messages', () => {
     deliverInputEvent(ch, {
       invocationId: 'inv-cont',
       runId: 'run-1',
-      codecMessageId: 'm-cont',
+      transportMessageId: 'm-cont',
       serial: 's-cont',
       inputEventId: 'p-cont',
     });
@@ -2125,7 +2131,7 @@ describe('Run.messages', () => {
     const codec: Codec<TestInput, TestOutput, TestProjection, TestMessage> = {
       init: () => ({ messages: [] }),
       fold: (state) => state,
-      getMessages: (p) => p.messages.map((m) => ({ codecMessageId: m.id, message: m })),
+      getMessages: (p) => p.messages.map((m) => ({ transportMessageId: m.id, message: m })),
       createUserMessage: (m: TestMessage) => ({ kind: 'user-message' as const, message: m }),
       createRegenerate: (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }),
       createEncoder: vi.fn(() => createMockEncoder()),
@@ -2149,7 +2155,7 @@ describe('Run.messages', () => {
     deliverInputEvent(ch, {
       invocationId: 'inv-cont',
       runId: 'run-1',
-      codecMessageId: 'm-tool',
+      transportMessageId: 'm-tool',
       serial: 's-tool',
       inputEventId: 'p-tool',
       name: 'tool-output-available',
@@ -2203,7 +2209,14 @@ describe('Run.messages', () => {
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
     const startPromise = run.start();
-    deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'u2', serial: 's-05', inputEventId, parent: 'a1' });
+    deliverInputEvent(ch, {
+      invocationId,
+      runId,
+      transportMessageId: 'u2',
+      serial: 's-05',
+      inputEventId,
+      parent: 'a1',
+    });
     await startPromise;
 
     // Before loadConversation: only the current run's view messages (input u2).
@@ -2396,7 +2409,14 @@ describe('Run.loadConversation', () => {
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
     const startPromise = run.start();
-    deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'u2', serial: 's-05', inputEventId, parent: 'a1' });
+    deliverInputEvent(ch, {
+      invocationId,
+      runId,
+      transportMessageId: 'u2',
+      serial: 's-05',
+      inputEventId,
+      parent: 'a1',
+    });
     await startPromise;
 
     const history = await run.loadConversation();
@@ -2443,7 +2463,14 @@ describe('Run.loadConversation', () => {
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
     const startPromise = run.start();
-    deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'u3', serial: 's-07', inputEventId, parent: 'a2' });
+    deliverInputEvent(ch, {
+      invocationId,
+      runId,
+      transportMessageId: 'u3',
+      serial: 's-07',
+      inputEventId,
+      parent: 'a2',
+    });
     await startPromise;
 
     const history = await run.loadConversation();
@@ -2503,7 +2530,7 @@ describe('Run.loadConversation', () => {
     deliverInputEvent(ch, {
       invocationId,
       runId,
-      codecMessageId: 'rc',
+      transportMessageId: 'rc',
       serial: 's-05',
       inputEventId,
       parent: 'u1',
@@ -2563,7 +2590,7 @@ describe('Run.loadConversation', () => {
     deliverInputEvent(ch, {
       invocationId,
       runId,
-      codecMessageId: 'u2b',
+      transportMessageId: 'u2b',
       serial: 's-07',
       inputEventId,
       parent: 'a1',
@@ -2616,7 +2643,7 @@ describe('Run.loadConversation', () => {
     // resolves during start(). parent='a1' chains it onto turn 1.
     deliverInputEvent(ch, {
       invocationId,
-      codecMessageId: 'u2',
+      transportMessageId: 'u2',
       serial: 's-05',
       inputEventId,
       parent: 'a1',
@@ -2764,7 +2791,7 @@ describe('Run.loadConversation', () => {
     deliverInputEvent(ch, {
       invocationId,
       runId,
-      codecMessageId: 'tr1',
+      transportMessageId: 'tr1',
       serial: 's-06',
       inputEventId,
       parent: 'a1',
@@ -2883,13 +2910,13 @@ const viewMessageIds = (wiresOldestFirst: Ably.InboundMessage[]): string[] => {
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     vi.fn(() =>
       Promise.resolve({
-        inputCodecMessageId: 'k',
+        inputTransportMessageId: 'k',
         runId: Promise.resolve('r'),
         inputEventId: '',
         invocationId: 'inv',
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
         cancel: () => Promise.resolve(),
-        optimisticCodecMessageIds: [],
+        optimisticTransportMessageIds: [],
         toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       }),
     );
@@ -2936,7 +2963,14 @@ describe('agent loadConversation ≡ client View.getMessages (cross-engine equiv
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
     const startPromise = run.start();
-    deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'u2', serial: 's-05', inputEventId, parent: 'a1' });
+    deliverInputEvent(ch, {
+      invocationId,
+      runId,
+      transportMessageId: 'u2',
+      serial: 's-05',
+      inputEventId,
+      parent: 'a1',
+    });
     await startPromise;
 
     const agentMessages = await run.loadConversation();
@@ -2979,7 +3013,14 @@ describe('agent loadConversation ≡ client View.getMessages (cross-engine equiv
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
     const startPromise = run.start();
-    deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'u3', serial: 's-07', inputEventId, parent: 'a2' });
+    deliverInputEvent(ch, {
+      invocationId,
+      runId,
+      transportMessageId: 'u3',
+      serial: 's-07',
+      inputEventId,
+      parent: 'a2',
+    });
     await startPromise;
 
     const agentMessages = await run.loadConversation();

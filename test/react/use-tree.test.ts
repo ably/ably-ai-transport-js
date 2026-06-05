@@ -12,9 +12,9 @@ import { createMockSession } from './helper/mock-session.js';
 const makeFakeRun = (runId: string): RunNode<unknown> => ({
   kind: 'run',
   runId,
-  parentCodecMessageId: undefined,
+  parentTransportMessageId: undefined,
   forkOf: undefined,
-  regeneratesCodecMessageId: undefined,
+  regeneratesTransportMessageId: undefined,
   clientId: '',
   invocationId: '',
   status: 'complete',
@@ -46,14 +46,14 @@ describe('useTree', () => {
     expect(result.current.getRunNode('run-1')).toBe(fakeRun);
   });
 
-  it('delegates getNodeByCodecMessageId to tree', () => {
+  it('delegates getNodeByTransportMessageId to tree', () => {
     const mock = createMockSession([]);
     const fakeRun = makeFakeRun('run-1');
-    (mock.tree.getNodeByCodecMessageId as ReturnType<typeof vi.fn>).mockReturnValue(fakeRun);
+    (mock.tree.getNodeByTransportMessageId as ReturnType<typeof vi.fn>).mockReturnValue(fakeRun);
 
     const { result } = renderHook(() => useTree({ session: mock.session }));
 
-    expect(result.current.getNodeByCodecMessageId('msg-1')).toBe(fakeRun);
+    expect(result.current.getNodeByTransportMessageId('msg-1')).toBe(fakeRun);
   });
 
   it('returns safe defaults when no session and no nearest context', () => {
@@ -61,7 +61,7 @@ describe('useTree', () => {
 
     expect(result.current.getSiblingNodes('a')).toEqual([]);
     expect(result.current.getRunNode('a')).toBeUndefined();
-    expect(result.current.getNodeByCodecMessageId('msg-1')).toBeUndefined();
+    expect(result.current.getNodeByTransportMessageId('msg-1')).toBeUndefined();
   });
 
   it('uses nearest session from context when session is omitted', () => {

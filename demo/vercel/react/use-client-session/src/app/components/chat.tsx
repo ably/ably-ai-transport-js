@@ -123,11 +123,11 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
   }, []);
 
   const handleToolApprove = useCallback(
-    (codecMessageId: string, toolCallId: string) => {
-      const run = view.runOf(codecMessageId);
+    (transportMessageId: string, toolCallId: string) => {
+      const run = view.runOf(transportMessageId);
       if (!run) return;
       wake(
-        view.send([UIMessageCodec.createToolApprovalResponse(codecMessageId, { toolCallId, approved: true })], {
+        view.send([UIMessageCodec.createToolApprovalResponse(transportMessageId, { toolCallId, approved: true })], {
           runId: run.runId,
         }),
       );
@@ -136,13 +136,13 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
   );
 
   const handleToolDeny = useCallback(
-    (codecMessageId: string, toolCallId: string) => {
-      const run = view.runOf(codecMessageId);
+    (transportMessageId: string, toolCallId: string) => {
+      const run = view.runOf(transportMessageId);
       if (!run) return;
       wake(
         view.send(
           [
-            UIMessageCodec.createToolApprovalResponse(codecMessageId, {
+            UIMessageCodec.createToolApprovalResponse(transportMessageId, {
               toolCallId,
               approved: false,
               reason: 'User denied',
@@ -169,9 +169,9 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
             runOf,
           }}
           onLoadOlder={() => void loadOlder()}
-          onRegenerate={(codecMessageId) => wake(view.regenerate(codecMessageId))}
-          onEdit={(codecMessageId, text) =>
-            wake(view.edit(codecMessageId, [UIMessageCodec.createUserMessage(userMessage(text))]))
+          onRegenerate={(transportMessageId) => wake(view.regenerate(transportMessageId))}
+          onEdit={(transportMessageId, text) =>
+            wake(view.edit(transportMessageId, [UIMessageCodec.createUserMessage(userMessage(text))]))
           }
           onToolApprove={handleToolApprove}
           onToolDeny={handleToolDeny}

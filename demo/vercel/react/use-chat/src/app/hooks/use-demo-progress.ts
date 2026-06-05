@@ -96,8 +96,8 @@ const ALL_STEPS: DemoStep[] = [
 
 export function useDemoProgress(
   messages: UIMessage[],
-  runOf: (codecMessageId: string) => RunInfo | undefined,
-  branchSelection: (codecMessageId: string) => BranchSelection<UIMessage>,
+  runOf: (transportMessageId: string) => RunInfo | undefined,
+  branchSelection: (transportMessageId: string) => BranchSelection<UIMessage>,
   ablyMessages: Ably.InboundMessage[],
 ): DemoStep[] {
   return useMemo(() => {

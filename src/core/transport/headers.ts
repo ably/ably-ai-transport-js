@@ -33,7 +33,7 @@ import type { RunEndReason, RunLifecycleEvent } from './types.js';
  * @param opts.runId - Run correlation ID, or `undefined` for a fresh client
  *   input (the client no longer mints run-ids — the agent does). Omitted from
  *   the headers when undefined; a continuation still carries the known run-id.
- * @param opts.codecMessageId - Message identity — the wire `codec-message-id` for this message.
+ * @param opts.transportMessageId - Message identity — the wire `codec-message-id` for this message.
  * @param opts.runClientId - ClientId of the run initiator.
  * @param opts.parent - Preceding message's codec-message-id (for branching).
  * @param opts.forkOf - Forked user-prompt's codec-message-id (for edits — creates a Run-level fork sibling).
@@ -48,7 +48,7 @@ import type { RunEndReason, RunLifecycleEvent } from './types.js';
  *   own publishes (run lifecycle + outputs). Differs from `runClientId` on
  *   continuation invocations driven by an input from a non-owner.
  * @param opts.inputEventId - Per-event identifier. Set on each client-published user-prompt message; the invocation body's `inputEventIds` lists the ids the agent should look up.
- * @param opts.inputCodecMessageId - The codec-message-id of the input event that
+ * @param opts.inputTransportMessageId - The codec-message-id of the input event that
  *   triggered the current invocation (the one whose `event-id` matched the
  *   invocation's `inputEventId`). The agent re-stamps it on every event it
  *   publishes for the invocation (run lifecycle + outputs), mirroring
@@ -59,19 +59,19 @@ import type { RunEndReason, RunLifecycleEvent } from './types.js';
 export const buildTransportHeaders = (opts: {
   role: string;
   runId?: string;
-  codecMessageId: string;
+  transportMessageId: string;
   runClientId?: string;
   parent?: string;
   forkOf?: string;
   regenerates?: string;
   invocationId?: string;
   inputClientId?: string;
-  inputCodecMessageId?: string;
+  inputTransportMessageId?: string;
   inputEventId?: string;
 }): Record<string, string> => {
   const h: Record<string, string> = {
     [HEADER_ROLE]: opts.role,
-    [HEADER_TRANSPORT_MESSAGE_ID]: opts.codecMessageId,
+    [HEADER_TRANSPORT_MESSAGE_ID]: opts.transportMessageId,
   };
   if (opts.runId !== undefined) h[HEADER_RUN_ID] = opts.runId;
   if (opts.runClientId !== undefined) h[HEADER_RUN_CLIENT_ID] = opts.runClientId;
@@ -80,7 +80,7 @@ export const buildTransportHeaders = (opts: {
   if (opts.regenerates) h[HEADER_MSG_REGENERATE] = opts.regenerates;
   if (opts.invocationId) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.inputClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.inputClientId;
-  if (opts.inputCodecMessageId !== undefined) h[HEADER_INPUT_TRANSPORT_MESSAGE_ID] = opts.inputCodecMessageId;
+  if (opts.inputTransportMessageId !== undefined) h[HEADER_INPUT_TRANSPORT_MESSAGE_ID] = opts.inputTransportMessageId;
   if (opts.inputEventId) h[HEADER_EVENT_ID] = opts.inputEventId;
   return h;
 };
@@ -103,7 +103,7 @@ export const buildTransportHeaders = (opts: {
  * @param opts.regenerates - Regenerated assistant codec-message-id (fresh run-start only).
  * @param opts.invocationId - Agent-minted invocation id; carried on every lifecycle event.
  * @param opts.inputClientId - ClientId of the triggering input event.
- * @param opts.inputCodecMessageId - Codec-message-id of the triggering input event.
+ * @param opts.inputTransportMessageId - Codec-message-id of the triggering input event.
  * @param opts.reason - Terminal reason; stamped on run-end only.
  * @returns A headers record with the lifecycle headers set.
  */
@@ -115,7 +115,7 @@ export const buildLifecycleHeaders = (opts: {
   regenerates?: string;
   invocationId?: string;
   inputClientId?: string;
-  inputCodecMessageId?: string;
+  inputTransportMessageId?: string;
   reason?: RunEndReason;
 }): Record<string, string> => {
   const h: Record<string, string> = {
@@ -128,7 +128,7 @@ export const buildLifecycleHeaders = (opts: {
   if (opts.regenerates !== undefined) h[HEADER_MSG_REGENERATE] = opts.regenerates;
   if (opts.invocationId !== undefined) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.inputClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.inputClientId;
-  if (opts.inputCodecMessageId !== undefined) h[HEADER_INPUT_TRANSPORT_MESSAGE_ID] = opts.inputCodecMessageId;
+  if (opts.inputTransportMessageId !== undefined) h[HEADER_INPUT_TRANSPORT_MESSAGE_ID] = opts.inputTransportMessageId;
   return h;
 };
 

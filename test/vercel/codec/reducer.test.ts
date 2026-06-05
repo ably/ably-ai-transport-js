@@ -23,11 +23,11 @@ const meta = (serial: string, messageId?: string): ReducerMeta =>
  * the SDK correlates on. `message.id` is preserved from the source and is
  * never used for lookup.
  * @param state - The projection to search.
- * @param codecMessageId - The codec-message-id to find.
+ * @param transportMessageId - The codec-message-id to find.
  * @returns The reconstructed message, or undefined.
  */
-const msgById = (state: VercelProjection, codecMessageId: string): AI.UIMessage | undefined =>
-  state.messages.find((e) => e.codecMessageId === codecMessageId)?.message;
+const msgById = (state: VercelProjection, transportMessageId: string): AI.UIMessage | undefined =>
+  state.messages.find((e) => e.transportMessageId === transportMessageId)?.message;
 
 /**
  * Build a baseline projection in which `toolCallId` is in the
@@ -75,8 +75,8 @@ describe('Vercel reducer', () => {
     it('returns the messages paired with their codec-message-ids', () => {
       const state = init();
       const msg: AI.UIMessage = { id: 'm-1', role: 'user', parts: [{ type: 'text', text: 'hi' }] };
-      state.messages.push({ codecMessageId: 'cm-1', message: msg });
-      expect(getMessages(state)).toEqual([{ codecMessageId: 'cm-1', message: msg }]);
+      state.messages.push({ transportMessageId: 'cm-1', message: msg });
+      expect(getMessages(state)).toEqual([{ transportMessageId: 'cm-1', message: msg }]);
     });
   });
 
@@ -206,7 +206,7 @@ describe('Vercel reducer', () => {
       state = fold(state, event, meta('s1', 'cm-1'));
 
       expect(state.messages).toHaveLength(1);
-      expect(state.messages[0]).toEqual({ codecMessageId: 'cm-1', message });
+      expect(state.messages[0]).toEqual({ transportMessageId: 'cm-1', message });
       expect(state.messages[0]?.message.id).toBe('u-1');
     });
 
@@ -219,7 +219,7 @@ describe('Vercel reducer', () => {
       state = fold(state, { kind: 'user-message', message: replacement }, meta('s2', 'cm-1'));
 
       expect(state.messages).toHaveLength(1);
-      expect(state.messages[0]).toEqual({ codecMessageId: 'cm-1', message: replacement });
+      expect(state.messages[0]).toEqual({ transportMessageId: 'cm-1', message: replacement });
     });
   });
 
@@ -237,11 +237,11 @@ describe('Vercel reducer', () => {
       );
 
       // The continuation publish carries its own wire codec-message-id; the reducer
-      // redirects the response onto the assistant by codecMessageId+toolCallId
+      // redirects the response onto the assistant by transportMessageId+toolCallId
       // and marks the continuation codec-message-id as consumed.
       const approval: VercelInput = {
         kind: 'tool-approval-response',
-        codecMessageId: 'msg-1',
+        transportMessageId: 'msg-1',
         payload: { toolCallId: 'tc-1', approved: true },
       };
       state = fold(state, approval, meta('s3', 'continuation-codec-message-id'));
@@ -267,7 +267,7 @@ describe('Vercel reducer', () => {
 
       const denial: VercelInput = {
         kind: 'tool-approval-response',
-        codecMessageId: 'msg-1',
+        transportMessageId: 'msg-1',
         payload: { toolCallId: 'tc-1', approved: false, reason: 'nope' },
       };
       state = fold(state, denial, meta('s3', 'continuation-codec-message-id'));
@@ -283,7 +283,7 @@ describe('Vercel reducer', () => {
       // Approval arrives before any assistant exists for tc-1 → buffer.
       const approval: VercelInput = {
         kind: 'tool-approval-response',
-        codecMessageId: 'msg-1',
+        transportMessageId: 'msg-1',
         payload: { toolCallId: 'tc-1', approved: true },
       };
       state = fold(state, approval, meta('s1', 'continuation-codec-message-id'));
@@ -303,7 +303,7 @@ describe('Vercel reducer', () => {
   // -- tool-output / tool-output-error (client inputs that redirect) --------
 
   describe('tool-result / tool-result-error inputs', () => {
-    it('redirects tool-result onto the prior assistant by codecMessageId+toolCallId', () => {
+    it('redirects tool-result onto the prior assistant by transportMessageId+toolCallId', () => {
       let state = init();
       state = fold(
         state,
@@ -318,7 +318,7 @@ describe('Vercel reducer', () => {
 
       const toolOutput: VercelInput = {
         kind: 'tool-result',
-        codecMessageId: 'msg-1',
+        transportMessageId: 'msg-1',
         payload: { toolCallId: 'tc-1', output: { latitude: 51.5, longitude: -0.1 } },
       };
       state = fold(state, toolOutput, meta('s3', 'continuation-codec-message-id-0'));
@@ -347,12 +347,12 @@ describe('Vercel reducer', () => {
 
       const first: VercelInput = {
         kind: 'tool-result',
-        codecMessageId: 'msg-1',
+        transportMessageId: 'msg-1',
         payload: { toolCallId: 'tc-1', output: { v: 1 } },
       };
       const second: VercelInput = {
         kind: 'tool-result',
-        codecMessageId: 'msg-1',
+        transportMessageId: 'msg-1',
         payload: { toolCallId: 'tc-1', output: { v: 2 } },
       };
 
@@ -367,7 +367,7 @@ describe('Vercel reducer', () => {
       expect(toolPart.output).toEqual({ v: 1 });
     });
 
-    it('redirects tool-result-error onto the prior assistant by codecMessageId+toolCallId', () => {
+    it('redirects tool-result-error onto the prior assistant by transportMessageId+toolCallId', () => {
       let state = init();
       state = fold(
         state,
@@ -382,7 +382,7 @@ describe('Vercel reducer', () => {
 
       const errorInput: VercelInput = {
         kind: 'tool-result-error',
-        codecMessageId: 'msg-1',
+        transportMessageId: 'msg-1',
         payload: { toolCallId: 'tc-1', message: 'permission denied' },
       };
       state = fold(state, errorInput, meta('s3', 'continuation-codec-message-id-0'));
@@ -399,7 +399,7 @@ describe('Vercel reducer', () => {
       let state = init();
       const orphan: VercelInput = {
         kind: 'tool-result',
-        codecMessageId: 'msg-1',
+        transportMessageId: 'msg-1',
         payload: { toolCallId: 'tc-1', output: { v: 'x' } },
       };
       state = fold(state, orphan, meta('s1', 'continuation-codec-message-id-0'));
@@ -479,7 +479,7 @@ describe('Vercel reducer', () => {
       );
 
       // No phantom message created for the fresh id.
-      expect(state.messages.map((e) => e.codecMessageId)).toEqual(['msg-1']);
+      expect(state.messages.map((e) => e.transportMessageId)).toEqual(['msg-1']);
       const part = state.messages[0]?.message.parts.find((p) => p.type === 'dynamic-tool' && p.toolCallId === 'tc-1');
       expect(part?.type === 'dynamic-tool' && part.state).toBe('output-available');
       expect(part?.type === 'dynamic-tool' && part.state === 'output-available' && part.output).toEqual({ v: 42 });
@@ -493,7 +493,7 @@ describe('Vercel reducer', () => {
         meta('s2', 'msg-2'),
       );
 
-      expect(state.messages.map((e) => e.codecMessageId)).toEqual(['msg-1']);
+      expect(state.messages.map((e) => e.transportMessageId)).toEqual(['msg-1']);
       const part = state.messages[0]?.message.parts.find((p) => p.type === 'dynamic-tool' && p.toolCallId === 'tc-1');
       expect(part?.type === 'dynamic-tool' && part.state).toBe('output-error');
       expect(part?.type === 'dynamic-tool' && part.state === 'output-error' && part.errorText).toBe('boom');
@@ -519,7 +519,7 @@ describe('Vercel reducer', () => {
       const event = UIMessageCodec.createUserMessage(message);
 
       state = UIMessageCodec.fold(state, event, meta('s1', 'cm-1'));
-      expect(UIMessageCodec.getMessages(state)).toEqual([{ codecMessageId: 'cm-1', message }]);
+      expect(UIMessageCodec.getMessages(state)).toEqual([{ transportMessageId: 'cm-1', message }]);
     });
   });
 

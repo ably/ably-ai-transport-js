@@ -98,7 +98,7 @@ describe('RunManager', () => {
         continuation: true,
         invocationId: 'inv-2',
         inputClientId: 'user-b',
-        inputCodecMessageId: 'trigger-msg',
+        inputTransportMessageId: 'trigger-msg',
       });
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
@@ -172,15 +172,15 @@ describe('RunManager', () => {
       expect(headers[HEADER_FORK_OF]).toBeUndefined();
     });
 
-    it('stamps input-codec-message-id when metadata.inputCodecMessageId is set', async () => {
-      await manager.startRun('run-1', 'user-a', undefined, { inputCodecMessageId: 'trigger-msg' });
+    it('stamps input-codec-message-id when metadata.inputTransportMessageId is set', async () => {
+      await manager.startRun('run-1', 'user-a', undefined, { inputTransportMessageId: 'trigger-msg' });
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
       const headers = headersOf(channel.publishCalls.at(0)!);
       expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('trigger-msg');
     });
 
-    it('omits input-codec-message-id when inputCodecMessageId is unset', async () => {
+    it('omits input-codec-message-id when inputTransportMessageId is unset', async () => {
       await manager.startRun('run-1', 'user-a');
 
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
@@ -239,7 +239,7 @@ describe('RunManager', () => {
       expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
     });
 
-    it('stamps input-codec-message-id when inputCodecMessageId is provided', async () => {
+    it('stamps input-codec-message-id when inputTransportMessageId is provided', async () => {
       await manager.startRun('run-1', 'user-a');
       await manager.endRun('run-1', 'complete', 'inv-1', 'user-b', 'trigger-msg');
 
@@ -248,7 +248,7 @@ describe('RunManager', () => {
       expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('trigger-msg');
     });
 
-    it('omits input-codec-message-id when inputCodecMessageId is unset', async () => {
+    it('omits input-codec-message-id when inputTransportMessageId is unset', async () => {
       await manager.startRun('run-1', 'user-a');
       await manager.endRun('run-1', 'complete');
 

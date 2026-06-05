@@ -7,9 +7,9 @@ import { MessageBubble } from './message-bubble';
 import { IntroCard } from './intro-card';
 
 interface ViewLookupApi {
-  branchSelection: (codecMessageId: string) => BranchSelection<UIMessage>;
-  selectSibling: (codecMessageId: string, index: number) => void;
-  runOf: (codecMessageId: string) => RunInfo | undefined;
+  branchSelection: (transportMessageId: string) => BranchSelection<UIMessage>;
+  selectSibling: (transportMessageId: string, index: number) => void;
+  runOf: (transportMessageId: string) => RunInfo | undefined;
 }
 
 interface MessageListProps {
@@ -20,8 +20,8 @@ interface MessageListProps {
   onLoadOlder: () => void;
   onRegenerate: (messageId: string) => void;
   onEdit: (messageId: string, newText: string) => void;
-  onToolApprove?: (codecMessageId: string, toolCallId: string) => void;
-  onToolDeny?: (codecMessageId: string, toolCallId: string) => void;
+  onToolApprove?: (transportMessageId: string, toolCallId: string) => void;
+  onToolDeny?: (transportMessageId: string, toolCallId: string) => void;
 }
 
 export function MessageList({

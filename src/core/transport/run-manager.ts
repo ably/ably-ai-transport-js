@@ -31,7 +31,7 @@ export interface StartRunMetadata {
   /** ClientId of the triggering input event. */
   inputClientId?: string;
   /** Codec-message-id of the triggering input event. */
-  inputCodecMessageId?: string;
+  inputTransportMessageId?: string;
   /** When true, publish `ai-run-resume` (re-entry) instead of `ai-run-start`. */
   continuation?: boolean;
 }
@@ -61,17 +61,22 @@ export interface RunManager {
    * live AbortController to retain. A cancel arriving during suspension is a
    * no-op; the resuming invocation re-registers the run via {@link startRun}.
    * Carries the same per-invocation attribution as {@link endRun}
-   * (`inputClientId`, `inputCodecMessageId`), since a suspend is the terminal
+   * (`inputClientId`, `inputTransportMessageId`), since a suspend is the terminal
    * event of the suspending invocation just as run-end is of an ending one.
    */
-  suspendRun(runId: string, invocationId?: string, inputClientId?: string, inputCodecMessageId?: string): Promise<void>;
+  suspendRun(
+    runId: string,
+    invocationId?: string,
+    inputClientId?: string,
+    inputTransportMessageId?: string,
+  ): Promise<void>;
   /** End a run. Publishes run-end on the channel. Cleans up internal state. */
   endRun(
     runId: string,
     reason: RunEndReason,
     invocationId?: string,
     inputClientId?: string,
-    inputCodecMessageId?: string,
+    inputTransportMessageId?: string,
   ): Promise<void>;
   /** Get the AbortSignal for a run. */
   getSignal(runId: string): AbortSignal | undefined;
@@ -138,7 +143,7 @@ class DefaultRunManager implements RunManager {
       regenerates: continuation ? undefined : metadata?.regenerates,
       invocationId: metadata?.invocationId,
       inputClientId: metadata?.inputClientId,
-      inputCodecMessageId: metadata?.inputCodecMessageId,
+      inputTransportMessageId: metadata?.inputTransportMessageId,
     });
 
     await this._channel.publish({
@@ -154,10 +159,10 @@ class DefaultRunManager implements RunManager {
     runId: string,
     invocationId?: string,
     inputClientId?: string,
-    inputCodecMessageId?: string,
+    inputTransportMessageId?: string,
   ): Promise<void> {
     this._logger?.trace('DefaultRunManager.suspendRun();', { runId });
-    await this._publishTerminal(EVENT_RUN_SUSPEND, runId, { invocationId, inputClientId, inputCodecMessageId });
+    await this._publishTerminal(EVENT_RUN_SUSPEND, runId, { invocationId, inputClientId, inputTransportMessageId });
     this._logger?.debug('DefaultRunManager.suspendRun(); run suspended', { runId });
   }
 
@@ -166,10 +171,10 @@ class DefaultRunManager implements RunManager {
     reason: RunEndReason,
     invocationId?: string,
     inputClientId?: string,
-    inputCodecMessageId?: string,
+    inputTransportMessageId?: string,
   ): Promise<void> {
     this._logger?.trace('DefaultRunManager.endRun();', { runId, reason });
-    await this._publishTerminal(EVENT_RUN_END, runId, { reason, invocationId, inputClientId, inputCodecMessageId });
+    await this._publishTerminal(EVENT_RUN_END, runId, { reason, invocationId, inputClientId, inputTransportMessageId });
     this._logger?.debug('DefaultRunManager.endRun(); run ended', { runId, reason });
   }
 
@@ -185,7 +190,7 @@ class DefaultRunManager implements RunManager {
    * @param attribution.reason - Terminal reason; set for run-end, omitted for run-suspend.
    * @param attribution.invocationId - The invocation's id.
    * @param attribution.inputClientId - ClientId of the triggering input event.
-   * @param attribution.inputCodecMessageId - Codec-message-id of the triggering input event.
+   * @param attribution.inputTransportMessageId - Codec-message-id of the triggering input event.
    */
   private async _publishTerminal(
     eventName: string,
@@ -194,7 +199,7 @@ class DefaultRunManager implements RunManager {
       reason?: RunEndReason;
       invocationId?: string;
       inputClientId?: string;
-      inputCodecMessageId?: string;
+      inputTransportMessageId?: string;
     },
   ): Promise<void> {
     const resolvedClientId = this._activeRuns.get(runId)?.clientId ?? '';

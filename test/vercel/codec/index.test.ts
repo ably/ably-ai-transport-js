@@ -28,29 +28,29 @@ describe('UIMessageCodec', () => {
   });
 
   describe('createToolResult', () => {
-    it('builds a tool-result input carrying codecMessageId and the domain payload', () => {
+    it('builds a tool-result input carrying transportMessageId and the domain payload', () => {
       const input = UIMessageCodec.createToolResult('asst-A1', { toolCallId: 'tc-1', output: { temp: 22 } });
       expect(input).toEqual({
         kind: 'tool-result',
-        codecMessageId: 'asst-A1',
+        transportMessageId: 'asst-A1',
         payload: { toolCallId: 'tc-1', output: { temp: 22 } },
       });
     });
   });
 
   describe('createToolResultError', () => {
-    it('builds a tool-result-error input carrying codecMessageId and the domain payload', () => {
+    it('builds a tool-result-error input carrying transportMessageId and the domain payload', () => {
       const input = UIMessageCodec.createToolResultError('asst-A1', { toolCallId: 'tc-1', message: 'boom' });
       expect(input).toEqual({
         kind: 'tool-result-error',
-        codecMessageId: 'asst-A1',
+        transportMessageId: 'asst-A1',
         payload: { toolCallId: 'tc-1', message: 'boom' },
       });
     });
   });
 
   describe('createToolApprovalResponse', () => {
-    it('builds a tool-approval-response input carrying codecMessageId and the domain payload', () => {
+    it('builds a tool-approval-response input carrying transportMessageId and the domain payload', () => {
       const input = UIMessageCodec.createToolApprovalResponse('asst-A1', {
         toolCallId: 'tc-1',
         approved: false,
@@ -58,7 +58,7 @@ describe('UIMessageCodec', () => {
       });
       expect(input).toEqual({
         kind: 'tool-approval-response',
-        codecMessageId: 'asst-A1',
+        transportMessageId: 'asst-A1',
         payload: { toolCallId: 'tc-1', approved: false, reason: 'no' },
       });
     });

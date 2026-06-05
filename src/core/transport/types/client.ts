@@ -103,7 +103,7 @@ export interface ActiveRun {
    * key on this — it is known immediately, unlike {@link runId}, which the
    * agent now mints.
    */
-  inputCodecMessageId: string;
+  inputTransportMessageId: string;
   /**
    * The run's unique identifier, resolved when the agent's `ai-run-start` for
    * this send is observed on the channel. The agent mints the run-id now (the
@@ -122,7 +122,7 @@ export interface ActiveRun {
   inputEventId: string;
   /**
    * Cancel this specific run. Publishes a cancel signal synchronously — keyed
-   * by the triggering input's codec-message-id ({@link inputCodecMessageId}),
+   * by the triggering input's codec-message-id ({@link inputTransportMessageId}),
    * which the client owns the moment it publishes, so a cancel issued before
    * the agent mints the run-id is still honoured (the agent buffers it and
    * fires it once its input-event lookup resolves the input to the run). A
@@ -135,7 +135,7 @@ export interface ActiveRun {
    * Present when the send included user messages (edit); empty for
    * regeneration (no user messages to insert optimistically).
    */
-  optimisticCodecMessageIds: string[];
+  optimisticTransportMessageIds: string[];
   /**
    * Build the {@link Invocation} pointer for this run — `inputEventId`, the
    * session's channel name as `sessionName`, and `runId` only for a

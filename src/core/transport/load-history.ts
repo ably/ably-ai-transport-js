@@ -51,20 +51,20 @@ interface HistoryState {
    * first-contact), or a `message.create` carrying `discrete` (a discrete
    * message, created and terminated in one wire message).
    */
-  startedCodecMessageIds: Set<string>;
+  startedTransportMessageIds: Set<string>;
   /**
    * `codec-message-id`s with a terminal wire signal: either `discrete`
    * on a `message.create` (discrete message) or `status: "complete"`
    * / `"cancelled"` on any action (closed stream).
    */
-  terminatedCodecMessageIds: Set<string>;
+  terminatedTransportMessageIds: Set<string>;
   /**
    * `codec-message-id`s that are both started AND terminated — counted as
    * complete. The fetch loop reads this set's size to decide when to stop
    * paging. Maintained incrementally by {@link countNewCompletions}. Grows
    * monotonically.
    */
-  completedCodecMessageIds: Set<string>;
+  completedTransportMessageIds: Set<string>;
   logger: Logger;
 }
 
@@ -117,8 +117,8 @@ interface HistoryState {
 const countNewCompletions = (state: HistoryState, newMessages: readonly Ably.InboundMessage[]): void => {
   for (const msg of newMessages) {
     const headers = getTransportHeaders(msg);
-    const codecMessageId = headers[HEADER_TRANSPORT_MESSAGE_ID];
-    if (!codecMessageId) continue;
+    const transportMessageId = headers[HEADER_TRANSPORT_MESSAGE_ID];
+    if (!transportMessageId) continue;
 
     const action = msg.action;
     const isDiscreteCreate = action === 'message.create' && HEADER_DISCRETE in headers;
@@ -132,10 +132,13 @@ const countNewCompletions = (state: HistoryState, newMessages: readonly Ably.Inb
     const status = headers[HEADER_STATUS];
     const isTerminal = status === 'complete' || status === 'cancelled';
 
-    if (isDiscreteCreate || hasStreamContent) state.startedCodecMessageIds.add(codecMessageId);
-    if (isDiscreteCreate || isTerminal) state.terminatedCodecMessageIds.add(codecMessageId);
-    if (state.startedCodecMessageIds.has(codecMessageId) && state.terminatedCodecMessageIds.has(codecMessageId)) {
-      state.completedCodecMessageIds.add(codecMessageId);
+    if (isDiscreteCreate || hasStreamContent) state.startedTransportMessageIds.add(transportMessageId);
+    if (isDiscreteCreate || isTerminal) state.terminatedTransportMessageIds.add(transportMessageId);
+    if (
+      state.startedTransportMessageIds.has(transportMessageId) &&
+      state.terminatedTransportMessageIds.has(transportMessageId)
+    ) {
+      state.completedTransportMessageIds.add(transportMessageId);
     }
   }
 };
@@ -163,10 +166,10 @@ const fetchUntilLimit = async (
   countNewCompletions(state, ablyPage.items);
 
   const target = state.returnedCount + limit;
-  while (state.completedCodecMessageIds.size < target && ablyPage.hasNext()) {
+  while (state.completedTransportMessageIds.size < target && ablyPage.hasNext()) {
     state.logger.debug('loadHistory.fetchUntilLimit(); fetching next page', {
       collected: state.rawMessages.length,
-      completed: state.completedCodecMessageIds.size,
+      completed: state.completedTransportMessageIds.size,
     });
     const nextPage = await ablyPage.next();
     if (!nextPage) break;
@@ -191,7 +194,7 @@ const buildResult = (state: HistoryState, limit: number): HistoryPage => {
   // Advance the served-completion counter by up to `limit`, mirroring the
   // page granularity the consumer asked for. `rawMessages` for this page are
   // all wires fetched since the previous page (empty for buffered pages).
-  const totalCompleted = state.completedCodecMessageIds.size;
+  const totalCompleted = state.completedTransportMessageIds.size;
   const served = Math.min(limit, Math.max(0, totalCompleted - state.returnedCount));
   state.returnedCount += served;
 
@@ -249,9 +252,9 @@ export const loadHistory = async (
     returnedCount: 0,
     returnedRawCount: 0,
     lastAblyPage: undefined,
-    startedCodecMessageIds: new Set<string>(),
-    terminatedCodecMessageIds: new Set<string>(),
-    completedCodecMessageIds: new Set<string>(),
+    startedTransportMessageIds: new Set<string>(),
+    terminatedTransportMessageIds: new Set<string>(),
+    completedTransportMessageIds: new Set<string>(),
     logger,
   };
 

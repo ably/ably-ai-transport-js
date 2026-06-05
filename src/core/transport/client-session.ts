@@ -169,21 +169,21 @@ class DefaultClientSession<
     this.tree = this._tree;
     this.view = this._view;
 
-    // Seed tree with initial messages — the session assigns a codecMessageId
+    // Seed tree with initial messages — the session assigns a transportMessageId
     // per seed message. Each seed becomes a run-less input node (no run-id —
     // the client never mints one); the parent chain mirrors the original seed
     // sequence (a user→user input chain the Tree threads kind-blind).
     if (options.messages) {
       let prevMsgId: string | undefined;
       for (const msg of options.messages) {
-        const codecMessageId = crypto.randomUUID();
+        const transportMessageId = crypto.randomUUID();
         const seedHeaders: Record<string, string> = {
-          [HEADER_TRANSPORT_MESSAGE_ID]: codecMessageId,
+          [HEADER_TRANSPORT_MESSAGE_ID]: transportMessageId,
           [HEADER_ROLE]: 'user',
         };
         if (prevMsgId) seedHeaders[HEADER_PARENT] = prevMsgId;
         this._tree.applyMessage({ inputs: [this._codec.createUserMessage(msg)], outputs: [] }, seedHeaders);
-        prevMsgId = codecMessageId;
+        prevMsgId = transportMessageId;
       }
     }
 
@@ -371,21 +371,21 @@ class DefaultClientSession<
   /**
    * Tear down local state for a send whose channel publish failed.
    * Idempotent.
-   * @param codecMessageIds - The codec-message-ids of the failed send's
+   * @param transportMessageIds - The codec-message-ids of the failed send's
    *   optimistic input nodes (the client mints no run-id, so the optimistic
    *   inserts are keyed by their codec-message-ids).
    */
-  private _cleanupFailedSend(codecMessageIds: string[]): void {
-    for (const codecMessageId of codecMessageIds) {
+  private _cleanupFailedSend(transportMessageIds: string[]): void {
+    for (const transportMessageId of transportMessageIds) {
       // Drop the optimistic input node only if the publish never produced a
       // server-assigned serial (i.e. nothing live observed it). A server-acked
       // node is part of the canonical channel state and must stay; the View /
       // observers already see it. A fresh send's optimistic inserts are input
       // nodes (keyed by codec-message-id).
-      const node = this._tree.getNodeByCodecMessageId(codecMessageId);
+      const node = this._tree.getNodeByTransportMessageId(transportMessageId);
       if (node?.kind === 'input' && node.serial === undefined) {
         // An input node's key is its codec-message-id, so delete by it directly.
-        this._tree.delete(node.codecMessageId);
+        this._tree.delete(node.transportMessageId);
       }
     }
   }
@@ -416,7 +416,7 @@ class DefaultClientSession<
   private async _internalSend(
     input: TInput[],
     sendOptions: SendOptions | undefined,
-    parentCodecMessageId: string | undefined,
+    parentTransportMessageId: string | undefined,
   ): Promise<ActiveRun> {
     if (this._state === ClientSessionState.CLOSED) {
       throw new Ably.ErrorInfo('unable to send; session is closed', ErrorCode.SessionClosed, 400);
@@ -450,16 +450,16 @@ class DefaultClientSession<
     // since the session is codec-agnostic and can't extract it from TMessage.
     let autoParent: string | undefined;
     if (sendOptions?.parent === undefined && !sendOptions?.forkOf) {
-      autoParent = parentCodecMessageId;
+      autoParent = parentTransportMessageId;
     }
 
-    const codecMessageIds = new Set<string>();
+    const transportMessageIds = new Set<string>();
     interface ItemState {
       input: TInput;
-      codecMessageId: string;
+      transportMessageId: string;
       inputEventId: string;
       headers: Record<string, string>;
-      /** Inputs that reference an existing codec-message without contributing fresh local content (regenerate, tool resolutions) are wire-only — no optimistic projection fold. Fresh user-messages always fold, even when they pin their own codecMessageId. */
+      /** Inputs that reference an existing codec-message without contributing fresh local content (regenerate, tool resolutions) are wire-only — no optimistic projection fold. Fresh user-messages always fold, even when they pin their own transportMessageId. */
       isWireOnly: boolean;
     }
     const items: ItemState[] = [];
@@ -470,10 +470,10 @@ class DefaultClientSession<
     // optimistically.
     for (const entry of input) {
       const inputEventId = crypto.randomUUID();
-      // Use the input's `codecMessageId` when set (e.g. tool resolution
+      // Use the input's `transportMessageId` when set (e.g. tool resolution
       // targeting the prior assistant); otherwise mint a fresh id.
-      const codecMessageId = entry.codecMessageId ?? crypto.randomUUID();
-      codecMessageIds.add(codecMessageId);
+      const transportMessageId = entry.transportMessageId ?? crypto.randomUUID();
+      transportMessageIds.add(transportMessageId);
 
       // Inputs that reference an existing message (regenerate, tool
       // resolutions targeting an assistant) are wire-only — no optimistic
@@ -482,14 +482,14 @@ class DefaultClientSession<
       // and will be amended when the wire echoes back.
       //
       // A fresh `user-message` is never wire-only, even on the rare path
-      // where it carries an explicit `codecMessageId`: it is new content that
+      // where it carries an explicit `transportMessageId`: it is new content that
       // must fold into the local projection immediately. Excluding it here
       // keeps the optimistic user bubble from depending on the channel
       // round-trip. (The session mints the codec-message-id for fresh user
       // messages; the caller's `message.id` is preserved but never used as
       // the correlation key.)
       const isWireOnly =
-        entry.kind !== 'user-message' && (entry.kind === 'regenerate' || entry.codecMessageId !== undefined);
+        entry.kind !== 'user-message' && (entry.kind === 'regenerate' || entry.transportMessageId !== undefined);
 
       // The input's own routing fields override the auto-parent /
       // sendOptions defaults. For regenerate inputs, `target` becomes the
@@ -503,7 +503,7 @@ class DefaultClientSession<
       const headers = buildTransportHeaders({
         role: 'user',
         runId,
-        codecMessageId,
+        transportMessageId,
         runClientId: this._clientId,
         ...(parent !== undefined && { parent }),
         ...(forkOf !== undefined && { forkOf }),
@@ -516,12 +516,12 @@ class DefaultClientSession<
         this._tree.applyMessage({ inputs: [entry], outputs: [] }, headers);
       }
 
-      items.push({ input: entry, codecMessageId, inputEventId, headers, isWireOnly });
+      items.push({ input: entry, transportMessageId, inputEventId, headers, isWireOnly });
 
       // Spec: AIT-CT3e — chain subsequent inputs off the previous one when
       // auto-parenting is in effect.
       if (!isWireOnly && sendOptions?.parent === undefined && !sendOptions?.forkOf && entry.parent === undefined) {
-        autoParent = codecMessageId;
+        autoParent = transportMessageId;
       }
     }
 
@@ -542,7 +542,7 @@ class DefaultClientSession<
       );
     }
     const triggerInputEventId = triggerItem.inputEventId;
-    const startedKey = triggerItem.codecMessageId;
+    const startedKey = triggerItem.transportMessageId;
 
     // Arm the run-start tracker backing the returned `ActiveRun.runId` promise.
     // The run-start handler resolves it with the agent-minted run-id when this
@@ -571,7 +571,7 @@ class DefaultClientSession<
         for (const item of items) {
           await this._encoder.publishInput(item.input, {
             extras: { headers: item.headers },
-            messageId: item.codecMessageId,
+            messageId: item.transportMessageId,
             ...(this._clientId !== undefined && { clientId: this._clientId }),
           });
         }
@@ -593,7 +593,7 @@ class DefaultClientSession<
         // Continuations didn't insert optimistic nodes, so there is nothing to
         // clear for them — only a fresh send's optimistic input nodes need
         // removing, keyed by their codec-message-ids (the client mints no runId).
-        if (!isContinuation) this._cleanupFailedSend([...codecMessageIds]);
+        if (!isContinuation) this._cleanupFailedSend([...transportMessageIds]);
         throw err;
       }
     })();
@@ -605,23 +605,23 @@ class DefaultClientSession<
     await publishPromise;
 
     return {
-      inputCodecMessageId: startedKey,
+      inputTransportMessageId: startedKey,
       runId: runIdPromise,
       inputEventId: triggerInputEventId,
       // The agent mints the run-id, so a fresh run has none until run-start.
       // Cancel synchronously by the triggering input's codec-message-id (the
-      // handle the client owns at send time, = `inputCodecMessageId`): the
+      // handle the client owns at send time, = `inputTransportMessageId`): the
       // agent resolves it to the run once its input-event lookup completes, and
       // buffers a cancel that arrives before then so an early cancel is honoured
       // rather than dropped. A continuation additionally carries its known
       // run-id so the agent can match the run directly.
       cancel: async () => {
         await this._publishCancel({
-          inputCodecMessageId: startedKey,
+          inputTransportMessageId: startedKey,
           ...(runId !== undefined && { runId }),
         });
       },
-      optimisticCodecMessageIds: [...codecMessageIds],
+      optimisticTransportMessageIds: [...transportMessageIds],
       toInvocation: () =>
         // The invocation body carries no run-id: run identity lives on the
         // channel (the agent mints a fresh run-id, or reads a continuation's
@@ -643,9 +643,9 @@ class DefaultClientSession<
    * whichever identifier is present:
    *
    * - `runId` — a continuation, whose run-id the caller already knows.
-   * - `inputCodecMessageId` — a fresh send, whose run-id the agent mints at
+   * - `inputTransportMessageId` — a fresh send, whose run-id the agent mints at
    *   run-start. The client can only key the cancel by the triggering input's
-   *   codec-message-id (the `ActiveRun.inputCodecMessageId`) it owns at send
+   *   codec-message-id (the `ActiveRun.inputTransportMessageId`) it owns at send
    *   time; the agent resolves it to the run once its input-event lookup
    *   completes, buffering a cancel that arrives before then.
    *
@@ -660,19 +660,19 @@ class DefaultClientSession<
    * intact so late agent events (a cancel append, a trailing
    * `status: cancelled`) still fold into the Run's projection.
    * @param target - The run identifier(s) to cancel. At least one of `runId` /
-   *   `inputCodecMessageId` must be set.
+   *   `inputTransportMessageId` must be set.
    * @param target.runId - The run-id to cancel (continuations).
-   * @param target.inputCodecMessageId - The triggering input's
+   * @param target.inputTransportMessageId - The triggering input's
    *   codec-message-id to cancel (fresh sends, before run-start).
    */
-  private async _publishCancel(target: { runId?: string; inputCodecMessageId?: string }): Promise<void> {
+  private async _publishCancel(target: { runId?: string; inputTransportMessageId?: string }): Promise<void> {
     if (this._state === ClientSessionState.CLOSED) return;
     await this._requireConnected('cancel');
     // CAST: re-check after await — close() may have been called while waiting for connect.
     if ((this._state as ClientSessionState) === ClientSessionState.CLOSED) return;
     this._logger.debug('ClientSession._publishCancel();', {
       runId: target.runId,
-      inputCodecMessageId: target.inputCodecMessageId,
+      inputTransportMessageId: target.inputTransportMessageId,
     });
 
     const headers: Record<string, string> = {
@@ -681,8 +681,8 @@ class DefaultClientSession<
       [HEADER_EVENT_ID]: crypto.randomUUID(),
     };
     if (target.runId !== undefined) headers[HEADER_RUN_ID] = target.runId;
-    if (target.inputCodecMessageId !== undefined)
-      headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID] = target.inputCodecMessageId;
+    if (target.inputTransportMessageId !== undefined)
+      headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID] = target.inputTransportMessageId;
 
     await this._channel.publish({
       name: EVENT_CANCEL,

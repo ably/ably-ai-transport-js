@@ -26,13 +26,13 @@ export interface TreeHandle<TProjection> {
    * observed. Returns a {@link ConversationNode} union — narrow on `kind`
    * (`'input'` vs `'run'`) before reading kind-specific fields.
    */
-  getNodeByCodecMessageId: (codecMessageId: string) => ConversationNode<TProjection> | undefined;
+  getNodeByTransportMessageId: (transportMessageId: string) => ConversationNode<TProjection> | undefined;
   /**
    * Get the sibling group (both kinds) the node keyed by `key` belongs to —
    * edit versions for an input node, regenerate runs for a reply run — ordered
    * oldest-first. A single-element array when the node has no siblings; empty
    * when `key` is unknown. `key` is a {@link RunNode.runId} or an
-   * {@link InputNode.codecMessageId}.
+   * {@link InputNode.transportMessageId}.
    */
   getSiblingNodes: (key: string) => ConversationNode<TProjection>[];
 }
@@ -62,9 +62,9 @@ export const useTree = <TInput extends CodecInputEvent, TOutput extends CodecOut
     [resolved],
   );
 
-  const getNodeByCodecMessageId = useCallback(
-    (codecMessageId: string): ConversationNode<TProjection> | undefined =>
-      resolved?.tree.getNodeByCodecMessageId(codecMessageId),
+  const getNodeByTransportMessageId = useCallback(
+    (transportMessageId: string): ConversationNode<TProjection> | undefined =>
+      resolved?.tree.getNodeByTransportMessageId(transportMessageId),
     [resolved],
   );
 
@@ -75,7 +75,7 @@ export const useTree = <TInput extends CodecInputEvent, TOutput extends CodecOut
 
   return {
     getRunNode,
-    getNodeByCodecMessageId,
+    getNodeByTransportMessageId,
     getSiblingNodes,
   };
 };

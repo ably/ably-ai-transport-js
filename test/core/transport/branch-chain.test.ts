@@ -6,8 +6,8 @@ import { buildBranchChain } from '../../../src/core/transport/branch-chain.js';
 // Build a nodeMeta map from `{ id: parentId }` entries (undefined parent = root).
 const meta = (entries: Record<string, string | undefined>): Map<string, BranchChainNode> => {
   const map = new Map<string, BranchChainNode>();
-  for (const [id, parentCodecMessageId] of Object.entries(entries)) {
-    map.set(id, { parentCodecMessageId });
+  for (const [id, parentTransportMessageId] of Object.entries(entries)) {
+    map.set(id, { parentTransportMessageId });
   }
   return map;
 };
@@ -68,14 +68,14 @@ describe('buildBranchChain', () => {
 
   it('accepts a richer node-meta shape structurally', () => {
     // A node-meta carrying extra fields (as the PR-2 index will) satisfies
-    // BranchChainNode; the walk reads only parentCodecMessageId.
+    // BranchChainNode; the walk reads only parentTransportMessageId.
     interface RichMeta extends BranchChainNode {
       runId: string | undefined;
       forkOf: string | undefined;
     }
     const rich = new Map<string, RichMeta>([
-      ['a', { parentCodecMessageId: undefined, runId: undefined, forkOf: undefined }],
-      ['b', { parentCodecMessageId: 'a', runId: 'R1', forkOf: undefined }],
+      ['a', { parentTransportMessageId: undefined, runId: undefined, forkOf: undefined }],
+      ['b', { parentTransportMessageId: 'a', runId: 'R1', forkOf: undefined }],
     ]);
     expect(buildBranchChain(rich, 'b')).toEqual(['a', 'b']);
   });

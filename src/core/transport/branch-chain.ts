@@ -9,7 +9,7 @@
  * isolation and reused by both engines without drift.
  *
  * Branch selection is implicit: a node reaches only its own ancestors via
- * `parentCodecMessageId`, so sibling branches (edits / regenerates that the
+ * `parentTransportMessageId`, so sibling branches (edits / regenerates that the
  * anchor did not descend from) are never visited. There is no separate
  * fork/regenerate filtering step — the un-taken sibling is simply unreachable.
  */
@@ -24,11 +24,11 @@ export interface BranchChainNode {
    * Codec-message-id of this node's structural parent — the node it hangs off
    * — or `undefined` for a root node. This is the only edge the walk follows.
    */
-  parentCodecMessageId: string | undefined;
+  parentTransportMessageId: string | undefined;
 }
 
 /**
- * Walk `parentCodecMessageId` links upward from `anchorCodecMessageId` and
+ * Walk `parentTransportMessageId` links upward from `anchorTransportMessageId` and
  * return the branch it sits on, ordered root-first (oldest) to anchor (newest,
  * last). The anchor is always the final element.
  *
@@ -38,21 +38,21 @@ export interface BranchChainNode {
  * broken best-effort rather than looping forever).
  * @param nodeMeta - Lookup from codec-message-id to its node meta. Need not
  *   contain the anchor or every ancestor; missing entries simply end the walk.
- * @param anchorCodecMessageId - The codec-message-id to start the walk from
+ * @param anchorTransportMessageId - The codec-message-id to start the walk from
  *   (the newest node on the branch; included in the result).
  * @returns The branch's codec-message-ids ordered root-first to anchor-last.
  */
 export const buildBranchChain = (
   nodeMeta: ReadonlyMap<string, BranchChainNode>,
-  anchorCodecMessageId: string,
+  anchorTransportMessageId: string,
 ): string[] => {
   const chain: string[] = [];
   const seen = new Set<string>();
-  let current: string | undefined = anchorCodecMessageId;
+  let current: string | undefined = anchorTransportMessageId;
   while (current !== undefined && !seen.has(current)) {
     seen.add(current);
     chain.push(current);
-    current = nodeMeta.get(current)?.parentCodecMessageId;
+    current = nodeMeta.get(current)?.parentTransportMessageId;
   }
   return chain.toReversed();
 };

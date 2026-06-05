@@ -6,7 +6,7 @@
  * that match a registered client tool. Executes the tool, then publishes a
  * `tool-result` (or `tool-result-error`) TInput on the channel via
  * `view.send`. The codec's reducer folds the result onto the
- * assistant message addressed by `codecMessageId` (matched by `toolCallId`
+ * assistant message addressed by `transportMessageId` (matched by `toolCallId`
  * within that message).
  *
  * Skips tool calls that already have a follow-up assistant message - those
@@ -90,13 +90,13 @@ export function useClientTools(view: ViewHandle<VercelInput, UIMessage>, clientI
 }
 
 // The tool result targets the suspended assistant message via
-// `codecMessageId`; the continuation reuses that run's runId so the
+// `transportMessageId`; the continuation reuses that run's runId so the
 // agent picks the result up off the channel and resumes generation.
 async function executeClientTool(
   view: ViewHandle<VercelInput, UIMessage>,
   api: string,
   runId: string,
-  codecMessageId: string,
+  transportMessageId: string,
   toolPart: DynamicToolUIPart,
 ): Promise<void> {
   const executor = clientTools[toolPart.toolName];
@@ -107,9 +107,9 @@ async function executeClientTool(
   let input: VercelInput;
   try {
     const output = await executor(toolPart.input);
-    input = UIMessageCodec.createToolResult(codecMessageId, { toolCallId: toolPart.toolCallId, output });
+    input = UIMessageCodec.createToolResult(transportMessageId, { toolCallId: toolPart.toolCallId, output });
   } catch (error) {
-    input = UIMessageCodec.createToolResultError(codecMessageId, {
+    input = UIMessageCodec.createToolResultError(transportMessageId, {
       toolCallId: toolPart.toolCallId,
       message: error instanceof Error ? error.message : 'Client tool execution failed',
     });

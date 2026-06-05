@@ -98,8 +98,8 @@ import type { BranchSelection, RunInfo } from '@ably/ai-transport';
 
 export function useDemoProgress(
   messages: UIMessage[],
-  branchSelection: (codecMessageId: string) => BranchSelection<UIMessage>,
-  runOf: (codecMessageId: string) => RunInfo | undefined,
+  branchSelection: (transportMessageId: string) => BranchSelection<UIMessage>,
+  runOf: (transportMessageId: string) => RunInfo | undefined,
   ablyMessages: Ably.InboundMessage[],
 ): DemoStep[] {
   return useMemo(() => {

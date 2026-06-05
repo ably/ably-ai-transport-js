@@ -19,8 +19,8 @@ interface MessageBubbleProps {
   onSelectSibling: (index: number) => void;
   onRegenerate?: () => void;
   onEdit?: (newText: string) => void;
-  onToolApprove?: (codecMessageId: string, toolCallId: string) => void;
-  onToolDeny?: (codecMessageId: string, toolCallId: string) => void;
+  onToolApprove?: (transportMessageId: string, toolCallId: string) => void;
+  onToolDeny?: (transportMessageId: string, toolCallId: string) => void;
 }
 
 function BranchNavigator({
@@ -184,7 +184,7 @@ export function MessageBubble({
   const [isEditing, setIsEditing] = useState(false);
 
   const role = message.role;
-  const codecMessageId = message.id;
+  const transportMessageId = message.id;
   const colors = clientId ? clientColor(clientId) : undefined;
 
   const messageText = message.parts
@@ -215,12 +215,14 @@ export function MessageBubble({
                       key={i}
                       part={toolPart}
                       onApprove={
-                        onToolApprove && codecMessageId
-                          ? () => onToolApprove(codecMessageId, toolPart.toolCallId)
+                        onToolApprove && transportMessageId
+                          ? () => onToolApprove(transportMessageId, toolPart.toolCallId)
                           : noop
                       }
                       onDeny={
-                        onToolDeny && codecMessageId ? () => onToolDeny(codecMessageId, toolPart.toolCallId) : noop
+                        onToolDeny && transportMessageId
+                          ? () => onToolDeny(transportMessageId, toolPart.toolCallId)
+                          : noop
                       }
                     />
                   );

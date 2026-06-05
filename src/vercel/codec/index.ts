@@ -51,19 +51,22 @@ const uiMessageCodecImpl = {
     target,
     parent,
   }),
-  createToolResult: (codecMessageId: string, payload: VercelToolResultPayload): VercelInput => ({
+  createToolResult: (transportMessageId: string, payload: VercelToolResultPayload): VercelInput => ({
     kind: 'tool-result',
-    codecMessageId,
+    transportMessageId,
     payload,
   }),
-  createToolResultError: (codecMessageId: string, payload: VercelToolResultErrorPayload): VercelInput => ({
+  createToolResultError: (transportMessageId: string, payload: VercelToolResultErrorPayload): VercelInput => ({
     kind: 'tool-result-error',
-    codecMessageId,
+    transportMessageId,
     payload,
   }),
-  createToolApprovalResponse: (codecMessageId: string, payload: VercelToolApprovalResponsePayload): VercelInput => ({
+  createToolApprovalResponse: (
+    transportMessageId: string,
+    payload: VercelToolApprovalResponsePayload,
+  ): VercelInput => ({
     kind: 'tool-approval-response',
-    codecMessageId,
+    transportMessageId,
     payload,
   }),
 };

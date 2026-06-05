@@ -312,7 +312,7 @@ export interface CodecInputEvent {
    * the wire's `codec-message-id` is stamped with this value so
    * the reducer's direct-fold path matches by codec-message-id.
    */
-  codecMessageId?: string;
+  transportMessageId?: string;
 }
 
 /**
@@ -350,11 +350,11 @@ export interface Regenerate extends CodecInputEvent {
 /**
  * Well-known input variant: client-published tool result (success). The
  * tool ran and produced output. Mutates the assistant codec-message
- * addressed by `codecMessageId` — the codec's reducer applies the result
+ * addressed by `transportMessageId` — the codec's reducer applies the result
  * onto the existing tool-call state of the referenced assistant.
  *
  * The core is domain-independent: it knows only that this input amends the
- * assistant at `codecMessageId` and carries a codec-defined `payload`. The
+ * assistant at `transportMessageId` and carries a codec-defined `payload`. The
  * shape of `payload` (e.g. the tool-call id and output value) is supplied
  * by the codec via `TPayload` — see the Vercel layer's payload type.
  *
@@ -370,7 +370,7 @@ export interface ToolResult<TPayload> extends CodecInputEvent {
   /** Discriminator. */
   kind: 'tool-result';
   /** The assistant codec-message containing the tool call. Required. */
-  codecMessageId: string;
+  transportMessageId: string;
   /** The codec's domain payload describing the tool result. */
   payload: TPayload;
 }
@@ -378,7 +378,7 @@ export interface ToolResult<TPayload> extends CodecInputEvent {
 /**
  * Well-known input variant: client-published tool result (failure). The
  * tool ran and failed. Mutates the assistant codec-message addressed by
- * `codecMessageId`. The failure detail (e.g. tool-call id and error text)
+ * `transportMessageId`. The failure detail (e.g. tool-call id and error text)
  * is the codec's domain `payload` — see the Vercel layer's payload type.
  * @template TPayload - The codec's domain payload for a tool-result failure.
  */
@@ -386,7 +386,7 @@ export interface ToolResultError<TPayload> extends CodecInputEvent {
   /** Discriminator. */
   kind: 'tool-result-error';
   /** The assistant codec-message containing the tool call. Required. */
-  codecMessageId: string;
+  transportMessageId: string;
   /** The codec's domain payload describing the failure. */
   payload: TPayload;
 }
@@ -394,7 +394,7 @@ export interface ToolResultError<TPayload> extends CodecInputEvent {
 /**
  * Well-known input variant: client-published response to an
  * agent-emitted tool-approval request. Mutates the assistant
- * codec-message addressed by `codecMessageId` — flipping the targeted
+ * codec-message addressed by `transportMessageId` — flipping the targeted
  * tool call from pending-approval to approved or denied. The decision
  * detail (e.g. tool-call id, approved flag, reason) is the codec's domain
  * `payload` — see the Vercel layer's payload type.
@@ -408,7 +408,7 @@ export interface ToolApprovalResponse<TPayload> extends CodecInputEvent {
   /** Discriminator. */
   kind: 'tool-approval-response';
   /** The assistant codec-message containing the tool call. Required. */
-  codecMessageId: string;
+  transportMessageId: string;
   /** The codec's domain payload describing the approval decision. */
   payload: TPayload;
 }
@@ -452,7 +452,7 @@ export type ToolApprovalResponsePayloadOf<TInput> = TInput extends ToolApprovalR
  * constraint structurally — its `type` literal is assignable to
  * `string` — so the Vercel codec needs no implementation changes.
  *
- * No routing fields today: outputs carry no per-event `codecMessageId` /
+ * No routing fields today: outputs carry no per-event `transportMessageId` /
  * `parent` / `forkOf` overrides. Those move onto this base when a concrete
  * output needs to carry them.
  */
@@ -474,13 +474,13 @@ export interface CodecOutputEvent {
  * SDK stream assigned) and is surfaced to the application as-is; the SDK
  * never inspects `message` for identity. All internal correlation —
  * Tree indexing, parent/fork/regenerate routing, branch grouping — keys on
- * `codecMessageId`, the SDK's own client-minted identifier. The two need
+ * `transportMessageId`, the SDK's own client-minted identifier. The two need
  * not be equal.
  * @template TMessage - The codec's per-message domain type.
  */
 export interface CodecMessage<TMessage> {
   /** The SDK's codec-message-id for this message — the correlation key. */
-  codecMessageId: string;
+  transportMessageId: string;
   /** The domain message, reconstructed verbatim from the source values. */
   message: TMessage;
 }
@@ -516,7 +516,7 @@ export interface Codec<
   /**
    * Extract the per-message list from a projection, each message paired
    * with its codec-message-id (see {@link CodecMessage}). The SDK uses the
-   * `codecMessageId` to correlate messages — it never reads identity from
+   * `transportMessageId` to correlate messages — it never reads identity from
    * the message itself — and surfaces `message` to the application
    * unchanged.
    */
@@ -549,29 +549,29 @@ export interface Codec<
   createRegenerate(target: string, parent: string): TInput;
   /**
    * Build a {@link ToolResult} for the codec, returned as a `TInput`.
-   * Amends the assistant at `codecMessageId` with the codec's domain
+   * Amends the assistant at `transportMessageId` with the codec's domain
    * `payload`. Optional — only codecs whose `TInput` includes the
    * {@link ToolResult} variant implement it.
-   * @param codecMessageId - The assistant codec-message the result amends.
+   * @param transportMessageId - The assistant codec-message the result amends.
    * @param payload - The codec's domain tool-result payload.
    * @returns A `TInput` (the codec's {@link ToolResult} variant).
    */
-  createToolResult?(codecMessageId: string, payload: ToolResultPayloadOf<TInput>): TInput;
+  createToolResult?(transportMessageId: string, payload: ToolResultPayloadOf<TInput>): TInput;
   /**
    * Build a {@link ToolResultError} for the codec, returned as a `TInput`.
    * Optional — only codecs whose `TInput` includes the variant implement it.
-   * @param codecMessageId - The assistant codec-message the error amends.
+   * @param transportMessageId - The assistant codec-message the error amends.
    * @param payload - The codec's domain tool-result-failure payload.
    * @returns A `TInput` (the codec's {@link ToolResultError} variant).
    */
-  createToolResultError?(codecMessageId: string, payload: ToolResultErrorPayloadOf<TInput>): TInput;
+  createToolResultError?(transportMessageId: string, payload: ToolResultErrorPayloadOf<TInput>): TInput;
   /**
    * Build a {@link ToolApprovalResponse} for the codec, returned as a
    * `TInput`. Optional — only codecs whose `TInput` includes the variant
    * implement it.
-   * @param codecMessageId - The assistant codec-message the response amends.
+   * @param transportMessageId - The assistant codec-message the response amends.
    * @param payload - The codec's domain approval-decision payload.
    * @returns A `TInput` (the codec's {@link ToolApprovalResponse} variant).
    */
-  createToolApprovalResponse?(codecMessageId: string, payload: ToolApprovalResponsePayloadOf<TInput>): TInput;
+  createToolApprovalResponse?(transportMessageId: string, payload: ToolApprovalResponsePayloadOf<TInput>): TInput;
 }

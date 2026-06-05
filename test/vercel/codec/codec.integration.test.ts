@@ -653,7 +653,7 @@ describe('Vercel UIMessageCodec integration', () => {
     await encoder.publishInput(
       {
         kind: 'tool-result',
-        codecMessageId: 'msg-1',
+        transportMessageId: 'msg-1',
         payload: { toolCallId: 'tc-1', output: { latitude: 51.5, longitude: -0.1 } },
       },
       { messageId: continuationId },

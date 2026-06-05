@@ -162,11 +162,11 @@ export interface View<TInput extends CodecInputEvent, TMessage> {
 
   /**
    * Look up the {@link RunInfo} for the Run that owns
-   * `codecMessageId`. Returns `undefined` when the codec-message-id
+   * `transportMessageId`. Returns `undefined` when the codec-message-id
    * hasn't been observed by the view.
-   * @param codecMessageId - The codec-message-id to look up.
+   * @param transportMessageId - The codec-message-id to look up.
    */
-  runOf(codecMessageId: string): RunInfo | undefined;
+  runOf(transportMessageId: string): RunInfo | undefined;
 
   /**
    * Direct lookup by Run id. Kept for symmetry with {@link runOf} so
@@ -180,32 +180,32 @@ export interface View<TInput extends CodecInputEvent, TMessage> {
 
   /**
    * Resolve the {@link BranchSelection} bundle anchored at
-   * `codecMessageId`. Always returns a safe object — see
+   * `transportMessageId`. Always returns a safe object — see
    * {@link BranchSelection} for the per-case shape.
    *
    * Per AITRFC-014, branch points are message-anchored: edit forks
    * point at the user prompt's codec-message-id, regenerate forks
    * point at the assistant message's codec-message-id.
-   * @param codecMessageId - The codec-message-id of the bubble being rendered.
+   * @param transportMessageId - The codec-message-id of the bubble being rendered.
    */
-  branchSelection(codecMessageId: string): BranchSelection<TMessage>;
+  branchSelection(transportMessageId: string): BranchSelection<TMessage>;
 
   /**
    * Select a sibling at the branch point anchored at
-   * `codecMessageId`. `index` is clamped to
-   * `[0, siblings.length - 1]`. Silent no-op when `codecMessageId`
+   * `transportMessageId`. `index` is clamped to
+   * `[0, siblings.length - 1]`. Silent no-op when `transportMessageId`
    * is not a branch anchor. Emits 'update' when the visible output
    * changes.
-   * @param codecMessageId - The codec-message-id of the bubble being rendered.
+   * @param transportMessageId - The codec-message-id of the bubble being rendered.
    * @param index - The index of the sibling to select.
    */
-  selectSibling(codecMessageId: string, index: number): void;
+  selectSibling(transportMessageId: string, index: number): void;
 
   // --- Write operations ---
 
   /**
    * Send one or more TInputs on the channel and fire a POST. Each TInput
-   * carries its own routing metadata (`parent` / `target` / `codecMessageId`)
+   * carries its own routing metadata (`parent` / `target` / `transportMessageId`)
    * via the {@link CodecInputEvent} base; the SDK reads those fields
    * directly without runtime classification.
    *

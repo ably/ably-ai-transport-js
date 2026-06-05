@@ -24,11 +24,11 @@ import {
 } from '../../../src/core/transport/headers.js';
 
 describe('buildTransportHeaders', () => {
-  it('includes role, runId, and codecMessageId', () => {
+  it('includes role, runId, and transportMessageId', () => {
     const headers = buildTransportHeaders({
       role: 'user',
       runId: 'run-1',
-      codecMessageId: 'msg-1',
+      transportMessageId: 'msg-1',
     });
 
     expect(headers[HEADER_ROLE]).toBe('user');
@@ -40,7 +40,7 @@ describe('buildTransportHeaders', () => {
     const headers = buildTransportHeaders({
       role: 'assistant',
       runId: 'run-1',
-      codecMessageId: 'msg-1',
+      transportMessageId: 'msg-1',
       runClientId: 'user-a',
     });
 
@@ -51,7 +51,7 @@ describe('buildTransportHeaders', () => {
     const headers = buildTransportHeaders({
       role: 'user',
       runId: 'run-1',
-      codecMessageId: 'msg-1',
+      transportMessageId: 'msg-1',
       parent: 'parent-msg',
     });
 
@@ -62,7 +62,7 @@ describe('buildTransportHeaders', () => {
     const headers = buildTransportHeaders({
       role: 'user',
       runId: 'run-1',
-      codecMessageId: 'msg-1',
+      transportMessageId: 'msg-1',
       forkOf: 'fork-msg',
     });
 
@@ -73,7 +73,7 @@ describe('buildTransportHeaders', () => {
     const headers = buildTransportHeaders({
       role: 'assistant',
       runId: 'run-1',
-      codecMessageId: 'msg-1',
+      transportMessageId: 'msg-1',
       inputClientId: 'user-b',
     });
 
@@ -87,19 +87,19 @@ describe('buildTransportHeaders', () => {
     const headers = buildTransportHeaders({
       role: 'assistant',
       runId: 'run-1',
-      codecMessageId: 'msg-1',
+      transportMessageId: 'msg-1',
       inputClientId: '',
     });
 
     expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('');
   });
 
-  it('includes inputCodecMessageId when provided', () => {
+  it('includes inputTransportMessageId when provided', () => {
     const headers = buildTransportHeaders({
       role: 'assistant',
       runId: 'run-1',
-      codecMessageId: 'msg-1',
-      inputCodecMessageId: 'trigger-msg',
+      transportMessageId: 'msg-1',
+      inputTransportMessageId: 'trigger-msg',
     });
 
     expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('trigger-msg');
@@ -109,7 +109,7 @@ describe('buildTransportHeaders', () => {
     const headers = buildTransportHeaders({
       role: 'user',
       runId: 'run-1',
-      codecMessageId: 'msg-1',
+      transportMessageId: 'msg-1',
       regenerates: 'asst-original',
     });
 
@@ -120,7 +120,7 @@ describe('buildTransportHeaders', () => {
     const headers = buildTransportHeaders({
       role: 'user',
       runId: 'run-1',
-      codecMessageId: 'msg-1',
+      transportMessageId: 'msg-1',
     });
 
     expect(headers).not.toHaveProperty(HEADER_RUN_CLIENT_ID);
@@ -153,7 +153,7 @@ describe('buildLifecycleHeaders', () => {
       regenerates: 'g',
       invocationId: 'inv-1',
       inputClientId: 'user-b',
-      inputCodecMessageId: 'trigger',
+      inputTransportMessageId: 'trigger',
     });
     expect(headers[HEADER_PARENT]).toBe('p');
     expect(headers[HEADER_FORK_OF]).toBe('f');

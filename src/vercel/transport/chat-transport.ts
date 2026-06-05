@@ -266,7 +266,7 @@ const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'a
  *
  * Each input carries the prior assistant's tree codec-message-id (the one
  * holding the original `dynamic-tool` part the resolution targets) in its
- * `codecMessageId` field, so the encoder stamps `codec-message-id`
+ * `transportMessageId` field, so the encoder stamps `codec-message-id`
  * and the reducer's direct-fold path lands the resolution on that assistant
  * in one step — no cross-message redirect-by-toolCallId fallback. Every
  * variant rides the `ai-input` wire, matching its publisher (client → input).
@@ -288,7 +288,7 @@ const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'a
  * @param pairs - The visible tree messages paired with their codec-message-ids.
  * @param messages - useChat's local overlay messages.
  * @returns The continuation inputs to publish, in tree order. Each input
- *   carries its own `codecMessageId` targeting the prior assistant it folds
+ *   carries its own `transportMessageId` targeting the prior assistant it folds
  *   onto.
  */
 const deriveContinuationInputs = (pairs: CodecMessage<AI.UIMessage>[], messages: AI.UIMessage[]): VercelInput[] => {
@@ -302,7 +302,7 @@ const deriveContinuationInputs = (pairs: CodecMessage<AI.UIMessage>[], messages:
     // domain `message.id`.
     const treeEntry = pairs.find((p) => p.message.id === overlay.id);
     if (!treeEntry) continue;
-    const { codecMessageId, message: treeMessage } = treeEntry;
+    const { transportMessageId, message: treeMessage } = treeEntry;
 
     for (const overlayPart of overlay.parts) {
       if (!_isToolPart(overlayPart)) continue;
@@ -323,7 +323,7 @@ const deriveContinuationInputs = (pairs: CodecMessage<AI.UIMessage>[], messages:
       // the decision.
       if (overlayPart.state === 'approval-responded' && (!treePart || treePart.state === 'approval-requested')) {
         inputs.push(
-          UIMessageCodec.createToolApprovalResponse(codecMessageId, {
+          UIMessageCodec.createToolApprovalResponse(transportMessageId, {
             toolCallId: overlayPart.toolCallId,
             approved: true,
             ...(overlayPart.approval.reason === undefined ? {} : { reason: overlayPart.approval.reason }),
@@ -333,7 +333,7 @@ const deriveContinuationInputs = (pairs: CodecMessage<AI.UIMessage>[], messages:
       }
       if (overlayPart.state === 'output-denied' && (!treePart || treePart.state === 'approval-requested')) {
         inputs.push(
-          UIMessageCodec.createToolApprovalResponse(codecMessageId, {
+          UIMessageCodec.createToolApprovalResponse(transportMessageId, {
             toolCallId: overlayPart.toolCallId,
             approved: false,
           }),
@@ -352,14 +352,14 @@ const deriveContinuationInputs = (pairs: CodecMessage<AI.UIMessage>[], messages:
 
       if (overlayPart.state === 'output-available') {
         inputs.push(
-          UIMessageCodec.createToolResult(codecMessageId, {
+          UIMessageCodec.createToolResult(transportMessageId, {
             toolCallId: overlayPart.toolCallId,
             output: overlayPart.output,
           }),
         );
       } else {
         inputs.push(
-          UIMessageCodec.createToolResultError(codecMessageId, {
+          UIMessageCodec.createToolResultError(transportMessageId, {
             toolCallId: overlayPart.toolCallId,
             message: overlayPart.errorText,
           }),
@@ -383,7 +383,7 @@ const deriveContinuationInputs = (pairs: CodecMessage<AI.UIMessage>[], messages:
 const findPredecessorCodecId = (pairs: CodecMessage<AI.UIMessage>[], domainId: string): string | undefined => {
   const idx = pairs.findIndex((p) => p.message.id === domainId);
   if (idx <= 0) return undefined;
-  return pairs[idx - 1]?.codecMessageId;
+  return pairs[idx - 1]?.transportMessageId;
 };
 
 // ---------------------------------------------------------------------------
@@ -445,7 +445,7 @@ export const createChatTransport = (
     // the message's codec-message-id (the SDK never correlates on the domain
     // id, which may differ from the codec-message-id).
     const pairs = session.view.getMessagesWithIds();
-    const codecIdByDomainId = new Map(pairs.map((p) => [p.message.id, p.codecMessageId]));
+    const codecIdByDomainId = new Map(pairs.map((p) => [p.message.id, p.transportMessageId]));
     const codecIdOf = (domainId: string): string | undefined => codecIdByDomainId.get(domainId);
 
     // useChat calls sendMessages in three distinct modes. We disambiguate
@@ -610,11 +610,11 @@ export const createChatTransport = (
     // Build the consumer-facing stream from the Tree's events for this run.
     // Streaming is a useChat concern owned by the Vercel layer; the core
     // session no longer exposes a per-run stream. Key it on
-    // `run.inputCodecMessageId` — the triggering input's codec-message-id, which
+    // `run.inputTransportMessageId` — the triggering input's codec-message-id, which
     // the client owns from send time and the agent echoes as
     // `input-codec-message-id`. The agent mints the runId, supplied as
     // `run.runId` (a promise) for the run-end safety-net.
-    const runStream = createRunOutputStream(session, run.runId, run.inputCodecMessageId);
+    const runStream = createRunOutputStream(session, run.runId, run.inputTransportMessageId);
 
     if (abortSignal) {
       const onAbort = (): void => {

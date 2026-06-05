@@ -263,7 +263,7 @@ const publishCompleteRun = async (
   // Run-less user input node — no run-id; keyed by its codec-message-id.
   const userHeaders = buildTransportHeaders({
     role: 'user',
-    codecMessageId: opts.userMsgId,
+    transportMessageId: opts.userMsgId,
     parent: opts.userParentMsgId,
     forkOf: opts.userForkOfMsgId,
   });
@@ -282,7 +282,7 @@ const publishCompleteRun = async (
   const asstHeaders = buildTransportHeaders({
     role: 'assistant',
     runId: opts.runId,
-    codecMessageId: opts.asstMsgId,
+    transportMessageId: opts.asstMsgId,
     invocationId: opts.invocationId,
     runClientId: opts.clientId,
     parent: opts.userMsgId,
@@ -349,7 +349,7 @@ const publishRegenerateRun = async (
   const encoderHeaders = buildTransportHeaders({
     role: 'assistant',
     runId: opts.runId,
-    codecMessageId: opts.asstMsgId,
+    transportMessageId: opts.asstMsgId,
     invocationId: opts.invocationId,
     runClientId: opts.clientId,
     parent: opts.parentMsgId,
@@ -924,7 +924,7 @@ describe('ClientSession integration', () => {
         {
           kind: 'message',
           message: { id: userMsgId, role: 'user', parts: [{ type: 'text', text: `pq${String(turn)}` }] },
-          codecMessageId: userMsgId,
+          transportMessageId: userMsgId,
           parentId,
           forkOf: undefined,
           headers: {},
@@ -1195,13 +1195,13 @@ describe('ClientSession integration', () => {
     expect(asstPair).toBeDefined();
 
     if (userPair) {
-      expect(userPair.codecMessageId).toBeDefined();
-      const run = clientSession.view.runOf(userPair.codecMessageId);
+      expect(userPair.transportMessageId).toBeDefined();
+      const run = clientSession.view.runOf(userPair.transportMessageId);
       expect(run?.runId).toBe(runId);
     }
     if (asstPair) {
-      expect(asstPair.codecMessageId).toBeDefined();
-      const run = clientSession.view.runOf(asstPair.codecMessageId);
+      expect(asstPair.transportMessageId).toBeDefined();
+      const run = clientSession.view.runOf(asstPair.transportMessageId);
       expect(run?.runId).toBe(runId);
     }
   });
@@ -1231,7 +1231,7 @@ describe('ClientSession integration', () => {
 
     // Client sends BEFORE any agent is up. send() resolves as soon as the
     // input is published — it never blocks on run-start. The SDK-minted
-    // codec-message-id (`activeRun.inputCodecMessageId`) is the stable key to
+    // codec-message-id (`activeRun.inputTransportMessageId`) is the stable key to
     // locate it on the wire; the caller's `message.id` is decoupled from it.
     const activeRun = await sendUserMessage(clientSession.view, {
       id: 'user-late-agent',
@@ -1249,7 +1249,7 @@ describe('ClientSession integration', () => {
       found = page.items.find((m) => {
         const headers = getHeaders(m);
         return (
-          headers[HEADER_ROLE] === 'user' && headers[HEADER_TRANSPORT_MESSAGE_ID] === activeRun.inputCodecMessageId
+          headers[HEADER_ROLE] === 'user' && headers[HEADER_TRANSPORT_MESSAGE_ID] === activeRun.inputTransportMessageId
         );
       });
     }
@@ -1292,7 +1292,7 @@ describe('ClientSession integration', () => {
     });
     // The synchronous routing key is the triggering input's SDK-minted
     // codec-message-id, decoupled from the caller's `message.id`.
-    expect(typeof activeRun.inputCodecMessageId).toBe('string');
+    expect(typeof activeRun.inputTransportMessageId).toBe('string');
 
     // `runId` must stay pending — no agent published run-start. Race it
     // against a short timer to prove it neither resolves nor rejects.
@@ -1527,10 +1527,10 @@ describe('ClientSession integration', () => {
     });
     await clientSession.connect();
 
-    const codecMessageId = 'asst-tool-result-1';
+    const transportMessageId = 'asst-tool-result-1';
     const toolCallId = 'tc-result-1';
     await clientSession.view.send(
-      UIMessageCodec.createToolResult(codecMessageId, { toolCallId, output: { temperature: 22 } }),
+      UIMessageCodec.createToolResult(transportMessageId, { toolCallId, output: { temperature: 22 } }),
     );
 
     await gotInput;
@@ -1612,7 +1612,7 @@ describe('ClientSession integration', () => {
    * Scenario: the client cancels a fresh send BEFORE the agent has minted the
    * reply run-id and published run-start. In the two-node model a fresh run has
    * no run-id at send time, so the client keys the cancel by the triggering
-   * input's codec-message-id (the `ActiveRun.inputCodecMessageId`). The agent must buffer that
+   * input's codec-message-id (the `ActiveRun.inputTransportMessageId`). The agent must buffer that
    * early cancel and honour it once its input-event lookup resolves the input
    * to a run — aborting the run as `start()` completes, not dropping the cancel.
    *
@@ -1652,7 +1652,7 @@ describe('ClientSession integration', () => {
       role: 'user',
       parts: [{ type: 'text', text: 'cancel me before you even start' }],
     });
-    expect(typeof activeRun.inputCodecMessageId).toBe('string');
+    expect(typeof activeRun.inputTransportMessageId).toBe('string');
 
     // Cancel BEFORE the agent creates its run. The wire cancel is keyed by the
     // input codec-message-id (no run-id exists yet), so the agent buffers it.
@@ -1738,9 +1738,9 @@ describe('ClientSession integration', () => {
     // Each send's routing key is a distinct SDK-minted codec-message-id
     // (decoupled from the caller's `message.id`); outputs route by the
     // agent-minted run-id resolved from each distinct triggering input.
-    expect(typeof runA.inputCodecMessageId).toBe('string');
-    expect(typeof runB.inputCodecMessageId).toBe('string');
-    expect(runA.inputCodecMessageId).not.toBe(runB.inputCodecMessageId);
+    expect(typeof runA.inputTransportMessageId).toBe('string');
+    expect(typeof runB.inputTransportMessageId).toBe('string');
+    expect(runA.inputTransportMessageId).not.toBe(runB.inputTransportMessageId);
     expect(runA.inputEventId).not.toBe(runB.inputEventId);
 
     // Each agent run mints its own run-id and drives off its own input event.
@@ -1799,7 +1799,7 @@ describe('ClientSession integration', () => {
     const asstPairs = pairs.filter((p) => p.message.role === 'assistant');
     expect(asstPairs).toHaveLength(2);
     const asstTextByRunId = new Map(
-      asstPairs.map((p) => [clientSession?.view.runOf(p.codecMessageId)?.runId, textOfMessage(p.message)]),
+      asstPairs.map((p) => [clientSession?.view.runOf(p.transportMessageId)?.runId, textOfMessage(p.message)]),
     );
     expect(asstTextByRunId.get(runIdA)).toBe('answer A');
     expect(asstTextByRunId.get(runIdB)).toBe('answer B');

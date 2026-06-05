@@ -379,11 +379,11 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
 
   /**
    * Publish a client-side tool output on the `ai-input` wire. Targets the
-   * assistant addressed by `input.codecMessageId`; the wire's
+   * assistant addressed by `input.transportMessageId`; the wire's
    * `codec-message-id` is stamped via `perWrite.messageId` by the
    * client-session.
    * @param input - The tool-output input.
-   * @param perWrite - Per-write overrides carrying the wire codecMessageId.
+   * @param perWrite - Per-write overrides carrying the wire transportMessageId.
    */
   private async _publishToolResult(input: ToolResult<VercelToolResultPayload>, perWrite?: WriteOptions): Promise<void> {
     const h = headerWriter().str('type', 'tool-result').str('toolCallId', input.payload.toolCallId).build();
@@ -395,7 +395,7 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
 
   /**
    * Publish a client-side tool error on the `ai-input` wire. Targets the
-   * assistant addressed by `input.codecMessageId`.
+   * assistant addressed by `input.transportMessageId`.
    * @param input - The tool-result-error input.
    * @param perWrite - Per-write overrides.
    */
@@ -412,7 +412,7 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
 
   /**
    * Publish a client-side tool approval response on the `ai-input` wire.
-   * Targets the assistant addressed by `input.codecMessageId`.
+   * Targets the assistant addressed by `input.transportMessageId`.
    * @param input - The approval-response input.
    * @param perWrite - Per-write overrides.
    */

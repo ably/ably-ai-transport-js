@@ -25,14 +25,14 @@ const mockSend = vi.fn(
     Promise.resolve({
       // The triggering input's codec-message-id — the synchronous routing
       // handle the client owns the moment it publishes.
-      inputCodecMessageId: 'input-1',
+      inputTransportMessageId: 'input-1',
       // The agent mints the run-id now, so it resolves asynchronously once
       // `ai-run-start` is observed. A fresh send omits run-id from the
       // invocation pointer, leaving the agent to mint it.
       runId: Promise.resolve('run-1'),
       inputEventId: 'ev-1',
       cancel: async () => {},
-      optimisticCodecMessageIds: [],
+      optimisticTransportMessageIds: [],
       toInvocation: () => Invocation.fromJSON({ inputEventId: 'ev-1', sessionName: 'demo' }),
     }),
 );

@@ -18,7 +18,7 @@
  * `_conflictKeyOf` for the per-variant key derivation.
  *
  * Client-published tool resolutions (`ToolResult`, `ToolResultError`,
- * `ToolApprovalResponse`) carry `codecMessageId` targeting the assistant
+ * `ToolApprovalResponse`) carry `transportMessageId` targeting the assistant
  * they amend; the reducer applies the resolution onto that assistant's
  * `dynamic-tool` part directly. If the assistant has not yet arrived in
  * the projection (out-of-order delivery), the resolution is buffered in
@@ -61,7 +61,7 @@ interface ToolPartTracker {
   inputText: string;
 }
 
-/** Per-codecMessageId tracking state for in-progress streams within a UIMessage. */
+/** Per-transportMessageId tracking state for in-progress streams within a UIMessage. */
 interface MessageTrackers {
   /** Text stream id → partIndex. */
   text: Map<string, number>;
@@ -87,7 +87,7 @@ export interface VercelProjection {
   /**
    * UIMessages produced or modified in this Run, in publication order,
    * each paired with its codec-message-id. The reducer correlates strictly
-   * on `codecMessageId`; `message.id` is preserved verbatim from the source
+   * on `transportMessageId`; `message.id` is preserved verbatim from the source
    * (the AI SDK stream's `start.messageId` for assistants, the caller's id
    * for user messages) and is never used as an identity key.
    */
@@ -101,7 +101,7 @@ export interface VercelProjection {
    * unconditionally.
    */
   conflictSerials: Map<string, string>;
-  /** Per-codecMessageId tracker state for streamed parts. Internal — do not access. */
+  /** Per-transportMessageId tracker state for streamed parts. Internal — do not access. */
   trackers: Map<string, MessageTrackers>;
   /**
    * Tool-resolution events that arrived before any assistant in this
@@ -120,7 +120,7 @@ export interface VercelProjection {
  */
 interface PendingToolResolution {
   /** The codec-message-id of the assistant the resolution targets. */
-  targetCodecMessageId: string;
+  targetTransportMessageId: string;
   /** Tool call this resolution targets. */
   toolCallId: string;
   /** Serial of the wire message — used by the conflict-key check on promotion. */
@@ -324,27 +324,27 @@ const _foldUserMessage = (state: VercelProjection, message: AI.UIMessage, meta: 
   // caller-supplied `message.id` is preserved verbatim and surfaced to the
   // application unchanged. Without a codec-message-id the message has no
   // identity to key on, so it is appended as a fresh entry.
-  const codecMessageId = meta.messageId;
-  if (codecMessageId === undefined) {
-    state.messages.push({ codecMessageId: message.id, message });
+  const transportMessageId = meta.messageId;
+  if (transportMessageId === undefined) {
+    state.messages.push({ transportMessageId: message.id, message });
     return state;
   }
-  const existingIdx = state.messages.findIndex((e) => e.codecMessageId === codecMessageId);
+  const existingIdx = state.messages.findIndex((e) => e.transportMessageId === transportMessageId);
   if (existingIdx === -1) {
-    state.messages.push({ codecMessageId, message });
+    state.messages.push({ transportMessageId, message });
   } else {
-    state.messages[existingIdx] = { codecMessageId, message };
+    state.messages[existingIdx] = { transportMessageId, message };
   }
   return state;
 };
 
 /**
  * Fold a client-published `ToolResult`. The input carries
- * `codecMessageId` pointing at the assistant whose `dynamic-tool` part
+ * `transportMessageId` pointing at the assistant whose `dynamic-tool` part
  * holds the matching `toolCallId`. If the assistant is present, fold
  * directly; otherwise pend until the assistant arrives.
  * @param state - Projection to fold into.
- * @param event - The tool-result input (codecMessageId + domain payload).
+ * @param event - The tool-result input (transportMessageId + domain payload).
  * @param meta - Transport-derived metadata.
  * @returns The same projection reference.
  */
@@ -354,7 +354,7 @@ const _foldClientToolResult = (
   meta: ReducerMeta,
 ): VercelProjection => {
   const { toolCallId, output } = event.payload;
-  const owner = _findOwner(state, event.codecMessageId, toolCallId);
+  const owner = _findOwner(state, event.transportMessageId, toolCallId);
   if (owner) {
     owner.message.parts[owner.tracker.partIndex] = transitionToolPart(owner.part, {
       type: 'tool-output-available',
@@ -365,7 +365,7 @@ const _foldClientToolResult = (
   }
 
   state.pendingToolResolutions.push({
-    targetCodecMessageId: event.codecMessageId,
+    targetTransportMessageId: event.transportMessageId,
     toolCallId,
     serial: meta.serial,
     resolution: { kind: 'tool-result', output },
@@ -377,7 +377,7 @@ const _foldClientToolResult = (
  * Fold a client-published `ToolResultError`. Mirrors
  * {@link _foldClientToolResult} but with the error transition.
  * @param state - Projection to fold into.
- * @param event - The tool-result-error input (codecMessageId + domain payload).
+ * @param event - The tool-result-error input (transportMessageId + domain payload).
  * @param meta - Transport-derived metadata.
  * @returns The same projection reference.
  */
@@ -387,7 +387,7 @@ const _foldClientToolResultError = (
   meta: ReducerMeta,
 ): VercelProjection => {
   const { toolCallId, message } = event.payload;
-  const owner = _findOwner(state, event.codecMessageId, toolCallId);
+  const owner = _findOwner(state, event.transportMessageId, toolCallId);
   if (owner) {
     owner.message.parts[owner.tracker.partIndex] = transitionToolPart(owner.part, {
       type: 'tool-output-error',
@@ -398,7 +398,7 @@ const _foldClientToolResultError = (
   }
 
   state.pendingToolResolutions.push({
-    targetCodecMessageId: event.codecMessageId,
+    targetTransportMessageId: event.transportMessageId,
     toolCallId,
     serial: meta.serial,
     resolution: { kind: 'tool-result-error', message },
@@ -408,7 +408,7 @@ const _foldClientToolResultError = (
 
 /**
  * Fold a client-published `ToolApprovalResponse`. The input carries
- * `codecMessageId` pointing at the assistant whose `dynamic-tool` part
+ * `transportMessageId` pointing at the assistant whose `dynamic-tool` part
  * holds the matching `toolCallId`. Approval → `approval-responded`;
  * denial → `output-denied` via {@link transitionToolPart}.
  * @param state - Projection to fold into.
@@ -422,14 +422,14 @@ const _foldToolApprovalResponse = (
   meta: ReducerMeta,
 ): VercelProjection => {
   const { toolCallId, approved, reason } = event.payload;
-  const owner = _findOwner(state, event.codecMessageId, toolCallId);
+  const owner = _findOwner(state, event.transportMessageId, toolCallId);
   if (owner) {
     owner.message.parts[owner.tracker.partIndex] = _approvalTransition(owner.part, approved, reason);
     return state;
   }
 
   state.pendingToolResolutions.push({
-    targetCodecMessageId: event.codecMessageId,
+    targetTransportMessageId: event.transportMessageId,
     toolCallId,
     serial: meta.serial,
     resolution: {
@@ -447,10 +447,14 @@ interface OwnerLookup {
   part: AI.DynamicToolUIPart;
 }
 
-const _findOwner = (state: VercelProjection, codecMessageId: string, toolCallId: string): OwnerLookup | undefined => {
-  const entry = state.messages.find((e) => e.codecMessageId === codecMessageId);
+const _findOwner = (
+  state: VercelProjection,
+  transportMessageId: string,
+  toolCallId: string,
+): OwnerLookup | undefined => {
+  const entry = state.messages.find((e) => e.transportMessageId === transportMessageId);
   if (!entry) return undefined;
-  const trackers = _ensureTrackers(state, codecMessageId);
+  const trackers = _ensureTrackers(state, transportMessageId);
   const found = _getToolPart(entry.message, trackers, toolCallId);
   if (!found) return undefined;
   return { message: entry.message, tracker: found.tracker, part: found.part };
@@ -469,7 +473,7 @@ const _findOwner = (state: VercelProjection, codecMessageId: string, toolCallId:
  */
 const _findToolPartOwner = (state: VercelProjection, toolCallId: string): OwnerLookup | undefined => {
   for (const entry of state.messages) {
-    const trackers = state.trackers.get(entry.codecMessageId);
+    const trackers = state.trackers.get(entry.transportMessageId);
     if (!trackers) continue;
     const found = _getToolPart(entry.message, trackers, toolCallId);
     if (found) return { message: entry.message, tracker: found.tracker, part: found.part };
@@ -525,7 +529,7 @@ const _approvalTransition = (
 const _retryPendingResolutions = (state: VercelProjection): void => {
   const next: PendingToolResolution[] = [];
   for (const pending of state.pendingToolResolutions) {
-    const owner = _findOwner(state, pending.targetCodecMessageId, pending.toolCallId);
+    const owner = _findOwner(state, pending.targetTransportMessageId, pending.toolCallId);
     if (!owner) {
       next.push(pending);
       continue;
@@ -624,13 +628,13 @@ const _foldChunk = (state: VercelProjection, chunk: VercelOutput, meta: ReducerM
 // Message + tracker helpers
 // ---------------------------------------------------------------------------
 
-const _ensureMessage = (state: VercelProjection, codecMessageId: string): AI.UIMessage => {
-  let entry = state.messages.find((e) => e.codecMessageId === codecMessageId);
+const _ensureMessage = (state: VercelProjection, transportMessageId: string): AI.UIMessage => {
+  let entry = state.messages.find((e) => e.transportMessageId === transportMessageId);
   if (!entry) {
     // No source id seen yet — seed the domain `message.id` with the
     // codec-message-id as a fallback. The `start` chunk overwrites it with
     // the stream's `messageId` when the stream provides one.
-    entry = { codecMessageId, message: { id: codecMessageId, role: 'assistant', parts: [] } };
+    entry = { transportMessageId, message: { id: transportMessageId, role: 'assistant', parts: [] } };
     state.messages.push(entry);
   }
   return entry.message;
@@ -699,7 +703,7 @@ const _foldLifecycle = (
       return state;
     }
     case 'finish': {
-      const message = state.messages.find((e) => e.codecMessageId === messageId)?.message;
+      const message = state.messages.find((e) => e.transportMessageId === messageId)?.message;
       if (message && chunk.messageMetadata !== undefined) {
         message.metadata = chunk.messageMetadata;
       }
@@ -713,7 +717,7 @@ const _foldLifecycle = (
       return state;
     }
     case 'message-metadata': {
-      const message = state.messages.find((e) => e.codecMessageId === messageId)?.message;
+      const message = state.messages.find((e) => e.transportMessageId === messageId)?.message;
       if (message && chunk.messageMetadata !== undefined) {
         message.metadata = chunk.messageMetadata;
       }

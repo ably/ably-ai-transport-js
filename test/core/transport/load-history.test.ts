@@ -50,10 +50,10 @@ const ablyMsg = (opts: MsgOpts = {}): Ably.InboundMessage =>
   }) as unknown as Ably.InboundMessage;
 
 // A discrete message: created and terminated by a single wire (start + terminal).
-const discreteMsg = (codecMessageId: string, extraHeaders: Record<string, string> = {}): Ably.InboundMessage =>
+const discreteMsg = (transportMessageId: string, extraHeaders: Record<string, string> = {}): Ably.InboundMessage =>
   ablyMsg({
     headers: {
-      [HEADER_TRANSPORT_MESSAGE_ID]: codecMessageId,
+      [HEADER_TRANSPORT_MESSAGE_ID]: transportMessageId,
       [HEADER_STREAM]: 'false',
       [HEADER_DISCRETE]: 'true',
       ...extraHeaders,
@@ -63,11 +63,11 @@ const discreteMsg = (codecMessageId: string, extraHeaders: Record<string, string
 // A streamed run: a create followed by `deltaCount` appends and a closing
 // append carrying `status: complete`. All wires share one serial. Returned
 // newest-first, as Ably history delivers them.
-const streamingRun = (runId: string, codecMessageId: string, deltaCount: number): Ably.InboundMessage[] => {
+const streamingRun = (runId: string, transportMessageId: string, deltaCount: number): Ably.InboundMessage[] => {
   const serial = nextSerial();
   const baseHeaders = {
     [HEADER_RUN_ID]: runId,
-    [HEADER_TRANSPORT_MESSAGE_ID]: codecMessageId,
+    [HEADER_TRANSPORT_MESSAGE_ID]: transportMessageId,
     [HEADER_STREAM]: 'true',
   };
 

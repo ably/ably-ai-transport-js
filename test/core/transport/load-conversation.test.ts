@@ -33,7 +33,7 @@ interface TestProjection {
 const testCodec: Codec<TestInput, TestOutput, TestProjection, TestMessage> = {
   init: () => ({ ids: [] }),
   fold: (state, _event, meta) => ({ ids: [...state.ids, meta.messageId ?? ''] }),
-  getMessages: (state) => state.ids.map((id) => ({ codecMessageId: id, message: { id } })),
+  getMessages: (state) => state.ids.map((id) => ({ transportMessageId: id, message: { id } })),
   createDecoder: (): Decoder<TestInput, TestOutput> => ({ decode: () => ({ inputs: [], outputs: [{ type: 'out' }] }) }),
   createEncoder: () => {
     throw new Error('not used');

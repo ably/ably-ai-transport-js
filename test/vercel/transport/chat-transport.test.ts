@@ -62,11 +62,11 @@ const makeEmitter = (): MockEmitter => {
 
 interface MockRun {
   stream: ReadableStream<AI.UIMessageChunk>;
-  inputCodecMessageId: string;
+  inputTransportMessageId: string;
   runId: Promise<string>;
   inputEventId: string;
   cancel: ReturnType<typeof vi.fn>;
-  optimisticCodecMessageIds: string[];
+  optimisticTransportMessageIds: string[];
   toInvocation: () => Invocation;
   /** Emit a chunk as a Tree `output` event for this run (drives the consumer stream). */
   enqueue: (chunk: AI.UIMessageChunk) => void;
@@ -93,7 +93,7 @@ const createMockSession = (): MockSession => {
   const runId = 'run-1';
   // The triggering input's codec-message-id — the synchronous routing key the
   // consumer stream is built on (the agent mints the run-id separately).
-  const inputCodecMessageId = 'input-1';
+  const inputTransportMessageId = 'input-1';
 
   const mockRun: MockRun = {
     // The transport no longer reads this — it builds its own stream from Tree
@@ -102,18 +102,18 @@ const createMockSession = (): MockSession => {
       // eslint-disable-next-line @typescript-eslint/no-empty-function -- inert placeholder stream
       start: () => {},
     }),
-    inputCodecMessageId,
+    inputTransportMessageId,
     runId: Promise.resolve(runId),
     inputEventId: '',
     cancel: vi.fn(),
-    optimisticCodecMessageIds: [],
+    optimisticTransportMessageIds: [],
     toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'chat-1' }),
     enqueue: (chunk: AI.UIMessageChunk) => {
       // Route by the triggering input id — the key the consumer stream opens on.
       treeEmitter.emit('output', {
         runId,
-        inputCodecMessageId,
-        codecMessageId: 'm-1',
+        inputTransportMessageId,
+        transportMessageId: 'm-1',
         serial: 's-1',
         events: [chunk],
       });
@@ -135,7 +135,7 @@ const createMockSession = (): MockSession => {
 
   const tree = {
     getRunNode: vi.fn(),
-    getNodeByCodecMessageId: vi.fn(),
+    getNodeByTransportMessageId: vi.fn(),
     getSiblingNodes: vi.fn(() => []),
     on: vi.fn(treeEmitter.on),
   } as unknown as Tree<VercelOutput, VercelProjection>;
@@ -152,7 +152,7 @@ const createMockSession = (): MockSession => {
     // Derive the codec-message-id pairs from whatever `getMessages` is
     // stubbed to return. These tests use fixtures where `message.id` equals
     // the codec-message-id; the divergent-id case is covered separately.
-    getMessagesWithIds: vi.fn(() => getMessages().map((m) => ({ codecMessageId: m.id, message: m }))),
+    getMessagesWithIds: vi.fn(() => getMessages().map((m) => ({ transportMessageId: m.id, message: m }))),
     runs: vi.fn(() => []),
     hasOlder: vi.fn(() => false),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
@@ -318,8 +318,8 @@ describe('createChatTransport', () => {
 
       expect(regenerate).toHaveBeenCalledOnce();
       expect(send).not.toHaveBeenCalled();
-      const [codecMessageId] = regenerate.mock.calls[0] as [string, SendOptions];
-      expect(codecMessageId).toBe('m2-id');
+      const [transportMessageId] = regenerate.mock.calls[0] as [string, SendOptions];
+      expect(transportMessageId).toBe('m2-id');
 
       // The regenerate run's invocation is POSTed to wake the agent.
       expect(postBody()).toMatchObject({
@@ -337,8 +337,8 @@ describe('createChatTransport', () => {
       // useChat references the assistant by its domain id 'a2'; the transport
       // must regenerate by its codec-message-id 'codec-a2'.
       (view.getMessagesWithIds as ReturnType<typeof vi.fn>).mockReturnValue([
-        { codecMessageId: 'codec-1', message: m1 },
-        { codecMessageId: 'codec-a2', message: m2 },
+        { transportMessageId: 'codec-1', message: m1 },
+        { transportMessageId: 'codec-a2', message: m2 },
       ]);
 
       const streamPromise = chat.sendMessages({
@@ -351,8 +351,8 @@ describe('createChatTransport', () => {
       mockRun.close();
       await streamPromise;
 
-      const [codecMessageId] = regenerate.mock.calls[0] as [string, SendOptions];
-      expect(codecMessageId).toBe('codec-a2');
+      const [transportMessageId] = regenerate.mock.calls[0] as [string, SendOptions];
+      expect(transportMessageId).toBe('codec-a2');
     });
 
     it('throws when regenerate-message fires without a messageId', async () => {
@@ -414,8 +414,8 @@ describe('createChatTransport', () => {
       (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([previousUser, edited]);
       // Domain ids differ from the codec-message-ids the transport must route on.
       (view.getMessagesWithIds as ReturnType<typeof vi.fn>).mockReturnValue([
-        { codecMessageId: 'codec-prev', message: previousUser },
-        { codecMessageId: 'codec-edit', message: edited },
+        { transportMessageId: 'codec-prev', message: previousUser },
+        { transportMessageId: 'codec-edit', message: edited },
       ]);
 
       const chat = createChatTransport(session);
@@ -1168,11 +1168,11 @@ describe('createChatTransport', () => {
   });
 
   // -------------------------------------------------------------------------
-  // sendMessages — continuation: codecMessageId threading
+  // sendMessages — continuation: transportMessageId threading
   // -------------------------------------------------------------------------
 
-  describe('sendMessages — continuation codecMessageId', () => {
-    it('passes the prior assistant tree codec-message-id as codecMessageId for a client-tool resolution', async () => {
+  describe('sendMessages — continuation transportMessageId', () => {
+    it('passes the prior assistant tree codec-message-id as transportMessageId for a client-tool resolution', async () => {
       const { session, send, view, mockRun } = createMockSession();
 
       const user1 = makeMessage('u1');
@@ -1226,13 +1226,13 @@ describe('createChatTransport', () => {
       const [input] = send.mock.calls[0] as [VercelInput[]];
 
       // chat-transport passes tool-resolution inputs to view.send.
-      // Each input carries `codecMessageId` so the SDK stamps the wire
+      // Each input carries `transportMessageId` so the SDK stamps the wire
       // HEADER_TRANSPORT_MESSAGE_ID to 'a1' — the reducer's direct-fold path
       // then matches by codec-message-id and folds onto the existing
       // assistant without a cross-message redirect.
       expect(input).toHaveLength(1);
       expect(input[0]?.kind).toBe('tool-result');
-      expect(input[0]?.codecMessageId).toBe('a1');
+      expect(input[0]?.transportMessageId).toBe('a1');
     });
 
     it('routes a continuation by codec-message-id even when it differs from the domain message id', async () => {
@@ -1266,8 +1266,8 @@ describe('createChatTransport', () => {
 
       (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([user1, treeAssistant]);
       (view.getMessagesWithIds as ReturnType<typeof vi.fn>).mockReturnValue([
-        { codecMessageId: 'codec-u1', message: user1 },
-        { codecMessageId: 'codec-a1', message: treeAssistant },
+        { transportMessageId: 'codec-u1', message: user1 },
+        { transportMessageId: 'codec-a1', message: treeAssistant },
       ]);
       // runOf resolves the runId ONLY when queried by the codec-message-id —
       // a lookup by the domain id 'a1' would miss and leave runId unset.
@@ -1290,11 +1290,11 @@ describe('createChatTransport', () => {
       // the runId resolved (via runOf keyed on 'codec-a1') flows to sendOpts —
       // never the domain id 'a1'.
       const [input, opts] = send.mock.calls[0] as [VercelInput[], SendOptions];
-      expect(input[0]?.codecMessageId).toBe('codec-a1');
+      expect(input[0]?.transportMessageId).toBe('codec-a1');
       expect(opts.runId).toBe('run-a1');
     });
 
-    it('passes the prior assistant tree codec-message-id as codecMessageId for an approval response', async () => {
+    it('passes the prior assistant tree codec-message-id as transportMessageId for an approval response', async () => {
       const { session, send, view, mockRun } = createMockSession();
 
       const user1 = makeMessage('u1');
@@ -1344,7 +1344,7 @@ describe('createChatTransport', () => {
       const [input] = send.mock.calls[0] as [VercelInput[]];
       expect(input).toHaveLength(1);
       expect(input[0]?.kind).toBe('tool-approval-response');
-      expect(input[0]?.codecMessageId).toBe('a1');
+      expect(input[0]?.transportMessageId).toBe('a1');
     });
   });
 });

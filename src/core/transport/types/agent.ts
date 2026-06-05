@@ -101,7 +101,7 @@ export interface EventsNode<TOutput extends CodecOutputEvent> {
   /** Discriminator — identifies this as an events node. */
   kind: 'event';
   /** The `codec-message-id` of the existing message to update. */
-  codecMessageId: string;
+  transportMessageId: string;
   /** Outputs to apply to the target message. */
   events: TOutput[];
 }
@@ -118,7 +118,7 @@ export interface PipeOptions<TOutput extends CodecOutputEvent> {
   /**
    * Optional per-output hook invoked before each output is encoded. The
    * returned {@link WriteOptions} (if any) override the stream's default
-   * headers and `codecMessageId` for that one encode call only; return `undefined`
+   * headers and `transportMessageId` for that one encode call only; return `undefined`
    * to use the stream defaults.
    *
    * Used to carry a subset of outputs within the stream to a different
@@ -304,7 +304,7 @@ export interface Run<TOutput extends CodecOutputEvent, TProjection, TMessage> {
 
   /**
    * Publish events targeting existing messages in the tree. Each node
-   * specifies a target message (by `codecMessageId`) and the events to apply.
+   * specifies a target message (by `transportMessageId`) and the events to apply.
    * Events are encoded and published with the target's `codec-message-id`,
    * so receiving clients apply them to the existing node rather than
    * creating a new one.

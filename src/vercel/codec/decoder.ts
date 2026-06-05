@@ -484,34 +484,38 @@ const decodeDiscreteMessagePart = (input: MessagePayload): VercelInput[] => {
 const isDiscreteMessagePart = (codecType: string, headers: Record<string, string>): boolean =>
   (codecType === 'text' || codecType === 'file' || isDataEventName(codecType)) && HEADER_DISCRETE in headers;
 
-const decodeClientToolResult = (codecMessageId: string, r: VercelHeaderReader, data: unknown): VercelInput[] => {
+const decodeClientToolResult = (transportMessageId: string, r: VercelHeaderReader, data: unknown): VercelInput[] => {
   // CAST: Trust boundary — encoder produced the expected object shape.
   const parsed = data as ToolOutputAvailableWireData | undefined;
   return [
     {
       kind: 'tool-result',
-      codecMessageId,
+      transportMessageId,
       payload: { toolCallId: r.strOr('toolCallId', ''), output: parsed?.output },
     },
   ];
 };
 
-const decodeClientToolResultError = (codecMessageId: string, r: VercelHeaderReader, data: unknown): VercelInput[] => {
+const decodeClientToolResultError = (
+  transportMessageId: string,
+  r: VercelHeaderReader,
+  data: unknown,
+): VercelInput[] => {
   // CAST: Trust boundary — encoder produced the expected object shape.
   const parsed = data as ClientToolResultErrorWireData | undefined;
   return [
     {
       kind: 'tool-result-error',
-      codecMessageId,
+      transportMessageId,
       payload: { toolCallId: r.strOr('toolCallId', ''), message: parsed?.message ?? '' },
     },
   ];
 };
 
-const decodeClientToolApprovalResponse = (codecMessageId: string, r: VercelHeaderReader): VercelInput[] => [
+const decodeClientToolApprovalResponse = (transportMessageId: string, r: VercelHeaderReader): VercelInput[] => [
   {
     kind: 'tool-approval-response',
-    codecMessageId,
+    transportMessageId,
     payload: stripUndefined({
       toolCallId: r.strOr('toolCallId', ''),
       approved: r.bool('approved') ?? false,
@@ -594,17 +598,17 @@ const decodeAiInputPayload = (codecType: string, input: MessagePayload, r: Verce
     return decodeDiscreteMessagePart(input);
   }
 
-  const codecMessageId = input.transportHeaders?.[HEADER_TRANSPORT_MESSAGE_ID] ?? '';
+  const transportMessageId = input.transportHeaders?.[HEADER_TRANSPORT_MESSAGE_ID] ?? '';
 
   switch (codecType) {
     case 'tool-result': {
-      return decodeClientToolResult(codecMessageId, r, input.data);
+      return decodeClientToolResult(transportMessageId, r, input.data);
     }
     case 'tool-result-error': {
-      return decodeClientToolResultError(codecMessageId, r, input.data);
+      return decodeClientToolResultError(transportMessageId, r, input.data);
     }
     case 'tool-approval-response': {
-      return decodeClientToolApprovalResponse(codecMessageId, r);
+      return decodeClientToolApprovalResponse(transportMessageId, r);
     }
     case 'regenerate': {
       // Wire-only signal — carries `parent` / `target` on transport headers,

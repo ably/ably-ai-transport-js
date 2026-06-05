@@ -47,7 +47,7 @@ export function useClientTools(
   session: ClientSession<VercelInput, VercelOutput, VercelProjection, UIMessage>,
   messages: UIMessage[],
   addToolResult: ChatAddToolOutputFunction<UIMessage>,
-  runOf: (codecMessageId: string) => RunInfo | undefined,
+  runOf: (transportMessageId: string) => RunInfo | undefined,
   clientId: string | undefined,
 ) {
   const handledRef = useRef(new Set<string>());

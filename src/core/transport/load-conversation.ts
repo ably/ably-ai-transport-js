@@ -138,12 +138,12 @@ export const foldRunMessages = <
 
 /**
  * Fold a single run-less INPUT node's events into a fresh projection: every
- * wire stamped with `codecMessageId` and NO run-id (the user prompt the client
+ * wire stamped with `transportMessageId` and NO run-id (the user prompt the client
  * published before the agent minted a run-id). The two-node analogue of
  * {@link foldRunMessages} for the user-input side of the conversation chain.
  * @param codec - Codec used to decode and fold events.
  * @param sortedMessages - Chronologically ordered wire messages (all runs).
- * @param codecMessageId - The input node's codec-message-id.
+ * @param transportMessageId - The input node's codec-message-id.
  * @returns The folded projection for that input node.
  */
 export const foldInputMessages = <
@@ -154,15 +154,15 @@ export const foldInputMessages = <
 >(
   codec: Codec<TInput, TOutput, TProjection, TMessage>,
   sortedMessages: readonly Ably.InboundMessage[],
-  codecMessageId: string,
+  transportMessageId: string,
 ): TProjection => {
   const decoder = codec.createDecoder();
   let projection = codec.init();
   for (const msg of sortedMessages) {
     const h = getTransportHeaders(msg);
     if (h[HEADER_RUN_ID] !== undefined) continue;
-    if (h[HEADER_TRANSPORT_MESSAGE_ID] !== codecMessageId) continue;
-    projection = foldMessageInto(codec, decoder, projection, msg, codecMessageId);
+    if (h[HEADER_TRANSPORT_MESSAGE_ID] !== transportMessageId) continue;
+    projection = foldMessageInto(codec, decoder, projection, msg, transportMessageId);
   }
   return projection;
 };
@@ -290,16 +290,16 @@ export const loadConversation = async <
   // wires record their runId; run-less user inputs are input nodes (runId
   // undefined).
   const nodeMeta = new Map<string, NodeMeta>();
-  const runIdToCodecMessageId = new Map<string, string>();
+  const runIdToTransportMessageId = new Map<string, string>();
   for (const msg of sortedMessages) {
     if (isRunLifecycleName(msg.name)) continue;
     const h = getTransportHeaders(msg);
     const cid = h[HEADER_TRANSPORT_MESSAGE_ID];
     if (cid === undefined) continue;
     const msgRunId = h[HEADER_RUN_ID];
-    if (msgRunId !== undefined) runIdToCodecMessageId.set(msgRunId, cid);
+    if (msgRunId !== undefined) runIdToTransportMessageId.set(msgRunId, cid);
     if (!nodeMeta.has(cid)) {
-      nodeMeta.set(cid, { runId: msgRunId, parentCodecMessageId: h[HEADER_PARENT] });
+      nodeMeta.set(cid, { runId: msgRunId, parentTransportMessageId: h[HEADER_PARENT] });
     }
   }
   // Backfill a reply run's structural parent from ai-run-start when its output
@@ -309,10 +309,10 @@ export const loadConversation = async <
     const h = getTransportHeaders(msg);
     const msgRunId = h[HEADER_RUN_ID];
     if (msgRunId === undefined) continue;
-    const cid = runIdToCodecMessageId.get(msgRunId);
+    const cid = runIdToTransportMessageId.get(msgRunId);
     if (cid === undefined) continue;
     const meta = nodeMeta.get(cid);
-    if (meta && meta.parentCodecMessageId === undefined) meta.parentCodecMessageId = h[HEADER_PARENT];
+    if (meta && meta.parentTransportMessageId === undefined) meta.parentTransportMessageId = h[HEADER_PARENT];
   }
 
   // Walk the structural parent chain from the current run's input node up to

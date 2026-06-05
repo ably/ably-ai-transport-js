@@ -63,15 +63,15 @@ export interface RunOutputStream {
  * close the stream once it resolves.
  * @param session - The Vercel client session whose Tree to observe.
  * @param runId - The agent-minted runId, resolved when run-start is observed.
- *   Used only by the run-end safety-net; routing keys on `inputCodecMessageId`.
- * @param inputCodecMessageId - The triggering input's codec-message-id. An
+ *   Used only by the run-end safety-net; routing keys on `inputTransportMessageId`.
+ * @param inputTransportMessageId - The triggering input's codec-message-id. An
  *   output routes to this stream when it carries this id.
  * @returns The stream and its external settle handles.
  */
 export const createRunOutputStream = (
   session: VercelSession,
   runId: Promise<string>,
-  inputCodecMessageId: string,
+  inputTransportMessageId: string,
 ): RunOutputStream => {
   const holder: { controller?: ReadableStreamDefaultController<VercelOutput> } = {};
   // ReadableStream's start() runs synchronously, so the controller is captured
@@ -139,7 +139,7 @@ export const createRunOutputStream = (
 
   unsubscribe.push(
     session.tree.on('output', (event) => {
-      if (event.inputCodecMessageId !== inputCodecMessageId) return;
+      if (event.inputTransportMessageId !== inputTransportMessageId) return;
       for (const output of event.events) {
         try {
           controller.enqueue(output);

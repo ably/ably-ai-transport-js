@@ -49,7 +49,7 @@ describe('Codec input event well-known shapes', () => {
     it('exposes the transport routing fields as optional', () => {
       expectTypeOf<CodecInputEvent>().toHaveProperty('parent').toEqualTypeOf<string | undefined>();
       expectTypeOf<CodecInputEvent>().toHaveProperty('target').toEqualTypeOf<string | undefined>();
-      expectTypeOf<CodecInputEvent>().toHaveProperty('codecMessageId').toEqualTypeOf<string | undefined>();
+      expectTypeOf<CodecInputEvent>().toHaveProperty('transportMessageId').toEqualTypeOf<string | undefined>();
     });
   });
 
@@ -143,8 +143,8 @@ describe('Codec input event well-known shapes', () => {
       expectTypeOf<ToolResult<FakeResultPayload>>().toHaveProperty('kind').toEqualTypeOf<'tool-result'>();
     });
 
-    it('requires `codecMessageId` (string) and carries the domain `payload`', () => {
-      expectTypeOf<ToolResult<FakeResultPayload>>().toHaveProperty('codecMessageId').toEqualTypeOf<string>();
+    it('requires `transportMessageId` (string) and carries the domain `payload`', () => {
+      expectTypeOf<ToolResult<FakeResultPayload>>().toHaveProperty('transportMessageId').toEqualTypeOf<string>();
       expectTypeOf<ToolResult<FakeResultPayload>>().toHaveProperty('payload').toEqualTypeOf<FakeResultPayload>();
     });
 
@@ -159,14 +159,14 @@ describe('Codec input event well-known shapes', () => {
       expectTypeOf<ToolResult<FakeResultPayload>>().toExtend<CodecInputEvent>();
     });
 
-    it('rejects values that omit `codecMessageId` or `payload`', () => {
-      // @ts-expect-error — missing required `codecMessageId`, `payload`.
+    it('rejects values that omit `transportMessageId` or `payload`', () => {
+      // @ts-expect-error — missing required `transportMessageId`, `payload`.
       const _empty: ToolResult<FakeResultPayload> = { kind: 'tool-result' };
       // @ts-expect-error — missing required `payload`.
-      const _noPayload: ToolResult<FakeResultPayload> = { kind: 'tool-result', codecMessageId: 'a' };
+      const _noPayload: ToolResult<FakeResultPayload> = { kind: 'tool-result', transportMessageId: 'a' };
       const _ok: ToolResult<FakeResultPayload> = {
         kind: 'tool-result',
-        codecMessageId: 'a',
+        transportMessageId: 'a',
         payload: { toolCallId: 't', output: { v: 1 } },
       };
       void _empty;
@@ -189,8 +189,8 @@ describe('Codec input event well-known shapes', () => {
       expectTypeOf<ToolResultError<FakeErrorPayload>>().toHaveProperty('kind').toEqualTypeOf<'tool-result-error'>();
     });
 
-    it('requires `codecMessageId` (string) and carries the domain `payload`', () => {
-      expectTypeOf<ToolResultError<FakeErrorPayload>>().toHaveProperty('codecMessageId').toEqualTypeOf<string>();
+    it('requires `transportMessageId` (string) and carries the domain `payload`', () => {
+      expectTypeOf<ToolResultError<FakeErrorPayload>>().toHaveProperty('transportMessageId').toEqualTypeOf<string>();
       expectTypeOf<ToolResultError<FakeErrorPayload>>().toHaveProperty('payload').toEqualTypeOf<FakeErrorPayload>();
     });
 
@@ -203,12 +203,12 @@ describe('Codec input event well-known shapes', () => {
       expectTypeOf<ToolResultError<FakeErrorPayload>>().toExtend<CodecInputEvent>();
     });
 
-    it('rejects values that omit `codecMessageId` or `payload`', () => {
+    it('rejects values that omit `transportMessageId` or `payload`', () => {
       // @ts-expect-error — missing required fields.
       const _empty: ToolResultError<FakeErrorPayload> = { kind: 'tool-result-error' };
       const _ok: ToolResultError<FakeErrorPayload> = {
         kind: 'tool-result-error',
-        codecMessageId: 'a',
+        transportMessageId: 'a',
         payload: { toolCallId: 't', message: 'failure' },
       };
       void _empty;
@@ -233,9 +233,9 @@ describe('Codec input event well-known shapes', () => {
         .toEqualTypeOf<'tool-approval-response'>();
     });
 
-    it('requires `codecMessageId` (string) and carries the domain `payload`', () => {
+    it('requires `transportMessageId` (string) and carries the domain `payload`', () => {
       expectTypeOf<ToolApprovalResponse<FakeApprovalPayload>>()
-        .toHaveProperty('codecMessageId')
+        .toHaveProperty('transportMessageId')
         .toEqualTypeOf<string>();
       expectTypeOf<ToolApprovalResponse<FakeApprovalPayload>>()
         .toHaveProperty('payload')
@@ -251,12 +251,12 @@ describe('Codec input event well-known shapes', () => {
       expectTypeOf<ToolApprovalResponse<FakeApprovalPayload>>().toExtend<CodecInputEvent>();
     });
 
-    it('rejects values that omit `codecMessageId` or `payload`', () => {
+    it('rejects values that omit `transportMessageId` or `payload`', () => {
       // @ts-expect-error — missing required fields.
       const _empty: ToolApprovalResponse<FakeApprovalPayload> = { kind: 'tool-approval-response' };
       const _ok: ToolApprovalResponse<FakeApprovalPayload> = {
         kind: 'tool-approval-response',
-        codecMessageId: 'a',
+        transportMessageId: 'a',
         payload: { toolCallId: 't', approved: false, reason: 'nope' },
       };
       void _empty;

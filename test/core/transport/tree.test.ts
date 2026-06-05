@@ -432,7 +432,7 @@ describe('Tree', () => {
       // Reachability keys on the structural parentCodecMessageId, recorded at
       // create time. This is documented behaviour — out-of-order inserts may
       // produce disconnected Run forests when parents arrive late. The fix for
-      // that is decode-history's re-ingestion pass; for live channels parents
+      // that is load-history's re-ingestion pass; for live channels parents
       // always arrive first. For this test we assert the flatten still includes
       // every Run in startSerial order.
       expect(flatRunIds(tree)).toContain('R1');

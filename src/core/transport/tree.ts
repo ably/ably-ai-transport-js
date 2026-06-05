@@ -106,14 +106,6 @@ export interface TreeInternal<
   TProjection,
 > extends Tree<TOutput, TProjection> {
   /**
-   * Monotonic counter that increments on structural changes (Run insert,
-   * delete, startSerial promotion/reorder) but NOT on projection updates
-   * (existing Run's projection mutated by fold). Allows the View to skip
-   * full tree walks when only projection content changed.
-   */
-  readonly structuralVersion: number;
-
-  /**
    * Walk the visible node chain (both input nodes and reply runs) along the
    * selected branches, in chronological order. The View renders from this.
    * @param selections - Per-group selected member key, keyed by group root.
@@ -276,10 +268,6 @@ export class DefaultTree<
    */
   private _siblingCache = new Map<string, InternalNode<TProjection>[]>();
   private _siblingCacheVersion = -1;
-
-  get structuralVersion(): number {
-    return this._structuralVersion;
-  }
 
   constructor(codec: Reducer<TInput | TOutput, TProjection>, logger: Logger) {
     this._codec = codec;
@@ -652,7 +640,7 @@ export class DefaultTree<
     // `update` is the structural channel: emit it only when this apply
     // actually changes the tree shape (new node, startSerial promotion).
     // Content-only folds (streaming chunks into an existing node) flow through
-    // `output` instead, so they leave `structuralVersion` untouched.
+    // `output` instead, so they leave `_structuralVersion` untouched.
     const structuralBefore = this._structuralVersion;
 
     if (inputNodeCodecMessageId !== undefined) {

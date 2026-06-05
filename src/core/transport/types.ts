@@ -691,9 +691,6 @@ export interface MessageNode<TMessage> {
   serial: string | undefined;
 }
 
-/** @deprecated Use {@link MessageNode} instead. */
-export type TreeNode<TMessage> = MessageNode<TMessage>;
-
 /**
  * A node in the conversation tree, representing a single Run.
  *

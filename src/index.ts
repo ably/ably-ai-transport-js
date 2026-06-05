@@ -27,10 +27,6 @@ export type {
   Tree,
   View,
 } from './core/transport/index.js';
-
-// Deprecated aliases — intentional re-export of deprecated types for backwards compatibility.
-// eslint-disable-next-line @typescript-eslint/no-deprecated
-export type { TreeNode } from './core/transport/index.js';
 export { buildTransportHeaders, createAgentSession, createClientSession, Invocation } from './core/transport/index.js';
 
 // Core codec

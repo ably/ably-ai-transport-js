@@ -14,7 +14,6 @@ import * as Ably from 'ably';
 
 import {
   EVENT_CANCEL,
-  EVENT_RUN_START,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
@@ -29,9 +28,9 @@ import type { Logger } from '../../logger.js';
 import { compareBySerial, getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
-import { buildBranchChain } from './branch-chain.js';
-import { buildTransportHeaders, isRunLifecycleName } from './headers.js';
+import { buildTransportHeaders } from './headers.js';
 import { Invocation } from './invocation.js';
+import { loadConversation, loadRunProjection } from './load-conversation.js';
 import { pipeStream } from './pipe-stream.js';
 import type { RunManager } from './run-manager.js';
 import { createRunManager } from './run-manager.js';
@@ -51,206 +50,8 @@ import type {
 } from './types.js';
 
 // ---------------------------------------------------------------------------
-// Shared wire-message helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Merge live-observed messages into a collection of history messages, then
- * return a deduplicated, chronologically sorted array.
- *
- * History messages take priority in deduplication (history serial wins if the
- * same message appears in both). Messages without a serial are dropped because
- * they cannot be reliably ordered.
- * @param collected - Raw messages from channel.history (any order).
- * @param live - Messages observed live (e.g. by the input-event lookup); may be undefined.
- * @returns Deduplicated, chronologically sorted messages.
- */
-const withLiveMessages = (
-  collected: readonly Ably.InboundMessage[],
-  live: readonly Ably.InboundMessage[] | undefined,
-): Ably.InboundMessage[] => {
-  const seen = new Set<string>();
-  const result: Ably.InboundMessage[] = [];
-  for (const msg of collected) {
-    if (msg.serial !== undefined && !seen.has(msg.serial)) {
-      seen.add(msg.serial);
-      result.push(msg);
-    }
-  }
-  if (live !== undefined) {
-    for (const msg of live) {
-      if (msg.serial !== undefined && !seen.has(msg.serial)) {
-        seen.add(msg.serial);
-        result.push(msg);
-      }
-    }
-  }
-  return result.toSorted(compareBySerial);
-};
-
-/**
- * Page through a channel's history and collect raw messages, bounded so a
- * long-lived channel can't exhaust memory. No `untilAttach` — callers need
- * messages published after the channel first attached (e.g. client tool-output
- * amends on a suspended run).
- * @param channel - The Ably channel to read history from.
- * @param pageLimit - Messages requested per history page.
- * @param maxMessages - Stop paging once this many messages are collected.
- * @returns The collected messages in history order (newest first per Ably).
- */
-const collectHistory = async (
-  channel: Ably.RealtimeChannel,
-  pageLimit: number,
-  maxMessages: number,
-): Promise<Ably.InboundMessage[]> => {
-  const collected: Ably.InboundMessage[] = [];
-  let page = await channel.history({ limit: pageLimit });
-  collected.push(...page.items);
-  while (page.hasNext() && collected.length < maxMessages) {
-    const nextPage: Ably.PaginatedResult<Ably.InboundMessage> | null = await page.next();
-    if (!nextPage) break;
-    collected.push(...nextPage.items);
-    page = nextPage;
-  }
-  return collected;
-};
-
-/**
- * Fold a pre-sorted array of wire messages for a single run into a projection.
- *
- * Skips lifecycle events (`ai-run-start` / `ai-run-suspend` / `ai-run-resume` /
- * `ai-run-end`) and stops before the
- * message whose `codec-message-id` equals `truncateAt` (exclusive —
- * that message is not folded). Used by both `loadRunProjection` (no truncation)
- * and `loadConversation` (ancestor truncation for regenerate / fork).
- * @param codec - Codec used to decode and fold events.
- * @param sortedMessages - Chronologically ordered wire messages (all runs).
- * @param runId - Only messages stamped with this run-id are folded.
- * @param truncateAt - Stop before this codec-message-id; omit to fold all messages.
- * @returns The projection and the count of messages that were folded.
- */
-const foldRunMessages = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>(
-  codec: Codec<TInput, TOutput, TProjection, TMessage>,
-  sortedMessages: readonly Ably.InboundMessage[],
-  runId: string,
-  truncateAt?: string,
-): { projection: TProjection; folded: number } => {
-  const decoder = codec.createDecoder();
-  let projection = codec.init();
-  let folded = 0;
-  for (const msg of sortedMessages) {
-    const h = getTransportHeaders(msg);
-    if (h[HEADER_RUN_ID] !== runId) continue;
-    // Lifecycle events carry no codec content — skip them.
-    if (isRunLifecycleName(msg.name)) continue;
-    const codecMsgId = h[HEADER_CODEC_MESSAGE_ID];
-    if (truncateAt !== undefined && codecMsgId === truncateAt) break;
-    const { inputs, outputs } = decoder.decode(msg);
-    const events: (TInput | TOutput)[] = [...inputs, ...outputs];
-    const routingCodecMessageId = codecMsgId ?? '';
-    for (const event of events) {
-      projection = codec.fold(projection, event, { serial: msg.serial ?? '', messageId: routingCodecMessageId });
-    }
-    folded++;
-  }
-  return { projection, folded };
-};
-
-/**
- * Fold a single run-less INPUT node's events into a fresh projection: every
- * wire stamped with `codecMessageId` and NO run-id (the user prompt the client
- * published before the agent minted a run-id). The two-node analogue of
- * {@link foldRunMessages} for the user-input side of the conversation chain.
- * @param codec - Codec used to decode and fold events.
- * @param sortedMessages - Chronologically ordered wire messages (all runs).
- * @param codecMessageId - The input node's codec-message-id.
- * @returns The folded projection for that input node.
- */
-const foldInputMessages = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>(
-  codec: Codec<TInput, TOutput, TProjection, TMessage>,
-  sortedMessages: readonly Ably.InboundMessage[],
-  codecMessageId: string,
-): TProjection => {
-  const decoder = codec.createDecoder();
-  let projection = codec.init();
-  for (const msg of sortedMessages) {
-    const h = getTransportHeaders(msg);
-    if (h[HEADER_RUN_ID] !== undefined) continue;
-    if (h[HEADER_CODEC_MESSAGE_ID] !== codecMessageId) continue;
-    const { inputs, outputs } = decoder.decode(msg);
-    for (const event of [...inputs, ...outputs]) {
-      projection = codec.fold(projection, event, { serial: msg.serial ?? '', messageId: codecMessageId });
-    }
-  }
-  return projection;
-};
-
-// ---------------------------------------------------------------------------
 // Run-state lookup helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Fetch all messages on the channel that belong to `runId`, decode them
- * through the codec, and fold them into a single projection. Used by the
- * agent to reconstruct the run's full state — including client-published
- * tool-output amends — when resuming a suspended run in a fresh agent
- * session.
- *
- * Doesn't require channel rewind: an explicit `channel.history()` call
- * returns the same data even if the channel is already attached from a
- * prior session.
- * @param opts - Load parameters.
- * @param opts.channel - The Ably channel to read history from.
- * @param opts.codec - Codec used to decode and fold events.
- * @param opts.runId - Run identifier whose events should be folded.
- * @param opts.signal - AbortSignal that cancels the wait when the run is cancelled.
- * @param opts.logger - Optional logger for diagnostic output.
- * @param opts.liveMessages - Raw Ably messages already observed live (e.g. by
- *   the input-event lookup). Folded alongside the history fetch so just-published
- *   client wires don't depend on Ably's history-indexing window.
- * @returns The projection produced by folding all run events in serial order.
- */
-const loadRunProjection = async <
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-  TProjection,
-  TMessage,
->(opts: {
-  channel: Ably.RealtimeChannel;
-  codec: Codec<TInput, TOutput, TProjection, TMessage>;
-  runId: string;
-  signal: AbortSignal;
-  logger: Logger | undefined;
-  /**
-   * Wires the agent already observed live via the input-event lookup channel
-   * subscription. Folded alongside the history fetch so that the
-   * just-published client wires (e.g. a tool-output-available
-   * continuation) are guaranteed to land in the projection even if Ably
-   * has not yet indexed them into channel.history.
-   */
-  liveMessages?: readonly Ably.InboundMessage[];
-}): Promise<TProjection> => {
-  const { channel, codec, runId, signal, logger, liveMessages } = opts;
-
-  if (signal.aborted) {
-    throw new Ably.ErrorInfo(
-      `unable to load run projection; run ${runId} was cancelled`,
-      ErrorCode.InvalidArgument,
-      400,
-    );
-  }
-
-  await channel.attach();
-
-  // 2000 wire messages is generously more than any single run could produce.
-  const collected = await collectHistory(channel, 200, 2000);
-
-  const sorted = withLiveMessages(collected, liveMessages);
-  const { projection, folded } = foldRunMessages(codec, sorted, runId);
-
-  logger?.debug('loadRunProjection(); folded run events', { runId, folded });
-  return projection;
-};
 
 /**
  * Wait for every event-id in `expectedInputEventIds` to arrive as a channel
@@ -1359,117 +1160,20 @@ class DefaultAgentSession<
       loadConversation: async (options?: LoadConversationOptions): Promise<TMessage[]> => {
         logger?.trace('Run.loadConversation();', { runId });
         await requireConnected('loadConversation');
-        if (signal.aborted) {
-          throw new Ably.ErrorInfo(
-            `unable to load conversation; run ${runId} was cancelled`,
-            ErrorCode.InvalidArgument,
-            400,
-          );
-        }
-        const pageLimit = options?.pageLimit ?? 200;
-        const maxMessages = options?.maxMessages ?? 2000;
-
-        // Single channel.history() fetch for all runs. Live lookup messages are
-        // merged in so the current run's just-published client wires don't depend
-        // on Ably's history-indexing window. Deduped by serial (history wins),
-        // sorted chronologically.
-        const collected = await collectHistory(channel, pageLimit, maxMessages);
-        const sortedMessages = withLiveMessages(collected, liveLookupMessages);
-
-        // Index pass — build node metadata per codec-message-id from the
-        // serial-sorted history, with sticky identity (the first wire for a
-        // codec-message-id wins for parent/forkOf/regenerates; a later amend
-        // can't poison it). Run-bearing wires record their runId; run-less user
-        // inputs are input nodes (runId undefined). The entries satisfy
-        // BranchChainNode (they carry `parentCodecMessageId`).
-        interface NodeMeta {
-          runId: string | undefined;
-          parentCodecMessageId: string | undefined;
-          forkOf: string | undefined;
-          regenerates: string | undefined;
-        }
-        const nodeMeta = new Map<string, NodeMeta>();
-        const runIdToCodecMessageId = new Map<string, string>();
-        for (const msg of sortedMessages) {
-          if (isRunLifecycleName(msg.name)) continue;
-          const h = getTransportHeaders(msg);
-          const cid = h[HEADER_CODEC_MESSAGE_ID];
-          if (cid === undefined) continue;
-          const msgRunId = h[HEADER_RUN_ID];
-          if (msgRunId !== undefined) runIdToCodecMessageId.set(msgRunId, cid);
-          if (!nodeMeta.has(cid)) {
-            nodeMeta.set(cid, {
-              runId: msgRunId,
-              parentCodecMessageId: h[HEADER_PARENT],
-              forkOf: h[HEADER_FORK_OF],
-              regenerates: h[HEADER_MSG_REGENERATE],
-            });
-          }
-        }
-        // Backfill a reply run's structural metadata from ai-run-start when its
-        // output wire wasn't indexed (rare history lag). Keyed by runId → the
-        // run's codec-message-id.
-        for (const msg of sortedMessages) {
-          if (msg.name !== EVENT_RUN_START) continue;
-          const h = getTransportHeaders(msg);
-          const msgRunId = h[HEADER_RUN_ID];
-          if (msgRunId === undefined) continue;
-          const cid = runIdToCodecMessageId.get(msgRunId);
-          if (cid === undefined) continue;
-          const meta = nodeMeta.get(cid);
-          if (!meta) continue;
-          if (meta.parentCodecMessageId === undefined) meta.parentCodecMessageId = h[HEADER_PARENT];
-          if (meta.forkOf === undefined) meta.forkOf = h[HEADER_FORK_OF];
-          if (meta.regenerates === undefined) meta.regenerates = h[HEADER_MSG_REGENERATE];
-        }
-
-        // Walk the structural parent chain from the current run's input node
-        // (M_user = `assistantParentFallback`, computed at run-start the same way
-        // the output path does) up to the conversation root, then fold each node
-        // in chain order. Seed from the STRUCTURAL parent, not the triggering
-        // input id: for a regenerate the trigger is the regenerate carrier
-        // (≠ M_user). The upward walk naturally excludes un-taken branch siblings
-        // (an edit's alternate prompt, a regenerate's superseded reply), so no
-        // per-ancestor truncation is needed. (Open caveat, deferred with a golden
-        // test: regenerating a non-trailing message of a multi-message reply —
-        // the node walk can't slice inside one run's projection.)
-        const allMessages: TMessage[] = [];
-        let chainLength = 0;
-        if (assistantParentFallback !== undefined) {
-          const chain = buildBranchChain(nodeMeta, assistantParentFallback);
-          chainLength = chain.length;
-          for (const cid of chain) {
-            const meta = nodeMeta.get(cid);
-            // Skip any chain node belonging to the CURRENT run — it is folded
-            // once, wholesale, at the tail below. For a continuation the run-id
-            // is reused and `assistantParentFallback` points at a message INSIDE
-            // the current run (e.g. the tool-call assistant message a
-            // tool-approval continues), so the run would otherwise be folded
-            // twice and emit duplicate tool_use ids.
-            if (meta?.runId === runId) continue;
-            const projection =
-              meta?.runId === undefined
-                ? foldInputMessages(codec, sortedMessages, cid)
-                : foldRunMessages(codec, sortedMessages, meta.runId).projection;
-            allMessages.push(...codec.getMessages(projection));
-          }
-        }
-
-        // Current run — fold from the same sorted messages (live messages already
-        // merged in by withLiveMessages above). Appended at the chain tail: the
-        // chain ended at this run's input node (M_user).
-        const { projection: currentProjection, folded } = foldRunMessages(codec, sortedMessages, runId);
-        cachedProjection = currentProjection;
-        allMessages.push(...codec.getMessages(currentProjection));
-
-        logger?.debug('Run.loadConversation(); built', {
+        const { messages, projection } = await loadConversation<TInput, TOutput, TProjection, TMessage>({
+          channel,
+          codec,
           runId,
-          chainLength,
-          totalMessages: allMessages.length,
-          folded,
+          signal,
+          logger,
+          liveMessages: liveLookupMessages,
+          assistantParentFallback,
+          pageLimit: options?.pageLimit ?? 200,
+          maxMessages: options?.maxMessages ?? 2000,
         });
-        cachedConversation = allMessages;
-        return allMessages;
+        cachedProjection = projection;
+        cachedConversation = messages;
+        return messages;
       },
 
       // Spec: AIT-ST6, AIT-ST6a, AIT-ST6b, AIT-ST6b1, AIT-ST6b2, AIT-ST6b3, AIT-ST6c

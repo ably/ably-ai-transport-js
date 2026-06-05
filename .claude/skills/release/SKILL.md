@@ -126,6 +126,12 @@ The changelog skill will:
 If the changelog skill reports no PRs found (placeholder `-` bullet),
 note this in the final summary and remind the user to fill it in.
 
+The changelog is end-user-facing and must never contain internal-only
+references — Jira `AIT-*` ticket/epic ids, `AIT-*` / `RSA*`-style spec
+points, `AITDR-*` / `AITRFC-*` RFC/DR documents, internal Slack threads,
+or standup notes. The changelog skill enforces this; if any slip through
+into the generated entry, strip them before staging in Step 10.
+
 **Contract after this step:** `CHANGELOG.md` is modified but not staged.
 The working tree also contains the `package.json` and `src/version.ts`
 edits from Step 5 and the lockfile changes from Steps 6-7, all unstaged.

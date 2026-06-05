@@ -125,7 +125,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
         </div>
       </div>
       <DebugPane
-        messages={messages}
+        messages={messages.map((p) => p.message)}
         ablyMessages={ablyMessages}
         status={status}
         callbackLog={callbackLog}

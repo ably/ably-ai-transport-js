@@ -2,7 +2,7 @@
 
 import { useRef, useEffect } from 'react';
 import type { UIMessage } from 'ai';
-import type { BranchSelection, RunInfo } from '@ably/ai-transport';
+import type { AIMessage, BranchSelection, RunInfo } from '@ably/ai-transport';
 import { MessageBubble } from './message-bubble';
 import { IntroCard } from './intro-card';
 
@@ -13,11 +13,15 @@ interface ViewLookupApi {
 }
 
 interface MessageListProps {
-  messages: UIMessage[];
+  messages: AIMessage<UIMessage>[];
   hasOlder: boolean;
   loading: boolean;
   view: ViewLookupApi;
   onLoadOlder: () => void;
+  /**
+   * useChat operates on the domain `UIMessage.id`; chat-transport translates
+   * to the transport id internally. Pass `message.id`, not `transportMessageId`.
+   */
   onRegenerate: (messageId: string) => void;
   onEdit: (messageId: string, newText: string) => void;
   onToolApprove?: (approvalId: string) => void;
@@ -40,7 +44,7 @@ export function MessageList({
   const prevLastIdRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
-    const lastId = messages.length > 0 ? messages[messages.length - 1].id : undefined;
+    const lastId = messages.length > 0 ? messages[messages.length - 1].transportMessageId : undefined;
     if (lastId && lastId !== prevLastIdRef.current) {
       prevLastIdRef.current = lastId;
       endRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -74,13 +78,13 @@ export function MessageList({
         </div>
       )}
       {loading && <div className="text-center text-xs text-zinc-600 animate-pulse">Loading history...</div>}
-      {messages.map((message) => {
-        const run = view.runOf(message.id);
-        const branch = view.branchSelection(message.id);
+      {messages.map(({ transportMessageId, message }) => {
+        const run = view.runOf(transportMessageId);
+        const branch = view.branchSelection(transportMessageId);
         const bubbleStatus = run?.status === 'active' ? 'streaming' : run?.status;
         return (
           <MessageBubble
-            key={message.id}
+            key={transportMessageId}
             message={message}
             clientId={run?.clientId || undefined}
             runId={run?.runId}
@@ -88,7 +92,7 @@ export function MessageList({
             hasSiblings={branch.hasSiblings}
             siblingCount={branch.hasSiblings ? branch.siblings.length : undefined}
             selectedIndex={branch.hasSiblings ? branch.index : undefined}
-            onSelectSibling={branch.hasSiblings ? (index) => view.selectSibling(message.id, index) : undefined}
+            onSelectSibling={branch.hasSiblings ? (index) => view.selectSibling(transportMessageId, index) : undefined}
             onRegenerate={message.role === 'assistant' ? () => onRegenerate(message.id) : undefined}
             onEdit={message.role === 'user' ? (text) => onEdit(message.id, text) : undefined}
             onToolApprove={onToolApprove}

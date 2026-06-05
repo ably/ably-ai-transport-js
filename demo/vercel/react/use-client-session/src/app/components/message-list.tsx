@@ -2,7 +2,7 @@
 
 import { useRef, useEffect } from 'react';
 import type { UIMessage } from 'ai';
-import type { BranchSelection, RunInfo } from '@ably/ai-transport';
+import type { AIMessage, BranchSelection, RunInfo } from '@ably/ai-transport';
 import { MessageBubble } from './message-bubble';
 import { IntroCard } from './intro-card';
 
@@ -13,13 +13,13 @@ interface ViewLookupApi {
 }
 
 interface MessageListProps {
-  messages: UIMessage[];
+  messages: AIMessage<UIMessage>[];
   hasOlder: boolean;
   loading: boolean;
   view: ViewLookupApi;
   onLoadOlder: () => void;
-  onRegenerate: (messageId: string) => void;
-  onEdit: (messageId: string, newText: string) => void;
+  onRegenerate: (transportMessageId: string) => void;
+  onEdit: (transportMessageId: string, newText: string) => void;
   onToolApprove?: (transportMessageId: string, toolCallId: string) => void;
   onToolDeny?: (transportMessageId: string, toolCallId: string) => void;
 }
@@ -40,7 +40,7 @@ export function MessageList({
   const prevLastIdRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
-    const lastId = messages.length > 0 ? messages[messages.length - 1].id : undefined;
+    const lastId = messages.length > 0 ? messages[messages.length - 1].transportMessageId : undefined;
     if (lastId && lastId !== prevLastIdRef.current) {
       prevLastIdRef.current = lastId;
       endRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -77,21 +77,22 @@ export function MessageList({
       {messages.length === 0 && !loading && (
         <p className="text-sm text-zinc-600 text-center mt-20">Send a message to start chatting.</p>
       )}
-      {messages.map((message) => {
+      {messages.map(({ transportMessageId, message }) => {
         // Project the owning Run + branch-selection bundle into primitives
         // at this glue layer so the MessageBubble component stays free of
         // SDK type dependencies. The bundle is total — safe to destructure
         // for any message; non-anchor bubbles return `siblings = [message]`
         // (length 1) so the bubble's render condition uses `hasSiblings`.
-        const run = view.runOf(message.id);
-        const branch = view.branchSelection(message.id);
+        const run = view.runOf(transportMessageId);
+        const branch = view.branchSelection(transportMessageId);
         // Translate the literal Run lifecycle state to the bubble's
         // rendering vocabulary: `'active'` → `'streaming'`.
         const bubbleStatus = run?.status === 'active' ? 'streaming' : run?.status;
         return (
           <MessageBubble
-            key={message.id}
+            key={transportMessageId}
             message={message}
+            transportMessageId={transportMessageId}
             clientId={run?.clientId || undefined}
             runId={run?.runId}
             status={bubbleStatus}
@@ -99,10 +100,10 @@ export function MessageList({
             siblingCount={branch.siblings.length}
             selectedIndex={branch.index}
             onSelectSibling={(index) => {
-              view.selectSibling(message.id, index);
+              view.selectSibling(transportMessageId, index);
             }}
-            onRegenerate={message.role === 'assistant' ? () => onRegenerate(message.id) : undefined}
-            onEdit={message.role === 'user' ? (text) => onEdit(message.id, text) : undefined}
+            onRegenerate={message.role === 'assistant' ? () => onRegenerate(transportMessageId) : undefined}
+            onEdit={message.role === 'user' ? (text) => onEdit(transportMessageId, text) : undefined}
             onToolApprove={onToolApprove}
             onToolDeny={onToolDeny}
           />

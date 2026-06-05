@@ -3,7 +3,7 @@ import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { useEffect, useState, type ReactNode } from 'react';
 import type * as AI from 'ai';
 import { Invocation } from '@ably/ai-transport';
-import type { ActiveRun, BranchSelection, ClientSession, SendOptions } from '@ably/ai-transport';
+import type { ActiveRun, AIMessage, BranchSelection, ClientSession, SendOptions } from '@ably/ai-transport';
 import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
 
 // jsdom doesn't implement Element.prototype.scrollIntoView; MessageList's
@@ -18,7 +18,7 @@ Element.prototype.scrollIntoView = () => {};
 // the SDK's session-hooks surface is caught at module-load or render-time.
 // ---------------------------------------------------------------------------
 
-let setMockViewMessages: ((messages: AI.UIMessage[]) => void) | null = null;
+let setMockViewMessages: ((messages: AIMessage<AI.UIMessage>[]) => void) | null = null;
 
 const mockSend = vi.fn(
   (_input: VercelInput | VercelInput[], _opts?: SendOptions): Promise<ActiveRun> =>
@@ -57,7 +57,7 @@ vi.mock('../providers', () => ({
     useClientSession: () => ({ session: mockSession, sessionError: undefined }),
     useAblyMessages: () => [],
     useView: () => {
-      const [messages, setMessages] = useState<AI.UIMessage[]>([]);
+      const [messages, setMessages] = useState<AIMessage<AI.UIMessage>[]>([]);
       useEffect(() => {
         setMockViewMessages = setMessages;
         return () => {
@@ -73,6 +73,7 @@ vi.mock('../providers', () => ({
         selectSibling: () => {},
         runOf: () => undefined,
         run: () => undefined,
+        runs: () => [],
         send: mockSend,
         regenerate: vi.fn(),
         edit: vi.fn(),
@@ -148,7 +149,8 @@ describe('<Chat>', () => {
 
     expect(setMockViewMessages).not.toBeNull();
     act(() => {
-      setMockViewMessages?.([assistantText('Hi there')]);
+      const msg = assistantText('Hi there');
+      setMockViewMessages?.([{ transportMessageId: msg.id, message: msg }]);
     });
 
     expect(screen.queryByText('Hi there')).not.toBeNull();

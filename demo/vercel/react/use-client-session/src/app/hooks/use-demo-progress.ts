@@ -18,7 +18,7 @@
 import { useMemo } from 'react';
 import type * as Ably from 'ably';
 import type { DynamicToolUIPart, UIMessage } from 'ai';
-import { EVENT_CANCEL } from '@ably/ai-transport';
+import { EVENT_CANCEL, type AIMessage, type BranchSelection, type RunInfo } from '@ably/ai-transport';
 
 export type DemoStepId =
   | 'server-weather'
@@ -94,10 +94,8 @@ const ALL_STEPS: DemoStep[] = [
   },
 ];
 
-import type { BranchSelection, RunInfo } from '@ably/ai-transport';
-
 export function useDemoProgress(
-  messages: UIMessage[],
+  messages: AIMessage<UIMessage>[],
   branchSelection: (transportMessageId: string) => BranchSelection<UIMessage>,
   runOf: (transportMessageId: string) => RunInfo | undefined,
   ablyMessages: Ably.InboundMessage[],
@@ -110,12 +108,12 @@ export function useDemoProgress(
     }
 
     for (let i = 0; i < messages.length; i++) {
-      if (messages[i].role !== 'user') continue;
+      if (messages[i].message.role !== 'user') continue;
 
       const turnTools = new Set<string>();
       const turnOutputs = new Set<string>();
       for (let j = i + 1; j < messages.length; j++) {
-        const m = messages[j];
+        const m = messages[j].message;
         if (m.role === 'user') break;
         if (m.role !== 'assistant') continue;
         for (const part of m.parts) {
@@ -138,16 +136,16 @@ export function useDemoProgress(
     }
 
     const turnClientIds = new Set<string>();
-    for (const m of messages) {
-      const run = runOf(m.id);
+    for (const pair of messages) {
+      const run = runOf(pair.transportMessageId);
       if (run?.clientId) turnClientIds.add(run.clientId);
     }
     if (turnClientIds.size > 1) completed.add('multi-tab');
 
-    for (const m of messages) {
-      if (!branchSelection(m.id).hasSiblings) continue;
-      if (m.role === 'assistant') completed.add('regenerate');
-      if (m.role === 'user') completed.add('edit');
+    for (const pair of messages) {
+      if (!branchSelection(pair.transportMessageId).hasSiblings) continue;
+      if (pair.message.role === 'assistant') completed.add('regenerate');
+      if (pair.message.role === 'user') completed.add('edit');
     }
 
     return ALL_STEPS.filter((s) => !completed.has(s.id));

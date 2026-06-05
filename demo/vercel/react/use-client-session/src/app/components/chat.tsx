@@ -65,7 +65,7 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
   // the Stop button; any other status ('active', 'error', 'suspended')
   // leaves Stop available so the user can still abort a stuck or paused
   // run. The Run also carries the runId Stop needs to cancel.
-  const latestRun = runOf(messages.at(-1)?.id ?? '');
+  const latestRun = runOf(messages.at(-1)?.transportMessageId ?? '');
   const latestRunId = latestRun?.runId;
   const latestStatus = latestRun?.status;
   const isRunInProgress = latestRunId !== undefined && latestStatus !== 'complete' && latestStatus !== 'cancelled';
@@ -195,7 +195,7 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
         </div>
       </div>
       <DebugPane
-        messages={messages}
+        messages={messages.map((p) => p.message)}
         ablyMessages={ablyMessages}
         status={status}
         callbackLog={callbackLog}

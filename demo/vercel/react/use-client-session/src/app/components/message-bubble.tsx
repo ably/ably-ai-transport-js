@@ -7,6 +7,13 @@ import { clientColor } from '../lib/client-color';
 
 interface MessageBubbleProps {
   message: UIMessage;
+  /**
+   * The SDK's transport id for this message — the routing key for branch /
+   * regen / edit / tool-approval callbacks. Passed alongside `message`
+   * because post-AIT-815 `message.id` is the domain stream id, not the
+   * wire-routing identifier.
+   */
+  transportMessageId: string;
   // Per-message metadata derived from the View at the list-glue layer
   // (see MessageList) and passed as primitives so the bubble stays a
   // pure renderer with no SDK type dependencies.
@@ -168,6 +175,7 @@ function EditForm({
 
 export function MessageBubble({
   message,
+  transportMessageId,
   clientId,
   runId,
   status,
@@ -184,7 +192,6 @@ export function MessageBubble({
   const [isEditing, setIsEditing] = useState(false);
 
   const role = message.role;
-  const transportMessageId = message.id;
   const colors = clientId ? clientColor(clientId) : undefined;
 
   const messageText = message.parts

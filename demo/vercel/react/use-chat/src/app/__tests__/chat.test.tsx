@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { useEffect, useState, type ReactNode } from 'react';
 import type * as AI from 'ai';
-import type { BranchSelection, ClientSession, RunInfo } from '@ably/ai-transport';
+import type { AIMessage, BranchSelection, ClientSession, RunInfo } from '@ably/ai-transport';
 import type { ChatTransport, VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
 
 // jsdom doesn't implement Element.prototype.scrollIntoView; MessageList's
@@ -19,7 +19,7 @@ Element.prototype.scrollIntoView = () => {};
 // ---------------------------------------------------------------------------
 
 interface MockViewState {
-  messages: AI.UIMessage[];
+  messages: AIMessage<AI.UIMessage>[];
   runs: Map<string, RunInfo>;
 }
 
@@ -75,6 +75,7 @@ vi.mock('@ably/ai-transport/vercel/react', () => ({
       selectSibling: () => {},
       runOf: () => undefined,
       run: (runId: string) => state.runs.get(runId),
+      runs: () => Array.from(state.runs.values()),
     };
   },
 }));
@@ -131,7 +132,11 @@ describe('<Chat>', () => {
 
     expect(setMockViewState).not.toBeNull();
     act(() => {
-      setMockViewState?.({ messages: [assistantTextMessage('Hi there')], runs: new Map() });
+      const msg = assistantTextMessage('Hi there');
+      setMockViewState?.({
+        messages: [{ transportMessageId: msg.id, message: msg }],
+        runs: new Map(),
+      });
     });
 
     expect(screen.queryByText('Hi there')).not.toBeNull();

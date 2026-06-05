@@ -56,24 +56,24 @@ export function useClientTools(view: ViewHandle<VercelInput, UIMessage>, clientI
     if (messages.length === 0) return;
 
     for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
-      if (msg.role !== 'assistant') continue;
+      const pair = messages[i];
+      if (pair.message.role !== 'assistant') continue;
 
       // Only execute client tools for runs initiated by this client.
       // Other clients on the same channel see the tool call but should
       // not execute it - only the requesting client has the context
       // (e.g. browser geolocation) to provide the result.
-      const run = view.runOf(msg.id);
+      const run = view.runOf(pair.transportMessageId);
       if (!run) continue;
       if (run.clientId && run.clientId !== clientId) continue;
 
       // If there's a later assistant message, this tool call was already
       // resolved in a previous session - skip to prevent re-execution
       // on page refresh.
-      const hasFollowUpAssistant = messages.slice(i + 1).some((m) => m.role === 'assistant');
+      const hasFollowUpAssistant = messages.slice(i + 1).some(({ message }) => message.role === 'assistant');
       if (hasFollowUpAssistant) continue;
 
-      for (const part of msg.parts) {
+      for (const part of pair.message.parts) {
         if (part.type !== 'dynamic-tool') continue;
         const toolPart = part as DynamicToolUIPart;
 
@@ -83,7 +83,7 @@ export function useClientTools(view: ViewHandle<VercelInput, UIMessage>, clientI
 
         handledRef.current.add(toolPart.toolCallId);
 
-        executeClientTool(view, api, run.runId, msg.id, toolPart);
+        executeClientTool(view, api, run.runId, pair.transportMessageId, toolPart);
       }
     }
   }, [view, view.messages, clientId, api]);

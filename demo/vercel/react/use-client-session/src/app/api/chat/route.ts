@@ -76,7 +76,7 @@ export async function POST(req: Request) {
     } else {
       await run.end(outcome);
     }
-    session.close();
+    await session.close();
     ably.close();
   });
 

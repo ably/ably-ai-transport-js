@@ -129,8 +129,8 @@ const isRunEnd = (msg: Ably.InboundMessage): boolean => msg.name === EVENT_RUN_E
 describe('AgentSession integration', () => {
   let session: AgentSessionT | undefined;
 
-  afterEach(() => {
-    session?.close();
+  afterEach(async () => {
+    await session?.close();
     session = undefined;
     closeAllClients();
   });

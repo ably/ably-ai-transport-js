@@ -81,6 +81,7 @@ interface MockChannel {
   on: ReturnType<typeof vi.fn>;
   off: ReturnType<typeof vi.fn>;
   attach: ReturnType<typeof vi.fn>;
+  detach: ReturnType<typeof vi.fn>;
   history: ReturnType<typeof vi.fn>;
   state: Ably.ChannelState;
   publishCalls: Ably.Message[];
@@ -116,6 +117,8 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
     }),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
     attach: vi.fn(() => Promise.resolve()),
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+    detach: vi.fn(() => Promise.resolve()),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
     history: vi.fn(() => {
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
@@ -421,8 +424,8 @@ describe('AgentSession', () => {
     await session.connect();
   });
 
-  afterEach(() => {
-    session.close();
+  afterEach(async () => {
+    await session.close();
   });
 
   // -------------------------------------------------------------------------
@@ -435,7 +438,7 @@ describe('AgentSession', () => {
       expect(typeof session.close).toBe('function');
     });
 
-    it('registers the agent and resolves the channel via client.channels.get', () => {
+    it('registers the agent and resolves the channel via client.channels.get', async () => {
       const ch = createMockChannel();
       const client = createMockClient(ch);
       const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
@@ -445,10 +448,10 @@ describe('AgentSession', () => {
       });
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock check
       expect(client.channels.get).toHaveBeenCalled();
-      s.close();
+      await s.close();
     });
 
-    it('forwards a custom rewindWindow to params.rewind', () => {
+    it('forwards a custom rewindWindow to params.rewind', async () => {
       const ch = createMockChannel();
       const client = createMockClient(ch);
       const c = createMockCodec();
@@ -462,10 +465,10 @@ describe('AgentSession', () => {
       expect(client.channels.get).toHaveBeenCalledWith('rewind-channel', {
         params: { agent: `ai-transport-js/${VERSION}`, rewind: '5m' },
       });
-      s.close();
+      await s.close();
     });
 
-    it('does not pollute options.agents when constructing multiple sessions on the same client', () => {
+    it('does not pollute options.agents when constructing multiple sessions on the same client', async () => {
       const ch1 = createMockChannel();
       const ch2 = createMockChannel();
       const client = createMockClient(ch1);
@@ -491,8 +494,8 @@ describe('AgentSession', () => {
         'some-other-sdk': '9.9.9',
         'ai-transport-js': VERSION,
       });
-      s1.close();
-      s2.close();
+      await s1.close();
+      await s2.close();
     });
   });
 
@@ -513,7 +516,7 @@ describe('AgentSession', () => {
       expect(p1).toBe(p2);
       await Promise.all([p1, p2]);
       expect(ch.subscribe).toHaveBeenCalledTimes(1);
-      s.close();
+      await s.close();
     });
 
     it('subscribes unfiltered (single listener installed)', () => {
@@ -535,7 +538,7 @@ describe('AgentSession', () => {
       });
       await expect(s.connect()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSubscriptionError);
       expect(onError).toHaveBeenCalled();
-      s.close();
+      await s.close();
     });
 
     it('Run methods throw InvalidArgument before connect()', async () => {
@@ -547,7 +550,7 @@ describe('AgentSession', () => {
       });
       const run = createRunFromOpts(s, { runId: 'run-x' });
       await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
-      s.close();
+      await s.close();
     });
   });
 
@@ -596,7 +599,7 @@ describe('AgentSession', () => {
 
       expect(ch.publishCalls.find((m) => m.name === 'ai-run-resume')).toBeDefined();
       expect(ch.publishCalls.find((m) => m.name === 'ai-run-start')).toBeUndefined();
-      s.close();
+      await s.close();
     });
 
     it('start() publishes ai-run-start (not ai-run-resume) when no continuation header is present', async () => {
@@ -645,7 +648,7 @@ describe('AgentSession', () => {
       expect(headers?.['msg-regenerate']).toBe('orig-asst');
       expect(headers?.parent).toBe('orig-user');
       expect(headers?.['fork-of']).toBeUndefined();
-      s.close();
+      await s.close();
     });
 
     it('end() publishes run-end with reason', async () => {
@@ -890,7 +893,7 @@ describe('AgentSession', () => {
       await expect(
         run.addEvents([{ kind: 'event', codecMessageId: 'target-1', events: [{ type: 'ev' }] }]),
       ).rejects.toBeErrorInfoWithCode(ErrorCode.RunLifecycleError);
-      failSession.close();
+      await failSession.close();
     });
   });
 
@@ -1008,7 +1011,7 @@ describe('AgentSession', () => {
       // here we only assert the regenerate header survives the pipe.
       expect(capturedHeaders?.['msg-regenerate']).toBe('orig-asst');
       expect(capturedHeaders?.['fork-of']).toBeUndefined();
-      s.close();
+      await s.close();
     });
 
     it('defaults assistant parent to the most recently looked-up input event', async () => {
@@ -1044,7 +1047,7 @@ describe('AgentSession', () => {
       await run.pipe(streamOf({ type: 'text', text: 'reply' }));
 
       expect(capturedHeaders?.[HEADER_PARENT]).toBe('user-1');
-      s.close();
+      await s.close();
     });
 
     it('omits parent header when view.messages is empty and no pipe parent is supplied', async () => {
@@ -1137,7 +1140,7 @@ describe('AgentSession', () => {
         (call) => typeof call[0] === 'string' && call[0].includes('missing run-id and input-codec-message-id'),
       );
       expect(warnCalls.length).toBe(1);
-      s.close();
+      await s.close();
     });
   });
 
@@ -1173,7 +1176,7 @@ describe('AgentSession', () => {
       await startPromise;
 
       expect(run.abortSignal.aborted).toBe(true);
-      s.close();
+      await s.close();
     });
 
     it('honours a continuation cancel (run-id + input id) that arrived before run-resume', async () => {
@@ -1218,7 +1221,7 @@ describe('AgentSession', () => {
       expect(run.abortSignal.aborted).toBe(true);
       // The run adopted the existing run-id from the wire, not the provisional.
       expect(run.runId).toBe(continuationRunId);
-      s.close();
+      await s.close();
     });
 
     it('a buffered cancel is honoured by onCancel exactly as a live cancel', async () => {
@@ -1250,7 +1253,7 @@ describe('AgentSession', () => {
 
       expect(onCancel).toHaveBeenCalledTimes(1);
       expect(run.abortSignal.aborted).toBe(true);
-      s.close();
+      await s.close();
     });
 
     it('a buffered cancel whose onCancel returns false does not abort the run', async () => {
@@ -1280,7 +1283,7 @@ describe('AgentSession', () => {
       await startPromise;
 
       expect(run.abortSignal.aborted).toBe(false);
-      s.close();
+      await s.close();
     });
 
     it('routes a live cancel by input codec-message-id once the run has resolved it', async () => {
@@ -1306,7 +1309,7 @@ describe('AgentSession', () => {
       await new Promise((r) => setTimeout(r, 5));
 
       expect(run.abortSignal.aborted).toBe(true);
-      s.close();
+      await s.close();
     });
 
     it('FIFO-evicts the oldest deferred cancel beyond the buffer limit', async () => {
@@ -1357,7 +1360,7 @@ describe('AgentSession', () => {
       await retainedStart;
       expect(retained.abortSignal.aborted).toBe(true);
 
-      s.close();
+      await s.close();
     });
 
     it('clears deferred cancels on close so they are not honoured by a later run', async () => {
@@ -1366,7 +1369,7 @@ describe('AgentSession', () => {
 
       simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: 'm-stale' });
       await new Promise((r) => setTimeout(r, 5));
-      s.close();
+      await s.close();
 
       // A fresh session reusing the same input id sees no buffered cancel.
       const s2 = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
@@ -1386,7 +1389,7 @@ describe('AgentSession', () => {
       });
       await startPromise;
       expect(run.abortSignal.aborted).toBe(false);
-      s2.close();
+      await s2.close();
     });
 
     it('a run-end clears the input → run linkage so a late cancel by input id is a no-op', async () => {
@@ -1411,7 +1414,7 @@ describe('AgentSession', () => {
 
       // No throw, no abort attempt against a non-existent registration.
       expect(run.abortSignal.aborted).toBe(false);
-      s.close();
+      await s.close();
     });
   });
 
@@ -1490,7 +1493,7 @@ describe('AgentSession', () => {
       const run = createRunFromOpts(failSession, { runId: 'run-1', onError });
       await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.RunLifecycleError);
       expect(onError).not.toHaveBeenCalled();
-      failSession.close();
+      await failSession.close();
     });
 
     it('end() throws on run-end publish failure', async () => {
@@ -1552,20 +1555,82 @@ describe('AgentSession', () => {
       const run2 = createRunFromOpts(session, { runId: 'run-2' });
       await run1.start();
       await run2.start();
-      session.close();
+      await session.close();
       expect(run1.abortSignal.aborted).toBe(true);
       expect(run2.abortSignal.aborted).toBe(true);
     });
 
-    it('unsubscribes from the channel', () => {
-      session.close();
+    it('unsubscribes from the channel', async () => {
+      await session.close();
       expect(channel.unsubscribe).toHaveBeenCalled();
     });
 
-    it('is idempotent', () => {
-      session.close();
-      session.close();
+    it('detaches the channel it attached', async () => {
+      await session.close();
+      expect(channel.detach).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not close the injected client', async () => {
+      const ch = createMockChannel();
+      const client = createMockClient(ch);
+      // Attach a spy so the assertion proves the SDK never calls client.close():
+      // the client is injected and the caller owns its lifecycle.
+      // CAST: the mock client is a plain object; add a close spy for the assertion.
+      const close = vi.fn();
+      (client as unknown as { close: () => void }).close = close;
+      const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client,
+        channelName: 'no-client-close',
+        codec: createMockCodec(),
+      });
+      await s.connect();
+      await s.close();
+      expect(close).not.toHaveBeenCalled();
+    });
+
+    it('does not detach when connect() was never called', async () => {
+      const ch = createMockChannel();
+      const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'never-connected',
+        codec: createMockCodec(),
+      });
+      await s.close();
+      expect(ch.detach).not.toHaveBeenCalled();
+    });
+
+    it('swallows a detach failure and logs it at debug', async () => {
+      const ch = createMockChannel();
+      ch.detach.mockRejectedValueOnce(new Error('detach failed'));
+      const debug = vi.fn();
+      // Minimal logger spy; withContext returns the same instance so the
+      // session's child-context logs reach this debug spy.
+      const logger: import('../../../src/logger.js').Logger = {
+        trace: vi.fn(),
+        debug,
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        withContext: () => logger,
+      };
+      const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'detach-fail',
+        codec: createMockCodec(),
+        logger,
+      });
+      await s.connect();
+      // Best-effort teardown: close() resolves despite the detach rejection...
+      await expect(s.close()).resolves.toBeUndefined();
+      // ...and the failure is logged at debug for observability.
+      expect(debug).toHaveBeenCalledWith(expect.stringContaining('channel detach failed'), expect.anything());
+    });
+
+    it('is idempotent', async () => {
+      await session.close();
+      await session.close();
       expect(channel.unsubscribe).toHaveBeenCalledTimes(1);
+      expect(channel.detach).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -1576,7 +1641,7 @@ describe('AgentSession', () => {
   describe('channel continuity', () => {
     it.each([['failed' as const], ['suspended' as const], ['detached' as const]])(
       'emits onError with ChannelContinuityLost when channel enters %s',
-      (state) => {
+      async (state) => {
         const onError = vi.fn();
         const ch = createMockChannel();
         ch.state = 'initialized';
@@ -1595,11 +1660,11 @@ describe('AgentSession', () => {
         expect(onError).toHaveBeenCalledWith(
           expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost, statusCode: 500 }),
         );
-        s.close();
+        await s.close();
       },
     );
 
-    it('emits onError on UPDATE (attached → attached, resumed: false)', () => {
+    it('emits onError on UPDATE (attached → attached, resumed: false)', async () => {
       const onError = vi.fn();
       const ch = createMockChannel();
       ch.state = 'initialized';
@@ -1619,7 +1684,7 @@ describe('AgentSession', () => {
       expect(onError).toHaveBeenCalledWith(
         expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost, statusCode: 500 }),
       );
-      s.close();
+      await s.close();
     });
   });
 
@@ -1647,7 +1712,7 @@ describe('AgentSession', () => {
       await startPromise;
       expect(run.view.messages).toHaveLength(1);
       expect(run.view.messages[0]?.codecMessageId).toBe('a');
-      s.close();
+      await s.close();
     });
 
     it('rejects with InputEventNotFound including "received X of Y" on partial collection at timeout', async () => {
@@ -1670,7 +1735,7 @@ describe('AgentSession', () => {
       const rejection = await startPromise.catch((error: unknown) => error);
       expect(rejection).toBeErrorInfoWithCode(ErrorCode.InputEventNotFound);
       expect((rejection as Ably.ErrorInfo).message).toContain('received 0 of 1');
-      s.close();
+      await s.close();
     });
 
     it('drains buffered input events in insertion order and stays registered for the remainder', async () => {
@@ -1695,7 +1760,7 @@ describe('AgentSession', () => {
       // start() should resolve immediately by draining the buffer.
       await startPromise;
       expect(run.view.messages.map((m) => m.codecMessageId)).toEqual(['first']);
-      s.close();
+      await s.close();
     });
 
     it('waits for continuation tool-resolution publishes via HEADER_RUN_ID + HEADER_EVENT_ID', async () => {
@@ -1733,7 +1798,7 @@ describe('AgentSession', () => {
       });
 
       await expect(startPromise).resolves.toBeUndefined();
-      s.close();
+      await s.close();
     });
   });
 
@@ -1762,7 +1827,7 @@ describe('AgentSession', () => {
       await run.start();
 
       expect(run.view.messages.map((m) => m.codecMessageId)).toEqual(['a']);
-      s.close();
+      await s.close();
     });
 
     it('routes input events by event-id, ignoring the invocation-id header', async () => {
@@ -1793,7 +1858,7 @@ describe('AgentSession', () => {
 
       await startPromise;
       expect(run.view.messages.map((m) => m.codecMessageId)).toEqual(['a']);
-      s.close();
+      await s.close();
     });
 
     it('rejects the entire lookup if any message fails to decode', async () => {
@@ -1829,7 +1894,7 @@ describe('AgentSession', () => {
       const rejection = await startPromise.catch((error: unknown) => error);
       expect(rejection).toBeErrorInfoWithCode(ErrorCode.InputEventNotFound);
       expect((rejection as Ably.ErrorInfo).message).toContain('decode failed');
-      s.close();
+      await s.close();
     });
 
     it('cancels the lookup when the run signal aborts mid-collection', async () => {
@@ -1852,7 +1917,7 @@ describe('AgentSession', () => {
       simulateCancel(ch, { [HEADER_RUN_ID]: runId });
 
       await expect(startPromise).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
-      s.close();
+      await s.close();
     });
   });
 
@@ -1888,7 +1953,7 @@ describe('AgentSession', () => {
       const ctx = evictCalls[0]?.[1] as { evictedEventId?: string; limit?: number } | undefined;
       expect(ctx?.evictedEventId).toBe('p-m0');
       expect(ctx?.limit).toBe(200);
-      s.close();
+      await s.close();
     });
 
     it('honours a custom inputEventBufferLimit option', async () => {
@@ -1927,7 +1992,7 @@ describe('AgentSession', () => {
       const ctx = evictCalls[0]?.[1] as { evictedEventId?: string; limit?: number } | undefined;
       expect(ctx?.evictedEventId).toBe('p-m0');
       expect(ctx?.limit).toBe(3);
-      s.close();
+      await s.close();
     });
   });
 });
@@ -1952,7 +2017,7 @@ describe('AgentSession input-event lookup', () => {
       invocationId: 'inv-1',
     });
     await expect(run.start()).resolves.toBeUndefined();
-    session.close();
+    await session.close();
   });
 
   it('start() succeeds when invocation already carries messages (legacy path)', async () => {
@@ -1969,7 +2034,7 @@ describe('AgentSession input-event lookup', () => {
     // inputEventIds, the lookup is skipped and start() completes synchronously.
     const run = createRunFromOpts(session, { runId: 'run-1', invocationId: 'inv-1' });
     await expect(run.start()).resolves.toBeUndefined();
-    session.close();
+    await session.close();
   });
 
   it('start() rejects with InputEventNotFound when timeout lapses', async () => {
@@ -1996,7 +2061,7 @@ describe('AgentSession input-event lookup', () => {
     // lifecycle invariant for other channel observers).
     expect(channel.publishCalls.find((m) => m.name === 'ai-run-end')).toBeUndefined();
     expect(channel.publishCalls.find((m) => m.name === 'ai-run-start')).toBeUndefined();
-    session.close();
+    await session.close();
   });
 });
 
@@ -2005,7 +2070,7 @@ describe('AgentSession input-event lookup', () => {
 // ---------------------------------------------------------------------------
 
 describe('Run.messages', () => {
-  it('is empty before start() resolves (no loadProjection yet)', () => {
+  it('is empty before start() resolves (no loadProjection yet)', async () => {
     const channel = createMockChannel();
     const codec = codecWithFunctionalDecoder();
     const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
@@ -2018,7 +2083,7 @@ describe('Run.messages', () => {
     // Fresh array per access — mutating the return value doesn't bleed.
     run.messages.push({ id: 'leak', content: 'no' });
     expect(run.messages).toEqual([]);
-    session.close();
+    await session.close();
   });
 
   it('returns view-message contributions after start() resolves (fresh send)', async () => {
@@ -2048,7 +2113,7 @@ describe('Run.messages', () => {
 
     // The functional decoder produces { id: codecMessageId, content: codecMessageId }.
     expect(run.messages).toEqual([{ id: 'user-new', content: 'user-new' }]);
-    session.close();
+    await session.close();
   });
 
   it('returns view messages after start() resolves on continuation (no history overlay)', async () => {
@@ -2079,7 +2144,7 @@ describe('Run.messages', () => {
 
     // Before loadProjection, messages are the view messages from the input-event lookup.
     expect(run.messages).toEqual([{ id: 'm-cont', content: 'm-cont' }]);
-    session.close();
+    await session.close();
   });
 
   it('returns only view messages after start() on continuation (no history to pass through)', async () => {
@@ -2109,7 +2174,7 @@ describe('Run.messages', () => {
     await startPromise;
 
     expect(run.messages).toEqual([{ id: 'm-cont', content: 'm-cont' }]);
-    session.close();
+    await session.close();
   });
 
   it('detects continuation status from a tool-resolution-only lookup (firstHeaders fallback)', async () => {
@@ -2161,7 +2226,7 @@ describe('Run.messages', () => {
     // ai-run-resume rather than open a new ai-run-start.
     expect(ch.publishCalls.find((m) => m.name === 'ai-run-resume')).toBeDefined();
     expect(ch.publishCalls.find((m) => m.name === 'ai-run-start')).toBeUndefined();
-    session.close();
+    await session.close();
   });
 
   it('returns the full conversation after loadConversation() is called', async () => {
@@ -2226,7 +2291,7 @@ describe('Run.messages', () => {
       { id: 'u2', content: 'u2' },
       { id: 'a2', content: 'a2' },
     ]);
-    session.close();
+    await session.close();
   });
 });
 
@@ -2358,7 +2423,7 @@ describe('Run.loadConversation', () => {
     expect(history).toEqual([{ id: 'msg-1', content: 'msg-1' }]);
     // Side effect: run.messages now returns the full conversation.
     expect(run.messages).toEqual(history);
-    session.close();
+    await session.close();
   });
 
   it('concatenates ancestor messages then current run messages in a two-turn conversation', async () => {
@@ -2406,7 +2471,7 @@ describe('Run.loadConversation', () => {
       { id: 'u2', content: 'u2' },
     ]);
     expect(run.messages).toEqual(history);
-    session.close();
+    await session.close();
   });
 
   it('walks the full ancestor chain oldest-first for a three-turn conversation', async () => {
@@ -2455,7 +2520,7 @@ describe('Run.loadConversation', () => {
       { id: 'u3', content: 'u3' },
     ]);
     expect(run.messages).toEqual(history);
-    session.close();
+    await session.close();
   });
 
   it('excludes the superseded reply (un-taken sibling) when regenerating an assistant message', async () => {
@@ -2516,7 +2581,7 @@ describe('Run.loadConversation', () => {
     // run) is excluded; run-2 has streamed no content yet.
     expect(history).toEqual([{ id: 'u1', content: 'u1' }]);
     expect(run.messages).toEqual(history);
-    session.close();
+    await session.close();
   });
 
   it('excludes the edited prompt and its reply (un-taken fork) when editing a user message', async () => {
@@ -2580,7 +2645,7 @@ describe('Run.loadConversation', () => {
       { id: 'u2b', content: 'u2b' },
     ]);
     expect(run.messages).toEqual(history);
-    session.close();
+    await session.close();
   });
 
   it('seeds the chain from the live-delivered input node when run-start is absent from history (indexing lag)', async () => {
@@ -2633,7 +2698,7 @@ describe('Run.loadConversation', () => {
       { id: 'u2', content: 'u2' },
     ]);
     expect(run.messages).toEqual(history);
-    session.close();
+    await session.close();
   });
 
   it('terminates without hanging when a cycle is detected in the ancestor chain', async () => {
@@ -2664,7 +2729,7 @@ describe('Run.loadConversation', () => {
     const history = await run.loadConversation();
     expect(Array.isArray(history)).toBe(true);
     expect(run.messages).toEqual(history);
-    session.close();
+    await session.close();
   });
 
   it('does not fold current-run messages twice when a continuation ai-run-start parents off the same run', async () => {
@@ -2704,7 +2769,7 @@ describe('Run.loadConversation', () => {
       { id: 'msg-3', content: 'msg-3' },
     ]);
     expect(run.messages).toEqual(history);
-    session.close();
+    await session.close();
   });
 
   it('folds the current run exactly once on a continuation whose live input parents off a message INSIDE the run', async () => {
@@ -2785,7 +2850,7 @@ describe('Run.loadConversation', () => {
     expect(ids.filter((id) => id === 'a1')).toHaveLength(1);
     expect(ids.filter((id) => id === 'tr1')).toHaveLength(1);
     expect(run.messages).toEqual(history);
-    session.close();
+    await session.close();
   });
 
   it('throws InvalidArgument when the run signal is already aborted', async () => {
@@ -2805,7 +2870,7 @@ describe('Run.loadConversation', () => {
     controller.abort();
 
     await expect(run.loadConversation()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
-    session.close();
+    await session.close();
   });
 });
 
@@ -2945,7 +3010,7 @@ describe('agent loadConversation ≡ client View.getMessages (cross-engine equiv
 
     expect(agentIds).toEqual(['u1', 'a1', 'u2', 'a2']);
     expect(agentIds).toEqual(viewIds);
-    session.close();
+    await session.close();
   });
 
   it('agrees on a three-turn linear conversation', async () => {
@@ -2988,6 +3053,6 @@ describe('agent loadConversation ≡ client View.getMessages (cross-engine equiv
 
     expect(agentIds).toEqual(['u1', 'a1', 'u2', 'a2', 'u3', 'a3']);
     expect(agentIds).toEqual(viewIds);
-    session.close();
+    await session.close();
   });
 });

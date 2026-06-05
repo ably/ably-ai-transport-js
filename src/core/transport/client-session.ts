@@ -732,6 +732,20 @@ class DefaultClientSession<
     } catch {
       // Swallow: encoder close is best-effort during teardown
     }
+
+    // Detach the channel this session attached. connect() subscribes (which
+    // implicitly attaches), so we only detach when connect() ran. Best-effort:
+    // a detach failure (e.g. the channel is already FAILED) must not throw out
+    // of close().
+    if (this._connectPromise) {
+      try {
+        await this._channel.detach();
+      } catch (error) {
+        // Swallowed (see above): a detach failure must not throw out of
+        // close(). Logged at debug for observability.
+        this._logger.debug('ClientSession.close(); channel detach failed', { error });
+      }
+    }
   }
 }
 

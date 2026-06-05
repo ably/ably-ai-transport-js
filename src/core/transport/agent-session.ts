@@ -511,7 +511,7 @@ class DefaultAgentSession<
   }
 
   // Spec: AIT-ST11
-  close(): void {
+  async close(): Promise<void> {
     if (this._state === SessionState.CLOSED) return;
     this._state = SessionState.CLOSED;
     this._logger?.trace('DefaultAgentSession.close();');
@@ -528,6 +528,21 @@ class DefaultAgentSession<
     this._pendingInputEventLookups.clear();
     this._inputEventBuffer.clear();
     this._runManager.close();
+
+    // Detach the channel this session attached. connect() subscribes (which
+    // implicitly attaches), so we only detach when connect() ran. Best-effort:
+    // a detach failure (e.g. the channel is already FAILED) must not throw out
+    // of close().
+    if (this._connectPromise) {
+      try {
+        await this._channel.detach();
+      } catch (error) {
+        // Swallowed (see above): a detach failure must not throw out of
+        // close(). Logged at debug for observability.
+        this._logger?.debug('DefaultAgentSession.close(); channel detach failed', { error });
+      }
+    }
+
     this._logger?.debug('DefaultAgentSession.close(); session closed');
   }
 

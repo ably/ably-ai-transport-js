@@ -107,7 +107,7 @@ Unlike the [client session's handling](client-session.md#delivery-guarantee), th
 
 ## Close
 
-`close()` unsubscribes from cancel messages, stops listening for channel state changes, cancels all active runs (via their `AbortController`s), and clears the registration map. It is idempotent. After close, existing Run objects can still call `end()` (to publish run-end) but new runs cannot be created.
+`close()` unsubscribes from cancel messages, stops listening for channel state changes, cancels all active runs (via their `AbortController`s), clears the registration map, and detaches the channel the session attached (best-effort — a detach failure is swallowed). It returns a promise that resolves once the detach completes, so a serverless agent can `await session.close()` for a graceful teardown before the function returns. It does **not** close the injected Ably client — the caller owns its lifecycle. It is idempotent. After close, existing Run objects can still call `end()` (to publish run-end) but new runs cannot be created.
 
 ## Error handling
 

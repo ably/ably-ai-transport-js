@@ -387,6 +387,13 @@ export interface AgentSession<TOutput extends CodecOutputEvent, TProjection, TMe
    */
   createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): Run<TOutput, TProjection, TMessage>;
 
-  /** Unsubscribe from cancel messages, cancel all active runs, and clean up. */
-  close(): void;
+  /**
+   * Unsubscribe from cancel messages, cancel all active runs, detach the
+   * channel this session attached, and clean up.
+   *
+   * Resolves once the detach completes. The detach is best-effort:
+   * a failure (e.g. the channel is already FAILED) is swallowed
+   * and does not reject. Idempotent.
+   */
+  close(): Promise<void>;
 }

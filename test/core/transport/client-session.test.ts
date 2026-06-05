@@ -92,6 +92,7 @@ interface MockChannel {
   on: ReturnType<typeof vi.fn>;
   off: ReturnType<typeof vi.fn>;
   attach: ReturnType<typeof vi.fn>;
+  detach: ReturnType<typeof vi.fn>;
   history: ReturnType<typeof vi.fn>;
   state: Ably.ChannelState;
   listener: ((msg: Ably.InboundMessage) => void) | undefined;
@@ -126,6 +127,8 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
     }),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
     attach: vi.fn(() => Promise.resolve()),
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+    detach: vi.fn(() => Promise.resolve()),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
     history: vi.fn(() => {
       const emptyPage = {
@@ -1765,11 +1768,76 @@ describe('ClientSession', () => {
     it('is idempotent', async () => {
       await fix.session.close();
       await expect(fix.session.close()).resolves.toBeUndefined();
+      expect(fix.channel.detach).toHaveBeenCalledTimes(1);
     });
 
     it('unsubscribes from the channel', async () => {
       await fix.session.close();
       expect(fix.channel.unsubscribe).toHaveBeenCalled();
+    });
+
+    it('detaches the channel it attached', async () => {
+      await fix.session.close();
+      expect(fix.channel.detach).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not close the injected client', async () => {
+      const ch = createMockChannel();
+      const client = createMockClient(ch);
+      // Attach a spy so the assertion proves the SDK never calls client.close():
+      // the client is injected and the caller owns its lifecycle.
+      // CAST: the mock client is a plain object; add a close spy for the assertion.
+      const close = vi.fn();
+      (client as unknown as { close: () => void }).close = close;
+      const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client,
+        channelName: 'no-client-close',
+        codec: createMockCodec(),
+        clientId: 'client-1',
+      });
+      await s.connect();
+      await s.close();
+      expect(close).not.toHaveBeenCalled();
+    });
+
+    it('does not detach when connect() was never called', async () => {
+      const ch = createMockChannel();
+      const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'never-connected',
+        codec: createMockCodec(),
+        clientId: 'client-1',
+      });
+      await s.close();
+      expect(ch.detach).not.toHaveBeenCalled();
+    });
+
+    it('swallows a detach failure and logs it at debug', async () => {
+      const ch = createMockChannel();
+      ch.detach.mockRejectedValueOnce(new Error('detach failed'));
+      const debug = vi.fn();
+      // Minimal logger spy; withContext returns the same instance so the
+      // session's child-context logs reach this debug spy.
+      const logger: import('../../../src/logger.js').Logger = {
+        trace: vi.fn(),
+        debug,
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        withContext: () => logger,
+      };
+      const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'detach-fail',
+        codec: createMockCodec(),
+        clientId: 'client-1',
+        logger,
+      });
+      await s.connect();
+      // Best-effort teardown: close() resolves despite the detach rejection...
+      await expect(s.close()).resolves.toBeUndefined();
+      // ...and the failure is logged at debug for observability.
+      expect(debug).toHaveBeenCalledWith(expect.stringContaining('channel detach failed'), expect.anything());
     });
 
     it('closes the shared encoder', async () => {

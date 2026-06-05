@@ -43,7 +43,7 @@ describe('useChat error propagation', () => {
   afterEach(async () => {
     await clientSession?.close();
     clientSession = undefined;
-    agentSession?.close();
+    await agentSession?.close();
     agentSession = undefined;
     chatTransport = undefined;
     closeAllClients();

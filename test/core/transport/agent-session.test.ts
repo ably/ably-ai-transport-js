@@ -348,8 +348,6 @@ interface DeliverInputEventOpts {
    * AITRFC-014 (edits and regenerates anchor at different headers).
    */
   regenerates?: string;
-  /** Optional `run-continue` flag — marks the publish as a continuation user-message. */
-  runContinue?: boolean;
 }
 
 /**
@@ -375,7 +373,6 @@ const deliverInputEvent = (ch: MockChannel, opts: DeliverInputEventOpts): void =
   if (opts.parent) headers[HEADER_PARENT] = opts.parent;
   if (opts.forkOf) headers['fork-of'] = opts.forkOf;
   if (opts.regenerates) headers['msg-regenerate'] = opts.regenerates;
-  if (opts.runContinue) headers['run-continue'] = 'true';
   const msg = {
     name: opts.name ?? 'text',
     serial: opts.serial,
@@ -570,11 +567,10 @@ describe('AgentSession', () => {
       expect(headers?.[HEADER_RUN_ID]).toBe('run-1');
     });
 
-    it('start() publishes ai-run-resume (not ai-run-start) when the input-event lookup result carries the continuation flag', async () => {
-      // Per-run metadata (continuation, clientId, parent, forkOf) is resolved
-      // from the first input-event lookup MessageNode's headers — the agent
-      // reads `run-continue` off the channel, not the body. A continuation
-      // re-enters the run via ai-run-resume.
+    it('start() publishes ai-run-resume (not ai-run-start) when the triggering input carries a wire run-id', async () => {
+      // The agent decides fresh-vs-continuation from the run-id on the
+      // triggering input event's wire headers: a continuation's input carries
+      // a run-id, so the agent re-enters the run via ai-run-resume.
       const ch = createMockChannel();
       const c = codecWithFunctionalDecoder();
       const s = createAgentSession({
@@ -596,7 +592,6 @@ describe('AgentSession', () => {
         codecMessageId: 'm-cont',
         serial: 's-cont',
         inputEventId,
-        runContinue: true,
       });
       await startPromise;
 
@@ -633,9 +628,11 @@ describe('AgentSession', () => {
       const inputEventId = 'p-regen';
       const run = createRunFromOpts(s, { runId, invocationId, inputEventId });
       const startPromise = run.start();
+      // Fresh run (regenerate opens a new run via ai-run-start) — the triggering
+      // input carries NO wire run-id, so the agent stamps regenerate/parent on
+      // run-start. The run's identity is pinned via createRunFromOpts above.
       deliverInputEvent(ch, {
         invocationId,
-        runId,
         codecMessageId: 'm-regen',
         serial: 's-regen',
         inputEventId,
@@ -674,9 +671,11 @@ describe('AgentSession', () => {
       const inputEventId = 'p-icid-start';
       const run = createRunFromOpts(session, { runId, invocationId, inputEventId: inputEventId });
       const startPromise = run.start();
+      // Fresh send — the triggering input carries NO wire run-id, so the agent
+      // opens the run with ai-run-start. Run identity is pinned via
+      // createRunFromOpts above.
       deliverInputEvent(channel, {
         invocationId,
-        runId,
         codecMessageId: 'm-icid-start',
         serial: 's-icid-start',
         inputEventId,
@@ -1655,9 +1654,9 @@ describe('AgentSession', () => {
       s.close();
     });
 
-    it('waits for continuation tool-resolution publishes via HEADER_RUN_CONTINUE + HEADER_EVENT_ID', async () => {
+    it('waits for continuation tool-resolution publishes via HEADER_RUN_ID + HEADER_EVENT_ID', async () => {
       // Continuation tool resolutions publish as `role: 'user'` channel
-      // messages stamped with `run-continue: 'true'` plus a
+      // messages stamped with a wire run-id plus a
       // event-id. The agent dispatcher routes any inbound message
       // carrying `event-id`, so the lookup picks up the
       // continuation publish regardless of how it was minted on the wire.
@@ -1678,7 +1677,7 @@ describe('AgentSession', () => {
       const startPromise = run.start();
 
       // Deliver a synthetic continuation user-message — a `role: 'user'`
-      // wire message stamped with HEADER_RUN_CONTINUE so the agent reads
+      // wire message stamped with a wire run-id so the agent reads
       // the run as a continuation. The lookup resolves solely because
       // the event-id is in the expected set.
       deliverInputEvent(ch, {
@@ -1687,7 +1686,6 @@ describe('AgentSession', () => {
         codecMessageId: 'm-cont',
         serial: 's-cont',
         inputEventId,
-        runContinue: true,
       });
 
       await expect(startPromise).resolves.toBeUndefined();
@@ -2032,7 +2030,6 @@ describe('Run.messages', () => {
       codecMessageId: 'm-cont',
       serial: 's-cont',
       inputEventId: 'p-cont',
-      runContinue: true,
     });
     await startPromise;
 
@@ -2064,7 +2061,6 @@ describe('Run.messages', () => {
       codecMessageId: 'm-cont',
       serial: 's-cont',
       inputEventId: 'p-cont',
-      runContinue: true,
     });
     await startPromise;
 
@@ -2077,7 +2073,7 @@ describe('Run.messages', () => {
     // publishes a `tool-output-available` wire message. The decoder produces
     // a chunk that folds into an empty per-message projection without an
     // assistant to land on — zero MessageNodes. The agent must still pick up
-    // HEADER_RUN_CONTINUE from the wire headers so the run-start stamps it.
+    // the wire run-id from the headers so the run re-enters via ai-run-resume.
     const ch = createMockChannel();
     // A codec whose decoder produces NO events for non-text messages — mimics
     // the chunk-with-no-assistant case. The agent should still treat the
@@ -2105,7 +2101,7 @@ describe('Run.messages', () => {
     });
     const startPromise = run.start();
     // Deliver a continuation tool-resolution wire message — produces zero
-    // MessageNodes but carries HEADER_RUN_CONTINUE='true'.
+    // MessageNodes but carries a wire run-id.
     deliverInputEvent(ch, {
       invocationId: 'inv-cont',
       runId: 'run-1',
@@ -2113,11 +2109,10 @@ describe('Run.messages', () => {
       serial: 's-tool',
       inputEventId: 'p-tool',
       name: 'tool-output-available',
-      runContinue: true,
     });
     await startPromise;
 
-    // The continuation flag (read from the tool-resolution wire's headers via
+    // The wire run-id (read from the tool-resolution wire's headers via
     // the firstHeaders fallback) makes the agent re-enter the run with
     // ai-run-resume rather than open a new ai-run-start.
     expect(ch.publishCalls.find((m) => m.name === 'ai-run-resume')).toBeDefined();
@@ -2670,8 +2665,8 @@ describe('Run.loadConversation', () => {
 
   it('folds the current run exactly once on a continuation whose live input parents off a message INSIDE the run', async () => {
     // Regression: a tool-call approval / tool-result continuation reuses the
-    // run-id (run-continue: true) and its triggering input parents INSIDE the
-    // current run (parent = the tool-call assistant message a1). The live
+    // run-id (the input carries a wire run-id) and its triggering input parents
+    // INSIDE the current run (parent = the tool-call assistant message a1). The live
     // input-event lookup therefore makes assistantParentFallback resolve to a
     // codec-message-id that belongs to the CURRENT run (tr1, a run-1 node).
     // buildBranchChain walks tr1 → a1 → u1 (root-first u1, a1, tr1), so the
@@ -2689,16 +2684,12 @@ describe('Run.loadConversation', () => {
       // chronological sort. Turn 1: run-less input u1 → reply run-1 emits the
       // tool-call assistant message a1. Continuation: tr1 reuses run-1 and
       // parents off a1 (INSIDE run-1).
-      // makeContentMsg doesn't stamp parent/run-continue, so add them here:
+      // makeContentMsg doesn't stamp parent, so add it here:
       // a1 (the tool-call assistant) is structurally parented at the input
-      // node u1; tr1 (the continuation input) is parented INSIDE the run at a1
-      // and carries the run-continue flag.
+      // node u1; tr1 (the continuation input) is parented INSIDE the run at a1.
+      // Both already carry run-id = run-1 from makeContentMsg.
       const a1 = stampHeader(makeContentMsg('run-1', 'a1', 's-04'), HEADER_PARENT, 'u1'); // tool-call assistant
-      const tr1 = stampHeader(
-        stampHeader(makeContentMsg('run-1', 'tr1', 's-06'), HEADER_PARENT, 'a1'),
-        'run-continue',
-        'true',
-      ); // continuation input (tool-result), parents off a1, run-1
+      const tr1 = stampHeader(makeContentMsg('run-1', 'tr1', 's-06'), HEADER_PARENT, 'a1'); // continuation input (tool-result), parents off a1, run-1
       const items = [
         tr1, // continuation input
         makeRunStartMsg('run-1', 'a1', { serial: 's-05' }), // continuation run-start — parents off a1 (inside run-1)
@@ -2723,8 +2714,8 @@ describe('Run.loadConversation', () => {
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
     const startPromise = run.start();
-    // Deliver the continuation input live: reuses run-1, parents off a1 (inside
-    // the run), run-continue. This drives assistantParentFallback to tr1 (a
+    // Deliver the continuation input live: reuses run-1 (wire run-id), parents
+    // off a1 (inside the run). This drives assistantParentFallback to tr1 (a
     // run-1 node), reproducing the double-fold trigger.
     deliverInputEvent(ch, {
       invocationId,
@@ -2733,7 +2724,6 @@ describe('Run.loadConversation', () => {
       serial: 's-06',
       inputEventId,
       parent: 'a1',
-      runContinue: true,
     });
     await startPromise;
 

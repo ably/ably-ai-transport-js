@@ -21,7 +21,6 @@ import {
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
-  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
 } from '../../constants.js';
@@ -55,9 +54,6 @@ import type { RunEndReason, RunLifecycleEvent } from './types.js';
  *   publishes for the invocation (run lifecycle + outputs), mirroring
  *   `inputClientId`, so the client can correlate any of those events back to
  *   the originating input by the id it owned at send time.
- * @param opts.runContinue - When `true`, stamps `run-continue: 'true'` to mark
- *   the message as a continuation user-message (e.g. a tool-resolution publish under
- *   a suspended run), distinguishing it from a fresh user-prompt that opens a new run.
  * @returns A headers record with the transport headers set.
  */
 export const buildTransportHeaders = (opts: {
@@ -72,7 +68,6 @@ export const buildTransportHeaders = (opts: {
   inputClientId?: string;
   inputCodecMessageId?: string;
   inputEventId?: string;
-  runContinue?: boolean;
 }): Record<string, string> => {
   const h: Record<string, string> = {
     [HEADER_ROLE]: opts.role,
@@ -87,7 +82,6 @@ export const buildTransportHeaders = (opts: {
   if (opts.inputClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.inputClientId;
   if (opts.inputCodecMessageId !== undefined) h[HEADER_INPUT_CODEC_MESSAGE_ID] = opts.inputCodecMessageId;
   if (opts.inputEventId) h[HEADER_EVENT_ID] = opts.inputEventId;
-  if (opts.runContinue) h[HEADER_RUN_CONTINUE] = 'true';
   return h;
 };
 

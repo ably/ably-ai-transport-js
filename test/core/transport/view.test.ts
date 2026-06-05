@@ -11,7 +11,6 @@ import {
   HEADER_INVOCATION_ID,
   HEADER_PARENT,
   HEADER_ROLE,
-  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
 } from '../../../src/constants.js';
 import type { Codec, CodecInputEvent, ReducerMeta } from '../../../src/core/codec/types.js';
@@ -120,7 +119,6 @@ interface ApplyOpts {
   regenerates?: string;
   role?: string;
   invocationId?: string;
-  runContinue?: boolean;
   serial?: string;
   message?: TestMessage;
 }
@@ -133,7 +131,6 @@ const apply = (tree: DefaultTree<TestInput, TestOutput, TestProjection>, opts: A
   if (opts.regenerates) h['msg-regenerate'] = opts.regenerates;
   if (opts.role) h[HEADER_ROLE] = opts.role;
   if (opts.invocationId) h[HEADER_INVOCATION_ID] = opts.invocationId;
-  if (opts.runContinue) h[HEADER_RUN_CONTINUE] = 'true';
   const events: TestOutput[] = opts.message ? [{ type: 'append-message', message: opts.message }] : [];
   tree.applyMessage({ inputs: [], outputs: events }, h, opts.serial);
 };
@@ -1530,7 +1527,6 @@ describe('DefaultView', () => {
       const beforeMessages = view.getMessages();
       apply(tree, {
         runId: 'R2',
-        runContinue: true,
         codecMessageId: 'm3',
         parent: 'm2',
         message: { id: 'c', content: 'follow' },

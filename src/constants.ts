@@ -99,18 +99,6 @@ export const HEADER_MSG_REGENERATE = 'msg-regenerate';
 export const HEADER_RUN_REASON = 'run-reason';
 
 /**
- * Header: stamped by the client on an `ai-input` to mark it a continuation of
- * an already-started run rather than the input that opens a fresh run. Value:
- * the literal string `'true'`. A continuation reuses the original run's id and
- * represents a subsequent invocation (e.g. a tool-result follow-up). The agent
- * reads this off the triggering input to decide whether to open the run with
- * `ai-run-start` or re-enter it with `ai-run-resume` — it is the interim
- * continuation signal until run ids are minted agent-side. Not echoed onto the
- * agent's lifecycle events (the event name conveys start vs resume).
- */
-export const HEADER_RUN_CONTINUE = 'run-continue';
-
-/**
  * Header: the `codec-message-id` of the input event that triggered the run.
  * The triggering input is the one whose `event-id` matches the invocation's
  * `inputEventId` (the last input of the originating send). The agent

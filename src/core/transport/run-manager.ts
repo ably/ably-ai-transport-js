@@ -132,8 +132,8 @@ class DefaultRunManager implements RunManager {
     // original run-start already established the run's structure, so the
     // parent / forkOf / regenerates metadata is NOT re-stamped here (doing so
     // would point the run at content within itself). The agent learned this is
-    // a continuation from the triggering input's `run-continue` marker; the
-    // re-entry is conveyed to clients by the event name, not a header echo.
+    // a continuation from the run-id on the triggering input; the re-entry is
+    // conveyed to clients by the event name, not a header echo.
     const continuation = metadata?.continuation === true;
 
     const headers: Record<string, string> = {

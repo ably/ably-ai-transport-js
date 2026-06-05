@@ -571,7 +571,6 @@ class DefaultClientSession<
         ...(forkOf !== undefined && { forkOf }),
         ...(regenerates !== undefined && { regenerates }),
         inputEventId,
-        runContinue: isContinuation,
       });
 
       // Spec: AIT-CT3c — optimistic fold for non-wire-only inputs.

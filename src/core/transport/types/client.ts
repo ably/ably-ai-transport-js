@@ -191,12 +191,13 @@ export interface ClientSession<
   on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void;
 
   /**
-   * Tear down the session: unsubscribe from the channel, close active
-   * streams, clear all handlers, and prevent further operations.
+   * Tear down the session: unsubscribe from the channel, close active views,
+   * clear all handlers, and detach the channel this session attached.
    *
-   * Local-state-only — the server keeps streaming until its runs end on
-   * their own. To stop in-progress runs, call {@link cancel} for each
-   * before `close()`.
+   * Detaching stops the session from receiving further channel messages;
+   * the server keeps streaming until its runs end on their own. To stop
+   * in-progress runs, call {@link cancel} for each before `close()`. The
+   * detach is best-effort: a failure is swallowed and does not reject.
    */
   close(): Promise<void>;
 }

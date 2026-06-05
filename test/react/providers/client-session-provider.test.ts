@@ -195,6 +195,33 @@ describe('ClientSessionProvider', () => {
     expect(created[0]?.close).toHaveBeenCalledOnce();
   });
 
+  it('defers the session close to a microtask so a Strict Mode remount can cancel it', async () => {
+    const created: ReturnType<typeof createMockSession>[] = [];
+    createClientSessionMock.mockImplementation(() => {
+      const mock = createMockSession();
+      created.push(mock);
+      return mock.session;
+    });
+
+    const { unmount } = renderHook(() => useClientSession({ channelName: 'ai:test' }), { wrapper: wrapDefault });
+    unmount();
+
+    // close() is NOT run synchronously on unmount — it is scheduled as a
+    // microtask. This is the mechanism that makes the provider safe under React
+    // Strict Mode: the synchronous mount -> unmount -> remount cycle resets
+    // pendingCloseRef before the microtask drains, cancelling the close. Since
+    // close() now detaches the channel (see client-session.test.ts "detaches
+    // the channel it attached"), this deferral is what prevents a spurious
+    // channel detach during the Strict Mode remount.
+    expect(created[0]?.close).not.toHaveBeenCalled();
+
+    await flushMicrotasks();
+
+    // On a genuine unmount (nothing remounts to reset the guard) the deferred
+    // close runs exactly once, detaching the channel the session attached.
+    expect(created[0]?.close).toHaveBeenCalledOnce();
+  });
+
   it('connects the new session and closes the old one when channelName changes', async () => {
     const created: ReturnType<typeof createMockSession>[] = [];
     createClientSessionMock.mockImplementation(() => {

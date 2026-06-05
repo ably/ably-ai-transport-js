@@ -102,11 +102,12 @@ A failed agent-invocation POST is **not** handled here — the core never sends 
 
 `close()` tears down all session state:
 
-1. Optionally publishes a cancel message (if `options.cancel` is set)
-2. Unsubscribes from the channel
-3. Clears event handlers and pending run-start trackers (rejecting any unresolved `ActiveRun.runId` promises with `SessionClosed`); closes the encoder
+1. Unsubscribes from the channel and stops listening for channel state changes
+2. Closes all open views, clears event handlers, and rejects any unresolved `ActiveRun.runId` promises with `SessionClosed`
+3. Closes the shared encoder (flushing any pending operations)
+4. Detaches the channel the session attached — `connect()` subscribed (and so attached) it, so `close()` cleans up that attach. Best-effort: a detach failure is swallowed.
 
-After close, all methods that create runs throw `SessionClosed`. Event subscriptions return no-op unsubscribe functions. The Tree retains its data (so any in-flight observer rendering continues to read the last-known state) — callers that need a fresh Tree must create a new session.
+`close()` does **not** close the injected Ably client — the caller owns its lifecycle (see [Sessions](../concepts/sessions.md#session-lifecycle)). After close, all methods that create runs throw `SessionClosed`. Event subscriptions return no-op unsubscribe functions. The Tree retains its data (so any in-flight observer rendering continues to read the last-known state) — callers that need a fresh Tree must create a new session.
 
 ## Events
 

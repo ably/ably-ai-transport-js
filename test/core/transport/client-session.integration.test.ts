@@ -380,9 +380,33 @@ describe('ClientSession integration', () => {
   afterEach(async () => {
     await clientSession?.close();
     clientSession = undefined;
-    agentSession?.close();
+    await agentSession?.close();
     agentSession = undefined;
     closeAllClients();
+  });
+
+  it('close() detaches the channel it attached but leaves the injected client connected', async () => {
+    const channelName = uniqueChannelName('ct-detach');
+    const client = ablyRealtimeClient();
+
+    clientSession = createClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+      client,
+      channelName,
+      codec: UIMessageCodec,
+    });
+    await clientSession.connect();
+
+    // connect() subscribes, which implicitly attaches the channel the session owns.
+    const channel = client.channels.get(channelName);
+    expect(channel.state).toBe('attached');
+
+    await clientSession.close();
+
+    // close() detaches the channel it attached...
+    expect(channel.state).toBe('detached');
+    // ...but never closes the injected client — the caller owns its lifecycle,
+    // so the connection stays open for other channels / sessions.
+    expect(client.connection.state).toBe('connected');
   });
 
   it('receives a streamed text response and accumulates it into a message', async () => {

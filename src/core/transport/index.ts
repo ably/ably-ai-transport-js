@@ -27,10 +27,6 @@ export type {
   View,
 } from './types.js';
 
-// Deprecated aliases — intentional re-export of deprecated types for backwards compatibility.
-// eslint-disable-next-line @typescript-eslint/no-deprecated
-export type { TreeNode } from './types.js';
-
 // Internal tree interface (consumed by View implementations)
 export type { TreeInternal } from './tree.js';
 

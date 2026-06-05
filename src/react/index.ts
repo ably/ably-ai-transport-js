@@ -4,8 +4,6 @@ export type { ClientSessionProviderProps } from './contexts/client-session-provi
 export { ClientSessionProvider } from './contexts/client-session-provider.js';
 export type { SessionHooks } from './create-session-hooks.js';
 export { createSessionHooks } from './create-session-hooks.js';
-// eslint-disable-next-line @typescript-eslint/no-deprecated -- intentional re-export for backwards compatibility
-export type { TreeNode } from '../core/transport/types.js';
 export type { UseAblyMessagesOptions } from './use-ably-messages.js';
 export { useAblyMessages } from './use-ably-messages.js';
 export type { ClientSessionHandle } from './use-client-session.js';

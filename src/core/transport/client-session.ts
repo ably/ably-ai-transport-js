@@ -87,7 +87,7 @@ class DefaultClientSession<
   private readonly _clientId: string | undefined;
   private readonly _logger: Logger;
 
-  // Typed event emitter — only 'error' remains on the session
+  // Typed event emitter — the session emits only 'error'; all data events live on Tree/View
   private readonly _emitter: EventEmitter<ClientSessionEventsMap>;
 
   // Sub-components
@@ -118,7 +118,7 @@ class DefaultClientSession<
    * Backing settlers for each in-flight run's `ActiveRun.runId` promise.
    * Resolved with the agent-minted run-id when the matching `ai-run-start` is
    * observed; rejected if the session closes first. There is no deadline —
-   * `send()` no longer blocks on run-start.
+   * `send()` resolves on publish and does not block on run-start.
    *
    * Keyed by the triggering input's codec-message-id — the handle the client
    * owns at send time, which the agent echoes back on run-start as
@@ -439,9 +439,9 @@ class DefaultClientSession<
 
     const isContinuation = sendOptions?.runId !== undefined;
 
-    // The client no longer mints run-ids. A fresh send carries no run-id (the
-    // agent mints it and echoes it on run-start); only a continuation reuses
-    // the existing run-id the caller passed.
+    // The agent mints run-ids, not the client. A fresh send carries no run-id
+    // (the agent mints it and echoes it on run-start); only a continuation
+    // reuses the existing run-id the caller passed.
     const runId = sendOptions?.runId;
 
     // Spec: AIT-CT3d

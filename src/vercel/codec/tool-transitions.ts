@@ -1,8 +1,8 @@
 /**
  * Shared tool part transition logic for the Vercel AI SDK codec.
  *
- * Extracted from the accumulator so the tool output state transition logic
- * lives in one place, reusable by the accumulator and any other callers.
+ * Keeps the tool output state transition logic in one place, reusable by the
+ * accumulator and any other callers.
  */
 
 import type * as AI from 'ai';

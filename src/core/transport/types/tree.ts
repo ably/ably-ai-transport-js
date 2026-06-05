@@ -180,11 +180,11 @@ export interface RunNode<TProjection> {
   projection: TProjection;
   /**
    * The agent-minted invocationId observed for this Run (wire `invocation-id`).
-   * The client no longer mints it, so an optimistic Run starts with an empty
-   * id; it is adopted from the agent's `ai-run-start` (or set at creation when
-   * the Run is first seen from a wire event carrying one) and never reassigned
-   * thereafter. Empty string until run-start arrives, or if the wire didn't
-   * carry an invocation-id.
+   * The agent mints it, so an optimistic Run starts with an empty id; it is
+   * adopted from the agent's `ai-run-start` (or set at creation when the Run is
+   * first seen from a wire event carrying one) and never reassigned thereafter.
+   * Empty string until run-start arrives, or if the wire didn't carry an
+   * invocation-id.
    */
   invocationId: string;
   /** Ably serial of the first observed message tagged with this run-id. Absent for optimistic Runs. */
@@ -326,7 +326,7 @@ export interface Tree<TOutput extends CodecOutputEvent, TProjection> {
   /** Subscribe to raw Ably messages arriving on the channel. */
   on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
 
-  /** Subscribe to run lifecycle events (start and end). */
+  /** Subscribe to run lifecycle events (start, suspend, resume, and end). */
   on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
 
   /**

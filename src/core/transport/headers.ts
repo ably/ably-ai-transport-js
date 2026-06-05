@@ -31,8 +31,8 @@ import type { RunEndReason, RunLifecycleEvent } from './types.js';
  * @param opts - The header values to include.
  * @param opts.role - Message role (e.g. "user", "assistant").
  * @param opts.runId - Run correlation ID, or `undefined` for a fresh client
- *   input (the client no longer mints run-ids — the agent does). Omitted from
- *   the headers when undefined; a continuation still carries the known run-id.
+ *   input (the agent mints run-ids, so it is not known synchronously). Omitted
+ *   from the headers when undefined; a continuation still carries the known run-id.
  * @param opts.codecMessageId - Message identity — the wire `codec-message-id` for this message.
  * @param opts.runClientId - ClientId of the run initiator.
  * @param opts.parent - Preceding message's codec-message-id (for branching).

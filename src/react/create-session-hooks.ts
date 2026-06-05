@@ -1,14 +1,14 @@
 /**
- * createSessionHooks: factory that captures TEvent and TMessage once and returns
- * a bundle of type-safe hooks + ClientSessionProvider. Hook call sites need no
- * type parameters at every use — just call the hooks directly.
+ * createSessionHooks: factory that captures the codec's type parameters once and
+ * returns a bundle of type-safe hooks + ClientSessionProvider. Hook call sites need
+ * no type parameters at every use — just call the hooks directly.
  * @example
  * // Once per app (e.g. in a shared session.ts):
  * export const {
  *   ClientSessionProvider,
  *   useClientSession,
  *   useView,
- * } = createSessionHooks<UIMessageChunk, UIMessage>();
+ * } = createSessionHooks<VercelInput, VercelOutput, VercelProjection, UIMessage>();
  *
  * // In page:
  * <ClientSessionProvider channelName="ai:demo" codec={UIMessageCodec}>
@@ -38,8 +38,8 @@ import { useView as _useView } from './use-view.js';
 /**
  * Bundle of type-safe hooks and provider returned by {@link createSessionHooks}.
  *
- * `TEvent` and `TMessage` are baked in at factory creation time so no type params
- * are needed at hook call sites.
+ * The codec's `TInput`, `TOutput`, `TProjection`, and `TMessage` are baked in at
+ * factory creation time so no type params are needed at hook call sites.
  */
 export interface SessionHooks<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage> {
   /**
@@ -115,9 +115,10 @@ export interface SessionHooks<TInput extends CodecInputEvent, TOutput extends Co
 }
 
 /**
- * Create a bundle of type-safe hooks and provider for a given `TEvent`/`TMessage` pair.
+ * Create a bundle of type-safe hooks and provider for a given codec's
+ * `TInput`/`TOutput`/`TProjection`/`TMessage`.
  *
- * `TEvent` and `TMessage` are captured at factory creation time; hook call sites need
+ * These type parameters are captured at factory creation time; hook call sites need
  * no type parameters. The returned hooks are thin wrappers around the standalone hooks
  * with the types resolved.
  * @returns A {@link SessionHooks} bundle.
@@ -128,7 +129,7 @@ export const createSessionHooks = <
   TProjection,
   TMessage,
 >(): SessionHooks<TInput, TOutput, TProjection, TMessage> => ({
-  // CAST: ClientSessionProvider is generic; factory narrows it to the codec's TInput/TOutput/TMessage.
+  // CAST: ClientSessionProvider is generic; factory narrows it to the codec's TInput/TOutput/TProjection/TMessage.
   ClientSessionProvider: _ClientSessionProvider as ComponentType<
     ClientSessionProviderProps<TInput, TOutput, TProjection, TMessage>
   >,

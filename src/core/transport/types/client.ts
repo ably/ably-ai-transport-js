@@ -90,7 +90,7 @@ export interface SendOptions {
  * A handle to an active client-side run, returned by `send()`,
  * `regenerate()`, and `edit()`.
  *
- * The core no longer exposes a per-run output stream — streaming is a
+ * The core does not expose a per-run output stream — streaming is a
  * consumer-layer concern (e.g. the Vercel ChatTransport builds a stream from
  * the Tree's `output` events). The handle carries only run identity and
  * control, so it is not parameterized by the codec output type.
@@ -101,13 +101,13 @@ export interface ActiveRun {
    * codec-message-id, which the client owns the moment it publishes and the
    * agent echoes back as `input-codec-message-id`. Stream routing and cancel
    * key on this — it is known immediately, unlike {@link runId}, which the
-   * agent now mints.
+   * agent mints.
    */
   inputCodecMessageId: string;
   /**
    * The run's unique identifier, resolved when the agent's `ai-run-start` for
-   * this send is observed on the channel. The agent mints the run-id now (the
-   * client no longer does), so it is not known synchronously: `await run.runId`
+   * this send is observed on the channel. The agent mints the run-id, so it is
+   * not known synchronously: `await run.runId`
    * to learn it (this also tells you the agent has picked up the run). There is
    * no built-in deadline — race it against your own timeout if you need one.
    * Rejects only if the session is closed before run-start arrives. A

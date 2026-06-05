@@ -11,6 +11,34 @@ import type { CodecInputEvent, CodecOutputEvent, Encoder, WriteOptions } from '.
 import type { StreamResult } from './types.js';
 
 /**
+ * Adapt an AbortSignal into a promise that resolves once the signal aborts,
+ * paired with a cleanup that detaches the listener. With no signal the promise
+ * never resolves (there is no cancellation path); an already-aborted signal
+ * resolves immediately. `cleanup` is a no-op unless a listener was attached.
+ * @param signal - The AbortSignal to watch, or undefined for no cancellation.
+ * @returns The abort promise and a cleanup to call when racing is done.
+ */
+const abortSignalToPromise = (signal: AbortSignal | undefined): { promise: Promise<void>; cleanup: () => void } => {
+  let listener: (() => void) | undefined;
+  const promise =
+    signal === undefined
+      ? // eslint-disable-next-line @typescript-eslint/no-empty-function -- never-resolving promise: no signal means no cancellation path
+        new Promise<void>(() => {})
+      : signal.aborted
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => {
+            listener = () => {
+              resolve();
+            };
+            signal.addEventListener('abort', listener, { once: true });
+          });
+  const cleanup = (): void => {
+    if (listener && signal) signal.removeEventListener('abort', listener);
+  };
+  return { promise, cleanup };
+};
+
+/**
  * Pipe an output stream through an encoder to the channel.
  *
  * Returns when the stream completes, is cancelled (via signal), or errors.
@@ -34,21 +62,7 @@ export const pipeStream = async <TInput extends CodecInputEvent, TOutput extends
   logger?.trace('pipeStream();');
 
   const reader = stream.getReader();
-
-  let abortListener: (() => void) | undefined;
-  const abortPromise = signal
-    ? new Promise<void>((resolve) => {
-        if (signal.aborted) {
-          resolve();
-          return;
-        }
-        abortListener = () => {
-          resolve();
-        };
-        signal.addEventListener('abort', abortListener, { once: true });
-      })
-    : // eslint-disable-next-line @typescript-eslint/no-empty-function -- never-resolving promise: no signal means no cancellation path
-      new Promise<void>(() => {});
+  const abort = abortSignalToPromise(signal);
 
   let reason: StreamResult['reason'] = 'complete';
   let caughtError: Error | undefined;
@@ -58,7 +72,7 @@ export const pipeStream = async <TInput extends CodecInputEvent, TOutput extends
     while (true) {
       // .then() is intentional: transforms the AbortSignal into a discriminant
       // for Promise.race — no async/await equivalent for this pattern.
-      const result = await Promise.race([reader.read(), abortPromise.then(() => 'cancelled' as const)]);
+      const result = await Promise.race([reader.read(), abort.promise.then(() => 'cancelled' as const)]);
 
       if (result === 'cancelled') {
         reason = 'cancelled';
@@ -91,7 +105,7 @@ export const pipeStream = async <TInput extends CodecInputEvent, TOutput extends
       // the StreamResult reason ("error").
     }
   } finally {
-    if (abortListener) signal?.removeEventListener('abort', abortListener);
+    abort.cleanup();
     reader.releaseLock();
   }
 

@@ -83,11 +83,11 @@ export const HEADER_FORK_OF = 'fork-of';
  * Header: the msg-id of the assistant message this run regenerates.
  *
  * Stamped on the regenerate wire (and echoed on `run-start`) when the
- * client requested a regeneration. The Tree treats regenerates as
- * continuations of the prior run (parentRunId chain), not as forks; the
- * View consults this header to resolve the message-level sibling group
- * and to drop the regenerated message from earlier Runs in the visible
- * chain (Spec: AIT-CT13d).
+ * client requested a regeneration. A regenerate run parents at the SAME input
+ * node as the reply it regenerates, so it joins that input's reply runs as a
+ * same-parent sibling (no fork-of). The View consults this header to resolve
+ * the message-level sibling group and to drop the regenerated message from
+ * earlier Runs in the visible chain (Spec: AIT-CT13d).
  */
 export const HEADER_MSG_REGENERATE = 'msg-regenerate';
 
@@ -97,18 +97,6 @@ export const HEADER_MSG_REGENERATE = 'msg-regenerate';
 
 /** Header: reason a run ended (on ai-run-end messages). */
 export const HEADER_RUN_REASON = 'run-reason';
-
-/**
- * Header: stamped by the client on an `ai-input` to mark it a continuation of
- * an already-started run rather than the input that opens a fresh run. Value:
- * the literal string `'true'`. A continuation reuses the original run's id and
- * represents a subsequent invocation (e.g. a tool-result follow-up). The agent
- * reads this off the triggering input to decide whether to open the run with
- * `ai-run-start` or re-enter it with `ai-run-resume` — it is the interim
- * continuation signal until run ids are minted agent-side. Not echoed onto the
- * agent's lifecycle events (the event name conveys start vs resume).
- */
-export const HEADER_RUN_CONTINUE = 'run-continue';
 
 /**
  * Header: the `codec-message-id` of the input event that triggered the run.
@@ -136,7 +124,18 @@ export const HEADER_ERROR_MESSAGE = 'error-message';
 // Message / event names
 // ---------------------------------------------------------------------------
 
-/** Message name: client->agent cancel intent. Targets a specific run via the `run-id` header. */
+/**
+ * Message name: client->agent cancel intent. Targets a run by `run-id` (a
+ * continuation, whose run-id the client already knows) and/or by
+ * `input-codec-message-id` (a fresh send, whose run-id the agent mints at
+ * run-start — so the client can only key the cancel by the triggering input's
+ * codec-message-id it owns at send time). The agent resolves whichever is
+ * present to the registered run; a cancel that arrives before the run is known
+ * (the input-event lookup hasn't resolved the input id to a run yet) is
+ * buffered by `input-codec-message-id` and honoured when the run resolves it.
+ * Also carries an `event-id` so channel rewind redelivers it to a per-request /
+ * serverless agent that attaches after the cancel was published.
+ */
 export const EVENT_CANCEL = 'ai-cancel';
 
 /** Message name: server publishes this to signal a run has started. */

@@ -6,40 +6,36 @@
  * single channel subscription — no separate cancel manager needed.
  *
  * The session exposes a single factory method — `createRun()` — which returns
- * a Run object with explicit lifecycle methods: start(), addMessages(),
- * pipe(), and end().
+ * a Run object with explicit lifecycle methods: start(), pipe(), addEvents(),
+ * and end().
  */
 
 import * as Ably from 'ably';
 
 import {
   EVENT_CANCEL,
-  EVENT_RUN_END,
-  EVENT_RUN_RESUME,
-  EVENT_RUN_START,
-  EVENT_RUN_SUSPEND,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
+  HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_RUN_CLIENT_ID,
-  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
-import { compareBySerial, getTransportHeaders, mergeHeaders } from '../../utils.js';
+import { compareBySerial, getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
-import type { Codec, CodecInputEvent, CodecOutputEvent, WriteOptions } from '../codec/types.js';
+import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
+import { evictOldestIfFull } from './internal/bounded-map.js';
 import { Invocation } from './invocation.js';
+import { loadConversation, loadRunProjection } from './load-conversation.js';
 import { pipeStream } from './pipe-stream.js';
 import type { RunManager } from './run-manager.js';
 import { createRunManager } from './run-manager.js';
 import type {
-  AddMessageOptions,
-  AddMessagesResult,
   AgentSession,
   AgentSessionOptions,
   CancelRequest,
@@ -57,173 +53,6 @@ import type {
 // ---------------------------------------------------------------------------
 // Run-state lookup helpers
 // ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Shared wire-message helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Merge live-observed messages into a collection of history messages, then
- * return a deduplicated, chronologically sorted array.
- *
- * History messages take priority in deduplication (history serial wins if the
- * same message appears in both). Messages without a serial are dropped because
- * they cannot be reliably ordered.
- * @param collected - Raw messages from channel.history (any order).
- * @param live - Messages observed live (e.g. by the input-event lookup); may be undefined.
- * @returns Deduplicated, chronologically sorted messages.
- */
-const withLiveMessages = (
-  collected: readonly Ably.InboundMessage[],
-  live: readonly Ably.InboundMessage[] | undefined,
-): Ably.InboundMessage[] => {
-  const seen = new Set<string>();
-  const result: Ably.InboundMessage[] = [];
-  for (const msg of collected) {
-    if (msg.serial !== undefined && !seen.has(msg.serial)) {
-      seen.add(msg.serial);
-      result.push(msg);
-    }
-  }
-  if (live !== undefined) {
-    for (const msg of live) {
-      if (msg.serial !== undefined && !seen.has(msg.serial)) {
-        seen.add(msg.serial);
-        result.push(msg);
-      }
-    }
-  }
-  return result.toSorted(compareBySerial);
-};
-
-/**
- * Fold a pre-sorted array of wire messages for a single run into a projection.
- *
- * Skips lifecycle events (`ai-run-start` / `ai-run-suspend` / `ai-run-resume` /
- * `ai-run-end`) and stops before the
- * message whose `codec-message-id` equals `truncateAt` (exclusive —
- * that message is not folded). Used by both `loadRunProjection` (no truncation)
- * and `loadConversation` (ancestor truncation for regenerate / fork).
- * @param codec - Codec used to decode and fold events.
- * @param sortedMessages - Chronologically ordered wire messages (all runs).
- * @param runId - Only messages stamped with this run-id are folded.
- * @param truncateAt - Stop before this codec-message-id; omit to fold all messages.
- * @returns The projection and the count of messages that were folded.
- */
-const foldRunMessages = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>(
-  codec: Codec<TInput, TOutput, TProjection, TMessage>,
-  sortedMessages: readonly Ably.InboundMessage[],
-  runId: string,
-  truncateAt?: string,
-): { projection: TProjection; folded: number } => {
-  const decoder = codec.createDecoder();
-  let projection = codec.init();
-  let folded = 0;
-  for (const msg of sortedMessages) {
-    const h = getTransportHeaders(msg);
-    if (h[HEADER_RUN_ID] !== runId) continue;
-    // Lifecycle events carry no codec content — skip them.
-    if (
-      msg.name === EVENT_RUN_START ||
-      msg.name === EVENT_RUN_SUSPEND ||
-      msg.name === EVENT_RUN_RESUME ||
-      msg.name === EVENT_RUN_END
-    )
-      continue;
-    const codecMsgId = h[HEADER_CODEC_MESSAGE_ID];
-    if (truncateAt !== undefined && codecMsgId === truncateAt) break;
-    const { inputs, outputs } = decoder.decode(msg);
-    const events: (TInput | TOutput)[] = [...inputs, ...outputs];
-    const routingCodecMessageId = codecMsgId ?? '';
-    for (const event of events) {
-      projection = codec.fold(projection, event, { serial: msg.serial ?? '', messageId: routingCodecMessageId });
-    }
-    folded++;
-  }
-  return { projection, folded };
-};
-
-// ---------------------------------------------------------------------------
-// Run-state lookup helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Fetch all messages on the channel that belong to `runId`, decode them
- * through the codec, and fold them into a single projection. Used by the
- * agent to reconstruct the run's full state — including client-published
- * tool-output amends — when resuming a suspended run in a fresh agent
- * session.
- *
- * Doesn't require channel rewind: an explicit `channel.history()` call
- * returns the same data even if the channel is already attached from a
- * prior session.
- * @param opts - Load parameters.
- * @param opts.channel - The Ably channel to read history from.
- * @param opts.codec - Codec used to decode and fold events.
- * @param opts.runId - Run identifier whose events should be folded.
- * @param opts.signal - AbortSignal that cancels the wait when the run is cancelled.
- * @param opts.logger - Optional logger for diagnostic output.
- * @param opts.liveMessages - Raw Ably messages already observed live (e.g. by
- *   the input-event lookup). Folded alongside the history fetch so just-published
- *   client wires don't depend on Ably's history-indexing window.
- * @returns The projection produced by folding all run events in serial order.
- */
-const loadRunProjection = async <
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-  TProjection,
-  TMessage,
->(opts: {
-  channel: Ably.RealtimeChannel;
-  codec: Codec<TInput, TOutput, TProjection, TMessage>;
-  runId: string;
-  signal: AbortSignal;
-  logger: Logger | undefined;
-  /**
-   * Wires the agent already observed live via the input-event lookup channel
-   * subscription. Folded alongside the history fetch so that the
-   * just-published client wires (e.g. a tool-output-available
-   * continuation) are guaranteed to land in the projection even if Ably
-   * has not yet indexed them into channel.history.
-   */
-  liveMessages?: readonly Ably.InboundMessage[];
-}): Promise<TProjection> => {
-  const { channel, codec, runId, signal, logger, liveMessages } = opts;
-
-  if (signal.aborted) {
-    throw new Ably.ErrorInfo(
-      `unable to load run projection; run ${runId} was cancelled`,
-      ErrorCode.InvalidArgument,
-      400,
-    );
-  }
-
-  await channel.attach();
-
-  // No `untilAttach` — we need messages published AFTER the channel first
-  // attached (e.g. client-published tool-output amends on a suspended run
-  // that this agent session is resuming).
-  const wirePerPage = 200;
-  const collected: Ably.InboundMessage[] = [];
-  let page = await channel.history({ limit: wirePerPage });
-  collected.push(...page.items);
-  // Bound page-walk so a long-lived channel doesn't exhaust memory on
-  // resume. 2000 wire messages is generously more than any single run
-  // could possibly produce.
-  const collectedCap = 2000;
-  while (page.hasNext() && collected.length < collectedCap) {
-    const nextPage: Ably.PaginatedResult<Ably.InboundMessage> | null = await page.next();
-    if (!nextPage) break;
-    collected.push(...nextPage.items);
-    page = nextPage;
-  }
-
-  const sorted = withLiveMessages(collected, liveMessages);
-  const { projection, folded } = foldRunMessages(codec, sorted, runId);
-
-  logger?.debug('loadRunProjection(); folded run events', { runId, folded });
-  return projection;
-};
 
 /**
  * Wait for every event-id in `expectedInputEventIds` to arrive as a channel
@@ -298,7 +127,7 @@ const lookupInputEvents = async <
   TMessage,
 >(opts: {
   register: (callback: (msg: Ably.InboundMessage) => void) => () => void;
-  codec: import('../codec/types.js').Codec<TInput, TOutput, TProjection, TMessage>;
+  codec: Codec<TInput, TOutput, TProjection, TMessage>;
   invocationId: string;
   runId: string;
   expectedInputEventIds: readonly string[];
@@ -310,17 +139,17 @@ const lookupInputEvents = async <
   const expectedSet = new Set(expectedInputEventIds);
   const expectedCount = expectedSet.size;
 
-  /**
-   * Decode an inbound Ably message into MessageNodes via the codec.
-   * @param m - The inbound Ably message to decode.
-   * @returns The decoded MessageNodes carrying transport headers and serial.
-   */
   const collected: MessageNode<TMessage>[] = [];
   const rawMessages: Ably.InboundMessage[] = [];
   const matchedInputEventIds = new Set<string>();
   let firstHeaders: Record<string, string> | undefined;
   let firstClientId: string | undefined;
 
+  /**
+   * Decode an inbound Ably message into MessageNodes via the codec.
+   * @param m - The inbound Ably message to decode.
+   * @returns The decoded MessageNodes carrying transport headers and serial.
+   */
   const decode = (m: Ably.InboundMessage): MessageNode<TMessage>[] => {
     const decoder = codec.createDecoder();
     const headers = getTransportHeaders(m);
@@ -460,7 +289,7 @@ const lookupInputEvents = async <
 
 interface RegisteredRun {
   runId: string;
-  /** Invocation-id this run is associated with, sourced from the invocation's `invocationId`. */
+  /** Invocation-id this run is associated with, minted by the agent at `createRun` (or the `runtime.invocationId` override). */
   invocationId: string;
   controller: AbortController;
   /** Composite signal that fires when either the internal controller or the external signal aborts. */
@@ -494,13 +323,34 @@ class DefaultAgentSession<
   TOutput extends CodecOutputEvent,
   TProjection,
   TMessage,
-> implements AgentSession<TInput, TOutput, TProjection, TMessage> {
+> implements AgentSession<TOutput, TProjection, TMessage> {
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: AgentSessionOptions<TInput, TOutput, TProjection, TMessage>['codec'];
   private readonly _logger: Logger | undefined;
   private readonly _onError: ((error: Ably.ErrorInfo) => void) | undefined;
   private readonly _runManager: RunManager;
   private readonly _registeredRuns = new Map<string, RegisteredRun>();
+  /**
+   * Reverse index from a run's triggering input codec-message-id to its
+   * run-id, populated once `Run.start()`'s input-event lookup resolves the
+   * triggering input. Lets `_handleCancelMessage` route a cancel keyed by the
+   * input codec-message-id (a fresh send whose run-id the client doesn't know)
+   * to the registered run. Entries are removed when the run ends / suspends /
+   * the session closes, alongside `_registeredRuns`.
+   */
+  private readonly _runIdByInputCodecMessageId = new Map<string, string>();
+  /**
+   * Cancels buffered by triggering input codec-message-id when they arrived
+   * before the run was known — i.e. before `Run.start()`'s input-event lookup
+   * resolved that input to a run. A fresh run has no run-id at the client's
+   * send time (the agent mints it at run-start), so an early cancel can only be
+   * keyed by the input codec-message-id, and the `inputCodecMessageId → run`
+   * linkage doesn't exist until the lookup completes. `Run.start()` consults
+   * this buffer as a PULL once it resolves its `resolvedInputCodecMessageId`,
+   * honouring any cancel that arrived first. Mirrors `_inputEventBuffer`: FIFO
+   * eviction at `_inputEventBufferLimit` entries, cleared on `close()`.
+   */
+  private readonly _deferredCancels = new Map<string, Ably.InboundMessage>();
   /**
    * Active input-event lookups keyed by `event-id`. The channel listener
    * dispatches each input event to the lookup that registered for its
@@ -655,8 +505,8 @@ class DefaultAgentSession<
   }
 
   // Spec: AIT-ST3
-  createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): Run<TInput, TOutput, TProjection, TMessage> {
-    this._logger?.trace('DefaultAgentSession.createRun();', { runId: invocation.runId });
+  createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): Run<TOutput, TProjection, TMessage> {
+    this._logger?.trace('DefaultAgentSession.createRun();', { inputEventId: invocation.inputEventId });
     return this._createRun(invocation, runtime ?? {});
   }
 
@@ -673,6 +523,8 @@ class DefaultAgentSession<
       reg.controller.abort();
     }
     this._registeredRuns.clear();
+    this._runIdByInputCodecMessageId.clear();
+    this._deferredCancels.clear();
     this._pendingInputEventLookups.clear();
     this._inputEventBuffer.clear();
     this._runManager.close();
@@ -686,20 +538,97 @@ class DefaultAgentSession<
   private async _handleCancelMessage(msg: Ably.InboundMessage): Promise<void> {
     const headers = getTransportHeaders(msg);
     const runId = headers[HEADER_RUN_ID];
+    const inputCodecMessageId = headers[HEADER_INPUT_CODEC_MESSAGE_ID];
 
-    // Malformed cancel: drop with warn. The protocol requires a single
-    // `run-id` header identifying the target run.
-    if (!runId) {
-      this._logger?.warn('DefaultAgentSession._handleCancelMessage(); missing run-id header', {
+    // Malformed cancel: drop with warn. A cancel must identify its target by
+    // `run-id` (a continuation, whose run-id the client knows) and/or by
+    // `input-codec-message-id` (a fresh send, before the agent minted the
+    // run-id). Neither present means there is nothing to route to.
+    if (!runId && !inputCodecMessageId) {
+      this._logger?.warn('DefaultAgentSession._handleCancelMessage(); missing run-id and input-codec-message-id', {
         serial: msg.serial,
       });
       return;
     }
 
-    const reg = this._registeredRuns.get(runId);
-    if (!reg) return;
+    // Primary path — match by run-id (continuations, whose run-id the client
+    // already knows). Resolve the input-codec-message-id to a run-id when the
+    // run-id wasn't supplied (a fresh-send cancel that arrived after the run's
+    // input-event lookup resolved, so the linkage already exists).
+    const resolvedRunId =
+      runId ?? (inputCodecMessageId ? this._runIdByInputCodecMessageId.get(inputCodecMessageId) : undefined);
+    const reg = resolvedRunId ? this._registeredRuns.get(resolvedRunId) : undefined;
 
-    this._logger?.debug('DefaultAgentSession._handleCancelMessage(); matched run', { runId });
+    if (!reg) {
+      // The run isn't known yet. A fresh-send cancel can race ahead of the
+      // run's input-event lookup (which is what establishes the
+      // input-codec-message-id → run linkage). Buffer it by
+      // input-codec-message-id so `Run.start()` can pull and honour it once it
+      // resolves the triggering input. A bare run-id cancel for an unknown run
+      // is a no-op (the run never existed here, or already ended).
+      if (inputCodecMessageId !== undefined) {
+        this._bufferDeferredCancel(inputCodecMessageId, msg);
+      }
+      return;
+    }
+
+    await this._cancelRegistration(reg, msg);
+  }
+
+  /**
+   * Buffer a cancel that arrived before its target run was known, keyed by the
+   * triggering input's codec-message-id. FIFO-evicts the oldest entry at
+   * `_inputEventBufferLimit` (mirroring `_inputEventBuffer`). A later cancel
+   * for the same input replaces the earlier one — the intent is identical.
+   * @param inputCodecMessageId - The triggering input's codec-message-id.
+   * @param msg - The raw cancel message (passed to `onCancel`).
+   */
+  private _bufferDeferredCancel(inputCodecMessageId: string, msg: Ably.InboundMessage): void {
+    const evicted = evictOldestIfFull(this._deferredCancels, inputCodecMessageId, this._inputEventBufferLimit);
+    if (evicted !== undefined) {
+      this._logger?.warn('DefaultAgentSession._bufferDeferredCancel(); deferred-cancel buffer full, dropping oldest', {
+        evictedInputCodecMessageId: evicted,
+        limit: this._inputEventBufferLimit,
+      });
+    }
+    this._deferredCancels.set(inputCodecMessageId, msg);
+    this._logger?.debug('DefaultAgentSession._bufferDeferredCancel(); buffered early cancel', {
+      inputCodecMessageId,
+      serial: msg.serial,
+    });
+  }
+
+  /**
+   * Pull and honour a cancel buffered before this run was known. Called from
+   * `Run.start()` once the input-event lookup resolves the run's triggering
+   * input codec-message-id — the point at which the
+   * `input-codec-message-id → run` linkage first exists. No-op when no cancel
+   * was buffered for that input.
+   * @param reg - The now-known run registration.
+   * @param inputCodecMessageId - The run's resolved triggering input codec-message-id.
+   */
+  private async _pullDeferredCancel(reg: RegisteredRun, inputCodecMessageId: string): Promise<void> {
+    const buffered = this._deferredCancels.get(inputCodecMessageId);
+    if (buffered === undefined) return;
+    this._deferredCancels.delete(inputCodecMessageId);
+    this._logger?.debug('DefaultAgentSession._pullDeferredCancel(); honouring buffered cancel', {
+      runId: reg.runId,
+      inputCodecMessageId,
+    });
+    await this._cancelRegistration(reg, buffered);
+  }
+
+  /**
+   * Fire a cancel against a known run: consult its `onCancel` authorization
+   * hook (if any), then abort the run's controller. Shared by the run-id match,
+   * the input-codec-message-id match, and the buffered-cancel pull so all three
+   * honour `onCancel` and surface handler errors identically.
+   * @param reg - The target run registration.
+   * @param msg - The raw cancel message (passed to `onCancel`).
+   */
+  private async _cancelRegistration(reg: RegisteredRun, msg: Ably.InboundMessage): Promise<void> {
+    const { runId } = reg;
+    this._logger?.debug('DefaultAgentSession._cancelRegistration(); matched run', { runId });
 
     const request: CancelRequest = { message: msg, runId };
 
@@ -707,14 +636,14 @@ class DefaultAgentSession<
       if (reg.onCancel) {
         const allowed = await reg.onCancel(request);
         if (!allowed) {
-          this._logger?.debug('DefaultAgentSession._handleCancelMessage(); cancel rejected by onCancel', {
+          this._logger?.debug('DefaultAgentSession._cancelRegistration(); cancel rejected by onCancel', {
             runId,
           });
           return;
         }
       }
       reg.controller.abort();
-      this._logger?.debug('DefaultAgentSession._handleCancelMessage(); run cancelled', { runId });
+      this._logger?.debug('DefaultAgentSession._cancelRegistration(); run cancelled', { runId });
     } catch (error) {
       const errInfo = new Ably.ErrorInfo(
         `unable to process cancel for run ${runId}; onCancel handler threw: ${error instanceof Error ? error.message : String(error)}`,
@@ -722,7 +651,7 @@ class DefaultAgentSession<
         500,
         error instanceof Ably.ErrorInfo ? error : undefined,
       );
-      this._logger?.error('DefaultAgentSession._handleCancelMessage(); onCancel threw', { runId });
+      this._logger?.error('DefaultAgentSession._cancelRegistration(); onCancel threw', { runId });
       (reg.onError ?? this._onError)?.(errInfo);
     }
   }
@@ -817,23 +746,16 @@ class DefaultAgentSession<
           if (existing) {
             existing.push(msg);
           } else {
-            if (this._inputEventBuffer.size >= this._inputEventBufferLimit) {
-              // FIFO eviction: drop the oldest event entry (and all its
-              // buffered redeliveries). Clients whose input event was evicted
-              // will fail their lookup with `InputEventNotFound` — this warn
-              // is the only operator-visible signal that capacity caused
-              // the failure.
-              const oldestKey = this._inputEventBuffer.keys().next().value;
-              if (oldestKey !== undefined) {
-                this._inputEventBuffer.delete(oldestKey);
-                this._logger?.warn(
-                  'DefaultAgentSession._handleChannelMessage(); input-event buffer full, dropping oldest entry',
-                  {
-                    evictedEventId: oldestKey,
-                    limit: this._inputEventBufferLimit,
-                  },
-                );
-              }
+            // FIFO eviction: drop the oldest event entry (and all its buffered
+            // redeliveries). Clients whose input event was evicted will fail
+            // their lookup with `InputEventNotFound` — this warn is the only
+            // operator-visible signal that capacity caused the failure.
+            const evicted = evictOldestIfFull(this._inputEventBuffer, eventId, this._inputEventBufferLimit);
+            if (evicted !== undefined) {
+              this._logger?.warn(
+                'DefaultAgentSession._handleChannelMessage(); input-event buffer full, dropping oldest entry',
+                { evictedEventId: evicted, limit: this._inputEventBufferLimit },
+              );
             }
             this._inputEventBuffer.set(eventId, [msg]);
           }
@@ -870,12 +792,18 @@ class DefaultAgentSession<
   // Run creation
   // -------------------------------------------------------------------------
 
-  private _createRun(
-    invocation: Invocation,
-    runtime: RunRuntime<TOutput>,
-  ): Run<TInput, TOutput, TProjection, TMessage> {
-    const runId = invocation.runId;
-    const invocationId = invocation.invocationId;
+  private _createRun(invocation: Invocation, runtime: RunRuntime<TOutput>): Run<TOutput, TProjection, TMessage> {
+    // The run-id is no longer carried in the invocation body. Mint a
+    // provisional id now (or take the `runtime.runId` override for tests /
+    // in-process drivers) — this IS the id for a fresh run. A continuation
+    // overrides it in `Run.start()` with the existing run-id read off the
+    // triggering input event's wire headers (the run it re-enters). Mirrors
+    // the invocationId mint below.
+    let runId = runtime.runId ?? crypto.randomUUID();
+    // The agent mints the invocation id — one per HTTP request that invokes
+    // it. A per-run override (runtime.invocationId) supports deterministic ids
+    // in tests and in-process drivers.
+    const invocationId = runtime.invocationId ?? crypto.randomUUID();
     const inputEventLookupTimeoutMs = this._inputEventLookupTimeoutMs;
     const { onMessage, onCancelled, onCancel, onError: runOnError, signal: externalSignal } = runtime;
 
@@ -887,7 +815,10 @@ class DefaultAgentSession<
     // timeout) cancels the run through the same path as Ably cancel messages.
     const signal = externalSignal ? AbortSignal.any([controller.signal, externalSignal]) : controller.signal;
 
-    // Spec: AIT-ST3a — register immediately so early cancels can fire the AbortSignal.
+    // Spec: AIT-ST3a — register immediately so `close()` aborts an in-flight
+    // start() and a post-lookup cancel can fire the AbortSignal. Keyed by the
+    // provisional run-id; a continuation re-keys to the real id in start()
+    // once the triggering input reveals it.
     const registration: RegisteredRun = {
       runId,
       invocationId,
@@ -905,8 +836,11 @@ class DefaultAgentSession<
     const codec = this._codec;
     const channel = this._channel;
     const registeredRuns = this._registeredRuns;
+    const runIdByInputCodecMessageId = this._runIdByInputCodecMessageId;
+    const deferredCancels = this._deferredCancels;
     const requireConnected = this._requireConnected.bind(this);
     const registerInputEventListener = this._registerInputEventListener.bind(this);
+    const pullDeferredCancel = this._pullDeferredCancel.bind(this);
     const inputEventId = invocation.inputEventId;
 
     // `viewMessages` starts empty. `Run.start()` populates it via the
@@ -920,12 +854,14 @@ class DefaultAgentSession<
     };
 
     // Per-run metadata resolved from the input-event lookup result. The first
-    // matched wire message's headers carry the run's `clientId`, `parent`,
-    // `forkOf`, and continuation flag; its Ably-level publisher `clientId`
-    // becomes the `inputClientId` re-stamped on the agent's own publishes.
-    // Captured separately from `viewMessages` because tool-resolution wire
-    // messages (`tool-output-available` etc.) decode to chunks and produce
-    // zero MessageNodes — the metadata still needs to surface.
+    // matched wire message's headers carry the run's `clientId`, `parent`, and
+    // `forkOf`, and — for a continuation — the `run-id` it re-enters (a fresh
+    // input carries none; the client stamps a run-id only when re-entering a
+    // run it already knows). Its Ably-level publisher `clientId` becomes the
+    // `inputClientId` re-stamped on the agent's own publishes. Captured
+    // separately from `viewMessages` because tool-resolution wire messages
+    // (`tool-output-available` etc.) decode to chunks and produce zero
+    // MessageNodes — the metadata still needs to surface.
     let resolvedClientId: string | undefined;
     let resolvedInputClientId: string | undefined;
     let resolvedParent: string | undefined;
@@ -935,6 +871,15 @@ class DefaultAgentSession<
     let resolvedContinuation = false;
     let firstLookupHeaders: Record<string, string> | undefined;
     /**
+     * The reply run's structural-parent fallback, computed once in
+     * `Run.start()` (after the input-event lookup has populated `viewMessages`)
+     * and consumed by every `Run.pipe()` publish. A per-stream
+     * `streamOpts.parent` still overrides it. Storing it here keeps it stable
+     * across pipes and decouples the assistant's structural parent from the
+     * run-start wire's own `parent`.
+     */
+    let assistantParentFallback: string | undefined;
+    /**
      * Raw Ably messages observed live by the input-event lookup. Passed to
      * `loadRunProjection` so the just-published client wires don't need
      * to wait on Ably's channel history indexing window. Empty when no
@@ -942,11 +887,25 @@ class DefaultAgentSession<
      */
     let liveLookupMessages: readonly Ably.InboundMessage[] | undefined;
 
-    // Most recently loaded projection for this run only. `Run.loadProjection()`
-    // and `Run.loadConversation()` both cache it so `Run.pipe()` can consult
-    // `codec.resolveToolTarget` for cross-message attribution (e.g. approved-tool
-    // second-pass tool outputs redirect to the original assistant). `undefined`
-    // before any load call; pipe falls back to natural messageId behaviour then.
+    /**
+     * Remove this run from the session's routing maps. Drops the
+     * `_registeredRuns` entry plus the `input-codec-message-id → run-id`
+     * reverse index (and any stale deferred cancel still buffered for that
+     * input), keeping the cancel-routing state consistent when the run ends,
+     * suspends, or its start fails.
+     */
+    const deregisterRun = (): void => {
+      registeredRuns.delete(runId);
+      if (resolvedInputCodecMessageId !== undefined) {
+        runIdByInputCodecMessageId.delete(resolvedInputCodecMessageId);
+        deferredCancels.delete(resolvedInputCodecMessageId);
+      }
+    };
+
+    // Most recently loaded projection for this run only, cached by
+    // `Run.loadProjection()` and `Run.loadConversation()` so the `messages`
+    // getter can return the run's folded messages. `undefined` before any
+    // load call; the getter then falls back to the live `viewMessages`.
     let cachedProjection: TProjection | undefined;
 
     // Full multi-turn conversation, set by `Run.loadConversation()`. When set,
@@ -955,9 +914,12 @@ class DefaultAgentSession<
     // messages instead of the current run alone.
     let cachedConversation: TMessage[] | undefined;
 
-    const run: Run<TInput, TOutput, TProjection, TMessage> = {
+    const run: Run<TOutput, TProjection, TMessage> = {
       get runId() {
         return runId;
+      },
+      get invocationId() {
+        return invocationId;
       },
       get abortSignal() {
         return signal;
@@ -1027,17 +989,19 @@ class DefaultAgentSession<
             // the signal the client sees. No channel publish: an
             // `ai-run-end` without a preceding `ai-run-start` would break
             // the lifecycle invariant for other channel observers.
-            registeredRuns.delete(runId);
+            deregisterRun();
             logger?.error('Run.start(); input-event lookup failed', { runId, invocationId });
             throw errInfo;
           }
         }
 
         // Resolve per-run metadata from the first matched wire message's
-        // headers — they carry `clientId`, `parent`, `forkOf`, and the
-        // continuation flag. Continuations of a suspended run pick up the
-        // suspended assistant's parent in the same headers (the continuation
-        // wire message parents off the assistant). Fall back to the first
+        // headers — they carry `clientId`, `parent`, and `forkOf`.
+        // Continuations of a suspended run pick up the suspended assistant's
+        // parent in the same headers (the continuation wire message parents off
+        // the assistant). A `run-id` on the triggering input marks a
+        // continuation (re-entry via `ai-run-resume`); a fresh input carries
+        // none and opens the run with `ai-run-start`. Fall back to the first
         // MessageNode's headers for the legacy pre-populated path where the
         // lookup ran with `viewMessages` already populated and no
         // `firstHeaders` was captured.
@@ -1048,12 +1012,50 @@ class DefaultAgentSession<
           resolvedForkOf = sourceHeaders[HEADER_FORK_OF];
           resolvedRegenerates = sourceHeaders[HEADER_MSG_REGENERATE];
           resolvedInputCodecMessageId = sourceHeaders[HEADER_CODEC_MESSAGE_ID];
-          resolvedContinuation = sourceHeaders[HEADER_RUN_CONTINUE] === 'true';
+
+          // The triggering input's run-id (if any) IS this run's identity.
+          // Present → a continuation re-entering that run: adopt the id,
+          // overriding the provisional one minted at construction, and re-key
+          // the registration so cancel routing / deregistration resolve to the
+          // real run. Absent → a fresh run: the provisional id stands and the
+          // run opens with run-start.
+          const wireRunId = sourceHeaders[HEADER_RUN_ID];
+          resolvedContinuation = wireRunId !== undefined;
+          if (wireRunId !== undefined && wireRunId !== runId) {
+            registeredRuns.delete(runId);
+            runId = wireRunId;
+            registration.runId = runId;
+            registeredRuns.set(runId, registration);
+          }
+        }
+
+        // Compute the reply run's structural-parent fallback now that the
+        // lookup has populated `viewMessages`: the triggering user message,
+        // or — for regenerate wires that match by inputEventId but produce no
+        // MessageNodes — the input wire's own `parent`. `Run.pipe()` consumes
+        // this for every assistant publish.
+        assistantParentFallback = viewMessages.at(-1)?.codecMessageId ?? resolvedParent;
+
+        // The triggering input's codec-message-id is now resolved, so the
+        // `input-codec-message-id → run` linkage exists: index it for live
+        // cancels and pull any cancel that arrived before the run was known
+        // (a fresh-send cancel published before the agent minted this run-id).
+        // Honouring it here may abort the controller before run-start; that is
+        // fine — the abort propagates through the same signal a normal cancel
+        // would use.
+        if (resolvedInputCodecMessageId !== undefined) {
+          runIdByInputCodecMessageId.set(resolvedInputCodecMessageId, runId);
+          await pullDeferredCancel(registration, resolvedInputCodecMessageId);
         }
 
         try {
           await runManager.startRun(runId, resolvedClientId, controller, {
-            parent: resolvedParent,
+            // Stamp the reply run's STRUCTURAL parent (its input node, M_user) —
+            // the same value the output path stamps — not the input wire's own
+            // parent. Makes `parent` structural on every wire so the Tree's two
+            // creation paths agree regardless of arrival order. Valid only now
+            // that M_user is a separate input node (the two-node flip).
+            parent: assistantParentFallback,
             forkOf: resolvedForkOf,
             regenerates: resolvedRegenerates,
             invocationId,
@@ -1073,71 +1075,6 @@ class DefaultAgentSession<
         }
 
         logger?.debug('Run.start(); run started', { runId, inputEventId });
-      },
-
-      // Spec: AIT-ST5, AIT-ST5a, AIT-ST5b, AIT-ST5c
-      addMessages: async (nodes: MessageNode<TMessage>[], opts?: AddMessageOptions): Promise<AddMessagesResult> => {
-        logger?.trace('Run.addMessages();', { runId, count: nodes.length });
-
-        await requireConnected('addMessages');
-
-        if (state === RunState.INITIALIZED) {
-          throw new Ably.ErrorInfo(
-            `unable to add messages; start() must be called before addMessages() (run ${runId})`,
-            ErrorCode.InvalidArgument,
-            400,
-          );
-        }
-
-        const codecMessageIds: string[] = [];
-
-        try {
-          for (const node of nodes) {
-            // Build transport headers from the node's typed fields, then merge
-            // any extra headers from the node (e.g. domain-specific headers).
-            const headers = mergeHeaders(
-              buildTransportHeaders({
-                role: 'user',
-                runId,
-                codecMessageId: node.codecMessageId,
-                runClientId: opts?.clientId,
-                parent: node.parentId,
-                forkOf: node.forkOf,
-                inputEventId,
-                inputClientId: resolvedInputClientId,
-                inputCodecMessageId: resolvedInputCodecMessageId,
-              }),
-              node.headers,
-            );
-
-            const encoder = codec.createEncoder(channel, {
-              extras: { headers },
-              onMessage,
-            });
-
-            // CAST: UserMessage<TMessage> is the well-known input variant
-            // produced by `codec.createUserMessage`; TInput is the codec's
-            // full input union, of which UserMessage<TMessage> is one
-            // member. TypeScript can't see the membership through the
-            // generic boundary.
-            const userInput = codec.createUserMessage(node.message) as unknown as TInput;
-            await encoder.publishInput(userInput, opts?.clientId ? { clientId: opts.clientId } : undefined);
-
-            codecMessageIds.push(node.codecMessageId);
-          }
-        } catch (error) {
-          const errInfo = new Ably.ErrorInfo(
-            `unable to publish messages for run ${runId}; ${error instanceof Error ? error.message : String(error)}`,
-            ErrorCode.RunLifecycleError,
-            500,
-            error instanceof Ably.ErrorInfo ? error : undefined,
-          );
-          logger?.error('Run.addMessages(); publish failed', { runId });
-          throw errInfo;
-        }
-
-        logger?.debug('Run.addMessages(); messages published', { runId, count: nodes.length });
-        return { codecMessageIds };
       },
 
       // Spec: AIT-ST5c
@@ -1211,131 +1148,20 @@ class DefaultAgentSession<
       loadConversation: async (options?: LoadConversationOptions): Promise<TMessage[]> => {
         logger?.trace('Run.loadConversation();', { runId });
         await requireConnected('loadConversation');
-        if (signal.aborted) {
-          throw new Ably.ErrorInfo(
-            `unable to load conversation; run ${runId} was cancelled`,
-            ErrorCode.InvalidArgument,
-            400,
-          );
-        }
-        const pageLimit = options?.pageLimit ?? 200;
-        const maxMessages = options?.maxMessages ?? 2000;
-
-        // Single channel.history() fetch for all runs. Live lookup messages are
-        // merged in so the current run's just-published client wires don't depend
-        // on Ably's history-indexing window. Deduped by serial (history wins),
-        // sorted chronologically.
-        const collected: Ably.InboundMessage[] = [];
-        let page = await channel.history({ limit: pageLimit });
-        collected.push(...page.items);
-        while (page.hasNext() && collected.length < maxMessages) {
-          const nextPage: Ably.PaginatedResult<Ably.InboundMessage> | null = await page.next();
-          if (!nextPage) break;
-          collected.push(...nextPage.items);
-          page = nextPage;
-        }
-        const sortedMessages = withLiveMessages(collected, liveLookupMessages);
-
-        // Pass 1 — build a codec-message-id → runId index from every non-lifecycle
-        // message. Used to resolve the HEADER_PARENT codec-message-id on ai-run-start
-        // events into the parent runId, without any out-of-band metadata from the
-        // invocation body.
-        const codecMsgToRunId = new Map<string, string>();
-        for (const msg of sortedMessages) {
-          if (
-            msg.name === EVENT_RUN_START ||
-            msg.name === EVENT_RUN_SUSPEND ||
-            msg.name === EVENT_RUN_RESUME ||
-            msg.name === EVENT_RUN_END
-          )
-            continue;
-          const h = getTransportHeaders(msg);
-          const msgRunId = h[HEADER_RUN_ID];
-          const msgCodecId = h[HEADER_CODEC_MESSAGE_ID];
-          if (msgRunId && msgCodecId) codecMsgToRunId.set(msgCodecId, msgRunId);
-        }
-
-        // Pass 2 — build runMap from ai-run-start events. Each entry records the
-        // run's parentRunId (resolved from HEADER_PARENT via the index above) and
-        // what it replaced (regenerates / forkOf), used to derive the truncation
-        // point for each ancestor during the fold.
-        const runMap = new Map<
-          string,
-          {
-            parentRunId: string | undefined;
-            regenerates: string | undefined;
-            forkOf: string | undefined;
-          }
-        >();
-        for (const msg of sortedMessages) {
-          if (msg.name !== EVENT_RUN_START) continue;
-          const h = getTransportHeaders(msg);
-          const msgRunId = h[HEADER_RUN_ID];
-          if (!msgRunId) continue;
-          const parentCodecMsgId = h[HEADER_PARENT];
-          runMap.set(msgRunId, {
-            parentRunId: parentCodecMsgId ? codecMsgToRunId.get(parentCodecMsgId) : undefined,
-            regenerates: h[HEADER_MSG_REGENERATE],
-            forkOf: h[HEADER_FORK_OF],
-          });
-        }
-
-        // Seed the ancestor chain from the current run's parentRunId resolved from
-        // channel history. If the current run's ai-run-start hasn't been indexed yet
-        // (rare Ably history lag), fall back to resolvedParent from the input-event lookup
-        // (a codec-message-id) resolved through the same index.
-        // A cycle guard (seen Set) prevents an infinite loop on self-referential data.
-        const lagFallback = resolvedParent ? codecMsgToRunId.get(resolvedParent) : undefined;
-        const seedParentRunId = runMap.get(runId)?.parentRunId ?? lagFallback;
-        const chain: string[] = [];
-        const seen = new Set<string>();
-        let current = seedParentRunId;
-        while (current !== undefined) {
-          if (seen.has(current)) {
-            logger?.warn('Run.loadConversation(); cycle detected in ancestor chain, breaking', {
-              runId: current,
-            });
-            break;
-          }
-          seen.add(current);
-          if (current !== runId) chain.unshift(current);
-          current = runMap.get(current)?.parentRunId;
-        }
-
-        // Fold each run's projection from the shared sorted message list —
-        // no extra channel.history() calls. For each ancestor, truncate at the
-        // codec-message-id that the next run in the chain replaced (via
-        // regenerates or forkOf).
-        const allMessages: TMessage[] = [];
-        for (const [i, ancestorRunId] of chain.entries()) {
-          const childRunId = chain[i + 1];
-          // For the last ancestor (no child in the chain array), truncate at the
-          // codec-message-id the current run regenerated or forked. Prefer the
-          // value resolved from channel history (runMap.get(runId)); fall back to
-          // the input-event lookup values in case the current run's ai-run-start hasn't
-          // been indexed yet.
-          const truncateAt =
-            childRunId === undefined
-              ? (runMap.get(runId)?.regenerates ?? resolvedRegenerates ?? runMap.get(runId)?.forkOf ?? resolvedForkOf)
-              : (runMap.get(childRunId)?.regenerates ?? runMap.get(childRunId)?.forkOf);
-          const { projection } = foldRunMessages(codec, sortedMessages, ancestorRunId, truncateAt);
-          allMessages.push(...codec.getMessages(projection));
-        }
-
-        // Current run — fold from the same sorted messages (live messages already
-        // merged in by withLiveMessages above).
-        const { projection: currentProjection, folded } = foldRunMessages(codec, sortedMessages, runId);
-        cachedProjection = currentProjection;
-        allMessages.push(...codec.getMessages(currentProjection));
-
-        logger?.debug('Run.loadConversation(); built', {
+        const { messages, projection } = await loadConversation<TInput, TOutput, TProjection, TMessage>({
+          channel,
+          codec,
           runId,
-          ancestorCount: chain.length,
-          totalMessages: allMessages.length,
-          folded,
+          signal,
+          logger,
+          liveMessages: liveLookupMessages,
+          assistantParentFallback,
+          pageLimit: options?.pageLimit ?? 200,
+          maxMessages: options?.maxMessages ?? 2000,
         });
-        cachedConversation = allMessages;
-        return allMessages;
+        cachedProjection = projection;
+        cachedConversation = messages;
+        return messages;
       },
 
       // Spec: AIT-ST6, AIT-ST6a, AIT-ST6b, AIT-ST6b1, AIT-ST6b2, AIT-ST6b3, AIT-ST6c
@@ -1354,21 +1180,16 @@ class DefaultAgentSession<
 
         const runOwnerClientId = runManager.getClientId(runId);
 
-        // Resolve the assistant message's parent. Priority (highest first):
-        //   1. Explicit `streamOpts.parent` from the caller.
-        //   2. The most recently looked-up input event for this run — so the
-        //      assistant threads under the user msg that triggered it.
-        //   3. `resolvedParent` from the input-event lookup's `firstLookupHeaders`.
-        //      For regenerate wires the lookup matches the event (by
-        //      inputEventId) but produces no MessageNodes, so `viewMessages` is
-        //      empty — the regenerate event's `parent` header carries
-        //      the parent codec-message-id we need to thread under.
-        // Owning the default here means agent routes don't have to remember
-        // to pass `{ parent: lastUserCodecMessageId }` to keep tree threading correct;
-        // edit-then-regenerate sibling resolution relies on the user→assistant
-        // chain being explicit.
-        const lastViewCodecMessageId = viewMessages.at(-1)?.codecMessageId;
-        const assistantParent = streamOpts?.parent ?? lastViewCodecMessageId ?? resolvedParent;
+        // The assistant message's parent: an explicit per-stream
+        // `streamOpts.parent` from the caller, else the reply run's
+        // structural-parent fallback computed once at run-start
+        // (`assistantParentFallback` — the triggering user message, or the
+        // input wire's own parent for regenerate wires that produced no
+        // MessageNodes). Owning the default here means agent routes don't have
+        // to pass `{ parent: lastUserCodecMessageId }` to keep tree threading
+        // correct; edit-then-regenerate sibling resolution relies on the
+        // user→assistant chain being explicit.
+        const assistantParent = streamOpts?.parent ?? assistantParentFallback;
         const assistantForkOf = streamOpts?.forkOf ?? resolvedForkOf;
         // Echo `msg-regenerate` on the assistant wire so that a
         // client receiving the assistant chunk before `ai-run-start`
@@ -1397,25 +1218,7 @@ class DefaultAgentSession<
           messageId: codecMessageId,
         });
 
-        // Compose caller-supplied resolveWriteOptions with codec-driven
-        // tool-output attribution. After a `loadProjection` call, the
-        // codec's `resolveToolTarget` returns the original message id for
-        // tool-output chunks whose toolCallId matches an awaiting tool
-        // call in the projection — letting the reducer fold them onto the
-        // original message via the standard messageId routing path. The
-        // caller's `messageId` (if any) wins over the codec's suggestion.
-        const composed = (event: TOutput): WriteOptions | undefined => {
-          const callerResolved = streamOpts?.resolveWriteOptions?.(event);
-          if (cachedProjection === undefined) return callerResolved;
-          const target = codec.resolveToolTarget(event, cachedProjection);
-          if (target === undefined) return callerResolved;
-          return {
-            ...callerResolved,
-            messageId: callerResolved?.messageId ?? target,
-          };
-        };
-
-        const result = await pipeStream(stream, encoder, signal, onCancelled, composed, logger);
+        const result = await pipeStream(stream, encoder, signal, onCancelled, streamOpts?.resolveWriteOptions, logger);
 
         if (result.error) {
           const errInfo = new Ably.ErrorInfo(
@@ -1461,7 +1264,7 @@ class DefaultAgentSession<
           logger?.error('Run.suspend(); failed to publish run-suspend', { runId });
           throw errInfo;
         } finally {
-          registeredRuns.delete(runId);
+          deregisterRun();
         }
 
         logger?.debug('Run.suspend(); run suspended', { runId });
@@ -1495,7 +1298,7 @@ class DefaultAgentSession<
           logger?.error('Run.end(); failed to publish run-end', { runId });
           throw errInfo;
         } finally {
-          registeredRuns.delete(runId);
+          deregisterRun();
         }
 
         logger?.debug('Run.end(); run ended', { runId, reason });
@@ -1524,4 +1327,4 @@ export const createAgentSession = <
   TMessage,
 >(
   options: AgentSessionOptions<TInput, TOutput, TProjection, TMessage>,
-): AgentSession<TInput, TOutput, TProjection, TMessage> => new DefaultAgentSession(options);
+): AgentSession<TOutput, TProjection, TMessage> => new DefaultAgentSession(options);

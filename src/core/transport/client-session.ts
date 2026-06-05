@@ -9,10 +9,11 @@
  * codec encoder. It does not send HTTP: waking an agent is the application's
  * concern — it POSTs `run.toInvocation().toJSON()` to its own endpoint if and
  * when it wants one woken (the Vercel ChatTransport does this for useChat
- * parity). The agent correlates the input event by the `invocation-id` header
- * and publishes run lifecycle events (run-start, run-end) plus assistant
- * chunks. The channel is the durable session record; agents that weren't
- * running at publish time can resume by reading channel rewind.
+ * parity). The agent locates the triggering input event by its `event-id`
+ * header and publishes run lifecycle events (run-start, run-end) plus assistant
+ * chunks, minting and stamping the invocation-id itself. The channel is the
+ * durable session record; agents that weren't running at publish time can
+ * resume by reading channel rewind.
  */
 
 import * as Ably from 'ably';
@@ -20,9 +21,6 @@ import * as Ably from 'ably';
 import {
   EVENT_CANCEL,
   EVENT_RUN_END,
-  EVENT_RUN_RESUME,
-  EVENT_RUN_START,
-  EVENT_RUN_SUSPEND,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
@@ -41,7 +39,8 @@ import { LogLevel, makeLogger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import type { CodecInputEvent, CodecOutputEvent, Decoder, Encoder } from '../codec/types.js';
-import { buildTransportHeaders, parseRunLifecycle } from './headers.js';
+import { applyWireMessage } from './decode-fold.js';
+import { buildTransportHeaders } from './headers.js';
 import { Invocation } from './invocation.js';
 import type { DefaultTree } from './tree.js';
 import { createTree } from './tree.js';
@@ -116,21 +115,22 @@ class DefaultClientSession<
   private readonly _onChannelStateChange: Ably.channelEventCallback;
 
   /**
-   * Backing settlers for each in-flight run's `ActiveRun.started` promise.
-   * Resolved when the matching `ai-run-start` is observed; rejected if the
-   * session closes first. There is no deadline — `send()` no longer blocks on
-   * run-start.
+   * Backing settlers for each in-flight run's `ActiveRun.runId` promise.
+   * Resolved with the agent-minted run-id when the matching `ai-run-start` is
+   * observed; rejected if the session closes first. There is no deadline —
+   * `send()` no longer blocks on run-start.
    *
    * Keyed by the triggering input's codec-message-id — the handle the client
    * owns at send time, which the agent echoes back on run-start as
    * `input-codec-message-id`. This is uniform across fresh sends and
    * continuations (a continuation is itself an input event — tool-approval or
    * tool-result — with its own codec-message-id), so reconciliation never
-   * depends on a client-minted run/invocation id. The sole exception is an
-   * empty-input continuation, which publishes no input and so keys by the
-   * reused `runId` instead.
+   * depends on a client-minted run/invocation id.
    */
-  private readonly _pendingRunStarts = new Map<string, { resolve: () => void; reject: (e: Ably.ErrorInfo) => void }>();
+  private readonly _pendingRunStarts = new Map<
+    string,
+    { resolve: (runId: string) => void; reject: (e: Ably.ErrorInfo) => void }
+  >();
 
   constructor(options: ClientSessionOptions<TInput, TOutput, TProjection, TMessage>) {
     // Spec: AIT-CT1a, AIT-CT1a2 — register this SDK on both the connection
@@ -169,16 +169,15 @@ class DefaultClientSession<
     this.tree = this._tree;
     this.view = this._view;
 
-    // Seed tree with initial messages — session assigns its own runId / codecMessageId
-    // per seed message. Each seed message becomes a single-message Run; the
-    // parent chain mirrors the original seed sequence.
+    // Seed tree with initial messages — the session assigns a codecMessageId
+    // per seed message. Each seed becomes a run-less input node (no run-id —
+    // the client never mints one); the parent chain mirrors the original seed
+    // sequence (a user→user input chain the Tree threads kind-blind).
     if (options.messages) {
       let prevMsgId: string | undefined;
       for (const msg of options.messages) {
-        const seedRunId = crypto.randomUUID();
         const codecMessageId = crypto.randomUUID();
         const seedHeaders: Record<string, string> = {
-          [HEADER_RUN_ID]: seedRunId,
           [HEADER_CODEC_MESSAGE_ID]: codecMessageId,
           [HEADER_ROLE]: 'user',
         };
@@ -264,64 +263,15 @@ class DefaultClientSession<
 
     try {
       // Spec: AIT-CT16a
-      // --- Run lifecycle events from the agent ---
-      if (ablyMessage.name === EVENT_RUN_START || ablyMessage.name === EVENT_RUN_RESUME) {
-        const headers = getTransportHeaders(ablyMessage);
-        const event = parseRunLifecycle(ablyMessage.name, headers, ablyMessage.serial);
-        if (event) {
-          this._tree.applyRunLifecycle(event);
-          // Resolve the pending `started` for this run-start (a fresh start) or
-          // run-resume (a continuation re-entering an existing run). Every send
-          // that carries an input event — the fresh input of a start, or the
-          // tool-approval / tool-result that triggers a resume — armed the
-          // tracker by that triggering input's codec-message-id, which the agent
-          // echoes here as `input-codec-message-id`. The only input-less send is
-          // an empty-input continuation, whose resume carries no
-          // `input-codec-message-id`; it falls back to the reused runId (always
-          // present in this block). A resume fires only after the agent consumed
-          // the continuation input, so it is the event that run's `started`
-          // waits on. invocation-id is not a match key.
-          const startedKey = headers[HEADER_INPUT_CODEC_MESSAGE_ID] ?? event.runId;
-          const pending = this._pendingRunStarts.get(startedKey);
-          if (pending) {
-            this._pendingRunStarts.delete(startedKey);
-            pending.resolve();
-          }
-        }
-        this._tree.emitAblyMessage(ablyMessage);
-        return;
-      }
-
-      if (ablyMessage.name === EVENT_RUN_SUSPEND) {
-        const headers = getTransportHeaders(ablyMessage);
-        const runId = headers[HEADER_RUN_ID];
-        if (runId) {
-          // A suspend keeps the run live in the Tree (status 'suspended') so a
-          // continuation that reuses the runId picks up where it left off. The
-          // `run` event fires so consumers can react. No pending-run-start
-          // tracker is outstanding here — the agent only suspends after it has
-          // published run-start.
-          const event = parseRunLifecycle(EVENT_RUN_SUSPEND, headers, ablyMessage.serial);
-          if (event) this._tree.applyRunLifecycle(event);
-        }
-        this._tree.emitAblyMessage(ablyMessage);
-        return;
-      }
-
+      // Live-only: surface an agent error carried on a run-end BEFORE applying
+      // it, preserving the original 'error'-before-tree-'run' emit ordering.
+      // Consumers that expose a per-run stream (e.g. the Vercel ChatTransport)
+      // error their stream off this event. The agent only publishes run-end
+      // after run-start, so no pending-run-start tracker is outstanding.
       if (ablyMessage.name === EVENT_RUN_END) {
         const headers = getTransportHeaders(ablyMessage);
-        const runId = headers[HEADER_RUN_ID];
-        const invocationId = headers[HEADER_INVOCATION_ID];
         // CAST: agent always writes a valid RunEndReason; default to 'complete' for robustness
         const reason = (headers[HEADER_RUN_REASON] ?? 'complete') as RunEndReason;
-
-        // When reason is 'error' the agent surfaces a mid-run failure
-        // via the error-code / error-message headers.
-        // Reify the error and emit the session error event. Consumers that
-        // expose a per-run stream (e.g. the Vercel ChatTransport) error their
-        // stream off this event. The agent only publishes `run-end` after it
-        // has published `run-start`, so no pending-run-start tracker is
-        // outstanding at this point.
         if (reason === 'error') {
           const codeRaw = headers[HEADER_ERROR_CODE];
           const parsedCode = codeRaw === undefined ? Number.NaN : Number(codeRaw);
@@ -330,47 +280,38 @@ class DefaultClientSession<
           const statusCode = code >= 10000 && code < 60000 ? Math.floor(code / 100) : 500;
           const errInfo = new Ably.ErrorInfo(message, code, statusCode);
           this._logger.error('ClientSession._handleMessage(); agent error received', {
-            runId,
-            invocationId,
+            runId: headers[HEADER_RUN_ID],
+            invocationId: headers[HEADER_INVOCATION_ID],
             code,
           });
           this._emitter.emit('error', errInfo);
         }
+      }
 
-        if (runId) {
-          // Every run-end is applied unconditionally. Concurrent work always
-          // runs under distinct run-ids, and a resume/continuation is
-          // sequential (the prior invocation's terminal event is seen before
-          // the next invocation starts), so there is never a competing run-end
-          // for the same run-id that we'd need to disambiguate by invocation.
-          //
-          // run-end is terminal (complete / cancelled / error); a run that
-          // merely pauses awaiting input arrives as a separate ai-run-suspend
-          // and keeps the run live in the Tree.
-          const event = parseRunLifecycle(EVENT_RUN_END, headers, ablyMessage.serial);
-          if (event) this._tree.applyRunLifecycle(event);
+      // Reconstruct the tree via the shared decode-fold engine — the same path
+      // the View's history replay uses, so the live loop can't drift from it.
+      const event = applyWireMessage(this._tree, this._decoder, ablyMessage);
+
+      // Live-only: resolve the pending `runId` promise on a fresh run-start or
+      // a continuation run-resume. Key by the echoed `input-codec-message-id`
+      // — the mirror of the arming key on `_pendingRunStarts` (see that
+      // field's JSDoc). Every send carries at least one input, so the agent
+      // always echoes it.
+      if (event && (event.type === 'start' || event.type === 'resume')) {
+        const startedKey = getTransportHeaders(ablyMessage)[HEADER_INPUT_CODEC_MESSAGE_ID];
+        if (startedKey !== undefined) {
+          const pending = this._pendingRunStarts.get(startedKey);
+          if (pending) {
+            this._pendingRunStarts.delete(startedKey);
+            // Resolve the run handle's `runId` promise with the agent-minted id.
+            pending.resolve(event.runId);
+          }
         }
-        this._tree.emitAblyMessage(ablyMessage);
-        return;
       }
 
-      // --- Codec-decoded events ---
-      const { inputs, outputs } = this._decoder.decode(ablyMessage);
-      const headers = getTransportHeaders(ablyMessage);
-      const serial = ablyMessage.serial;
-      const runId = headers[HEADER_RUN_ID];
-
-      // Fold into the Tree's per-Run projection. The Tree's `output` event
-      // (emitted after the fold) carries these outputs to any consumer that
-      // builds a stream from them (e.g. the Vercel ChatTransport); the session
-      // no longer routes outputs itself.
-      if (inputs.length > 0 || outputs.length > 0 || runId) {
-        this._tree.applyMessage({ inputs, outputs }, headers, serial);
-      }
-
-      // Emit ably-message AFTER applyMessage so View subscribers can find
-      // the owning Run in `_lastVisibleRunIdSet`, which is refreshed by the
-      // tree 'update' events that applyMessage triggers.
+      // Emit ably-message AFTER the apply so View subscribers can find the
+      // owning Run in `_lastVisibleRunIdSet`, which is refreshed by the tree
+      // 'update' events the apply triggers.
       this._tree.emitAblyMessage(ablyMessage);
     } catch (error) {
       const cause = error instanceof Ably.ErrorInfo ? error : undefined;
@@ -437,22 +378,20 @@ class DefaultClientSession<
   /**
    * Tear down local state for a send whose channel publish failed.
    * Idempotent.
-   * @param runId - The runId of the failed send.
-   * @param options - Cleanup options.
-   * @param options.removeOptimistic - When true, delete optimistic tree
-   *   nodes for this send that haven't been acked yet (no serial). True for
-   *   a fresh send (the optimistic insert never reached the channel); false
-   *   for a continuation, which inserts no optimistic nodes.
+   * @param codecMessageIds - The codec-message-ids of the failed send's
+   *   optimistic input nodes (the client mints no run-id, so the optimistic
+   *   inserts are keyed by their codec-message-ids).
    */
-  private _cleanupFailedSend(runId: string, options: { removeOptimistic: boolean }): void {
-    if (options.removeOptimistic) {
-      // Drop the optimistic Run only if the publish never produced a
-      // server-assigned serial (i.e. nothing live observed the Run). A
-      // server-acked Run is part of the canonical channel state and must
-      // stay; the View / observers already see it.
-      const run = this._tree.getRunNode(runId);
-      if (run && run.startSerial === undefined) {
-        this._tree.delete(runId);
+  private _cleanupFailedSend(codecMessageIds: string[]): void {
+    for (const codecMessageId of codecMessageIds) {
+      // Drop the optimistic input node only if the publish never produced a
+      // server-assigned serial (i.e. nothing live observed it). A server-acked
+      // node is part of the canonical channel state and must stay; the View /
+      // observers already see it. A fresh send's optimistic inserts are input
+      // nodes (keyed by codec-message-id).
+      const node = this._tree.getNodeByCodecMessageId(codecMessageId);
+      if (node?.kind === 'input' && node.serial === undefined) {
+        this._tree.deleteByCodecMessageId(codecMessageId);
       }
     }
   }
@@ -506,20 +445,10 @@ class DefaultClientSession<
 
     const isContinuation = sendOptions?.runId !== undefined;
 
-    // Every send must carry at least one input. The only exception is a
-    // continuation under an existing runId that carries no new inputs
-    // (rare, but allowed — the run's existing input events are already on
-    // the channel).
-    if (input.length === 0 && !isContinuation) {
-      throw new Ably.ErrorInfo(
-        'unable to send; inputs array is empty (pass options.runId for continuation, or include at least one input)',
-        ErrorCode.InvalidArgument,
-        400,
-      );
-    }
-
-    const runId = sendOptions?.runId ?? crypto.randomUUID();
-    const invocationId = crypto.randomUUID();
+    // The client no longer mints run-ids. A fresh send carries no run-id (the
+    // agent mints it and echoes it on run-start); only a continuation reuses
+    // the existing run-id the caller passed.
+    const runId = sendOptions?.runId;
 
     // Spec: AIT-CT3d
     // Auto-compute parent from the visible branch tail when not explicitly
@@ -534,6 +463,7 @@ class DefaultClientSession<
     interface ItemState {
       input: TInput;
       codecMessageId: string;
+      inputEventId: string;
       headers: Record<string, string>;
       /** Inputs that reference an existing codec-message without contributing fresh local content (regenerate, tool resolutions) are wire-only — no optimistic projection fold. Fresh user-messages always fold, even when they pin their own codecMessageId. */
       isWireOnly: boolean;
@@ -583,9 +513,7 @@ class DefaultClientSession<
         ...(parent !== undefined && { parent }),
         ...(forkOf !== undefined && { forkOf }),
         ...(regenerates !== undefined && { regenerates }),
-        invocationId,
         inputEventId,
-        runContinue: isContinuation,
       });
 
       // Spec: AIT-CT3c — optimistic fold for non-wire-only inputs.
@@ -593,7 +521,7 @@ class DefaultClientSession<
         this._tree.applyMessage({ inputs: [entry], outputs: [] }, headers);
       }
 
-      items.push({ input: entry, codecMessageId, headers, isWireOnly });
+      items.push({ input: entry, codecMessageId, inputEventId, headers, isWireOnly });
 
       // Spec: AIT-CT3e — chain subsequent inputs off the previous one when
       // auto-parenting is in effect.
@@ -602,52 +530,41 @@ class DefaultClientSession<
       }
     }
 
-    // The primary trigger event is the last input — the one the agent looks
-    // up on the channel via `event-id`. It is surfaced on `ActiveRun` (and via
-    // `toInvocation()`) so the application can point an invocation at it.
-    const triggerInputEventId = items.at(-1)?.headers[HEADER_EVENT_ID] ?? '';
-    // The triggering input's codec-message-id — the handle a fresh send uses
-    // to correlate its `started` promise against the agent's run-start (which
-    // echoes it as `input-codec-message-id`). Always defined for a fresh send
-    // (which carries at least one input); undefined only for an empty-input
-    // continuation, which keys by runId instead.
-    const triggerCodecMessageId = items.at(-1)?.codecMessageId;
+    // The trigger event is the last input — the one the agent looks up on the
+    // channel via `event-id`, surfaced on `ActiveRun` (and via `toInvocation()`)
+    // so the application can point an invocation at it. Its codec-message-id is
+    // the handle the client owns at send time; the agent echoes it back on
+    // run-start as `input-codec-message-id`, and it keys the run-start tracker.
+    const triggerItem = items.at(-1);
+    if (triggerItem === undefined) {
+      // Every send must carry at least one input — only new input starts or
+      // continues a run. The loop above produced no items, so nothing was
+      // published or folded optimistically.
+      throw new Ably.ErrorInfo(
+        'unable to send; inputs array is empty (include at least one input)',
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+    const triggerInputEventId = triggerItem.inputEventId;
+    const startedKey = triggerItem.codecMessageId;
 
-    // Arm the run-start tracker. It backs the returned `ActiveRun.started`
-    // promise: the run-start handler resolves it when the agent's
-    // `ai-run-start` for this send is observed; close() rejects it if the
-    // session is torn down first. There is no deadline — `send()` resolves on
-    // publish, and callers who want to bound the run-start wait race
-    // `started` against their own timeout.
+    // Arm the run-start tracker backing the returned `ActiveRun.runId` promise.
+    // The run-start handler resolves it with the agent-minted run-id when this
+    // send's `ai-run-start` is observed; close() rejects it on teardown. No
+    // deadline — `send()` resolves on publish; callers bound the wait by racing
+    // `run.runId` against their own timeout.
     //
-    // Key by the handle the client owns at send time: the triggering input's
-    // codec-message-id, which the agent echoes back on run-start as
-    // `input-codec-message-id`. This is uniform across fresh sends and
-    // continuations — a continuation is itself an input event (tool-approval
-    // or tool-result) carrying its own codec-message-id. The sole exception
-    // is an empty-input continuation, which publishes nothing: it falls back
-    // to the reused runId (known to the caller) and resolves on the
-    // continuation run-start, which carries no `input-codec-message-id`.
-    //
-    // Any send carrying input has `triggerCodecMessageId` defined, so the
-    // `?? runId` fallback engages only for that empty-input continuation. The
-    // arm key (here) and the resolve key (the run-start handler) stay
-    // symmetric because the agent stamps `input-codec-message-id` on run-start
-    // exactly when it consumed the input from the channel — i.e. whenever it
-    // ran its input-event lookup, which is every path that has a remote client
-    // awaiting `started`. The no-lookup agent config
-    // (`inputEventLookupTimeoutMs: 0`, for in-process drivers) does not
-    // consume channel input and so has no remote `started` to satisfy.
-    // The executor runs synchronously, so the tracker entry is registered
-    // before `new Promise` returns.
-    const startedKey = triggerCodecMessageId ?? runId;
-    const started = new Promise<void>((resolve, reject) => {
+    // Key on the arming side mirrors the resolve side — see `_pendingRunStarts`
+    // for the full keying invariant. The executor runs synchronously, so the
+    // tracker entry is registered before `new Promise` returns.
+    const runIdPromise = new Promise<string>((resolve, reject) => {
       this._pendingRunStarts.set(startedKey, { resolve, reject });
     });
     // Suppress unhandled-rejection warnings for callers that never await
-    // `started`; the caller still observes the rejection if it does await.
-    started.catch(() => {
-      /* observed via run.started, if at all */
+    // `run.runId`; the caller still observes the rejection if it does await.
+    runIdPromise.catch(() => {
+      /* observed via run.runId, if at all */
     });
 
     // Publish each input in original order via the shared encoder. The
@@ -676,11 +593,12 @@ class DefaultClientSession<
         );
         this._emitter.emit('error', err);
         // The input never reached the channel — there is no run to wait on.
-        // Drop the started tracker so close() doesn't later reject an orphan.
+        // Drop the run-start tracker so close() doesn't later reject an orphan.
         this._pendingRunStarts.delete(startedKey);
-        // Continuations didn't insert optimistic nodes, so removeOptimistic
-        // is moot for them — only fresh sends need to clear their inserts.
-        this._cleanupFailedSend(runId, { removeOptimistic: !isContinuation });
+        // Continuations didn't insert optimistic nodes, so there is nothing to
+        // clear for them — only a fresh send's optimistic input nodes need
+        // removing, keyed by their codec-message-ids (the client mints no runId).
+        if (!isContinuation) this._cleanupFailedSend([...codecMessageIds]);
         throw err;
       }
     })();
@@ -688,20 +606,32 @@ class DefaultClientSession<
     // `send()` resolves once the input is published. The core never sends
     // HTTP — waking an agent is the application's concern. Callers POST
     // `run.toInvocation().toJSON()` to their endpoint if they want one woken,
-    // and await `run.started` if they need to know it was picked up.
+    // and await `run.runId` if they need to know it was picked up.
     await publishPromise;
 
     return {
-      started,
-      runId,
+      key: startedKey,
+      runId: runIdPromise,
       inputEventId: triggerInputEventId,
-      invocationId,
-      cancel: async () => this.cancel(runId),
+      // The agent mints the run-id, so a fresh run has none until run-start.
+      // Cancel synchronously by the triggering input's codec-message-id (the
+      // handle the client owns at send time, = `key`): the agent resolves it
+      // to the run once its input-event lookup completes, and buffers a cancel
+      // that arrives before then so an early cancel is honoured rather than
+      // dropped. A continuation additionally carries its known run-id so the
+      // agent can match the run directly.
+      cancel: async () => {
+        await this._publishCancel({
+          inputCodecMessageId: startedKey,
+          ...(runId !== undefined && { runId }),
+        });
+      },
       optimisticCodecMessageIds: [...codecMessageIds],
       toInvocation: () =>
+        // The invocation body carries no run-id: run identity lives on the
+        // channel (the agent mints a fresh run-id, or reads a continuation's
+        // from the triggering input event, which carries the reused run-id).
         Invocation.fromJSON({
-          runId,
-          invocationId,
           inputEventId: triggerInputEventId,
           sessionName: this._channel.name,
         }),
@@ -710,22 +640,58 @@ class DefaultClientSession<
 
   // Spec: AIT-CT7, AIT-CT7a
   async cancel(runId: string): Promise<void> {
+    return this._publishCancel({ runId });
+  }
+
+  /**
+   * Publish an `ai-cancel` signal. The agent resolves the target run by
+   * whichever identifier is present:
+   *
+   * - `runId` — a continuation, whose run-id the caller already knows.
+   * - `inputCodecMessageId` — a fresh send, whose run-id the agent mints at
+   *   run-start. The client can only key the cancel by the triggering input's
+   *   codec-message-id (the `ActiveRun.key`) it owns at send time; the agent
+   *   resolves it to the run once its input-event lookup completes, buffering
+   *   a cancel that arrives before then.
+   *
+   * Both may be present (a continuation knows its run-id AND published an
+   * input). An `event-id` is always stamped so channel rewind redelivers the
+   * cancel to a per-request / serverless agent that attaches after it was
+   * published.
+   *
+   * Publishing the cancel signal is all the core does. The consumer-facing
+   * stream (if any) lives in the layer that built it — e.g. the Vercel
+   * ChatTransport closes its stream on cancel — and the Tree's RunNode is left
+   * intact so late agent events (a cancel append, a trailing
+   * `status: cancelled`) still fold into the Run's projection.
+   * @param target - The run identifier(s) to cancel. At least one of `runId` /
+   *   `inputCodecMessageId` must be set.
+   * @param target.runId - The run-id to cancel (continuations).
+   * @param target.inputCodecMessageId - The triggering input's
+   *   codec-message-id to cancel (fresh sends, before run-start).
+   */
+  private async _publishCancel(target: { runId?: string; inputCodecMessageId?: string }): Promise<void> {
     if (this._state === ClientSessionState.CLOSED) return;
     await this._requireConnected('cancel');
     // CAST: re-check after await — close() may have been called while waiting for connect.
     if ((this._state as ClientSessionState) === ClientSessionState.CLOSED) return;
-    this._logger.debug('ClientSession.cancel();', { runId });
+    this._logger.debug('ClientSession._publishCancel();', {
+      runId: target.runId,
+      inputCodecMessageId: target.inputCodecMessageId,
+    });
+
+    const headers: Record<string, string> = {
+      // Stamp a per-cancel event-id so channel rewind redelivers this cancel
+      // to an agent that attaches after it was published.
+      [HEADER_EVENT_ID]: crypto.randomUUID(),
+    };
+    if (target.runId !== undefined) headers[HEADER_RUN_ID] = target.runId;
+    if (target.inputCodecMessageId !== undefined) headers[HEADER_INPUT_CODEC_MESSAGE_ID] = target.inputCodecMessageId;
 
     await this._channel.publish({
       name: EVENT_CANCEL,
-      extras: { ai: { transport: { [HEADER_RUN_ID]: runId } } },
+      extras: { ai: { transport: headers } },
     });
-
-    // Publishing the cancel signal is all the core does. The consumer-facing
-    // stream (if any) lives in the layer that built it — e.g. the Vercel
-    // ChatTransport closes its stream on cancel — and the Tree's RunNode is
-    // left intact so late agent events (a cancel append, a trailing
-    // `status: cancelled`) still fold into the Run's projection.
   }
 
   // Spec: AIT-CT8, AIT-CT8c, AIT-CT8d
@@ -753,7 +719,7 @@ class DefaultClientSession<
     this._emitter.off();
     for (const v of this._views) v.close();
     this._views.clear();
-    // Reject any in-flight `started` promises so callers awaiting run-start
+    // Reject any in-flight `run.runId` promises so callers awaiting run-start
     // settle rather than hang.
     if (this._pendingRunStarts.size > 0) {
       const closedErr = new Ably.ErrorInfo('unable to await run-start; session closed', ErrorCode.SessionClosed, 400);

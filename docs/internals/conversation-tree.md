@@ -1,6 +1,8 @@
 # Conversation tree
 
-The conversation tree (`src/core/transport/tree.ts`) materializes a branching conversation as a forest of **Runs**, keyed by `run-id`. It handles Run ordering and sibling grouping for edit/regenerate forks. The tree is a data structure with codec wiring - it owns the per-Run [TProjection](glossary.md#tprojection) and folds inbound events into it, but selection state and navigation (`select()`, `getSelectedIndex()`) live on the View.
+The conversation tree (`src/core/transport/tree.ts`) materializes a branching conversation as a forest of **nodes**. Each turn is two nodes: a client-owned **input node** (the user prompt, keyed by its `codec-message-id`, with no run id) and an agent-owned **reply run** (the streamed response, keyed by the agent-minted `run-id`, parented to the input node via `parentCodecMessageId`). The tree handles node ordering and sibling grouping for edit/regenerate forks. It is a data structure with codec wiring - it owns the per-node [TProjection](glossary.md#tprojection) and folds inbound events into it, but selection state and navigation (`branchSelection()`, `selectSibling()`) live on the View.
+
+Reachability is kind-blind: it walks `parentCodecMessageId` edges (input node → prior reply run, reply run → its input node, seed input → prior input), so the client no longer needs the `run-id` to thread a turn. A reply run's `run-id` is minted by the agent and observed off `ai-run-start`; the input node's id is owned by the client at send time.
 
 The tree is the single source of truth for conversation state. The view's `flattenNodes()` delegates to the tree's internal `flattenNodes()` with pagination filtering and branch selection.
 
@@ -52,7 +54,7 @@ The entry point for every inbound channel message. The decoded events arrive spl
 Three message kinds flow through here:
 
 1. **Fresh user prompt**: creates the Run if missing, folds events into the projection.
-2. **Continuation tool-resolution** (`run-continue: 'true'`): routes to the existing Run via `_msgIdToRunId`, folds events.
+2. **Continuation tool-resolution** (carries a `run-id`): routes to the existing Run by that `run-id`, folds events.
 3. **Assistant/agent events**: routes to the existing Run by runId, folds events.
 
 The optimistic send path (client publishing a fresh user-message) calls `applyMessage` with a `undefined` serial. When the server relay arrives, the same Run's startSerial gets promoted from null to a real serial, and the Run re-sorts.
@@ -67,21 +69,26 @@ The tree maintains a `structuralVersion` counter (exposed via `TreeInternal`) th
 
 ## Sibling groups and fork chains
 
-When a user calls `regenerate(msgId)` or `edit(msgId)`, a **new Run** is started whose `forkOf` points at the (runId, msgId) being replaced. Runs that fork the same target (or transitively fork each other) form a **sibling group** - alternative Runs at the same point in the conversation.
+Sibling grouping is **kind-split** - an edit produces a sibling input node, a regenerate produces a sibling reply run:
+
+- **Edit (`edit(msgId)`)**: a new **input node** whose `forkOf` points at the input node being replaced. Input nodes that fork the same target (or transitively fork each other) form a sibling group of edit versions.
+- **Regenerate (`regenerate(msgId)`)**: a new **reply run** parented to the same input node as the original. Reply runs sharing a `parentCodecMessageId` are the regenerate group - no `forkOf` is stamped on a regenerate run, since sharing the input-node parent already groups them.
+
+A sibling group never mixes kinds.
 
 ### Finding the group
 
-To find the sibling group for a Run:
+To find the sibling group for a node:
 
-1. Follow the `forkOf` chain to the **[group root](glossary.md#group-root)** - the original Run that has no `forkOf` (or whose `forkOf` target has a different parentRunId)
-2. Collect all Runs with the same `parentRunId` whose `forkOf` chain leads back to the group root
-3. Sort siblings by startSerial (newest last)
+1. Narrow on `kind`. For a reply run, the group is the reply runs sharing its `parentCodecMessageId`; for an input node, follow the `forkOf` chain to the **[group root](glossary.md#group-root)** - the original input node with no `forkOf` (or whose `forkOf` target has a different parent).
+2. Collect the members for that kind (same input-node parent for runs; same `forkOf` chain for inputs).
+3. Sort siblings by startSerial (newest last).
 
 Cycle detection guards against malformed `forkOf` chains.
 
 ### Selection
 
-Each sibling group has a selected Run (default: the latest, i.e. the most recent fork). Selection state is managed by the View - `view.select(runId, index)` changes which sibling is active. The selection is stored by the group root's runId.
+Each sibling group has a selected node (default: the latest, i.e. the most recent fork). Selection state is managed by the View - `view.selectSibling(codecMessageId, index)` changes which sibling is active. The selection is stored by the group root's key.
 
 ## Flatten: producing the visible Run chain
 
@@ -106,12 +113,12 @@ Sibling group resolution is cached per `flattenNodes()` call using a `resolvedGr
 
 The public `Tree` interface exposes:
 
-| Method                  | Returns                                          |
-| ----------------------- | ------------------------------------------------ |
-| `getRunNode(runId)`     | The `RunNode` by runId                           |
-| `getRunByMsgId(msgId)`  | The Run that owns a given msg-id                 |
-| `getSiblingRuns(runId)` | All Runs in the sibling group containing `runId` |
-| `hasSiblingRuns(runId)` | Whether the Run has alternative versions         |
+| Method                        | Returns                                                                                        |
+| ----------------------------- | ---------------------------------------------------------------------------------------------- |
+| `getRunNode(runId)`           | The `RunNode` by runId                                                                         |
+| `getNodeByCodecMessageId(id)` | The `ConversationNode` (`InputNode \| RunNode`) that owns a codec-message-id; narrow on `kind` |
+| `getSiblingNodes(key)`        | The sibling group (edit versions for an input node, regenerate runs for a reply run)           |
+| `getRegenerateGroup(runId)`   | The regenerate sibling group anchored at a codec-message-id, or `undefined`                    |
 
 The following are on the `View`, not the public `Tree` interface:
 

@@ -45,24 +45,6 @@ const uiMessageCodecImpl = {
     target,
     parent,
   }),
-  resolveToolTarget: (output: VercelOutput, projection: VercelProjection): string | undefined => {
-    // Only tool-output-style chunks are candidates for redirection — the
-    // streamText second-pass case after an approved tool runs. Other
-    // events default to whatever messageId the caller (or pipe default)
-    // assigns.
-    if (output.type !== 'tool-output-available' && output.type !== 'tool-output-error') return undefined;
-    const toolCallId = output.toolCallId;
-    for (const msg of projection.messages) {
-      for (const part of msg.parts) {
-        if (part.type !== 'dynamic-tool') continue;
-        if (part.toolCallId !== toolCallId) continue;
-        if (part.state === 'approval-responded' || part.state === 'approval-requested') {
-          return msg.id;
-        }
-      }
-    }
-    return undefined;
-  },
 };
 
 export const UIMessageCodec: Codec<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> = uiMessageCodecImpl;

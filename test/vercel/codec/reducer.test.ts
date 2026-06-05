@@ -435,6 +435,52 @@ describe('Vercel reducer', () => {
     });
   });
 
+  // -- agent tool-output attribution ----------------------------------------
+
+  describe('agent tool-output attribution by toolCallId', () => {
+    it('folds tool-output-available onto the owning message even under a different messageId', () => {
+      // The original assistant (msg-1) holds the tool call. The approved-tool
+      // continuation pass emits tool-output-available stamped with a FRESH
+      // codec-message-id (msg-2). It must fold onto msg-1 by matching toolCallId.
+      let state = seedToolCall('tc-1', 'msg-1');
+      state = fold(
+        state,
+        { type: 'tool-output-available', toolCallId: 'tc-1', output: { v: 42 }, dynamic: true },
+        meta('s2', 'msg-2'),
+      );
+
+      // No phantom message created for the fresh id.
+      expect(state.messages.map((m) => m.id)).toEqual(['msg-1']);
+      const part = state.messages[0]?.parts.find((p) => p.type === 'dynamic-tool' && p.toolCallId === 'tc-1');
+      expect(part?.type === 'dynamic-tool' && part.state).toBe('output-available');
+      expect(part?.type === 'dynamic-tool' && part.state === 'output-available' && part.output).toEqual({ v: 42 });
+    });
+
+    it('folds tool-output-error onto the owning message even under a different messageId', () => {
+      let state = seedToolCall('tc-1', 'msg-1');
+      state = fold(
+        state,
+        { type: 'tool-output-error', toolCallId: 'tc-1', errorText: 'boom', dynamic: true },
+        meta('s2', 'msg-2'),
+      );
+
+      expect(state.messages.map((m) => m.id)).toEqual(['msg-1']);
+      const part = state.messages[0]?.parts.find((p) => p.type === 'dynamic-tool' && p.toolCallId === 'tc-1');
+      expect(part?.type === 'dynamic-tool' && part.state).toBe('output-error');
+      expect(part?.type === 'dynamic-tool' && part.state === 'output-error' && part.errorText).toBe('boom');
+    });
+
+    it('drops an orphan tool-output with no matching tool call and creates no message', () => {
+      let state = init();
+      state = fold(
+        state,
+        { type: 'tool-output-available', toolCallId: 'tc-unknown', output: { v: 1 }, dynamic: true },
+        meta('s1', 'msg-2'),
+      );
+      expect(state.messages).toHaveLength(0);
+    });
+  });
+
   // -- Codec wiring --------------------------------------------------------
 
   describe('Codec wiring', () => {

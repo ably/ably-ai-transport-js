@@ -453,9 +453,9 @@ export interface ToolApprovalResponse extends CodecInputEvent {
  * constraint structurally — its `type` literal is assignable to
  * `string` — so the Vercel codec needs no implementation changes.
  *
- * No routing fields today: per-output `codecMessageId` / `parent` /
- * `forkOf` overrides are still handled via {@link Codec.resolveToolTarget};
- * those move onto this base when a concrete output needs to carry them.
+ * No routing fields today: outputs carry no per-event `codecMessageId` /
+ * `parent` / `forkOf` overrides. Those move onto this base when a concrete
+ * output needs to carry them.
  */
 export interface CodecOutputEvent {
   /** Discriminator. Codec authors pick the literal value per variant. */
@@ -497,8 +497,8 @@ export interface Codec<
   getMessages(projection: TProjection): TMessage[];
   /**
    * Wrap a TMessage as the codec's well-known {@link UserMessage} variant
-   * suitable for publishing on the `ai-input` wire. Used by the agent session's
-   * `addMessages` and `ClientSessionProvider`'s seed-message path to translate
+   * suitable for publishing on the `ai-input` wire. Used by the client session's
+   * send path and `ClientSessionProvider`'s seed-message path to translate
    * caller-provided TMessages into well-typed inputs.
    * @param message - The user's message in the codec's domain representation.
    * @returns A {@link UserMessage} that fits the codec's `TInput` union.
@@ -518,24 +518,4 @@ export interface Codec<
    * @returns A {@link Regenerate} that fits the codec's `TInput` union.
    */
   createRegenerate(target: string, parent: string): Regenerate;
-  /**
-   * Return the existing message id an output should be attributed to,
-   * based on the projection's current state. Used by `Run.pipe` to
-   * override the wire `HEADER_CODEC_MESSAGE_ID` when a tool-output event
-   * (or similar message-modifying event) emitted by `streamText`'s second
-   * pass should land on the original message that holds the matching
-   * tool call.
-   *
-   * Codecs implement the lookup over their own projection shape. The
-   * Vercel codec, for example, scans `dynamic-tool` parts in
-   * `approval-responded` / `approval-requested` state for a matching
-   * `toolCallId`.
-   *
-   * Returns `undefined` when the output has no projection-derived
-   * target (the caller's default `messageId` is used).
-   * @param output - The output about to be encoded.
-   * @param projection - The current per-run projection.
-   * @returns The target message id, or `undefined` to use the default.
-   */
-  resolveToolTarget(output: TOutput, projection: TProjection): string | undefined;
 }

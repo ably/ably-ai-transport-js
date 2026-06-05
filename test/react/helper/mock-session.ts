@@ -10,7 +10,6 @@ import type {
   BranchSelection,
   ClientSession,
   RunLifecycleEvent,
-  RunNode,
   Tree,
   View,
 } from '../../../src/core/transport/types.js';
@@ -94,44 +93,22 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
       };
     });
 
-  const initialNodes: RunNode<unknown>[] = initialMessages.map(
-    (_, i): RunNode<unknown> => ({
-      runId: `run-${String(i)}`,
-      parentRunId: i > 0 ? `run-${String(i - 1)}` : undefined,
-      parentCodecMessageId: undefined,
-      forkOf: undefined,
-      regeneratesCodecMessageId: undefined,
-      clientId: '',
-      invocationId: '',
-      status: 'complete',
-      projection: undefined,
-      startSerial: undefined,
-      endSerial: undefined,
-    }),
-  );
-
   const tree: Tree<CodecOutputEvent, unknown> = {
-    runs: vi.fn(() => initialNodes),
     getRunNode: vi.fn(),
-    getRunByCodecMessageId: vi.fn(),
-    getSiblingRuns: vi.fn(() => []),
-    hasSiblingRuns: vi.fn(() => false),
-    // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires explicit undefined return for the contract
-    getRegenerateGroup: vi.fn(() => undefined),
+    getNodeByCodecMessageId: vi.fn(),
+    getSiblingNodes: vi.fn(() => []),
     on: makeTreeOn(treeHandlers),
   };
 
   const mockRun = {
     stream: new ReadableStream(),
-    started: Promise.resolve(),
-    runId: 'run-1',
+    key: 'input-1',
+    runId: Promise.resolve('run-1'),
     inputEventId: '',
-    invocationId: 'inv-1',
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     cancel: vi.fn(() => Promise.resolve()),
     optimisticCodecMessageIds: [] as string[],
-    toInvocation: () =>
-      Invocation.fromJSON({ runId: 'run-1', invocationId: 'inv-1', inputEventId: '', sessionName: 'mock-session' }),
+    toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'mock-session' }),
   };
 
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly

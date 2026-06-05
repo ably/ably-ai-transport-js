@@ -64,5 +64,5 @@ export const createClientSession = (
  */
 export const createAgentSession = (
   options: VercelAgentSessionOptions,
-): AgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> =>
+): AgentSession<VercelOutput, VercelProjection, AI.UIMessage> =>
   createCoreAgentSession({ ...options, codec: UIMessageCodec });

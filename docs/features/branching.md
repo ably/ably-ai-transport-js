@@ -97,7 +97,7 @@ Build a sibling navigator anchored to a message:
 )}
 ```
 
-If your UI works with runIds directly (for example navigating an explicit Run tree), `view.select(runId, index)`, `view.getSelectedIndex(runId)`, and `view.getRunNode(runId)` are also available, and `session.tree.getSiblingRuns(runId)` / `session.tree.getRunByMsgId(msgId)` give direct structural access for advanced cases.
+For direct structural access (for example navigating an explicit node tree), `session.tree.getNodeByCodecMessageId(id)` resolves the owning node (an `InputNode` or a `RunNode` — narrow on `kind`), `session.tree.getSiblingNodes(key)` returns its sibling group (edit versions for an input node, regenerate runs for a reply run), and `session.tree.getRunNode(runId)` looks up a reply run by its agent-minted run id.
 
 Calling `select` updates the view's active branch and re-renders with the selected path.
 

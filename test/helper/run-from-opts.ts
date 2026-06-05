@@ -7,7 +7,7 @@
 
 import type * as Ably from 'ably';
 
-import type { AgentSession, CancelRequest, CodecInputEvent, CodecOutputEvent, Run } from '../../src/index.js';
+import type { AgentSession, CancelRequest, CodecOutputEvent, Run } from '../../src/index.js';
 import { Invocation } from '../../src/index.js';
 
 interface RunOpts<TOutput extends CodecOutputEvent> {
@@ -37,22 +37,22 @@ interface RunOpts<TOutput extends CodecOutputEvent> {
  * @param opts - Run identity (runId, invocationId, inputEventIds) plus runtime hooks.
  * @returns The created Run.
  */
-export const createRunFromOpts = <
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-  TProjection,
-  TMessage,
->(
-  session: AgentSession<TInput, TOutput, TProjection, TMessage>,
+export const createRunFromOpts = <TOutput extends CodecOutputEvent, TProjection, TMessage>(
+  session: AgentSession<TOutput, TProjection, TMessage>,
   opts: RunOpts<TOutput>,
-): Run<TInput, TOutput, TProjection, TMessage> => {
+): Run<TOutput, TProjection, TMessage> => {
   const invocation = Invocation.fromJSON({
-    runId: opts.runId,
-    invocationId: opts.invocationId ?? `${opts.runId}-inv`,
     inputEventId: opts.inputEventId ?? '',
     sessionName: 'test',
   });
+  // The invocation body no longer carries a run-id. The agent mints a fresh
+  // run-id (or reads a continuation's off the channel); tests pin both the
+  // fresh run-id and the invocation-id deterministically via the runtime
+  // overrides. A continuation test additionally delivers an input event
+  // stamped with the wire run-id, which the agent adopts over runtime.runId.
   return session.createRun(invocation, {
+    runId: opts.runId,
+    invocationId: opts.invocationId ?? `${opts.runId}-inv`,
     signal: opts.signal,
     onMessage: opts.onMessage,
     onCancelled: opts.onCancelled,

@@ -188,12 +188,13 @@ const tree = useTree<TInput, TOutput, TProjection, TMessage>({ session? } = {});
 
 **Returns:** `TreeHandle<TProjection>`
 
-| Property/Method         | Type                                                   | Description                              |
-| ----------------------- | ------------------------------------------------------ | ---------------------------------------- |
-| `getRunNode(runId)`     | `(runId: string) => RunNode<TProjection> \| undefined` | Look up a Run by runId                   |
-| `getRunByMsgId(msgId)`  | `(msgId: string) => RunNode<TProjection> \| undefined` | Resolve the Run that owns a given msg-id |
-| `getSiblingRuns(runId)` | `(runId: string) => RunNode<TProjection>[]`            | All alternative Runs at a fork point     |
-| `hasSiblingRuns(runId)` | `(runId: string) => boolean`                           | Whether to show navigation arrows        |
+| Property/Method               | Type                                                         | Description                                                                           |
+| ----------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| `getRunNode(runId)`           | `(runId: string) => RunNode<TProjection> \| undefined`       | Look up a reply run by its agent-minted runId                                         |
+| `getNodeByCodecMessageId(id)` | `(id: string) => ConversationNode<TProjection> \| undefined` | Resolve the node (`InputNode \| RunNode`) that owns a codec-message-id; narrow `kind` |
+| `getSiblingNodes(key)`        | `(key: string) => ConversationNode<TProjection>[]`           | The sibling group: edit versions for an input node, regenerate runs for a reply run   |
+
+`key` is a node key — a `RunNode.runId` or an `InputNode.codecMessageId`. `getSiblingNodes` returns a single-element array when the node has no siblings, and an empty array when `key` is unknown.
 
 Branch navigation (`select()`, `getSelectedIndex()`) and write operations (`sendMessage()`, `regenerate()`, `edit()`) are on `ViewHandle` from `useView()`, not `TreeHandle`. The tree provides structural queries that are the same regardless of which branch is selected.
 

@@ -62,9 +62,9 @@ const makeEmitter = (): MockEmitter => {
 
 interface MockRun {
   stream: ReadableStream<AI.UIMessageChunk>;
-  started: Promise<void>;
-  runId: string;
-  invocationId: string;
+  key: string;
+  runId: Promise<string>;
+  inputEventId: string;
   cancel: ReturnType<typeof vi.fn>;
   optimisticCodecMessageIds: string[];
   toInvocation: () => Invocation;
@@ -91,6 +91,9 @@ const createMockSession = (): MockSession => {
   const treeEmitter = makeEmitter();
   const sessionEmitter = makeEmitter();
   const runId = 'run-1';
+  // The triggering input's codec-message-id — the synchronous routing key the
+  // consumer stream is built on (the agent mints the run-id separately).
+  const key = 'input-1';
 
   const mockRun: MockRun = {
     // The transport no longer reads this — it builds its own stream from Tree
@@ -99,14 +102,21 @@ const createMockSession = (): MockSession => {
       // eslint-disable-next-line @typescript-eslint/no-empty-function -- inert placeholder stream
       start: () => {},
     }),
-    started: Promise.resolve(),
-    runId,
-    invocationId: 'inv-1',
+    key,
+    runId: Promise.resolve(runId),
+    inputEventId: '',
     cancel: vi.fn(),
     optimisticCodecMessageIds: [],
-    toInvocation: () => Invocation.fromJSON({ runId, invocationId: 'inv-1', inputEventId: '', sessionName: 'chat-1' }),
+    toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'chat-1' }),
     enqueue: (chunk: AI.UIMessageChunk) => {
-      treeEmitter.emit('output', { runId, codecMessageId: 'm-1', serial: 's-1', events: [chunk] });
+      // Route by the triggering input id — the key the consumer stream opens on.
+      treeEmitter.emit('output', {
+        runId,
+        inputCodecMessageId: key,
+        codecMessageId: 'm-1',
+        serial: 's-1',
+        events: [chunk],
+      });
     },
     close: () => {
       treeEmitter.emit('run', {
@@ -124,13 +134,9 @@ const createMockSession = (): MockSession => {
   };
 
   const tree = {
-    runs: vi.fn(() => []),
     getRunNode: vi.fn(),
-    getRunByCodecMessageId: vi.fn(),
-    getSiblingRuns: vi.fn(() => []),
-    hasSiblingRuns: vi.fn(() => false),
-    // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires explicit undefined return for the contract
-    getRegenerateGroup: vi.fn(() => undefined),
+    getNodeByCodecMessageId: vi.fn(),
+    getSiblingNodes: vi.fn(() => []),
     on: vi.fn(treeEmitter.on),
   } as unknown as Tree<VercelOutput, VercelProjection>;
 
@@ -247,8 +253,6 @@ describe('createChatTransport', () => {
       expect(postCalls).toHaveLength(1);
       const body = postBody();
       expect(body).toMatchObject({
-        runId: mockRun.runId,
-        invocationId: mockRun.invocationId,
         sessionName: 'chat-1',
       });
       expect(body.history).toBeUndefined();
@@ -312,8 +316,6 @@ describe('createChatTransport', () => {
 
       // The regenerate run's invocation is POSTed to wake the agent.
       expect(postBody()).toMatchObject({
-        runId: mockRun.runId,
-        invocationId: mockRun.invocationId,
         sessionName: 'chat-1',
       });
     });
@@ -530,8 +532,8 @@ describe('createChatTransport', () => {
   });
 
   describe('abort signal', () => {
-    it('wires to session.cancel(runId) for the run just produced', async () => {
-      const { session, cancel, mockRun } = createMockSession();
+    it('wires to run.cancel() for the run just produced', async () => {
+      const { session, mockRun } = createMockSession();
       const chat = createChatTransport(session);
       const abortController = new AbortController();
 
@@ -544,10 +546,11 @@ describe('createChatTransport', () => {
         abortSignal: abortController.signal,
       });
 
-      // Abort — the listener calls `void session.cancel(runId)` which is fire-and-forget
+      // Abort — the listener calls `void run.cancel()` (the run handle knows its
+      // own key / agent-minted runId) which is fire-and-forget.
       abortController.abort();
 
-      expect(cancel).toHaveBeenCalledWith(mockRun.runId);
+      expect(mockRun.cancel).toHaveBeenCalled();
 
       // Clean up
       mockRun.close();
@@ -564,7 +567,7 @@ describe('createChatTransport', () => {
       // *before* the adapter has the runId to attach a listener for. The
       // adapter must call `session.cancel(runId)` even when the signal is
       // already aborted by the time it gets a chance to look at it.
-      const { session, cancel, mockRun, view } = createMockSession();
+      const { session, mockRun, view } = createMockSession();
       const chat = createChatTransport(session);
       const abortController = new AbortController();
 
@@ -586,14 +589,14 @@ describe('createChatTransport', () => {
 
       // Simulate the user clicking Stop while sendInput is still awaiting.
       abortController.abort();
-      expect(cancel).not.toHaveBeenCalled();
+      expect(mockRun.cancel).not.toHaveBeenCalled();
 
-      // sendInput settles after the abort — by the time the adapter sees
-      // run.runId, the signal is already aborted.
+      // sendInput settles after the abort — by the time the adapter has the
+      // run handle, the signal is already aborted.
       resolveSend?.(mockRun);
       const stream = await streamPromise;
 
-      expect(cancel).toHaveBeenCalledWith(mockRun.runId);
+      expect(mockRun.cancel).toHaveBeenCalled();
 
       // Clean up
       mockRun.close();
@@ -645,7 +648,7 @@ describe('createChatTransport', () => {
       expect(send).toHaveBeenCalledOnce();
       const body = postBody();
       expect(body.custom).toBe('body');
-      expect(body.runId).toBe(mockRun.runId);
+      expect(body.inputEventId).toBe(mockRun.toInvocation().inputEventId);
       expect(postHeaders()['X-Custom']).toBe('header');
     });
 
@@ -690,7 +693,7 @@ describe('createChatTransport', () => {
       expect(regenerate).toHaveBeenCalledOnce();
       const body = postBody();
       expect(body.customBody).toBe('regen');
-      expect(body.runId).toBe(mockRun.runId);
+      expect(body.inputEventId).toBe(mockRun.toInvocation().inputEventId);
       expect(postHeaders()['X-Custom-Regen']).toBe('yes');
     });
   });
@@ -721,8 +724,6 @@ describe('createChatTransport', () => {
       // conversation from the channel, so no history/messages are POSTed.
       const body = postBody();
       expect(body).toEqual({
-        runId: mockRun.runId,
-        invocationId: mockRun.invocationId,
         inputEventId: mockRun.toInvocation().inputEventId,
         sessionName: 'chat-1',
       });

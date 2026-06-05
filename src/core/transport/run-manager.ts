@@ -9,23 +9,32 @@
 
 import type * as Ably from 'ably';
 
-import {
-  EVENT_RUN_END,
-  EVENT_RUN_RESUME,
-  EVENT_RUN_START,
-  EVENT_RUN_SUSPEND,
-  HEADER_FORK_OF,
-  HEADER_INPUT_CLIENT_ID,
-  HEADER_INPUT_CODEC_MESSAGE_ID,
-  HEADER_INVOCATION_ID,
-  HEADER_MSG_REGENERATE,
-  HEADER_PARENT,
-  HEADER_RUN_CLIENT_ID,
-  HEADER_RUN_ID,
-  HEADER_RUN_REASON,
-} from '../../constants.js';
+import { EVENT_RUN_END, EVENT_RUN_RESUME, EVENT_RUN_START, EVENT_RUN_SUSPEND } from '../../constants.js';
 import type { Logger } from '../../logger.js';
+import { buildLifecycleHeaders } from './headers.js';
 import type { RunEndReason } from './types.js';
+
+/**
+ * Per-invocation metadata carried on a run's opening lifecycle event. A
+ * continuation (re-entering an existing run) sets `continuation` and omits the
+ * structural `parent` / `forkOf` / `regenerates` fields.
+ */
+export interface StartRunMetadata {
+  /** Structural parent codec-message-id (fresh run-start only). */
+  parent?: string;
+  /** Forked user-prompt codec-message-id for an edit (fresh run-start only). */
+  forkOf?: string;
+  /** Regenerated assistant codec-message-id (fresh run-start only). */
+  regenerates?: string;
+  /** Agent-minted invocation id, carried on the lifecycle event. */
+  invocationId?: string;
+  /** ClientId of the triggering input event. */
+  inputClientId?: string;
+  /** Codec-message-id of the triggering input event. */
+  inputCodecMessageId?: string;
+  /** When true, publish `ai-run-resume` (re-entry) instead of `ai-run-start`. */
+  continuation?: boolean;
+}
 
 // ---------------------------------------------------------------------------
 // Interface
@@ -44,15 +53,7 @@ export interface RunManager {
     runId: string,
     clientId?: string,
     controller?: AbortController,
-    metadata?: {
-      parent?: string;
-      forkOf?: string;
-      regenerates?: string;
-      invocationId?: string;
-      inputClientId?: string;
-      inputCodecMessageId?: string;
-      continuation?: boolean;
-    },
+    metadata?: StartRunMetadata,
   ): Promise<AbortSignal>;
   /**
    * Suspend a run. Publishes run-suspend on the channel and drops the run's
@@ -111,15 +112,7 @@ class DefaultRunManager implements RunManager {
     runId: string,
     clientId?: string,
     externalController?: AbortController,
-    metadata?: {
-      parent?: string;
-      forkOf?: string;
-      regenerates?: string;
-      invocationId?: string;
-      inputClientId?: string;
-      inputCodecMessageId?: string;
-      continuation?: boolean;
-    },
+    metadata?: StartRunMetadata,
   ): Promise<AbortSignal> {
     this._logger?.trace('DefaultRunManager.startRun();', { runId, clientId });
 
@@ -132,40 +125,21 @@ class DefaultRunManager implements RunManager {
     // original run-start already established the run's structure, so the
     // parent / forkOf / regenerates metadata is NOT re-stamped here (doing so
     // would point the run at content within itself). The agent learned this is
-    // a continuation from the triggering input's `run-continue` marker; the
-    // re-entry is conveyed to clients by the event name, not a header echo.
+    // a continuation from the run-id on the triggering input; the re-entry is
+    // conveyed to clients by the event name, not a header echo. The
+    // invocation-id / input attribution headers are carried on both.
     const continuation = metadata?.continuation === true;
 
-    const headers: Record<string, string> = {
-      [HEADER_RUN_ID]: runId,
-      [HEADER_RUN_CLIENT_ID]: resolvedClientId,
-    };
-    if (!continuation) {
-      if (metadata?.parent !== undefined) {
-        headers[HEADER_PARENT] = metadata.parent;
-      }
-      if (metadata?.forkOf !== undefined) {
-        headers[HEADER_FORK_OF] = metadata.forkOf;
-      }
-      if (metadata?.regenerates !== undefined) {
-        headers[HEADER_MSG_REGENERATE] = metadata.regenerates;
-      }
-    }
-    // Stamp the invocation-id so the client can match it against its pending
-    // invocation and resolve the run's `started` promise. Carried on both
-    // run-start and run-resume.
-    if (metadata?.invocationId !== undefined) {
-      headers[HEADER_INVOCATION_ID] = metadata.invocationId;
-    }
-    if (metadata?.inputClientId !== undefined) {
-      headers[HEADER_INPUT_CLIENT_ID] = metadata.inputClientId;
-    }
-    // Echo the triggering input's codec-message-id so the client can correlate
-    // this lifecycle event against a send using the only id it owns at send
-    // time — without depending on a client-minted run-id or invocation-id.
-    if (metadata?.inputCodecMessageId !== undefined) {
-      headers[HEADER_INPUT_CODEC_MESSAGE_ID] = metadata.inputCodecMessageId;
-    }
+    const headers = buildLifecycleHeaders({
+      runId,
+      runClientId: resolvedClientId,
+      parent: continuation ? undefined : metadata?.parent,
+      forkOf: continuation ? undefined : metadata?.forkOf,
+      regenerates: continuation ? undefined : metadata?.regenerates,
+      invocationId: metadata?.invocationId,
+      inputClientId: metadata?.inputClientId,
+      inputCodecMessageId: metadata?.inputCodecMessageId,
+    });
 
     await this._channel.publish({
       name: continuation ? EVENT_RUN_RESUME : EVENT_RUN_START,
@@ -183,39 +157,7 @@ class DefaultRunManager implements RunManager {
     inputCodecMessageId?: string,
   ): Promise<void> {
     this._logger?.trace('DefaultRunManager.suspendRun();', { runId });
-
-    const state = this._activeRuns.get(runId);
-    const resolvedClientId = state?.clientId ?? '';
-
-    const headers: Record<string, string> = {
-      [HEADER_RUN_ID]: runId,
-      [HEADER_RUN_CLIENT_ID]: resolvedClientId,
-    };
-    // Mirror endRun: a suspend is the terminal event of the suspending
-    // invocation, so it carries the same per-invocation correlation
-    // (invocation-id) and input attribution (input-client-id,
-    // input-codec-message-id) as run-start / run-end and the invocation's
-    // output events.
-    if (invocationId !== undefined) {
-      headers[HEADER_INVOCATION_ID] = invocationId;
-    }
-    if (inputClientId !== undefined) {
-      headers[HEADER_INPUT_CLIENT_ID] = inputClientId;
-    }
-    if (inputCodecMessageId !== undefined) {
-      headers[HEADER_INPUT_CODEC_MESSAGE_ID] = inputCodecMessageId;
-    }
-
-    // Publish before dropping local state so a publish failure leaves the run
-    // in the active set.
-    await this._channel.publish({
-      name: EVENT_RUN_SUSPEND,
-      extras: { ai: { transport: headers } },
-    });
-
-    // Drop the registry entry: the process terminates on suspend, so the
-    // AbortController is gone. The resuming invocation re-registers the run.
-    this._activeRuns.delete(runId);
+    await this._publishTerminal(EVENT_RUN_SUSPEND, runId, { invocationId, inputClientId, inputCodecMessageId });
     this._logger?.debug('DefaultRunManager.suspendRun(); run suspended', { runId });
   }
 
@@ -227,39 +169,38 @@ class DefaultRunManager implements RunManager {
     inputCodecMessageId?: string,
   ): Promise<void> {
     this._logger?.trace('DefaultRunManager.endRun();', { runId, reason });
-
-    const state = this._activeRuns.get(runId);
-    const resolvedClientId = state?.clientId ?? '';
-
-    const headers: Record<string, string> = {
-      [HEADER_RUN_ID]: runId,
-      [HEADER_RUN_CLIENT_ID]: resolvedClientId,
-      [HEADER_RUN_REASON]: reason,
-    };
-    // Mirror startRun: stamp the invocation-id so the terminating run-end
-    // carries the same correlation id as the run-start and the run's
-    // assistant chunks (the client surfaces it in error diagnostics).
-    if (invocationId !== undefined) {
-      headers[HEADER_INVOCATION_ID] = invocationId;
-    }
-    if (inputClientId !== undefined) {
-      headers[HEADER_INPUT_CLIENT_ID] = inputClientId;
-    }
-    // Mirror startRun: thread the triggering input's codec-message-id through
-    // run-end too, so every event of the invocation carries the same handle.
-    if (inputCodecMessageId !== undefined) {
-      headers[HEADER_INPUT_CODEC_MESSAGE_ID] = inputCodecMessageId;
-    }
-
-    // Publish before deleting local state so that if publish fails,
-    // the run remains in the active set and can be retried or cleaned up.
-    await this._channel.publish({
-      name: EVENT_RUN_END,
-      extras: { ai: { transport: headers } },
-    });
-
-    this._activeRuns.delete(runId);
+    await this._publishTerminal(EVENT_RUN_END, runId, { reason, invocationId, inputClientId, inputCodecMessageId });
     this._logger?.debug('DefaultRunManager.endRun(); run ended', { runId, reason });
+  }
+
+  /**
+   * Publish a run's terminal lifecycle event (run-suspend or run-end) and drop
+   * its active-run entry. Both events are the suspending/ending invocation's
+   * terminal signal, carrying the same per-invocation correlation; they differ
+   * only by event name and the run-reason header (run-end). Publishes BEFORE
+   * dropping local state so a publish failure leaves the run in the active set.
+   * @param eventName - The lifecycle event to publish (run-suspend or run-end).
+   * @param runId - The run being suspended or ended.
+   * @param attribution - Per-invocation correlation and the terminal reason.
+   * @param attribution.reason - Terminal reason; set for run-end, omitted for run-suspend.
+   * @param attribution.invocationId - The invocation's id.
+   * @param attribution.inputClientId - ClientId of the triggering input event.
+   * @param attribution.inputCodecMessageId - Codec-message-id of the triggering input event.
+   */
+  private async _publishTerminal(
+    eventName: string,
+    runId: string,
+    attribution: {
+      reason?: RunEndReason;
+      invocationId?: string;
+      inputClientId?: string;
+      inputCodecMessageId?: string;
+    },
+  ): Promise<void> {
+    const resolvedClientId = this._activeRuns.get(runId)?.clientId ?? '';
+    const headers = buildLifecycleHeaders({ runId, runClientId: resolvedClientId, ...attribution });
+    await this._channel.publish({ name: eventName, extras: { ai: { transport: headers } } });
+    this._activeRuns.delete(runId);
   }
 
   getSignal(runId: string): AbortSignal | undefined {

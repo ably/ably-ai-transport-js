@@ -302,7 +302,7 @@ const _foldUserMessage = (state: VercelProjection, message: AI.UIMessage, meta: 
   // (= meta.messageId) so the Tree's _codecMessageIdToRunId index is reachable from
   // any consumer holding the UIMessage. Without this, useChat-supplied
   // domain ids leak through, and downstream lookups (view.regenerate /
-  // view.edit / view.getRunByCodecMessageId) silently miss because the tree only
+  // view.edit / tree.getNodeByCodecMessageId) silently miss because the tree only
   // indexes wire codec-message-ids.
   const targetId = meta.messageId ?? message.id;
   const aligned = message.id === targetId ? message : { ...message, id: targetId };
@@ -424,6 +424,27 @@ const _findOwner = (state: VercelProjection, codecMessageId: string, toolCallId:
   const found = _getToolPart(message, trackers, toolCallId);
   if (!found) return undefined;
   return { message, tracker: found.tracker, part: found.part };
+};
+
+/**
+ * Locate the `dynamic-tool` part for a `toolCallId` anywhere in the projection.
+ * Agent-emitted second-pass tool outputs (after an approved tool runs) are
+ * stamped with a fresh codec-message-id that differs from the assistant holding
+ * the tool call, so they can't be found via `meta.messageId` — they fold onto
+ * whichever message holds the matching tool call (created in the first pass or
+ * by an approval response).
+ * @param state - Projection to scan.
+ * @param toolCallId - The tool call to locate.
+ * @returns The owning message, tracker, and part, or `undefined` if absent.
+ */
+const _findToolPartOwner = (state: VercelProjection, toolCallId: string): OwnerLookup | undefined => {
+  for (const message of state.messages) {
+    const trackers = state.trackers.get(message.id);
+    if (!trackers) continue;
+    const found = _getToolPart(message, trackers, toolCallId);
+    if (found) return { message, tracker: found.tracker, part: found.part };
+  }
+  return undefined;
 };
 
 /**
@@ -802,6 +823,24 @@ const _foldToolOutput = (
   >,
   messageId: string,
 ): VercelProjection => {
+  // `tool-output-available` / `tool-output-error` after an approved tool runs
+  // are emitted by streamText's continuation pass under a fresh
+  // codec-message-id that differs from the assistant holding the tool call.
+  // Resolve the owning part by toolCallId across the whole projection so the
+  // output folds onto the original message. Deliberately do NOT materialise
+  // `messageId` first — that would leave a phantom empty message behind the
+  // fresh id. Drop on miss: a tool output with no matching tool call has no
+  // anchor to attach to.
+  if (chunk.type === 'tool-output-available' || chunk.type === 'tool-output-error') {
+    const owner = _findToolPartOwner(state, chunk.toolCallId);
+    if (!owner) return state;
+    owner.message.parts[owner.tracker.partIndex] = transitionToolPart(owner.part, chunk);
+    return state;
+  }
+
+  // `tool-approval-request` (first pass) creates the part on the run's own
+  // message; `tool-output-denied` transitions that same part. Both key on the
+  // stamped messageId.
   const message = _ensureMessage(state, messageId);
   const trackers = _ensureTrackers(state, messageId);
 

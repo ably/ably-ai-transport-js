@@ -1,15 +1,15 @@
 // Shared types
 export type {
   ActiveRun,
-  AddMessageOptions,
-  AddMessagesResult,
   AgentSession,
   AgentSessionOptions,
   BranchSelection,
   CancelRequest,
   ClientSession,
   ClientSessionOptions,
+  ConversationNode,
   EventsNode,
+  InputNode,
   LoadConversationOptions,
   MessageNode,
   OutputEvent,
@@ -26,13 +26,6 @@ export type {
   Tree,
   View,
 } from './types.js';
-
-// Deprecated aliases — intentional re-export of deprecated types for backwards compatibility.
-// eslint-disable-next-line @typescript-eslint/no-deprecated
-export type { TreeNode } from './types.js';
-
-// Internal tree interface (consumed by View implementations)
-export type { TreeInternal } from './tree.js';
 
 // Invocation
 export type { InvocationData } from './invocation.js';

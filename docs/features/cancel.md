@@ -9,12 +9,16 @@ Without a cancel protocol, stopping a generation requires either dropping the HT
 Cancel a specific run by ID:
 
 ```typescript
-// Cancel a specific run (returned by send/regenerate/edit)
+// Cancel a specific run (returned by send/regenerate/edit). This is the
+// preferred form: run.cancel() keys on the input's codec-message-id, which the
+// client owns synchronously, so a cancel issued before the agent has minted the
+// run id is still honoured (the agent buffers it until its run is known).
 const run = await view.send(userMessage);
 await run.cancel();
 
-// Or cancel by runId from anywhere that holds the id
-await session.cancel(run.runId);
+// Or cancel by runId from anywhere that holds the id. The agent mints the run
+// id now, so await run.runId to learn it (run.cancel() avoids this wait).
+await session.cancel(await run.runId);
 ```
 
 Each `session.cancel(runId)` call targets exactly one run. To cancel multiple runs, iterate over runIds you hold yourself (handles returned by `send()`, or runIds read off rendered message nodes).
@@ -117,11 +121,11 @@ Internally, `AbortSignal.any()` composes the external signal with the run's own 
 
 ## Cancel and close
 
-`session.close()` tears down only local state — the server keeps streaming until its runs end on their own. To stop in-progress runs before closing, call `session.cancel(runId)` for each first:
+`session.close()` tears down only local state — the server keeps streaming until its runs end on their own. To stop in-progress runs before closing, call `run.cancel()` for each first:
 
 ```typescript
 // Cancel known runs, then close
-await session.cancel(run.runId);
+await run.cancel();
 await session.close();
 ```
 

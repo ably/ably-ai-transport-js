@@ -104,8 +104,13 @@ const makeEmitter = (): MockEmitter => {
 
 interface MockRun {
   stream: ReadableStream<AI.UIMessageChunk>;
-  runId: string;
+  /** The triggering input's codec-message-id — the synchronous stream routing key. */
+  key: string;
+  runId: Promise<string>;
+  inputEventId: string;
   cancel: ReturnType<typeof vi.fn>;
+  /** The optimistic input codec-message-ids the stream may key on (empty in these mocks). */
+  optimisticCodecMessageIds: string[];
   /** Build the run's invocation pointer (the transport POSTs this to wake the agent). */
   toInvocation: () => Invocation;
   /** Emit a chunk as a Tree `output` event for this run (drives the consumer stream). */
@@ -114,38 +119,44 @@ interface MockRun {
   close: () => void;
 }
 
-const createMockRun = (runId: string, treeEmit: MockEmitter['emit']): MockRun => ({
-  // Inert placeholder — the transport builds its own stream from Tree events.
-  // eslint-disable-next-line @typescript-eslint/no-empty-function -- inert placeholder stream
-  stream: new ReadableStream<AI.UIMessageChunk>({ start: () => {} }),
-  runId,
-  cancel: vi.fn(),
-  toInvocation: () =>
-    Invocation.fromJSON({ runId, invocationId: `${runId}-inv`, inputEventId: '', sessionName: 'chat-1' }),
-  enqueue: (chunk: AI.UIMessageChunk) => {
-    treeEmit('output', { runId, codecMessageId: 'm-1', serial: 's-1', events: [chunk] });
-  },
-  close: () => {
-    treeEmit('run', {
-      type: 'end',
-      runId,
-      clientId: '',
-      invocationId: `${runId}-inv`,
-      serial: 's-1',
-      reason: 'complete',
-    });
-  },
-});
+const createMockRun = (runId: string, treeEmit: MockEmitter['emit']): MockRun => {
+  // The consumer stream routes purely by the triggering input's codec-message-id
+  // (the agent mints the run-id separately); key it per run.
+  const key = `${runId}-input`;
+  return {
+    // Inert placeholder — the transport builds its own stream from Tree events.
+    // eslint-disable-next-line @typescript-eslint/no-empty-function -- inert placeholder stream
+    stream: new ReadableStream<AI.UIMessageChunk>({ start: () => {} }),
+    key,
+    runId: Promise.resolve(runId),
+    inputEventId: '',
+    cancel: vi.fn(),
+    optimisticCodecMessageIds: [],
+    toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'chat-1' }),
+    enqueue: (chunk: AI.UIMessageChunk) => {
+      treeEmit('output', { runId, inputCodecMessageId: key, codecMessageId: 'm-1', serial: 's-1', events: [chunk] });
+    },
+    close: () => {
+      treeEmit('run', {
+        type: 'end',
+        runId,
+        clientId: '',
+        invocationId: `${runId}-inv`,
+        serial: 's-1',
+        reason: 'complete',
+      });
+    },
+  };
+};
 
 const createMockTree = (treeEmitter: MockEmitter) =>
   ({
     flattenNodes: vi.fn(() => []),
-    getSiblingRuns: vi.fn(() => []),
-    hasSiblingRuns: vi.fn(() => false),
+    getSiblingNodes: vi.fn(() => []),
     getSelectedIndex: vi.fn(() => 0),
     select: vi.fn(),
     getRunNode: vi.fn(),
-    getRunByCodecMessageId: vi.fn(),
+    getNodeByCodecMessageId: vi.fn(),
     on: vi.fn(treeEmitter.on),
   }) as unknown as Tree<VercelOutput, VercelProjection>;
 
@@ -161,7 +172,7 @@ const createMockSession = () => {
   const view = {
     flattenNodes: vi.fn(() => []),
     getMessages: vi.fn(() => []),
-    getRunByCodecMessageId: vi.fn(),
+    getNodeByCodecMessageId: vi.fn(),
     sendInput: send,
     regenerate: vi.fn(),
     edit: vi.fn(),
@@ -199,7 +210,7 @@ const createMultiRunMockSession = () => {
   const view = {
     flattenNodes: vi.fn(() => []),
     getMessages: vi.fn(() => []),
-    getRunByCodecMessageId: vi.fn(),
+    getNodeByCodecMessageId: vi.fn(),
     sendInput: send,
     regenerate: vi.fn(),
     edit: vi.fn(),

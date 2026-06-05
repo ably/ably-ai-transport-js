@@ -36,7 +36,7 @@ import { createRunFromOpts } from '../../helper/run-from-opts.js';
 // ---------------------------------------------------------------------------
 
 describe('useChat error propagation', () => {
-  let agentSession: AgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> | undefined;
+  let agentSession: AgentSession<VercelOutput, VercelProjection, AI.UIMessage> | undefined;
   let clientSession: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> | undefined;
   let chatTransport: ChatTransport | undefined;
 

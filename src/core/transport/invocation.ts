@@ -16,12 +16,17 @@
  * ```
  *
  * The body carries only what the agent needs out-of-band before the channel
- * is observable: identifiers (`runId`, `invocationId`), the session/channel
- * name, the `inputEventId` that triggered the invocation. Per-message metadata — `clientId`, `parent`, `forkOf`,
- * continuation flag — lives on the channel and is resolved by the agent from
- * the triggering input event, not from the body. The `inputClientId` the
- * agent re-stamps on its own publishes comes from the publisher's Ably
- * `clientId` on the matched input event, not from a body field.
+ * is observable: the session/channel name and the `inputEventId` that triggered
+ * the invocation. The agent mints the `invocationId` itself (one per HTTP
+ * request) and returns it on the HTTP response, so it is not a body field. Run
+ * identity also lives on the channel: the agent mints the `runId` for a fresh
+ * run and reads the existing `runId` off the triggering input event for a
+ * continuation — so the body carries no run-id either. Per-message metadata —
+ * `clientId`, `parent`, `forkOf`, continuation status — likewise lives on the
+ * channel and is resolved by the agent from the triggering input event, not
+ * from the body. The `inputClientId` the agent re-stamps on its own publishes
+ * comes from the publisher's Ably `clientId` on the matched input event, not
+ * from a body field.
  */
 
 // ---------------------------------------------------------------------------
@@ -33,14 +38,11 @@
  * transport's HTTP POST to the agent endpoint.
  */
 export interface InvocationData {
-  /** Identifier for the run this invocation creates or continues. */
-  runId: string;
-  /** Identifier for this specific invocation under the run. The agent correlates client-published events on the channel by this id. */
-  invocationId: string;
   /**
    * Identifier for the specific input event on the channel that triggered
    * this invocation. The agent locates the event via the `event-id`
-   * header.
+   * header. Its wire headers carry the run-id for a continuation (absent for
+   * a fresh run), so run identity is resolved from the channel, not the body.
    */
   inputEventId: string;
   /** Logical name of the session (chat) — used as the Ably channel name. */
@@ -58,21 +60,16 @@ export interface InvocationData {
  */
 // Spec: AIT-ST13
 export class Invocation {
-  /** Identifier for the run this invocation creates. */
-  readonly runId: string;
-  /** Identifier for this specific invocation under the run. */
-  readonly invocationId: string;
   /**
    * Identifier for the specific input event on the channel that triggered
-   * this invocation.
+   * this invocation. Run identity is resolved from that event's wire headers
+   * (or minted), not from the body.
    */
   readonly inputEventId: string;
   /** Logical name of the session (chat). Used as the Ably channel name. */
   readonly sessionName: string;
 
   private constructor(data: InvocationData) {
-    this.runId = data.runId;
-    this.invocationId = data.invocationId;
     this.inputEventId = data.inputEventId;
     this.sessionName = data.sessionName;
   }
@@ -94,8 +91,6 @@ export class Invocation {
    */
   toJSON(): InvocationData {
     return {
-      runId: this.runId,
-      invocationId: this.invocationId,
       inputEventId: this.inputEventId,
       sessionName: this.sessionName,
     };

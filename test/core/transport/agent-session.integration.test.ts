@@ -29,7 +29,6 @@ import {
   HEADER_INPUT_CLIENT_ID,
   HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
-  HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
@@ -54,7 +53,7 @@ const getHeaders = (msg: Ably.InboundMessage): Record<string, string> => ({
   ...getCodecHeaders(msg),
 });
 
-type AgentSessionT = AgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+type AgentSessionT = AgentSession<VercelOutput, VercelProjection, AI.UIMessage>;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -191,7 +190,7 @@ describe('AgentSession integration', () => {
     // invocation. A second invocation triggered by an input from a
     // different publisher stamps the new value while `runClientId` (the
     // run owner) stays the same. The continuation is materialised as an
-    // `ai-run-resume` (the triggering input carried `run-continue: 'true'`),
+    // `ai-run-resume` (the triggering input carried a wire run-id),
     // not a second `ai-run-start`.
     const channelName = uniqueChannelName('st-input-client-id');
     const serverClient = ablyRealtimeClient();
@@ -243,8 +242,9 @@ describe('AgentSession integration', () => {
      * @param opts.invocationId - Invocation identifier the agent uses.
      * @param opts.codecMessageId - `codec-message-id` for the published input.
      * @param opts.streamArgs - Forwarded to `textResponseStream` for the agent's reply.
-     * @param opts.continuation - When true, marks the input `run-continue` so the
+     * @param opts.continuation - When true, stamps the run-id on the input wire so the
      *   agent re-enters the run and publishes `ai-run-resume` rather than `ai-run-start`.
+     *   A fresh send carries no wire run-id (the agent mints it on run-start).
      */
     const runWithInput = async (opts: {
       publisher: Ably.Realtime;
@@ -258,11 +258,11 @@ describe('AgentSession integration', () => {
       const publisherChannel = opts.publisher.channels.get(channelName);
       const headers = buildTransportHeaders({
         role: 'user',
-        runId: opts.runId,
+        // A continuation stamps the reused run-id on the wire; a fresh send
+        // carries none, signalling the agent to mint one and open the run.
+        ...(opts.continuation ? { runId: opts.runId } : {}),
         codecMessageId: opts.codecMessageId,
-        invocationId: opts.invocationId,
         inputEventId,
-        ...(opts.continuation ? { runContinue: true } : {}),
       });
       const encoder = UIMessageCodec.createEncoder(publisherChannel, { extras: { headers } });
       const userInput = UIMessageCodec.createUserMessage({
@@ -309,7 +309,7 @@ describe('AgentSession integration', () => {
     await twoEnds;
 
     // The fresh first invocation opens the run with ai-run-start; the
-    // continuation (inv-b, input marked run-continue) re-enters it with
+    // continuation (inv-b, input carries the wire run-id) re-enters it with
     // ai-run-resume.
     const startMsgs = lifecycleMessages.filter((m) => m.name === EVENT_RUN_START);
     const resumeMsgs = lifecycleMessages.filter((m) => m.name === EVENT_RUN_RESUME);
@@ -648,74 +648,6 @@ describe('AgentSession integration', () => {
     expect(text2?.text).toBe('Shared response');
   });
 
-  it('addMessages returns codec-message-ids and explicit parent links assistant', async () => {
-    const channelName = uniqueChannelName('st-add-msgs');
-    const serverClient = ablyRealtimeClient();
-    const subClient = ablyRealtimeClient();
-    const subChannel = subClient.channels.get(channelName);
-
-    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
-      client: serverClient,
-      channelName,
-      codec: UIMessageCodec,
-    });
-    await session.connect();
-
-    const rawMessages: Ably.InboundMessage[] = [];
-    let resolveFinish: () => void;
-    const gotFinish = new Promise<void>((r) => {
-      resolveFinish = r;
-    });
-
-    const decoder = UIMessageCodec.createDecoder();
-    await subChannel.subscribe((msg) => {
-      rawMessages.push(msg);
-      const { outputs } = decoder.decode(msg);
-      if (outputs.some((e) => e.type === 'finish')) resolveFinish();
-    });
-
-    const run = createRunFromOpts(session, { runId: 'run-add-1' });
-    await run.start();
-
-    const userMessage: AI.UIMessage = {
-      id: 'user-msg-1',
-      role: 'user',
-      parts: [{ type: 'text', text: 'What is the weather?' }],
-    };
-    const { codecMessageIds } = await run.addMessages([
-      {
-        kind: 'message',
-        message: userMessage,
-        codecMessageId: crypto.randomUUID(),
-        parentId: undefined,
-        forkOf: undefined,
-        headers: {},
-        serial: undefined,
-      },
-    ]);
-
-    await run.pipe(textResponseStream('msg-reply-1', 'text-reply-1', 'Sunny!'), {
-      parent: codecMessageIds.at(-1),
-    });
-    await run.end('complete');
-
-    await gotFinish;
-
-    const userRoleMsg = rawMessages.find((m) => getHeaders(m)[HEADER_ROLE] === 'user');
-    expect(userRoleMsg).toBeDefined();
-    if (!userRoleMsg) return;
-    const userHeaders = getHeaders(userRoleMsg);
-    expect(userHeaders[HEADER_RUN_ID]).toBe('run-add-1');
-    const userCodecMessageId = userHeaders[HEADER_CODEC_MESSAGE_ID];
-    expect(userCodecMessageId).toBeDefined();
-
-    const assistantMsg = rawMessages.find((m) => getHeaders(m)[HEADER_ROLE] === 'assistant');
-    expect(assistantMsg).toBeDefined();
-    if (!assistantMsg) return;
-    const assistantHeaders = getHeaders(assistantMsg);
-    expect(assistantHeaders[HEADER_PARENT]).toBe(userCodecMessageId);
-  });
-
   it('invokes onError with ChannelContinuityLost when the channel detaches', async () => {
     const channelName = uniqueChannelName('st-continuity');
     const serverClient = ablyRealtimeClient();
@@ -823,10 +755,10 @@ describe('AgentSession integration', () => {
    * tests in this file cover). The lookup must pick the message up as
    * it arrives live and resolve `run.start()`.
    *
-   * Pre-allocating the runId / invocationId is what makes this
+   * Pre-allocating the runId / inputEventId is what makes this
    * orderable: the agent can stand up its run with known identifiers
    * and call `start()` first, then the publisher publishes a message
-   * tagged with the same invocation-id.
+   * tagged with the same inputEventId.
    */
   it('collects an input event that arrives live after the lookup is registered', async () => {
     const channelName = uniqueChannelName('st-live-lookup');
@@ -843,14 +775,12 @@ describe('AgentSession integration', () => {
     await session.connect();
 
     const runId = crypto.randomUUID();
-    const invocationId = crypto.randomUUID();
     const codecMessageId = crypto.randomUUID();
     const text = 'Live arrival';
 
     const inputEventId = crypto.randomUUID();
     const serverRun = createRunFromOpts(session, {
       runId,
-      invocationId,
       inputEventId: inputEventId,
     });
 
@@ -866,7 +796,7 @@ describe('AgentSession integration', () => {
     // a few hundred ms is safe.
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
     const publisherChannel = publisherClient.channels.get(channelName);
-    const headers = buildTransportHeaders({ role: 'user', runId, codecMessageId, invocationId, inputEventId });
+    const headers = buildTransportHeaders({ role: 'user', runId, codecMessageId, inputEventId });
     const encoder = UIMessageCodec.createEncoder(publisherChannel, { extras: { headers } });
     const userInput = UIMessageCodec.createUserMessage({
       id: codecMessageId,
@@ -880,7 +810,6 @@ describe('AgentSession integration', () => {
     expect(serverRun.view.messages).toHaveLength(1);
     const found = serverRun.view.messages[0];
     expect(found?.codecMessageId).toBe(codecMessageId);
-    expect(found?.headers[HEADER_INVOCATION_ID]).toBe(invocationId);
     expect(found?.message.parts[0]).toEqual({ type: 'text', text });
 
     await serverRun.end('complete');
@@ -889,16 +818,18 @@ describe('AgentSession integration', () => {
   /**
    * Scenario: multi-message `send([m1, m2])` round-trip.
    *
-   * The client publishes two user messages on the channel under a single
-   * invocation-id (each as its own Ably message). The agent's
-   * `lookupInputEvents` must collect both before resolving, surface them in
-   * `run.view.messages` ordered by publish order, then the agent can pipe
-   * an assistant response that the client receives.
+   * In the two-node model the client publishes each user message as its own
+   * run-less input node (chained by `parent`). The agent's `start()` lookup
+   * collects the primary trigger (the last message); the full prompt chain is
+   * reconstructed via `loadConversation()`, which walks the input nodes'
+   * structural parent chain and folds each, surfacing both messages in publish
+   * order on `run.messages`. The agent then pipes an assistant response that
+   * the client receives.
    *
    * This is the regression test for PR #90: previously the lookup settled
    * on the first matching arrival and dropped subsequent messages.
    */
-  it('collects all messages in a multi-message send before run.start() resolves', async () => {
+  it('reconstructs all messages of a multi-message send via loadConversation', async () => {
     // Lazy-import to keep the existing test imports above stable.
     const { createClientSession } = await import('../../../src/core/transport/client-session.js');
     const channelName = uniqueChannelName('st-multi-msg');
@@ -940,20 +871,26 @@ describe('AgentSession integration', () => {
         },
       ]);
 
+      // The agent is the run-id authority: it mints the reply run-id and
+      // drives off the client's input event. The client's `run.runId` resolves
+      // to this minted id once run-start lands.
+      const mintedRunId = crypto.randomUUID();
       const serverRun = createRunFromOpts(session, {
-        runId: activeRun.runId,
-        invocationId: activeRun.invocationId,
+        runId: mintedRunId,
         inputEventId: activeRun.inputEventId,
       });
       await serverRun.start();
+      const runId = await activeRun.runId;
+      expect(runId).toBe(mintedRunId);
       // start() only collects the primary trigger event (the last message of
-      // the send). The non-trigger messages are read by loadProjection() from
-      // channel.history(), which is eventually consistent — so retry until
-      // both have been indexed rather than asserting after a single read.
+      // the send). The full prompt chain — both run-less input nodes — is
+      // reconstructed by loadConversation(), which reads channel.history()
+      // (eventually consistent) and walks the input nodes' parent chain. Retry
+      // until both have been indexed rather than asserting after a single read.
       let messages = serverRun.messages;
       await vi.waitFor(
         async () => {
-          await serverRun.loadProjection();
+          await serverRun.loadConversation();
           messages = serverRun.messages;
           expect(messages).toHaveLength(2);
         },
@@ -978,10 +915,10 @@ describe('AgentSession integration', () => {
           reject(new Error('timed out collecting run outputs'));
         }, 10_000);
         const unsubOutput = clientSession.tree.on('output', (e) => {
-          if (e.runId === activeRun.runId) events.push(...e.events);
+          if (e.runId === runId) events.push(...e.events);
         });
         const unsubRun = clientSession.tree.on('run', (e) => {
-          if (e.runId === activeRun.runId && e.type === 'end') {
+          if (e.runId === runId && e.type === 'end') {
             clearTimeout(timer);
             unsubOutput();
             unsubRun();

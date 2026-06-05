@@ -20,25 +20,20 @@ Element.prototype.scrollIntoView = () => {};
 
 let setMockViewMessages: ((messages: AI.UIMessage[]) => void) | null = null;
 
-const emptyEventStream = (): ReadableStream<VercelOutput> =>
-  new ReadableStream<VercelOutput>({
-    start: (controller) => {
-      controller.close();
-    },
-  });
-
 const mockSendMessage = vi.fn(
   (_messages: AI.UIMessage | AI.UIMessage[], _opts?: SendOptions): Promise<ActiveRun> =>
     Promise.resolve({
-      stream: emptyEventStream(),
-      started: Promise.resolve(),
-      runId: 'run-1',
-      invocationId: 'inv-1',
+      // The triggering input's codec-message-id — the synchronous routing
+      // handle the client owns the moment it publishes.
+      key: 'input-1',
+      // The agent mints the run-id now, so it resolves asynchronously once
+      // `ai-run-start` is observed. A fresh send omits run-id from the
+      // invocation pointer, leaving the agent to mint it.
+      runId: Promise.resolve('run-1'),
       inputEventId: 'ev-1',
       cancel: async () => {},
       optimisticCodecMessageIds: [],
-      toInvocation: () =>
-        Invocation.fromJSON({ runId: 'run-1', invocationId: 'inv-1', inputEventId: 'ev-1', sessionName: 'demo' }),
+      toInvocation: () => Invocation.fromJSON({ inputEventId: 'ev-1', sessionName: 'demo' }),
     }),
 );
 
@@ -112,11 +107,12 @@ describe('<Chat>', () => {
   beforeEach(() => {
     mockSendMessage.mockClear();
     // The demo wakes the agent by POSTing the invocation after each send.
-    // Stub fetch so that POST succeeds rather than hitting the network.
+    // Stub fetch so that POST succeeds rather than hitting the network; the
+    // agent route returns the minted invocation-id, which wakeAgent reads.
     vi.stubGlobal(
       'fetch',
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-      vi.fn(() => Promise.resolve(new Response(undefined, { status: 200 }))),
+      vi.fn(() => Promise.resolve(Response.json({ invocationId: 'inv-1' }))),
     );
   });
 

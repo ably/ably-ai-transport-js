@@ -1,15 +1,15 @@
 // Core transport
 export type {
   ActiveRun,
-  AddMessageOptions,
-  AddMessagesResult,
   AgentSession,
   AgentSessionOptions,
   BranchSelection,
   CancelRequest,
   ClientSession,
   ClientSessionOptions,
+  ConversationNode,
   EventsNode,
+  InputNode,
   InvocationData,
   LoadConversationOptions,
   MessageNode,
@@ -27,10 +27,6 @@ export type {
   Tree,
   View,
 } from './core/transport/index.js';
-
-// Deprecated aliases — intentional re-export of deprecated types for backwards compatibility.
-// eslint-disable-next-line @typescript-eslint/no-deprecated
-export type { TreeNode } from './core/transport/index.js';
 export { buildTransportHeaders, createAgentSession, createClientSession, Invocation } from './core/transport/index.js';
 
 // Core codec
@@ -80,7 +76,6 @@ export {
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
-  HEADER_RUN_CONTINUE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
   HEADER_STATUS,

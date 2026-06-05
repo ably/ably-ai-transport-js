@@ -47,8 +47,8 @@ const makeEmitter = (): {
 
 interface MockSession {
   session: VercelSession;
-  /** Emit a Tree `output` event. */
-  output: (runId: string, events: VercelOutput[]) => void;
+  /** Emit a Tree `output` event, optionally carrying a triggering input-codec-message-id. */
+  output: (runId: string, events: VercelOutput[], inputCodecMessageId?: string) => void;
   /** Emit a Tree `run` run-end event with the given reason. */
   runEnd: (runId: string, reason: string) => void;
   /** Emit a Tree `run` run-suspend event. */
@@ -69,8 +69,8 @@ const createMockSession = (): MockSession => {
 
   return {
     session,
-    output: (runId, events) => {
-      treeEmitter.emit('output', { runId, codecMessageId: 'm-1', serial: 's-1', events });
+    output: (runId, events, inputCodecMessageId) => {
+      treeEmitter.emit('output', { runId, inputCodecMessageId, codecMessageId: 'm-1', serial: 's-1', events });
     },
     runEnd: (runId, reason) => {
       treeEmitter.emit('run', {
@@ -116,23 +116,53 @@ const drain = async (stream: ReadableStream<VercelOutput>): Promise<VercelOutput
 // ---------------------------------------------------------------------------
 
 describe('createRunOutputStream', () => {
-  it('enqueues output events for the matching run and closes on a terminal chunk', async () => {
+  it('enqueues output events for the matching input and closes on a terminal chunk', async () => {
     const mock = createMockSession();
-    const { stream } = createRunOutputStream(mock.session, 'run-1');
+    const { stream } = createRunOutputStream(mock.session, Promise.resolve('run-1'), 'u-1');
 
-    mock.output('run-1', [textDelta('hel'), textDelta('lo')]);
-    mock.output('run-1', [finish()]);
+    mock.output('run-1', [textDelta('hel'), textDelta('lo')], 'u-1');
+    mock.output('run-1', [finish()], 'u-1');
 
     const events = await drain(stream);
     expect(events.map((e) => e.type)).toEqual(['text-delta', 'text-delta', 'finish']);
   });
 
-  it('ignores output events for other runs', async () => {
+  it('ignores output events for other inputs', async () => {
     const mock = createMockSession();
-    const { stream } = createRunOutputStream(mock.session, 'run-1');
+    const { stream } = createRunOutputStream(mock.session, Promise.resolve('run-1'), 'u-1');
 
-    mock.output('run-2', [textDelta('nope')]);
-    mock.output('run-1', [finish()]);
+    mock.output('run-1', [textDelta('nope')], 'u-2');
+    mock.output('run-1', [finish()], 'u-1');
+
+    const events = await drain(stream);
+    expect(events.map((e) => e.type)).toEqual(['finish']);
+  });
+
+  it('routes by input-codec-message-id independently of the runId', async () => {
+    const mock = createMockSession();
+    // Open the stream keyed by the triggering input id, with a runId promise
+    // the agent resolves once it mints its own run-id.
+    const { stream } = createRunOutputStream(mock.session, Promise.resolve('run-agent'), 'u-1');
+
+    // An output under a different (agent-minted) runId still routes here
+    // because it carries the matching input-codec-message-id.
+    mock.output('run-agent', [textDelta('hi')], 'u-1');
+    // An output for a different input is ignored even though the runId matches.
+    mock.output('run-agent', [textDelta('nope')], 'u-2');
+    mock.output('run-agent', [finish()], 'u-1');
+
+    const events = await drain(stream);
+    expect(events.map((e) => e.type)).toEqual(['text-delta', 'finish']);
+  });
+
+  it('ignores an output carrying no input-codec-message-id', async () => {
+    const mock = createMockSession();
+    const { stream } = createRunOutputStream(mock.session, Promise.resolve('run-1'), 'u-1');
+
+    // Routing is purely by input id now; an output with no input id (e.g. a
+    // local fold with no wire echo yet) does not route to this stream.
+    mock.output('run-1', [textDelta('orphan')]);
+    mock.output('run-1', [finish()], 'u-1');
 
     const events = await drain(stream);
     expect(events.map((e) => e.type)).toEqual(['finish']);
@@ -140,13 +170,15 @@ describe('createRunOutputStream', () => {
 
   it('does not close on a run-suspend but closes on a terminal run-end', async () => {
     const mock = createMockSession();
-    const { stream } = createRunOutputStream(mock.session, 'run-1');
+    const { stream } = createRunOutputStream(mock.session, Promise.resolve('run-1'), 'u-1');
+    // The run-end safety-net keys on the resolved runId; let the promise settle.
+    await Promise.resolve();
 
-    mock.output('run-1', [textDelta('partial')]);
+    mock.output('run-1', [textDelta('partial')], 'u-1');
     // A run-suspend (e.g. awaiting a tool result) must NOT close the consumer
     // stream — the run continues.
     mock.runSuspend('run-1');
-    mock.output('run-1', [textDelta('more')]);
+    mock.output('run-1', [textDelta('more')], 'u-1');
     // A terminal run-end closes the stream as a safety net.
     mock.runEnd('run-1', 'complete');
 
@@ -156,7 +188,7 @@ describe('createRunOutputStream', () => {
 
   it('errors the stream when the session emits an error', async () => {
     const mock = createMockSession();
-    const { stream } = createRunOutputStream(mock.session, 'run-1');
+    const { stream } = createRunOutputStream(mock.session, Promise.resolve('run-1'), 'u-1');
 
     const reason = new Ably.ErrorInfo('channel continuity lost', ErrorCode.SessionSubscriptionError, 500);
     mock.error(reason);
@@ -166,7 +198,7 @@ describe('createRunOutputStream', () => {
 
   it('close() is idempotent and ends the stream', async () => {
     const mock = createMockSession();
-    const { stream, close } = createRunOutputStream(mock.session, 'run-1');
+    const { stream, close } = createRunOutputStream(mock.session, Promise.resolve('run-1'), 'u-1');
 
     close();
     close();
@@ -177,7 +209,7 @@ describe('createRunOutputStream', () => {
 
   it('error() settles the stream and a later close() is a no-op', async () => {
     const mock = createMockSession();
-    const { stream, close, error } = createRunOutputStream(mock.session, 'run-1');
+    const { stream, close, error } = createRunOutputStream(mock.session, Promise.resolve('run-1'), 'u-1');
 
     const reason = new Ably.ErrorInfo('post failed', ErrorCode.SessionSubscriptionError, 500);
     error(reason);
@@ -189,11 +221,11 @@ describe('createRunOutputStream', () => {
 
   it('output and run-end after settling are ignored', async () => {
     const mock = createMockSession();
-    const { stream, close } = createRunOutputStream(mock.session, 'run-1');
+    const { stream, close } = createRunOutputStream(mock.session, Promise.resolve('run-1'), 'u-1');
 
     close();
     // Late events must not throw against the closed controller.
-    mock.output('run-1', [textDelta('late')]);
+    mock.output('run-1', [textDelta('late')], 'u-1');
     mock.runEnd('run-1', 'complete');
 
     const events = await drain(stream);

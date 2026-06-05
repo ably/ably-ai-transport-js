@@ -52,15 +52,27 @@ export interface RunOutputStream {
 }
 
 /**
- * Create a consumer-facing output stream for `runId`, sourced from the
- * session Tree's events. See the module docs for close/error semantics. The
- * returned `close`/`error` let the caller settle the stream for conditions the
- * Tree doesn't surface (local cancel, POST failure).
+ * Create a consumer-facing output stream for a send, sourced from the session
+ * Tree's events. See the module docs for close/error semantics. The returned
+ * `close`/`error` let the caller settle the stream for conditions the Tree
+ * doesn't surface (local cancel, POST failure).
+ *
+ * Outputs route PURELY by the triggering input's codec-message-id — the key the
+ * client owns from send time, before the agent mints the runId. The agent's
+ * minted runId is supplied as a promise so the run-end safety-net can still
+ * close the stream once it resolves.
  * @param session - The Vercel client session whose Tree to observe.
- * @param runId - The run whose outputs to project.
+ * @param runId - The agent-minted runId, resolved when run-start is observed.
+ *   Used only by the run-end safety-net; routing keys on `inputCodecMessageId`.
+ * @param inputCodecMessageId - The triggering input's codec-message-id. An
+ *   output routes to this stream when it carries this id.
  * @returns The stream and its external settle handles.
  */
-export const createRunOutputStream = (session: VercelSession, runId: string): RunOutputStream => {
+export const createRunOutputStream = (
+  session: VercelSession,
+  runId: Promise<string>,
+  inputCodecMessageId: string,
+): RunOutputStream => {
   const holder: { controller?: ReadableStreamDefaultController<VercelOutput> } = {};
   // ReadableStream's start() runs synchronously, so the controller is captured
   // before the constructor returns.
@@ -82,35 +94,52 @@ export const createRunOutputStream = (session: VercelSession, runId: string): Ru
     );
   }
 
+  // The agent mints the runId; learn it (for the run-end safety-net) when the
+  // promise resolves. Fire-and-forget: the stream opens on the input key, so a
+  // never-resolving runId only forgoes the safety-net, not normal close.
+  let resolvedRunId: string | undefined;
+  // Best-effort: failure only disables the run-end safety-net; normal close is
+  // the terminal chunk. `void` discards the promise (no await needed here).
+  void runId.then(
+    (id) => {
+      resolvedRunId = id;
+    },
+    () => {
+      /* session closed before run-start; safety-net stays disarmed */
+    },
+  );
+
   let settled = false;
   const teardown = (): void => {
     for (const unsub of unsubscribe) unsub();
     unsubscribe.length = 0;
   };
-  const close = (): void => {
+  // Settle the stream at most once: run the controller action (close/error),
+  // swallow the throw if the consumer already cancelled, then tear down.
+  const settle = (action: () => void): void => {
     if (settled) return;
     settled = true;
     try {
-      controller.close();
+      action();
     } catch {
       /* consumer already cancelled the stream */
     }
     teardown();
   };
+  const close = (): void => {
+    settle(() => {
+      controller.close();
+    });
+  };
   const error = (reason: Ably.ErrorInfo): void => {
-    if (settled) return;
-    settled = true;
-    try {
+    settle(() => {
       controller.error(reason);
-    } catch {
-      /* consumer already cancelled the stream */
-    }
-    teardown();
+    });
   };
 
   unsubscribe.push(
     session.tree.on('output', (event) => {
-      if (event.runId !== runId) return;
+      if (event.inputCodecMessageId !== inputCodecMessageId) return;
       for (const output of event.events) {
         try {
           controller.enqueue(output);
@@ -126,8 +155,9 @@ export const createRunOutputStream = (session: VercelSession, runId: string): Ru
     }),
     session.tree.on('run', (event) => {
       // run-end is always terminal now; a run-suspend (event.type === 'suspend')
-      // keeps the core run alive and must not close the consumer stream.
-      if (event.type === 'end' && event.runId === runId) {
+      // keeps the core run alive and must not close the consumer stream. Match
+      // against the resolved runId once the agent has minted it.
+      if (event.type === 'end' && resolvedRunId !== undefined && event.runId === resolvedRunId) {
         close();
       }
     }),

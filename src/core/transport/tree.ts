@@ -342,6 +342,59 @@ export class DefaultTree<
     if (idx !== -1) this._sortedNodes.splice(idx, 1);
   }
 
+  /**
+   * Insert a freshly-created node into the primary store, the parent index, and
+   * the sorted list, then bump the structural version. Kind-specific secondary
+   * indexing — the codec-message-id map for input nodes, the reply→input edge
+   * for reply runs — is the caller's responsibility.
+   * @param key - The node's primary key ({@link nodeKey}).
+   * @param entry - The internal node to insert.
+   * @param parentCodecMessageId - The node's structural parent, or undefined for a root.
+   */
+  private _insertNode(key: string, entry: InternalNode<TProjection>, parentCodecMessageId: string | undefined): void {
+    this._nodeIndex.set(key, entry);
+    this._addToParentIndex(parentCodecMessageId, key);
+    this._insertSortedNode(entry);
+    this._structuralVersion++;
+  }
+
+  /**
+   * Re-sort a node whose sort key just changed and bump the structural version.
+   * The caller mutates the serial field (`serial` for input nodes, `startSerial`
+   * for runs); this keeps the sorted list and version in step. Used on the
+   * optimistic-serial promotion paths when the server relay/echo arrives.
+   * @param entry - The internal node whose serial was just promoted.
+   */
+  private _promoteSerial(entry: InternalNode<TProjection>): void {
+    this._removeSortedNode(entry);
+    this._insertSortedNode(entry);
+    this._structuralVersion++;
+  }
+
+  /**
+   * Fold a batch of events into a node's projection in place, isolating each
+   * fold in a try/catch so a throwing reducer can't abort the rest of the batch
+   * or the surrounding apply.
+   * @param entry - The internal node whose projection is folded in place.
+   * @param events - The decoded events to fold, in wire order.
+   * @param serial - Ably channel serial; coerced to '' for an optimistic insert.
+   * @param messageId - The reducer routing key (codec-message-id), or undefined.
+   */
+  private _foldInto(
+    entry: InternalNode<TProjection>,
+    events: (TInput | TOutput)[],
+    serial: string | undefined,
+    messageId: string | undefined,
+  ): void {
+    for (const event of events) {
+      try {
+        entry.node.projection = this._codec.fold(entry.node.projection, event, { serial: serial ?? '', messageId });
+      } catch (error) {
+        this._logger.error('Tree._foldInto(); fold threw', { key: nodeKey(entry.node), messageId, err: error });
+      }
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Parent index maintenance
   // -------------------------------------------------------------------------
@@ -671,31 +724,17 @@ export class DefaultTree<
     let entry = this._nodeIndex.get(codecMessageId);
     if (!entry) {
       entry = this._createInputNodeFromHeaders(codecMessageId, headers, serial);
-      this._nodeIndex.set(codecMessageId, entry);
+      this._insertNode(codecMessageId, entry, entry.node.parentCodecMessageId);
       this._codecMessageIdToNodeKey.set(codecMessageId, codecMessageId);
-      this._addToParentIndex(entry.node.parentCodecMessageId, codecMessageId);
-      this._insertSortedNode(entry);
-      this._structuralVersion++;
       this._logger.debug('Tree.applyMessage(); created input node', { codecMessageId });
     } else if (entry.node.kind === 'input' && serial && !entry.node.serial) {
       // Promote optimistic serial when the relay/echo arrives.
       this._logger.debug('Tree.applyMessage(); promoting input serial', { codecMessageId, serial });
       entry.node.serial = serial;
-      this._removeSortedNode(entry);
-      this._insertSortedNode(entry);
-      this._structuralVersion++;
+      this._promoteSerial(entry);
     }
 
-    for (const event of all) {
-      try {
-        entry.node.projection = this._codec.fold(entry.node.projection, event, {
-          serial: serial ?? '',
-          messageId: codecMessageId,
-        });
-      } catch (error) {
-        this._logger.error('Tree.applyMessage(); input fold threw', { codecMessageId, err: error });
-      }
-    }
+    this._foldInto(entry, all, serial, codecMessageId);
 
     // An input node owns no agent outputs; the event still fires (empty
     // outputs) so consumers observe the projection change. It has no run-id —
@@ -750,35 +789,21 @@ export class DefaultTree<
 
     if (!run) {
       run = this._createRunFromHeaders(wireRunId, headers, serial);
-      this._nodeIndex.set(wireRunId, run);
-      this._addToParentIndex(run.node.parentCodecMessageId, wireRunId);
+      this._insertNode(wireRunId, run, run.node.parentCodecMessageId);
       this._indexReplyRun(run.node, wireRunId);
-      this._insertSortedNode(run);
-      this._structuralVersion++;
       this._logger.debug('Tree.applyMessage(); created new Run', { runId: wireRunId });
     } else if (serial && run.node.kind === 'run' && !run.node.startSerial) {
       // Promote optimistic startSerial when the relay/echo arrives.
       this._logger.debug('Tree.applyMessage(); promoting startSerial', { runId: wireRunId, serial });
       run.node.startSerial = serial;
-      this._removeSortedNode(run);
-      this._insertSortedNode(run);
-      this._structuralVersion++;
+      this._promoteSerial(run);
     }
 
     // Index the codec-message-id against the node that actually owns it.
     const ownerKey = nodeKey(run.node);
     if (codecMessageId) this._codecMessageIdToNodeKey.set(codecMessageId, ownerKey);
 
-    for (const event of all) {
-      try {
-        run.node.projection = this._codec.fold(run.node.projection, event, {
-          serial: serial ?? '',
-          messageId: codecMessageId,
-        });
-      } catch (error) {
-        this._logger.error('Tree.applyMessage(); fold threw', { runId: ownerKey, err: error });
-      }
-    }
+    this._foldInto(run, all, serial, codecMessageId);
 
     this._emitter.emit('output', { runId: ownerKey, inputCodecMessageId, codecMessageId, serial, events: outputs });
   }
@@ -843,9 +868,7 @@ export class DefaultTree<
       }
       if (event.serial && !node.startSerial) {
         node.startSerial = event.serial;
-        this._removeSortedNode(existing);
-        this._insertSortedNode(existing);
-        this._structuralVersion++;
+        this._promoteSerial(existing);
       }
       // Backfill structural metadata if the Run was created from an
       // assistant wire that arrived before run-start (history pagination
@@ -885,11 +908,8 @@ export class DefaultTree<
       }
     } else if (!existing) {
       const run = this._createRunFromLifecycle(event);
-      this._nodeIndex.set(event.runId, run);
-      this._addToParentIndex(run.node.parentCodecMessageId, event.runId);
+      this._insertNode(event.runId, run, run.node.parentCodecMessageId);
       this._indexReplyRun(run.node, event.runId);
-      this._insertSortedNode(run);
-      this._structuralVersion++;
     }
   }
 

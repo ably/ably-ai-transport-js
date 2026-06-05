@@ -685,9 +685,10 @@ class DefaultClientSession<
       },
       optimisticCodecMessageIds: [...codecMessageIds],
       toInvocation: () =>
+        // The invocation body carries no run-id: run identity lives on the
+        // channel (the agent mints a fresh run-id, or reads a continuation's
+        // from the triggering input event, which carries the reused run-id).
         Invocation.fromJSON({
-          // Omitted for a fresh run (the agent mints it); set for a continuation.
-          ...(runId !== undefined && { runId }),
           inputEventId: triggerInputEventId,
           sessionName: this._channel.name,
         }),

@@ -1177,6 +1177,51 @@ describe('AgentSession', () => {
       s.close();
     });
 
+    it('honours a continuation cancel (run-id + input id) that arrived before run-resume', async () => {
+      const { session: s, ch } = lookupSession();
+      await s.connect();
+
+      const inputEventId = 'p-cont-early';
+      const inputCodecMessageId = 'm-cont-early';
+      const continuationRunId = 'run-cont-existing';
+      // Build the run directly with no `runtime.runId` so the agent mints a
+      // provisional run-id — mirroring production, where it differs from the
+      // existing run-id a continuation re-enters. (createRunFromOpts would pin
+      // runtime.runId to the same value, collapsing the distinction.)
+      const run = s.createRun(Invocation.fromJSON({ inputEventId, sessionName: 'test' }), {
+        invocationId: 'inv-cont-early',
+      });
+
+      // A continuation cancel knows the EXISTING run-id (the client passed it)
+      // and carries the triggering input's codec-message-id. The run is
+      // registered under the provisional id, so the cancel doesn't match by
+      // run-id and is buffered by the input codec-message-id — the same path a
+      // fresh-send cancel takes.
+      simulateCancel(ch, {
+        [HEADER_RUN_ID]: continuationRunId,
+        [HEADER_INPUT_CODEC_MESSAGE_ID]: inputCodecMessageId,
+      });
+      await new Promise((r) => setTimeout(r, 5));
+
+      // start() runs the lookup; the continuation input carries the existing
+      // run-id on the wire, so the agent adopts it (re-keying the registration)
+      // and pulls the buffered cancel.
+      const startPromise = run.start();
+      deliverInputEvent(ch, {
+        invocationId: 'inv-cont-early',
+        runId: continuationRunId,
+        codecMessageId: inputCodecMessageId,
+        serial: 's-cont-early',
+        inputEventId,
+      });
+      await startPromise;
+
+      expect(run.abortSignal.aborted).toBe(true);
+      // The run adopted the existing run-id from the wire, not the provisional.
+      expect(run.runId).toBe(continuationRunId);
+      s.close();
+    });
+
     it('a buffered cancel is honoured by onCancel exactly as a live cancel', async () => {
       const { session: s, ch } = lookupSession();
       await s.connect();
@@ -2846,7 +2891,7 @@ const viewMessageIds = (wiresOldestFirst: Ably.InboundMessage[]): string[] => {
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
-        toInvocation: () => Invocation.fromJSON({ runId: 'r', inputEventId: '', sessionName: 'test' }),
+        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       }),
     );
   const view = new DefaultView<TestInput, TestOutput, TestProjection, TestMessage>({

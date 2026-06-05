@@ -192,6 +192,17 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
   invocationId?: string;
 
   /**
+   * Override the run id for a FRESH run. When omitted, the agent mints a fresh
+   * `crypto.randomUUID()` — the normal path. A continuation IGNORES this: its
+   * run id is read from the triggering input event's wire headers, since a
+   * continuation re-enters a run that already exists. Supply a non-empty fixed
+   * value for deterministic ids in tests or in-process drivers; the empty
+   * string is not a valid override (it is the "unset" sentinel and does not
+   * fall through to minting).
+   */
+  runId?: string;
+
+  /**
    * An external AbortSignal (typically the HTTP request's `req.signal`) that,
    * when fired, cancels this run. This allows platform-level cancellation —
    * request cancellation, serverless function timeout — to stop LLM generation

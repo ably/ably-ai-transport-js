@@ -132,7 +132,7 @@ const createMockRun = (runId: string, treeEmit: MockEmitter['emit']): MockRun =>
     inputEventId: '',
     cancel: vi.fn(),
     optimisticCodecMessageIds: [],
-    toInvocation: () => Invocation.fromJSON({ runId, inputEventId: '', sessionName: 'chat-1' }),
+    toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'chat-1' }),
     enqueue: (chunk: AI.UIMessageChunk) => {
       treeEmit('output', { runId, inputCodecMessageId: key, codecMessageId: 'm-1', serial: 's-1', events: [chunk] });
     },

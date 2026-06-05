@@ -717,7 +717,7 @@ class DefaultAgentSession<
 
   // Spec: AIT-ST3
   createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): Run<TOutput, TProjection, TMessage> {
-    this._logger?.trace('DefaultAgentSession.createRun();', { runId: invocation.runId });
+    this._logger?.trace('DefaultAgentSession.createRun();', { inputEventId: invocation.inputEventId });
     return this._createRun(invocation, runtime ?? {});
   }
 
@@ -1016,14 +1016,14 @@ class DefaultAgentSession<
   // Run creation
   // -------------------------------------------------------------------------
 
-  private _createRun(
-    invocation: Invocation,
-    runtime: RunRuntime<TOutput>,
-  ): Run<TOutput, TProjection, TMessage> {
-    // The agent mints the run-id for a fresh run (the client no longer mints
-    // it); a continuation carries the existing run-id in the invocation body.
-    // Mirrors the invocationId mint below.
-    const runId = invocation.runId ?? crypto.randomUUID();
+  private _createRun(invocation: Invocation, runtime: RunRuntime<TOutput>): Run<TOutput, TProjection, TMessage> {
+    // The run-id is no longer carried in the invocation body. Mint a
+    // provisional id now (or take the `runtime.runId` override for tests /
+    // in-process drivers) — this IS the id for a fresh run. A continuation
+    // overrides it in `Run.start()` with the existing run-id read off the
+    // triggering input event's wire headers (the run it re-enters). Mirrors
+    // the invocationId mint below.
+    let runId = runtime.runId ?? crypto.randomUUID();
     // The agent mints the invocation id — one per HTTP request that invokes
     // it. A per-run override (runtime.invocationId) supports deterministic ids
     // in tests and in-process drivers.
@@ -1039,7 +1039,10 @@ class DefaultAgentSession<
     // timeout) cancels the run through the same path as Ably cancel messages.
     const signal = externalSignal ? AbortSignal.any([controller.signal, externalSignal]) : controller.signal;
 
-    // Spec: AIT-ST3a — register immediately so early cancels can fire the AbortSignal.
+    // Spec: AIT-ST3a — register immediately so `close()` aborts an in-flight
+    // start() and a post-lookup cancel can fire the AbortSignal. Keyed by the
+    // provisional run-id; a continuation re-keys to the real id in start()
+    // once the triggering input reveals it.
     const registration: RegisteredRun = {
       runId,
       invocationId,
@@ -1233,7 +1236,21 @@ class DefaultAgentSession<
           resolvedForkOf = sourceHeaders[HEADER_FORK_OF];
           resolvedRegenerates = sourceHeaders[HEADER_MSG_REGENERATE];
           resolvedInputCodecMessageId = sourceHeaders[HEADER_CODEC_MESSAGE_ID];
-          resolvedContinuation = sourceHeaders[HEADER_RUN_ID] !== undefined;
+
+          // The triggering input's run-id (if any) IS this run's identity.
+          // Present → a continuation re-entering that run: adopt the id,
+          // overriding the provisional one minted at construction, and re-key
+          // the registration so cancel routing / deregistration resolve to the
+          // real run. Absent → a fresh run: the provisional id stands and the
+          // run opens with run-start.
+          const wireRunId = sourceHeaders[HEADER_RUN_ID];
+          resolvedContinuation = wireRunId !== undefined;
+          if (wireRunId !== undefined && wireRunId !== runId) {
+            registeredRuns.delete(runId);
+            runId = wireRunId;
+            registration.runId = runId;
+            registeredRuns.set(runId, registration);
+          }
         }
 
         // Compute the reply run's structural-parent fallback now that the

@@ -107,7 +107,7 @@ const createMockSendDelegate = (): SendDelegate<TestInput> =>
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
       cancel: () => Promise.resolve(),
       optimisticCodecMessageIds: [],
-      toInvocation: () => Invocation.fromJSON({ runId: 'mock-run', inputEventId: '', sessionName: 'test' }),
+      toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
     }),
   );
 
@@ -1140,7 +1140,7 @@ describe('DefaultView', () => {
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
         inputEventId: '',
-        toInvocation: () => Invocation.fromJSON({ runId: 'Rregen1', inputEventId: '', sessionName: 'test' }),
+        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       });
       await view.regenerate('a1');
       tree.applyRunLifecycle({
@@ -1207,7 +1207,7 @@ describe('DefaultView', () => {
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
         inputEventId: '',
-        toInvocation: () => Invocation.fromJSON({ runId: 'Rregen2', inputEventId: '', sessionName: 'test' }),
+        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       });
       await regenPromise;
 
@@ -1241,7 +1241,7 @@ describe('DefaultView', () => {
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
         inputEventId: '',
-        toInvocation: () => Invocation.fromJSON({ runId: 'Rregen1', inputEventId: '', sessionName: 'test' }),
+        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       });
       await view.regenerate('a1');
       tree.applyRunLifecycle({
@@ -1272,7 +1272,7 @@ describe('DefaultView', () => {
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
         inputEventId: '',
-        toInvocation: () => Invocation.fromJSON({ runId: 'Rregen2', inputEventId: '', sessionName: 'test' }),
+        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       });
       await view.regenerate('a1_new1');
       tree.applyRunLifecycle({
@@ -1303,7 +1303,7 @@ describe('DefaultView', () => {
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
         inputEventId: '',
-        toInvocation: () => Invocation.fromJSON({ runId: 'Rregen3', inputEventId: '', sessionName: 'test' }),
+        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       });
       await view.regenerate('a1_new2');
       tree.applyRunLifecycle({
@@ -2071,7 +2071,7 @@ describe('DefaultView', () => {
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
         inputEventId: '',
-        toInvocation: () => Invocation.fromJSON({ runId: 'R2new', inputEventId: '', sessionName: 'test' }),
+        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       });
 
       await view.regenerate('a1');
@@ -2104,7 +2104,7 @@ describe('DefaultView', () => {
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: [],
         inputEventId: '',
-        toInvocation: () => Invocation.fromJSON({ runId: 'R2new', inputEventId: '', sessionName: 'test' }),
+        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       });
 
       await view.regenerate('a1');
@@ -2214,7 +2214,7 @@ describe('DefaultView', () => {
         cancel: () => Promise.resolve(),
         optimisticCodecMessageIds: ['u-new'],
         inputEventId: '',
-        toInvocation: () => Invocation.fromJSON({ runId: 'R2edit', inputEventId: '', sessionName: 'test' }),
+        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       });
       // For the auto-select to land, the new Run needs to exist in the tree.
       // role omitted so the new user-content wire routes at wire-runId.

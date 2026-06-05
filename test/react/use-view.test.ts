@@ -160,10 +160,22 @@ describe('useView', () => {
       expect(result.current.run('run-1')).toEqual(info);
     });
 
+    it('runs forwards to view.runs', () => {
+      const mock = createMockSession();
+      const infos: RunInfo[] = [
+        { runId: 'run-1', clientId: 'c1', status: 'active', invocationId: 'inv-1' },
+        { runId: 'run-2', clientId: 'c1', status: 'complete', invocationId: 'inv-2' },
+      ];
+      (mock.view.runs as ReturnType<typeof vi.fn>).mockReturnValue(infos);
+      const { result } = renderHook(() => useView({ session: mock.session }));
+      expect(result.current.runs()).toEqual(infos);
+    });
+
     it('safe defaults when no session is available', () => {
       const { result } = renderHook(() => useView());
       expect(result.current.runOf('msg-1')).toBeUndefined();
       expect(result.current.run('run-1')).toBeUndefined();
+      expect(result.current.runs()).toEqual([]);
     });
   });
 

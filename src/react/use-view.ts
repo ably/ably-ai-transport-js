@@ -42,6 +42,14 @@ export interface ViewHandle<TInput extends CodecInputEvent, TMessage> {
    * {@link branchSelection}, {@link regenerate}, or {@link edit}.
    */
   messages: AIMessage<TMessage>[];
+  /**
+   * Snapshot of the visible Runs along the selected branch, in chronological
+   * order — filtered by this view's pagination window, branch selection, and
+   * regenerate substitution. Useful for rendering per-Run UI (status badges,
+   * run-id labels, error states) without reaching into `session.tree`. See
+   * {@link View.runs}.
+   */
+  runs: () => RunInfo[];
   /** Whether there are older messages that can be revealed via `loadOlder`. */
   hasOlder: boolean;
   /** Whether a page load is currently in progress. */
@@ -191,6 +199,8 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
 
   const run = useCallback((runId: string): RunInfo | undefined => resolvedView?.run(runId), [resolvedView]);
 
+  const runs = useCallback((): RunInfo[] => resolvedView?.runs() ?? [], [resolvedView]);
+
   // Branch navigation
   const branchSelection = useCallback(
     (transportMessageId: string): BranchSelection<TMessage> =>
@@ -238,6 +248,7 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
 
   return {
     messages,
+    runs,
     hasOlder,
     loading,
     loadError,

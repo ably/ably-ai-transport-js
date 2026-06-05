@@ -1,3 +1,4 @@
+export type { AIMessage } from '../core/codec/types.js';
 export type { EventsNode, MessageNode } from '../core/transport/types.js';
 export type { ClientSessionSlot } from './contexts/client-session-context.js';
 export type { ClientSessionProviderProps } from './contexts/client-session-provider.js';

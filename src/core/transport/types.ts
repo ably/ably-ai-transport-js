@@ -649,26 +649,14 @@ export interface ActiveRun {
 // History / pagination
 // ---------------------------------------------------------------------------
 
-/** A single decoded history item with its transport metadata. */
-export interface HistoryItem<TMessage> {
-  /** The decoded domain message. */
-  message: TMessage;
-  /** Transport headers for tree identity and ordering. */
-  headers: Record<string, string>;
-  /** Ably serial for tree ordering. */
-  serial: string;
-}
-
-/** A page of decoded history from the channel. Internal to View/decodeHistory. */
-export interface HistoryPage<TMessage> {
-  /** Decoded items in chronological order (oldest first). */
-  items: HistoryItem<TMessage>[];
-  /** Raw Ably messages that produced this page, in chronological order. */
+/** A page of raw history wires from the channel. Internal to View/decodeHistory. */
+export interface HistoryPage {
+  /** Raw Ably messages that produced this page, in chronological order (oldest first). */
   rawMessages: Ably.InboundMessage[];
   /** Whether there are older pages available. */
   hasNext(): boolean;
   /** Fetch the next (older) page. Returns undefined if no more pages. */
-  next(): Promise<HistoryPage<TMessage> | undefined>;
+  next(): Promise<HistoryPage | undefined>;
 }
 
 /** Options for loading channel history. */

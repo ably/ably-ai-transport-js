@@ -165,12 +165,10 @@ const applyInput = (tree: DefaultTree<TestInput, TestOutput, TestProjection>, op
 };
 
 const makePage = (
-  items: { message: TestMessage; headers: Record<string, string>; serial: string }[],
   rawMessages: Ably.InboundMessage[] = [],
   hasNextPage = false,
-  nextPageFn?: () => Promise<HistoryPage<TestMessage> | undefined>,
-): HistoryPage<TestMessage> => ({
-  items,
+  nextPageFn?: () => Promise<HistoryPage | undefined>,
+): HistoryPage => ({
   rawMessages,
   hasNext: () => hasNextPage,
   // eslint-disable-next-line @typescript-eslint/promise-function-async, unicorn/no-useless-undefined -- mock needs explicit undefined return for HistoryPage shape
@@ -1673,13 +1671,6 @@ describe('DefaultView', () => {
 
     it('loadOlder reveals Runs from history and bumps visible chain', async () => {
       // History returns a single message that creates Run R0.
-      const items = [
-        {
-          message: { id: 'h1', content: 'old' },
-          headers: { [HEADER_RUN_ID]: 'R0', [HEADER_CODEC_MESSAGE_ID]: 'mh1' },
-          serial: 's0',
-        },
-      ];
       const rawMsg = {
         name: 'fake',
         serial: 's0',
@@ -1695,20 +1686,13 @@ describe('DefaultView', () => {
       }));
       codec.createDecoder = vi.fn(() => ({ decode: decodeSpy }));
 
-      vi.mocked(decodeHistory).mockResolvedValueOnce(makePage(items, [rawMsg]));
+      vi.mocked(decodeHistory).mockResolvedValueOnce(makePage([rawMsg]));
 
       await view.loadOlder(10);
       expect(view.runs().map((r) => r.runId)).toContain('R0');
     });
 
     it('hasOlder becomes true when history page reports hasNext', async () => {
-      const items = [
-        {
-          message: { id: 'h1', content: 'old' },
-          headers: { [HEADER_RUN_ID]: 'R0', [HEADER_CODEC_MESSAGE_ID]: 'mh1' },
-          serial: 's0',
-        },
-      ];
       const rawMsg = {
         name: 'fake',
         serial: 's0',
@@ -1720,16 +1704,16 @@ describe('DefaultView', () => {
       }));
       codec.createDecoder = vi.fn(() => ({ decode: decodeSpy }));
 
-      vi.mocked(decodeHistory).mockResolvedValueOnce(makePage(items, [rawMsg], true));
+      vi.mocked(decodeHistory).mockResolvedValueOnce(makePage([rawMsg], true));
 
       await view.loadOlder(10);
       expect(view.hasOlder()).toBe(true);
     });
 
     it('is a no-op when called while already loading', async () => {
-      let resolveFirst: ((page: HistoryPage<TestMessage>) => void) | undefined;
+      let resolveFirst: ((page: HistoryPage) => void) | undefined;
       vi.mocked(decodeHistory).mockReturnValueOnce(
-        new Promise<HistoryPage<TestMessage>>((resolve) => {
+        new Promise<HistoryPage>((resolve) => {
           resolveFirst = resolve;
         }),
       );
@@ -1749,11 +1733,6 @@ describe('DefaultView', () => {
       // at the prior run's message — two same-parent reply runs would collapse
       // as regenerate siblings in the two-node model). With limit=2 the View
       // reveals the newest 2 and withholds the oldest in the buffer.
-      const items = [0, 1, 2].map((i) => ({
-        message: { id: `h${String(i)}`, content: `old-${String(i)}` },
-        headers: linearChainHeaders(i),
-        serial: `s${String(i)}`,
-      }));
       const rawMessages = [0, 1, 2].map(
         (i) =>
           ({
@@ -1774,7 +1753,7 @@ describe('DefaultView', () => {
         },
       }));
 
-      vi.mocked(decodeHistory).mockResolvedValueOnce(makePage(items, rawMessages));
+      vi.mocked(decodeHistory).mockResolvedValueOnce(makePage(rawMessages));
 
       await view.loadOlder(2);
       // The newest 2 by startSerial (R1, R2) are revealed; R0 is withheld.
@@ -1826,7 +1805,7 @@ describe('DefaultView', () => {
         },
       }));
 
-      vi.mocked(decodeHistory).mockResolvedValueOnce(makePage(items, rawMessages));
+      vi.mocked(decodeHistory).mockResolvedValueOnce(makePage(rawMessages));
       await view.loadOlder(2);
 
       // R0 is withheld at this point. An ably-message for R0 must be
@@ -1881,12 +1860,8 @@ describe('DefaultView', () => {
         },
       }));
 
-      const page2 = makePage(
-        [{ message: { id: 'm-multi-b', content: 'multi-b' }, headers: headersB, serial: 's02' }],
-        [rawB],
-      );
+      const page2 = makePage([rawB]);
       const page1 = makePage(
-        [{ message: { id: 'm-multi-a', content: 'multi-a' }, headers: headersA, serial: 's01' }],
         [rawA],
         true,
         // eslint-disable-next-line @typescript-eslint/require-await -- mock
@@ -1920,7 +1895,7 @@ describe('DefaultView', () => {
         },
       } as unknown as Ably.InboundMessage;
 
-      vi.mocked(decodeHistory).mockResolvedValueOnce(makePage([], [runStartMsg]));
+      vi.mocked(decodeHistory).mockResolvedValueOnce(makePage([runStartMsg]));
 
       await view.loadOlder(1);
 
@@ -1944,7 +1919,7 @@ describe('DefaultView', () => {
         extras: { ai: { transport: { [HEADER_RUN_ID]: 'R-susp', 'run-client-id': '' } } },
       } as unknown as Ably.InboundMessage;
 
-      vi.mocked(decodeHistory).mockResolvedValueOnce(makePage([], [runStartMsg, runSuspendMsg]));
+      vi.mocked(decodeHistory).mockResolvedValueOnce(makePage([runStartMsg, runSuspendMsg]));
 
       await view.loadOlder(1);
 
@@ -1961,10 +1936,11 @@ describe('DefaultView', () => {
         ({ name, serial, extras: { ai: { transport } } }) as unknown as Ably.InboundMessage;
 
       vi.mocked(decodeHistory).mockResolvedValueOnce(
-        makePage(
-          [],
-          [lifecycle(EVENT_RUN_START, 's01'), lifecycle(EVENT_RUN_SUSPEND, 's02'), lifecycle(EVENT_RUN_RESUME, 's03')],
-        ),
+        makePage([
+          lifecycle(EVENT_RUN_START, 's01'),
+          lifecycle(EVENT_RUN_SUSPEND, 's02'),
+          lifecycle(EVENT_RUN_RESUME, 's03'),
+        ]),
       );
 
       await view.loadOlder(1);

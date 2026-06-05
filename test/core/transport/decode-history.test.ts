@@ -1,12 +1,12 @@
 /**
  * decodeHistory unit tests.
  *
- * Rewritten against the event-sourced `Codec<TEvent, TProjection, TMessage>`
- * contract — decoder returns `TEvent[]`; per-run projections are built via
- * `init`/`fold`; messages are extracted via `getMessages`. Amend semantics
- * follow the producer-responsibility model: matching `HEADER_RUN_ID` folds
- * into the same projection; mismatched run-ids are dropped at the reducer
- * (orphan).
+ * decodeHistory no longer decodes: it pages back through Ably history using a
+ * cheap, header-based completion counter and returns the raw wire messages
+ * (oldest-first) for the caller to fold. These tests cover the completion
+ * counter (what marks a codec-message-id complete, including across page
+ * boundaries) and the raw-message pagination contract (chronological order,
+ * hasNext/next, buffered pages).
  */
 
 import type * as Ably from 'ably';
@@ -15,60 +15,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   HEADER_CODEC_MESSAGE_ID,
   HEADER_DISCRETE,
-  HEADER_INVOCATION_ID,
-  HEADER_PARENT,
-  HEADER_ROLE,
   HEADER_RUN_ID,
   HEADER_STATUS,
   HEADER_STREAM,
 } from '../../../src/constants.js';
-import type { Codec, CodecInputEvent, Decoder, Encoder, ReducerMeta } from '../../../src/core/codec/types.js';
 import { decodeHistory } from '../../../src/core/transport/decode-history.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 
-// ---------------------------------------------------------------------------
-// Test types
-// ---------------------------------------------------------------------------
-
-interface TestInput extends CodecInputEvent {
-  kind: 'user-message';
-  message: TestMessage;
-}
-
-interface TestOutput {
-  type: 'text' | 'finish';
-  text?: string;
-}
-
-type TestEvent = TestInput | TestOutput;
-
-interface TestMessage {
-  id: string;
-  content: string;
-}
-
-interface TestProjection {
-  /** Map of codec-message-id → in-progress message (mirrors the runtime tracker pattern). */
-  byId: Map<string, TestMessage>;
-  /** Ordered list of codec-message-ids (insertion order). */
-  order: string[];
-}
-
 const silentLogger = makeLogger({ logLevel: LogLevel.Silent });
-
-// ---------------------------------------------------------------------------
-// Decoder output registry — events to emit on a per-message basis. A fresh
-// decoder is created per decode pass, so this lives outside the decoder. The
-// stored shape mirrors the codec's `decode()` return — split into input and
-// output halves so the mock decoder can return them tagged.
-// ---------------------------------------------------------------------------
-
-interface DecoderRegistryEntry {
-  inputs: TestInput[];
-  outputs: TestOutput[];
-}
-
-const eventsByMessage = new WeakMap<Ably.InboundMessage, DecoderRegistryEntry>();
 
 // ---------------------------------------------------------------------------
 // Ably message builders
@@ -82,45 +36,34 @@ const nextSerial = (): string => {
 };
 
 interface MsgOpts {
-  name?: string;
   headers?: Record<string, string>;
-  data?: unknown;
   action?: string;
   serial?: string;
 }
 
 const ablyMsg = (opts: MsgOpts = {}): Ably.InboundMessage =>
   ({
-    name: opts.name ?? 'msg',
-    data: opts.data,
+    name: 'msg',
     action: opts.action ?? 'message.create',
     extras: { ai: { transport: opts.headers ?? {} } },
     serial: opts.serial ?? nextSerial(),
   }) as unknown as Ably.InboundMessage;
 
-const withEvents = (msg: Ably.InboundMessage, outputs: TestOutput[], inputs: TestInput[] = []): Ably.InboundMessage => {
-  eventsByMessage.set(msg, { inputs, outputs });
-  return msg;
-};
+// A discrete message: created and terminated by a single wire (start + terminal).
+const discreteMsg = (codecMessageId: string, extraHeaders: Record<string, string> = {}): Ably.InboundMessage =>
+  ablyMsg({
+    headers: {
+      [HEADER_CODEC_MESSAGE_ID]: codecMessageId,
+      [HEADER_STREAM]: 'false',
+      [HEADER_DISCRETE]: 'true',
+      ...extraHeaders,
+    },
+  });
 
-const discreteMsg = (
-  codecMessageId: string,
-  content: string,
-  extraHeaders: Record<string, string> = {},
-): Ably.InboundMessage =>
-  withEvents(
-    ablyMsg({
-      headers: {
-        [HEADER_CODEC_MESSAGE_ID]: codecMessageId,
-        [HEADER_STREAM]: 'false',
-        [HEADER_DISCRETE]: 'true',
-        ...extraHeaders,
-      },
-    }),
-    [{ type: 'text', text: content }, { type: 'finish' }],
-  );
-
-const streamingRun = (runId: string, codecMessageId: string, deltas: string[]): Ably.InboundMessage[] => {
+// A streamed run: a create followed by `deltaCount` appends and a closing
+// append carrying `status: complete`. All wires share one serial. Returned
+// newest-first, as Ably history delivers them.
+const streamingRun = (runId: string, codecMessageId: string, deltaCount: number): Ably.InboundMessage[] => {
   const serial = nextSerial();
   const baseHeaders = {
     [HEADER_RUN_ID]: runId,
@@ -128,21 +71,18 @@ const streamingRun = (runId: string, codecMessageId: string, deltas: string[]): 
     [HEADER_STREAM]: 'true',
   };
 
-  const create = withEvents(ablyMsg({ action: 'message.create', headers: baseHeaders, serial }), []);
-  const deltaMessages = deltas.map((text) =>
-    withEvents(ablyMsg({ action: 'message.append', headers: baseHeaders, serial }), [{ type: 'text', text }]),
+  const create = ablyMsg({ action: 'message.create', headers: baseHeaders, serial });
+  const deltas = Array.from({ length: deltaCount }, () =>
+    ablyMsg({ action: 'message.append', headers: baseHeaders, serial }),
   );
-  const finish = withEvents(
-    ablyMsg({
-      action: 'message.append',
-      headers: { ...baseHeaders, [HEADER_STATUS]: 'complete' },
-      serial,
-    }),
-    [{ type: 'finish' }],
-  );
+  const finish = ablyMsg({
+    action: 'message.append',
+    headers: { ...baseHeaders, [HEADER_STATUS]: 'complete' },
+    serial,
+  });
 
-  // Newest-first (as Ably history returns): finish first, deltas reversed, create last.
-  return [finish, ...deltaMessages.toReversed(), create];
+  // Newest-first: finish, deltas reversed, create.
+  return [finish, ...deltas.toReversed(), create];
 };
 
 // ---------------------------------------------------------------------------
@@ -175,71 +115,7 @@ const createMockChannel = (pages: Ably.InboundMessage[][] = []): Ably.RealtimeCh
   return channel as unknown as Ably.RealtimeChannel;
 };
 
-// ---------------------------------------------------------------------------
-// Mock codec — decoder pulls events from the per-message registry; the
-// reducer accumulates text per codec-message-id (drawn from meta.messageId).
-// ---------------------------------------------------------------------------
-
-const createMockDecoder = (): Decoder<TestInput, TestOutput> => ({
-  decode: vi.fn((msg: Ably.InboundMessage) => {
-    const evs = eventsByMessage.get(msg);
-    if (!evs) return { inputs: [], outputs: [] };
-    return {
-      inputs: evs.inputs.map((e) => ({ ...e })),
-      outputs: evs.outputs.map((e) => ({ ...e })),
-    };
-  }),
-});
-
-const noopEncoderFactory = (): Encoder<TestInput, TestOutput> => ({
-  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-  publishInput: () => Promise.resolve(),
-  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-  publishOutput: () => Promise.resolve(),
-  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-  cancel: () => Promise.resolve(),
-  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-  close: () => Promise.resolve(),
-});
-
-const createMockCodec = (): Codec<TestInput, TestOutput, TestProjection, TestMessage> & {
-  decoderInstances: number;
-} => {
-  const counters = { decoderInstances: 0 };
-  return {
-    get decoderInstances() {
-      return counters.decoderInstances;
-    },
-    init: vi.fn(
-      (): TestProjection => ({
-        byId: new Map<string, TestMessage>(),
-        order: [],
-      }),
-    ),
-    fold: vi.fn((state: TestProjection, event: TestEvent, meta: ReducerMeta) => {
-      const messageId = meta.messageId;
-      if (!messageId) return state;
-      let msg = state.byId.get(messageId);
-      if (!msg) {
-        msg = { id: messageId, content: '' };
-        state.byId.set(messageId, msg);
-        state.order.push(messageId);
-      }
-      if ('type' in event && event.type === 'text' && typeof event.text === 'string') {
-        msg.content += event.text;
-      }
-      return state;
-    }),
-    getMessages: vi.fn((p: TestProjection) => p.order.map((id) => p.byId.get(id)).filter((m): m is TestMessage => !!m)),
-    createUserMessage: vi.fn((m: TestMessage) => ({ kind: 'user-message' as const, message: m })),
-    createRegenerate: vi.fn((target: string, parent: string) => ({ kind: 'regenerate', target, parent }) as const),
-    createEncoder: vi.fn(() => noopEncoderFactory()),
-    createDecoder: vi.fn(() => {
-      counters.decoderInstances += 1;
-      return createMockDecoder();
-    }),
-  };
-};
+const serialsOf = (msgs: readonly Ably.InboundMessage[]): (string | undefined)[] => msgs.map((m) => m.serial);
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -251,376 +127,156 @@ describe('decodeHistory', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Basic pagination
+  // Raw-message pagination
   // -------------------------------------------------------------------------
 
   describe('pagination', () => {
-    it('returns all items when a single page satisfies the limit', async () => {
-      const m3 = discreteMsg('u3', 'third');
-      const m2 = discreteMsg('u2', 'second');
-      const m1 = discreteMsg('u1', 'first');
+    it('returns all collected wires chronologically when a single page satisfies the limit', async () => {
+      const m3 = discreteMsg('u3');
+      const m2 = discreteMsg('u2');
+      const m1 = discreteMsg('u1');
+      // Ably delivers newest-first.
       const channel = createMockChannel([[m3, m2, m1]]);
-      const codec = createMockCodec();
 
-      const page = await decodeHistory(channel, codec, { limit: 3 }, silentLogger);
+      const page = await decodeHistory(channel, { limit: 3 }, silentLogger);
 
-      expect(page.items.map((i) => i.message.id)).toEqual(['u1', 'u2', 'u3']);
-      expect(page.items.map((i) => i.message.content)).toEqual(['first', 'second', 'third']);
+      // rawMessages are reversed to chronological (oldest first).
+      expect(serialsOf(page.rawMessages)).toEqual(serialsOf([m1, m2, m3]));
       expect(page.hasNext()).toBe(false);
-      expect(page.rawMessages.map((m) => m.serial)).toEqual([m1.serial, m2.serial, m3.serial]);
     });
 
-    it('returns fewer than limit when history has fewer completed messages', async () => {
-      const m2 = discreteMsg('u2', 'second');
-      const m1 = discreteMsg('u1', 'first');
+    it('returns every wire when history has fewer completed messages than the limit', async () => {
+      const m2 = discreteMsg('u2');
+      const m1 = discreteMsg('u1');
       const channel = createMockChannel([[m2, m1]]);
-      const codec = createMockCodec();
 
-      const page = await decodeHistory(channel, codec, { limit: 10 }, silentLogger);
+      const page = await decodeHistory(channel, { limit: 10 }, silentLogger);
 
-      expect(page.items).toHaveLength(2);
+      expect(serialsOf(page.rawMessages)).toEqual(serialsOf([m1, m2]));
       expect(page.hasNext()).toBe(false);
     });
 
-    it('fetches additional pages until limit is satisfied', async () => {
-      const pageNewest = [discreteMsg('u3', 'third')];
-      const pageOlder = [discreteMsg('u2', 'second'), discreteMsg('u1', 'first')];
+    it('fetches additional pages until the completion limit is satisfied', async () => {
+      const pageNewest = [discreteMsg('u3')];
+      const pageOlder = [discreteMsg('u2'), discreteMsg('u1')];
       const channel = createMockChannel([pageNewest, pageOlder]);
-      const codec = createMockCodec();
 
-      const page = await decodeHistory(channel, codec, { limit: 3 }, silentLogger);
+      const page = await decodeHistory(channel, { limit: 3 }, silentLogger);
 
-      expect(page.items.map((i) => i.message.id)).toEqual(['u1', 'u2', 'u3']);
+      // Both pages were fetched; all three wires appear chronologically.
+      expect(page.rawMessages).toHaveLength(3);
+      expect(page.hasNext()).toBe(false);
     });
 
-    it('paginates via next() when limit is smaller than the available items', async () => {
-      const m4 = discreteMsg('u4', 'd');
-      const m3 = discreteMsg('u3', 'c');
-      const m2 = discreteMsg('u2', 'b');
-      const m1 = discreteMsg('u1', 'a');
-      const channel = createMockChannel([[m4, m3, m2, m1]]);
-      const codec = createMockCodec();
+    it('stops fetching once enough completions are collected, leaving older pages for next()', async () => {
+      const m2 = discreteMsg('u2');
+      const m1 = discreteMsg('u1');
+      const channel = createMockChannel([[m2], [m1]]);
 
-      const first = await decodeHistory(channel, codec, { limit: 2 }, silentLogger);
-      expect(first.items.map((i) => i.message.id)).toEqual(['u3', 'u4']);
+      // limit 1 is satisfied by the newest page alone — the older page is not fetched yet.
+      const first = await decodeHistory(channel, { limit: 1 }, silentLogger);
+      expect(serialsOf(first.rawMessages)).toEqual(serialsOf([m2]));
       expect(first.hasNext()).toBe(true);
 
+      // next() fetches the older page and serves its wire.
       const second = await first.next();
       expect(second).toBeDefined();
-      expect(second?.items.map((i) => i.message.id)).toEqual(['u1', 'u2']);
+      expect(serialsOf(second?.rawMessages ?? [])).toEqual(serialsOf([m1]));
+      expect(second?.hasNext()).toBe(false);
+    });
+
+    it('serves buffered completions on next() without new wires when one fetch over-collects', async () => {
+      const m4 = discreteMsg('u4');
+      const m3 = discreteMsg('u3');
+      const m2 = discreteMsg('u2');
+      const m1 = discreteMsg('u1');
+      const channel = createMockChannel([[m4, m3, m2, m1]]);
+
+      // A single Ably page already holds 4 completions; limit 2 buffers the rest.
+      const first = await decodeHistory(channel, { limit: 2 }, silentLogger);
+      // All fetched wires are handed over on the first page.
+      expect(serialsOf(first.rawMessages)).toEqual(serialsOf([m1, m2, m3, m4]));
+      expect(first.hasNext()).toBe(true);
+
+      // The buffered page carries no new wires but drains the remaining completions.
+      const second = await first.next();
+      expect(second?.rawMessages).toEqual([]);
+      expect(second?.hasNext()).toBe(false);
     });
 
     it('returns an empty page when history has no messages', async () => {
       const channel = createMockChannel([[]]);
-      const codec = createMockCodec();
-      const page = await decodeHistory(channel, codec, { limit: 10 }, silentLogger);
-      expect(page.items).toEqual([]);
+      const page = await decodeHistory(channel, { limit: 10 }, silentLogger);
+      expect(page.rawMessages).toEqual([]);
       expect(page.hasNext()).toBe(false);
     });
 
-    it('uses default limit when options is omitted', async () => {
-      const m3 = discreteMsg('u3', 'c');
-      const m2 = discreteMsg('u2', 'b');
-      const m1 = discreteMsg('u1', 'a');
-      const channel = createMockChannel([[m3, m2, m1]]);
-      const codec = createMockCodec();
-
-      const page = await decodeHistory(channel, codec, undefined, silentLogger);
-      expect(page.items).toHaveLength(3);
+    it('uses the default limit when options is omitted', async () => {
+      const channel = createMockChannel([[discreteMsg('u3'), discreteMsg('u2'), discreteMsg('u1')]]);
+      const page = await decodeHistory(channel, undefined, silentLogger);
+      expect(page.rawMessages).toHaveLength(3);
     });
   });
 
   // -------------------------------------------------------------------------
-  // Streamed runs spanning page boundaries
+  // Completion counting (header scan, no decode)
   // -------------------------------------------------------------------------
 
-  describe('streaming runs', () => {
-    it('reconstructs a streaming run delivered as create + appends', async () => {
-      // Run T1 streams ['hi ', 'there'] across 4 wire messages
-      const [finish, delta2, delta1, create] = streamingRun('T1', 'asst-1', ['hi ', 'there']);
-      if (!finish || !delta2 || !delta1 || !create) throw new Error('expected 4 wire messages');
+  describe('completion counting', () => {
+    it('counts a streamed run (create + appends + finish) as one completion', async () => {
+      const wires = streamingRun('T1', 'asst-1', 2);
+      const channel = createMockChannel([wires]);
 
-      const channel = createMockChannel([[finish, delta2, delta1, create]]);
-      const codec = createMockCodec();
-
-      const page = await decodeHistory(channel, codec, { limit: 10 }, silentLogger);
-
-      const asst = page.items.find((i) => i.message.id === 'asst-1');
-      expect(asst).toBeDefined();
-      expect(asst?.message.content).toBe('hi there');
+      // limit 1 is satisfied by the single completed run; all its wires come back.
+      const page = await decodeHistory(channel, { limit: 1 }, silentLogger);
+      expect(page.rawMessages).toHaveLength(wires.length);
+      expect(page.hasNext()).toBe(false);
     });
 
-    it('reconstructs a run whose stream spans a page boundary', async () => {
-      // To genuinely span a boundary the counter must see only a terminal in
-      // the newest page (no start) and only a start in the older. Use a
-      // create with no stream header on the newest finish marker — but in
-      // practice the counter treats first-contact appends as starts, so we
-      // force a boundary by having an UNCOMPLETED discrete msg in the new
-      // page plus a complete one in the older page.
-      const m1 = discreteMsg('u1', 'older');
-      const m2 = discreteMsg('u2', 'newer');
-      // Page 1 (newest) has only m2; page 2 (older) has m1. With limit=2 we
-      // need to fetch both pages.
+    it('requires both a start and a terminal signal across a page boundary', async () => {
+      // The counter treats first-contact appends as starts, so a genuine
+      // start-only/terminal-only split is forced with two discrete messages in
+      // separate pages and limit 2 — both pages must be fetched to satisfy it.
+      const m2 = discreteMsg('u2');
+      const m1 = discreteMsg('u1');
       const channel = createMockChannel([[m2], [m1]]);
-      const codec = createMockCodec();
 
-      const page = await decodeHistory(channel, codec, { limit: 2 }, silentLogger);
+      const page = await decodeHistory(channel, { limit: 2 }, silentLogger);
 
-      expect(page.items.map((i) => i.message.id)).toEqual(['u1', 'u2']);
+      expect(serialsOf(page.rawMessages)).toEqual(serialsOf([m1, m2]));
+      expect(page.hasNext()).toBe(false);
     });
 
     it('treats status:cancelled as terminal for counting', async () => {
-      // A cancelled-stream message satisfies the wire-level counter the same
-      // way as complete: append + stream=true + status=cancelled = complete.
-      const serial = nextSerial();
-      const baseHeaders = {
-        [HEADER_RUN_ID]: 'T1',
-        [HEADER_CODEC_MESSAGE_ID]: 'asst-cancel',
-        [HEADER_STREAM]: 'true',
-      };
-      const cancelled = withEvents(
-        ablyMsg({
-          action: 'message.append',
-          headers: { ...baseHeaders, [HEADER_STATUS]: 'cancelled' },
-          serial,
-        }),
-        [{ type: 'finish' }],
-      );
-
+      // append + stream=true + status=cancelled is a start AND a terminal.
+      const cancelled = ablyMsg({
+        action: 'message.append',
+        headers: {
+          [HEADER_RUN_ID]: 'T1',
+          [HEADER_CODEC_MESSAGE_ID]: 'asst-cancel',
+          [HEADER_STREAM]: 'true',
+          [HEADER_STATUS]: 'cancelled',
+        },
+      });
       const channel = createMockChannel([[cancelled]]);
-      const codec = createMockCodec();
-      const page = await decodeHistory(channel, codec, { limit: 1 }, silentLogger);
-      // The cancelled message is counted complete and returned in the page.
-      expect(page.items).toHaveLength(1);
-    });
-  });
 
-  // -------------------------------------------------------------------------
-  // Headers + canonical serial captured per codec-message-id
-  // -------------------------------------------------------------------------
-
-  describe('headers capture', () => {
-    it('returns canonical headers and first-seen serial for each item', async () => {
-      const m = discreteMsg('u1', 'hi', { 'x-extra': 'v1' });
-      const channel = createMockChannel([[m]]);
-      const codec = createMockCodec();
-
-      const page = await decodeHistory(channel, codec, { limit: 1 }, silentLogger);
-
-      expect(page.items[0]?.serial).toBe(m.serial);
-      expect(page.items[0]?.headers).toMatchObject({ [HEADER_CODEC_MESSAGE_ID]: 'u1', 'x-extra': 'v1' });
+      const page = await decodeHistory(channel, { limit: 1 }, silentLogger);
+      // Counted complete and returned without needing to page further.
+      expect(serialsOf(page.rawMessages)).toEqual(serialsOf([cancelled]));
+      expect(page.hasNext()).toBe(false);
     });
 
-    it('per-run runs include their HEADER_RUN_ID in the returned headers', async () => {
-      const [finish, delta, create] = streamingRun('T1', 'asst-1', ['answer']);
-      if (!finish || !delta || !create) throw new Error('expected 3 wire messages');
+    it('does not count wires without a codec-message-id (lifecycle events)', async () => {
+      // Two lifecycle-only wires (no codec-message-id) + one real completion.
+      const lifecycle1 = ablyMsg({ headers: { [HEADER_RUN_ID]: 'T1' } });
+      const lifecycle2 = ablyMsg({ headers: { [HEADER_RUN_ID]: 'T1' } });
+      const real = discreteMsg('u1');
+      const channel = createMockChannel([[lifecycle1, lifecycle2, real]]);
 
-      const channel = createMockChannel([[finish, delta, create]]);
-      const codec = createMockCodec();
-
-      const page = await decodeHistory(channel, codec, { limit: 10 }, silentLogger);
-      const asst = page.items.find((i) => i.message.id === 'asst-1');
-      expect(asst?.headers[HEADER_RUN_ID]).toBe('T1');
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // Same-run message routing — successive wire messages folded together
-  // -------------------------------------------------------------------------
-
-  describe('same-run message routing', () => {
-    it('folds a follow-up message with matching HEADER_RUN_ID into the same run projection', async () => {
-      // Run T1 streams the original message; a later wire message in the SAME
-      // run T1 carries HEADER_CODEC_MESSAGE_ID = 'asst-1' to extend it. The reducer
-      // routes via meta.messageId === 'asst-1', so the follow-up appends
-      // into the same message.
-      const [finish, delta, create] = streamingRun('T1', 'asst-1', ['original']);
-      if (!finish || !delta || !create) throw new Error('expected 3 wire messages');
-
-      const followUp = withEvents(
-        ablyMsg({
-          action: 'message.create',
-          headers: {
-            [HEADER_RUN_ID]: 'T1',
-            [HEADER_CODEC_MESSAGE_ID]: 'asst-1',
-            [HEADER_STREAM]: 'false',
-            [HEADER_DISCRETE]: 'true',
-          },
-        }),
-        [{ type: 'text', text: ' + extended' }],
-      );
-
-      // Newest-first: follow-up, finish, delta, create
-      const channel = createMockChannel([[followUp, finish, delta, create]]);
-      const codec = createMockCodec();
-
-      const page = await decodeHistory(channel, codec, { limit: 10 }, silentLogger);
-      const asst = page.items.find((i) => i.message.id === 'asst-1');
-      expect(asst?.message.content).toBe('original + extended');
-    });
-
-    it('preserves identity headers from the first wire when later amend wires target the same codec-message-id', async () => {
-      // Regression: under Option X the continuation tool-resolution wire
-      // publishes under the prior assistant's codec-message-id (so the reducer's
-      // direct-fold path runs). The wire carries `role: user, parent: <self>`
-      // because it's a continuation publish — its headers describe the
-      // continuation, not the assistant. The agent-side amend wire
-      // (`tool-output-available`) also publishes under the assistant's
-      // codec-message-id but with `parent: <self>` (the run.pipe default parent
-      // points at the assistant being amended).
-      //
-      // Without identity-preservation in decode-history, those amends
-      // clobber the assistant's stored `role` and `parent`, poisoning the
-      // tree node so `flattenNodes` skips it as unreachable (self-loop
-      // parent). With preservation, identity stays as set by the first
-      // wire — the assistant renders correctly on history rewind.
-      const [finish, delta, create] = streamingRun('T1', 'asst-1', ['answer']);
-      if (!finish || !delta || !create) throw new Error('expected 3 wire messages');
-
-      // Override the create's headers so it has `role: assistant, parent: u1`
-      // — the assistant's real identity from its first wire.
-      const createWithIdentity = withEvents(
-        ablyMsg({
-          action: 'message.create',
-          headers: {
-            [HEADER_RUN_ID]: 'T1',
-            [HEADER_CODEC_MESSAGE_ID]: 'asst-1',
-            [HEADER_STREAM]: 'true',
-            [HEADER_ROLE]: 'assistant',
-            [HEADER_PARENT]: 'u1',
-          },
-          serial: create.serial ?? undefined,
-        }),
-        [],
-      );
-
-      // Option X continuation tool-resolution wire: same codec-message-id, role=user,
-      // parent=self. Different invocation.
-      const continuationAmend = withEvents(
-        ablyMsg({
-          action: 'message.create',
-          headers: {
-            [HEADER_RUN_ID]: 'T1',
-            [HEADER_CODEC_MESSAGE_ID]: 'asst-1',
-            [HEADER_ROLE]: 'user',
-            [HEADER_PARENT]: 'asst-1',
-            [HEADER_INVOCATION_ID]: 'inv-continuation',
-            [HEADER_STREAM]: 'false',
-            [HEADER_DISCRETE]: 'true',
-          },
-        }),
-        // Reducer no-op (mock codec doesn't model tool resolutions).
-        [],
-      );
-
-      // Agent-side amend (tool-output-available): same codec-message-id,
-      // role=assistant, parent=self.
-      const agentAmend = withEvents(
-        ablyMsg({
-          action: 'message.create',
-          headers: {
-            [HEADER_RUN_ID]: 'T1',
-            [HEADER_CODEC_MESSAGE_ID]: 'asst-1',
-            [HEADER_ROLE]: 'assistant',
-            [HEADER_PARENT]: 'asst-1',
-            [HEADER_STREAM]: 'false',
-            [HEADER_DISCRETE]: 'true',
-          },
-        }),
-        [],
-      );
-
-      // Newest-first: agentAmend, continuationAmend, finish, delta, create
-      const channel = createMockChannel([[agentAmend, continuationAmend, finish, delta, createWithIdentity]]);
-      const codec = createMockCodec();
-
-      const page = await decodeHistory(channel, codec, { limit: 10 }, silentLogger);
-      const asst = page.items.find((i) => i.message.id === 'asst-1');
-      expect(asst).toBeDefined();
-      // Identity preserved from the first wire (create).
-      expect(asst?.headers[HEADER_ROLE]).toBe('assistant');
-      expect(asst?.headers[HEADER_PARENT]).toBe('u1');
-    });
-
-    it('keeps follow-ups under a different HEADER_RUN_ID isolated from the original message', async () => {
-      // T1 streams; a wire message in T2 targets T1's asst-1. With the new
-      // producer-responsibility model the producer must publish under T1's
-      // HEADER_RUN_ID, so a follow-up tagged with T2 lands in T2's
-      // projection — where there is no asst-1 to update — and never merges
-      // into T1's asst-1 message.
-      const [finish, delta, create] = streamingRun('T1', 'asst-1', ['original']);
-      if (!finish || !delta || !create) throw new Error('expected 3 wire messages');
-
-      const orphanFollowUp = withEvents(
-        ablyMsg({
-          action: 'message.create',
-          headers: {
-            [HEADER_RUN_ID]: 'T2',
-            [HEADER_CODEC_MESSAGE_ID]: 'asst-1',
-            [HEADER_STREAM]: 'false',
-            [HEADER_DISCRETE]: 'true',
-          },
-        }),
-        [{ type: 'text', text: '[orphan]' }],
-      );
-
-      const channel = createMockChannel([[orphanFollowUp, finish, delta, create]]);
-      const codec = createMockCodec();
-
-      const page = await decodeHistory(channel, codec, { limit: 10 }, silentLogger);
-      const asst = page.items.find((i) => i.message.id === 'asst-1');
-      // The mock reducer keys by meta.messageId — when the follow-up lands
-      // in T2's projection, it creates a 'asst-1' message there, but the
-      // per-run separation in decode-history means that doesn't merge into
-      // T1's 'asst-1' message. Verify T1's content is unchanged.
-      expect(asst?.message.content).toBe('original');
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // Decode-pass efficiency (cache invalidation tests)
-  // -------------------------------------------------------------------------
-
-  describe('decode caching', () => {
-    it('creates exactly one decoder per decodeHistory() call regardless of page count', async () => {
-      const m3 = discreteMsg('u3', 'c');
-      const m2 = discreteMsg('u2', 'b');
-      const m1 = discreteMsg('u1', 'a');
-      const channel = createMockChannel([[m3], [m2], [m1]]);
-      const codec = createMockCodec();
-
-      await decodeHistory(channel, codec, { limit: 10 }, silentLogger);
-      expect(codec.decoderInstances).toBe(1);
-    });
-
-    it('does not re-decode when next() serves a buffered page', async () => {
-      const m4 = discreteMsg('u4', 'd');
-      const m3 = discreteMsg('u3', 'c');
-      const m2 = discreteMsg('u2', 'b');
-      const m1 = discreteMsg('u1', 'a');
-      const channel = createMockChannel([[m4, m3, m2, m1]]);
-      const codec = createMockCodec();
-
-      const first = await decodeHistory(channel, codec, { limit: 2 }, silentLogger);
-      const decodesAfterFirst = codec.decoderInstances;
-      await first.next();
-      expect(codec.decoderInstances).toBe(decodesAfterFirst);
-    });
-
-    it('re-decodes when next() fetches a new Ably page (cache invalidation)', async () => {
-      const m2 = discreteMsg('u2', 'b');
-      const m1 = discreteMsg('u1', 'a');
-      // Two pages, limit forces fetch on next()
-      const channel = createMockChannel([[m2], [m1]]);
-      const codec = createMockCodec();
-
-      const first = await decodeHistory(channel, codec, { limit: 1 }, silentLogger);
-      const decodesBefore = codec.decoderInstances;
-      await first.next();
-      // A new page was pulled in — the cache was invalidated and a fresh
-      // decoder ran. The exact count isn't load-bearing — only that another
-      // decode pass occurred.
-      expect(codec.decoderInstances).toBeGreaterThan(decodesBefore);
+      // limit 1 is met by the single real completion; lifecycle wires never count.
+      const page = await decodeHistory(channel, { limit: 1 }, silentLogger);
+      expect(page.rawMessages).toHaveLength(3);
+      expect(page.hasNext()).toBe(false);
     });
   });
 });

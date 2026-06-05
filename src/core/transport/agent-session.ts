@@ -14,10 +14,7 @@ import * as Ably from 'ably';
 
 import {
   EVENT_CANCEL,
-  EVENT_RUN_END,
-  EVENT_RUN_RESUME,
   EVENT_RUN_START,
-  EVENT_RUN_SUSPEND,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
@@ -33,7 +30,7 @@ import { compareBySerial, getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
 import { buildBranchChain } from './branch-chain.js';
-import { buildTransportHeaders } from './headers.js';
+import { buildTransportHeaders, isRunLifecycleName } from './headers.js';
 import { Invocation } from './invocation.js';
 import { pipeStream } from './pipe-stream.js';
 import type { RunManager } from './run-manager.js';
@@ -56,16 +53,6 @@ import type {
 // ---------------------------------------------------------------------------
 // Shared wire-message helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Whether an Ably message name is a run-lifecycle event (run-start, suspend,
- * resume, end). Lifecycle events carry no codec content, so history folds and
- * node-index passes skip them.
- * @param name - The Ably message name.
- * @returns True when the name is a lifecycle event.
- */
-const isLifecycleEvent = (name: string | undefined): boolean =>
-  name === EVENT_RUN_START || name === EVENT_RUN_SUSPEND || name === EVENT_RUN_RESUME || name === EVENT_RUN_END;
 
 /**
  * Merge live-observed messages into a collection of history messages, then
@@ -155,7 +142,7 @@ const foldRunMessages = <TInput extends CodecInputEvent, TOutput extends CodecOu
     const h = getTransportHeaders(msg);
     if (h[HEADER_RUN_ID] !== runId) continue;
     // Lifecycle events carry no codec content — skip them.
-    if (isLifecycleEvent(msg.name)) continue;
+    if (isRunLifecycleName(msg.name)) continue;
     const codecMsgId = h[HEADER_CODEC_MESSAGE_ID];
     if (truncateAt !== undefined && codecMsgId === truncateAt) break;
     const { inputs, outputs } = decoder.decode(msg);
@@ -1404,7 +1391,7 @@ class DefaultAgentSession<
         const nodeMeta = new Map<string, NodeMeta>();
         const runIdToCodecMessageId = new Map<string, string>();
         for (const msg of sortedMessages) {
-          if (isLifecycleEvent(msg.name)) continue;
+          if (isRunLifecycleName(msg.name)) continue;
           const h = getTransportHeaders(msg);
           const cid = h[HEADER_CODEC_MESSAGE_ID];
           if (cid === undefined) continue;

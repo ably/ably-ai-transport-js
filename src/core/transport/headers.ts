@@ -85,6 +85,25 @@ export const buildTransportHeaders = (opts: {
   return h;
 };
 
+/** The four run-lifecycle Ably message names. */
+type RunLifecycleName =
+  | typeof EVENT_RUN_START
+  | typeof EVENT_RUN_SUSPEND
+  | typeof EVENT_RUN_RESUME
+  | typeof EVENT_RUN_END;
+
+/**
+ * Whether an Ably message `name` is one of the run-lifecycle event names
+ * (run-start / run-suspend / run-resume / run-end). Single source of truth for
+ * the classification both decode loops and the agent's history scan use to
+ * route lifecycle wires away from the codec decoder. Narrows `name` to a
+ * lifecycle name so callers can pass it straight to {@link parseRunLifecycle}.
+ * @param name - The inbound Ably message `name`, or undefined.
+ * @returns True when `name` is a run-lifecycle event name.
+ */
+export const isRunLifecycleName = (name: string | undefined): name is RunLifecycleName =>
+  name === EVENT_RUN_START || name === EVENT_RUN_SUSPEND || name === EVENT_RUN_RESUME || name === EVENT_RUN_END;
+
 /**
  * Parse an inbound run-lifecycle Ably message into a {@link RunLifecycleEvent}.
  *

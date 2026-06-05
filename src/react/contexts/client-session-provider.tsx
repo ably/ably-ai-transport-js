@@ -5,9 +5,11 @@
  * Reads the Ably Realtime client from the surrounding `<AblyProvider>` and
  * forwards it to `createClientSession` along with the supplied `channelName`.
  *
- * The session is created once on first render (via useRef) and `connect()`
- * is invoked from a `useEffect` so the session is subscribed/attached
- * before the first descendant operation. If `createClientSession` throws,
+ * The session is created on first render (via useRef) and recreated when
+ * `channelName` changes; the previous session is queued for disposal.
+ * `connect()` is invoked from a `useEffect` so the session is
+ * subscribed/attached before the first descendant operation. If
+ * `createClientSession` throws,
  * the error is stored in the ClientSessionSlot (alongside an undefined
  * session) so that useClientSession can surface it as `sessionError`
  * without crashing the component tree.

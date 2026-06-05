@@ -845,8 +845,8 @@ export class DefaultView<
       throw new Ably.ErrorInfo('unable to edit; view is closed', ErrorCode.InvalidArgument, 400);
     }
 
-    // The edit target is a user prompt — an INPUT node now (run-less), so
-    // resolve it kind-blind, not via the reply-run-only lookup.
+    // The edit target is a user prompt — a run-less INPUT node — so resolve
+    // it kind-blind, not via the reply-run-only lookup.
     const targetNode = this._tree.getNodeByCodecMessageId(messageId);
     if (!targetNode) {
       throw new Ably.ErrorInfo(

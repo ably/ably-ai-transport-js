@@ -59,7 +59,7 @@ export interface RunInfo {
   /**
    * The agent-minted `invocationId` observed for this Run, adopted from the
    * wire `ai-run-start`. Stable across the Run's lifecycle once observed.
-   * Empty string until run-start arrives (the client no longer mints it, so an
+   * Empty string until run-start arrives (the agent mints it, so an
    * optimistic Run carries none) or when the wire didn't carry an
    * invocation-id.
    */

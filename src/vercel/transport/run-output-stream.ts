@@ -154,7 +154,7 @@ export const createRunOutputStream = (
       }
     }),
     session.tree.on('run', (event) => {
-      // run-end is always terminal now; a run-suspend (event.type === 'suspend')
+      // run-end is always terminal; a run-suspend (event.type === 'suspend')
       // keeps the core run alive and must not close the consumer stream. Match
       // against the resolved runId once the agent has minted it.
       if (event.type === 'end' && resolvedRunId !== undefined && event.runId === resolvedRunId) {

@@ -347,8 +347,8 @@ const deriveContinuationInputs = (
       // Client-tool resolution: overlay has `output-available` / `output-error`
       // while the tree's part is still unresolved. Construct a TInput
       // variant (not a UIMessageChunk) so the encoder publishes on the
-      // `ai-input` wire — this is the fix for AIT-815 where client tool
-      // results previously landed on `ai-output`.
+      // `ai-input` wire — client tool results belong on `ai-input`, matching
+      // their client publisher, not on `ai-output`.
       if (overlayPart.state !== 'output-available' && overlayPart.state !== 'output-error') continue;
       // Tree already resolved (echo arrived back) — nothing to do.
       if (treePart && !UNRESOLVED_TOOL_STATES.has(treePart.state)) continue;
@@ -428,7 +428,7 @@ export const createChatTransport = (
   // onStreamingChange handler can't prevent others from firing or block the
   // state transition) and uniform emitter behaviour across the SDK. The
   // factory takes no logger, so a silent one is used — listener exceptions are
-  // swallowed exactly as the previous hand-rolled try/catch did.
+  // swallowed by the emitter rather than surfaced.
   let _streaming = false;
   const emitter = new EventEmitter<ChatTransportEventsMap>(makeLogger({ logLevel: LogLevel.Silent }));
 
@@ -612,7 +612,7 @@ export const createChatTransport = (
 
     // Build the consumer-facing stream from the Tree's events for this run.
     // Streaming is a useChat concern owned by the Vercel layer; the core
-    // session no longer exposes a per-run stream. Key it on
+    // session exposes no per-run stream. Key it on
     // `run.inputCodecMessageId` — the triggering input's codec-message-id, which
     // the client owns from send time and the agent echoes as
     // `input-codec-message-id`. The agent mints the runId, supplied as

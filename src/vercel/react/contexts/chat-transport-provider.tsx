@@ -6,7 +6,7 @@
  * surrounding `<AblyProvider>` supplies the Realtime client; the session
  * resolves the channel from `channelName` itself. An inner component reads
  * the ClientSession via useClientSession() and creates the ChatTransport
- * once on first render (via useRef).
+ * via useMemo, keyed on the session and transport options.
  *
  * The ChatTransport is NOT closed on unmount — the underlying ClientSession
  * lifecycle is managed by the wrapping ClientSessionProvider. Auto-closing would break

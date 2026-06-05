@@ -789,8 +789,8 @@ export class DefaultTree<
     let run = this._nodeIndex.get(wireRunId);
 
     // Reconcile an optimistic insert with its serial-bearing echo by
-    // codec-message-id rather than the wire run-id (kept for assistant content
-    // that pins a codec-message-id before its run-id is indexed).
+    // codec-message-id rather than the wire run-id — covers assistant content
+    // that pins a codec-message-id before its run-id is indexed.
     if (!run && codecMessageId !== undefined) {
       const indexedKey = this._codecMessageIdToNodeKey.get(codecMessageId);
       const indexed = indexedKey === undefined ? undefined : this._nodeIndex.get(indexedKey);
@@ -885,7 +885,7 @@ export class DefaultTree<
       // boundary or out-of-order delivery). The run-start lifecycle event is
       // the canonical source for parent/forkOf/regenerates; only fill in
       // fields the wire didn't already populate. A run-start is always a
-      // first start now (continuations re-enter via `ai-run-resume`, which
+      // first start (continuations re-enter via `ai-run-resume`, which
       // carries no structural metadata), so it is unconditionally
       // authoritative here. `parent` is the run's STRUCTURAL parent (its
       // input node) — reachability and the reply→input edge read it.
@@ -908,11 +908,11 @@ export class DefaultTree<
         this._structuralVersion++;
       }
       // Adopt the agent-minted invocation-id onto the optimistic node. The
-      // client no longer mints it, so a node created from an optimistic
-      // insert (or an assistant wire that arrived before run-start) carries
-      // an empty id until the agent's run-start delivers it. Metadata, not
-      // structure — consumers re-read it on the `run` emit, so no
-      // structural-version bump.
+      // agent mints it, so a node created from an optimistic insert (or an
+      // assistant wire that arrived before run-start) carries an empty id
+      // until the agent's run-start delivers it. Metadata, not structure —
+      // consumers re-read it on the `run` emit, so no structural-version
+      // bump.
       if (node.invocationId === '' && event.invocationId !== '') {
         node.invocationId = event.invocationId;
       }

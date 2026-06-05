@@ -808,12 +808,12 @@ class DefaultAgentSession<
   // -------------------------------------------------------------------------
 
   private _createRun(invocation: Invocation, runtime: RunRuntime<TOutput>): Run<TOutput, TProjection, TMessage> {
-    // The run-id is no longer carried in the invocation body. Mint a
-    // provisional id now (or take the `runtime.runId` override for tests /
-    // in-process drivers) — this IS the id for a fresh run. A continuation
-    // overrides it in `Run.start()` with the existing run-id read off the
-    // triggering input event's wire headers (the run it re-enters). Mirrors
-    // the invocationId mint below.
+    // The run-id is not carried in the invocation body — the agent mints it.
+    // Mint a provisional id now (or take the `runtime.runId` override for
+    // tests / in-process drivers) — this IS the id for a fresh run. A
+    // continuation overrides it in `Run.start()` with the existing run-id read
+    // off the triggering input event's wire headers (the run it re-enters).
+    // Mirrors the invocationId mint below.
     let runId = runtime.runId ?? crypto.randomUUID();
     // The agent mints the invocation id — one per HTTP request that invokes
     // it. A per-run override (runtime.invocationId) supports deterministic ids
@@ -1017,9 +1017,8 @@ class DefaultAgentSession<
         // the assistant). A `run-id` on the triggering input marks a
         // continuation (re-entry via `ai-run-resume`); a fresh input carries
         // none and opens the run with `ai-run-start`. Fall back to the first
-        // MessageNode's headers for the legacy pre-populated path where the
-        // lookup ran with `viewMessages` already populated and no
-        // `firstHeaders` was captured.
+        // MessageNode's headers for the path where the lookup ran with
+        // `viewMessages` already populated and no `firstHeaders` was captured.
         const sourceHeaders = firstLookupHeaders ?? viewMessages[0]?.headers;
         if (sourceHeaders) {
           resolvedClientId = sourceHeaders[HEADER_RUN_CLIENT_ID];

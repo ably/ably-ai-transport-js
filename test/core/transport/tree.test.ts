@@ -339,7 +339,7 @@ describe('Tree', () => {
     it('re-sorts after startSerial promotion', () => {
       // A linear chain: root reply R0, then a follow-up reply R1 parented at
       // R0's message. R1 arrives optimistically (no serial), then is promoted.
-      // The sorted-list re-sort (`_removeSortedRun`/`_insertSortedRun` on the
+      // The sorted-list re-sort (`_removeSortedNode`/`_insertSortedNode` on the
       // promotion path) must keep R1 correctly positioned after its parent. In
       // the two-node model two reply runs sharing a parent would be regenerate
       // siblings, so they must chain rather than sit side-by-side as roots.

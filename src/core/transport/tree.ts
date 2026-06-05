@@ -233,7 +233,7 @@ export class DefaultTree<
    * (optimistic) sort after all serial-bearing nodes, ordered among themselves
    * by insertion sequence.
    */
-  private readonly _sortedRuns: InternalNode<TProjection>[] = [];
+  private readonly _sortedNodes: InternalNode<TProjection>[] = [];
 
   /**
    * Parent index: parent node key (the key its children's
@@ -280,21 +280,21 @@ export class DefaultTree<
   // -------------------------------------------------------------------------
 
   /**
-   * Compare two Runs for sorted list ordering.
-   * Serial-bearing Runs sort by startSerial (lexicographic).
-   * Null-startSerial Runs sort after all serial-bearing Runs.
-   * Among null-startSerial Runs, sort by insertion sequence.
+   * Compare two nodes (Run or input) for sorted list ordering.
+   * Serial-bearing nodes sort by startSerial (lexicographic).
+   * Null-startSerial nodes sort after all serial-bearing nodes.
+   * Among null-startSerial nodes, sort by insertion sequence.
    *
-   * Optimistic (null-serial) Runs intentionally tail-sort so they reorder
+   * Optimistic (null-serial) nodes intentionally tail-sort so they reorder
    * into place when the server relay arrives and `applyMessage` promotes
-   * startSerial — see {@link applyMessage}'s `_removeSortedRun` /
-   * `_insertSortedRun` pair on the promotion path.
-   * @param a - First Run to compare.
-   * @param b - Second Run to compare.
+   * startSerial — see {@link applyMessage}'s `_removeSortedNode` /
+   * `_insertSortedNode` pair on the promotion path.
+   * @param a - First node to compare.
+   * @param b - Second node to compare.
    * @returns Negative if a sorts before b, positive if after, zero if equal.
    */
   // Spec: AIT-CT13a
-  private _compareRuns(a: InternalNode<TProjection>, b: InternalNode<TProjection>): number {
+  private _compareNodes(a: InternalNode<TProjection>, b: InternalNode<TProjection>): number {
     const sa = sortSerial(a.node);
     const sb = sortSerial(b.node);
     if (sa === undefined && sb === undefined) return a.insertSeq - b.insertSeq;
@@ -306,40 +306,40 @@ export class DefaultTree<
   }
 
   /**
-   * Insert a Run into sortedRuns at the correct position via binary search.
-   * @param internal - The Run to insert.
+   * Insert a node into the sorted list at the correct position via binary search.
+   * @param internal - The node to insert.
    */
-  private _insertSortedRun(internal: InternalNode<TProjection>): void {
+  private _insertSortedNode(internal: InternalNode<TProjection>): void {
     const startSerial = sortSerial(internal.node);
 
     // Fast path: null-startSerial always appends to end.
     if (startSerial === undefined) {
-      this._sortedRuns.push(internal);
+      this._sortedNodes.push(internal);
       return;
     }
 
     let lo = 0;
-    let hi = this._sortedRuns.length;
+    let hi = this._sortedNodes.length;
     while (lo < hi) {
       const mid = (lo + hi) >>> 1;
-      const midRun = this._sortedRuns[mid];
-      if (!midRun) break; // unreachable
-      if (this._compareRuns(midRun, internal) <= 0) {
+      const midNode = this._sortedNodes[mid];
+      if (!midNode) break; // unreachable
+      if (this._compareNodes(midNode, internal) <= 0) {
         lo = mid + 1;
       } else {
         hi = mid;
       }
     }
-    this._sortedRuns.splice(lo, 0, internal);
+    this._sortedNodes.splice(lo, 0, internal);
   }
 
   /**
-   * Remove a Run from sortedRuns.
-   * @param internal - The Run to remove.
+   * Remove a node from the sorted list.
+   * @param internal - The node to remove.
    */
-  private _removeSortedRun(internal: InternalNode<TProjection>): void {
-    const idx = this._sortedRuns.indexOf(internal);
-    if (idx !== -1) this._sortedRuns.splice(idx, 1);
+  private _removeSortedNode(internal: InternalNode<TProjection>): void {
+    const idx = this._sortedNodes.indexOf(internal);
+    if (idx !== -1) this._sortedNodes.splice(idx, 1);
   }
 
   // -------------------------------------------------------------------------
@@ -374,20 +374,6 @@ export class DefaultTree<
   // -------------------------------------------------------------------------
 
   /**
-   * Get the sibling group that the node keyed by `key` belongs to. Kind-split:
-   *
-   * - **Reply runs** — every reply run sharing the same input-node parent is a
-   *   sibling (the original reply + its regenerators all parent at the same
-   *   input node M_user). No fork-of involved.
-   * - **Input nodes** — edit versions: nodes sharing a parent AND linked by a
-   *   `forkOf` chain to the group root.
-   *
-   * Returned ordered by startSerial (original/oldest first). A group of one is
-   * returned as a single-element array (no branching).
-   * @param key - The node key ({@link nodeKey}) to look up the group for.
-   * @returns The ordered list of sibling nodes.
-   */
-  /**
    * Walk an input node's `forkOf` chain to the group root — the earliest edit
    * version sharing the same structural parent. Stops at a missing target, a
    * non-input target, a parent mismatch, or a cycle.
@@ -409,6 +395,20 @@ export class DefaultTree<
     return current;
   }
 
+  /**
+   * Get the sibling group that the node keyed by `key` belongs to. Kind-split:
+   *
+   * - **Reply runs** — every reply run sharing the same input-node parent is a
+   *   sibling (the original reply + its regenerators all parent at the same
+   *   input node M_user). No fork-of involved.
+   * - **Input nodes** — edit versions: nodes sharing a parent AND linked by a
+   *   `forkOf` chain to the group root.
+   *
+   * Returned ordered by startSerial (original/oldest first). A group of one is
+   * returned as a single-element array (no branching).
+   * @param key - The node key ({@link nodeKey}) to look up the group for.
+   * @returns The ordered list of sibling nodes.
+   */
   // Spec: AIT-CT13b
   private _getSiblingGroup(key: string): InternalNode<TProjection>[] {
     if (this._siblingCacheVersion !== this._structuralVersion) {
@@ -445,7 +445,7 @@ export class DefaultTree<
       }
     }
 
-    siblings.sort((a, b) => this._compareRuns(a, b));
+    siblings.sort((a, b) => this._compareNodes(a, b));
     // Cache against the queried key AND every member of the group: a single
     // group is the same array regardless of which member triggered the lookup,
     // so subsequent queries against any member hit without recomputing.
@@ -527,7 +527,7 @@ export class DefaultTree<
     const currentPath = new Set<string>();
     const resolvedGroups = new Map<string, string>(); // groupRootKey -> selected key
 
-    for (const internal of this._sortedRuns) {
+    for (const internal of this._sortedNodes) {
       const node = internal.node;
       const key = nodeKey(node);
 
@@ -674,15 +674,15 @@ export class DefaultTree<
       this._nodeIndex.set(codecMessageId, entry);
       this._codecMessageIdToNodeKey.set(codecMessageId, codecMessageId);
       this._addToParentIndex(entry.node.parentCodecMessageId, codecMessageId);
-      this._insertSortedRun(entry);
+      this._insertSortedNode(entry);
       this._structuralVersion++;
       this._logger.debug('Tree.applyMessage(); created input node', { codecMessageId });
     } else if (entry.node.kind === 'input' && serial && !entry.node.serial) {
       // Promote optimistic serial when the relay/echo arrives.
       this._logger.debug('Tree.applyMessage(); promoting input serial', { codecMessageId, serial });
       entry.node.serial = serial;
-      this._removeSortedRun(entry);
-      this._insertSortedRun(entry);
+      this._removeSortedNode(entry);
+      this._insertSortedNode(entry);
       this._structuralVersion++;
     }
 
@@ -753,15 +753,15 @@ export class DefaultTree<
       this._nodeIndex.set(wireRunId, run);
       this._addToParentIndex(run.node.parentCodecMessageId, wireRunId);
       this._indexReplyRun(run.node, wireRunId);
-      this._insertSortedRun(run);
+      this._insertSortedNode(run);
       this._structuralVersion++;
       this._logger.debug('Tree.applyMessage(); created new Run', { runId: wireRunId });
     } else if (serial && run.node.kind === 'run' && !run.node.startSerial) {
       // Promote optimistic startSerial when the relay/echo arrives.
       this._logger.debug('Tree.applyMessage(); promoting startSerial', { runId: wireRunId, serial });
       run.node.startSerial = serial;
-      this._removeSortedRun(run);
-      this._insertSortedRun(run);
+      this._removeSortedNode(run);
+      this._insertSortedNode(run);
       this._structuralVersion++;
     }
 
@@ -869,8 +869,8 @@ export class DefaultTree<
       }
       if (event.serial && !node.startSerial) {
         node.startSerial = event.serial;
-        this._removeSortedRun(existing);
-        this._insertSortedRun(existing);
+        this._removeSortedNode(existing);
+        this._insertSortedNode(existing);
         this._structuralVersion++;
       }
       // Backfill structural metadata if the Run was created from an
@@ -914,7 +914,7 @@ export class DefaultTree<
       this._nodeIndex.set(event.runId, run);
       this._addToParentIndex(run.node.parentCodecMessageId, event.runId);
       this._indexReplyRun(run.node, event.runId);
-      this._insertSortedRun(run);
+      this._insertSortedNode(run);
       this._structuralVersion++;
     }
   }
@@ -931,15 +931,15 @@ export class DefaultTree<
     this._logger.debug('Tree.delete();', { key });
 
     this._removeFromParentIndex(entry.node.parentCodecMessageId, key);
-    this._removeSortedRun(entry);
+    this._removeSortedNode(entry);
     this._nodeIndex.delete(key);
     // Drop the reply→input reverse edge.
     if (entry.node.kind === 'run' && entry.node.parentCodecMessageId !== undefined) {
       deleteFromSetMap(this._replyRunsByInput, entry.node.parentCodecMessageId, key);
     }
-    // codecMessageIdToRunId entries pointing at this run linger but are harmless;
-    // they'll be overwritten if the Run is re-created and remain dangling
-    // otherwise. Cleanup not worth the index walk.
+    // _codecMessageIdToNodeKey entries pointing at this node linger but are
+    // harmless; they'll be overwritten if the node is re-created and remain
+    // dangling otherwise. Cleanup not worth the index walk.
 
     this._structuralVersion++;
     this._emitter.emit('update');

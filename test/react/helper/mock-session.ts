@@ -102,7 +102,7 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
 
   const mockRun = {
     stream: new ReadableStream(),
-    key: 'input-1',
+    inputCodecMessageId: 'input-1',
     runId: Promise.resolve('run-1'),
     inputEventId: '',
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly

@@ -103,7 +103,7 @@ export interface ActiveRun {
    * key on this — it is known immediately, unlike {@link runId}, which the
    * agent now mints.
    */
-  key: string;
+  inputCodecMessageId: string;
   /**
    * The run's unique identifier, resolved when the agent's `ai-run-start` for
    * this send is observed on the channel. The agent mints the run-id now (the
@@ -122,12 +122,12 @@ export interface ActiveRun {
   inputEventId: string;
   /**
    * Cancel this specific run. Publishes a cancel signal synchronously — keyed
-   * by the triggering input's codec-message-id ({@link key}), which the client
-   * owns the moment it publishes, so a cancel issued before the agent mints the
-   * run-id is still honoured (the agent buffers it and fires it once its
-   * input-event lookup resolves the input to the run). A continuation also
-   * carries its known run-id. Resolves once the cancel is published; it does
-   * not wait for {@link runId}.
+   * by the triggering input's codec-message-id ({@link inputCodecMessageId}),
+   * which the client owns the moment it publishes, so a cancel issued before
+   * the agent mints the run-id is still honoured (the agent buffers it and
+   * fires it once its input-event lookup resolves the input to the run). A
+   * continuation also carries its known run-id. Resolves once the cancel is
+   * published; it does not wait for {@link runId}.
    */
   cancel(): Promise<void>;
   /**

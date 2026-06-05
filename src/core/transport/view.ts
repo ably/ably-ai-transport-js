@@ -784,16 +784,19 @@ export class DefaultView<
     // we cannot pin by it synchronously. Resolve the group root from the
     // original reply run owning the anchor, and pin a pending selection keyed by
     // that group root, carrying the regenerate carrier's codec-message-id
-    // (`result.key`) so we can promote when the new reply run lands.
+    // (`result.inputCodecMessageId`) so we can promote when the new reply run lands.
     const anchorRun = this._runByCodecMessageId(anchorCodecMessageId);
     if (!anchorRun) return;
     const groupRoot = this._tree.getGroupRoot(anchorRun.runId);
 
-    this._regenSelections.set(groupRoot, { kind: 'pending', carrierCodecMessageId: result.key });
+    this._regenSelections.set(groupRoot, {
+      kind: 'pending',
+      carrierCodecMessageId: result.inputCodecMessageId,
+    });
     this._logger.debug('DefaultView._applyRegenerateAutoSelect(); deferring regenerate selection', {
       anchorCodecMessageId,
       groupRoot,
-      carrier: result.key,
+      carrier: result.inputCodecMessageId,
     });
 
     // The new reply run may already be in the tree (run-start raced ahead of the

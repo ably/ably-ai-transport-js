@@ -1277,7 +1277,7 @@ describe('ClientSession integration', () => {
       parts: [{ type: 'text', text: 'no-one is listening' }],
     });
     // The synchronous routing key is the triggering input's codec-message-id.
-    expect(activeRun.key).toBe('user-nonblocking-1');
+    expect(activeRun.inputCodecMessageId).toBe('user-nonblocking-1');
 
     // `runId` must stay pending — no agent published run-start. Race it
     // against a short timer to prove it neither resolves nor rejects.
@@ -1600,7 +1600,7 @@ describe('ClientSession integration', () => {
    * Scenario: the client cancels a fresh send BEFORE the agent has minted the
    * reply run-id and published run-start. In the two-node model a fresh run has
    * no run-id at send time, so the client keys the cancel by the triggering
-   * input's codec-message-id (the `ActiveRun.key`). The agent must buffer that
+   * input's codec-message-id (the `ActiveRun.inputCodecMessageId`). The agent must buffer that
    * early cancel and honour it once its input-event lookup resolves the input
    * to a run — aborting the run as `start()` completes, not dropping the cancel.
    *
@@ -1639,7 +1639,7 @@ describe('ClientSession integration', () => {
       role: 'user',
       parts: [{ type: 'text', text: 'cancel me before you even start' }],
     });
-    expect(activeRun.key).toBe('user-cancel-before-start-1');
+    expect(activeRun.inputCodecMessageId).toBe('user-cancel-before-start-1');
 
     // Cancel BEFORE the agent creates its run. The wire cancel is keyed by the
     // input codec-message-id (no run-id exists yet), so the agent buffers it.
@@ -1723,8 +1723,8 @@ describe('ClientSession integration', () => {
     });
 
     // Distinct input ids — the client routes outputs by these.
-    expect(runA.key).toBe('user-conc-a');
-    expect(runB.key).toBe('user-conc-b');
+    expect(runA.inputCodecMessageId).toBe('user-conc-a');
+    expect(runB.inputCodecMessageId).toBe('user-conc-b');
     expect(runA.inputEventId).not.toBe(runB.inputEventId);
 
     // Each agent run mints its own run-id and drives off its own input event.

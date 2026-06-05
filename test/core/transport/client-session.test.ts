@@ -529,11 +529,11 @@ describe('ClientSession', () => {
   // -------------------------------------------------------------------------
 
   describe('send', () => {
-    it('returns an ActiveRun with a synchronous key, runId promise and cancel', async () => {
+    it('returns an ActiveRun with a synchronous inputCodecMessageId, runId promise and cancel', async () => {
       const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       // The agent mints the run-id, so it is a promise; the synchronous routing
       // key (the triggering input's codec-message-id) is known immediately.
-      expect(typeof run.key).toBe('string');
+      expect(typeof run.inputCodecMessageId).toBe('string');
       expect(run.runId).toBeInstanceOf(Promise);
       expect(typeof run.cancel).toBe('function');
     });
@@ -738,7 +738,7 @@ describe('ClientSession', () => {
       const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       // The agent mints the run-id, so it is a promise; the send-resolved-on-
       // publish guarantee is observable via the synchronous routing key.
-      expect(typeof run.key).toBe('string');
+      expect(typeof run.inputCodecMessageId).toBe('string');
     });
   });
 
@@ -941,7 +941,7 @@ describe('ClientSession', () => {
       // input is published. The run-id is a promise (agent-minted); the
       // synchronous routing key proves the handle is usable immediately.
       const run = await s.view.sendInput({ kind: 'user-message', text: 'hi' });
-      expect(typeof run.key).toBe('string');
+      expect(typeof run.inputCodecMessageId).toBe('string');
       await s.close();
     });
 
@@ -1732,11 +1732,11 @@ describe('ClientSession', () => {
     it('run.cancel() on a fresh send publishes synchronously by the input codec-message-id (no run-id yet)', async () => {
       // A fresh send has no run-id until the agent mints it on run-start, so
       // run.cancel() keys the cancel by the triggering input's
-      // codec-message-id (= run.key) without awaiting run.runId.
+      // codec-message-id (= run.inputCodecMessageId) without awaiting run.runId.
       const run = await fix.session.view.sendInput({ kind: 'user-message', text: 'hi' });
       await run.cancel();
       const headers = cancelHeadersOf(fix.channel);
-      expect(headers?.[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe(run.key);
+      expect(headers?.[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe(run.inputCodecMessageId);
       // No run-id was ever minted client-side for a fresh send.
       expect(headers?.[HEADER_RUN_ID]).toBeUndefined();
       expect(headers?.[HEADER_EVENT_ID]).toBeDefined();
@@ -1747,7 +1747,7 @@ describe('ClientSession', () => {
       await run.cancel();
       const headers = cancelHeadersOf(fix.channel);
       expect(headers?.[HEADER_RUN_ID]).toBe('run-cont');
-      expect(headers?.[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe(run.key);
+      expect(headers?.[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe(run.inputCodecMessageId);
     });
 
     it('cancel is a no-op after close', async () => {

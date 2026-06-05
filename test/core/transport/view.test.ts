@@ -100,7 +100,7 @@ const createMockSendDelegate = (): SendDelegate<TestInput> =>
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   vi.fn(() =>
     Promise.resolve({
-      key: 'mock-input',
+      inputCodecMessageId: 'mock-input',
       runId: Promise.resolve('mock-run'),
       inputEventId: '',
       invocationId: 'mock-inv',
@@ -1132,7 +1132,7 @@ describe('DefaultView', () => {
       // First regen completes — promoted to auto.
       let deferredResolve: ((value: ActiveRun) => void) | undefined;
       vi.mocked(sendDelegate).mockResolvedValueOnce({
-        key: 'a1',
+        inputCodecMessageId: 'a1',
         runId: Promise.resolve('Rregen1'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
@@ -1199,7 +1199,7 @@ describe('DefaultView', () => {
       // The publish ACK resolves later: _applyRegenerateAutoSelect runs and the
       // selection stays on the latest (regen-2).
       deferredResolve?.({
-        key: 'a1_new1',
+        inputCodecMessageId: 'a1_new1',
         runId: Promise.resolve('Rregen2'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
@@ -1233,7 +1233,7 @@ describe('DefaultView', () => {
 
       // First regenerate.
       vi.mocked(sendDelegate).mockResolvedValueOnce({
-        key: 'a1',
+        inputCodecMessageId: 'a1',
         runId: Promise.resolve('Rregen1'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
@@ -1264,7 +1264,7 @@ describe('DefaultView', () => {
 
       // Second regenerate (clicking the displayed regen-1 message).
       vi.mocked(sendDelegate).mockResolvedValueOnce({
-        key: 'a1_new1',
+        inputCodecMessageId: 'a1_new1',
         runId: Promise.resolve('Rregen2'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
@@ -1295,7 +1295,7 @@ describe('DefaultView', () => {
 
       // Third regenerate.
       vi.mocked(sendDelegate).mockResolvedValueOnce({
-        key: 'a1_new2',
+        inputCodecMessageId: 'a1_new2',
         runId: Promise.resolve('Rregen3'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
@@ -2041,7 +2041,7 @@ describe('DefaultView', () => {
 
     it('regenerate sets a pending regenerate selection that resolves when the new Run arrives', async () => {
       vi.mocked(sendDelegate).mockResolvedValueOnce({
-        key: 'a1',
+        inputCodecMessageId: 'a1',
         runId: Promise.resolve('R2new'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
@@ -2074,7 +2074,7 @@ describe('DefaultView', () => {
 
     it('pending selection is cleared on run-end when the server never creates the sibling Run', async () => {
       vi.mocked(sendDelegate).mockResolvedValueOnce({
-        key: 'a1',
+        inputCodecMessageId: 'a1',
         runId: Promise.resolve('R2new'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
@@ -2184,7 +2184,7 @@ describe('DefaultView', () => {
 
     it('edit auto-selects the new sibling Run from optimisticCodecMessageIds', async () => {
       vi.mocked(sendDelegate).mockResolvedValueOnce({
-        key: 'u-new',
+        inputCodecMessageId: 'u-new',
         runId: Promise.resolve('R2edit'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),

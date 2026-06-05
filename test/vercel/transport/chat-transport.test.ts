@@ -62,7 +62,7 @@ const makeEmitter = (): MockEmitter => {
 
 interface MockRun {
   stream: ReadableStream<AI.UIMessageChunk>;
-  key: string;
+  inputCodecMessageId: string;
   runId: Promise<string>;
   inputEventId: string;
   cancel: ReturnType<typeof vi.fn>;
@@ -93,7 +93,7 @@ const createMockSession = (): MockSession => {
   const runId = 'run-1';
   // The triggering input's codec-message-id — the synchronous routing key the
   // consumer stream is built on (the agent mints the run-id separately).
-  const key = 'input-1';
+  const inputCodecMessageId = 'input-1';
 
   const mockRun: MockRun = {
     // The transport no longer reads this — it builds its own stream from Tree
@@ -102,7 +102,7 @@ const createMockSession = (): MockSession => {
       // eslint-disable-next-line @typescript-eslint/no-empty-function -- inert placeholder stream
       start: () => {},
     }),
-    key,
+    inputCodecMessageId,
     runId: Promise.resolve(runId),
     inputEventId: '',
     cancel: vi.fn(),
@@ -112,7 +112,7 @@ const createMockSession = (): MockSession => {
       // Route by the triggering input id — the key the consumer stream opens on.
       treeEmitter.emit('output', {
         runId,
-        inputCodecMessageId: key,
+        inputCodecMessageId,
         codecMessageId: 'm-1',
         serial: 's-1',
         events: [chunk],

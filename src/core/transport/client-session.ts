@@ -391,7 +391,8 @@ class DefaultClientSession<
       // nodes (keyed by codec-message-id).
       const node = this._tree.getNodeByCodecMessageId(codecMessageId);
       if (node?.kind === 'input' && node.serial === undefined) {
-        this._tree.deleteByCodecMessageId(codecMessageId);
+        // An input node's key is its codec-message-id, so delete by it directly.
+        this._tree.delete(node.codecMessageId);
       }
     }
   }

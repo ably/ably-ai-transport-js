@@ -137,8 +137,6 @@ const createMockSession = (): MockSession => {
     getRunNode: vi.fn(),
     getNodeByCodecMessageId: vi.fn(),
     getSiblingNodes: vi.fn(() => []),
-    // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires explicit undefined return for the contract
-    getRegenerateGroup: vi.fn(() => undefined),
     on: vi.fn(treeEmitter.on),
   } as unknown as Tree<VercelOutput, VercelProjection>;
 

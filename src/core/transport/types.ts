@@ -894,27 +894,6 @@ export interface Tree<TOutput extends CodecOutputEvent, TProjection> {
    */
   getSiblingNodes(key: string): ConversationNode<TProjection>[];
 
-  /**
-   * Resolve the regenerate sibling group containing `runId`, if any.
-   *
-   * The group is anchored at a codec-message-id — the one being regenerated —
-   * and its members are the Run that owns that codec-message-id plus every
-   * Run whose `regeneratesCodecMessageId` points at it. Returns `undefined`
-   * when `runId` neither regenerates a known codec-message-id nor owns a
-   * codec-message-id that has been regenerated.
-   * @param runId - The runId to look up.
-   * @returns Anchor codec-message-id and members ordered chronologically by
-   *   startSerial (owner first), or `undefined` if there is no group.
-   */
-  getRegenerateGroup(runId: string):
-    | {
-        /** The codec-message-id this group regenerates. */
-        anchorCodecMessageId: string;
-        /** Ordered group members (owner first, then regenerators by serial). */
-        runs: RunNode<TProjection>[];
-      }
-    | undefined;
-
   // --- Events ---
 
   /**

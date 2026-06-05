@@ -12,16 +12,16 @@ The run manager tracks active runs and publishes [run lifecycle events](wire-pro
 
 ### Operations
 
-| Method                                                                   | What it does                                                                                                                                                                                                                                                                                                                                                                                            |
-| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `startRun(runId, clientId?, controller?, metadata?)`                     | Registers the run and publishes its opening lifecycle event — `ai-run-start` for a fresh run, or `ai-run-resume` when `metadata.continuation` is set (a continuation re-entering an existing run). Returns an `AbortSignal`. `metadata` optionally stamps `parent`, `forkOf`, `invocationId`, `inputClientId` (→ `input-client-id`); the structural `parent` / `forkOf` headers are omitted on a resume |
-| `suspendRun(runId, invocationId?, inputClientId?, inputCodecMessageId?)` | Publishes `ai-run-suspend` (run paused awaiting input) and drops the run from the active set — a cancel during suspension is a no-op; the resuming invocation re-registers the run                                                                                                                                                                                                                      |
-| `endRun(runId, reason, invocationId?, inputClientId?)`                   | Publishes `ai-run-end` with the reason (and `invocationId` / `inputClientId` if provided), removes the run                                                                                                                                                                                                                                                                                              |
-| `cancel(runId)`                                                          | Fires the run's `AbortController.abort()` immediately                                                                                                                                                                                                                                                                                                                                                   |
-| `getSignal(runId)`                                                       | Returns the `AbortSignal` for a run                                                                                                                                                                                                                                                                                                                                                                     |
-| `getClientId(runId)`                                                     | Returns the clientId that owns a run                                                                                                                                                                                                                                                                                                                                                                    |
-| `getActiveRunIds()`                                                      | Returns all active run IDs                                                                                                                                                                                                                                                                                                                                                                              |
-| `close()`                                                                | Cancels all active runs and clears state                                                                                                                                                                                                                                                                                                                                                                |
+| Method                                                                       | What it does                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `startRun(runId, clientId?, controller?, metadata?)`                         | Registers the run and publishes its opening lifecycle event — `ai-run-start` for a fresh run, or `ai-run-resume` when `metadata.continuation` is set (a continuation re-entering an existing run). Returns an `AbortSignal`. `metadata` optionally stamps `parent`, `forkOf`, `regenerates`, `invocationId`, `inputClientId` (→ `input-client-id`), `inputCodecMessageId` (→ `input-codec-message-id`); the structural `parent` / `forkOf` / `regenerates` headers are omitted on a resume |
+| `suspendRun(runId, invocationId?, inputClientId?, inputCodecMessageId?)`     | Publishes `ai-run-suspend` (run paused awaiting input) and drops the run from the active set — a cancel during suspension is a no-op; the resuming invocation re-registers the run                                                                                                                                                                                                                                                                                                         |
+| `endRun(runId, reason, invocationId?, inputClientId?, inputCodecMessageId?)` | Publishes `ai-run-end` with the reason (and `invocationId` / `inputClientId` / `inputCodecMessageId` if provided), removes the run                                                                                                                                                                                                                                                                                                                                                         |
+| `cancel(runId)`                                                              | Fires the run's `AbortController.abort()` immediately                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `getSignal(runId)`                                                           | Returns the `AbortSignal` for a run                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `getClientId(runId)`                                                         | Returns the clientId that owns a run                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `getActiveRunIds()`                                                          | Returns all active run IDs                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `close()`                                                                    | Cancels all active runs and clears state                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 ### AbortController per run
 
@@ -42,7 +42,7 @@ while true:
   race(reader.read(), abortPromise)
     → cancelled?  call onCancelled(), then encoder.cancel('cancelled')
     → done?       call encoder.close()
-    → value?      call encoder.publish(value)
+    → value?      call encoder.publishOutput(value)
     → error?      call encoder.close() (best-effort), return 'error'
 ```
 
@@ -58,52 +58,55 @@ When cancelled:
 
 ### Error handling
 
-When the stream throws or `appendEvent()` fails, `pipeStream` catches the error and calls `encoder.close()` as a best-effort cleanup (the close itself may also fail if the channel is disconnected). The original error is preserved in the return value as `reason: 'error'`.
+When the stream throws or `publishOutput()` fails, `pipeStream` catches the error and calls `encoder.close()` as a best-effort cleanup (the close itself may also fail if the channel is disconnected). The original error is preserved in the return value as `reason: 'error'`.
 
 ### Return value
 
-Returns `{ reason }` where reason is `'complete'`, `'cancelled'`, or `'error'`. The agent session passes this to `run.end()`.
+Returns `{ reason, error? }` where reason is `'complete'`, `'cancelled'`, or `'error'`; `error` is present only when reason is `'error'` and carries the original provider error. The agent session passes the reason to `run.end()`.
 
 ## Cancel routing (agent session)
 
 Cancel routing lives in the agent session (`src/core/transport/agent-session.ts`), not in a separate component.
 
-The agent session subscribes to [`ai-cancel`](wire-protocol.md#lifecycle-events) events on channel construction. When a cancel message arrives, it:
+The agent session subscribes to [`ai-cancel`](wire-protocol.md#lifecycle-events) events when `connect()` is called (the constructor only registers a channel state-change listener; the message subscription is registered in `connect()`). A cancel can identify its target two ways: by `run-id` (a continuation, whose run-id the client already knows) or by `input-codec-message-id` (a fresh send, before the agent has minted the run-id). When a cancel message arrives, it:
 
-1. Reads `run-id` from the message headers — the protocol's single cancel target. Messages missing this header are dropped with a warn-level log.
-2. Looks up the registered run by id. If nothing matches, the cancel is a no-op.
-3. Calls the run's `onCancel` hook (if provided) — the hook can return `false` to reject the cancel.
-4. If allowed, fires `controller.abort()` on the run's AbortController.
+1. Reads `run-id` and `input-codec-message-id` from the message headers. A message carrying neither is dropped with a warn-level log.
+2. Resolves a run-id: uses `run-id` directly, else resolves `input-codec-message-id` to a run-id via the `input-codec-message-id → run` map, then looks up the registered run.
+3. If no run matches yet but the cancel carries an `input-codec-message-id`, it is **buffered** keyed by that id (a fresh-send cancel can race ahead of the run's input-event lookup, which is what establishes the linkage). `Run.start()` pulls and honours the buffered cancel once it resolves the triggering input. A bare `run-id` cancel for an unknown run is a no-op.
+4. For a matched run, calls the run's `onCancel` hook (if provided) — the hook can return `false` to reject the cancel.
+5. If allowed, fires `controller.abort()` on the run's AbortController.
 
-Each `ai-cancel` event targets exactly one run, so cancel routing is one lookup deep. Clients that want to stop multiple runs publish one `ai-cancel` per runId.
+Each `ai-cancel` event targets exactly one run. Clients that want to stop multiple runs publish one `ai-cancel` per run.
 
 ## buildTransportHeaders
 
 `src/core/transport/headers.ts` - used by both client and server.
 
-A single function that builds the standard [transport header set](wire-protocol.md#transport-headers) for a message. Used by the agent session's `addMessages()` and `pipe()`, and by the client session for optimistic message stamping.
+A single function that builds the standard [transport header set](wire-protocol.md#transport-headers) for a message. Used by the agent session's `addEvents()` and `pipe()`, and by the client session for optimistic message stamping.
 
 ```typescript
 buildTransportHeaders({
   role: 'assistant', // required - 'user' or 'assistant'
-  runId: 'run-1', // required
+  runId: 'run-1', // optional - omitted on a fresh client input (the agent mints it)
   codecMessageId: 'msg-2', // required
   runClientId: 'user-1', // optional - run owner; omits header when undefined
   parent: 'msg-1', // optional - see Branching headers
   forkOf: 'msg-0', // optional - sibling marker for fork chains
+  regenerates: 'msg-r', // optional - regenerated assistant codec-message-id (→ msg-regenerate)
   invocationId: 'inv-1', // optional - per-invocation correlator
   inputClientId: 'user-2', // optional - publisher clientId of the triggering input event (see Client identity)
+  inputCodecMessageId: 'msg-i', // optional - codec-message-id of the triggering input event
   inputEventId: 'e-1', // optional - per-event correlator (client side)
 });
 // → {
 //     'role': 'assistant', 'run-id': 'run-1',
 //     'codec-message-id': 'msg-2', 'run-client-id': 'user-1',
-//     'parent': 'msg-1', 'fork-of': 'msg-0',
+//     'parent': 'msg-1', 'fork-of': 'msg-0', 'msg-regenerate': 'msg-r',
 //     'invocation-id': 'inv-1', 'input-client-id': 'user-2',
-//     'event-id': 'e-1',
+//     'input-codec-message-id': 'msg-i', 'event-id': 'e-1',
 //   }
 ```
 
-Optional fields are omitted from the result entirely when undefined, not stamped as empty strings. The two `*ClientId` fields (`runClientId`, `inputClientId`) treat the empty string `''` as a present value and still stamp the header — so anonymous publishers surface as an explicit empty string rather than vanishing. Other optional fields (`parent`, `forkOf`, `invocationId`, `inputEventId`, `runId`) omit on any falsy value - a fresh `ai-input` carries no `run-id` (the agent mints it), while a continuation stamps the run-id it re-enters. See [Branching headers](wire-protocol.md#branching-headers) for how `parent` and `forkOf` shape the conversation tree, [Run.pipe parent resolution](wire-protocol.md#how-parent-is-resolved) for the default-parent rules, and [Client identity](wire-protocol.md#client-identity) for the two `clientId` tiers.
+Optional fields are omitted from the result entirely when undefined, not stamped as empty strings. The fields checked with `!== undefined` (`runId`, `runClientId`, `inputClientId`, `inputCodecMessageId`) treat the empty string `''` as a present value and still stamp the header — so anonymous publishers surface as an explicit empty string rather than vanishing. The remaining optional fields (`parent`, `forkOf`, `regenerates`, `invocationId`, `inputEventId`) omit on any falsy value. A fresh `ai-input` carries no `run-id` (the agent mints it), while a continuation stamps the run-id it re-enters. See [Branching headers](wire-protocol.md#branching-headers) for how `parent` and `forkOf` shape the conversation tree, [Run.pipe parent resolution](wire-protocol.md#how-parent-is-resolved) for the default-parent rules, and [Client identity](wire-protocol.md#client-identity) for the two `clientId` tiers.
 
 See [Client session](client-session.md) and [Agent session](agent-session.md) for how these sub-components are composed into the full session implementations. See [Wire protocol](wire-protocol.md) for the full header and event specification. See [Encoder](encoder.md) for how the encoder writes through the channel. See [Decoder](decoder.md) for how decoded events are produced for routing. See [Headers](headers.md) for the domain header reader/writer utilities.

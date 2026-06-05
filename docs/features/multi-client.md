@@ -6,7 +6,7 @@ Without multi-client support, sharing a conversation across browser tabs, device
 
 ## How it works
 
-All clients subscribe to the same Ably channel and handle every run identically: each inbound message is decoded, accumulated via the codec, and folded into the run's projection in the conversation tree. Whether this client started the run (via `send()`, `regenerate()`, or `edit()`) or is merely observing another client's run changes nothing about delivery — the [own vs observer](../internals/glossary.md#own-run-vs-observer-run) distinction only scopes cancellation and UI affordances. Every run's outputs surface on the tree's `output` event, routed by `inputCodecMessageId` (the triggering input's `codec-message-id`).
+All clients subscribe to the same Ably channel and handle every run identically: each inbound message is decoded into events and folded into the run's projection in the conversation tree. Whether this client started the run (via `send()`, `regenerate()`, or `edit()`) or is merely observing another client's run changes nothing about delivery — the [own vs observer](../internals/glossary.md#own-run-vs-observer-run) distinction only scopes cancellation and UI affordances. Every run's outputs surface on the tree's `output` event, routed by `inputCodecMessageId` (the triggering input's `codec-message-id`).
 
 No special API is needed. Connect two clients to the same channel name, and messages sync automatically:
 
@@ -32,8 +32,8 @@ When another client's run streams a response:
 
 1. The session receives Ably messages from the channel subscription
 2. The decoder produces domain events from the raw Ably messages
-3. A per-run accumulator builds domain messages from the events
-4. Accumulated messages are upserted into the conversation tree
+3. The tree folds those events into the owning node's projection (a reply run keyed by `run-id`, or a run-less input node keyed by `codec-message-id`)
+4. The tree emits `output` for the projection change, and `update` whenever the apply changes the tree shape (new node, serial promotion)
 5. An `'update'` notification fires on the view, updating React state
 
 This happens for every event - observer messages stream in real time, not just at run completion.
@@ -44,8 +44,8 @@ Run lifecycle events fire for every client on the channel and include the origin
 
 ```typescript
 session.tree.on('run', (event) => {
-  // event.clientId tells you who started or ended the run
-  // event.type is 'start' or 'end'
+  // event.clientId is the run owner (run-client-id)
+  // event.type is 'start', 'suspend', 'resume', or 'end'
 });
 ```
 
@@ -56,7 +56,7 @@ The SDK does not summarise these into a global "who is currently generating?" se
 A client that joins mid-conversation loads history from the channel:
 
 ```typescript
-const { nodes, hasOlder, loadOlder } = useView({ session, limit: 50 });
+const { messages, hasOlder, loadOlder } = useView({ session, limit: 50 });
 ```
 
 History contains all messages from all clients, with their full branch structure. The late joiner sees the same conversation state as clients who were present from the start. See [History](history.md) for details.
@@ -74,7 +74,7 @@ useMessageSync({ setMessages });
 // messages now includes messages from all clients on the channel
 ```
 
-Without `useMessageSync()`, `useChat()` would only show messages from its own sends. The sync hook replaces `useChat()`'s message state with the session's authoritative list on every update.
+Without `useMessageSync()`, `useChat()` would only show messages from its own sends. The sync hook merges the session's authoritative list into `useChat()`'s message state per-message (locally-resolved tool parts in the overlay are preserved), and gates the sync while an own-run stream is active so it doesn't clobber the in-flight stream — flushing once the stream ends.
 
 ## Identity
 

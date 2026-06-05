@@ -8,12 +8,14 @@ Domain codecs provide hooks that know how to build events from stream state. The
 
 The decoder's `decode()` method switches on `message.action`:
 
-| Action           | What it means                      | How the decoder handles it                                                                                    |
-| ---------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `message.create` | New message published              | Check `stream` header: if `"true"`, start tracking a new stream. If `"false"`, delegate to `decodeDiscrete()` |
-| `message.append` | Delta appended to existing message | Look up stream tracker by serial, accumulate delta, check for terminal status                                 |
-| `message.update` | Message content replaced           | Either first-contact (create tracker + synthesize events) or prefix-match/replacement on existing tracker     |
-| `message.delete` | Message deleted                    | Fire `onStreamDelete` callback, mark tracker closed                                                           |
+| Action           | What it means                      | How the decoder handles it                                                                                                     |
+| ---------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `message.create` | New message published              | Check the transport `stream` header: if `"true"`, start tracking a new stream. If `"false"`, delegate to `decodeDiscrete()`    |
+| `message.append` | Delta appended to existing message | Look up stream tracker by serial, accumulate delta, check for terminal status. Unknown serial falls through to the update path |
+| `message.update` | Message content replaced           | Either first-contact (create tracker + synthesize events) or prefix-match/replacement on existing tracker                      |
+| `message.delete` | Message deleted                    | Fire `onStreamDelete` callback, mark tracker closed and clear accumulated text                                                 |
+
+Any other action returns an empty array.
 
 ## Stream tracker
 
@@ -24,7 +26,8 @@ interface StreamTrackerState {
   name: string; // Ably message name (e.g. "text", "reasoning")
   streamId: string; // From stream-id header
   accumulated: string; // Full text accumulated so far
-  headers: Record<string, string>; // Current headers
+  codecHeaders: Record<string, string>; // Current codec-tier headers (extras.ai.codec)
+  transportHeaders: Record<string, string>; // Current transport-tier headers (extras.ai.transport)
   closed: boolean; // Whether stream is complete or cancelled
 }
 ```
@@ -35,14 +38,14 @@ The tracker is created on the first `message.create` with `stream: "true"` and k
 
 The decoder core delegates event building to four hooks provided by the domain codec:
 
-| Hook                                      | Called when                           | Returns                                                  |
-| ----------------------------------------- | ------------------------------------- | -------------------------------------------------------- |
-| `buildStartEvents(tracker)`               | A new stream starts                   | Events for stream start (e.g. `text-start` chunk)        |
-| `buildDeltaEvents(tracker, delta)`        | Text delta received                   | Events for the delta (e.g. `text-delta` chunk)           |
-| `buildEndEvents(tracker, closingHeaders)` | Stream completes (status: `complete`) | Events for stream end (e.g. `text-end`, `finish` chunks) |
-| `decodeDiscrete(payload)`                 | Discrete message received             | Events or complete messages                              |
+| Hook                                           | Called when                           | Returns                                                  |
+| ---------------------------------------------- | ------------------------------------- | -------------------------------------------------------- |
+| `buildStartEvents(tracker)`                    | A new stream starts                   | Events for stream start (e.g. `text-start` chunk)        |
+| `buildDeltaEvents(tracker, delta)`             | Text delta received                   | Events for the delta (e.g. `text-delta` chunk)           |
+| `buildEndEvents(tracker, closingCodecHeaders)` | Stream completes (status: `complete`) | Events for stream end (e.g. `text-end`, `finish` chunks) |
+| `decodeDiscrete(payload)`                      | Discrete message received             | Events                                                   |
 
-The hooks receive the tracker state and return arrays of `DecoderOutput<TEvent, TMessage>` - either `{ kind: 'event', event }` or `{ kind: 'message', message }`.
+Every hook returns a flat `TEvent[]` — there is no event-vs-message union. `decodeDiscrete` receives a `MessagePayload` (name, data, and the codec/transport header tiers) rather than a tracker; `buildEndEvents` receives the closing codec-tier headers, which may differ from `tracker.codecHeaders` when the closing append carried updated headers.
 
 ## Append handling
 
@@ -50,10 +53,9 @@ When a `message.append` arrives:
 
 1. Look up the tracker by serial
 2. If no tracker exists, fall through to update handling (first-contact path)
-3. Extract the string delta from `message.data`
-4. Accumulate: `tracker.accumulated += delta`
-5. Call `buildDeltaEvents()` to emit domain events
-6. Check `status`: if `"complete"`, call `buildEndEvents()` and mark closed - the event is [terminal](glossary.md#terminal-event). If `"cancelled"`, mark closed (no end events for cancels)
+3. Extract the string delta from `message.data` (empty string if `data` is not a string)
+4. If the delta is non-empty, accumulate (`tracker.accumulated += delta`) and call `buildDeltaEvents()` to emit domain events
+5. Check the transport `status` header: if `"complete"` and not already closed, call `buildEndEvents()` and mark closed - the end events are [terminal](glossary.md#terminal-event). If `"cancelled"` and not already closed, mark closed (no end events for cancels)
 
 ## Update handling: first-contact vs prefix-match
 
@@ -61,9 +63,12 @@ The `message.update` action handles two scenarios:
 
 ### First-contact
 
-The decoder has no tracker for this serial - the stream started before the subscription (history, reconnect). The decoder:
+The decoder has no tracker for this serial - the stream started before the subscription (history, reconnect). The decoder first checks the transport `stream` header:
 
-1. Creates a new tracker with the full `data` as accumulated text
+- If the update is **not** streamed (`stream` is not `"true"`), it is a discrete message and is delegated straight to `decodeDiscrete()`.
+- If it is streamed, the decoder:
+
+1. Creates a new tracker with the full `data` as accumulated text, marking it closed when status is `"complete"` or `"cancelled"`
 2. Emits start events via `buildStartEvents()`
 3. If data is non-empty, emits delta events via `buildDeltaEvents()`
 4. If status is `"complete"`, emits end events via `buildEndEvents()`
@@ -83,8 +88,8 @@ The decoder has an existing tracker. It checks whether the incoming data starts 
 **Not a prefix match** (data doesn't start with accumulated):
 
 - The message was replaced entirely (e.g. [encoder recovery](encoder.md#recovery-mechanism) via `updateMessage`)
-- Replace `tracker.accumulated` and `tracker.headers`
-- Fire `onStreamUpdate` callback
+- Replace `tracker.accumulated`, `tracker.codecHeaders`, and `tracker.transportHeaders`
+- Fire the `onStreamUpdate` callback (from `DecoderCoreOptions`)
 - Emit no events (the full content will be visible when the decoder consumer reads the tracker)
 
 ## Delete handling
@@ -95,23 +100,10 @@ On `message.delete`:
 2. Mark the tracker as closed and clear accumulated text
 3. Emit no events - deletion is handled by the transport layer (e.g. removing the message from the [conversation tree](conversation-tree.md#delete))
 
-## Message ID tagging
+## Decoder output
 
-After decoding, the decoder tags every event output with the [`codec-message-id`](wire-protocol.md#message-identity-codec-message-id) from the message headers. This ID is used by the [accumulator](codec-interface.md#accumulator) to route events to the correct in-progress domain message - for example, correlating a `text-delta` event to the `UIMessage` it belongs to.
+`decode()` returns a flat `TEvent[]` — a list of domain events for the single inbound message. The decoder core does not distinguish events from messages and does not tag events with any identity: it is purely the action-dispatch and stream-accumulation machinery.
 
-## Decoder output types
-
-The decoder returns an array of `DecoderOutput<TEvent, TMessage>`:
-
-```typescript
-type DecoderOutput<TEvent, TMessage> =
-  | { kind: 'event'; event: TEvent; messageId?: string }
-  | { kind: 'message'; message: TMessage };
-```
-
-- `kind: 'event'` - a streaming event that is accumulated into the in-progress message
-- `kind: 'message'` - a complete domain message (e.g. a user message from `decodeDiscrete()`)
-
-The transport layer folds both into the owning run's projection in the [conversation tree](conversation-tree.md): events accumulate into the in-progress message and surface on the tree's `output` event, while complete messages are upserted directly.
+Per-message routing is the SDK's job, not the decoder's. The transport's decode-and-apply engine (`src/core/transport/decode-fold.ts`) folds each event into the run's projection via the codec's `fold(state, event, meta)`, passing a [`ReducerMeta`](codec-interface.md#decoder-architecture) that carries the message `serial` and the [`codec-message-id`](wire-protocol.md#message-identity-codec-message-id) read from the inbound message. The reducer uses `serial` for idempotency and `messageId` to route an event to the correct message within the projection — for example, correlating a `text-delta` to the message it belongs to. The resulting projection surfaces on the [conversation tree](conversation-tree.md)'s `output` event.
 
 See [Wire protocol](wire-protocol.md) for the message actions and header specification. See [Encoder](encoder.md) for the encoding side, including the recovery mechanism that produces `message.update` actions. See [Codec interface](codec-interface.md) for how domain codecs provide decoder hooks.

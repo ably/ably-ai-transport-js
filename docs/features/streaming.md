@@ -41,25 +41,33 @@ Pipe any `ReadableStream` of codec events through the run's `pipe()`:
 ```typescript
 import { streamText } from 'ai';
 import { Invocation } from '@ably/ai-transport';
-import { createAgentSession } from '@ably/ai-transport/vercel';
+import type { InvocationData } from '@ably/ai-transport';
+import { createAgentSession, vercelRunOutcome } from '@ably/ai-transport/vercel';
 
-const session = createAgentSession({ client: ably, channelName });
+const invocation = Invocation.fromJSON((await req.json()) as InvocationData);
+
+const session = createAgentSession({ client: ably, channelName: invocation.sessionName });
 await session.connect();
-const run = session.createRun(Invocation.fromJSON({ runId, clientId }));
+const run = session.createRun(invocation, { signal: req.signal });
 
 await run.start();
+// Replay the channel into the codec to reconstruct the conversation so far
+await run.loadConversation();
 
-// Publish user messages to the channel so all clients see them and they persist in history
-await run.addMessages(userMessages, { clientId });
+const result = streamText({ model, messages: run.messages, abortSignal: run.abortSignal });
+const pipeResult = await run.pipe(result.toUIMessageStream());
 
-const result = streamText({ model, messages: conversationHistory, abortSignal: run.abortSignal });
-const { reason } = await run.pipe(result.toUIMessageStream());
-await run.end(reason);
+const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
+if (outcome === 'suspend') {
+  await run.suspend();
+} else {
+  await run.end(outcome);
+}
 
 session.close();
 ```
 
-`pipe()` reads events from the stream and routes them through the encoder. Text deltas become message appends; lifecycle events (finish, error) become discrete messages that close the stream.
+`pipe()` reads events from the stream and routes them through the encoder, resolving to a `StreamResult` (`{ reason, error? }`). Text deltas become message appends; lifecycle events (finish, error) become discrete messages that close the stream.
 
 ## Client
 
@@ -67,7 +75,7 @@ On the client, every streaming event is accumulated into the conversation tree a
 
 ```typescript
 const view = session.view;
-const run = await view.send(userMessage);
+const run = await view.send(UIMessageCodec.createUserMessage(userMessage));
 
 // Subscribe to accumulated messages - updates on every token
 const unsubscribe = view.on('update', () => {
@@ -84,7 +92,7 @@ For per-event granularity, subscribe to the tree's `output` event. Every decoded
 
 ```typescript
 // Per-event consumption - most apps use the view instead
-const run = await view.send(userMessage);
+const run = await view.send(UIMessageCodec.createUserMessage(userMessage));
 const unsubscribe = session.tree.on('output', (event) => {
   if (event.inputCodecMessageId !== run.inputCodecMessageId) return;
   for (const chunk of event.events) {

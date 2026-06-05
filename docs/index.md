@@ -27,4 +27,4 @@ Peer dependencies: `ably` (required), `ai` (for Vercel entry points), `react` (f
 
 ## Status
 
-This SDK is pre-release (v0.0.1). The Vercel AI SDK is the only supported framework today. The generic transport and codec interfaces support custom integrations - additional framework codecs are planned.
+This SDK is pre-release (v0.1.0). The Vercel AI SDK is the only supported framework today. The generic transport and codec interfaces support custom integrations - additional framework codecs are planned.

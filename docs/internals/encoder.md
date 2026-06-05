@@ -71,19 +71,23 @@ This means: even if intermediate appends are lost, the final message content is 
 
 ## Header merging
 
-Headers are merged in priority order (later wins):
+The encoder writes two header tiers under the [`extras.ai` envelope](wire-protocol.md#transport-headers): a `transport` tier and an optional `codec` tier. The two tiers are built independently - codec headers (`payload.codecHeaders`) never merge into the transport tier.
 
-1. `defaultExtras` - encoder-level defaults passed at construction
-2. Per-write overrides - headers passed to individual write calls
-3. Codec headers - domain-specific headers from the payload
+The transport tier (`_buildTransport`) is merged in priority order (later wins):
 
-If `WriteOptions.messageId` is set, the encoder stamps it as [`codec-message-id`](wire-protocol.md#message-identity-codec-message-id) (a transport header) during header merging. For streamed messages, this header is included in `persistentTransport` - so every append and the closing append carry the same codec-message-id, giving the entire message append lifecycle a single identity.
+1. Encoder-level default extras headers - passed at construction (`EncoderOptions.extras.headers`)
+2. Per-write override extras headers - passed to individual write calls (`WriteOptions.extras.headers`)
+3. Payload transport headers - transport-tier headers the codec stamps directly on the payload (`payload.transportHeaders`, e.g. `role`, `status`)
+
+The codec tier is taken verbatim from `payload.codecHeaders` and is omitted from the wire entirely when empty.
+
+If `WriteOptions.messageId` is set, the encoder stamps it as [`codec-message-id`](wire-protocol.md#message-identity-codec-message-id) (a transport-tier header) during header merging. For streamed messages, this header is included in `persistentTransport` - so every append and the closing append carry the same codec-message-id, giving the entire message append lifecycle a single identity.
 
 After the headers are merged, the `onMessage` hook runs as a post-processing step - it receives the fully constructed `Ably.Message` object and can mutate it in place. The transport uses this hook to stamp [transport-level headers](wire-protocol.md#transport-headers) (run IDs, role, parent, fork-of) onto every message without the codec needing to know about them.
 
 ### Closing appends repeat all headers
 
-Ably replaces the entire `extras` object on each append. The encoder builds closing headers by starting from the persistent tiers (`persistentTransport` / `persistentCodec`, captured at `startStream()`) and layering caller and codec overrides on top. This ensures the final message state has all necessary headers.
+Ably replaces the entire `extras` object on each append. The encoder builds closing headers (`_buildClosing`) by starting from the persistent tiers (`persistentTransport` / `persistentCodec`, captured at `startStream()`) and layering overrides on top: the transport tier layers caller extras headers then `payload.transportHeaders`, and the codec tier layers `payload.codecHeaders`. This ensures the final message state has all necessary headers.
 
 ## ChannelWriter interface
 

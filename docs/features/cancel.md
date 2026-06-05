@@ -21,31 +21,34 @@ await run.cancel();
 await session.cancel(await run.runId);
 ```
 
-Each `session.cancel(runId)` call targets exactly one run. To cancel multiple runs, iterate over runIds you hold yourself (handles returned by `send()`, or runIds read off rendered message nodes).
+Each `session.cancel(runId)` call targets exactly one run. To cancel multiple runs, iterate over runIds you hold yourself (the `runId` promise on each handle returned by `send()`).
 
-In React, the simplest "stop" button targets the run that produced the message the user is looking at — read `run-id` off the latest visible node:
+In React, the simplest "stop" button keeps the most recent `ActiveRun` returned by `send` and calls `run.cancel()` on it. Because `run.cancel()` keys on the input's codec-message-id, it works the instant the send is published — no need to await `run.runId`:
 
 ```typescript
+import { useState } from 'react';
 import { useView } from '@ably/ai-transport/react';
+import type { ActiveRun } from '@ably/ai-transport';
 
-const { nodes } = useView({ session });
-const latest = nodes.at(-1);
-const latestRunId = latest?.headers['run-id'];
-const latestStatus = latest?.headers['status'];
-const isStreaming = latestRunId !== undefined && latestStatus !== 'complete' && latestStatus !== 'cancelled';
+const { send } = useView({ session });
+const [activeRun, setActiveRun] = useState<ActiveRun | undefined>();
+
+const onSend = async (message: AI.UIMessage) => {
+  const run = await send(UIMessageCodec.createUserMessage(message));
+  setActiveRun(run);
+};
 
 <button
   onClick={() => {
-    if (!latestRunId) return;
-    void session.cancel(latestRunId);
+    void activeRun?.cancel();
   }}
-  disabled={!isStreaming}
+  disabled={!activeRun}
 >
   Stop
 </button>
 ```
 
-This is authoritative for the only thing the user can meaningfully stop — the streaming response in front of them — and stays correct even when the session has only hydrated part of the channel history.
+This stops the only thing the user can meaningfully stop — the response to the send they just made — without waiting on the agent to mint the run-id.
 
 ## Server side
 
@@ -54,7 +57,7 @@ Each run has an `AbortSignal` that fires when a matching cancel arrives:
 ```typescript
 import { Invocation } from '@ably/ai-transport';
 
-const run = session.createRun(Invocation.fromJSON({ runId, clientId }), {
+const run = session.createRun(Invocation.fromJSON({ inputEventId, sessionName }), {
   onCancel: async (request) => {
     // request.runId - the targeted runId
     // request.message - the raw Ably cancel message (request.message.clientId is the sender)
@@ -64,7 +67,7 @@ const run = session.createRun(Invocation.fromJSON({ runId, clientId }), {
   onCancelled: async (write) => {
     // Runs after the AbortSignal fires, before the stream closes.
     // Use write() to publish final events before the encoder closes, e.g.:
-    // await write({ type: 'text-delta', textDelta: '[generation cancelled]' });
+    // await write({ type: 'text-delta', id: 'msg-1', delta: '[generation cancelled]' });
   },
 });
 
@@ -88,8 +91,8 @@ sequenceDiagram
     participant Ch as Ably Channel
     participant S as Server
 
-    C->>Ch: publish(ai-cancel)<br/>headers: run-id=<runId>
-    Note left of C: close local stream
+    C->>Ch: publish(ai-cancel)<br/>headers: run-id and/or input-codec-message-id
+    Note left of C: ChatTransport closes its local stream
     Ch->>S: deliver to cancel listener
     Note right of S: look up registered run by id
     Note right of S: onCancel() → true
@@ -100,7 +103,7 @@ sequenceDiagram
     Ch->>C: deliver run-end
 ```
 
-The client closes its local streams immediately on cancel - it doesn't wait for the server to confirm. The server-side run ends with `reason: 'cancelled'`, which all clients see via run lifecycle events.
+Publishing the cancel signal is all the core does — it doesn't wait for the server to confirm. The consumer-facing stream lives in the layer that built it: the Vercel `ChatTransport` closes its stream on cancel. The server-side run ends with `reason: 'cancelled'`, which all clients see via run lifecycle events.
 
 ## Platform-level cancellation
 
@@ -110,7 +113,7 @@ Pass the platform's `AbortSignal` to `createRun()` via the `signal` option:
 
 ```typescript
 const run = session.createRun(
-  Invocation.fromJSON({ runId, clientId }),
+  Invocation.fromJSON({ inputEventId, sessionName }),
   { signal: req.signal }, // fires on request cancellation or function timeout
 );
 ```

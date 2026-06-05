@@ -273,7 +273,7 @@ export class DefaultView<
   private _hasMoreHistory = false;
 
   /** Internal state for continuing history pagination. */
-  private _lastHistoryPage: HistoryPage<TMessage> | undefined;
+  private _lastHistoryPage: HistoryPage | undefined;
 
   /** Buffer of withheld nodes (input + reply), drained newest-first by successive loadOlder() calls. */
   private readonly _withheldBuffer: ConversationNode<TProjection>[] = [];
@@ -999,7 +999,7 @@ export class DefaultView<
     // decodeHistory's limit counts complete domain messages per page (not
     // Runs); see `_RUN_TO_MESSAGE_FETCH_FACTOR` for the scaling rationale.
     const messageLimit = limit * _RUN_TO_MESSAGE_FETCH_FACTOR;
-    const firstPage = await decodeHistory(this._channel, this._codec, { limit: messageLimit }, this._logger);
+    const firstPage = await decodeHistory(this._channel, { limit: messageLimit }, this._logger);
     if (this._closed) return;
     await this._revealFromPage(firstPage, limit);
   }
@@ -1013,7 +1013,7 @@ export class DefaultView<
    * @param page - The decoded history page to start from.
    * @param limit - Max Runs to reveal in this batch.
    */
-  private async _revealFromPage(page: HistoryPage<TMessage>, limit: number): Promise<void> {
+  private async _revealFromPage(page: HistoryPage, limit: number): Promise<void> {
     // Snapshot before loading: every node already in the tree stays visible.
     const beforeRunIds = new Set(this._treeVisibleNodes().map((n) => nodeKey(n)));
 
@@ -1062,7 +1062,7 @@ export class DefaultView<
    * since the session's live decoder maintains its own stream-tracker state.
    * @param page - The history page returned by `decodeHistory`.
    */
-  private _processHistoryPage(page: HistoryPage<TMessage>): void {
+  private _processHistoryPage(page: HistoryPage): void {
     this._processingHistory = true;
     try {
       const decoder = this._codec.createDecoder();
@@ -1099,10 +1099,10 @@ export class DefaultView<
   }
 
   private async _loadUntilVisible(
-    firstPage: HistoryPage<TMessage>,
+    firstPage: HistoryPage,
     target: number,
     beforeRunIds: Set<string>,
-  ): Promise<{ newVisible: ConversationNode<TProjection>[]; lastPage: HistoryPage<TMessage> }> {
+  ): Promise<{ newVisible: ConversationNode<TProjection>[]; lastPage: HistoryPage }> {
     this._processHistoryPage(firstPage);
     let page = firstPage;
 

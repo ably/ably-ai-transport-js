@@ -172,19 +172,24 @@ export interface TreeInternal<
   applyRunLifecycle(event: RunLifecycleEvent): void;
 
   /**
+   * Get the node keyed by `key`, or undefined if `key` names no node. The
+   * key is a {@link nodeKey} — a runId (reply run) or an input node's
+   * codec-message-id — so the result is a {@link ConversationNode} union:
+   * narrow on `kind` before reading kind-specific fields. Pairs with
+   * {@link getNodeByCodecMessageId}, which resolves an arbitrary owned
+   * codec-message-id (including an assistant message's) to its node.
+   * @param key - The node key to look up.
+   * @returns The node, or undefined if not found.
+   */
+  getNode(key: string): ConversationNode<TProjection> | undefined;
+
+  /**
    * Remove a node from the tree by its key ({@link nodeKey} — a runId or an
    * input node's codec-message-id). Children become unreachable because their
    * parent is no longer on the active path.
    * @param key - The node key to remove.
    */
   delete(key: string): void;
-
-  /**
-   * Remove a node addressed by one of its codec-message-ids (resolved to the
-   * owning node's key). Used to drop a failed optimistic input insert.
-   * @param codecMessageId - A codec-message-id owned by the node to remove.
-   */
-  deleteByCodecMessageId(codecMessageId: string): void;
 
   /** Forward a raw Ably message event to tree subscribers. */
   emitAblyMessage(msg: Ably.InboundMessage): void;
@@ -625,6 +630,11 @@ export class DefaultTree<
     return node?.kind === 'run' ? node : undefined;
   }
 
+  getNode(key: string): ConversationNode<TProjection> | undefined {
+    this._logger.trace('DefaultTree.getNode();', { key });
+    return this._nodeIndex.get(key)?.node;
+  }
+
   getNodeByCodecMessageId(codecMessageId: string): ConversationNode<TProjection> | undefined {
     this._logger.trace('DefaultTree.getNodeByCodecMessageId();', { codecMessageId });
     const key = this._codecMessageIdToNodeKey.get(codecMessageId);
@@ -960,11 +970,6 @@ export class DefaultTree<
       run.node.status = event.reason;
       run.node.endSerial = event.serial;
     }
-  }
-
-  deleteByCodecMessageId(codecMessageId: string): void {
-    const key = this._codecMessageIdToNodeKey.get(codecMessageId);
-    if (key !== undefined) this.delete(key);
   }
 
   delete(key: string): void {

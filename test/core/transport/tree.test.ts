@@ -257,6 +257,24 @@ describe('Tree', () => {
       expect(tree.getNodeByCodecMessageId('m-unknown')).toBeUndefined();
     });
 
+    it('returns a node by node-key via getNode (runId or input codec-message-id)', () => {
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u', content: 'prompt' }, serial: 's0' });
+
+      // A reply run keys on its runId; an input node keys on its codec-message-id.
+      expect(runIdOf(tree.getNode('R1'))).toBe('R1');
+      expect(tree.getNode('u1')?.kind).toBe('input');
+      expect(tree.getNode('unknown')).toBeUndefined();
+    });
+
+    it('getNode keys strictly on node-key, unlike getNodeByCodecMessageId', () => {
+      // 'm1' is the run's owned assistant codec-message-id, not its node key.
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      // getNodeByCodecMessageId resolves the owned cmid to the run; getNode does not.
+      expect(runIdOf(tree.getNodeByCodecMessageId('m1'))).toBe('R1');
+      expect(tree.getNode('m1')).toBeUndefined();
+    });
+
     it('drops messages without an run-id header', () => {
       tree.applyMessage(
         { inputs: [], outputs: [{ type: 'append-message', message: { id: 'a', content: 'orphan' } }] },

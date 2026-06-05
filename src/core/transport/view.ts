@@ -1197,7 +1197,7 @@ export class DefaultView<
    */
   private _pinBranchSelections(): void {
     for (const key of this._lastVisibleNodeKeys) {
-      const node = this._tree.getNodeByCodecMessageId(key) ?? this._tree.getRunNode(key);
+      const node = this._tree.getNode(key);
       // Edit forks are INPUT-node sibling groups; only input nodes pin here.
       // Regenerate (reply-run) groups roll forward via _resolvePendingRegenSelections.
       if (node?.kind !== 'input') continue;

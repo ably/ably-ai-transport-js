@@ -114,21 +114,18 @@ export interface BranchSelection<TMessage> {
  */
 export interface View<TInput extends CodecInputEvent, TMessage> {
   /**
-   * The visible domain messages along the selected branch. Computed by
-   * walking the visible Run chain (newest to root) and concatenating
-   * each Run's `codec.getMessages(projection)` in chronological order.
+   * The visible messages along the selected branch, each paired with its
+   * codec-message-id (see {@link CodecMessage}). Computed by walking the
+   * visible Run chain (newest to root) and concatenating each Run's
+   * `codec.getMessages(projection)` in chronological order.
+   *
+   * Correlate a message back to the transport — routing a continuation
+   * input, resolving a regenerate/edit target, looking up the owning Run —
+   * via its `codecMessageId`, which the SDK assigns and tracks
+   * independently of any identity the domain `message` may carry. Read the
+   * domain object from each entry's `message` field.
    */
-  getMessages(): TMessage[];
-
-  /**
-   * The same visible messages as {@link getMessages}, in the same order,
-   * but each paired with its codec-message-id (see {@link CodecMessage}).
-   * Use this when correlating a rendered message back to the transport —
-   * e.g. routing a continuation input or resolving a regenerate/edit
-   * target — so correlation keys on the SDK's codec-message-id rather than
-   * the domain `message.id`, which the SDK never treats as an identity.
-   */
-  getMessagesWithIds(): CodecMessage<TMessage>[];
+  getMessages(): CodecMessage<TMessage>[];
 
   /**
    * Snapshot of the visible Runs along the selected branch, in

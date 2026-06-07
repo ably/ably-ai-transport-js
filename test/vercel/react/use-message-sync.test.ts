@@ -54,10 +54,12 @@ const createMockSlot = (): MockSlot => {
 
   // `flattenNodes` and `getMessages` are mocked together: tests stage
   // `{ message }` entries via `viewFlattenNodes.mockReturnValue(...)` and
-  // `getMessages` projects them to the flat `UIMessage[]` the production
-  // code reads.
+  // `getMessages` projects them to the codec-message-id pairs the production
+  // code reads (then maps to the flat `UIMessage[]`).
   const viewFlattenNodes = vi.fn(() => [] as { message: AI.UIMessage }[]);
-  const viewGetMessages = vi.fn(() => viewFlattenNodes().map((n) => n.message));
+  const viewGetMessages = vi.fn(() =>
+    viewFlattenNodes().map((n) => ({ codecMessageId: n.message.id, message: n.message })),
+  );
 
   const view = {
     on: viewOn,

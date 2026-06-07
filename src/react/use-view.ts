@@ -11,7 +11,7 @@
 import * as Ably from 'ably';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import type { CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
+import type { CodecInputEvent, CodecMessage, CodecOutputEvent } from '../core/codec/types.js';
 import type { ActiveRun, BranchSelection, RunInfo, SendOptions, View } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
 import type { BaseSessionOption } from './internal/use-resolved-session.js';
@@ -35,10 +35,17 @@ export interface UseViewOptions<
 /** Handle for the paginated, branch-aware conversation view. */
 export interface ViewHandle<TInput extends CodecInputEvent, TMessage> {
   /**
-   * The visible domain messages along the selected branch, concatenated
-   * across all visible Runs.
+   * The visible messages along the selected branch, concatenated across all
+   * visible Runs, each paired with its codec-message-id (see
+   * {@link CodecMessage}). Read the domain object from each entry's
+   * `message` field.
+   *
+   * Correlate a rendered message back to the View — `runOf`,
+   * `branchSelection`, `selectSibling`, `regenerate`, or `edit` — via its
+   * `codecMessageId`, which the SDK assigns and tracks independently of any
+   * identity the domain `message` may carry. See {@link View.getMessages}.
    */
-  messages: TMessage[];
+  messages: CodecMessage<TMessage>[];
   /** Whether there are older messages that can be revealed via `loadOlder`. */
   hasOlder: boolean;
   /** Whether a page load is currently in progress. */
@@ -119,7 +126,7 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
   const resolvedSession = useResolvedSession({ session, skip });
   const resolvedView = skip ? undefined : (view ?? resolvedSession?.view);
 
-  const [messages, setMessages] = useState<TMessage[]>(() => resolvedView?.getMessages() ?? []);
+  const [messages, setMessages] = useState<CodecMessage<TMessage>[]>(() => resolvedView?.getMessages() ?? []);
   const [hasOlder, setHasOlder] = useState(() => resolvedView?.hasOlder() ?? false);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<Ably.ErrorInfo | undefined>();

@@ -192,7 +192,7 @@ describe('useChat error propagation', () => {
     await waitFor(
       () => {
         const messages = ct.view.getMessages();
-        expect(messages.find((m) => m.role === 'assistant')).toBeDefined();
+        expect(messages.find((m) => m.message.role === 'assistant')).toBeDefined();
       },
       { timeout: 10_000 },
     );

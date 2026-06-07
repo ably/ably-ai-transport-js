@@ -7,8 +7,8 @@
  *
  * `getMessages()` reads the Tree's visible node chain (input nodes + reply
  * runs, with sibling selection applied) and concatenates each node's
- * `codec.getMessages(node.projection)` to produce the flat TMessage[] the UI
- * renders.
+ * `codec.getMessages(node.projection)` to produce the flat
+ * `CodecMessage<TMessage>[]` the UI renders.
  *
  * Each View owns its own branch selection state and pagination window,
  * allowing multiple independent Views over the same Tree.
@@ -241,13 +241,10 @@ export class DefaultView<
 
   /**
    * Snapshot of the visible flat message chain with codec-message-ids —
-   * the internal correlation source for parent/branch routing. The public
-   * `getMessages()` exposes only the `message` halves.
+   * exposed verbatim via `getMessages()` and the internal correlation
+   * source for parent/branch routing.
    */
   private _lastVisibleMessagePairs: CodecMessage<TMessage>[] = [];
-
-  /** Snapshot of visible flat messages — exposed via getMessages(). */
-  private _lastVisibleMessages: TMessage[] = [];
 
   /** Cached visible node-key Set — for O(1) lookup in event scoping. */
   private _lastVisibleNodeKeySet = new Set<string>();
@@ -334,7 +331,6 @@ export class DefaultView<
     // no-op for unchanged hook consumers.
     this._lastVisibleProjections = this._cachedNodes.map((n) => n.projection);
     this._lastVisibleMessagePairs = this._extractMessages(this._cachedNodes);
-    this._lastVisibleMessages = this._lastVisibleMessagePairs.map((p) => p.message);
     this._emitter.emit('update');
   }
 
@@ -342,11 +338,7 @@ export class DefaultView<
   // Public query methods
   // -------------------------------------------------------------------------
 
-  getMessages(): TMessage[] {
-    return this._lastVisibleMessages;
-  }
-
-  getMessagesWithIds(): CodecMessage<TMessage>[] {
+  getMessages(): CodecMessage<TMessage>[] {
     return this._lastVisibleMessagePairs;
   }
 
@@ -1093,7 +1085,6 @@ export class DefaultView<
     this._lastVisibleNodeKeySet = new Set(this._lastVisibleNodeKeys);
     this._lastVisibleProjections = resolved.map((n) => n.projection);
     this._lastVisibleMessagePairs = this._extractMessages(resolved);
-    this._lastVisibleMessages = this._lastVisibleMessagePairs.map((p) => p.message);
   }
 
   private _onTreeUpdate(): void {

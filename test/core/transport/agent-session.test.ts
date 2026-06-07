@@ -2900,7 +2900,7 @@ const viewMessageIds = (wiresOldestFirst: Ably.InboundMessage[]): string[] => {
     sendDelegate,
     logger,
   });
-  return view.getMessages().map((m) => m.id);
+  return view.getMessages().map((m) => m.message.id);
 };
 
 describe('agent loadConversation ≡ client View.getMessages (cross-engine equivalence)', () => {

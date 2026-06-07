@@ -503,15 +503,15 @@ describe('ClientSession', () => {
       await s.connect();
 
       const messages = s.view.getMessages();
-      expect(messages.map((m) => m.content)).toEqual(['first', 'second']);
+      expect(messages.map((m) => m.message.content)).toEqual(['first', 'second']);
       // Seeds are run-less user INPUT nodes in the two-node model — they carry
       // no run-id (the agent mints reply run-ids), so they surface as input
       // nodes, not as reply runs in view.runs() (which is reply-run-shaped).
       // The session assigns each seed a codec-message-id, which the mock codec
       // stamps as the rendered message id.
       expect(s.view.runs()).toHaveLength(0);
-      const id1 = messages[0]?.id;
-      const id2 = messages[1]?.id;
+      const id1 = messages[0]?.codecMessageId;
+      const id2 = messages[1]?.codecMessageId;
       expect(id1).toBeDefined();
       expect(id2).toBeDefined();
       const seed1 = id1 === undefined ? undefined : s.tree.getNodeByCodecMessageId(id1);
@@ -542,7 +542,7 @@ describe('ClientSession', () => {
       await fix.session.view.send({ kind: 'user-message', text: 'hello' });
       const messages = fix.session.view.getMessages();
       expect(messages).toHaveLength(1);
-      expect(messages[0]?.content).toBe('hello');
+      expect(messages[0]?.message.content).toBe('hello');
     });
 
     it('publishes the user-message TInput on the channel via encoder.publishInput with transport headers', async () => {
@@ -622,8 +622,8 @@ describe('ClientSession', () => {
 
       const messages = fix.session.view.getMessages();
       expect(messages).toHaveLength(1);
-      expect(messages[0]?.id).toBe('pinned-id');
-      expect(messages[0]?.content).toBe('hello');
+      expect(messages[0]?.message.id).toBe('pinned-id');
+      expect(messages[0]?.message.content).toBe('hello');
     });
 
     it('mints a distinct event-id per user-message; ActiveRun.inputEventId is the last (primary trigger)', async () => {
@@ -660,7 +660,7 @@ describe('ClientSession', () => {
 
       // The seed's codec-message-id is the rendered message id (the mock codec
       // stamps the session-assigned codec-message-id onto TMessage.id).
-      const seedCodecMessageId = seeded.view.getMessages()[0]?.id;
+      const seedCodecMessageId = seeded.view.getMessages()[0]?.codecMessageId;
       expect(seedCodecMessageId).toBeDefined();
       const run = await seeded.view.send({ kind: 'user-message', text: 'next' });
 
@@ -684,8 +684,8 @@ describe('ClientSession', () => {
       // Both messages land in the same Run's projection (one Run per send).
       const messages = fix.session.view.getMessages();
       expect(messages).toHaveLength(2);
-      expect(messages[0]?.content).toBe('first');
-      expect(messages[1]?.content).toBe('second');
+      expect(messages[0]?.message.content).toBe('first');
+      expect(messages[1]?.message.content).toBe('second');
 
       // The encoder publishes each event with chained parents: second's parent header == first's codec-message-id.
       const enc = fix.codec.lastEncoder();
@@ -1939,7 +1939,7 @@ describe('ClientSession', () => {
       // run-less INPUT node — no reply run exists yet (the agent mints it).
       await fix.session.view.send({ kind: 'user-message', text: 'hi' });
       expect(fix.session.view.runs()).toHaveLength(0);
-      const userMsgId = fix.session.view.getMessages()[0]?.id;
+      const userMsgId = fix.session.view.getMessages()[0]?.codecMessageId;
       expect(userMsgId).toBeDefined();
       if (!userMsgId) throw new Error('expected user message id');
       const inputNodeBefore = fix.session.tree.getNodeByCodecMessageId(userMsgId);

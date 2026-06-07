@@ -117,7 +117,12 @@ export const useMessageSync = ({ setMessages, channelName, skip }: UseMessageSyn
     if (!view || gated) return;
 
     const sync = (): void => {
-      setMessages((overlay) => mergeMessages(view.getMessages(), overlay));
+      setMessages((overlay) =>
+        mergeMessages(
+          view.getMessages().map((m) => m.message),
+          overlay,
+        ),
+      );
     };
 
     // Sync immediately to cover gate-open and initial mount.

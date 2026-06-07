@@ -285,13 +285,16 @@ const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'a
  *   `tool-approval-response` (approved = false)
  * - `output-available` overlay vs unresolved tree → `tool-result`
  * - `output-error` overlay vs unresolved tree → `tool-result-error`
- * @param pairs - The visible tree messages paired with their codec-message-ids.
+ * @param codecMessages - The visible tree messages paired with their codec-message-ids.
  * @param messages - useChat's local overlay messages.
  * @returns The continuation inputs to publish, in tree order. Each input
  *   carries its own `codecMessageId` targeting the prior assistant it folds
  *   onto.
  */
-const deriveContinuationInputs = (pairs: CodecMessage<AI.UIMessage>[], messages: AI.UIMessage[]): VercelInput[] => {
+const deriveContinuationInputs = (
+  codecMessages: CodecMessage<AI.UIMessage>[],
+  messages: AI.UIMessage[],
+): VercelInput[] => {
   const inputs: VercelInput[] = [];
   for (const overlay of messages) {
     if (overlay.role !== 'assistant') continue;
@@ -300,7 +303,7 @@ const deriveContinuationInputs = (pairs: CodecMessage<AI.UIMessage>[], messages:
     // the tree message's codec-message-id — the agent folds tool
     // resolutions onto the assistant by codec-message-id, never by the
     // domain `message.id`.
-    const treeEntry = pairs.find((p) => p.message.id === overlay.id);
+    const treeEntry = codecMessages.find((p) => p.message.id === overlay.id);
     if (!treeEntry) continue;
     const { codecMessageId, message: treeMessage } = treeEntry;
 
@@ -376,14 +379,14 @@ const deriveContinuationInputs = (pairs: CodecMessage<AI.UIMessage>[], messages:
  * located by its domain `message.id` (the id useChat references), but the
  * returned value is the predecessor's codec-message-id — never a domain id.
  * Returns undefined if the target is the first message or not found.
- * @param pairs - Visible messages paired with their codec-message-ids.
+ * @param codecMessages - Visible messages paired with their codec-message-ids.
  * @param domainId - The domain id of the target message.
  * @returns The predecessor's codec-message-id, or undefined.
  */
-const findPredecessorCodecId = (pairs: CodecMessage<AI.UIMessage>[], domainId: string): string | undefined => {
-  const idx = pairs.findIndex((p) => p.message.id === domainId);
+const findPredecessorCodecId = (codecMessages: CodecMessage<AI.UIMessage>[], domainId: string): string | undefined => {
+  const idx = codecMessages.findIndex((p) => p.message.id === domainId);
   if (idx <= 0) return undefined;
-  return pairs[idx - 1]?.codecMessageId;
+  return codecMessages[idx - 1]?.codecMessageId;
 };
 
 // ---------------------------------------------------------------------------
@@ -444,8 +447,8 @@ export const createChatTransport = (
     // locate a message in the tree, then route every transport operation by
     // the message's codec-message-id (the SDK never correlates on the domain
     // id, which may differ from the codec-message-id).
-    const pairs = session.view.getMessagesWithIds();
-    const codecIdByDomainId = new Map(pairs.map((p) => [p.message.id, p.codecMessageId]));
+    const codecMessages = session.view.getMessages();
+    const codecIdByDomainId = new Map(codecMessages.map((m) => [m.message.id, m.codecMessageId]));
     const codecIdOf = (domainId: string): string | undefined => codecIdByDomainId.get(domainId);
 
     // useChat calls sendMessages in three distinct modes. We disambiguate
@@ -524,12 +527,12 @@ export const createChatTransport = (
       // forkOf = its codec-message-id, parent = the immediately-preceding
       // codec-message-id in the flat conversation.
       forkOf = codecIdOf(messageId);
-      parent = findPredecessorCodecId(pairs, messageId);
+      parent = findPredecessorCodecId(codecMessages, messageId);
     } else if (forkSourceDomainId) {
       // Fork off the preceding assistant — the new user message becomes a
       // sibling of the unresolved tool call assistant, rooted at its parent.
       forkOf = codecIdOf(forkSourceDomainId);
-      parent = findPredecessorCodecId(pairs, forkSourceDomainId);
+      parent = findPredecessorCodecId(codecMessages, forkSourceDomainId);
     }
 
     let sendBody: Record<string, unknown>;
@@ -582,7 +585,7 @@ export const createChatTransport = (
     //   `view.send`.
     let run: ActiveRun;
     if (isContinuation) {
-      const inputs = deriveContinuationInputs(pairs, messages);
+      const inputs = deriveContinuationInputs(codecMessages, messages);
       run = await session.view.send(inputs, sendOpts);
     } else if (trigger === 'regenerate-message') {
       if (messageId === undefined) {

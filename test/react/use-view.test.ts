@@ -19,26 +19,37 @@ describe('useView', () => {
     expect(result.current.loading).toBe(false);
   });
 
-  it('returns initial messages from view on mount', () => {
+  it('returns initial messages from view on mount, each paired with its codec-message-id', () => {
     const mock = createMockSession(['hello', 'world']);
     const { result } = renderHook(() => useView({ session: mock.session }));
-    expect(result.current.messages).toEqual(['hello', 'world']);
+    // The mock pairs each message with itself as the codec-message-id.
+    expect(result.current.messages).toEqual([
+      { codecMessageId: 'hello', message: 'hello' },
+      { codecMessageId: 'world', message: 'world' },
+    ]);
   });
 
   it('updates messages when view emits update', () => {
     const mock = createMockSession(['hello']);
     const { result } = renderHook(() => useView({ session: mock.session }));
-    expect(result.current.messages).toEqual(['hello']);
+    expect(result.current.messages).toEqual([{ codecMessageId: 'hello', message: 'hello' }]);
 
-    // Mutate mock to return a new message list.
-    (mock.view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue(['hello', 'world']);
+    // Mutate mock to return a new pair list with codec-message-ids distinct
+    // from the domain messages — the SDK correlates on the former.
+    (mock.view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([
+      { codecMessageId: 'cmid-1', message: 'hello' },
+      { codecMessageId: 'cmid-2', message: 'world' },
+    ]);
     (mock.view.hasOlder as ReturnType<typeof vi.fn>).mockReturnValue(true);
 
     act(() => {
       mock.emitTree('update');
     });
 
-    expect(result.current.messages).toEqual(['hello', 'world']);
+    expect(result.current.messages).toEqual([
+      { codecMessageId: 'cmid-1', message: 'hello' },
+      { codecMessageId: 'cmid-2', message: 'world' },
+    ]);
     expect(result.current.hasOlder).toBe(true);
   });
 
@@ -105,7 +116,7 @@ describe('useView', () => {
 
     const { result } = renderHook(() => useView({ view: mock.view }));
 
-    expect(result.current.messages).toEqual(['hello']);
+    expect(result.current.messages).toEqual([{ codecMessageId: 'hello', message: 'hello' }]);
   });
 
   it('uses nearest session from context when session and view are omitted', () => {
@@ -124,7 +135,7 @@ describe('useView', () => {
 
     const { result } = renderHook(() => useView(), { wrapper });
 
-    expect(result.current.messages).toEqual(['hello']);
+    expect(result.current.messages).toEqual([{ codecMessageId: 'hello', message: 'hello' }]);
   });
 
   // ---------------------------------------------------------------------------

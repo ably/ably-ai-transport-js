@@ -34,6 +34,7 @@ export type {
   ChannelWriter,
   Codec,
   CodecInputEvent,
+  CodecMessage,
   CodecOutputEvent,
   DecodedMessage,
   Decoder,

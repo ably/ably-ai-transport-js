@@ -65,7 +65,9 @@ vi.mock('../providers', () => ({
         };
       }, []);
       return {
-        messages,
+        // The demo renders and correlates off the codec-message-id pairs; the
+        // mock derives them from the domain id (here they coincide).
+        messages: messages.map((message) => ({ codecMessageId: message.id, message })),
         hasOlder: false,
         loading: false,
         loadOlder: async () => {},

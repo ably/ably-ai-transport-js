@@ -7,6 +7,10 @@ import { clientColor } from '../lib/client-color';
 
 interface MessageBubbleProps {
   message: UIMessage;
+  // The SDK's codec-message-id for this message — the correlation key for
+  // tool approve/deny. Distinct from the domain `message.id`, which the SDK
+  // never treats as an identity (see CodecMessage).
+  codecMessageId: string;
   // Per-message metadata derived from the View at the list-glue layer
   // (see MessageList) and passed as primitives so the bubble stays a
   // pure renderer with no SDK type dependencies.
@@ -168,6 +172,7 @@ function EditForm({
 
 export function MessageBubble({
   message,
+  codecMessageId,
   clientId,
   runId,
   status,
@@ -184,7 +189,6 @@ export function MessageBubble({
   const [isEditing, setIsEditing] = useState(false);
 
   const role = message.role;
-  const codecMessageId = message.id;
   const colors = clientId ? clientColor(clientId) : undefined;
 
   const messageText = message.parts

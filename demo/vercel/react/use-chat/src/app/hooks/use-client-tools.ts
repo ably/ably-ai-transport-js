@@ -14,7 +14,7 @@
 
 import { useEffect, useRef } from 'react';
 import type { ChatAddToolOutputFunction, DynamicToolUIPart, UIMessage } from 'ai';
-import type { ClientSession, RunInfo } from '@ably/ai-transport';
+import type { ClientSession, CodecMessage, RunInfo } from '@ably/ai-transport';
 import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
 
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
@@ -45,7 +45,7 @@ const clientTools: Record<string, ClientToolExecutor> = {
 
 export function useClientTools(
   session: ClientSession<VercelInput, VercelOutput, VercelProjection, UIMessage>,
-  messages: UIMessage[],
+  messages: CodecMessage<UIMessage>[],
   addToolResult: ChatAddToolOutputFunction<UIMessage>,
   runOf: (codecMessageId: string) => RunInfo | undefined,
   clientId: string | undefined,
@@ -54,19 +54,20 @@ export function useClientTools(
 
   useEffect(() => {
     for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
+      const { codecMessageId, message: msg } = messages[i];
       if (msg.role !== 'assistant') continue;
 
       // Only execute client tools for runs initiated by this client.
       // Other clients on the same channel see the tool call but should
       // not execute it - only the requesting client has the context
-      // (e.g. browser geolocation) to provide the result.
-      const run = runOf(msg.id);
+      // (e.g. browser geolocation) to provide the result. Correlate on the
+      // codec-message-id, never the domain `message.id`.
+      const run = runOf(codecMessageId);
       if (run?.clientId && run.clientId !== clientId) continue;
 
       // If there's a later assistant message, this tool call was already
       // resolved in a previous session - skip.
-      const hasFollowUpAssistant = messages.slice(i + 1).some((m) => m.role === 'assistant');
+      const hasFollowUpAssistant = messages.slice(i + 1).some((m) => m.message.role === 'assistant');
       if (hasFollowUpAssistant) continue;
 
       for (const part of msg.parts) {

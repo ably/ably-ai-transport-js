@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import type { UIMessage } from 'ai';
+import type { CodecMessage } from '@ably/ai-transport';
 import type * as Ably from 'ably';
 
 export interface CallbackLogEntry {
@@ -11,7 +12,9 @@ export interface CallbackLogEntry {
 }
 
 interface DebugPaneProps {
-  messages: UIMessage[];
+  // The visible messages paired with their codec-message-ids; the pane renders
+  // the raw `message` halves as JSON.
+  messages: CodecMessage<UIMessage>[];
   ablyMessages: Ably.InboundMessage[];
   status: string;
   callbackLog: CallbackLogEntry[];
@@ -222,6 +225,9 @@ function LifecycleTab({
 
 export function DebugPane({ messages, ablyMessages, status, callbackLog, statusLog, onClearLogs }: DebugPaneProps) {
   const [isOpen, setIsOpen] = useState(true);
+
+  // Project away the codec-message-id pairing — the pane renders raw messages.
+  const uiMessages = useMemo(() => messages.map((m) => m.message), [messages]);
   const [tab, setTab] = useState<Tab>('ably');
 
   return (
@@ -279,7 +285,7 @@ export function DebugPane({ messages, ablyMessages, status, callbackLog, statusL
             <AblyMessagesTab entries={ablyMessages} />
           ) : tab === 'uimessages' ? (
             <UIMessagesTab
-              messages={messages}
+              messages={uiMessages}
               status={status}
             />
           ) : (

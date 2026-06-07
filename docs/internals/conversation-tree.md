@@ -103,7 +103,7 @@ for each Run in startSerial order:
   3. If both pass: add to the path
 ```
 
-Runs that fail either check are skipped - they're on unselected branches. The View then concatenates `codec.getMessages(run.projection)` per Run in chain order to produce the flat TMessage[] the UI renders.
+Runs that fail either check are skipped - they're on unselected branches. The View then concatenates `codec.getMessages(run.projection)` per Run in chain order to produce the flat `CodecMessage<TMessage>[]` the UI renders.
 
 ### Resolved group cache
 
@@ -122,12 +122,12 @@ The public `Tree` interface exposes:
 
 The following are on the `View`, not the public `Tree` interface:
 
-| Method                    | Returns                                          |
-| ------------------------- | ------------------------------------------------ |
-| `flattenNodes()`          | Linear Run chain following selected branches     |
-| `getMessages()`           | Flat TMessage[] concatenated across visible Runs |
-| `select(runId, index)`    | Switch to a different sibling at a fork point    |
-| `getSelectedIndex(runId)` | Currently selected index in the sibling group    |
+| Method                    | Returns                                                          |
+| ------------------------- | ---------------------------------------------------------------- |
+| `flattenNodes()`          | Linear Run chain following selected branches                     |
+| `getMessages()`           | Flat `CodecMessage<TMessage>[]` concatenated across visible Runs |
+| `select(runId, index)`    | Switch to a different sibling at a fork point                    |
+| `getSelectedIndex(runId)` | Currently selected index in the sibling group                    |
 
 ## Delete
 
@@ -153,7 +153,8 @@ R1 (user "hi" → assistant "hello")
      └─ R3 (user "tomorrow?" → assistant "rainy",   parentRunId=R2)
 
 view.flattenNodes()  → [R1, R2, R3]
-view.getMessages()   → ["hi", "hello", "what's weather", "sunny", "tomorrow?", "rainy"]
+view.getMessages()   → 6 { codecMessageId, message } pairs, message content:
+                       ["hi", "hello", "what's weather", "sunny", "tomorrow?", "rainy"]
 ```
 
 This is the shape every fresh `view.send()` produces: each new turn opens a Run whose `parentRunId` is the tail Run of the visible branch.

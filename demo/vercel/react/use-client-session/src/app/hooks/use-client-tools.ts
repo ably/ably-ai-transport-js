@@ -52,25 +52,28 @@ export function useClientTools(view: ViewHandle<VercelInput, UIMessage>, clientI
   const handledRef = useRef(new Set<string>());
 
   useEffect(() => {
+    // Correlate on the codec-message-id, never the domain `message.id`: the
+    // run lookup and the tool result's target both key on the SDK's
+    // client-minted id, which the domain id may not equal.
     const messages = view.messages;
     if (messages.length === 0) return;
 
     for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
+      const { codecMessageId, message: msg } = messages[i];
       if (msg.role !== 'assistant') continue;
 
       // Only execute client tools for runs initiated by this client.
       // Other clients on the same channel see the tool call but should
       // not execute it - only the requesting client has the context
       // (e.g. browser geolocation) to provide the result.
-      const run = view.runOf(msg.id);
+      const run = view.runOf(codecMessageId);
       if (!run) continue;
       if (run.clientId && run.clientId !== clientId) continue;
 
       // If there's a later assistant message, this tool call was already
       // resolved in a previous session - skip to prevent re-execution
       // on page refresh.
-      const hasFollowUpAssistant = messages.slice(i + 1).some((m) => m.role === 'assistant');
+      const hasFollowUpAssistant = messages.slice(i + 1).some((m) => m.message.role === 'assistant');
       if (hasFollowUpAssistant) continue;
 
       for (const part of msg.parts) {
@@ -83,7 +86,7 @@ export function useClientTools(view: ViewHandle<VercelInput, UIMessage>, clientI
 
         handledRef.current.add(toolPart.toolCallId);
 
-        executeClientTool(view, api, run.runId, msg.id, toolPart);
+        executeClientTool(view, api, run.runId, codecMessageId, toolPart);
       }
     }
   }, [view, view.messages, clientId, api]);

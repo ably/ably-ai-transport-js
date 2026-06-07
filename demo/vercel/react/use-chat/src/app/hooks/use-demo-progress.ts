@@ -18,7 +18,7 @@
 import { useMemo } from 'react';
 import type * as Ably from 'ably';
 import type { DynamicToolUIPart, UIMessage } from 'ai';
-import { EVENT_CANCEL, type BranchSelection, type RunInfo } from '@ably/ai-transport';
+import { EVENT_CANCEL, type BranchSelection, type CodecMessage, type RunInfo } from '@ably/ai-transport';
 
 export type DemoStepId =
   | 'server-weather'
@@ -95,7 +95,7 @@ const ALL_STEPS: DemoStep[] = [
 ];
 
 export function useDemoProgress(
-  messages: UIMessage[],
+  messages: CodecMessage<UIMessage>[],
   runOf: (codecMessageId: string) => RunInfo | undefined,
   branchSelection: (codecMessageId: string) => BranchSelection<UIMessage>,
   ablyMessages: Ably.InboundMessage[],
@@ -108,12 +108,12 @@ export function useDemoProgress(
     }
 
     for (let i = 0; i < messages.length; i++) {
-      if (messages[i].role !== 'user') continue;
+      if (messages[i].message.role !== 'user') continue;
 
       const turnTools = new Set<string>();
       const turnOutputs = new Set<string>();
       for (let j = i + 1; j < messages.length; j++) {
-        const m = messages[j];
+        const m = messages[j].message;
         if (m.role === 'user') break;
         if (m.role !== 'assistant') continue;
         for (const part of m.parts) {
@@ -136,11 +136,11 @@ export function useDemoProgress(
     }
 
     const runClientIds = new Set<string>();
-    for (const message of messages) {
-      const run = runOf(message.id);
+    for (const { codecMessageId, message } of messages) {
+      const run = runOf(codecMessageId);
       if (!run) continue;
       if (run.clientId) runClientIds.add(run.clientId);
-      if (!branchSelection(message.id).hasSiblings) continue;
+      if (!branchSelection(codecMessageId).hasSiblings) continue;
       if (message.role === 'assistant') completed.add('regenerate');
       if (message.role === 'user') completed.add('edit');
     }

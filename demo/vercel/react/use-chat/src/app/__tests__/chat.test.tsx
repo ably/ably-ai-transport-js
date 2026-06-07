@@ -67,7 +67,9 @@ vi.mock('@ably/ai-transport/vercel/react', () => ({
       };
     }, []);
     return {
-      messages: state.messages,
+      // The view exposes codec-message-id pairs; the mock derives them from
+      // the domain id (here they coincide).
+      messages: state.messages.map((message) => ({ codecMessageId: message.id, message })),
       hasOlder: false,
       loading: false,
       loadOlder: async () => {},

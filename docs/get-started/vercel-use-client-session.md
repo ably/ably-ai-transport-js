@@ -91,30 +91,31 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
         </button>
       )}
 
-      {/* Message list — render the flat TMessage[] from view.getMessages() */}
-      {messages.map((m) => (
-        <div key={m.id}>
-          <strong>{m.role}:</strong>
-          {m.parts.map((part, i) => (
+      {/* Message list — each entry is a { codecMessageId, message } pair from
+          view.getMessages(). Render `message`; correlate on `codecMessageId`. */}
+      {messages.map(({ codecMessageId, message }) => (
+        <div key={codecMessageId}>
+          <strong>{message.role}:</strong>
+          {message.parts.map((part, i) => (
             part.type === 'text' ? <span key={i}>{part.text}</span> : null
           ))}
 
-          {/* Branch navigation: message-keyed sibling controls */}
-          {hasMessageSiblings(m.id) && (() => {
-            const idx = getSelectedMessageSiblingIndex(m.id);
-            const count = getMessageSiblings(m.id).length;
+          {/* Branch navigation: codec-message-id-keyed sibling controls */}
+          {hasMessageSiblings(codecMessageId) && (() => {
+            const idx = getSelectedMessageSiblingIndex(codecMessageId);
+            const count = getMessageSiblings(codecMessageId).length;
             return (
               <span>
                 {idx + 1} / {count}
-                <button onClick={() => selectMessageSibling(m.id, idx - 1)}>prev</button>
-                <button onClick={() => selectMessageSibling(m.id, idx + 1)}>next</button>
+                <button onClick={() => selectMessageSibling(codecMessageId, idx - 1)}>prev</button>
+                <button onClick={() => selectMessageSibling(codecMessageId, idx + 1)}>next</button>
               </span>
             );
           })()}
 
           {/* Regenerate assistant messages */}
-          {m.role === 'assistant' && (
-            <button onClick={async () => wakeAgent(await regenerate(m.id))}>Regenerate</button>
+          {message.role === 'assistant' && (
+            <button onClick={async () => wakeAgent(await regenerate(codecMessageId))}>Regenerate</button>
           )}
         </div>
       ))}

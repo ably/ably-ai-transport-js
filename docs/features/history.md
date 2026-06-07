@@ -34,7 +34,7 @@ import { useView } from '@ably/ai-transport/react';
 const { nodes, messages, hasOlder, loading, loadOlder } = useView({ session, limit: 30 });
 
 // nodes - RunNode[] for the current branch (one Run per turn)
-// messages - flat TMessage[] concatenated across all visible Runs
+// messages - flat CodecMessage<TMessage>[] (each { codecMessageId, message }) concatenated across all visible Runs
 // hasOlder - are there older pages?
 // loading - is a page being fetched?
 // loadOlder() - load more older Runs

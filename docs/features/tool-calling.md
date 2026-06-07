@@ -102,7 +102,7 @@ import type { EventsNode } from '@ably/ai-transport';
 //    the transport — the assistant's domain `message.id` is independent of the
 //    codec-message-id and is never used for correlation.
 const assistant = view
-  .getMessagesWithIds()
+  .getMessages()
   .find(
     ({ message }) =>
       message.role === 'assistant' &&

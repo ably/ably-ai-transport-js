@@ -73,6 +73,12 @@ export interface ViewHandle<TInput extends CodecInputEvent, TMessage> {
    */
   run: (runId: string) => RunInfo | undefined;
   /**
+   * Snapshot of the visible Runs along the selected branch, in
+   * chronological order. Returns `[]` when the view isn't resolved.
+   * See {@link View.runs}.
+   */
+  runs: () => RunInfo[];
+  /**
    * Resolve the {@link BranchSelection} bundle anchored at
    * `codecMessageId`. Always returns a safe object — see
    * {@link BranchSelection}. See {@link View.branchSelection}.
@@ -195,6 +201,8 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
 
   const run = useCallback((runId: string): RunInfo | undefined => resolvedView?.run(runId), [resolvedView]);
 
+  const runs = useCallback((): RunInfo[] => resolvedView?.runs() ?? [], [resolvedView]);
+
   // Branch navigation
   const branchSelection = useCallback(
     (codecMessageId: string): BranchSelection<TMessage> =>
@@ -248,6 +256,7 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
     loadOlder,
     runOf,
     run,
+    runs,
     branchSelection,
     selectSibling,
     send,

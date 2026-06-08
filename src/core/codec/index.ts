@@ -1,4 +1,5 @@
 export type {
+  AIMessage,
   ChannelWriter,
   Codec,
   CodecInputEvent,

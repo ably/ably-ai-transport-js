@@ -31,6 +31,7 @@ export { buildTransportHeaders, createAgentSession, createClientSession, Invocat
 
 // Core codec
 export type {
+  AIMessage,
   ChannelWriter,
   Codec,
   CodecInputEvent,

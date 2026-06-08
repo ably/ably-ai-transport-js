@@ -155,7 +155,7 @@ function Header({ clientId }: { clientId?: string }) {
             rel="noreferrer"
             className="inline-flex items-center gap-1 rounded-full border border-zinc-700 px-2.5 py-0.5 text-xs text-zinc-300 hover:text-zinc-100 hover:border-zinc-500 transition-colors"
           >
-            SDK repo
+            SDK repo, Vercel preview test
             <ExternalLinkIcon />
           </a>
           <a

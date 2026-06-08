@@ -144,6 +144,23 @@ export default [
     },
   },
   {
+    files: ['test/**/*.{ts,tsx}'],
+
+    rules: {
+      // ably 2.22 added @deprecated v1-callback overloads to these channel
+      // methods. The rule resolves real call sites to the v2 overload and
+      // stays quiet, but bare references (mock assignment, expect() args)
+      // fall back to the symbol and flag because *an* overload is deprecated.
+      // We only ever use the v2 signatures, so allow these symbols in tests.
+      '@typescript-eslint/no-deprecated': [
+        'error',
+        {
+          allow: [{ from: 'package', package: 'ably', name: ['subscribe', 'unsubscribe', 'publish', 'history'] }],
+        },
+      ],
+    },
+  },
+  {
     files: ['**/*.{ts,tsx}'],
 
     rules: {

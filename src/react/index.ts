@@ -1,4 +1,16 @@
-export type { EventsNode, MessageNode } from '../core/transport/types.js';
+export type { CodecMessage } from '../core/codec/types.js';
+export type {
+  ActiveRun,
+  BranchSelection,
+  ClientSession,
+  ConversationNode,
+  EventsNode,
+  InputNode,
+  MessageNode,
+  RunInfo,
+  RunNode,
+  SendOptions,
+} from '../core/transport/types.js';
 export type { ClientSessionSlot } from './contexts/client-session-context.js';
 export type { ClientSessionProviderProps } from './contexts/client-session-provider.js';
 export { ClientSessionProvider } from './contexts/client-session-provider.js';

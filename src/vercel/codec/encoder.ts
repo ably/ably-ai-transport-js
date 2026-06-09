@@ -35,7 +35,6 @@ import type {
   UserMessage,
   WriteOptions,
 } from '../../core/codec/types.js';
-import { headerWriter } from '../../utils.js';
 import type {
   VercelInput,
   VercelOutput,
@@ -43,6 +42,7 @@ import type {
   VercelToolResultErrorPayload,
   VercelToolResultPayload,
 } from './events.js';
+import { fApproved, fId, fMediaType, fMessageId, fReason, fToolCallId, fType } from './fields.js';
 import { outputs } from './outputs.js';
 
 // ---------------------------------------------------------------------------
@@ -98,10 +98,12 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
     if (this._cancelled) return;
     this._cancelled = true;
     await this._core.cancelAllStreams();
+    const codecHeaders: Record<string, string> = {};
+    fType.write(codecHeaders, 'abort');
     await this._core.publishDiscrete({
       name: EVENT_AI_OUTPUT,
       data: reason ?? '',
-      codecHeaders: headerWriter().str('type', 'abort').build(),
+      codecHeaders,
       transportHeaders: { [HEADER_STATUS]: 'cancelled' },
     });
   }
@@ -141,8 +143,9 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
    * @param perWrite - Per-write overrides carrying the transport headers built by client-session.
    */
   private async _publishRegenerate(perWrite?: WriteOptions): Promise<void> {
-    const h = headerWriter().str('type', 'regenerate').build();
-    await this._core.publishDiscrete({ name: EVENT_AI_INPUT, data: '', codecHeaders: h }, perWrite);
+    const codecHeaders: Record<string, string> = {};
+    fType.write(codecHeaders, 'regenerate');
+    await this._core.publishDiscrete({ name: EVENT_AI_INPUT, data: '', codecHeaders }, perWrite);
   }
 
   /**
@@ -154,9 +157,11 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
    * @param perWrite - Per-write overrides carrying the wire codecMessageId.
    */
   private async _publishToolResult(input: ToolResult<VercelToolResultPayload>, perWrite?: WriteOptions): Promise<void> {
-    const h = headerWriter().str('type', 'tool-result').str('toolCallId', input.payload.toolCallId).build();
+    const codecHeaders: Record<string, string> = {};
+    fType.write(codecHeaders, 'tool-result');
+    fToolCallId.write(codecHeaders, input.payload.toolCallId);
     await this._core.publishDiscrete(
-      { name: EVENT_AI_INPUT, data: { output: input.payload.output }, codecHeaders: h },
+      { name: EVENT_AI_INPUT, data: { output: input.payload.output }, codecHeaders },
       perWrite,
     );
   }
@@ -171,9 +176,11 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
     input: ToolResultError<VercelToolResultErrorPayload>,
     perWrite?: WriteOptions,
   ): Promise<void> {
-    const h = headerWriter().str('type', 'tool-result-error').str('toolCallId', input.payload.toolCallId).build();
+    const codecHeaders: Record<string, string> = {};
+    fType.write(codecHeaders, 'tool-result-error');
+    fToolCallId.write(codecHeaders, input.payload.toolCallId);
     await this._core.publishDiscrete(
-      { name: EVENT_AI_INPUT, data: { message: input.payload.message }, codecHeaders: h },
+      { name: EVENT_AI_INPUT, data: { message: input.payload.message }, codecHeaders },
       perWrite,
     );
   }
@@ -188,13 +195,12 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
     input: ToolApprovalResponse<VercelToolApprovalResponsePayload>,
     perWrite?: WriteOptions,
   ): Promise<void> {
-    const h = headerWriter()
-      .str('type', 'tool-approval-response')
-      .str('toolCallId', input.payload.toolCallId)
-      .bool('approved', input.payload.approved)
-      .str('reason', input.payload.reason)
-      .build();
-    await this._core.publishDiscrete({ name: EVENT_AI_INPUT, data: '', codecHeaders: h }, perWrite);
+    const codecHeaders: Record<string, string> = {};
+    fType.write(codecHeaders, 'tool-approval-response');
+    fToolCallId.write(codecHeaders, input.payload.toolCallId);
+    fApproved.write(codecHeaders, input.payload.approved);
+    fReason.write(codecHeaders, input.payload.reason);
+    await this._core.publishDiscrete({ name: EVENT_AI_INPUT, data: '', codecHeaders }, perWrite);
   }
 }
 
@@ -209,32 +215,27 @@ const encodeMessagePayloads = (message: AI.UIMessage): MessagePayload[] => {
   for (const part of message.parts) {
     switch (part.type) {
       case 'text': {
-        payloads.push({
-          name: EVENT_AI_INPUT,
-          data: part.text,
-          codecHeaders: headerWriter().str('type', 'text').str('messageId', messageId).build(),
-        });
+        const codecHeaders: Record<string, string> = {};
+        fType.write(codecHeaders, 'text');
+        fMessageId.write(codecHeaders, messageId);
+        payloads.push({ name: EVENT_AI_INPUT, data: part.text, codecHeaders });
         break;
       }
       case 'file': {
-        payloads.push({
-          name: EVENT_AI_INPUT,
-          data: part.url,
-          codecHeaders: headerWriter()
-            .str('type', 'file')
-            .str('messageId', messageId)
-            .str('mediaType', part.mediaType)
-            .build(),
-        });
+        const codecHeaders: Record<string, string> = {};
+        fType.write(codecHeaders, 'file');
+        fMessageId.write(codecHeaders, messageId);
+        fMediaType.write(codecHeaders, part.mediaType);
+        payloads.push({ name: EVENT_AI_INPUT, data: part.url, codecHeaders });
         break;
       }
       default: {
         if (isDataUIPart(part)) {
-          payloads.push({
-            name: EVENT_AI_INPUT,
-            data: part.data,
-            codecHeaders: headerWriter().str('type', part.type).str('messageId', messageId).str('id', part.id).build(),
-          });
+          const codecHeaders: Record<string, string> = {};
+          fType.write(codecHeaders, part.type);
+          fMessageId.write(codecHeaders, messageId);
+          fId.write(codecHeaders, part.id);
+          payloads.push({ name: EVENT_AI_INPUT, data: part.data, codecHeaders });
         }
         break;
       }
@@ -243,11 +244,10 @@ const encodeMessagePayloads = (message: AI.UIMessage): MessagePayload[] => {
 
   if (payloads.length === 0) {
     // Always emit at least one part so the decoder can reconstruct the codec-message-id and role from headers, even when the user-message carried no encodable parts.
-    payloads.push({
-      name: EVENT_AI_INPUT,
-      data: '',
-      codecHeaders: headerWriter().str('type', 'text').str('messageId', messageId).build(),
-    });
+    const codecHeaders: Record<string, string> = {};
+    fType.write(codecHeaders, 'text');
+    fMessageId.write(codecHeaders, messageId);
+    payloads.push({ name: EVENT_AI_INPUT, data: '', codecHeaders });
   }
 
   return payloads;

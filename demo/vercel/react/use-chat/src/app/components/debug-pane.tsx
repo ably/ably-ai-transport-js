@@ -7,7 +7,7 @@ import type * as Ably from 'ably';
 
 export interface CallbackLogEntry {
   time: number;
-  type: 'onToolCall' | 'onFinish' | 'onData';
+  type: 'onToolCall' | 'onFinish' | 'onData' | 'onError';
   summary: string;
 }
 
@@ -50,7 +50,7 @@ interface DebugPaneProps {
   ablyMessages: Ably.InboundMessage[];
   status: string;
   callbackLog: CallbackLogEntry[];
-  statusLog: { time: number; status: string }[];
+  statusLog: { time: number; status: string; error?: string }[];
   clientToolLog: ClientToolLogEntry[];
   onClearLogs: () => void;
 }
@@ -175,6 +175,7 @@ const callbackTypeColors: Record<string, string> = {
   onToolCall: 'text-blue-400',
   onFinish: 'text-emerald-400',
   onData: 'text-purple-400',
+  onError: 'text-red-400',
 };
 
 const statusColors: Record<string, string> = {
@@ -191,7 +192,7 @@ function LifecycleTab({
   onClear,
 }: {
   callbackLog: CallbackLogEntry[];
-  statusLog: { time: number; status: string }[];
+  statusLog: { time: number; status: string; error?: string }[];
   clientToolLog: ClientToolLogEntry[];
   onClear: () => void;
 }) {
@@ -229,6 +230,7 @@ function LifecycleTab({
             >
               {idx > 0 && <span className="text-zinc-700">&rarr;</span>}
               <span className={statusColors[entry.status] ?? 'text-zinc-500'}>{entry.status}</span>
+              {entry.error && <span className="text-red-300 break-all">({entry.error})</span>}
             </span>
           ))}
         </div>

@@ -1,6 +1,6 @@
 /**
  * loadHistory — load conversation history from an Ably channel and return
- * the raw wire messages as a paginated HistoryPage result.
+ * the raw Ably messages as a paginated HistoryPage result.
  *
  * This does NOT decode: it pages back through Ably history via the shared
  * {@link loadHistoryPages} primitive until `limit` complete messages are
@@ -9,7 +9,7 @@
  * a cheap, header-based completion counter to decide when to stop paging.
  *
  * The `limit` option controls the number of complete **messages** per page,
- * not the number of Ably wire messages fetched. A message is complete when
+ * not the number of Ably messages fetched. A message is complete when
  * its terminal wire signal — `status: "complete"` / `"cancelled"`, or a
  * `discrete` create — has been seen. Runs that span a page boundary are
  * handled by the counter requiring both a start and a terminal signal
@@ -35,7 +35,7 @@ import type { HistoryPage, LoadHistoryOptions } from './types.js';
 // ---------------------------------------------------------------------------
 
 interface HistoryState {
-  /** Cursor over the shared `loadHistoryPages` primitive; each `next()` returns one Ably page's wires (newest-first within the page). */
+  /** Cursor over the shared `loadHistoryPages` primitive; each `next()` returns one Ably page's messages (newest-first within the page). */
   cursor: HistoryPagesCursor;
   /** All raw Ably messages collected so far, in newest-first order (as received from Ably). */
   rawMessages: Ably.InboundMessage[];
@@ -53,7 +53,7 @@ interface HistoryState {
    * `message.create` / `message.update` / `message.append` with
    * `stream: "true"` (the decoder establishes a tracker via create or
    * first-contact), or a `message.create` carrying `discrete` (a discrete
-   * message, created and terminated in one wire message).
+   * message, created and terminated in one Ably message).
    */
   startedCodecMessageIds: Set<string>;
   /**
@@ -83,7 +83,7 @@ interface HistoryState {
  *
  * A codec-message-id is considered complete only when BOTH of these have been seen:
  * - a "start" signal: either `discrete` on a `message.create`
- *   (discrete messages are created and terminated by the same wire
+ *   (discrete messages are created and terminated by the same Ably message
  *   message), OR any `message.create` / `message.update` / `message.append`
  *   with `stream: "true"` (the decoder establishes a tracker via
  *   create or first-contact).
@@ -107,7 +107,7 @@ interface HistoryState {
  * - Missing `codec-message-id`: lifecycle events not tied to a domain message.
  * - `message.delete`: clears the tracker, doesn't produce output.
  *
- * Amend-class wire messages (events targeting an existing message via
+ * Amend-class Ably messages (events targeting an existing message via
  * `HEADER_CODEC_MESSAGE_ID`) flow through the same counter — the Sets naturally
  * dedup so a tool-output amend on an already-seen codec-message-id is idempotent.
  *
@@ -177,7 +177,7 @@ const fetchUntilLimit = async (state: HistoryState, limit: number): Promise<void
 // ---------------------------------------------------------------------------
 
 /**
- * Build a HistoryPage of raw wire messages from the current fetch state.
+ * Build a HistoryPage of raw Ably messages from the current fetch state.
  * @param state - The shared history traversal state.
  * @param limit - Max complete messages per page.
  * @returns A page of raw history messages with a `next()` cursor.
@@ -185,7 +185,7 @@ const fetchUntilLimit = async (state: HistoryState, limit: number): Promise<void
 const buildResult = (state: HistoryState, limit: number): HistoryPage => {
   // Advance the served-completion counter by up to `limit`, mirroring the
   // page granularity the consumer asked for. `rawMessages` for this page are
-  // all wires fetched since the previous page (empty for buffered pages).
+  // all messages fetched since the previous page (empty for buffered pages).
   const totalCompleted = state.completedCodecMessageIds.size;
   const served = Math.min(limit, Math.max(0, totalCompleted - state.returnedCount));
   state.returnedCount += served;
@@ -217,17 +217,17 @@ const buildResult = (state: HistoryState, limit: number): HistoryPage => {
 // ---------------------------------------------------------------------------
 
 /**
- * Load conversation history from a channel and return the raw wire messages.
+ * Load conversation history from a channel and return the raw Ably messages.
  *
  * Drives the shared {@link loadHistoryPages} primitive with
  * `untilAttach: true` (gapless continuity with the live subscription) and a
- * wire-message page limit that overprovisions for the many-wires-per-message
+ * Ably message page limit that overprovisions for the many-Ably-messages-per-domain-message
  * ratio. Each `HistoryPage` returned covers up to `limit` complete domain
- * messages; subsequent pages drain over-collected wires from the buffer
+ * messages; subsequent pages drain over-collected messages from the buffer
  * before pulling more from the iterator.
  *
  * The `limit` option controls the number of complete messages returned per
- * page, not the number of Ably wire messages fetched.
+ * page, not the number of Ably messages fetched.
  * @param channel - The Ably channel to load history from.
  * @param options - Pagination options.
  * @param logger - Logger for diagnostic output.
@@ -243,8 +243,8 @@ export const loadHistory = async (
 
   logger.trace('loadHistory();', { limit });
 
-  // Request more Ably wire messages per page than the domain-message limit to
-  // account for the many-to-one ratio (multiple wire messages per message).
+  // Request more Ably messages per page than the domain-message limit to
+  // account for the many-to-one ratio (multiple Ably messages per domain message).
   // The wire pagination is internal to the iterator; the consumer-visible
   // pagination is by complete domain messages.
   const wireLimit = limit * 10;

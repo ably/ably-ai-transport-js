@@ -279,9 +279,9 @@ export class DefaultTree<
   private _siblingCacheVersion = -1;
 
   /**
-   * Index from `event-id` header to the raw Ably wire that carried it.
-   * Populated incrementally as wires arrive via {@link emitAblyMessage}; reads
-   * back the raw wire for the agent's input-event lookup
+   * Index from `event-id` header to the raw Ably message that carried it.
+   * Populated incrementally as messages arrive via {@link emitAblyMessage};
+   * reads back the raw message for the agent's input-event lookup
    * ({@link findWireByEventId}). Bounded by the Tree's lifetime — cleared
    * when the Tree is replaced on continuity loss / session close.
    */

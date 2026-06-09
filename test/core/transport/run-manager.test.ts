@@ -73,16 +73,13 @@ describe('RunManager', () => {
       expect(headers[HEADER_RUN_CLIENT_ID]).toBe('user-a');
     });
 
-    it('returns an AbortSignal', async () => {
-      const signal = await manager.startRun('run-1');
-      expect(signal).toBeInstanceOf(AbortSignal);
-      expect(signal.aborted).toBe(false);
-    });
-
-    it('uses external controller when provided', async () => {
+    it('adopts the external controller so close() aborts it', async () => {
       const controller = new AbortController();
-      const signal = await manager.startRun('run-1', 'user-a', controller);
-      expect(signal).toBe(controller.signal);
+      await manager.startRun('run-1', 'user-a', controller);
+      expect(controller.signal.aborted).toBe(false);
+
+      manager.close();
+      expect(controller.signal.aborted).toBe(true);
     });
 
     it('defaults clientId to empty string when omitted', async () => {
@@ -206,11 +203,13 @@ describe('RunManager', () => {
     });
 
     it('removes run from active set after publish', async () => {
-      await manager.startRun('run-1');
+      const controller = new AbortController();
+      await manager.startRun('run-1', undefined, controller);
       await manager.endRun('run-1', 'complete');
 
-      expect(manager.getSignal('run-1')).toBeUndefined();
-      expect(manager.getActiveRunIds()).toHaveLength(0);
+      // The run is gone from the active set, so a later close() does not abort it.
+      manager.close();
+      expect(controller.signal.aborted).toBe(false);
     });
 
     it('defaults clientId to empty string for unknown run', async () => {
@@ -305,12 +304,15 @@ describe('RunManager', () => {
       expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
     });
 
-    it('drops the run from the active set so a cancel during suspension is a no-op', async () => {
-      await manager.startRun('run-1', 'user-a');
+    it('drops the run from the active set so a later close() is a no-op for it', async () => {
+      const controller = new AbortController();
+      await manager.startRun('run-1', 'user-a', controller);
       await manager.suspendRun('run-1', 'inv-1');
 
-      expect(manager.getSignal('run-1')).toBeUndefined();
-      expect(manager.getActiveRunIds()).toHaveLength(0);
+      // The agent process terminates on suspend; the run is dropped, so close()
+      // has no controller to abort for it.
+      manager.close();
+      expect(controller.signal.aborted).toBe(false);
     });
 
     it('defaults run-client-id to empty string for an unknown run', async () => {
@@ -319,17 +321,6 @@ describe('RunManager', () => {
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
       const headers = headersOf(channel.publishCalls.at(0)!);
       expect(headers[HEADER_RUN_CLIENT_ID]).toBe('');
-    });
-  });
-
-  describe('getSignal', () => {
-    it('returns signal for active run', async () => {
-      await manager.startRun('run-1');
-      expect(manager.getSignal('run-1')).toBeInstanceOf(AbortSignal);
-    });
-
-    it('returns undefined for unknown run', () => {
-      expect(manager.getSignal('nope')).toBeUndefined();
     });
   });
 
@@ -344,49 +335,17 @@ describe('RunManager', () => {
     });
   });
 
-  describe('cancel', () => {
-    it('fires the AbortSignal for the run', async () => {
-      const signal = await manager.startRun('run-1');
-      expect(signal.aborted).toBe(false);
-
-      manager.cancel('run-1');
-      expect(signal.aborted).toBe(true);
-    });
-
-    it('does nothing for unknown run', () => {
-      // Should not throw
-      manager.cancel('nope');
-    });
-  });
-
-  describe('getActiveRunIds', () => {
-    it('returns all active run IDs', async () => {
-      await manager.startRun('run-1');
-      await manager.startRun('run-2');
-
-      const ids = manager.getActiveRunIds();
-      expect(ids).toHaveLength(2);
-      expect(ids).toContain('run-1');
-      expect(ids).toContain('run-2');
-    });
-  });
-
   describe('close', () => {
-    it('cancels all active runs', async () => {
-      const signal1 = await manager.startRun('run-1');
-      const signal2 = await manager.startRun('run-2');
+    it('aborts all active runs', async () => {
+      const controller1 = new AbortController();
+      const controller2 = new AbortController();
+      await manager.startRun('run-1', 'user-a', controller1);
+      await manager.startRun('run-2', 'user-a', controller2);
 
       manager.close();
 
-      expect(signal1.aborted).toBe(true);
-      expect(signal2.aborted).toBe(true);
-    });
-
-    it('clears all active runs', async () => {
-      await manager.startRun('run-1');
-      manager.close();
-
-      expect(manager.getActiveRunIds()).toHaveLength(0);
+      expect(controller1.signal.aborted).toBe(true);
+      expect(controller2.signal.aborted).toBe(true);
     });
   });
 });

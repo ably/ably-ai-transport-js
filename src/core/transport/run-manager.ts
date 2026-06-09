@@ -19,7 +19,7 @@ import type { RunEndReason } from './types.js';
  * continuation (re-entering an existing run) sets `continuation` and omits the
  * structural `parent` / `forkOf` / `regenerates` fields.
  */
-export interface StartRunMetadata {
+interface StartRunMetadata {
   /** Structural parent codec-message-id (fresh run-start only). */
   parent?: string;
   /** Forked user-prompt codec-message-id for an edit (fresh run-start only). */
@@ -47,14 +47,9 @@ export interface RunManager {
    * `ai-run-start` for a fresh run, or `ai-run-resume` when `metadata.continuation`
    * is set (a subsequent invocation re-entering an existing run). A resume omits
    * the structural `parent` / `forkOf` / `regenerates` headers — the original
-   * run-start owns the run's structure. Returns the run's AbortSignal.
+   * run-start owns the run's structure.
    */
-  startRun(
-    runId: string,
-    clientId?: string,
-    controller?: AbortController,
-    metadata?: StartRunMetadata,
-  ): Promise<AbortSignal>;
+  startRun(runId: string, clientId?: string, controller?: AbortController, metadata?: StartRunMetadata): Promise<void>;
   /**
    * Suspend a run. Publishes run-suspend on the channel and drops the run's
    * active-run entry — the agent process terminates on suspend, so there is no
@@ -79,14 +74,8 @@ export interface RunManager {
     inputClientId?: string,
     inputCodecMessageId?: string,
   ): Promise<void>;
-  /** Get the AbortSignal for a run. */
-  getSignal(runId: string): AbortSignal | undefined;
   /** Get the clientId that owns a run. */
   getClientId(runId: string): string | undefined;
-  /** Fire the AbortSignal for a run to cancel any in-flight work. */
-  cancel(runId: string): void;
-  /** Get all active run IDs. */
-  getActiveRunIds(): string[];
   /** Cancel all active runs and clear state. */
   close(): void;
 }
@@ -119,7 +108,7 @@ class DefaultRunManager implements RunManager {
     clientId?: string,
     externalController?: AbortController,
     metadata?: StartRunMetadata,
-  ): Promise<AbortSignal> {
+  ): Promise<void> {
     this._logger?.trace('DefaultRunManager.startRun();', { runId, clientId });
 
     const controller = externalController ?? new AbortController();
@@ -153,7 +142,6 @@ class DefaultRunManager implements RunManager {
     });
 
     this._logger?.debug('DefaultRunManager.startRun(); run started', { runId });
-    return controller.signal;
   }
 
   async suspendRun(
@@ -209,21 +197,8 @@ class DefaultRunManager implements RunManager {
     this._activeRuns.delete(runId);
   }
 
-  getSignal(runId: string): AbortSignal | undefined {
-    return this._activeRuns.get(runId)?.controller.signal;
-  }
-
   getClientId(runId: string): string | undefined {
     return this._activeRuns.get(runId)?.clientId;
-  }
-
-  cancel(runId: string): void {
-    this._logger?.debug('DefaultRunManager.cancel();', { runId });
-    this._activeRuns.get(runId)?.controller.abort();
-  }
-
-  getActiveRunIds(): string[] {
-    return [...this._activeRuns.keys()];
   }
 
   close(): void {

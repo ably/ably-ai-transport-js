@@ -82,7 +82,7 @@ export type SendDelegate<TInput extends CodecInputEvent> = (
 // ---------------------------------------------------------------------------
 
 /** Options for creating a View. */
-export interface ViewOptions<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage> {
+interface ViewOptions<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage> {
   /** The tree to project. */
   tree: TreeInternal<TInput, TOutput, TProjection>;
   /** The Ably channel to load history from. */

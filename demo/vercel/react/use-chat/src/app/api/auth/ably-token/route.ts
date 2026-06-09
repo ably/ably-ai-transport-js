@@ -22,10 +22,16 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const clientId = url.searchParams.get('clientId') ?? `user-${crypto.randomUUID().slice(0, 8)}`;
 
+  // Scope the token to the configured channel namespace (default `ai:`) rather
+  // than every channel in the app. The browser only ever opens `<namespace><slug>`
+  // channels, so `<namespace>*` is sufficient and keeps the token least-privilege.
+  // Pinned `?channel=` names must sit within this namespace to be authorised.
+  const namespace = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ai:';
+
   const token = jwt.sign(
     {
       'x-ably-clientId': clientId,
-      'x-ably-capability': JSON.stringify({ '*': ['publish', 'subscribe', 'history'] }),
+      'x-ably-capability': JSON.stringify({ [`${namespace}*`]: ['publish', 'subscribe', 'history'] }),
     },
     keySecret,
     {

@@ -24,262 +24,111 @@ import {
   HEADER_RUN_ID,
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
-import type { Logger } from '../../logger.js';
+import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { compareBySerial, getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
-import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
+import type { CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
+import { applyWireMessage } from './decode-fold.js';
 import { buildTransportHeaders } from './headers.js';
 import { evictOldestIfFull } from './internal/bounded-map.js';
 import { Invocation } from './invocation.js';
-import { loadConversation, loadRunProjection } from './load-conversation.js';
+import { loadHistoryPages } from './load-history-pages.js';
 import { pipeStream } from './pipe-stream.js';
 import type { RunManager } from './run-manager.js';
 import { createRunManager } from './run-manager.js';
+import { createTree, type DefaultTree } from './tree.js';
 import type {
   AgentSession,
   AgentSessionOptions,
   CancelRequest,
+  ConversationNode,
   LoadConversationOptions,
-  MessageNode,
   PipeOptions,
   Run,
   RunEndReason,
   RunRuntime,
   RunView,
   StreamResult,
+  Tree,
 } from './types.js';
 
 // ---------------------------------------------------------------------------
-// Run-state lookup helpers
+// Input-event lookup result
 // ---------------------------------------------------------------------------
 
 /**
- * Wait for every event-id in `expectedInputEventIds` to arrive as a channel
- * message before letting the run proceed to LLM work. Uses the session's
- * unfiltered channel dispatcher (registered in `connect()`) so that
- * messages replayed via channel rewind on attach reach the lookup — no
- * separate history fetch needed.
+ * Result of {@link DefaultAgentSession._findInputEvent}. The lookup races
+ * the session's Tree (`findWireByEventId` pre-scan + `'ably-message'` event
+ * for live arrivals) against a bounded `loadHistoryPages` fetch; resolves
+ * with the matched wires sorted by Ably `serial` ascending.
  *
- * Scope: this awaits the data-carrying input events a send publishes —
- * fresh prompts, edits, regenerates, tool results, and approvals. Control
- * events (cancel etc.) carry no `event-id`, are dispatched
- * separately, and never enter this lookup.
- *
- * Each client-published event in a send (user-message AND amend events
- * such as tool-approval responses and client tool outputs) is stamped
- * with its own `event-id`.
- * The lookup matches incoming messages against the expected set; ids
- * not in the set are ignored, duplicates (rewind redelivering a message
- * also seen live) are deduped by event-id. The wait completes when
- * every expected id has arrived, guaranteeing the channel state is
- * consistent with what the client promised before any downstream
- * processing (loadProjection, streamText) runs.
- *
- * User-message arrivals decode into MessageNodes that populate
- * `run.view.messages`; amend arrivals fold into a fresh projection that
- * has no target message, so they're orphaned and dropped — they only
- * count toward the wait. Collected nodes are returned sorted by Ably
- * `serial` ascending.
- *
- * Bounded by `timeoutMs` as a total budget across all N arrivals. The
- * caller's `signal` aborts the wait. On partial collection at timeout the
- * promise rejects with `InputEventNotFound` and an error message including
- * "received X of Y". If any decode throws mid-collection, the whole lookup
- * rejects with `InputEventNotFound` wrapping the decode error as cause —
- * already-collected messages are discarded.
- * @param opts - Lookup parameters.
- * @param opts.register - Session-provided registration that delivers the input events for the expected event-ids. Returns an unregister function.
- * @param opts.codec - Codec used to decode arriving messages.
- * @param opts.invocationId - Invocation identifier — used only for diagnostic logging and error messages.
- * @param opts.runId - Run identifier (used for logging and error messages).
- * @param opts.expectedInputEventIds - Input-event ids the lookup must observe before resolving.
- * @param opts.timeoutMs - Maximum total time to wait for all event-id arrivals.
- * @param opts.signal - AbortSignal that cancels the wait when the run is cancelled.
- * @param opts.logger - Optional logger for diagnostic output.
- * @returns The MessageNodes for arriving user-message events (sorted by Ably
- *   serial — empty when every input event was a tool-resolution wire message that
- *   decoded to a chunk and produced no node), and the transport headers of
- *   the first matched wire message. `firstHeaders` is the canonical source for
- *   run-level metadata (clientId, parent, forkOf, continuation flag) because
- *   it lands whether or not the decode produced a MessageNode. `firstClientId`
- *   carries the publisher's Ably-level `clientId` from that same message — the
- *   source of `inputClientId` re-stamping on the agent's published events.
+ * Run.start reads `firstHeaders` / `firstClientId` from the smallest-serial
+ * matched wire to derive per-run metadata (run-id, parent, forkOf,
+ * continuation flag, publisher clientId). The Tree has already folded
+ * each wire by the time the lookup resolves, so callers do NOT need to
+ * decode the raw messages themselves.
  */
 interface InputEventLookupResult<TMessage> {
-  nodes: MessageNode<TMessage>[];
-  firstHeaders?: Record<string, string>;
-  firstClientId?: string;
-  /**
-   * Raw Ably messages observed live for the matched input-event ids, in
-   * arrival order. The agent forwards these to `loadRunProjection` so a
-   * continuation invocation can fold the just-published client wires
-   * (e.g. a tool-output-available) without waiting on Ably's channel
-   * history indexing window.
-   */
+  /** Raw Ably wires matched by the lookup, sorted by serial ascending. */
   rawMessages: Ably.InboundMessage[];
+  /** Transport headers of the smallest-serial matched wire (run metadata). */
+  firstHeaders?: Record<string, string>;
+  /** Publisher's Ably channel-level `clientId` from the smallest-serial wire. */
+  firstClientId?: string;
+  /** Phantom marker so the TMessage generic is referenced (no runtime value). */
+  _phantom?: TMessage;
 }
 
-const lookupInputEvents = async <
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-  TProjection,
-  TMessage,
->(opts: {
-  register: (callback: (msg: Ably.InboundMessage) => void) => () => void;
-  codec: Codec<TInput, TOutput, TProjection, TMessage>;
-  invocationId: string;
-  runId: string;
-  expectedInputEventIds: readonly string[];
-  timeoutMs: number;
-  signal: AbortSignal;
-  logger: Logger | undefined;
-}): Promise<InputEventLookupResult<TMessage>> => {
-  const { register, codec, invocationId, runId, expectedInputEventIds, timeoutMs, signal, logger } = opts;
-  const expectedSet = new Set(expectedInputEventIds);
-  const expectedCount = expectedSet.size;
+// ---------------------------------------------------------------------------
+// Ancestor-chain walk over the Tree
+// ---------------------------------------------------------------------------
 
-  const collected: MessageNode<TMessage>[] = [];
-  const rawMessages: Ably.InboundMessage[] = [];
-  const matchedInputEventIds = new Set<string>();
-  let firstHeaders: Record<string, string> | undefined;
-  let firstClientId: string | undefined;
+/**
+ * Walk parent pointers from an anchor codec-message-id back through the
+ * Tree to the conversation root, returning nodes in root-first order. When
+ * `maxRuns` is set, the walk stops after collecting that many reply
+ * RunNodes (input nodes encountered alongside don't count toward the bound).
+ *
+ * Returns an empty array when the anchor isn't in the Tree.
+ * @param tree - The materialisation tree to walk.
+ * @param anchor - The codec-message-id to start from (typically the current run's input).
+ * @param maxRuns - Optional bound on the number of reply RunNodes in the chain.
+ * @returns Nodes from root to anchor in chronological order.
+ */
+const walkAncestorChain = <TOutput extends CodecOutputEvent, TProjection>(
+  tree: Tree<TOutput, TProjection>,
+  anchor: string | undefined,
+  maxRuns?: number,
+): readonly ConversationNode<TProjection>[] => {
+  if (anchor === undefined) return [];
+  const chain: ConversationNode<TProjection>[] = [];
+  let current = tree.getNodeByCodecMessageId(anchor);
+  const seen = new Set<string>();
+  while (current !== undefined) {
+    // Defensive cycle guard — `parentCodecMessageId` chains should be DAGs;
+    // a cycle indicates Tree corruption but we don't want to infinite-loop.
+    const key = current.kind === 'run' ? current.runId : current.codecMessageId;
+    if (seen.has(key)) break;
+    seen.add(key);
+    chain.unshift(current);
+    if (maxRuns !== undefined && countReplyRuns(chain) >= maxRuns) break;
+    const parentId = current.parentCodecMessageId;
+    if (parentId === undefined) break;
+    current = tree.getNodeByCodecMessageId(parentId);
+  }
+  return chain;
+};
 
-  /**
-   * Decode an inbound Ably message into MessageNodes via the codec.
-   * @param m - The inbound Ably message to decode.
-   * @returns The decoded MessageNodes carrying transport headers and serial.
-   */
-  const decode = (m: Ably.InboundMessage): MessageNode<TMessage>[] => {
-    const decoder = codec.createDecoder();
-    const headers = getTransportHeaders(m);
-    const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID] ?? '';
-    const { inputs, outputs } = decoder.decode(m);
-    const events: (TInput | TOutput)[] = [...inputs, ...outputs];
-    let projection = codec.init();
-    for (const event of events) {
-      projection = codec.fold(projection, event, { serial: m.serial ?? '', messageId: codecMessageId });
-    }
-    return codec.getMessages(projection).map(({ message }) => ({
-      kind: 'message' as const,
-      message,
-      codecMessageId,
-      parentId: headers[HEADER_PARENT],
-      forkOf: headers[HEADER_FORK_OF],
-      headers,
-      serial: m.serial,
-    }));
-  };
-
-  return new Promise<InputEventLookupResult<TMessage>>((resolve, reject) => {
-    let settled = false;
-    // Dedupe across rewind-redelivery: rewind may surface a message the
-    // listener also saw live. Scoped to the active lookup so it cannot
-    // grow unbounded.
-    const seenSerials = new Set<string>();
-    // Forward-declared so that cleanup() and onCancelled() can reference them
-    // before they are assigned. cleanup may run synchronously inside
-    // `register(...)` (when buffered input events drain on registration) before
-    // `unregister`/`timer` have been assigned — the no-op fallback for
-    // unregister and undefined-guard for timer handle that window. The
-    // settled-flag re-check after `register` returns reconciles the
-    // listener-detach that cleanup couldn't perform inside that window.
-    /* eslint-disable prefer-const, unicorn/consistent-function-scoping, @typescript-eslint/no-empty-function -- forward-declared state for the sync-drain reconciliation pattern; see comment above. */
-    let unregister: () => void = () => {};
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    /* eslint-enable */
-    const cleanup = (): void => {
-      unregister();
-      if (timer !== undefined) clearTimeout(timer);
-      signal.removeEventListener('abort', onCancelled);
-    };
-    const onCancelled = (): void => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(
-        new Ably.ErrorInfo(`unable to look up input event; run ${runId} was cancelled`, ErrorCode.InvalidArgument, 400),
-      );
-    };
-    signal.addEventListener('abort', onCancelled, { once: true });
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- onCancelled may have settled the promise synchronously above when the signal was already aborted.
-    if (settled) return;
-    unregister = register((m) => {
-      if (settled) return;
-      if (m.serial !== undefined && seenSerials.has(m.serial)) return;
-      if (m.serial !== undefined) seenSerials.add(m.serial);
-
-      const wireHeaders = getTransportHeaders(m);
-
-      // Only count messages whose event-id is in the expected set.
-      const msgEventId = wireHeaders[HEADER_EVENT_ID];
-      if (!msgEventId || !expectedSet.has(msgEventId) || matchedInputEventIds.has(msgEventId)) return;
-      matchedInputEventIds.add(msgEventId);
-
-      // Capture the trigger event's headers AND its Ably channel-level `clientId`
-      // so run-level metadata (parent / forkOf / continuation flag from headers;
-      // `inputClientId` from the wire publisher) is available even when the decode
-      // produces zero MessageNodes — the case for continuation tool-resolution
-      // trigger events whose chunks fold into a fresh empty projection without
-      // an assistant to land on.
-      if (firstHeaders === undefined) {
-        firstHeaders = wireHeaders;
-        firstClientId = m.clientId;
-      }
-
-      let decoded: MessageNode<TMessage>[];
-      try {
-        decoded = decode(m);
-      } catch (error) {
-        settled = true;
-        cleanup();
-        const cause = error instanceof Ably.ErrorInfo ? error : undefined;
-        reject(
-          new Ably.ErrorInfo(
-            `unable to look up input event; decode failed for invocation ${invocationId}: ${error instanceof Error ? error.message : String(error)}`,
-            ErrorCode.InputEventNotFound,
-            504,
-            cause,
-          ),
-        );
-        return;
-      }
-      for (const node of decoded) collected.push(node);
-      rawMessages.push(m);
-      if (matchedInputEventIds.size < expectedCount) return;
-      settled = true;
-      cleanup();
-      // Sort by Ably serial ascending so callers see publish order regardless
-      // of interleaved rewind+live delivery. Null serials sort last (defensive
-      // — input events should always carry a serial).
-      collected.sort(compareBySerial);
-      logger?.debug('lookupInputEvents(); collected input events', {
-        runId,
-        invocationId,
-        count: collected.length,
-      });
-      resolve({ nodes: collected, firstHeaders, firstClientId, rawMessages });
-    });
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the register callback may have settled the promise synchronously during buffered input-event drain.
-    if (settled) {
-      // Sync drain inside register settled the promise; cleanup ran but
-      // could not detach the listener because `unregister` was still the
-      // no-op. Detach it now.
-      unregister();
-      return;
-    }
-    timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(
-        new Ably.ErrorInfo(
-          `unable to look up input event; received ${String(collected.length)} of ${String(expectedCount)} input events for invocation ${invocationId} within ${String(timeoutMs)}ms`,
-          ErrorCode.InputEventNotFound,
-          504,
-        ),
-      );
-    }, timeoutMs);
-  });
+/**
+ * Count the reply RunNodes in an ancestor chain. Used to bound the walk
+ * via the `maxRuns` option.
+ * @param chain - Ancestor chain to count over.
+ * @returns Number of reply RunNodes in the chain.
+ */
+const countReplyRuns = <TProjection>(chain: readonly ConversationNode<TProjection>[]): number => {
+  let count = 0;
+  for (const node of chain) if (node.kind === 'run') count++;
+  return count;
 };
 
 // ---------------------------------------------------------------------------
@@ -351,28 +200,56 @@ class DefaultAgentSession<
    */
   private readonly _deferredCancels = new Map<string, Ably.InboundMessage>();
   /**
-   * Active input-event lookups keyed by `event-id`. The channel listener
-   * dispatches each input event to the lookup that registered for its
-   * `event-id`, so that messages replayed via channel rewind (and live
-   * messages alike) reach the right lookup without each lookup having to
-   * subscribe separately, and without depending on a client-minted
-   * `invocation-id`.
+   * Session-owned materialisation tree. Every wire (live + history) folds
+   * through `applyWireMessage(this._tree, this._decoder, msg)`; conversation
+   * state is read by walking parent pointers from the input node.
+   *
+   * Replaced (not cleared in place) on channel continuity loss so that the
+   * fresh tree starts empty. The old tree is abandoned to GC once in-flight
+   * lookups have aborted.
    */
-  private readonly _pendingInputEventLookups = new Map<string, (msg: Ably.InboundMessage) => void>();
+  private _tree: DefaultTree<TInput, TOutput, TProjection>;
   /**
-   * Input events buffered by `event-id` when no lookup callback was
-   * registered at delivery time. Rewind replays user messages on attach —
-   * before `run.start()` runs — so without buffering they would be dropped.
-   * Each `event-id` maps to an ordered array so rewind redelivery of the
-   * same event before registration is preserved (the lookup later dedupes by
-   * serial). `_registerInputEventListener` drains the buffer on registration.
-   * FIFO eviction at `_inputEventBufferLimit` event entries (each entry counts
-   * once regardless of array length).
+   * Single shared inbound decoder threaded through every `applyWireMessage`
+   * call (live + history). Streaming-across-pages folds correctly because
+   * the decoder keeps stream-tracker state across wires. Outbound encoders
+   * (used by `Run.pipe` / `Run.addEvents`) manage their own decoders.
    */
-  private readonly _inputEventBuffer = new Map<string, Ably.InboundMessage[]>();
-  private readonly _inputEventBufferLimit: number;
+  private _decoder: ReturnType<AgentSessionOptions<TInput, TOutput, TProjection, TMessage>['codec']['createDecoder']>;
+  /**
+   * Single-slot promise mutex for history-page hydration. Concurrent
+   * `loadConversation` calls that both need to extend the Tree's ancestor
+   * coverage serialise through this so we issue at most one history fetch
+   * per overlapping extension request.
+   */
+  private _hydrationMutex: Promise<void> | undefined;
+  /**
+   * Suppression flag for the Tree's `update` event during a history page
+   * fold. Each page can fire hundreds of `update` events; with no
+   * subscribers on the agent side they are noise. The flag is checked
+   * inside the Tree (via a setter exposed on `DefaultTree`) — set true
+   * during page replay, false after.
+   */
+  private _processingHistory = false;
+  /**
+   * Set of Ably wire serials already folded into the Tree. Both the live
+   * channel listener and `_hydrateAncestors` consult this before
+   * `applyWireMessage` — guards against double-folds when a wire is
+   * delivered live AND returned by a subsequent history fetch (overlap can
+   * happen at the attachSerial boundary or in test mocks that don't
+   * partition live vs history).
+   *
+   * Bounded by the Tree's lifetime — cleared on continuity-loss Tree swap.
+   */
+  private _foldedSerials = new Set<string>();
   private readonly _channelListener: (msg: Ably.InboundMessage) => void;
   private readonly _inputEventLookupTimeoutMs: number;
+  /**
+   * Lookback bound for `findInputEvent`'s history scan: stop paginating
+   * when the oldest message in a page is older than
+   * `Date.now() - _inputEventLookbackMs`.
+   */
+  private readonly _inputEventLookbackMs: number;
 
   private _state = SessionState.READY;
   private _connectPromise: Promise<void> | undefined;
@@ -385,20 +262,20 @@ class DefaultAgentSession<
     // (options.agents) and channel-attach (params.agent) paths. Idempotent
     // across sessions sharing one client.
     const registerOptions = registerAgent(options.client, options.codec);
-    // Attach with a rewind window (default 2m) so a freshly-constructed
-    // agent session can locate an input event that was published before it
-    // attached (closes the lookup race when a per-request agent is spun
-    // up after the client has already POSTed). Tunable via
-    // `AgentSessionOptions.rewindWindow`.
-    const channelOptions: Ably.ChannelOptions = {
-      params: { ...registerOptions.params, rewind: options.rewindWindow ?? '2m' },
-    };
-    this._channel = options.client.channels.get(options.channelName, channelOptions);
+    // No `rewind` param. The `untilAttach: true` history scan plus the
+    // post-attach live subscription cover every wire by serial boundary, so
+    // rewind would only duplicate wires the Tree already folds.
+    this._channel = options.client.channels.get(options.channelName, registerOptions);
     this._logger = options.logger?.withContext({ component: 'AgentSession' });
     this._onError = options.onError;
     this._runManager = createRunManager(this._channel, this._logger);
     this._inputEventLookupTimeoutMs = options.inputEventLookupTimeoutMs ?? 30000;
-    this._inputEventBufferLimit = options.inputEventBufferLimit ?? 200;
+    this._inputEventLookbackMs = options.inputEventLookbackMs ?? 120_000;
+    this._tree = createTree<TInput, TOutput, TProjection>(
+      this._codec,
+      this._logger ?? makeLogger({ logLevel: LogLevel.Silent }),
+    );
+    this._decoder = this._codec.createDecoder();
 
     this._channelListener = (msg: Ably.InboundMessage) => {
       this._handleChannelMessage(msg);
@@ -469,47 +346,12 @@ class DefaultAgentSession<
   }
 
   /**
-   * Register a callback to receive the input events carrying any of the
-   * given `eventIds`. Lookups must share the session's unfiltered
-   * subscription rather than registering their own subscribe — Ably's
-   * rewind only delivers to listeners present at attach time.
-   *
-   * The listener remains registered after the initial buffer drain so a
-   * matching event that arrives live (rather than from the buffer) still
-   * reaches the lookup until it unregisters itself. Today the only caller
-   * registers a single trigger event-id; the array form keeps the
-   * registration capable of awaiting several ids without changing callers.
-   * @param eventIds - The `event-id`s this listener cares about.
-   * @param callback - Invoked once per matching Ably message, in buffer-insertion order for drained entries.
-   * @returns Unregister function. Safe to call multiple times.
+   * The session-owned materialisation tree. Mirrors `ClientSession.tree`
+   * for observability and parity.
+   * @returns The session's Tree.
    */
-  private _registerInputEventListener(
-    eventIds: readonly string[],
-    callback: (msg: Ably.InboundMessage) => void,
-  ): () => void {
-    for (const eventId of eventIds) {
-      this._pendingInputEventLookups.set(eventId, callback);
-    }
-    // Drain any buffered input events for these event-ids — rewind replays
-    // user messages on attach before run.start() can register the callback.
-    // Without this drain, the lookup waits the full
-    // `inputEventLookupTimeoutMs` for a live arrival that never comes. Set
-    // all listeners before draining so a drain that completes the lookup
-    // synchronously cannot leave a later event-id unmapped.
-    for (const eventId of eventIds) {
-      const buffered = this._inputEventBuffer.get(eventId);
-      if (buffered) {
-        this._inputEventBuffer.delete(eventId);
-        for (const m of buffered) callback(m);
-      }
-    }
-    return () => {
-      for (const eventId of eventIds) {
-        if (this._pendingInputEventLookups.get(eventId) === callback) {
-          this._pendingInputEventLookups.delete(eventId);
-        }
-      }
-    };
+  get tree(): Tree<TOutput, TProjection> {
+    return this._tree;
   }
 
   // Spec: AIT-ST3
@@ -533,8 +375,6 @@ class DefaultAgentSession<
     this._registeredRuns.clear();
     this._runIdByInputCodecMessageId.clear();
     this._deferredCancels.clear();
-    this._pendingInputEventLookups.clear();
-    this._inputEventBuffer.clear();
     this._runManager.close();
 
     // Detach the channel this session attached. connect() subscribes (which
@@ -600,18 +440,22 @@ class DefaultAgentSession<
 
   /**
    * Buffer a cancel that arrived before its target run was known, keyed by the
-   * triggering input's codec-message-id. FIFO-evicts the oldest entry at
-   * `_inputEventBufferLimit` (mirroring `_inputEventBuffer`). A later cancel
-   * for the same input replaces the earlier one — the intent is identical.
+   * triggering input's codec-message-id. FIFO-evicts the oldest entry at the
+   * fixed limit below. A later cancel for the same input replaces the earlier
+   * one — the intent is identical.
    * @param inputCodecMessageId - The triggering input's codec-message-id.
    * @param msg - The raw cancel message (passed to `onCancel`).
    */
   private _bufferDeferredCancel(inputCodecMessageId: string, msg: Ably.InboundMessage): void {
-    const evicted = evictOldestIfFull(this._deferredCancels, inputCodecMessageId, this._inputEventBufferLimit);
+    // Deferred cancels are bounded so a pathological burst can't grow the
+    // map without bound. 200 outstanding fresh-send cancels in flight is
+    // ample — a typical agent process sees one per HTTP request.
+    const DEFERRED_CANCEL_LIMIT = 200;
+    const evicted = evictOldestIfFull(this._deferredCancels, inputCodecMessageId, DEFERRED_CANCEL_LIMIT);
     if (evicted !== undefined) {
       this._logger?.warn('DefaultAgentSession._bufferDeferredCancel(); deferred-cancel buffer full, dropping oldest', {
         evictedInputCodecMessageId: evicted,
-        limit: this._inputEventBufferLimit,
+        limit: DEFERRED_CANCEL_LIMIT,
       });
     }
     this._deferredCancels.set(inputCodecMessageId, msg);
@@ -689,7 +533,7 @@ class DefaultAgentSession<
 
     const { current, resumed } = stateChange;
 
-    // Track the initial attach so we don't treat it as a discontinuity
+    // Track the initial attach so we don't treat it as a discontinuity.
     if (current === 'attached' && !this._hasAttachedOnce) {
       this._hasAttachedOnce = true;
       return;
@@ -709,18 +553,35 @@ class DefaultAgentSession<
       previous: stateChange.previous,
     });
 
-    const err = new Ably.ErrorInfo(
-      `unable to deliver cancel messages; channel continuity lost (${current}${current === 'attached' ? ', resumed: false' : ''})`,
+    const continuityErr = new Ably.ErrorInfo(
+      `unable to continue; channel continuity lost (${current}${current === 'attached' ? ', resumed: false' : ''})`,
       ErrorCode.ChannelContinuityLost,
       500,
       stateChange.reason,
     );
 
-    // Session-level notification only: continuity loss is not scoped to any
+    // Abort every active run's controller FIRST so in-flight
+    // `loadConversation` / `findInputEvent` calls observe the abort before
+    // the Tree changes underneath them and reject with ChannelContinuityLost.
+    for (const reg of this._registeredRuns.values()) {
+      reg.controller.abort();
+    }
+
+    // Then swap the Tree for a fresh empty instance — abandons the old
+    // Tree's projections, indices, and ably-message listeners to GC. New
+    // runs use the fresh Tree; lingering closures on the old Tree from
+    // in-flight (now-aborted) lookups are bounded by the abort propagation.
+    this._tree = createTree<TInput, TOutput, TProjection>(
+      this._codec,
+      this._logger ?? makeLogger({ logLevel: LogLevel.Silent }),
+    );
+    this._decoder = this._codec.createDecoder();
+    this._foldedSerials = new Set<string>();
+
+    // Session-level notification: continuity loss is not scoped to any one
     // run. Per-run onError handlers are reserved for errors from that run's
-    // own operations (publish failures, encoder errors). Developers that need
-    // per-run reaction can iterate active runs from the session handler.
-    this._onError?.(err);
+    // own operations (publish failures, encoder errors).
+    this._onError?.(continuityErr);
   }
 
   // -------------------------------------------------------------------------
@@ -729,6 +590,24 @@ class DefaultAgentSession<
 
   private _handleChannelMessage(msg: Ably.InboundMessage): void {
     try {
+      // Fold every wire into the session-owned Tree. Mirrors the
+      // ClientSession's live decode loop — same engine, same fold path.
+      // `applyWireMessage` decodes the wire and applies the result to the
+      // Tree (or routes lifecycle wires through `applyRunLifecycle`).
+      // `emitAblyMessage` notifies Tree subscribers AND populates the
+      // event-id index used by `findInputEvent`.
+      //
+      // Dedup by serial so live + history paths don't double-fold a wire
+      // that surfaces both ways. Wires without a serial bypass the dedup
+      // (we cannot uniquely identify them).
+      if (msg.serial !== undefined && this._foldedSerials.has(msg.serial)) {
+        // Still dispatch cancels (control wires) below; just skip the fold.
+      } else {
+        if (msg.serial !== undefined) this._foldedSerials.add(msg.serial);
+        applyWireMessage(this._tree, this._decoder, msg);
+        this._tree.emitAblyMessage(msg);
+      }
+
       if (msg.name === EVENT_CANCEL) {
         // Fire-and-forget async handler — errors are caught internally.
         this._handleCancelMessage(msg).catch((error: unknown) => {
@@ -742,47 +621,6 @@ class DefaultAgentSession<
           this._onError?.(errInfo);
         });
         return;
-      }
-
-      // Dispatch client-published input events to the lookup registered
-      // for their `event-id`. Every client-originated event in an
-      // invocation (user-message AND amend events such as tool-approval
-      // responses and client tool outputs) carries `event-id`; the lookup
-      // waits for every promised id to arrive before letting the run start
-      // LLM work. Routing by `event-id` rather than `invocation-id` keeps
-      // the dispatcher independent of any client-minted invocation
-      // identity. Server-side lifecycle messages (run-start, run-end,
-      // cancel, error) never stamp `event-id`, so they're naturally
-      // excluded.
-      const headers = getTransportHeaders(msg);
-      const eventId = headers[HEADER_EVENT_ID];
-      if (eventId !== undefined) {
-        const listener = this._pendingInputEventLookups.get(eventId);
-        if (listener) {
-          listener(msg);
-        } else {
-          // Buffer for a future `_registerInputEventListener` call. This is
-          // load-bearing for the "agent attaches after publish" scenario
-          // where channel rewind delivers user messages before
-          // `run.start()` runs.
-          const existing = this._inputEventBuffer.get(eventId);
-          if (existing) {
-            existing.push(msg);
-          } else {
-            // FIFO eviction: drop the oldest event entry (and all its buffered
-            // redeliveries). Clients whose input event was evicted will fail
-            // their lookup with `InputEventNotFound` — this warn is the only
-            // operator-visible signal that capacity caused the failure.
-            const evicted = evictOldestIfFull(this._inputEventBuffer, eventId, this._inputEventBufferLimit);
-            if (evicted !== undefined) {
-              this._logger?.warn(
-                'DefaultAgentSession._handleChannelMessage(); input-event buffer full, dropping oldest entry',
-                { evictedEventId: evicted, limit: this._inputEventBufferLimit },
-              );
-            }
-            this._inputEventBuffer.set(eventId, [msg]);
-          }
-        }
       }
     } catch (error) {
       const errInfo = new Ably.ErrorInfo(
@@ -809,6 +647,335 @@ class DefaultAgentSession<
       );
     }
     return this._connectPromise;
+  }
+
+  // -------------------------------------------------------------------------
+  // Input-event lookup
+  // -------------------------------------------------------------------------
+
+  /**
+   * Find every wire whose `event-id` matches one of `expectedEventIds`,
+   * racing three sources:
+   *
+   *  1. A scan of the session's `_liveBuffer` for already-delivered wires.
+   *  2. A live listener that catches new arrivals during the call.
+   *  3. A bounded history scan via `loadHistoryPages` (lookback window).
+   *
+   * Resolves when every expected event-id has been matched. Per-id race
+   * resolution — whichever source surfaces a matched wire first wins
+   * (dedup by serial). On timeout: cancels the in-flight history scan and
+   * rejects with `InputEventNotFound`. On signal abort: rejects with
+   * `InvalidArgument`.
+   *
+   * `firstHeaders` and `firstClientId` are read from the matched wire with
+   * the smallest serial (`compareBySerial`), giving stable run-level
+   * metadata regardless of arrival ordering across sources.
+   * @param opts - Lookup parameters.
+   * @param opts.invocationId - The invocation id this lookup is for (logging / error messages).
+   * @param opts.runId - The run id this lookup is for (logging / error messages).
+   * @param opts.expectedEventIds - The set of `event-id`s the lookup must observe before resolving.
+   * @param opts.timeoutMs - Maximum total wait across live + history sources.
+   * @param opts.signal - AbortSignal that aborts the lookup if the run is cancelled.
+   * @returns Decoded MessageNodes for each matched wire, sorted by serial,
+   *   plus first-wire headers and raw wires for downstream merging.
+   */
+  private async _findInputEvent(opts: {
+    invocationId: string;
+    runId: string;
+    expectedEventIds: readonly string[];
+    timeoutMs: number;
+    signal: AbortSignal;
+  }): Promise<InputEventLookupResult<TMessage>> {
+    const { invocationId, runId, expectedEventIds, timeoutMs, signal } = opts;
+    const logger = this._logger;
+    const expectedSet = new Set(expectedEventIds);
+    const expectedCount = expectedSet.size;
+
+    const matchedByEventId = new Map<string, Ably.InboundMessage>();
+
+    // Bounded history fetch in parallel with the live wait; this controller
+    // lets the lookup cancel the in-flight fetch on timeout / abort.
+    const historyController = new AbortController();
+
+    return new Promise<InputEventLookupResult<TMessage>>((resolve, reject) => {
+      let settled = false;
+      /* eslint-disable prefer-const -- forward-declared so cleanup() / onCancelled() can reference before the listener register or the timeout schedule has run. */
+      let unregisterLive: (() => void) | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      /* eslint-enable */
+
+      const cleanup = (): void => {
+        if (unregisterLive) unregisterLive();
+        if (timer !== undefined) clearTimeout(timer);
+        historyController.abort();
+        signal.removeEventListener('abort', onCancelled);
+      };
+
+      const onCancelled = (): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(
+          new Ably.ErrorInfo(
+            `unable to look up input event; run ${runId} was cancelled`,
+            ErrorCode.InvalidArgument,
+            400,
+          ),
+        );
+      };
+
+      const finishOk = (): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        // Sort matched wires by serial for deterministic publish-order
+        // delivery to the caller — firstHeaders / firstClientId come from
+        // the smallest-serial wire.
+        const sorted = [...matchedByEventId.values()].toSorted(compareBySerial);
+        let firstHeaders: Record<string, string> | undefined;
+        let firstClientId: string | undefined;
+        for (const m of sorted) {
+          if (firstHeaders === undefined) {
+            firstHeaders = getTransportHeaders(m);
+            firstClientId = m.clientId;
+            break;
+          }
+        }
+        logger?.debug('AgentSession._findInputEvent(); collected input events', {
+          runId,
+          invocationId,
+          count: sorted.length,
+        });
+        resolve({ rawMessages: sorted, firstHeaders, firstClientId });
+      };
+
+      // Consider a wire for matching against the expected set; returns true
+      // when the lookup is now fully satisfied.
+      const consider = (m: Ably.InboundMessage): boolean => {
+        if (settled) return false;
+        const headers = getTransportHeaders(m);
+        const eventId = headers[HEADER_EVENT_ID];
+        if (!eventId || !expectedSet.has(eventId) || matchedByEventId.has(eventId)) return false;
+        matchedByEventId.set(eventId, m);
+        return matchedByEventId.size >= expectedCount;
+      };
+
+      signal.addEventListener('abort', onCancelled, { once: true });
+      if (signal.aborted) {
+        onCancelled();
+        return;
+      }
+
+      // 1. Pre-scan the Tree's event-id index for already-folded matches.
+      //    Multi-run sessions where a prior run folded the wire hit here
+      //    synchronously.
+      for (const id of expectedEventIds) {
+        const wire = this._tree.findWireByEventId(id);
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- settled may mutate via synchronous callbacks during consider()
+        if (wire && consider(wire) && !settled) {
+          finishOk();
+          return;
+        }
+      }
+
+      // 2. Subscribe to the Tree's `ably-message` event for live arrivals.
+      //    `applyWireMessage` folds first; `emitAblyMessage` notifies
+      //    subscribers AND populates the event-id index. Wires fed in by
+      //    the parallel history fetch flow through the same event so the
+      //    listener picks them up uniformly.
+      unregisterLive = this._tree.on('ably-message', (msg) => {
+        if (consider(msg) && !settled) finishOk();
+      });
+
+      // 3. Drive a bounded history fetch in parallel; each page's wires
+      //    fold into the Tree via `applyWireMessage`, which triggers the
+      //    listener above. Suppress Tree `update` emits during the fold
+      //    — no subscribers on the agent side, and per-wire updates
+      //    can storm.
+      (async (): Promise<void> => {
+        try {
+          const cursor = await loadHistoryPages(this._channel, {
+            pageLimit: 200,
+            untilAttach: true,
+            lookbackMs: this._inputEventLookbackMs,
+            signal: historyController.signal,
+            logger,
+          });
+          this._processingHistory = true;
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- settled mutates via listener / timer callbacks fired on the event loop
+            while (cursor.hasNext() && !settled) {
+              const chunk = await cursor.next();
+              if (!chunk) break;
+              // Ably returns history pages newest-first; fold in chronological
+              // order so codec projections build oldest-to-newest (matches the
+              // live decode loop's fold order).
+              for (const wire of chunk.toReversed()) {
+                if (wire.serial !== undefined && this._foldedSerials.has(wire.serial)) continue;
+                if (wire.serial !== undefined) this._foldedSerials.add(wire.serial);
+                applyWireMessage(this._tree, this._decoder, wire);
+                this._tree.emitAblyMessage(wire);
+              }
+            }
+          } finally {
+            this._processingHistory = false;
+          }
+        } catch (error) {
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- settled mutates via listener / timer callbacks fired on the event loop
+          if (settled) return;
+          logger?.debug('AgentSession._findInputEvent(); history scan failed (continuing on live path)', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      })().catch(() => {
+        /* swallowed — handled inside */
+      });
+
+      // 4. Overall timeout — cancels the in-flight history fetch and
+      //    rejects with InputEventNotFound.
+      timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(
+          new Ably.ErrorInfo(
+            `unable to look up input event; received ${String(matchedByEventId.size)} of ${String(expectedCount)} input events for invocation ${invocationId} within ${String(timeoutMs)}ms`,
+            ErrorCode.InputEventNotFound,
+            504,
+          ),
+        );
+      }, timeoutMs);
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Conversation walk
+  // -------------------------------------------------------------------------
+
+  /**
+   * Walk the parent chain from the run's input node back to the conversation
+   * root, reading already-folded projections off the Tree's nodes.
+   *
+   * Strategy:
+   *  - Ensure the Tree has enough history hydrated by driving
+   *    `loadHistoryPages` until the input node has been observed and its
+   *    parent chain to root (or `maxRuns` reply runs back) is reachable.
+   *  - Walk parent pointers via the Tree's `getNodeByCodecMessageId`.
+   *  - Concatenate `codec.getMessages(node.projection)` per node, root first.
+   *
+   * Hydration is mutex-protected so concurrent `loadConversation` calls
+   * share one fetch.
+   * @param runId - The current run's id (for the tail run's projection lookup).
+   * @param assistantParentFallback - The current run's input node codec-message-id.
+   * @param signal - AbortSignal; rejects with InvalidArgument when aborted.
+   * @param maxRuns - Optional bound on the parent walk; counts reply RunNodes.
+   * @returns The branch's messages (root-first) and the current run's projection.
+   */
+  private async _walkConversation(
+    runId: string,
+    assistantParentFallback: string | undefined,
+    signal: AbortSignal,
+    maxRuns: number | undefined,
+  ): Promise<{ messages: TMessage[]; projection: TProjection }> {
+    if (signal.aborted) {
+      throw new Ably.ErrorInfo(
+        `unable to load conversation; run ${runId} was cancelled`,
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+
+    await this._hydrateAncestors(runId, assistantParentFallback, signal, maxRuns);
+
+    const chain = walkAncestorChain(this._tree, assistantParentFallback, maxRuns);
+    const messages: TMessage[] = [];
+    for (const node of chain) {
+      for (const m of this._codec.getMessages(node.projection)) {
+        messages.push(m.message);
+      }
+    }
+
+    const runNode = this._tree.getRunNode(runId);
+    if (runNode !== undefined && !chain.some((n) => n.kind === 'run' && n.runId === runId)) {
+      for (const m of this._codec.getMessages(runNode.projection)) {
+        messages.push(m.message);
+      }
+    }
+
+    return { messages, projection: runNode?.projection ?? this._codec.init() };
+  }
+
+  /**
+   * Drive `loadHistoryPages` to populate the Tree with enough ancestor
+   * coverage to walk from `anchor` to root (or `maxRuns` reply runs back).
+   * Mutex-protected: concurrent callers share a single in-flight fetch.
+   *
+   * Pages fold into the Tree via `applyWireMessage`; `_processingHistory`
+   * is set during the walk to suppress Tree `update` emits.
+   *
+   * Best-effort: if the channel has no more history but the chain still
+   * needs ancestors, the walk simply stops at what's available.
+   * @param runId - The current run's id (its node must be present in the Tree before the walk is complete).
+   * @param anchor - The input codec-message-id to walk from. Undefined means
+   *   no walk is needed (current run only).
+   * @param signal - AbortSignal.
+   * @param maxRuns - Optional bound on the ancestor walk.
+   */
+  private async _hydrateAncestors(
+    runId: string,
+    anchor: string | undefined,
+    signal: AbortSignal,
+    maxRuns: number | undefined,
+  ): Promise<void> {
+    if (this._hydrationMutex !== undefined) {
+      await this._hydrationMutex;
+      // Another caller's fetch just completed; the Tree may now have enough.
+      // Don't issue a second fetch — the caller can re-call.
+      return;
+    }
+    // Check whether the Tree already has what we need: the current run node
+    // exists AND (no anchor OR anchor's chain reaches root / maxRuns).
+    const needsFetch = (): boolean => {
+      if (this._tree.getRunNode(runId) === undefined) return true;
+      if (anchor === undefined) return false;
+      if (this._tree.getNodeByCodecMessageId(anchor) === undefined) return true;
+      const chain = walkAncestorChain(this._tree, anchor, maxRuns);
+      const reachedRoot = chain.length > 0 && chain[0]?.parentCodecMessageId === undefined;
+      const reachedLimit = maxRuns !== undefined && countReplyRuns(chain) >= maxRuns;
+      return !reachedRoot && !reachedLimit;
+    };
+    if (!needsFetch()) return;
+
+    this._hydrationMutex = (async (): Promise<void> => {
+      this._processingHistory = true;
+      try {
+        const cursor = await loadHistoryPages(this._channel, {
+          pageLimit: 200,
+          untilAttach: true,
+          signal,
+          logger: this._logger,
+        });
+        while (cursor.hasNext()) {
+          if (signal.aborted) return;
+          const chunk = await cursor.next();
+          if (!chunk) break;
+          // Ably returns history pages newest-first; fold in chronological
+          // order so codec projections build oldest-to-newest.
+          for (const wire of chunk.toReversed()) {
+            if (wire.serial !== undefined && this._foldedSerials.has(wire.serial)) continue;
+            if (wire.serial !== undefined) this._foldedSerials.add(wire.serial);
+            applyWireMessage(this._tree, this._decoder, wire);
+            this._tree.emitAblyMessage(wire);
+          }
+          // Early exit when the Tree has enough for the walk.
+          if (!needsFetch()) return;
+        }
+      } finally {
+        this._processingHistory = false;
+        this._hydrationMutex = undefined;
+      }
+    })();
+    await this._hydrationMutex;
   }
 
   // -------------------------------------------------------------------------
@@ -862,29 +1029,17 @@ class DefaultAgentSession<
     const runIdByInputCodecMessageId = this._runIdByInputCodecMessageId;
     const deferredCancels = this._deferredCancels;
     const requireConnected = this._requireConnected.bind(this);
-    const registerInputEventListener = this._registerInputEventListener.bind(this);
+    const findInputEvent = this._findInputEvent.bind(this);
+    const walkConversation = this._walkConversation.bind(this);
     const pullDeferredCancel = this._pullDeferredCancel.bind(this);
     const inputEventId = invocation.inputEventId;
-
-    // `viewMessages` starts empty. `Run.start()` populates it via the
-    // channel-rewind input-event lookup, pulling in user-message MessageNodes
-    // as they arrive on the channel.
-    const viewMessages: MessageNode<TMessage>[] = [];
-    const view: RunView<TMessage> = {
-      get messages() {
-        return viewMessages;
-      },
-    };
 
     // Per-run metadata resolved from the input-event lookup result. The first
     // matched wire message's headers carry the run's `clientId`, `parent`, and
     // `forkOf`, and — for a continuation — the `run-id` it re-enters (a fresh
     // input carries none; the client stamps a run-id only when re-entering a
     // run it already knows). Its Ably-level publisher `clientId` becomes the
-    // `inputClientId` re-stamped on the agent's own publishes. Captured
-    // separately from `viewMessages` because tool-resolution wire messages
-    // (`tool-output-available` etc.) decode to chunks and produce zero
-    // MessageNodes — the metadata still needs to surface.
+    // `inputClientId` re-stamped on the agent's own publishes.
     let resolvedClientId: string | undefined;
     let resolvedInputClientId: string | undefined;
     let resolvedParent: string | undefined;
@@ -893,6 +1048,33 @@ class DefaultAgentSession<
     let resolvedInputCodecMessageId: string | undefined;
     let resolvedContinuation = false;
     let firstLookupHeaders: Record<string, string> | undefined;
+
+    // `Run.view.messages` is a LIVE read against the session's Tree:
+    // returns the trigger node's currently-folded messages, reflecting any
+    // amendments (tool resolutions etc.) that have arrived since
+    // `Run.start()`. No internal `viewMessages` array — the Tree is the
+    // single source of truth. The trigger node may be an input node (fresh
+    // send) or a reply run (continuation re-entry with run-id on the
+    // triggering wire); both expose a projection the codec can read.
+    const tree = this._tree;
+    const view: RunView<TMessage> = {
+      get messages() {
+        if (resolvedInputCodecMessageId === undefined) return [];
+        const node = tree.getNodeByCodecMessageId(resolvedInputCodecMessageId);
+        if (!node) return [];
+        const sourceSerial = node.kind === 'input' ? node.serial : node.startSerial;
+        const sourceForkOf = node.kind === 'input' ? node.forkOf : undefined;
+        return codec.getMessages(node.projection).map((m) => ({
+          kind: 'message' as const,
+          message: m.message,
+          codecMessageId: m.codecMessageId,
+          parentId: node.parentCodecMessageId,
+          forkOf: sourceForkOf,
+          headers: {},
+          serial: sourceSerial,
+        }));
+      },
+    };
     /**
      * The reply run's structural-parent fallback, computed once in
      * `Run.start()` (after the input-event lookup has populated `viewMessages`)
@@ -902,14 +1084,6 @@ class DefaultAgentSession<
      * run-start wire's own `parent`.
      */
     let assistantParentFallback: string | undefined;
-    /**
-     * Raw Ably messages observed live by the input-event lookup. Passed to
-     * `loadRunProjection` so the just-published client wires don't need
-     * to wait on Ably's channel history indexing window. Empty when no
-     * lookup ran or no messages matched.
-     */
-    let liveLookupMessages: readonly Ably.InboundMessage[] | undefined;
-
     /**
      * Remove this run from the session's routing maps. Drops the
      * `_registeredRuns` entry plus the `input-codec-message-id → run-id`
@@ -925,18 +1099,6 @@ class DefaultAgentSession<
       }
     };
 
-    // Most recently loaded projection for this run only, cached by
-    // `Run.loadProjection()` and `Run.loadConversation()` so the `messages`
-    // getter can return the run's folded messages. `undefined` before any
-    // load call; the getter then falls back to the live `viewMessages`.
-    let cachedProjection: TProjection | undefined;
-
-    // Full multi-turn conversation, set by `Run.loadConversation()`. When set,
-    // it takes priority over `cachedProjection` in the `messages` getter —
-    // the getter then returns the complete ancestor-chain + current-run
-    // messages instead of the current run alone.
-    let cachedConversation: TMessage[] | undefined;
-
     const run: Run<TOutput, TProjection, TMessage> = {
       get runId() {
         return runId;
@@ -951,13 +1113,24 @@ class DefaultAgentSession<
         return view;
       },
       get messages() {
-        if (cachedConversation !== undefined) {
-          return [...cachedConversation];
+        // Always derive live from the Tree. Walks the parent chain
+        // from the run's structural-parent anchor and concatenates each
+        // ancestor's projection, then appends the current reply run's
+        // messages at the tail. Uses `assistantParentFallback` (which falls
+        // back to the input wire's `parent` for regenerate carriers whose
+        // own codec-message-id has no Tree node) — same anchor
+        // `loadConversation` uses. No cache: every read reflects the latest
+        // folded state.
+        const chain = assistantParentFallback === undefined ? [] : walkAncestorChain(tree, assistantParentFallback);
+        const messages: TMessage[] = [];
+        for (const node of chain) {
+          for (const m of codec.getMessages(node.projection)) messages.push(m.message);
         }
-        if (cachedProjection !== undefined) {
-          return codec.getMessages(cachedProjection).map((m) => m.message);
+        const runNode = tree.getRunNode(runId);
+        if (runNode !== undefined && !chain.some((n) => n.kind === 'run' && n.runId === runId)) {
+          for (const m of codec.getMessages(runNode.projection)) messages.push(m.message);
         }
-        return viewMessages.map((n) => n.message);
+        return messages;
       },
 
       // Spec: AIT-ST4, AIT-ST4a, AIT-ST4b
@@ -984,20 +1157,15 @@ class DefaultAgentSession<
         // when no inputEventId is set (invocation requires no channel lookup).
         if (inputEventId && inputEventLookupTimeoutMs > 0) {
           try {
-            const found = await lookupInputEvents<TInput, TOutput, TProjection, TMessage>({
-              register: (callback) => registerInputEventListener([inputEventId], callback),
-              codec,
+            const found = await findInputEvent({
               invocationId,
               runId,
-              expectedInputEventIds: [inputEventId],
+              expectedEventIds: [inputEventId],
               timeoutMs: inputEventLookupTimeoutMs,
               signal,
-              logger,
             });
-            for (const m of found.nodes) viewMessages.push(m);
             if (found.firstHeaders !== undefined) firstLookupHeaders = found.firstHeaders;
             if (found.firstClientId !== undefined) resolvedInputClientId = found.firstClientId;
-            liveLookupMessages = found.rawMessages;
           } catch (error) {
             const errInfo =
               error instanceof Ably.ErrorInfo
@@ -1024,10 +1192,8 @@ class DefaultAgentSession<
         // parent in the same headers (the continuation wire message parents off
         // the assistant). A `run-id` on the triggering input marks a
         // continuation (re-entry via `ai-run-resume`); a fresh input carries
-        // none and opens the run with `ai-run-start`. Fall back to the first
-        // MessageNode's headers for the path where the lookup ran with
-        // `viewMessages` already populated and no `firstHeaders` was captured.
-        const sourceHeaders = firstLookupHeaders ?? viewMessages[0]?.headers;
+        // none and opens the run with `ai-run-start`.
+        const sourceHeaders = firstLookupHeaders;
         if (sourceHeaders) {
           resolvedClientId = sourceHeaders[HEADER_RUN_CLIENT_ID];
           resolvedParent = sourceHeaders[HEADER_PARENT];
@@ -1051,12 +1217,17 @@ class DefaultAgentSession<
           }
         }
 
-        // Compute the reply run's structural-parent fallback now that the
-        // lookup has populated `viewMessages`: the triggering user message,
-        // or — for regenerate wires that match by inputEventId but produce no
-        // MessageNodes — the input wire's own `parent`. `Run.pipe()` consumes
-        // this for every assistant publish.
-        assistantParentFallback = viewMessages.at(-1)?.codecMessageId ?? resolvedParent;
+        // Compute the reply run's structural-parent fallback: the triggering
+        // user message's codec-message-id ONLY if that codec-message-id is
+        // backed by a real node in the Tree (i.e. the wire decoded into at
+        // least one input event); otherwise — for regenerate carriers that
+        // are wire-only signals with no input events — fall back to the
+        // input wire's own `parent` header.
+        assistantParentFallback =
+          resolvedInputCodecMessageId !== undefined &&
+          this._tree.getNodeByCodecMessageId(resolvedInputCodecMessageId) !== undefined
+            ? resolvedInputCodecMessageId
+            : resolvedParent;
 
         // The triggering input's codec-message-id is now resolved, so the
         // `input-codec-message-id → run` linkage exists: index it for live
@@ -1099,37 +1270,14 @@ class DefaultAgentSession<
         logger?.debug('Run.start(); run started', { runId, inputEventId });
       },
 
-      loadProjection: async (): Promise<TProjection> => {
-        logger?.trace('Run.loadProjection();', { runId });
-        await requireConnected('loadProjection');
-        const projection = await loadRunProjection<TInput, TOutput, TProjection, TMessage>({
-          channel,
-          codec,
-          runId,
-          signal,
-          logger,
-          liveMessages: liveLookupMessages,
-        });
-        cachedProjection = projection;
-        return projection;
-      },
-
       loadConversation: async (options?: LoadConversationOptions): Promise<TMessage[]> => {
         logger?.trace('Run.loadConversation();', { runId });
         await requireConnected('loadConversation');
-        const { messages, projection } = await loadConversation<TInput, TOutput, TProjection, TMessage>({
-          channel,
-          codec,
-          runId,
-          signal,
-          logger,
-          liveMessages: liveLookupMessages,
-          assistantParentFallback,
-          pageLimit: options?.pageLimit ?? 200,
-          maxMessages: options?.maxMessages ?? 2000,
-        });
-        cachedProjection = projection;
-        cachedConversation = messages;
+        // No cache. Drives Tree hydration via `walkConversation`
+        // and computes a fresh snapshot of the parent-chain messages at
+        // return time. After this call, `Run.messages` continues to work
+        // as a live Tree read.
+        const { messages } = await walkConversation(runId, assistantParentFallback, signal, options?.maxRuns);
         return messages;
       },
 

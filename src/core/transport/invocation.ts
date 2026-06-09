@@ -11,7 +11,7 @@
  * const invocation = Invocation.fromJSON(data);
  * const run = session.createRun(invocation, { signal: req.signal });
  * await run.start();
- * await run.loadProjection(); // fetch run projection from the channel
+ * await run.loadConversation(); // walk channel history into the session tree
  * const messages = run.messages;
  * ```
  *

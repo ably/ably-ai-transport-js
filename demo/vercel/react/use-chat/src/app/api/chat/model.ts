@@ -1,8 +1,14 @@
 import { anthropic } from '@ai-sdk/anthropic';
 import { createOpenAI } from '@ai-sdk/openai';
 import type { LanguageModel } from 'ai';
+import { createMockModel } from './mock-model';
 
 export function createModel(): LanguageModel {
+  // Deterministic mock model for the e2e tests; no API key needed.
+  if (process.env.MOCK_LLM) {
+    return createMockModel();
+  }
+
   if (process.env.ANTHROPIC_API_KEY) {
     return anthropic(process.env.ANTHROPIC_MODEL ?? 'claude-sonnet-4-6');
   }

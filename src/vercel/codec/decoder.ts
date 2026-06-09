@@ -41,8 +41,9 @@ import type {
   StreamTrackerState,
   UserMessage,
 } from '../../core/codec/types.js';
-import { type DomainHeaderReader, headerReader as rawHeaderReader, stripUndefined } from '../../utils.js';
+import { stripUndefined } from '../../utils.js';
 import type { VercelInput, VercelOutput } from './events.js';
+import { fApproved, fId, fMediaType, fMessageId, fReason, fToolCallId, fType } from './fields.js';
 import { outputs } from './outputs.js';
 import { isClientToolResultErrorWireData, isToolOutputAvailableWireData } from './wire-data.js';
 
@@ -53,33 +54,6 @@ type AnyEvent = VercelInput | VercelOutput;
 // Generic decode driver over the output descriptors. Rebuilds output chunks
 // from the wire; the lifecycle repair below wraps it.
 const outputDecoder = createDescriptorDecoder(outputs);
-
-// ---------------------------------------------------------------------------
-// Vercel-specific header reader (casts providerMetadata to AI.ProviderMetadata)
-// ---------------------------------------------------------------------------
-
-interface VercelHeaderReader extends DomainHeaderReader {
-  /** Read the `providerMetadata` domain header, cast to the AI SDK type. */
-  providerMetadata(): AI.ProviderMetadata | undefined;
-}
-
-/**
- * Create a header reader that adds Vercel-specific `providerMetadata` typing.
- * @param headers - The raw headers record to read domain headers from.
- * @returns A typed accessor with Vercel-specific providerMetadata typing.
- */
-const headerReader = (headers: Record<string, string>): VercelHeaderReader => {
-  const base = rawHeaderReader(headers);
-  return {
-    ...base,
-    // CAST: Trust boundary — the encoder serialized a valid ProviderMetadata value.
-    providerMetadata: () => base.json('providerMetadata') as AI.ProviderMetadata | undefined,
-  };
-};
-
-// ---------------------------------------------------------------------------
-// JSON boundary helpers
-// ---------------------------------------------------------------------------
 
 const isDataEventName = (name: string): name is `data-${string}` => name.startsWith('data-');
 
@@ -112,10 +86,11 @@ const createVercelLifecycleTracker = (): LifecycleTracker<AI.UIMessageChunk> =>
  * @returns A single `user-message` input, or an empty array when the part type is unrecognised.
  */
 const decodeDiscreteMessagePart = (input: MessagePayload): VercelInput[] => {
-  const r = headerReader(input.codecHeaders ?? {});
+  const codecHeaders = input.codecHeaders ?? {};
+  // CAST: HEADER_ROLE is wire data; the role string is trusted as a UIMessage role.
   const role = (input.transportHeaders?.[HEADER_ROLE] ?? 'user') as AI.UIMessage['role'];
-  const messageId = r.str('messageId') ?? '';
-  const codecType = r.strOr('type', '');
+  const messageId = fMessageId.read(codecHeaders) ?? '';
+  const codecType = fType.read(codecHeaders);
 
   let part: AI.UIMessage['parts'][number] | undefined;
 
@@ -127,14 +102,14 @@ const decodeDiscreteMessagePart = (input: MessagePayload): VercelInput[] => {
     case 'file': {
       part = {
         type: 'file',
-        mediaType: r.strOr('mediaType', ''),
+        mediaType: fMediaType.read(codecHeaders),
         url: typeof input.data === 'string' ? input.data : '',
       };
       break;
     }
     default: {
       if (isDataEventName(codecType)) {
-        part = stripUndefined({ type: codecType, id: r.str('id'), data: input.data });
+        part = stripUndefined({ type: codecType, id: fId.read(codecHeaders), data: input.data });
       }
       break;
     }
@@ -150,36 +125,47 @@ const decodeDiscreteMessagePart = (input: MessagePayload): VercelInput[] => {
 const isDiscreteMessagePart = (codecType: string, headers: Record<string, string>): boolean =>
   (codecType === 'text' || codecType === 'file' || isDataEventName(codecType)) && HEADER_DISCRETE in headers;
 
-const decodeClientToolResult = (codecMessageId: string, r: VercelHeaderReader, data: unknown): VercelInput[] => {
+const decodeClientToolResult = (
+  codecMessageId: string,
+  codecHeaders: Record<string, string>,
+  data: unknown,
+): VercelInput[] => {
   const parsed = isToolOutputAvailableWireData(data) ? data : undefined;
   return [
     {
       kind: 'tool-result',
       codecMessageId,
-      payload: { toolCallId: r.strOr('toolCallId', ''), output: parsed?.output },
+      payload: { toolCallId: fToolCallId.read(codecHeaders), output: parsed?.output },
     },
   ];
 };
 
-const decodeClientToolResultError = (codecMessageId: string, r: VercelHeaderReader, data: unknown): VercelInput[] => {
+const decodeClientToolResultError = (
+  codecMessageId: string,
+  codecHeaders: Record<string, string>,
+  data: unknown,
+): VercelInput[] => {
   const parsed = isClientToolResultErrorWireData(data) ? data : undefined;
   return [
     {
       kind: 'tool-result-error',
       codecMessageId,
-      payload: { toolCallId: r.strOr('toolCallId', ''), message: parsed?.message ?? '' },
+      payload: { toolCallId: fToolCallId.read(codecHeaders), message: parsed?.message ?? '' },
     },
   ];
 };
 
-const decodeClientToolApprovalResponse = (codecMessageId: string, r: VercelHeaderReader): VercelInput[] => [
+const decodeClientToolApprovalResponse = (
+  codecMessageId: string,
+  codecHeaders: Record<string, string>,
+): VercelInput[] => [
   {
     kind: 'tool-approval-response',
     codecMessageId,
     payload: stripUndefined({
-      toolCallId: r.strOr('toolCallId', ''),
-      approved: r.bool('approved') ?? false,
-      reason: r.str('reason'),
+      toolCallId: fToolCallId.read(codecHeaders),
+      approved: fApproved.read(codecHeaders) ?? false,
+      reason: fReason.read(codecHeaders),
     }),
   },
 ];
@@ -188,7 +174,7 @@ const decodeClientToolApprovalResponse = (codecMessageId: string, r: VercelHeade
 // Discrete payload dispatch
 // ---------------------------------------------------------------------------
 
-const decodeAiInputPayload = (codecType: string, input: MessagePayload, r: VercelHeaderReader): AnyEvent[] => {
+const decodeAiInputPayload = (codecType: string, input: MessagePayload): AnyEvent[] => {
   // Multi-part user-message parts (text / file / data-*) carry discrete
   // because they ride publishDiscreteBatch; the receive-side fans them back
   // out into a UserMessage.
@@ -196,17 +182,18 @@ const decodeAiInputPayload = (codecType: string, input: MessagePayload, r: Verce
     return decodeDiscreteMessagePart(input);
   }
 
+  const codecHeaders = input.codecHeaders ?? {};
   const codecMessageId = input.transportHeaders?.[HEADER_CODEC_MESSAGE_ID] ?? '';
 
   switch (codecType) {
     case 'tool-result': {
-      return decodeClientToolResult(codecMessageId, r, input.data);
+      return decodeClientToolResult(codecMessageId, codecHeaders, input.data);
     }
     case 'tool-result-error': {
-      return decodeClientToolResultError(codecMessageId, r, input.data);
+      return decodeClientToolResultError(codecMessageId, codecHeaders, input.data);
     }
     case 'tool-approval-response': {
-      return decodeClientToolApprovalResponse(codecMessageId, r);
+      return decodeClientToolApprovalResponse(codecMessageId, codecHeaders);
     }
     case 'regenerate': {
       // Wire-only signal — carries `parent` / `msg-regenerate` on transport
@@ -259,7 +246,7 @@ const decodeOutputDiscrete = (
     case 'tool-input': {
       // Non-streamed tool-input: pre-roll any missing start phases, then the
       // descriptor reconstructs the start + available chunk pair.
-      const pre = lifecycle.ensurePhases(runId, { messageId: headerReader(codecHeaders).str('messageId') });
+      const pre = lifecycle.ensurePhases(runId, { messageId: fMessageId.read(codecHeaders) });
       return [...pre, ...outputDecoder.decodeDiscrete(codecType, codecHeaders, transportHeaders, input.data)];
     }
   }
@@ -267,12 +254,11 @@ const decodeOutputDiscrete = (
 };
 
 const decodeDiscretePayload = (input: MessagePayload, lifecycle: LifecycleTracker<AI.UIMessageChunk>): AnyEvent[] => {
-  const r = headerReader(input.codecHeaders ?? {});
   const runId = input.transportHeaders?.[HEADER_RUN_ID] ?? '';
-  const codecType = r.strOr('type', '');
+  const codecType = fType.read(input.codecHeaders ?? {});
 
   if (input.name === EVENT_AI_INPUT) {
-    return decodeAiInputPayload(codecType, input, r);
+    return decodeAiInputPayload(codecType, input);
   }
 
   if (input.name === EVENT_AI_OUTPUT) {
@@ -289,7 +275,7 @@ const decodeDiscretePayload = (input: MessagePayload, lifecycle: LifecycleTracke
 const createHooks = (lifecycle: LifecycleTracker<AI.UIMessageChunk>): DecoderCoreHooks<AnyEvent> => ({
   buildStartEvents: (tracker: StreamTrackerState): AnyEvent[] => {
     const runId = tracker.transportHeaders[HEADER_RUN_ID] ?? '';
-    const messageId = headerReader(tracker.codecHeaders).str('messageId');
+    const messageId = fMessageId.read(tracker.codecHeaders);
     return [...lifecycle.ensurePhases(runId, { messageId }), ...outputDecoder.buildStart(tracker)];
   },
 

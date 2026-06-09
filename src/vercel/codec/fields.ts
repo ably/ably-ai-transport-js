@@ -35,6 +35,17 @@ export const fMediaType = strField('mediaType', '');
 /** Source id for source-url / source-document parts — defaulted to total. */
 export const fSourceId = strField('sourceId', '');
 
+// --- input-side bindings (shared by the imperative input encode/decode) ---
+
+/** The codec dispatch type header — defaulted to total so decode reads mirror `strOr(key, '')`. */
+export const fType = strField('type', '');
+/** Codec-message id stamped on user-message parts. */
+export const fMessageId = strField('messageId');
+/** Whether the user approved a tool execution. */
+export const fApproved = boolField('approved');
+/** Optional human-readable reason on a tool-approval response. */
+export const fReason = strField('reason');
+
 /**
  * Validated finish reason. Mirrors the AI SDK's `FinishReason` literals and
  * falls back to `'stop'` for an absent or unrecognized value — preserving the

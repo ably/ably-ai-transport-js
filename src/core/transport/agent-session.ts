@@ -6,8 +6,8 @@
  * single channel subscription — no separate cancel manager needed.
  *
  * The session exposes a single factory method — `createRun()` — which returns
- * a Run object with explicit lifecycle methods: start(), pipe(), addEvents(),
- * suspend(), and end() (suspend() and end() are both terminal).
+ * a Run object with explicit lifecycle methods: start(), pipe(), suspend(),
+ * and end() (suspend() and end() are both terminal).
  */
 
 import * as Ably from 'ably';
@@ -39,7 +39,6 @@ import type {
   AgentSession,
   AgentSessionOptions,
   CancelRequest,
-  EventsNode,
   LoadConversationOptions,
   MessageNode,
   PipeOptions,
@@ -1089,59 +1088,6 @@ class DefaultAgentSession<
         }
 
         logger?.debug('Run.start(); run started', { runId, inputEventId });
-      },
-
-      // Spec: AIT-ST5c
-      addEvents: async (nodes: EventsNode<TOutput>[]): Promise<void> => {
-        logger?.trace('Run.addEvents();', { runId, count: nodes.length });
-
-        await requireConnected('addEvents');
-
-        if (state === RunState.INITIALIZED) {
-          throw new Ably.ErrorInfo(
-            `unable to add events; start() must be called before addEvents() (run ${runId})`,
-            ErrorCode.InvalidArgument,
-            400,
-          );
-        }
-
-        const runOwnerClientId = runManager.getClientId(runId);
-
-        try {
-          for (const node of nodes) {
-            const headers = buildTransportHeaders({
-              role: 'assistant',
-              runId,
-              codecMessageId: node.codecMessageId,
-              runClientId: runOwnerClientId,
-              invocationId,
-              inputClientId: resolvedInputClientId,
-              inputCodecMessageId: resolvedInputCodecMessageId,
-            });
-
-            const encoder = codec.createEncoder(channel, {
-              extras: { headers },
-              onMessage,
-            });
-
-            for (const event of node.events) {
-              await encoder.publishOutput(event);
-            }
-
-            await encoder.close();
-          }
-        } catch (error) {
-          const errInfo = new Ably.ErrorInfo(
-            `unable to publish events for run ${runId}; ${error instanceof Error ? error.message : String(error)}`,
-            ErrorCode.RunLifecycleError,
-            500,
-            error instanceof Ably.ErrorInfo ? error : undefined,
-          );
-          logger?.error('Run.addEvents(); publish failed', { runId });
-          throw errInfo;
-        }
-
-        logger?.debug('Run.addEvents(); events published', { runId, count: nodes.length });
       },
 
       loadProjection: async (): Promise<TProjection> => {

@@ -36,7 +36,7 @@ The invocation POST is a cheap, retryable pointer — it carries only the `input
 
 Both `createAgentSession()` and `createClientSession()` return synchronously and do not touch the channel. Call `await session.connect()` to subscribe to the channel before any session method is used. `connect()` is idempotent - calling it twice returns the same in-flight promise and triggers a single subscribe.
 
-Run lifecycle methods (`run.start`, `run.addEvents`, `run.pipe`, `run.suspend`, `run.end`) and client write methods (`session.cancel`, `view.send`, etc.) throw `InvalidArgument` until `connect()` resolves. In React, `ClientSessionProvider` and `ChatTransportProvider` call `connect()` on mount, so consumers of `useClientSession`/`useChatTransport` don't need to call it explicitly.
+Run lifecycle methods (`run.start`, `run.pipe`, `run.suspend`, `run.end`) and client write methods (`session.cancel`, `view.send`, etc.) throw `InvalidArgument` until `connect()` resolves. In React, `ClientSessionProvider` and `ChatTransportProvider` call `connect()` on mount, so consumers of `useClientSession`/`useChatTransport` don't need to call it explicitly.
 
 `session.close()` reverses `connect()`: it unsubscribes, tears down listeners, and **detaches the channel the session attached**. It does **not** close the Ably client you passed in - your app owns the client's lifecycle (the React `<AblyProvider>` client, or a per-request client in a serverless agent). Both sessions' `close()` return a promise, so a serverless agent can `await session.close()` for a graceful channel teardown before the function returns.
 

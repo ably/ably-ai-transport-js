@@ -166,36 +166,11 @@ if (run?.clientId && run.clientId !== myClientId) {
 
 Observer clients see the tool call arrive (the assistant message streams normally) and see the result appear when the initiating client publishes its `tool-result` input and the run resumes. No special handling is needed on the observer side.
 
-## Server-side tool result events
-
-For tool calls that require server-mediated approval workflows or deferred execution, the server can publish tool results targeting a previous run's message using `run.addEvents()`:
-
-```typescript
-const run = session.createRun(invocation, { signal: req.signal });
-await run.start();
-
-// Publish the tool result targeting a message from a previous run.
-// `codecMessageId` addresses the assistant message holding the tool call;
-// `events` are `UIMessageChunk`s applied to it.
-await run.addEvents([
-  {
-    kind: 'event',
-    codecMessageId: previousAssistantCodecMessageId,
-    events: [{ type: 'tool-output-available', toolCallId, output: result }],
-  },
-]);
-
-// Continue streaming with the tool result in history
-const response = streamText({ model, messages: await convertToModelMessages(run.messages), tools });
-const pipeResult = await run.pipe(response.toUIMessageStream());
-await run.end(pipeResult.reason);
-```
-
 ## History and persistence
 
 Tool call events persist in Ably channel history. When a client loads history, the decoder reconstructs tool parts with their final state - including cross-run events. A tool that was called, executed, and resolved in a previous session appears with `state: 'output-available'` and the full output.
 
-Cross-run events (from a client `tool-result` input via `view.send()`, or server-side `run.addEvents()`) carry the `codec-message-id` of the message they target. When loading history, the SDK routes these amend events to the correct message and folds them through the codec's reducer, so the tool part state is reconstructed correctly.
+Cross-run events (from a client `tool-result` input via `view.send()`) carry the `codec-message-id` of the message they target. When loading history, the SDK routes these amend events to the correct message and folds them through the codec's reducer, so the tool part state is reconstructed correctly.
 
 To avoid re-executing client tools after a page refresh, check whether the tool call already has a follow-up assistant message (which means the model already consumed the result):
 

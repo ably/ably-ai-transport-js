@@ -2,7 +2,7 @@
  * Transport header builder.
  *
  * Single source of truth for which transport headers every transport
- * message carries. Used by the agent session (pipe, addEvents) and by
+ * message carries. Used by the agent session (pipe) and by
  * the client session (optimistic message stamping).
  */
 

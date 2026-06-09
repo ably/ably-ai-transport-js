@@ -2,7 +2,7 @@
  * AgentSession unit tests.
  *
  * Mock encoder uses split-direction `publishInput` / `publishOutput`;
- * `addEvents` and `pipe` flow through `encoder.publishOutput`, and the channel
+ * `pipe` flows through `encoder.publishOutput`, and the channel
  * subscription is unfiltered (cancel + input events + everything else dispatched
  * via the same listener).
  */
@@ -784,116 +784,6 @@ describe('AgentSession', () => {
       // The run was suspended, not ended — no run-end is published.
       expect(channel.publishCalls.filter((m) => m.name === 'ai-run-suspend')).toHaveLength(1);
       expect(channel.publishCalls.find((m) => m.name === 'ai-run-end')).toBeUndefined();
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // addEvents — publish each event with target's codec-message-id + amend header
-  // -------------------------------------------------------------------------
-
-  describe('addEvents', () => {
-    it('creates encoder with HEADER_CODEC_MESSAGE_ID pointing at the target codec-message-id', async () => {
-      const run = createRunFromOpts(session, { runId: 'run-1' });
-      await run.start();
-      await run.addEvents([{ kind: 'event', codecMessageId: 'target-msg-1', events: [{ type: 'tool-output' }] }]);
-
-      const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
-      expect(headers[HEADER_ROLE]).toBe('assistant');
-      // HEADER_CODEC_MESSAGE_ID = target's id so the reducer routes the events onto
-      // the existing message via its standard per-message-id fold path.
-      expect(headers[HEADER_CODEC_MESSAGE_ID]).toBe('target-msg-1');
-      expect(headers[HEADER_RUN_ID]).toBe('run-1');
-      expect(headers[HEADER_INVOCATION_ID]).toBe('run-1-inv');
-    });
-
-    it('stamps input attribution from the triggering input event on addEvents publishes', async () => {
-      const runId = 'run-icid-ae';
-      const invocationId = 'inv-icid-ae';
-      const inputEventId = 'p-icid-ae';
-      const run = createRunFromOpts(session, { runId, invocationId, inputEventId: inputEventId });
-      const startPromise = run.start();
-      deliverInputEvent(channel, {
-        invocationId,
-        runId,
-        codecMessageId: 'm-icid-ae',
-        serial: 's-icid-ae',
-        inputEventId,
-        publisherClientId: 'user-b',
-      });
-      await startPromise;
-      await run.addEvents([{ kind: 'event', codecMessageId: 'target-1', events: [{ type: 'ev' }] }]);
-
-      const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
-      expect(headers['input-client-id']).toBe('user-b');
-      expect(headers['input-codec-message-id']).toBe('m-icid-ae');
-    });
-
-    it('calls encoder.publishOutput per event', async () => {
-      const run = createRunFromOpts(session, { runId: 'run-1' });
-      await run.start();
-      await run.addEvents([
-        {
-          kind: 'event',
-          codecMessageId: 'target-1',
-          events: [{ type: 'ev-a' }, { type: 'ev-b' }, { type: 'ev-c' }],
-        },
-      ]);
-      const enc = codec.lastEncoder();
-      expect(enc?.publishCalls).toHaveLength(3);
-      const outputs = enc?.publishCalls.filter((c) => c.direction === 'output').map((c) => c.event as TestOutput);
-      expect(outputs?.map((e) => e.type)).toEqual(['ev-a', 'ev-b', 'ev-c']);
-    });
-
-    it('throws if run not started', async () => {
-      const run = createRunFromOpts(session, { runId: 'run-1' });
-      await expect(
-        run.addEvents([{ kind: 'event', codecMessageId: 'target-1', events: [{ type: 'ev' }] }]),
-      ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
-    });
-
-    it('uses one encoder per EventsNode (distinct target codec-message-ids)', async () => {
-      const run = createRunFromOpts(session, { runId: 'run-1' });
-      await run.start();
-      // Reset counts after start (start publishes run-start, no encoder)
-      const before = codec.encoderCalls.length;
-      await run.addEvents([
-        { kind: 'event', codecMessageId: 'target-1', events: [{ type: 'ev-1' }] },
-        { kind: 'event', codecMessageId: 'target-2', events: [{ type: 'ev-2' }] },
-      ]);
-      // Two nodes → two encoders
-      expect(codec.encoderCalls.length - before).toBe(2);
-      // Each encoder stamps HEADER_CODEC_MESSAGE_ID = its target id
-      const first = codec.encoderCalls[before]?.opts?.extras?.headers ?? {};
-      const second = codec.encoderCalls[before + 1]?.opts?.extras?.headers ?? {};
-      expect(first[HEADER_CODEC_MESSAGE_ID]).toBe('target-1');
-      expect(second[HEADER_CODEC_MESSAGE_ID]).toBe('target-2');
-    });
-
-    it('closes each encoder after publishing all events', async () => {
-      const run = createRunFromOpts(session, { runId: 'run-1' });
-      await run.start();
-      await run.addEvents([{ kind: 'event', codecMessageId: 'target-1', events: [{ type: 'ev-1' }] }]);
-      const enc = codec.lastEncoder();
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock check
-      expect(enc?.close).toHaveBeenCalled();
-    });
-
-    it('throws RunLifecycleError when an encoder.publishOutput fails', async () => {
-      const failCodec = createMockCodec({
-        encoderFactory: () => createMockEncoder(new Ably.ErrorInfo('boom', 40000, 500)),
-      });
-      const failSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
-        client: createMockClient(channel),
-        channelName: 'test-channel',
-        codec: failCodec,
-      });
-      await failSession.connect();
-      const run = createRunFromOpts(failSession, { runId: 'run-1' });
-      await run.start();
-      await expect(
-        run.addEvents([{ kind: 'event', codecMessageId: 'target-1', events: [{ type: 'ev' }] }]),
-      ).rejects.toBeErrorInfoWithCode(ErrorCode.RunLifecycleError);
-      await failSession.close();
     });
   });
 

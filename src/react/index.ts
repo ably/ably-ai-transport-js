@@ -4,7 +4,6 @@ export type {
   BranchSelection,
   ClientSession,
   ConversationNode,
-  EventsNode,
   InputNode,
   MessageNode,
   RunInfo,

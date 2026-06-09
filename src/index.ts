@@ -8,7 +8,6 @@ export type {
   ClientSession,
   ClientSessionOptions,
   ConversationNode,
-  EventsNode,
   InputNode,
   InvocationData,
   LoadConversationOptions,

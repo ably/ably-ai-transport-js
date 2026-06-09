@@ -82,7 +82,7 @@ Each `ai-cancel` event targets exactly one run. Clients that want to stop multip
 
 `src/core/transport/headers.ts` - used by both client and server.
 
-A single function that builds the standard [transport header set](wire-protocol.md#transport-headers) for a message. Used by the agent session's `addEvents()` and `pipe()`, and by the client session for optimistic message stamping.
+A single function that builds the standard [transport header set](wire-protocol.md#transport-headers) for a message. Used by the agent session's `pipe()`, and by the client session for optimistic message stamping.
 
 ```typescript
 buildTransportHeaders({

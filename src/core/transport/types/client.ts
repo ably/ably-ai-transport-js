@@ -75,12 +75,6 @@ export interface SendOptions {
    * agent, which mints a distinct `invocationId` per HTTP request.
    */
   runId?: string;
-  /**
-   * Currently non-functional: the send path always mints each input's
-   * `inputEventId` with `crypto.randomUUID()` (no override is read), so a
-   * value supplied here has no effect.
-   */
-  inputEventId?: string;
 }
 
 // ---------------------------------------------------------------------------

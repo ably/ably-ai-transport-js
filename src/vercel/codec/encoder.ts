@@ -18,11 +18,11 @@
  * drives it — inputs are always published as discrete messages.
  */
 
-import * as Ably from 'ably';
 import type * as AI from 'ai';
 import { isDataUIPart } from 'ai';
 
 import { EVENT_AI_INPUT, EVENT_AI_OUTPUT, HEADER_ROLE, HEADER_STATUS } from '../../constants.js';
+import { createDescriptorEncoder, type DescriptorEncoder } from '../../core/codec/descriptor-encoder.js';
 import type { EncoderCore, EncoderCoreOptions } from '../../core/codec/encoder.js';
 import { createEncoderCore } from '../../core/codec/encoder.js';
 import type {
@@ -35,7 +35,6 @@ import type {
   UserMessage,
   WriteOptions,
 } from '../../core/codec/types.js';
-import { ErrorCode, errorInfoIs } from '../../errors.js';
 import { headerWriter } from '../../utils.js';
 import type {
   VercelInput,
@@ -44,6 +43,7 @@ import type {
   VercelToolResultErrorPayload,
   VercelToolResultPayload,
 } from './events.js';
+import { outputs } from './outputs.js';
 
 // ---------------------------------------------------------------------------
 // Default implementation
@@ -52,11 +52,13 @@ import type {
 class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
   private readonly _core: EncoderCore;
   private readonly _messageId: string | undefined;
+  private readonly _outputEncoder: DescriptorEncoder<VercelOutput>;
   private _cancelled = false;
 
   constructor(writer: ChannelWriter, options: EncoderCoreOptions = {}) {
     this._core = createEncoderCore(writer, options);
     this._messageId = options.messageId;
+    this._outputEncoder = createDescriptorEncoder(outputs, EVENT_AI_OUTPUT);
   }
 
   async publishInput(input: VercelInput, options?: WriteOptions): Promise<void> {
@@ -85,7 +87,11 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
   }
 
   async publishOutput(output: VercelOutput, options?: WriteOptions): Promise<void> {
-    await this._publishChunk(output, options);
+    // The abort chunk marks the encoder cancelled so a later cancel() is a no-op,
+    // mirroring cancel()'s own guard; the descriptor's encode hatch performs the
+    // cancel-and-publish.
+    if (output.type === 'abort') this._cancelled = true;
+    await this._outputEncoder.encode(output, this._core, { messageId: this._messageId, opts: options });
   }
 
   async cancel(reason?: string): Promise<void> {
@@ -102,245 +108,6 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
 
   async close(): Promise<void> {
     await this._core.close();
-  }
-
-  // -------------------------------------------------------------------------
-  // VercelOutput routing — UIMessageChunk
-  // -------------------------------------------------------------------------
-
-  private async _publishChunk(chunk: AI.UIMessageChunk, perWrite?: WriteOptions): Promise<void> {
-    switch (chunk.type) {
-      // -- Stream start -----------------------------------------------------
-      case 'text-start': {
-        const h = headerWriter()
-          .str('type', 'text')
-          .str('id', chunk.id)
-          .json('providerMetadata', chunk.providerMetadata)
-          .build();
-        await this._core.startStream(chunk.id, { name: EVENT_AI_OUTPUT, data: '', codecHeaders: h }, perWrite);
-        return;
-      }
-      case 'reasoning-start': {
-        const h = headerWriter()
-          .str('type', 'reasoning')
-          .str('id', chunk.id)
-          .json('providerMetadata', chunk.providerMetadata)
-          .build();
-        await this._core.startStream(chunk.id, { name: EVENT_AI_OUTPUT, data: '', codecHeaders: h }, perWrite);
-        return;
-      }
-      case 'tool-input-start': {
-        const h = headerWriter()
-          .str('type', 'tool-input')
-          .str('toolCallId', chunk.toolCallId)
-          .str('toolName', chunk.toolName)
-          .bool('dynamic', chunk.dynamic)
-          .str('title', chunk.title)
-          .bool('providerExecuted', chunk.providerExecuted)
-          .json('providerMetadata', chunk.providerMetadata)
-          .build();
-        await this._core.startStream(chunk.toolCallId, { name: EVENT_AI_OUTPUT, data: '', codecHeaders: h }, perWrite);
-        return;
-      }
-
-      // -- Stream append ----------------------------------------------------
-      case 'text-delta': {
-        this._core.appendStream(chunk.id, chunk.delta);
-        return;
-      }
-      case 'reasoning-delta': {
-        this._core.appendStream(chunk.id, chunk.delta);
-        return;
-      }
-      case 'tool-input-delta': {
-        this._core.appendStream(chunk.toolCallId, chunk.inputTextDelta);
-        return;
-      }
-
-      // -- Stream close -----------------------------------------------------
-      case 'text-end': {
-        const h = headerWriter()
-          .str('type', 'text')
-          .str('id', chunk.id)
-          .json('providerMetadata', chunk.providerMetadata)
-          .build();
-        await this._core.closeStream(chunk.id, { name: EVENT_AI_OUTPUT, data: '', codecHeaders: h });
-        return;
-      }
-      case 'reasoning-end': {
-        const h = headerWriter()
-          .str('type', 'reasoning')
-          .str('id', chunk.id)
-          .json('providerMetadata', chunk.providerMetadata)
-          .build();
-        await this._core.closeStream(chunk.id, { name: EVENT_AI_OUTPUT, data: '', codecHeaders: h });
-        return;
-      }
-      case 'tool-input-available': {
-        try {
-          const h = headerWriter()
-            .str('type', 'tool-input')
-            .str('toolCallId', chunk.toolCallId)
-            .str('toolName', chunk.toolName)
-            .json('providerMetadata', chunk.providerMetadata)
-            .build();
-          await this._core.closeStream(chunk.toolCallId, { name: EVENT_AI_OUTPUT, data: '', codecHeaders: h });
-        } catch (error: unknown) {
-          // closeStream raises ErrorCode.InvalidArgument when there is no active stream for this id; fall through to a discrete publish in that case and rethrow any other error.
-          if (!(error instanceof Ably.ErrorInfo && errorInfoIs(error, ErrorCode.InvalidArgument))) {
-            throw error;
-          }
-          const h = headerWriter()
-            .str('type', 'tool-input')
-            .str('toolCallId', chunk.toolCallId)
-            .str('toolName', chunk.toolName)
-            .bool('dynamic', chunk.dynamic)
-            .str('title', chunk.title)
-            .bool('providerExecuted', chunk.providerExecuted)
-            .json('providerMetadata', chunk.providerMetadata)
-            .build();
-          await this._core.publishDiscrete({ name: EVENT_AI_OUTPUT, data: chunk.input, codecHeaders: h });
-        }
-        return;
-      }
-
-      // -- Lifecycle (discrete) ---------------------------------------------
-      case 'start': {
-        const h = headerWriter()
-          .str('type', 'start')
-          .str('messageId', chunk.messageId ?? this._messageId)
-          .json('messageMetadata', chunk.messageMetadata)
-          .build();
-        await this._core.publishDiscrete({ name: EVENT_AI_OUTPUT, data: '', codecHeaders: h }, perWrite);
-        return;
-      }
-      case 'start-step': {
-        const h = headerWriter().str('type', 'start-step').build();
-        await this._core.publishDiscrete({ name: EVENT_AI_OUTPUT, data: '', codecHeaders: h }, perWrite);
-        return;
-      }
-      case 'finish-step': {
-        const h = headerWriter().str('type', 'finish-step').build();
-        await this._core.publishDiscrete({ name: EVENT_AI_OUTPUT, data: '', codecHeaders: h }, perWrite);
-        return;
-      }
-      case 'finish': {
-        const h = headerWriter()
-          .str('type', 'finish')
-          .str('finishReason', chunk.finishReason)
-          .json('messageMetadata', chunk.messageMetadata)
-          .build();
-        await this._core.publishDiscrete({ name: EVENT_AI_OUTPUT, data: '', codecHeaders: h }, perWrite);
-        return;
-      }
-      case 'error': {
-        const h = headerWriter().str('type', 'error').build();
-        await this._core.publishDiscrete({ name: EVENT_AI_OUTPUT, data: chunk.errorText, codecHeaders: h }, perWrite);
-        return;
-      }
-      case 'abort': {
-        this._cancelled = true;
-        await this._core.cancelAllStreams(perWrite);
-        await this._core.publishDiscrete(
-          {
-            name: EVENT_AI_OUTPUT,
-            data: chunk.reason ?? '',
-            codecHeaders: headerWriter().str('type', 'abort').build(),
-            transportHeaders: { [HEADER_STATUS]: 'cancelled' },
-          },
-          perWrite,
-        );
-        return;
-      }
-      case 'message-metadata': {
-        const h = headerWriter().str('type', 'message-metadata').json('messageMetadata', chunk.messageMetadata).build();
-        await this._core.publishDiscrete({ name: EVENT_AI_OUTPUT, data: '', codecHeaders: h }, perWrite);
-        return;
-      }
-
-      // -- Tool lifecycle (discrete) ----------------------------------------
-      case 'tool-input-error': {
-        const h = headerWriter()
-          .str('type', 'tool-input-error')
-          .str('toolCallId', chunk.toolCallId)
-          .str('toolName', chunk.toolName)
-          .bool('dynamic', chunk.dynamic)
-          .str('title', chunk.title)
-          .bool('providerExecuted', chunk.providerExecuted)
-          .json('providerMetadata', chunk.providerMetadata)
-          .build();
-        await this._core.publishDiscrete(
-          { name: EVENT_AI_OUTPUT, data: { errorText: chunk.errorText, input: chunk.input }, codecHeaders: h },
-          perWrite,
-        );
-        return;
-      }
-      case 'tool-output-available':
-      case 'tool-output-error':
-      case 'tool-approval-request':
-      case 'tool-output-denied': {
-        await this._core.publishDiscrete(buildToolOutputPayload(chunk), perWrite);
-        return;
-      }
-
-      // -- Content parts (discrete) -----------------------------------------
-      case 'file': {
-        const h = headerWriter()
-          .str('type', 'file')
-          .str('mediaType', chunk.mediaType)
-          .json('providerMetadata', chunk.providerMetadata)
-          .build();
-        await this._core.publishDiscrete({ name: EVENT_AI_OUTPUT, data: chunk.url, codecHeaders: h }, perWrite);
-        return;
-      }
-      case 'source-url': {
-        const h = headerWriter()
-          .str('type', 'source-url')
-          .str('sourceId', chunk.sourceId)
-          .str('title', chunk.title)
-          .json('providerMetadata', chunk.providerMetadata)
-          .build();
-        await this._core.publishDiscrete({ name: EVENT_AI_OUTPUT, data: chunk.url, codecHeaders: h }, perWrite);
-        return;
-      }
-      case 'source-document': {
-        const h = headerWriter()
-          .str('type', 'source-document')
-          .str('sourceId', chunk.sourceId)
-          .str('mediaType', chunk.mediaType)
-          .str('title', chunk.title)
-          .str('filename', chunk.filename)
-          .json('providerMetadata', chunk.providerMetadata)
-          .build();
-        await this._core.publishDiscrete({ name: EVENT_AI_OUTPUT, data: '', codecHeaders: h }, perWrite);
-        return;
-      }
-
-      // -- data-* (discrete) ------------------------------------------------
-      default: {
-        if (chunk.type.startsWith('data-')) {
-          // CAST: data-* chunks always have id, transient, and data fields per AI SDK types.
-          // TypeScript can't narrow the template literal union in a default case.
-          const dataChunk = chunk;
-          const h = headerWriter()
-            .str('type', dataChunk.type)
-            .str('id', dataChunk.id)
-            .bool('transient', dataChunk.transient)
-            .build();
-          const ephemeral = dataChunk.transient === true;
-          await this._core.publishDiscrete(
-            { name: EVENT_AI_OUTPUT, data: dataChunk.data, codecHeaders: h, ephemeral },
-            perWrite,
-          );
-          return;
-        }
-        throw new Ably.ErrorInfo(
-          `unable to publish output; unsupported chunk type '${chunk.type}'`,
-          ErrorCode.InvalidArgument,
-          400,
-        );
-      }
-    }
   }
 
   // -------------------------------------------------------------------------
@@ -430,51 +197,6 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
     await this._core.publishDiscrete({ name: EVENT_AI_INPUT, data: '', codecHeaders: h }, perWrite);
   }
 }
-
-// ---------------------------------------------------------------------------
-// Tool output discrete payload builder (agent-side `ai-output` wire)
-// ---------------------------------------------------------------------------
-
-const buildToolOutputPayload = (
-  chunk: Extract<
-    AI.UIMessageChunk,
-    { type: 'tool-output-available' | 'tool-output-error' | 'tool-approval-request' | 'tool-output-denied' }
-  >,
-): MessagePayload => {
-  switch (chunk.type) {
-    case 'tool-output-available': {
-      const h = headerWriter()
-        .str('type', 'tool-output-available')
-        .str('toolCallId', chunk.toolCallId)
-        .bool('dynamic', chunk.dynamic)
-        .bool('providerExecuted', chunk.providerExecuted)
-        .bool('preliminary', chunk.preliminary)
-        .build();
-      return { name: EVENT_AI_OUTPUT, data: { output: chunk.output }, codecHeaders: h };
-    }
-    case 'tool-output-error': {
-      const h = headerWriter()
-        .str('type', 'tool-output-error')
-        .str('toolCallId', chunk.toolCallId)
-        .bool('dynamic', chunk.dynamic)
-        .bool('providerExecuted', chunk.providerExecuted)
-        .build();
-      return { name: EVENT_AI_OUTPUT, data: { errorText: chunk.errorText }, codecHeaders: h };
-    }
-    case 'tool-approval-request': {
-      const h = headerWriter()
-        .str('type', 'tool-approval-request')
-        .str('toolCallId', chunk.toolCallId)
-        .str('approvalId', chunk.approvalId)
-        .build();
-      return { name: EVENT_AI_OUTPUT, data: '', codecHeaders: h };
-    }
-    case 'tool-output-denied': {
-      const h = headerWriter().str('type', 'tool-output-denied').str('toolCallId', chunk.toolCallId).build();
-      return { name: EVENT_AI_OUTPUT, data: '', codecHeaders: h };
-    }
-  }
-};
 
 // ---------------------------------------------------------------------------
 // User-message per-part payload encoding

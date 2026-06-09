@@ -28,7 +28,11 @@ import {
   fToolCallId,
   fToolName,
 } from './fields.js';
-import { isAgentToolOutputErrorWireData, isToolInputErrorWireData, isToolOutputAvailableWireData } from './wire-data.js';
+import {
+  isAgentToolOutputErrorWireData,
+  isToolInputErrorWireData,
+  isToolOutputAvailableWireData,
+} from './wire-data.js';
 
 const event = defineEvent<VercelOutput>();
 const stream = defineStream<VercelOutput>();

@@ -2,7 +2,7 @@
 
 The agent session (`src/core/transport/agent-session.ts`) handles the server-side run lifecycle over an Ably channel. It composes a [RunManager](transport-components.md#runmanager) for run state and lifecycle event publishing, and delegates stream piping to [pipeStream](transport-components.md#pipestream).
 
-The session exposes a single factory method - `createRun()` - which returns a `Run` object with explicit lifecycle methods: `start()`, `pipe()`, `addEvents()`, `suspend()`, and `end()`.
+The session exposes a single factory method - `createRun()` - which returns a `Run` object with explicit lifecycle methods: `start()`, `pipe()`, `suspend()`, and `end()`.
 
 ## Construction and connect
 
@@ -69,10 +69,6 @@ Headers are built with `role: 'assistant'`, the assistant message's `codec-messa
 
 Returns a `StreamResult` - `{ reason; error? }`, where `reason` is `'complete'`, `'cancelled'`, or `'error'` and `error` carries the original failure when `reason` is `'error'`. A stream error is also wrapped as an `Ably.ErrorInfo` (code `StreamError`) and delivered to the run's `onError`. Does **not** call `end()` - the caller must do that after `pipe()` returns.
 
-### addEvents
-
-Publishes output events targeting existing messages in the tree - used for cross-run updates such as tool-result delivery after approval or client-side tool execution. Each `EventsNode` names a target message by its `codecMessageId` and the outputs to apply to it. Each node is encoded through a fresh encoder with `role: 'assistant'` [transport headers](wire-protocol.md#transport-headers) via [buildTransportHeaders](transport-components.md#buildtransportheaders) (run IDs, the target's `codec-message-id`, `invocation-id`, plus `input-client-id` / `input-codec-message-id` propagated from the triggering input event). Because each node is published under the target's existing `codec-message-id`, receiving clients apply the events to that node rather than creating a new one. Must be called after `start()`; throws `InvalidArgument` otherwise.
-
 ### end
 
 Publishes `ai-run-end` to the channel and unregisters the run from cancel routing. The lifecycle event carries `input-client-id` matching the value stamped on `ai-run-start` for the same invocation. Idempotent - calling `end()` twice is safe.
@@ -111,7 +107,7 @@ Errors fall into two categories:
 | Session-level | `options.onError` callback | Cancel subscription failure, channel attach error, channel continuity loss (FAILED/SUSPENDED/etc.) |
 | Run-level     | `runtime.onError` callback | Stream encoding error (also returned on `StreamResult.error`), `onCancel` handler failure          |
 
-Publish failures in `start()`, `addEvents()`, `suspend()`, and `end()` are **not** delivered via `onError` — those methods reject their returned promise with an `Ably.ErrorInfo`, and the caller handles it at the await site. Run-level errors that do route through `onError` fall back to the session-level `onError` if no per-run handler is provided. Channel-wide events (e.g. continuity loss) always go to the session-level `onError` and are not replicated to per-run handlers.
+Publish failures in `start()`, `suspend()`, and `end()` are **not** delivered via `onError` — those methods reject their returned promise with an `Ably.ErrorInfo`, and the caller handles it at the await site. Run-level errors that do route through `onError` fall back to the session-level `onError` if no per-run handler is provided. Channel-wide events (e.g. continuity loss) always go to the session-level `onError` and are not replicated to per-run handlers.
 
 ### Surfacing errors on the channel
 

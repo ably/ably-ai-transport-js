@@ -93,20 +93,6 @@ export interface AgentSessionOptions<
 // ---------------------------------------------------------------------------
 
 /**
- * A batch of events targeting an existing message.
- * Each node specifies the target message and the events to apply to it.
- * Used for cross-run updates such as tool result delivery.
- */
-export interface EventsNode<TOutput extends CodecOutputEvent> {
-  /** Discriminator — identifies this as an events node. */
-  kind: 'event';
-  /** The `codec-message-id` of the existing message to update. */
-  codecMessageId: string;
-  /** Outputs to apply to the target message. */
-  events: TOutput[];
-}
-
-/**
  * Options for `Run.pipe` — per-operation overrides for the assistant message.
  * @template TOutput - The codec output type carried by the stream; used by the `resolveWriteOptions` hook.
  */
@@ -206,7 +192,7 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
    *   `Ably.ErrorInfo` (code `StreamError`) for standardized observability.
    * - Failures in the `onCancel` handler.
    *
-   * Publish failures in `start`, `addEvents`, and `end`
+   * Publish failures in `start` and `end`
    * are not delivered here — those methods reject their returned promise
    * with an `Ably.ErrorInfo`, and the caller should handle it at the await
    * site. Run errors never render the session unusable, but the run may
@@ -295,7 +281,7 @@ export interface Run<TOutput extends CodecOutputEvent, TProjection, TMessage> {
   /**
    * Publish the run's opening lifecycle event to the channel (run-start, or
    * run-resume for a continuation). Must be called before any other run method
-   * (pipe, addEvents, suspend, end).
+   * (pipe, suspend, end).
    */
   start(): Promise<void>;
 
@@ -305,18 +291,6 @@ export interface Run<TOutput extends CodecOutputEvent, TProjection, TMessage> {
    * Does NOT call end() — the caller must call end() after pipe returns.
    */
   pipe(stream: ReadableStream<TOutput>, options?: PipeOptions<TOutput>): Promise<StreamResult>;
-
-  /**
-   * Publish events targeting existing messages in the tree. Each node
-   * specifies a target message (by `codecMessageId`) and the events to apply.
-   * Events are encoded and published with the target's `codec-message-id`,
-   * so receiving clients apply them to the existing node rather than
-   * creating a new one.
-   *
-   * Used for cross-run updates such as tool result delivery after
-   * approval or client-side tool execution.
-   */
-  addEvents(nodes: EventsNode<TOutput>[]): Promise<void>;
 
   /**
    * Fetch every channel message bound to this run and fold them through
@@ -377,10 +351,9 @@ export interface AgentSession<TOutput extends CodecOutputEvent, TProjection, TMe
    * subscribe is deliberately unfiltered so channel-rewind-replayed input
    * events also reach the dispatcher, which routes by name (cancel vs. input
    * event). Idempotent — subsequent calls return the same promise. All run
-   * methods (`start`, `addEvents`, `pipe`, `loadProjection`,
-   * `loadConversation`, `suspend`, `end`) throw `InvalidArgument` until
-   * `connect()` has been *called*; once it has, they await the in-flight
-   * connect promise rather than throwing.
+   * methods (`start`, `pipe`, `loadProjection`, `loadConversation`, `suspend`,
+   * `end`) throw `InvalidArgument` until `connect()` has been *called*; once it
+   * has, they await the in-flight connect promise rather than throwing.
    */
   connect(): Promise<void>;
 

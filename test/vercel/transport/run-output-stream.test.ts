@@ -207,12 +207,12 @@ describe('createRunOutputStream', () => {
     expect(events).toEqual([]);
   });
 
-  it('error() settles the stream and a later close() is a no-op', async () => {
+  it('a session error settles the stream and a later close() is a no-op', async () => {
     const mock = createMockSession();
-    const { stream, close, error } = createRunOutputStream(mock.session, Promise.resolve('run-1'), 'u-1');
+    const { stream, close } = createRunOutputStream(mock.session, Promise.resolve('run-1'), 'u-1');
 
     const reason = new Ably.ErrorInfo('post failed', ErrorCode.SessionSubscriptionError, 500);
-    error(reason);
+    mock.error(reason);
     // Once errored, a subsequent close must not throw or override the error.
     close();
 

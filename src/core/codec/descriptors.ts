@@ -33,11 +33,12 @@ export type StringKeyOf<C> = { [K in keyof C]-?: C[K] extends string ? K : never
  * wins; a wildcard literal (`'data-*'`) resolves to the template member
  * (`data-${string}`), so wildcard descriptors still narrow to the real member.
  */
-export type ResolveType<U extends { type: string }, T extends string> = Extract<U, { type: T }> extends never
-  ? T extends `${infer P}-*`
-    ? Extract<U, { type: `${P}-${string}` }>
-    : never
-  : Extract<U, { type: T }>;
+export type ResolveType<U extends { type: string }, T extends string> =
+  Extract<U, { type: T }> extends never
+    ? T extends `${infer P}-*`
+      ? Extract<U, { type: `${P}-${string}` }>
+      : never
+    : Extract<U, { type: T }>;
 
 // ---------------------------------------------------------------------------
 // Escape-hatch core surface

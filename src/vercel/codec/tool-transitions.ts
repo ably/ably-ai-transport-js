@@ -10,7 +10,7 @@ import type * as AI from 'ai';
 import { stripUndefined } from '../../utils.js';
 
 // ---------------------------------------------------------------------------
-// Tool output chunk type guard
+// Tool output chunk type
 // ---------------------------------------------------------------------------
 
 /** The set of UIMessageChunk types that represent tool output transitions. */
@@ -18,17 +18,6 @@ export type ToolOutputChunk = Extract<
   AI.UIMessageChunk,
   { type: 'tool-output-available' | 'tool-output-error' | 'tool-output-denied' | 'tool-approval-request' }
 >;
-
-/**
- * Whether a UIMessageChunk is a tool output transition event.
- * @param chunk - The chunk to test.
- * @returns True if the chunk is a tool output transition type.
- */
-export const isToolOutputChunk = (chunk: AI.UIMessageChunk): chunk is ToolOutputChunk =>
-  chunk.type === 'tool-output-available' ||
-  chunk.type === 'tool-output-error' ||
-  chunk.type === 'tool-output-denied' ||
-  chunk.type === 'tool-approval-request';
 
 // ---------------------------------------------------------------------------
 // Tool base helper

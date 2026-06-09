@@ -14,7 +14,7 @@
 
 // Chat transport adapter
 export type { ChatTransport, ChatTransportOptions, SendMessagesRequestContext } from './chat-transport.js';
-export { createChatTransport, DEFAULT_VERCEL_API } from './chat-transport.js';
+export { createChatTransport } from './chat-transport.js';
 
 import type * as AI from 'ai';
 

@@ -71,7 +71,7 @@ export interface SendMessagesRequestContext {
 }
 
 /** Default agent endpoint the transport POSTs invocations to — mirrors Vercel's DefaultChatTransport. */
-export const DEFAULT_VERCEL_API = '/api/chat';
+const DEFAULT_VERCEL_API = '/api/chat';
 
 /** Options for customizing the ChatTransport behavior. */
 export interface ChatTransportOptions {

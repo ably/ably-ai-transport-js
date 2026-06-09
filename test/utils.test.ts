@@ -10,7 +10,6 @@ import {
   mergeHeaders,
   parseBool,
   parseJson,
-  setIfPresent,
   stripUndefined,
 } from '../src/utils.js';
 
@@ -90,38 +89,6 @@ describe('parseJson', () => {
 
   it('parses arrays', () => {
     expect(parseJson('[1,2]')).toEqual([1, 2]);
-  });
-});
-
-describe('setIfPresent', () => {
-  it('sets a string value', () => {
-    const h: Record<string, string> = {};
-    setIfPresent(h, 'key', 'value');
-    expect(h).toEqual({ key: 'value' });
-  });
-
-  it('sets a boolean value as string', () => {
-    const h: Record<string, string> = {};
-    setIfPresent(h, 'flag', true);
-    expect(h).toEqual({ flag: 'true' });
-  });
-
-  it('sets an object as JSON', () => {
-    const h: Record<string, string> = {};
-    setIfPresent(h, 'obj', { a: 1 });
-    expect(h).toEqual({ obj: '{"a":1}' });
-  });
-
-  it('skips undefined', () => {
-    const h: Record<string, string> = {};
-    setIfPresent(h, 'key', undefined);
-    expect(h).toEqual({});
-  });
-
-  it('sets a number as string', () => {
-    const h: Record<string, string> = {};
-    setIfPresent(h, 'num', 42);
-    expect(h).toEqual({ num: '42' });
   });
 });
 

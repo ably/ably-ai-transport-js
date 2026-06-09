@@ -65,24 +65,6 @@ export const parseJson = (value: string | undefined): unknown => {
 };
 
 /**
- * Set a header value if defined, skipping undefined and null. Strings are set directly,
- * booleans and numbers are stringified, objects are JSON-serialized.
- * @param headers - The headers object to mutate.
- * @param key - The header key.
- * @param value - The value to set.
- */
-export const setIfPresent = (headers: Record<string, string>, key: string, value: unknown): void => {
-  if (value === undefined || value === null) return;
-  if (typeof value === 'string') {
-    headers[key] = value;
-  } else if (typeof value === 'boolean' || typeof value === 'number') {
-    headers[key] = String(value);
-  } else if (typeof value === 'object') {
-    headers[key] = JSON.stringify(value);
-  }
-};
-
-/**
  * Merge two header records into a new object. Later values override earlier ones.
  * Undefined inputs are treated as empty.
  * @param base - Base headers (lower priority).
@@ -131,14 +113,6 @@ export const compareBySerial = (a: HasSerial, b: HasSerial): number => {
 };
 
 /**
- * Read a domain header value from a codec-tier headers record.
- * @param headers - The codec headers record to read from.
- * @param key - The domain key (e.g. `'toolCallId'`).
- * @returns The header value, or undefined if absent.
- */
-export const getDomainHeader = (headers: Record<string, string>, key: string): string | undefined => headers[key];
-
-/**
  * Mapped type that converts properties whose type includes `undefined`
  * into optional properties with `undefined` excluded from the value.
  * Properties typed as `unknown` are kept required (since `undefined extends unknown`
@@ -178,7 +152,7 @@ export const stripUndefined = <T extends Record<string, unknown>>(obj: T): Strip
 
 /**
  * Typed accessor wrapper around a headers record for reading domain headers.
- * Reduces repetitive `getDomainHeader` + `parseBool` / `parseJson` chains.
+ * Reduces repetitive header lookup + `parseBool` / `parseJson` chains.
  */
 export interface DomainHeaderReader {
   /** Read a domain header as a string, or undefined if absent. */
@@ -197,10 +171,10 @@ export interface DomainHeaderReader {
  * @returns A typed accessor for domain header values.
  */
 export const headerReader = (headers: Record<string, string>): DomainHeaderReader => ({
-  str: (key: string) => getDomainHeader(headers, key),
-  strOr: (key: string, fallback: string) => getDomainHeader(headers, key) ?? fallback,
-  bool: (key: string) => parseBool(getDomainHeader(headers, key)),
-  json: (key: string) => parseJson(getDomainHeader(headers, key)),
+  str: (key: string) => headers[key],
+  strOr: (key: string, fallback: string) => headers[key] ?? fallback,
+  bool: (key: string) => parseBool(headers[key]),
+  json: (key: string) => parseJson(headers[key]),
 });
 
 // ---------------------------------------------------------------------------

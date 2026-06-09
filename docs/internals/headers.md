@@ -66,16 +66,14 @@ const pm = r.providerMetadata(); // AI.ProviderMetadata | undefined
 
 These back `headerReader` / `headerWriter` and the transport layer. Codec implementations should prefer the typed reader/writer over calling these directly.
 
-| Function                            | Purpose                                                                                                         |
-| ----------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `getTransportHeaders(msg)`          | Extract `extras.ai.transport` from an Ably `InboundMessage`. Returns `{}` if absent.                            |
-| `getCodecHeaders(msg)`              | Extract `extras.ai.codec` from an Ably `InboundMessage`. Returns `{}` if absent.                                |
-| `mergeHeaders(base, overrides)`     | Shallow merge of two header records into a new object (overrides win).                                          |
-| `getDomainHeader(headers, key)`     | Read a single domain header by unprefixed key.                                                                  |
-| `setIfPresent(headers, key, value)` | Set a header if the value is defined - strings directly, booleans/numbers stringified, objects JSON-serialized. |
-| `parseJson(value)`                  | Parse a JSON string, returning undefined on failure.                                                            |
-| `parseBool(value)`                  | Parse `"true"` / `"false"` (any other string is `false`), returning undefined if absent.                        |
-| `stripUndefined(obj)`               | Remove undefined-valued keys from an object. Used to build chunk literals with optional fields.                 |
+| Function                        | Purpose                                                                                         |
+| ------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `getTransportHeaders(msg)`      | Extract `extras.ai.transport` from an Ably `InboundMessage`. Returns `{}` if absent.            |
+| `getCodecHeaders(msg)`          | Extract `extras.ai.codec` from an Ably `InboundMessage`. Returns `{}` if absent.                |
+| `mergeHeaders(base, overrides)` | Shallow merge of two header records into a new object (overrides win).                          |
+| `parseJson(value)`              | Parse a JSON string, returning undefined on failure.                                            |
+| `parseBool(value)`              | Parse `"true"` / `"false"` (any other string is `false`), returning undefined if absent.        |
+| `stripUndefined(obj)`           | Remove undefined-valued keys from an object. Used to build chunk literals with optional fields. |
 
 ## Header merge order
 

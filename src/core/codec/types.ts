@@ -435,6 +435,16 @@ export type ToolResultErrorPayloadOf<TInput> = TInput extends ToolResultError<in
  */
 export type ToolApprovalResponsePayloadOf<TInput> = TInput extends ToolApprovalResponse<infer P> ? P : never;
 
+/**
+ * Extract the domain message type (`TMessage`) carried by a codec's
+ * {@link UserMessage} member from its `TInput` union, or `never` if the codec
+ * has no user-message variant. Lets the core well-known input factories type
+ * `createUserMessage` from `TInput` alone, without a separate message type
+ * parameter.
+ * @template TInput - The codec's input union.
+ */
+export type UserMessageOf<TInput> = TInput extends UserMessage<infer M> ? M : never;
+
 // ---------------------------------------------------------------------------
 // Codec output events — base shape for the output side
 // ---------------------------------------------------------------------------

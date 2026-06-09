@@ -9,7 +9,9 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "lint": "next lint",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "node scripts/run-e2e.mjs",
+    "test:e2e:live": "playwright test"
   },
   "dependencies": {
     "@ably/ai-transport": "link:../../../..",
@@ -25,6 +27,7 @@
     "zod": "^4"
   },
   "devDependencies": {
+    "@playwright/test": "1.60.0",
     "@tailwindcss/postcss": "^4",
     "@testing-library/react": "^16.3.2",
     "@types/jsonwebtoken": "^9",

@@ -40,7 +40,12 @@ export async function POST(req: Request) {
   // would miss inputs published while no agent was subscribed (the second
   // message's input-event lookup would time out). A per-request client also
   // keeps concurrent runs on the same channel from detaching each other.
-  const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY! });
+  // `ABLY_ENDPOINT` lets the e2e tests point the agent at the Ably sandbox
+  // (`nonprod:sandbox`); unset in normal use, so it defaults to production.
+  const ably = new Ably.Realtime({
+    key: process.env.ABLY_API_KEY!,
+    ...(process.env.ABLY_ENDPOINT ? { endpoint: process.env.ABLY_ENDPOINT } : {}),
+  });
 
   const session = createAgentSession({ client: ably, channelName: invocation.sessionName });
   await session.connect();

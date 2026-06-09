@@ -6,7 +6,7 @@ import type { Logger } from '../../../logger.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent, WriteOptions } from '../../codec/types.js';
 import type { Invocation } from '../invocation.js';
 import type { CancelRequest, RunEndReason } from './shared.js';
-import type { MessageNode } from './tree.js';
+import type { MessageNode, Tree } from './tree.js';
 
 // ---------------------------------------------------------------------------
 // Agent session options
@@ -43,49 +43,34 @@ export interface AgentSessionOptions<
 
   /**
    * How long `Run.start()` will wait for the input event(s) tagged with
-   * the run's `invocationId` to arrive on the channel (rewind + live wait)
-   * before rejecting with `InputEventNotFound`. The rejection bubbles up to the
-   * developer's HTTP handler, which should surface it as a non-2xx response
-   * so the client's pending send fails.
+   * the run's `invocationId` to arrive on the channel — across both the
+   * live capture (from rewind redelivery and post-attach live messages) and
+   * the bounded history scan — before rejecting with `InputEventNotFound`.
+   * The rejection bubbles up to the developer's HTTP handler, which should
+   * surface it as a non-2xx response so the client's pending send fails.
    * Default: 30000 (30 seconds).
    */
   inputEventLookupTimeoutMs?: number;
 
   /**
-   * Maximum number of distinct invocation-ids whose input events
-   * may be buffered while waiting for `Run.start()` to register a lookup
-   * listener. Channel rewind on attach can replay input events before any
-   * run has been created for them; this buffer holds those events so
-   * that subsequent `start()` calls can drain them on registration.
+   * How far back in time `Run.start()` scans channel history for the
+   * triggering input event. Implements the lookback bound for the
+   * input-event scan — anything older than `Date.now() - inputEventLookbackMs`
+   * is treated as outside the lookup window.
    *
-   * Each entry corresponds to one invocation-id regardless of how many
-   * events that invocation buffered. When the limit is exceeded the
-   * oldest invocation entry (and all its buffered events) is FIFO-evicted
-   * — the client whose input was dropped will fail their lookup with
-   * `InputEventNotFound`. The eviction is logged at warn level so operators
-   * can correlate capacity pressure with `InputEventNotFound` errors.
+   * The session ALSO requests a small Ably `params.rewind` window so the
+   * live listener captures inputs published just before attach without a
+   * history fetch; rewind is a latency fast-path, history is the
+   * correctness backstop. Together they cover everything within
+   * `inputEventLookbackMs` of attach.
    *
-   * Default: 200.
+   * Increase this for long-suspended runs whose continuation may arrive
+   * many minutes after the original publish (or whose request to the agent
+   * arrives after the rewind window). Decrease it for stricter recency.
+   *
+   * Default: 120000 (2 minutes).
    */
-  inputEventBufferLimit?: number;
-
-  /**
-   * The channel rewind applied when the agent attaches. Replays the whole
-   * channel subscription on attach (not just input events) so the lookup
-   * can catch input events published before the session attached. Passed
-   * through verbatim to Ably's `params.rewind` channel parameter — accepts
-   * duration strings (`"2m"`, `"30s"`) or a count of messages as a string
-   * (e.g. `"50"`). Malformed values surface as a channel attach error from
-   * Ably; the SDK does not pre-validate.
-   *
-   * A longer window improves the chances of catching an input event for an
-   * agent that takes a while to come up after the client published, but
-   * also increases the buffer pressure on `inputEventBufferLimit` because
-   * more events may be replayed on attach.
-   *
-   * Default: `"2m"`.
-   */
-  rewindWindow?: string;
+  inputEventLookbackMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -226,23 +211,25 @@ export interface RunView<TMessage> {
 /** Options for {@link Run.loadConversation}. */
 export interface LoadConversationOptions {
   /**
-   * Number of wire messages to request per history page.
-   * Default: 200.
+   * Maximum number of reply RunNodes to walk back through the ancestor
+   * chain. Input nodes encountered alongside don't count toward the
+   * bound. Default unbounded (walks to the conversation root).
+   *
+   * Set this to bound the LLM context window — `maxRuns: 5` returns the
+   * 5 most-recent reply runs and their associated input nodes, in
+   * chronological order.
    */
-  pageLimit?: number;
-  /**
-   * Maximum total wire messages to collect across all pages before
-   * stopping pagination. A safety bound so a long-lived channel
-   * doesn't exhaust memory.
-   * Default: 2000.
-   */
-  maxMessages?: number;
+  maxRuns?: number;
 }
 
 /**
  * A server-side run with explicit lifecycle methods. Generic over the codec's
- * output, projection, and message types.
+ * output, projection, and message types. `TProjection` is retained for
+ * parameter symmetry with {@link AgentSession.createRun}; it does not
+ * appear in the Run's public surface today but keeps the type slot
+ * available for future per-Run projection accessors.
  */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- see JSDoc
 export interface Run<TOutput extends CodecOutputEvent, TProjection, TMessage> {
   /** The run's unique identifier. */
   readonly runId: string;
@@ -293,32 +280,22 @@ export interface Run<TOutput extends CodecOutputEvent, TProjection, TMessage> {
   pipe(stream: ReadableStream<TOutput>, options?: PipeOptions<TOutput>): Promise<StreamResult>;
 
   /**
-   * Fetch every channel message bound to this run and fold them through
-   * the codec into a single projection. Used by the agent to reconstruct
-   * the run's full state — including client-published tool-output amends
-   * the agent didn't observe live — when resuming a suspended run.
-   *
-   * Uses `channel.history()` (no `untilAttach`) so messages published
-   * after the channel was originally attached are still included. Each
-   * call paginates until either there are no more pages or an internal
-   * safety bound is reached.
-   * @returns The TProjection produced by folding every event for this run
-   *   in serial order. The caller extracts what they need via
-   *   {@link Codec.getMessages}.
-   */
-  loadProjection(): Promise<TProjection>;
-
-  /**
    * Reconstruct the full multi-turn conversation by walking the ancestor
    * run chain and concatenating each run's messages, oldest turn first.
    *
-   * Performs a single `channel.history()` scan and builds projections for
-   * all ancestor runs plus the current run. After this call:
+   * Uses the session's history cache (extended backwards as needed) to
+   * build projections for all ancestor runs plus the current run; the
+   * session also merges any live wires published after the channel
+   * attached into the result. After this call:
    * - {@link Run.messages} returns the complete conversation (all ancestor
    *   turns followed by the current run's messages), making it ready to
    *   pass directly to the LLM.
-   * - The current run's projection is cached so {@link Run.pipe} works
-   *   correctly without a separate {@link Run.loadProjection} call.
+   * - The current run's projection is cached for {@link Run.pipe}.
+   * - The result is cached on this Run; a second call returns the cached
+   *   value without re-fetching.
+   *
+   * Walks to the conversation root by default; bound the walk via channel
+   * retention or the operator-set page tuning.
    * @param options - Optional tuning for history pagination.
    * @returns The same message list now accessible via {@link Run.messages}.
    */
@@ -360,13 +337,23 @@ export interface AgentSession<TOutput extends CodecOutputEvent, TProjection, TMe
   readonly presence: Ably.RealtimePresence;
 
   /**
+   * The session's materialisation tree. Every wire received on the channel
+   * (live + history) folds into this tree; consumers can introspect hydrated
+   * conversation state via {@link Tree.getNodeByCodecMessageId} /
+   * {@link Tree.getRunNode} etc. Mirrors `ClientSession.tree` so both
+   * sessions share one materialisation engine.
+   */
+  readonly tree: Tree<TOutput, TProjection>;
+
+  /**
    * Subscribe (unfiltered) to the shared channel and (implicitly) attach. The
-   * subscribe is deliberately unfiltered so channel-rewind-replayed input
-   * events also reach the dispatcher, which routes by name (cancel vs. input
-   * event). Idempotent — subsequent calls return the same promise. All run
-   * methods (`start`, `pipe`, `loadProjection`, `loadConversation`, `suspend`,
-   * `end`) throw `InvalidArgument` until `connect()` has been *called*; once it
-   * has, they await the in-flight connect promise rather than throwing.
+   * subscribe is deliberately unfiltered so channel-history-replayed input
+   * events reach the materialisation engine, which the input-event lookup
+   * queries via the Tree. Idempotent — subsequent calls return the same
+   * promise. All run methods (`start`, `pipe`, `loadConversation`,
+   * `suspend`, `end`) throw `InvalidArgument` until
+   * `connect()` has been *called*; once it has, they await the in-flight
+   * connect promise rather than throwing.
    */
   connect(): Promise<void>;
 

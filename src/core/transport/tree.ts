@@ -25,6 +25,7 @@ import type * as Ably from 'ably';
 
 import {
   HEADER_CODEC_MESSAGE_ID,
+  HEADER_EVENT_ID,
   HEADER_FORK_OF,
   HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
@@ -36,6 +37,7 @@ import {
 } from '../../constants.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
+import { getTransportHeaders } from '../../utils.js';
 import type { CodecInputEvent, CodecOutputEvent, Reducer } from '../codec/types.js';
 import type { ConversationNode, InputNode, OutputEvent, RunLifecycleEvent, RunNode, Tree } from './types.js';
 
@@ -275,6 +277,15 @@ export class DefaultTree<
    */
   private _siblingCache = new Map<string, InternalNode<TProjection>[]>();
   private _siblingCacheVersion = -1;
+
+  /**
+   * Index from `event-id` header to the raw Ably wire that carried it.
+   * Populated incrementally as wires arrive via {@link emitAblyMessage}; reads
+   * back the raw wire for the agent's input-event lookup
+   * ({@link findWireByEventId}). Bounded by the Tree's lifetime — cleared
+   * when the Tree is replaced on continuity loss / session close.
+   */
+  private readonly _eventIdIndex = new Map<string, Ably.InboundMessage>();
 
   constructor(codec: Reducer<TInput | TOutput, TProjection>, logger: Logger) {
     this._codec = codec;
@@ -1139,12 +1150,23 @@ export class DefaultTree<
   }
 
   /**
-   * Forward a raw Ably message event to tree subscribers.
+   * Forward a raw Ably message event to tree subscribers. Also indexes the
+   * wire by `event-id` header (if present) for {@link findWireByEventId}
+   * lookups.
    * @param msg - The raw Ably message to emit.
    */
   emitAblyMessage(msg: Ably.InboundMessage): void {
     this._logger.trace('DefaultTree.emitAblyMessage();');
+    const headers = getTransportHeaders(msg);
+    const eventId = headers[HEADER_EVENT_ID];
+    if (eventId !== undefined && !this._eventIdIndex.has(eventId)) {
+      this._eventIdIndex.set(eventId, msg);
+    }
     this._emitter.emit('ably-message', msg);
+  }
+
+  findWireByEventId(eventId: string): Ably.InboundMessage | undefined {
+    return this._eventIdIndex.get(eventId);
   }
 }
 

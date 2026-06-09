@@ -79,6 +79,13 @@ export enum ErrorCode {
    * lapsed without seeing them.
    */
   InputEventNotFound = 104010,
+
+  /**
+   * Channel history pagination failed after bounded retry — either the initial
+   * `channel.history()` call or a subsequent `page.next()` exhausted its
+   * retry budget. The original failure is preserved as `cause`.
+   */
+  HistoryFetchFailed = 104011,
 }
 
 /**

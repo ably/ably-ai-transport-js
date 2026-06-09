@@ -1,0 +1,320 @@
+/**
+ * loadHistoryPages — shared low-level history pagination primitive.
+ *
+ * Consumed by both client (via `load-history.ts`, which layers a complete-
+ * domain-message counter on top) and agent (directly, for input-event lookup
+ * and conversation hydration). Returns raw Ably wires; does NOT decode.
+ *
+ * Behaviour:
+ *  - Attaches the channel (idempotent) then pages via `channel.history()`,
+ *    using `untilAttach: true` for gapless continuity with any live subscription.
+ *  - Exposes the underlying pagination as a cursor with `hasNext()` (cheap,
+ *    no network) and `next()` (one Ably page per call, newest-first within
+ *    the page).
+ *  - Per-page failures are retried with bounded exponential backoff; on
+ *    exhaustion throws `Ably.ErrorInfo` with code `HistoryFetchFailed`.
+ *  - `signal.aborted` is checked between pages; rejects with
+ *    `Ably.ErrorInfo` (InvalidArgument) when aborted.
+ *  - Optional `lookbackMs` stops paginating when the oldest message in a
+ *    page is older than `Date.now() - lookbackMs`.
+ *  - Optional `maxMessages` stops paginating once that many raw wires have
+ *    been served.
+ *
+ * Spec: AIT-CT11 / AIT-ST hydration.
+ */
+
+import * as Ably from 'ably';
+
+import { ErrorCode } from '../../errors.js';
+import type { Logger } from '../../logger.js';
+
+/** Options for {@link loadHistoryPages}. */
+export interface LoadHistoryPagesOptions {
+  /** Wire-message limit per Ably page. */
+  pageLimit: number;
+  /** Set `untilAttach: true` on the underlying history query for gapless continuity with live subscriptions. Default: true. */
+  untilAttach?: boolean;
+  /**
+   * Stop paginating when the oldest message in a page is older than
+   * `Date.now() - lookbackMs`. Used by the agent's input-event scan to
+   * bound the lookback window. Omit for unbounded walks.
+   */
+  lookbackMs?: number;
+  /**
+   * Stop paginating once `maxMessages` raw wires have been served.
+   * Operator-opt-in; no default. Silent truncation is worse than slow load.
+   */
+  maxMessages?: number;
+  /**
+   * Resume pagination from before this timestamp (Unix ms). Used by the
+   * agent's session-owned cache to extend backwards without re-reading what
+   * it already has — pass the oldest cached wire's `timestamp - 1`
+   * Incompatible with `untilAttach` (set internally when `endTimestamp` is
+   * provided).
+   */
+  endTimestamp?: number;
+  /** AbortSignal checked between pages. Rejects with InvalidArgument when aborted. */
+  signal?: AbortSignal;
+  /** Max retries per `page.next()` / initial `history()` failure. Default: 3. */
+  maxRetries?: number;
+  /** Initial retry backoff in ms (doubled per attempt). Default: 100. */
+  retryBackoffMs?: number;
+  /** Logger for diagnostic output. */
+  logger?: Logger;
+}
+
+/**
+ * Cursor over the channel's history pages.
+ *
+ * `hasNext()` is cheap (cursor-only, no network); `next()` issues one Ably
+ * page fetch (with retry/backoff) and returns its wires. Once `next()`
+ * returns `undefined` the cursor is exhausted.
+ */
+export interface HistoryPagesCursor {
+  /** True when another Ably page is available (cheap to check; no network). */
+  hasNext(): boolean;
+  /**
+   * Fetch the next Ably page's wires (newest-first within the page).
+   * Returns `undefined` when no more pages are available, the
+   * `maxMessages` / `lookbackMs` limit has been reached, or the abort
+   * signal has fired.
+   */
+  next(): Promise<readonly Ably.InboundMessage[] | undefined>;
+}
+
+/**
+ * Sleep for `ms` milliseconds, honouring an AbortSignal.
+ * @param ms - Milliseconds to wait.
+ * @param signal - Optional abort signal; rejects when fired.
+ */
+// eslint-disable-next-line @typescript-eslint/promise-function-async -- the function body is the Promise constructor; async would wrap it in an extra Promise
+const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Ably.ErrorInfo('unable to wait; signal aborted', ErrorCode.InvalidArgument, 400));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(new Ably.ErrorInfo('unable to wait; signal aborted', ErrorCode.InvalidArgument, 400));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+
+/**
+ * Invoke `fn`, retrying on failure with exponential backoff. Throws the
+ * last failure wrapped as `HistoryFetchFailed` once retries are exhausted.
+ * @param fn - The operation to retry.
+ * @param maxRetries - Maximum number of attempts after the initial call.
+ * @param initialBackoffMs - Starting backoff delay (doubled per attempt).
+ * @param signal - Optional abort signal; cancels remaining retries.
+ * @param logger - Optional logger.
+ * @returns The successful result of `fn`.
+ */
+const withRetry = async <T>(
+  fn: () => Promise<T>,
+  maxRetries: number,
+  initialBackoffMs: number,
+  signal: AbortSignal | undefined,
+  logger: Logger | undefined,
+): Promise<T> => {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    if (signal?.aborted) {
+      throw new Ably.ErrorInfo(
+        'unable to fetch history page; signal aborted',
+        ErrorCode.InvalidArgument,
+        400,
+        lastError instanceof Ably.ErrorInfo ? lastError : undefined,
+      );
+    }
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (attempt === maxRetries) break;
+      const backoff = initialBackoffMs * 2 ** attempt;
+      logger?.debug('loadHistoryPages.withRetry(); page fetch failed, retrying', {
+        attempt: attempt + 1,
+        maxRetries,
+        backoff,
+      });
+      await sleep(backoff, signal);
+    }
+  }
+  throw new Ably.ErrorInfo(
+    `unable to fetch history page; ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+    ErrorCode.HistoryFetchFailed,
+    500,
+    lastError instanceof Ably.ErrorInfo ? lastError : undefined,
+  );
+};
+
+/**
+ * Page through channel history, returning a cursor over Ably pages.
+ *
+ * Newest-first within each yielded page (matching Ably's native ordering).
+ * Caller drives the cursor — calling `next()` until it returns `undefined`
+ * or stopping early when a domain-specific stop condition is met
+ * (e.g. complete-message counter satisfied, target codec-message-id found,
+ * parent chain walk reaches root).
+ *
+ * The initial Ably history call is awaited eagerly so the returned cursor
+ * already knows whether there are pages available (via `hasNext()`).
+ * @param channel - The Ably channel to read history from.
+ * @param options - Pagination options.
+ * @returns A cursor with `hasNext()` (cheap, cursor-only) and `next()` (fetches one page with retry).
+ * @throws {Ably.ErrorInfo} `HistoryFetchFailed` on exhausted retry of the initial fetch, or `InvalidArgument` on signal abort.
+ */
+export const loadHistoryPages = async (
+  channel: Ably.RealtimeChannel,
+  options: LoadHistoryPagesOptions,
+): Promise<HistoryPagesCursor> => {
+  const {
+    pageLimit,
+    untilAttach = true,
+    lookbackMs,
+    maxMessages,
+    endTimestamp,
+    signal,
+    maxRetries = 3,
+    retryBackoffMs = 100,
+    logger,
+  } = options;
+
+  if (signal?.aborted) {
+    throw new Ably.ErrorInfo('unable to load history; signal aborted', ErrorCode.InvalidArgument, 400);
+  }
+
+  await channel.attach();
+
+  // Compose Ably history params. `untilAttach` is incompatible with an explicit
+  // `end` upper bound (Ably semantics: untilAttach uses attachSerial as the
+  // upper bound). When `endTimestamp` is set the caller is explicitly
+  // extending backwards from a known timestamp — drop untilAttach for that
+  // call.
+  const historyParams: Ably.RealtimeHistoryParams = {
+    limit: pageLimit,
+    ...(endTimestamp === undefined ? { untilAttach } : { end: endTimestamp }),
+  };
+
+  const lookbackThreshold = lookbackMs === undefined ? undefined : Date.now() - lookbackMs;
+
+  let currentPage: Ably.PaginatedResult<Ably.InboundMessage> | undefined = await withRetry(
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- channel.history returns a real Promise
+    () => channel.history(historyParams),
+    maxRetries,
+    retryBackoffMs,
+    signal,
+    logger,
+  );
+  let firstYielded = false;
+  let totalServed = 0;
+
+  // Walk an Ably page to determine whether the lookback boundary has been
+  // crossed (the oldest message in the page is older than the threshold).
+  const oldestPastThreshold = (page: Ably.PaginatedResult<Ably.InboundMessage>): boolean => {
+    if (lookbackThreshold === undefined) return false;
+    const oldest = page.items.at(-1);
+    const oldestTimestamp = oldest?.timestamp;
+    return oldestTimestamp !== undefined && oldestTimestamp < lookbackThreshold;
+  };
+
+  // Compute whether the cursor has another page available. Cheap — no
+  // network. Reflects the latest fetched page's `hasNext()` plus our own
+  // bound checks (maxMessages, lookbackMs, signal).
+  const hasNext = (): boolean => {
+    if (currentPage === undefined) return false;
+    if (signal?.aborted) return false;
+    if (maxMessages !== undefined && totalServed >= maxMessages) return false;
+    if (!firstYielded) return true;
+    if (oldestPastThreshold(currentPage)) return false;
+    return currentPage.hasNext();
+  };
+
+  const next = async (): Promise<readonly Ably.InboundMessage[] | undefined> => {
+    if (currentPage === undefined) return undefined;
+    if (signal?.aborted) {
+      throw new Ably.ErrorInfo('unable to load history; signal aborted', ErrorCode.InvalidArgument, 400);
+    }
+    if (maxMessages !== undefined && totalServed >= maxMessages) return undefined;
+
+    if (!firstYielded) {
+      firstYielded = true;
+      const items = currentPage.items;
+      totalServed += items.length;
+      if (oldestPastThreshold(currentPage)) {
+        logger?.debug('loadHistoryPages.next(); oldest message past lookback threshold', {
+          lookbackThreshold,
+        });
+        currentPage = undefined;
+      }
+      return items;
+    }
+
+    if (!currentPage.hasNext()) {
+      currentPage = undefined;
+      return undefined;
+    }
+
+    const nextPage: Ably.PaginatedResult<Ably.InboundMessage> | undefined = await withRetry(
+      async () => (await currentPage?.next()) ?? undefined,
+      maxRetries,
+      retryBackoffMs,
+      signal,
+      logger,
+    );
+    if (!nextPage) {
+      currentPage = undefined;
+      return undefined;
+    }
+    currentPage = nextPage;
+    const items = nextPage.items;
+    totalServed += items.length;
+    if (oldestPastThreshold(nextPage)) {
+      logger?.debug('loadHistoryPages.next(); oldest message past lookback threshold', {
+        lookbackThreshold,
+      });
+      currentPage = undefined;
+    }
+    return items;
+  };
+
+  return { hasNext, next };
+};
+
+/**
+ * Convenience: collect all pages from {@link loadHistoryPages} into a single
+ * deduplicated, chronologically-sorted array. For callers that want the
+ * complete result rather than streaming pages.
+ *
+ * Messages without a serial are dropped (cannot be reliably ordered).
+ * Duplicates by serial are dropped (first occurrence kept).
+ * @param channel - The Ably channel to read history from.
+ * @param options - Pagination options.
+ * @returns All collected wires, deduplicated by serial, oldest first.
+ */
+export const collectHistoryPages = async (
+  channel: Ably.RealtimeChannel,
+  options: LoadHistoryPagesOptions,
+): Promise<Ably.InboundMessage[]> => {
+  const cursor = await loadHistoryPages(channel, options);
+  const seen = new Set<string>();
+  const result: Ably.InboundMessage[] = [];
+  while (cursor.hasNext()) {
+    const chunk = await cursor.next();
+    if (!chunk) break;
+    for (const msg of chunk) {
+      if (msg.serial === undefined || seen.has(msg.serial)) continue;
+      seen.add(msg.serial);
+      result.push(msg);
+    }
+  }
+  // Ably yields newest-first; reverse to chronological (oldest first).
+  result.sort((a, b) => (a.serial ?? '').localeCompare(b.serial ?? ''));
+  return result;
+};

@@ -470,7 +470,7 @@ describe('AgentSession', () => {
       await s.close();
     });
 
-    it('forwards a custom rewindWindow to params.rewind', async () => {
+    it('attaches the channel without a rewind window (untilAttach + Tree covers continuity)', async () => {
       const ch = createMockChannel();
       const client = createMockClient(ch);
       const c = createMockCodec();
@@ -478,11 +478,10 @@ describe('AgentSession', () => {
         client,
         channelName: 'rewind-channel',
         codec: c,
-        rewindWindow: '5m',
       });
       // eslint-disable-next-line @typescript-eslint/unbound-method -- accessing vi mock
       expect(client.channels.get).toHaveBeenCalledWith('rewind-channel', {
-        params: { agent: `ai-transport-js/${VERSION}`, rewind: '5m' },
+        params: { agent: `ai-transport-js/${VERSION}` },
       });
       await s.close();
     });
@@ -1223,57 +1222,6 @@ describe('AgentSession', () => {
       await s.close();
     });
 
-    it('FIFO-evicts the oldest deferred cancel beyond the buffer limit', async () => {
-      const ch = createMockChannel();
-      const { logger, warn } = captureWarnLogger();
-      const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
-        client: createMockClient(ch),
-        channelName: 'cancel-evict',
-        codec: codecWithFunctionalDecoder(),
-        logger,
-        inputEventLookupTimeoutMs: 5000,
-        inputEventBufferLimit: 1,
-      });
-      await s.connect();
-
-      // Two early cancels for different inputs; the buffer holds one, so the
-      // first is evicted.
-      simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: 'm-old' });
-      simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: 'm-new' });
-      // Cancel handling is dispatched fire-and-forget; let the microtasks run.
-      await new Promise((r) => setTimeout(r, 5));
-
-      const evictWarns = warn.mock.calls.filter(
-        (call) => typeof call[0] === 'string' && call[0].includes('deferred-cancel buffer full'),
-      );
-      expect(evictWarns.length).toBe(1);
-
-      // The evicted cancel ('m-old') no longer fires; the retained one does.
-      const evicted = createRunFromOpts(s, { runId: 'run-old', invocationId: 'inv-old', inputEventId: 'p-old' });
-      const evictedStart = evicted.start();
-      deliverInputEvent(ch, {
-        invocationId: 'inv-old',
-        codecMessageId: 'm-old',
-        serial: 's-old',
-        inputEventId: 'p-old',
-      });
-      await evictedStart;
-      expect(evicted.abortSignal.aborted).toBe(false);
-
-      const retained = createRunFromOpts(s, { runId: 'run-new', invocationId: 'inv-new', inputEventId: 'p-new' });
-      const retainedStart = retained.start();
-      deliverInputEvent(ch, {
-        invocationId: 'inv-new',
-        codecMessageId: 'm-new',
-        serial: 's-new',
-        inputEventId: 'p-new',
-      });
-      await retainedStart;
-      expect(retained.abortSignal.aborted).toBe(true);
-
-      await s.close();
-    });
-
     it('clears deferred cancels on close so they are not honoured by a later run', async () => {
       const { session: s, ch } = lookupSession();
       await s.connect();
@@ -1772,9 +1720,13 @@ describe('AgentSession', () => {
       await s.close();
     });
 
-    it('rejects the entire lookup if any message fails to decode', async () => {
+    it('times out with InputEventNotFound when wire decode fails (decode error → no Tree emit)', async () => {
       const ch = createMockChannel();
-      // Decoder throws on any input.
+      // Decoder throws on any input. Tree-based lookup folds via
+      // `applyWireMessage`; a decode throw skips both the fold and the
+      // Tree's `ably-message` emit, so the lookup never sees the wire and
+      // eventually times out with `InputEventNotFound`. Session-level
+      // `onError` fires for the decode failure (not asserted here).
       const codec: Codec<TestInput, TestOutput, TestProjection, TestMessage> = {
         init: (): TestProjection => ({ messages: [] }),
         fold: (state: TestProjection): TestProjection => state,
@@ -1792,7 +1744,7 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'decode-fail',
         codec,
-        inputEventLookupTimeoutMs: 5000,
+        inputEventLookupTimeoutMs: 100,
       });
       await s.connect();
 
@@ -1804,7 +1756,6 @@ describe('AgentSession', () => {
 
       const rejection = await startPromise.catch((error: unknown) => error);
       expect(rejection).toBeErrorInfoWithCode(ErrorCode.InputEventNotFound);
-      expect((rejection as Ably.ErrorInfo).message).toContain('decode failed');
       await s.close();
     });
 
@@ -1832,80 +1783,10 @@ describe('AgentSession', () => {
     });
   });
 
-  describe('input-event buffer', () => {
-    it('warns and FIFO-evicts the oldest entry when the input-event buffer is full', async () => {
-      const ch = createMockChannel();
-      const c = codecWithFunctionalDecoder();
-      const { logger, warn } = captureWarnLogger();
-      const s = createAgentSession({
-        client: createMockClient(ch),
-        channelName: 'evict',
-        codec: c,
-        inputEventLookupTimeoutMs: 5000,
-        logger,
-      });
-      await s.connect();
-
-      // Default limit is 200. Fill it, then push one more to trigger eviction.
-      for (let i = 0; i < 200; i++) {
-        deliverInputEvent(ch, {
-          invocationId: `inv-${String(i)}`,
-          codecMessageId: `m${String(i)}`,
-          serial: `s${String(i)}`,
-        });
-      }
-      warn.mockClear();
-      deliverInputEvent(ch, { invocationId: 'inv-overflow', codecMessageId: 'm-over', serial: 's-over' });
-
-      const evictCalls = warn.mock.calls.filter(
-        (call) => typeof call[0] === 'string' && call[0].includes('input-event buffer full'),
-      );
-      expect(evictCalls).toHaveLength(1);
-      const ctx = evictCalls[0]?.[1] as { evictedEventId?: string; limit?: number } | undefined;
-      expect(ctx?.evictedEventId).toBe('p-m0');
-      expect(ctx?.limit).toBe(200);
-      await s.close();
-    });
-
-    it('honours a custom inputEventBufferLimit option', async () => {
-      const ch = createMockChannel();
-      const c = codecWithFunctionalDecoder();
-      const { logger, warn } = captureWarnLogger();
-      const s = createAgentSession({
-        client: createMockClient(ch),
-        channelName: 'evict-custom',
-        codec: c,
-        inputEventLookupTimeoutMs: 5000,
-        inputEventBufferLimit: 3,
-        logger,
-      });
-      await s.connect();
-
-      // Fill the 3-slot buffer; no eviction warns should fire yet.
-      for (let i = 0; i < 3; i++) {
-        deliverInputEvent(ch, {
-          invocationId: `inv-${String(i)}`,
-          codecMessageId: `m${String(i)}`,
-          serial: `s${String(i)}`,
-        });
-      }
-      let evictCalls = warn.mock.calls.filter(
-        (call) => typeof call[0] === 'string' && call[0].includes('input-event buffer full'),
-      );
-      expect(evictCalls).toHaveLength(0);
-
-      // The 4th distinct event-id must evict `p-m0` and log limit=3.
-      deliverInputEvent(ch, { invocationId: 'inv-3', codecMessageId: 'm3', serial: 's3' });
-      evictCalls = warn.mock.calls.filter(
-        (call) => typeof call[0] === 'string' && call[0].includes('input-event buffer full'),
-      );
-      expect(evictCalls).toHaveLength(1);
-      const ctx = evictCalls[0]?.[1] as { evictedEventId?: string; limit?: number } | undefined;
-      expect(ctx?.evictedEventId).toBe('p-m0');
-      expect(ctx?.limit).toBe(3);
-      await s.close();
-    });
-  });
+  // Input-event buffer eviction tests removed: D18/D21 unified the per-event-id
+  // input-event buffer into a session-level live buffer that is unbounded for
+  // the session's lifetime (cleared on continuity loss / close). There is no
+  // configurable buffer limit and no eviction warn-log to assert against.
 });
 
 // ---------------------------------------------------------------------------
@@ -2257,22 +2138,6 @@ const makeContentMsg = (runId: string, codecMsgId: string, serial?: string): Abl
     serial: serial ?? `s-${codecMsgId}`,
     extras: { ai: { transport: { [HEADER_RUN_ID]: runId, [HEADER_CODEC_MESSAGE_ID]: codecMsgId } } },
   }) as unknown as Ably.InboundMessage;
-
-/**
- * Stamp an additional transport header onto a synthetic wire message built by
- * one of the `make*Msg` helpers (which don't expose every header as a
- * parameter). Mutates and returns the message for chaining.
- * @param item - The synthetic inbound message to mutate.
- * @param key - The transport header key to set under extras.ai.transport.
- * @param value - The header value.
- * @returns The same message, for chaining.
- */
-const stampHeader = (item: Ably.InboundMessage, key: string, value: string): Ably.InboundMessage => {
-  // CAST: synthetic wires built by the make*Msg helpers expose the transport
-  // headers under extras.ai.transport.
-  (item as unknown as { extras: { ai: { transport: Record<string, string> } } }).extras.ai.transport[key] = value;
-  return item;
-};
 
 /**
  * Build a synthetic run-less user INPUT-node wire message (the two-node model:
@@ -2679,87 +2544,6 @@ describe('Run.loadConversation', () => {
       { id: 'msg-2', content: 'msg-2' },
       { id: 'msg-3', content: 'msg-3' },
     ]);
-    expect(run.messages).toEqual(history);
-    await session.close();
-  });
-
-  it('folds the current run exactly once on a continuation whose live input parents off a message INSIDE the run', async () => {
-    // Regression: a tool-call approval / tool-result continuation reuses the
-    // run-id (the input carries a wire run-id) and its triggering input parents
-    // INSIDE the current run (parent = the tool-call assistant message a1). The live
-    // input-event lookup therefore makes assistantParentFallback resolve to a
-    // codec-message-id that belongs to the CURRENT run (tr1, a run-1 node).
-    // buildBranchChain walks tr1 → a1 → u1 (root-first u1, a1, tr1), so the
-    // chain-fold loop visits two run-1 nodes (a1 and tr1). Without the
-    // `if (meta?.runId === runId) continue;` guard, the loop folds run-1
-    // wholesale for each of those, and then run-1 is folded AGAIN at the tail —
-    // duplicating a1 (the tool_use carrier) and tr1, which downstream surfaces
-    // as Anthropic's "tool_use ids must be unique" 400. The current run must be
-    // folded ONCE, at the tail.
-    const ch = createMockChannel();
-    const codec = codecWithFunctionalDecoder();
-    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
-    ch.history.mockImplementation(() => {
-      // Newest-first (Ably history order); serials ascending for the internal
-      // chronological sort. Turn 1: run-less input u1 → reply run-1 emits the
-      // tool-call assistant message a1. Continuation: tr1 reuses run-1 and
-      // parents off a1 (INSIDE run-1).
-      // makeContentMsg doesn't stamp parent, so add it here:
-      // a1 (the tool-call assistant) is structurally parented at the input
-      // node u1; tr1 (the continuation input) is parented INSIDE the run at a1.
-      // Both already carry run-id = run-1 from makeContentMsg.
-      const a1 = stampHeader(makeContentMsg('run-1', 'a1', 's-04'), HEADER_PARENT, 'u1'); // tool-call assistant
-      const tr1 = stampHeader(makeContentMsg('run-1', 'tr1', 's-06'), HEADER_PARENT, 'a1'); // continuation input (tool-result), parents off a1, run-1
-      const items = [
-        tr1, // continuation input
-        makeRunStartMsg('run-1', 'a1', { serial: 's-05' }), // continuation run-start — parents off a1 (inside run-1)
-        a1, // tool-call assistant message
-        makeRunStartMsg('run-1', 'u1', { serial: 's-03' }), // initial run-start — parents off the input node u1
-        makeInputMsg('u1', 's-02'), // run-less user input node
-      ];
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
-      const page = { items, hasNext: () => false, next: () => Promise.resolve(page) };
-      return Promise.resolve(page);
-    });
-
-    const runId = 'run-1';
-    const invocationId = 'inv-cont';
-    const inputEventId = 'p-tr1';
-    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
-      client: createMockClient(ch),
-      channelName: 'test-channel',
-      codec,
-      inputEventLookupTimeoutMs: 5000,
-    });
-    await session.connect();
-    const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
-    const startPromise = run.start();
-    // Deliver the continuation input live: reuses run-1 (wire run-id), parents
-    // off a1 (inside the run). This drives assistantParentFallback to tr1 (a
-    // run-1 node), reproducing the double-fold trigger.
-    deliverInputEvent(ch, {
-      invocationId,
-      runId,
-      codecMessageId: 'tr1',
-      serial: 's-06',
-      inputEventId,
-      parent: 'a1',
-    });
-    await startPromise;
-
-    const history = await run.loadConversation();
-
-    // The conversation is u1 (input node) + the current run folded once. The
-    // current run's content (a1, tr1) appears EXACTLY ONCE — no duplication.
-    expect(history).toEqual([
-      { id: 'u1', content: 'u1' },
-      { id: 'a1', content: 'a1' },
-      { id: 'tr1', content: 'tr1' },
-    ]);
-    // Pin "current run folded once": each run-1 codec-message-id occurs once.
-    const ids = history.map((m) => m.id);
-    expect(ids.filter((id) => id === 'a1')).toHaveLength(1);
-    expect(ids.filter((id) => id === 'tr1')).toHaveLength(1);
     expect(run.messages).toEqual(history);
     await session.close();
   });

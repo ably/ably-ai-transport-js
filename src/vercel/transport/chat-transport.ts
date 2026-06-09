@@ -280,7 +280,7 @@ const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'a
  *
  * The resulting inputs are passed alongside the continuation `view.send`
  * so the channel publish and the continuation POST land as ONE atomic
- * operation — the agent's `loadProjection()` history fetch is guaranteed
+ * operation — the agent's `loadConversation()` history walk is guaranteed
  * to see them because the channel publish happens before the POST inside
  * `_internalSend`.
  *

@@ -45,12 +45,16 @@ export interface HeaderField<V> {
   read(headers: Record<string, string>): V;
   /**
    * Encode and write this field's value into a headers record, mutating it in
-   * place. `undefined` (and `null`, for JSON values) is skipped — the key is
-   * left unset rather than written as an empty string.
+   * place. `undefined` (and `null`, for JSON values), and values whose runtime
+   * type doesn't match the field, are skipped — the key is left unset rather
+   * than written. The parameter is `unknown` (not `V`) so a field keeps `V` in
+   * a single covariant position (`read`); this lets heterogeneous fields share a
+   * `HeaderField<unknown>[]` array, which the descriptor drivers rely on. At a
+   * typed call site the caller still passes a `V`.
    * @param headers - The headers record to mutate.
    * @param value - The value to encode and set.
    */
-  write(headers: Record<string, string>, value: V): void;
+  write(headers: Record<string, string>, value: unknown): void;
 }
 
 /**
@@ -71,7 +75,7 @@ export function strField(key: string, fallback?: string): HeaderField<string | u
     key,
     read: (headers) => headers[key] ?? fallback,
     write: (headers, value) => {
-      if (value !== undefined) headers[key] = value;
+      if (typeof value === 'string') headers[key] = value;
     },
   };
 }
@@ -94,7 +98,7 @@ export function boolField(key: string, fallback?: boolean): HeaderField<boolean 
     key,
     read: (headers) => parseBool(headers[key]) ?? fallback,
     write: (headers, value) => {
-      if (value !== undefined) headers[key] = String(value);
+      if (typeof value === 'boolean') headers[key] = String(value);
     },
   };
 }
@@ -143,6 +147,6 @@ export const enumField = <const T extends string>(
     return allowed.find((candidate) => candidate === raw) ?? fallback;
   },
   write: (headers, value) => {
-    headers[key] = value;
+    if (typeof value === 'string') headers[key] = value;
   },
 });

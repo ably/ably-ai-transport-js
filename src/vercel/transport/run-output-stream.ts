@@ -41,21 +41,20 @@ type VercelSession = ClientSession<VercelInput, VercelOutput, VercelProjection, 
 const isTerminalChunk = (output: VercelOutput): boolean =>
   output.type === 'finish' || output.type === 'error' || output.type === 'abort';
 
-/** A consumer-facing run output stream plus the handles to settle it externally. */
-export interface RunOutputStream {
+/** A consumer-facing run output stream plus the handle to close it externally. */
+interface RunOutputStream {
   /** The stream of decoded outputs for the run, as `useChat` consumes it. */
   stream: ReadableStream<VercelOutput>;
   /** Close the stream now (e.g. on local cancel). Idempotent. */
   close: () => void;
-  /** Error the stream now (e.g. on a failed agent-invocation POST). Idempotent. */
-  error: (reason: Ably.ErrorInfo) => void;
 }
 
 /**
  * Create a consumer-facing output stream for a send, sourced from the session
  * Tree's events. See the module docs for close/error semantics. The returned
- * `close`/`error` let the caller settle the stream for conditions the Tree
- * doesn't surface (local cancel, POST failure).
+ * `close` lets the caller settle the stream for conditions the Tree doesn't
+ * surface (local cancel). Session errors are wired internally to error the
+ * stream.
  *
  * Outputs route PURELY by the triggering input's codec-message-id — the key the
  * client owns from send time, before the agent mints the runId. The agent's
@@ -66,7 +65,7 @@ export interface RunOutputStream {
  *   Used only by the run-end safety-net; routing keys on `inputCodecMessageId`.
  * @param inputCodecMessageId - The triggering input's codec-message-id. An
  *   output routes to this stream when it carries this id.
- * @returns The stream and its external settle handles.
+ * @returns The stream and its external close handle.
  */
 export const createRunOutputStream = (
   session: VercelSession,
@@ -166,5 +165,5 @@ export const createRunOutputStream = (
     }),
   );
 
-  return { stream, close, error };
+  return { stream, close };
 };

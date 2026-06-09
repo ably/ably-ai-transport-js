@@ -60,20 +60,20 @@ import type {
  * Result of {@link DefaultAgentSession._findInputEvent}. The lookup races
  * the session's Tree (`findWireByEventId` pre-scan + `'ably-message'` event
  * for live arrivals) against a bounded `loadHistoryPages` fetch; resolves
- * with the matched wires sorted by Ably `serial` ascending.
+ * with the matched messages sorted by Ably `serial` ascending.
  *
  * Run.start reads `firstHeaders` / `firstClientId` from the smallest-serial
- * matched wire to derive per-run metadata (run-id, parent, forkOf,
+ * matched message to derive per-run metadata (run-id, parent, forkOf,
  * continuation flag, publisher clientId). The Tree has already folded
- * each wire by the time the lookup resolves, so callers do NOT need to
- * decode the raw messages themselves.
+ * each message by the time the lookup resolves, so callers do NOT need to
+ * decode the raw matched messages themselves.
  */
 interface InputEventLookupResult<TMessage> {
-  /** Raw Ably wires matched by the lookup, sorted by serial ascending. */
+  /** Raw Ably messages matched by the lookup, sorted by serial ascending. */
   rawMessages: Ably.InboundMessage[];
-  /** Transport headers of the smallest-serial matched wire (run metadata). */
+  /** Transport headers of the smallest-serial matched message (run metadata). */
   firstHeaders?: Record<string, string>;
-  /** Publisher's Ably channel-level `clientId` from the smallest-serial wire. */
+  /** Publisher's Ably channel-level `clientId` from the smallest-serial message. */
   firstClientId?: string;
   /** Phantom marker so the TMessage generic is referenced (no runtime value). */
   _phantom?: TMessage;
@@ -200,7 +200,7 @@ class DefaultAgentSession<
    */
   private readonly _deferredCancels = new Map<string, Ably.InboundMessage>();
   /**
-   * Session-owned materialisation tree. Every wire (live + history) folds
+   * Session-owned materialisation tree. Every message (live + history) folds
    * through `applyWireMessage(this._tree, this._decoder, msg)`; conversation
    * state is read by walking parent pointers from the input node.
    *
@@ -212,7 +212,7 @@ class DefaultAgentSession<
   /**
    * Single shared inbound decoder threaded through every `applyWireMessage`
    * call (live + history). Streaming-across-pages folds correctly because
-   * the decoder keeps stream-tracker state across wires. Outbound encoders
+   * the decoder keeps stream-tracker state across messages. Outbound encoders
    * (used by `Run.pipe` / `Run.addEvents`) manage their own decoders.
    */
   private _decoder: ReturnType<AgentSessionOptions<TInput, TOutput, TProjection, TMessage>['codec']['createDecoder']>;
@@ -232,9 +232,9 @@ class DefaultAgentSession<
    */
   private _processingHistory = false;
   /**
-   * Set of Ably wire serials already folded into the Tree. Both the live
+   * Set of Ably message serials already folded into the Tree. Both the live
    * channel listener and `_hydrateAncestors` consult this before
-   * `applyWireMessage` — guards against double-folds when a wire is
+   * `applyWireMessage` — guards against double-folds when a message is
    * delivered live AND returned by a subsequent history fetch (overlap can
    * happen at the attachSerial boundary or in test mocks that don't
    * partition live vs history).
@@ -263,8 +263,8 @@ class DefaultAgentSession<
     // across sessions sharing one client.
     const registerOptions = registerAgent(options.client, options.codec);
     // No `rewind` param. The `untilAttach: true` history scan plus the
-    // post-attach live subscription cover every wire by serial boundary, so
-    // rewind would only duplicate wires the Tree already folds.
+    // post-attach live subscription cover every message by serial boundary, so
+    // rewind would only duplicate messages the Tree already folds.
     this._channel = options.client.channels.get(options.channelName, registerOptions);
     this._logger = options.logger?.withContext({ component: 'AgentSession' });
     this._onError = options.onError;
@@ -320,12 +320,9 @@ class DefaultAgentSession<
 
     this._logger?.trace('DefaultAgentSession.connect();');
     // Subscribe unfiltered (before attach, per RTL7g — subscribe implicitly
-    // attaches the channel). An unfiltered subscribe ensures that messages
-    // replayed via channel rewind reach the dispatcher so input-event
-    // lookups can match against them; the dispatcher then routes by name
-    // (cancel vs. input event). A name-filtered subscribe would silently
-    // drop replayed user messages because rewind delivers them to listeners
-    // registered at attach time only.
+    // attaches the channel). Unfiltered so the Tree folds every post-attach
+    // message regardless of name (cancel control messages are dispatched
+    // separately by the channel listener after the Tree fold).
     this._connectPromise = this._channel.subscribe(this._channelListener).then(
       () => {
         this._logger?.debug('DefaultAgentSession.connect(); subscribed and attached');
@@ -590,18 +587,18 @@ class DefaultAgentSession<
 
   private _handleChannelMessage(msg: Ably.InboundMessage): void {
     try {
-      // Fold every wire into the session-owned Tree. Mirrors the
+      // Fold every message into the session-owned Tree. Mirrors the
       // ClientSession's live decode loop — same engine, same fold path.
-      // `applyWireMessage` decodes the wire and applies the result to the
-      // Tree (or routes lifecycle wires through `applyRunLifecycle`).
+      // `applyWireMessage` decodes the message and applies the result to the
+      // Tree (or routes lifecycle messages through `applyRunLifecycle`).
       // `emitAblyMessage` notifies Tree subscribers AND populates the
       // event-id index used by `findInputEvent`.
       //
-      // Dedup by serial so live + history paths don't double-fold a wire
+      // Dedup by serial so live + history paths don't double-fold a message
       // that surfaces both ways. Wires without a serial bypass the dedup
       // (we cannot uniquely identify them).
       if (msg.serial !== undefined && this._foldedSerials.has(msg.serial)) {
-        // Still dispatch cancels (control wires) below; just skip the fold.
+        // Still dispatch cancels (control messages) below; just skip the fold.
       } else {
         if (msg.serial !== undefined) this._foldedSerials.add(msg.serial);
         applyWireMessage(this._tree, this._decoder, msg);
@@ -654,20 +651,20 @@ class DefaultAgentSession<
   // -------------------------------------------------------------------------
 
   /**
-   * Find every wire whose `event-id` matches one of `expectedEventIds`,
+   * Find every message whose `event-id` matches one of `expectedEventIds`,
    * racing three sources:
    *
-   *  1. A scan of the session's `_liveBuffer` for already-delivered wires.
+   *  1. A scan of the session's `_liveBuffer` for already-delivered messages.
    *  2. A live listener that catches new arrivals during the call.
    *  3. A bounded history scan via `loadHistoryPages` (lookback window).
    *
    * Resolves when every expected event-id has been matched. Per-id race
-   * resolution — whichever source surfaces a matched wire first wins
+   * resolution — whichever source surfaces a matched message first wins
    * (dedup by serial). On timeout: cancels the in-flight history scan and
    * rejects with `InputEventNotFound`. On signal abort: rejects with
    * `InvalidArgument`.
    *
-   * `firstHeaders` and `firstClientId` are read from the matched wire with
+   * `firstHeaders` and `firstClientId` are read from the matched message with
    * the smallest serial (`compareBySerial`), giving stable run-level
    * metadata regardless of arrival ordering across sources.
    * @param opts - Lookup parameters.
@@ -676,8 +673,8 @@ class DefaultAgentSession<
    * @param opts.expectedEventIds - The set of `event-id`s the lookup must observe before resolving.
    * @param opts.timeoutMs - Maximum total wait across live + history sources.
    * @param opts.signal - AbortSignal that aborts the lookup if the run is cancelled.
-   * @returns Decoded MessageNodes for each matched wire, sorted by serial,
-   *   plus first-wire headers and raw wires for downstream merging.
+   * @returns Decoded MessageNodes for each matched message, sorted by serial,
+   *   plus first-message headers and raw messages for downstream merging.
    */
   private async _findInputEvent(opts: {
     invocationId: string;
@@ -728,9 +725,9 @@ class DefaultAgentSession<
         if (settled) return;
         settled = true;
         cleanup();
-        // Sort matched wires by serial for deterministic publish-order
+        // Sort matched messages by serial for deterministic publish-order
         // delivery to the caller — firstHeaders / firstClientId come from
-        // the smallest-serial wire.
+        // the smallest-serial message.
         const sorted = [...matchedByEventId.values()].toSorted(compareBySerial);
         let firstHeaders: Record<string, string> | undefined;
         let firstClientId: string | undefined;
@@ -749,7 +746,7 @@ class DefaultAgentSession<
         resolve({ rawMessages: sorted, firstHeaders, firstClientId });
       };
 
-      // Consider a wire for matching against the expected set; returns true
+      // Consider a message for matching against the expected set; returns true
       // when the lookup is now fully satisfied.
       const consider = (m: Ably.InboundMessage): boolean => {
         if (settled) return false;
@@ -767,7 +764,7 @@ class DefaultAgentSession<
       }
 
       // 1. Pre-scan the Tree's event-id index for already-folded matches.
-      //    Multi-run sessions where a prior run folded the wire hit here
+      //    Multi-run sessions where a prior run folded the message hit here
       //    synchronously.
       for (const id of expectedEventIds) {
         const wire = this._tree.findWireByEventId(id);
@@ -787,7 +784,7 @@ class DefaultAgentSession<
         if (consider(msg) && !settled) finishOk();
       });
 
-      // 3. Drive a bounded history fetch in parallel; each page's wires
+      // 3. Drive a bounded history fetch in parallel; each page's messages
       //    fold into the Tree via `applyWireMessage`, which triggers the
       //    listener above. Suppress Tree `update` emits during the fold
       //    — no subscribers on the agent side, and per-wire updates
@@ -987,7 +984,7 @@ class DefaultAgentSession<
     // Mint a provisional id now (or take the `runtime.runId` override for
     // tests / in-process drivers) — this IS the id for a fresh run. A
     // continuation overrides it in `Run.start()` with the existing run-id read
-    // off the triggering input event's wire headers (the run it re-enters).
+    // off the triggering input event's message headers (the run it re-enters).
     // Mirrors the invocationId mint below.
     let runId = runtime.runId ?? crypto.randomUUID();
     // The agent mints the invocation id — one per HTTP request that invokes
@@ -1035,7 +1032,7 @@ class DefaultAgentSession<
     const inputEventId = invocation.inputEventId;
 
     // Per-run metadata resolved from the input-event lookup result. The first
-    // matched wire message's headers carry the run's `clientId`, `parent`, and
+    // matched message message's headers carry the run's `clientId`, `parent`, and
     // `forkOf`, and — for a continuation — the `run-id` it re-enters (a fresh
     // input carries none; the client stamps a run-id only when re-entering a
     // run it already knows). Its Ably-level publisher `clientId` becomes the
@@ -1055,7 +1052,7 @@ class DefaultAgentSession<
     // `Run.start()`. No internal `viewMessages` array — the Tree is the
     // single source of truth. The trigger node may be an input node (fresh
     // send) or a reply run (continuation re-entry with run-id on the
-    // triggering wire); both expose a projection the codec can read.
+    // triggering message); both expose a projection the codec can read.
     const tree = this._tree;
     const view: RunView<TMessage> = {
       get messages() {
@@ -1081,7 +1078,7 @@ class DefaultAgentSession<
      * and consumed by every `Run.pipe()` publish. A per-stream
      * `streamOpts.parent` still overrides it. Storing it here keeps it stable
      * across pipes and decouples the assistant's structural parent from the
-     * run-start wire's own `parent`.
+     * run-start message's own `parent`.
      */
     let assistantParentFallback: string | undefined;
     /**
@@ -1117,7 +1114,7 @@ class DefaultAgentSession<
         // from the run's structural-parent anchor and concatenates each
         // ancestor's projection, then appends the current reply run's
         // messages at the tail. Uses `assistantParentFallback` (which falls
-        // back to the input wire's `parent` for regenerate carriers whose
+        // back to the input message's `parent` for regenerate carriers whose
         // own codec-message-id has no Tree node) — same anchor
         // `loadConversation` uses. No cache: every read reflects the latest
         // folded state.
@@ -1186,10 +1183,10 @@ class DefaultAgentSession<
           }
         }
 
-        // Resolve per-run metadata from the first matched wire message's
+        // Resolve per-run metadata from the first matched message message's
         // headers — they carry `clientId`, `parent`, and `forkOf`.
         // Continuations of a suspended run pick up the suspended assistant's
-        // parent in the same headers (the continuation wire message parents off
+        // parent in the same headers (the continuation message parents off
         // the assistant). A `run-id` on the triggering input marks a
         // continuation (re-entry via `ai-run-resume`); a fresh input carries
         // none and opens the run with `ai-run-start`.
@@ -1219,10 +1216,10 @@ class DefaultAgentSession<
 
         // Compute the reply run's structural-parent fallback: the triggering
         // user message's codec-message-id ONLY if that codec-message-id is
-        // backed by a real node in the Tree (i.e. the wire decoded into at
+        // backed by a real node in the Tree (i.e. the message decoded into at
         // least one input event); otherwise — for regenerate carriers that
         // are wire-only signals with no input events — fall back to the
-        // input wire's own `parent` header.
+        // input message's own `parent` header.
         assistantParentFallback =
           resolvedInputCodecMessageId !== undefined &&
           this._tree.getNodeByCodecMessageId(resolvedInputCodecMessageId) !== undefined
@@ -1244,8 +1241,8 @@ class DefaultAgentSession<
         try {
           await runManager.startRun(runId, resolvedClientId, controller, {
             // Stamp the reply run's STRUCTURAL parent (its input node, M_user) —
-            // the same value the output path stamps — not the input wire's own
-            // parent. Makes `parent` structural on every wire so the Tree's two
+            // the same value the output path stamps — not the input message's own
+            // parent. Makes `parent` structural on every message so the Tree's two
             // creation paths agree regardless of arrival order. Valid only now
             // that M_user is a separate input node (the two-node flip).
             parent: assistantParentFallback,
@@ -1301,14 +1298,14 @@ class DefaultAgentSession<
         // `streamOpts.parent` from the caller, else the reply run's
         // structural-parent fallback computed once at run-start
         // (`assistantParentFallback` — the triggering user message, or the
-        // input wire's own parent for regenerate wires that produced no
+        // input message's own parent for regenerate messages that produced no
         // MessageNodes). Owning the default here means agent routes don't have
         // to pass `{ parent: lastUserCodecMessageId }` to keep tree threading
         // correct; edit-then-regenerate sibling resolution relies on the
         // user→assistant chain being explicit.
         const assistantParent = streamOpts?.parent ?? assistantParentFallback;
         const assistantForkOf = streamOpts?.forkOf ?? resolvedForkOf;
-        // Echo `msg-regenerate` on the assistant wire so that a
+        // Echo `msg-regenerate` on the assistant message so that a
         // client receiving the assistant chunk before `ai-run-start`
         // (e.g. via history pagination across a page boundary, or a lost
         // lifecycle publish) can still populate `RunNode.regeneratesCodecMessageId`

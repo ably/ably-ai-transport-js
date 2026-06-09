@@ -74,9 +74,9 @@ export enum ErrorCode {
   StreamError = 104008,
 
   /**
-   * The agent attached to the channel and waited for the input event(s) the
-   * invocation points at (rewind + live wait) but `inputEventLookupTimeoutMs`
-   * lapsed without seeing them.
+   * The agent waited for the input event(s) the invocation points at —
+   * across the bounded history scan and the live subscription — but
+   * `inputEventLookupTimeoutMs` lapsed without seeing them.
    */
   InputEventNotFound = 104010,
 

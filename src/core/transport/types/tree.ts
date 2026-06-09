@@ -318,13 +318,13 @@ export interface Tree<TOutput extends CodecOutputEvent, TProjection> {
   getSiblingNodes(key: string): ConversationNode<TProjection>[];
 
   /**
-   * Look up the raw Ably wire that carried the given `event-id` header,
-   * if the Tree has observed it. Populated incrementally as wires arrive
+   * Look up the raw Ably message that carried the given `event-id` header,
+   * if the Tree has observed it. Populated incrementally as messages arrive
    * through the Tree's `ably-message` channel; not bounded except by the
    * Tree's lifetime. Used by the agent's input-event lookup to find a
-   * triggering input wire by id without scanning a separate buffer.
+   * triggering input message by id without scanning a separate buffer.
    * @param eventId - The `event-id` header value to look up.
-   * @returns The matching raw Ably wire, or undefined when the Tree has
+   * @returns The matching raw Ably message, or undefined when the Tree has
    *   not observed an event with that id.
    */
   findWireByEventId(eventId: string): Ably.InboundMessage | undefined;

@@ -44,10 +44,10 @@ export interface AgentSessionOptions<
   /**
    * How long `Run.start()` will wait for the input event(s) tagged with
    * the run's `invocationId` to arrive on the channel — across both the
-   * live capture (from rewind redelivery and post-attach live messages) and
-   * the bounded history scan — before rejecting with `InputEventNotFound`.
-   * The rejection bubbles up to the developer's HTTP handler, which should
-   * surface it as a non-2xx response so the client's pending send fails.
+   * post-attach live subscription and the bounded history scan — before
+   * rejecting with `InputEventNotFound`. The rejection bubbles up to the
+   * developer's HTTP handler, which should surface it as a non-2xx response
+   * so the client's pending send fails.
    * Default: 30000 (30 seconds).
    */
   inputEventLookupTimeoutMs?: number;
@@ -58,15 +58,13 @@ export interface AgentSessionOptions<
    * input-event scan — anything older than `Date.now() - inputEventLookbackMs`
    * is treated as outside the lookup window.
    *
-   * The session ALSO requests a small Ably `params.rewind` window so the
-   * live listener captures inputs published just before attach without a
-   * history fetch; rewind is a latency fast-path, history is the
-   * correctness backstop. Together they cover everything within
-   * `inputEventLookbackMs` of attach.
+   * History is fetched with `untilAttach: true` so the scan composes
+   * with the live subscription by serial boundary — together they cover
+   * every message within `inputEventLookbackMs` of attach.
    *
    * Increase this for long-suspended runs whose continuation may arrive
-   * many minutes after the original publish (or whose request to the agent
-   * arrives after the rewind window). Decrease it for stricter recency.
+   * many minutes after the original publish. Decrease it for stricter
+   * recency.
    *
    * Default: 120000 (2 minutes).
    */
@@ -285,7 +283,7 @@ export interface Run<TOutput extends CodecOutputEvent, TProjection, TMessage> {
    *
    * Uses the session's history cache (extended backwards as needed) to
    * build projections for all ancestor runs plus the current run; the
-   * session also merges any live wires published after the channel
+   * session also merges any live Ably messages published after the channel
    * attached into the result. After this call:
    * - {@link Run.messages} returns the complete conversation (all ancestor
    *   turns followed by the current run's messages), making it ready to
@@ -337,7 +335,7 @@ export interface AgentSession<TOutput extends CodecOutputEvent, TProjection, TMe
   readonly presence: Ably.RealtimePresence;
 
   /**
-   * The session's materialisation tree. Every wire received on the channel
+   * The session's materialisation tree. Every Ably message received on the channel
    * (live + history) folds into this tree; consumers can introspect hydrated
    * conversation state via {@link Tree.getNodeByCodecMessageId} /
    * {@link Tree.getRunNode} etc. Mirrors `ClientSession.tree` so both

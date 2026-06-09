@@ -3,7 +3,7 @@
  *
  * Consumed by both client (via `load-history.ts`, which layers a complete-
  * domain-message counter on top) and agent (directly, for input-event lookup
- * and conversation hydration). Returns raw Ably wires; does NOT decode.
+ * and conversation hydration). Returns raw Ably messages; does NOT decode.
  *
  * Behaviour:
  *  - Attaches the channel (idempotent) then pages via `channel.history()`,
@@ -17,7 +17,7 @@
  *    `Ably.ErrorInfo` (InvalidArgument) when aborted.
  *  - Optional `lookbackMs` stops paginating when the oldest message in a
  *    page is older than `Date.now() - lookbackMs`.
- *  - Optional `maxMessages` stops paginating once that many raw wires have
+ *  - Optional `maxMessages` stops paginating once that many raw messages have
  *    been served.
  *
  * Spec: AIT-CT11 / AIT-ST hydration.
@@ -41,14 +41,14 @@ export interface LoadHistoryPagesOptions {
    */
   lookbackMs?: number;
   /**
-   * Stop paginating once `maxMessages` raw wires have been served.
+   * Stop paginating once `maxMessages` raw messages have been served.
    * Operator-opt-in; no default. Silent truncation is worse than slow load.
    */
   maxMessages?: number;
   /**
    * Resume pagination from before this timestamp (Unix ms). Used by the
    * agent's session-owned cache to extend backwards without re-reading what
-   * it already has — pass the oldest cached wire's `timestamp - 1`
+   * it already has — pass the oldest cached message's `timestamp - 1`
    * Incompatible with `untilAttach` (set internally when `endTimestamp` is
    * provided).
    */
@@ -67,14 +67,14 @@ export interface LoadHistoryPagesOptions {
  * Cursor over the channel's history pages.
  *
  * `hasNext()` is cheap (cursor-only, no network); `next()` issues one Ably
- * page fetch (with retry/backoff) and returns its wires. Once `next()`
+ * page fetch (with retry/backoff) and returns its messages. Once `next()`
  * returns `undefined` the cursor is exhausted.
  */
 export interface HistoryPagesCursor {
   /** True when another Ably page is available (cheap to check; no network). */
   hasNext(): boolean;
   /**
-   * Fetch the next Ably page's wires (newest-first within the page).
+   * Fetch the next Ably page's messages (newest-first within the page).
    * Returns `undefined` when no more pages are available, the
    * `maxMessages` / `lookbackMs` limit has been reached, or the abort
    * signal has fired.
@@ -296,7 +296,7 @@ export const loadHistoryPages = async (
  * Duplicates by serial are dropped (first occurrence kept).
  * @param channel - The Ably channel to read history from.
  * @param options - Pagination options.
- * @returns All collected wires, deduplicated by serial, oldest first.
+ * @returns All collected messages, deduplicated by serial, oldest first.
  */
 export const collectHistoryPages = async (
   channel: Ably.RealtimeChannel,

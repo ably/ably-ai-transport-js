@@ -95,6 +95,28 @@ interface ClientToolResultErrorWireData {
   message?: string;
 }
 
+// Narrow JSON-parsed wire data to a record. The encoder is expected to publish
+// an object for these payloads, but a malformed publish could carry a primitive
+// or null — callers fall back to field defaults when these guards reject.
+const isRecord = (data: unknown): data is Record<string, unknown> => typeof data === 'object' && data !== null;
+
+// Validates the typed `errorText` field; `input` is tool-defined and
+// intentionally left unconstrained.
+const isToolInputErrorWireData = (data: unknown): data is ToolInputErrorWireData =>
+  isRecord(data) && (data.errorText === undefined || typeof data.errorText === 'string');
+
+// The sole field `output` is tool-defined and intentionally unconstrained, so
+// this asserts only that the payload is an object envelope.
+const isToolOutputAvailableWireData = (data: unknown): data is ToolOutputAvailableWireData => isRecord(data);
+
+// Validates the typed `errorText` field.
+const isAgentToolOutputErrorWireData = (data: unknown): data is AgentToolOutputErrorWireData =>
+  isRecord(data) && (data.errorText === undefined || typeof data.errorText === 'string');
+
+// Validates the typed `message` field.
+const isClientToolResultErrorWireData = (data: unknown): data is ClientToolResultErrorWireData =>
+  isRecord(data) && (data.message === undefined || typeof data.message === 'string');
+
 // ---------------------------------------------------------------------------
 // JSON boundary helpers
 // ---------------------------------------------------------------------------
@@ -337,8 +359,7 @@ const decodeSourceDocument = (r: VercelHeaderReader): AI.UIMessageChunk[] => [
 ];
 
 const decodeToolInputError = (r: VercelHeaderReader, data: unknown): AI.UIMessageChunk[] => {
-  // CAST: Trust boundary — encoder produced the expected object shape.
-  const parsed = data as ToolInputErrorWireData | undefined;
+  const parsed = isToolInputErrorWireData(data) ? data : undefined;
   return [
     stripUndefined({
       type: 'tool-input-error' as const,
@@ -355,8 +376,7 @@ const decodeToolInputError = (r: VercelHeaderReader, data: unknown): AI.UIMessag
 };
 
 const decodeAgentToolOutputAvailable = (r: VercelHeaderReader, data: unknown): AI.UIMessageChunk[] => {
-  // CAST: Trust boundary — encoder produced the expected object shape.
-  const parsed = data as ToolOutputAvailableWireData | undefined;
+  const parsed = isToolOutputAvailableWireData(data) ? data : undefined;
   return [
     stripUndefined({
       type: 'tool-output-available' as const,
@@ -370,8 +390,7 @@ const decodeAgentToolOutputAvailable = (r: VercelHeaderReader, data: unknown): A
 };
 
 const decodeAgentToolOutputError = (r: VercelHeaderReader, data: unknown): AI.UIMessageChunk[] => {
-  // CAST: Trust boundary — encoder produced the expected object shape.
-  const parsed = data as AgentToolOutputErrorWireData | undefined;
+  const parsed = isAgentToolOutputErrorWireData(data) ? data : undefined;
   return [
     stripUndefined({
       type: 'tool-output-error' as const,
@@ -485,8 +504,7 @@ const isDiscreteMessagePart = (codecType: string, headers: Record<string, string
   (codecType === 'text' || codecType === 'file' || isDataEventName(codecType)) && HEADER_DISCRETE in headers;
 
 const decodeClientToolResult = (codecMessageId: string, r: VercelHeaderReader, data: unknown): VercelInput[] => {
-  // CAST: Trust boundary — encoder produced the expected object shape.
-  const parsed = data as ToolOutputAvailableWireData | undefined;
+  const parsed = isToolOutputAvailableWireData(data) ? data : undefined;
   return [
     {
       kind: 'tool-result',
@@ -497,8 +515,7 @@ const decodeClientToolResult = (codecMessageId: string, r: VercelHeaderReader, d
 };
 
 const decodeClientToolResultError = (codecMessageId: string, r: VercelHeaderReader, data: unknown): VercelInput[] => {
-  // CAST: Trust boundary — encoder produced the expected object shape.
-  const parsed = data as ClientToolResultErrorWireData | undefined;
+  const parsed = isClientToolResultErrorWireData(data) ? data : undefined;
   return [
     {
       kind: 'tool-result-error',

@@ -4,26 +4,6 @@
 
 import type * as AI from 'ai';
 
-import type { DecodedMessage } from '../../src/core/codec/index.js';
-import type { VercelInput, VercelOutput } from '../../src/vercel/codec/index.js';
-
-/**
- * Extract output (chunk) event types from a decoded Ably message.
- * @param decoded - The decoder result for one inbound Ably message.
- * @returns Array of output event type strings.
- */
-export const eventTypesOf = (decoded: DecodedMessage<VercelInput, VercelOutput>): string[] =>
-  decoded.outputs.map((e) => e.type);
-
-/**
- * Extract the agent-side `UIMessageChunk` outputs from a decoded Ably
- * message. The client-side `VercelInput` half is dropped — the legacy
- * helper only surfaced the assistant stream.
- * @param decoded - The decoder result for one inbound Ably message.
- * @returns The output half (UIMessageChunks).
- */
-export const eventsOf = (decoded: DecodedMessage<VercelInput, VercelOutput>): AI.UIMessageChunk[] => decoded.outputs;
-
 /**
  * Create a ReadableStream of UIMessageChunks that produces a complete text response.
  * The text is split into two deltas at the midpoint.

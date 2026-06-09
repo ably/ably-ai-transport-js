@@ -6,13 +6,7 @@ import { vi } from 'vitest';
 
 import type { CodecInputEvent, CodecOutputEvent } from '../../../src/core/codec/types.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
-import type {
-  BranchSelection,
-  ClientSession,
-  RunLifecycleEvent,
-  Tree,
-  View,
-} from '../../../src/core/transport/types.js';
+import type { BranchSelection, ClientSession, Tree, View } from '../../../src/core/transport/types.js';
 
 type TreeEventType = 'update' | 'ably-message' | 'run' | 'output';
 type SessionEventType = 'error';
@@ -170,24 +164,4 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     tree,
     view,
   };
-};
-
-/**
- * Create a mock RunLifecycleEvent.
- * @param type - The event type ('start' or 'end').
- * @param runId - The run identifier.
- * @param clientId - The client identifier.
- * @param reason - The end reason (only for run-end events).
- * @returns A RunLifecycleEvent.
- */
-export const makeRunEvent = (
-  type: 'start' | 'end',
-  runId: string,
-  clientId: string,
-  reason?: 'complete' | 'cancelled' | 'error',
-): RunLifecycleEvent => {
-  if (type === 'start') {
-    return { type, runId, clientId, serial: undefined, invocationId: '' };
-  }
-  return { type, runId, clientId, serial: undefined, invocationId: '', reason: reason ?? 'complete' };
 };

@@ -18,15 +18,10 @@
 import type * as AI from 'ai';
 
 import type { Codec } from '../../core/codec/types.js';
+import { wellKnownInputs } from '../../core/codec/well-known-inputs.js';
 import { createDecoder } from './decoder.js';
 import { createEncoder } from './encoder.js';
-import type {
-  VercelInput,
-  VercelOutput,
-  VercelToolApprovalResponsePayload,
-  VercelToolResultErrorPayload,
-  VercelToolResultPayload,
-} from './events.js';
+import type { VercelInput, VercelOutput } from './events.js';
 import { fold, getMessages, init, type VercelProjection } from './reducer.js';
 
 /**
@@ -45,27 +40,7 @@ const uiMessageCodecImpl = {
   createEncoder,
   createDecoder,
   getMessages,
-  createUserMessage: (message: AI.UIMessage): VercelInput => ({ kind: 'user-message', message }),
-  createRegenerate: (target: string, parent: string): VercelInput => ({
-    kind: 'regenerate',
-    target,
-    parent,
-  }),
-  createToolResult: (codecMessageId: string, payload: VercelToolResultPayload): VercelInput => ({
-    kind: 'tool-result',
-    codecMessageId,
-    payload,
-  }),
-  createToolResultError: (codecMessageId: string, payload: VercelToolResultErrorPayload): VercelInput => ({
-    kind: 'tool-result-error',
-    codecMessageId,
-    payload,
-  }),
-  createToolApprovalResponse: (codecMessageId: string, payload: VercelToolApprovalResponsePayload): VercelInput => ({
-    kind: 'tool-approval-response',
-    codecMessageId,
-    payload,
-  }),
+  ...wellKnownInputs<VercelInput>(),
 };
 
 // Validate Codec conformance via `satisfies` on the variable (no excess-property

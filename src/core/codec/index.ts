@@ -37,3 +37,7 @@ export { createLifecycleTracker } from './lifecycle-tracker.js';
 // Typed header-field bindings
 export type { HeaderField } from './fields.js';
 export { boolField, enumField, jsonField, strField } from './fields.js';
+
+// Well-known input factories
+export type { WellKnownInputFactories } from './well-known-inputs.js';
+export { wellKnownInputs } from './well-known-inputs.js';

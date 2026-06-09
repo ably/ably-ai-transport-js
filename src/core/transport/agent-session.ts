@@ -1512,6 +1512,19 @@ class DefaultAgentSession<
           runOnError?.(errInfo);
         }
 
+        // Run cancellation is transport-tier: guarantee the run-end terminal so
+        // every observer's stream closes even if the caller's handler omits
+        // run.end(). Best-effort — pipe must still return the StreamResult; a
+        // later run.end() is a no-op via the ENDED guard. The run is past
+        // INITIALIZED here (pipe requires start()), so end()'s guards pass.
+        if (result.reason === 'cancelled') {
+          try {
+            await run.end('cancelled');
+          } catch {
+            logger?.error('Run.pipe(); run-end on cancel failed', { runId });
+          }
+        }
+
         logger?.debug('Run.pipe(); stream finished', { runId, reason: result.reason });
         return result;
       },

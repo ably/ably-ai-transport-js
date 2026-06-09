@@ -80,7 +80,10 @@ export const pipeStream = async <TInput extends CodecInputEvent, TOutput extends
         if (onCancelled) {
           await onCancelled(async (output: TOutput) => encoder.publishOutput(output));
         }
-        await encoder.cancel('cancelled');
+        // Transport mechanics only — close in-flight streamed messages as
+        // cancelled. Run termination is the transport ai-run-end event,
+        // guaranteed by Run.pipe on a cancelled result.
+        await encoder.cancelStreams();
         break;
       }
 

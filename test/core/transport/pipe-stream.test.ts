@@ -20,7 +20,7 @@ interface MockEncoder extends Encoder<TestInput, TestEvent> {
   appendedEvents: TestEvent[];
   appendedOpts: (WriteOptions | undefined)[];
   closed: boolean;
-  cancelledReason: string | undefined;
+  streamsCancelled: boolean;
 }
 
 const createMockEncoder = (): MockEncoder => {
@@ -28,7 +28,7 @@ const createMockEncoder = (): MockEncoder => {
     appendedEvents: [],
     appendedOpts: [],
     closed: false,
-    cancelledReason: undefined,
+    streamsCancelled: false,
 
     publishInput: vi.fn(async () => {
       /* unused — pipeStream only invokes publishOutput */
@@ -39,8 +39,8 @@ const createMockEncoder = (): MockEncoder => {
       mock.appendedOpts.push(opts);
     }),
     // eslint-disable-next-line @typescript-eslint/require-await -- mock
-    cancel: vi.fn(async (reason?: string) => {
-      mock.cancelledReason = reason ?? '';
+    cancelStreams: vi.fn(async () => {
+      mock.streamsCancelled = true;
     }),
     // eslint-disable-next-line @typescript-eslint/require-await -- mock
     close: vi.fn(async () => {
@@ -171,7 +171,7 @@ describe('pipeStream', () => {
       expect(encoder.appendedEvents).toContainEqual({ type: 'custom-abort' });
     });
 
-    it('calls encoder.cancel() with reason when cancelled', async () => {
+    it('calls encoder.cancelStreams() when cancelled', async () => {
       const controller = new AbortController();
       controller.abort();
 
@@ -184,11 +184,11 @@ describe('pipeStream', () => {
       await pipeStream(stream, encoder, controller.signal);
 
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock
-      expect(encoder.cancel).toHaveBeenCalledWith('cancelled');
-      expect(encoder.cancelledReason).toBe('cancelled');
+      expect(encoder.cancelStreams).toHaveBeenCalled();
+      expect(encoder.streamsCancelled).toBe(true);
     });
 
-    it('calls encoder.cancel() after onCancelled callback', async () => {
+    it('calls encoder.cancelStreams() after onCancelled callback', async () => {
       const controller = new AbortController();
       controller.abort();
 
@@ -198,8 +198,8 @@ describe('pipeStream', () => {
         callOrder.push('onCancelled');
       });
       // eslint-disable-next-line @typescript-eslint/unbound-method, @typescript-eslint/require-await -- vi mock
-      vi.mocked(encoder.cancel).mockImplementation(async () => {
-        callOrder.push('encoder.cancel');
+      vi.mocked(encoder.cancelStreams).mockImplementation(async () => {
+        callOrder.push('encoder.cancelStreams');
       });
 
       const stream = new ReadableStream<TestEvent>({
@@ -210,7 +210,7 @@ describe('pipeStream', () => {
 
       await pipeStream(stream, encoder, controller.signal, onCancelled);
 
-      expect(callOrder).toEqual(['onCancelled', 'encoder.cancel']);
+      expect(callOrder).toEqual(['onCancelled', 'encoder.cancelStreams']);
     });
 
     it('returns cancelled when signal is already aborted at start', async () => {

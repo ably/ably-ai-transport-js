@@ -201,7 +201,7 @@ const createMockEncoder = (failWith?: Error): MockEncoder => {
       return Promise.resolve();
     }),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-    cancel: vi.fn(() => Promise.resolve()),
+    cancelStreams: vi.fn(() => Promise.resolve()),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
     close: vi.fn(() => Promise.resolve()),
   };
@@ -863,6 +863,48 @@ describe('AgentSession', () => {
       expect(result.reason).toBe('complete');
     });
 
+    it('publishes ai-run-end(reason:cancelled) on a cancelled pipe without an explicit end()', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      // Cancel the run, then pipe a stream that never completes: pipeStream
+      // observes the aborted signal and returns reason:'cancelled'. Run.pipe
+      // must then guarantee the transport terminator itself.
+      simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
+      await new Promise((r) => setTimeout(r, 5));
+
+      const paused = new ReadableStream<TestOutput>({
+        start: () => {
+          /* never enqueues or closes */
+        },
+      });
+      const result = await run.pipe(paused);
+      expect(result.reason).toBe('cancelled');
+
+      const endMsg = channel.publishCalls.find((m) => m.name === 'ai-run-end');
+      expect(endMsg).toBeDefined();
+      const headers = (endMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+      expect(headers?.['run-reason']).toBe('cancelled');
+    });
+
+    it('a developer run.end() after a cancelled pipe is a no-op (no second run-end)', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+      simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
+      await new Promise((r) => setTimeout(r, 5));
+
+      const paused = new ReadableStream<TestOutput>({
+        start: () => {
+          /* never enqueues or closes */
+        },
+      });
+      await run.pipe(paused);
+      await run.end('cancelled');
+
+      const endMsgs = channel.publishCalls.filter((m) => m.name === 'ai-run-end');
+      expect(endMsgs).toHaveLength(1);
+    });
+
     it('uses explicit parent from pipe options', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
@@ -1086,6 +1128,58 @@ describe('AgentSession', () => {
       await startPromise;
 
       expect(run.abortSignal.aborted).toBe(true);
+      await s.close();
+    });
+
+    it('still lands a balanced ai-run-end after start + pipe (no orphaned run)', async () => {
+      // A cancel buffered before run-start aborts the controller during the
+      // lookup, but start() still publishes ai-run-start (run-start is
+      // unconditional once the linkage resolves). The run is therefore visible
+      // to observers and MUST be terminated: when the agent goes on to pipe its
+      // response, the already-aborted signal makes the pipe return 'cancelled'
+      // and Run.pipe guarantees the ai-run-end terminal — so the buffered-cancel
+      // path leaves no run stuck active. (PR 5c run-end guarantee reaching the
+      // deferred-cancel path.)
+      const { session: s, ch } = lookupSession();
+      await s.connect();
+
+      const inputEventId = 'p-early-end';
+      const inputCodecMessageId = 'm-early-end';
+      const run = createRunFromOpts(s, { runId: 'run-early-end', invocationId: 'inv-early-end', inputEventId });
+
+      // The cancel has no run-id and the input→run linkage isn't indexed until
+      // start() resolves the lookup, so it takes the buffer path — which runs
+      // synchronously (no await before `_bufferDeferredCancel`). The cancel is
+      // therefore buffered by the time simulateCancel returns; no wait needed.
+      simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: inputCodecMessageId });
+
+      const startPromise = run.start();
+      deliverInputEvent(ch, {
+        invocationId: 'inv-early-end',
+        codecMessageId: inputCodecMessageId,
+        serial: 's-early-end',
+        inputEventId,
+      });
+      await startPromise;
+
+      expect(run.abortSignal.aborted).toBe(true);
+      // run-start WAS published (start() publishes it even though the pulled
+      // cancel aborted the controller), so the run is observable.
+      expect(ch.publishCalls.find((m) => m.name === 'ai-run-start')).toBeDefined();
+
+      const paused = new ReadableStream<TestOutput>({
+        start: () => {
+          /* never enqueues or closes */
+        },
+      });
+      const result = await run.pipe(paused);
+      expect(result.reason).toBe('cancelled');
+
+      // The run-start is balanced by a run-end(reason:cancelled) — no orphan.
+      const endMsg = ch.publishCalls.find((m) => m.name === 'ai-run-end');
+      expect(endMsg).toBeDefined();
+      const headers = (endMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+      expect(headers?.['run-reason']).toBe('cancelled');
       await s.close();
     });
 

@@ -21,7 +21,7 @@
 import type * as AI from 'ai';
 import { isDataUIPart } from 'ai';
 
-import { EVENT_AI_INPUT, EVENT_AI_OUTPUT, HEADER_ROLE, HEADER_STATUS } from '../../constants.js';
+import { EVENT_AI_INPUT, EVENT_AI_OUTPUT, HEADER_ROLE } from '../../constants.js';
 import { createDescriptorEncoder, type DescriptorEncoder } from '../../core/codec/descriptor-encoder.js';
 import type { EncoderCore, EncoderCoreOptions } from '../../core/codec/encoder.js';
 import { createEncoderCore } from '../../core/codec/encoder.js';
@@ -53,7 +53,6 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
   private readonly _core: EncoderCore;
   private readonly _messageId: string | undefined;
   private readonly _outputEncoder: DescriptorEncoder<VercelOutput>;
-  private _cancelled = false;
 
   constructor(writer: ChannelWriter, options: EncoderCoreOptions = {}) {
     this._core = createEncoderCore(writer, options);
@@ -87,25 +86,15 @@ class DefaultUIMessageEncoder implements Encoder<VercelInput, VercelOutput> {
   }
 
   async publishOutput(output: VercelOutput, options?: WriteOptions): Promise<void> {
-    // The abort chunk marks the encoder cancelled so a later cancel() is a no-op,
-    // mirroring cancel()'s own guard; the descriptor's encode hatch performs the
-    // cancel-and-publish.
-    if (output.type === 'abort') this._cancelled = true;
     await this._outputEncoder.encode(output, this._core, { messageId: this._messageId, opts: options });
   }
 
-  async cancel(reason?: string): Promise<void> {
-    if (this._cancelled) return;
-    this._cancelled = true;
+  async cancelStreams(): Promise<void> {
+    // Pure transport mechanics: close in-flight streamed messages as cancelled.
+    // The run terminates via the transport ai-run-end event; the `abort` output
+    // chunk (if the agent's stream emits one) flows through publishOutput like
+    // any other output.
     await this._core.cancelAllStreams();
-    const codecHeaders: Record<string, string> = {};
-    fType.write(codecHeaders, 'abort');
-    await this._core.publishDiscrete({
-      name: EVENT_AI_OUTPUT,
-      data: reason ?? '',
-      codecHeaders,
-      transportHeaders: { [HEADER_STATUS]: 'cancelled' },
-    });
   }
 
   async close(): Promise<void> {

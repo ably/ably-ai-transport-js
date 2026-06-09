@@ -299,6 +299,9 @@ class DefaultEncoderCore implements EncoderCore {
     this._logger?.trace('DefaultEncoderCore.cancelAllStreams();', { streamCount: this._trackers.size });
 
     for (const tracker of this._trackers.values()) {
+      // Idempotent: a stream already cancelled must not be re-appended on a
+      // repeat call (e.g. cancelStreams() invoked twice on the cancel path).
+      if (tracker.cancelled) continue;
       tracker.cancelled = true;
 
       const { transport, codec } = this._buildClosing(tracker, undefined, opts);

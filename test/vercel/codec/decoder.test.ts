@@ -476,6 +476,60 @@ describe('Vercel decoder', () => {
     });
   });
 
+  // -- malformed tool wire data (trust-boundary guards) ---------------------
+
+  describe('malformed tool wire data falls back to defaults', () => {
+    it('tool-input-error: non-object data is rejected — empty errorText, no input', () => {
+      const decoder = createDecoder();
+      const { outputs } = decoder.decode(
+        withHeaders(
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: 'oops' },
+          { [HEADER_STREAM]: 'false', type: 'tool-input-error', toolCallId: 'tc-1', toolName: 'calc' },
+        ),
+      );
+      const [chunk] = outputs;
+      expect(chunk).toMatchObject({ type: 'tool-input-error', toolCallId: 'tc-1', errorText: '' });
+      expect(chunk).not.toHaveProperty('input');
+    });
+
+    it('tool-input-error: non-string errorText is rejected — falls back to empty', () => {
+      const decoder = createDecoder();
+      const { outputs } = decoder.decode(
+        withHeaders(
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: { errorText: 42, input: { x: 1 } } },
+          { [HEADER_STREAM]: 'false', type: 'tool-input-error', toolCallId: 'tc-1', toolName: 'calc' },
+        ),
+      );
+      expect(outputs).toEqual([expect.objectContaining({ type: 'tool-input-error', errorText: '' })]);
+    });
+
+    it('tool-output-available: non-object data is rejected — no output', () => {
+      const decoder = createDecoder();
+      const { outputs } = decoder.decode(
+        withHeaders(
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: 'oops' },
+          { [HEADER_STREAM]: 'false', type: 'tool-output-available', toolCallId: 'tc-1' },
+        ),
+      );
+      const [chunk] = outputs;
+      expect(chunk).toMatchObject({ type: 'tool-output-available', toolCallId: 'tc-1' });
+      expect(chunk).not.toHaveProperty('output');
+    });
+
+    it('tool-output-error: non-string errorText is rejected — falls back to empty', () => {
+      const decoder = createDecoder();
+      const { outputs } = decoder.decode(
+        withHeaders(
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: { errorText: { nested: true } } },
+          { [HEADER_STREAM]: 'false', type: 'tool-output-error', toolCallId: 'tc-1' },
+        ),
+      );
+      expect(outputs).toEqual([
+        expect.objectContaining({ type: 'tool-output-error', toolCallId: 'tc-1', errorText: '' }),
+      ]);
+    });
+  });
+
   // -- content parts --------------------------------------------------------
 
   describe('content parts', () => {
@@ -1113,6 +1167,46 @@ describe('Vercel decoder', () => {
       expect(input.payload.toolCallId).toBe('tc-1');
       expect(input.payload.message).toBe('geolocation denied');
       expect(input.codecMessageId).toBe('continuation-codec-message-id');
+    });
+
+    it('rejects non-object tool-result wire data — output is undefined', () => {
+      const decoder = createDecoder();
+      const msg = withHeaders(
+        { name: EVENT_AI_INPUT, data: 'oops' },
+        {
+          [HEADER_STREAM]: 'false',
+          [HEADER_CODEC_MESSAGE_ID]: 'continuation-codec-message-id',
+          type: 'tool-result',
+          toolCallId: 'tc-1',
+        },
+      );
+
+      const { inputs } = decoder.decode(msg);
+      const input = inputs[0];
+      expect(input?.kind).toBe('tool-result');
+      if (input?.kind !== 'tool-result') return;
+      expect(input.payload.toolCallId).toBe('tc-1');
+      expect(input.payload.output).toBeUndefined();
+    });
+
+    it('rejects non-string tool-result-error message — falls back to empty', () => {
+      const decoder = createDecoder();
+      const msg = withHeaders(
+        { name: EVENT_AI_INPUT, data: { message: 99 } },
+        {
+          [HEADER_STREAM]: 'false',
+          [HEADER_CODEC_MESSAGE_ID]: 'continuation-codec-message-id',
+          type: 'tool-result-error',
+          toolCallId: 'tc-1',
+        },
+      );
+
+      const { inputs } = decoder.decode(msg);
+      const input = inputs[0];
+      expect(input?.kind).toBe('tool-result-error');
+      if (input?.kind !== 'tool-result-error') return;
+      expect(input.payload.toolCallId).toBe('tc-1');
+      expect(input.payload.message).toBe('');
     });
 
     it('decodes ai-input regenerate wires into zero events (routing lives on transport headers)', () => {

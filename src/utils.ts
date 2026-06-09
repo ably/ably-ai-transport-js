@@ -65,6 +65,23 @@ export const parseJson = (value: string | undefined): unknown => {
 };
 
 /**
+ * Parse a string as JSON, falling back to the raw string when it isn't valid
+ * JSON. An empty string yields `undefined`. Used for accumulated stream text
+ * whose payload may be JSON or a plain string.
+ * @param value - The string to parse.
+ * @returns The parsed value, the raw string on parse failure, or undefined if empty.
+ */
+export const parseJsonOrString = (value: string): unknown => {
+  if (!value) return undefined;
+  try {
+    // CAST: JSON.parse returns any; unknown is the safe trust-boundary type.
+    return JSON.parse(value) as unknown;
+  } catch {
+    return value;
+  }
+};
+
+/**
  * Merge two header records into a new object. Later values override earlier ones.
  * Undefined inputs are treated as empty.
  * @param base - Base headers (lower priority).

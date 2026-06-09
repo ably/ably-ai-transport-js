@@ -10,7 +10,6 @@
 
 import * as Ably from 'ably';
 
-import { HEADER_STATUS } from '../../constants.js';
 import { defineEvent, defineStream, type Descriptor } from '../../core/codec/descriptors.js';
 import { boolField, jsonField, strField } from '../../core/codec/fields.js';
 import { ErrorCode, errorInfoIs } from '../../errors.js';
@@ -140,19 +139,16 @@ export const outputs: Descriptor<VercelOutput>[] = [
     data: { encode: (c) => c.errorText, decode: (data) => ({ errorText: asString(data) }) },
   }),
 
-  // abort: cancel all streams, then a discrete cancelled signal.
+  // abort: an ordinary discrete output carrying its reason as wire data. The
+  // agent's own stream emits it on abort; run cancellation closes in-flight
+  // streams via the encoder's cancelStreams() and terminates via the transport
+  // ai-run-end event — this chunk is content, not the run terminator.
   event('abort', {
     fields: [],
-    encode: async (c, core, { h, name, opts }) => {
-      await core.cancelAllStreams(opts);
-      await core.publishDiscrete(
-        { name, data: c.reason ?? '', codecHeaders: h(c), transportHeaders: { [HEADER_STATUS]: 'cancelled' } },
-        opts,
-      );
+    data: {
+      encode: (c) => c.reason ?? '',
+      decode: (data) => (typeof data === 'string' && data ? { reason: data } : {}),
     },
-    decode: ({ data }) => [
-      stripUndefined({ type: 'abort' as const, reason: typeof data === 'string' && data ? data : undefined }),
-    ],
   }),
 
   // --- content parts ---------------------------------------------------------

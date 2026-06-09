@@ -314,61 +314,56 @@ describe('Vercel encoder', () => {
       expect(msg.data).toBe('something failed');
     });
 
-    it('encodes abort and cancels all streams', async () => {
+    it('encodes abort as a plain discrete output and does not cancel streams', async () => {
       const encoder = createEncoder(writer);
       await encoder.publishOutput({ type: 'text-start', id: 'txt-1' });
       await encoder.publishOutput({ type: 'abort', reason: 'cancelled' });
 
-      // Should have: publish (text-start), append (cancel stream), publish (abort event)
-      const cancelMsg = lastPublish(writer);
-      expect(cancelMsg.name).toBe(EVENT_AI_OUTPUT);
-      expect(headersOf(cancelMsg).type).toBe('abort');
-      expect(cancelMsg.data).toBe('cancelled');
-      expect(headersOf(cancelMsg)[HEADER_STATUS]).toBe('cancelled');
+      // abort is an ordinary discrete output: type:'abort', reason as data, and
+      // NO status:cancelled header (that belongs on cancelled streams, not on
+      // the abort content chunk).
+      const abortMsg = lastPublish(writer);
+      expect(abortMsg.name).toBe(EVENT_AI_OUTPUT);
+      expect(headersOf(abortMsg).type).toBe('abort');
+      expect(abortMsg.data).toBe('cancelled');
+      expect(headersOf(abortMsg)[HEADER_STATUS]).toBeUndefined();
 
-      // The stream should have been cancelled
+      // Publishing an abort does NOT cancel the open stream — only
+      // cancelStreams() does that.
       const cancelAppend = writer.appendCalls.find((m) => headersOf(m)[HEADER_STATUS] === 'cancelled');
-      expect(cancelAppend).toBeDefined();
+      expect(cancelAppend).toBeUndefined();
     });
 
-    it('cancel() cancels all streams and publishes abort event', async () => {
+    it('cancelStreams() cancels all in-flight streams and publishes no abort', async () => {
       const encoder = createEncoder(writer);
       await encoder.publishOutput({ type: 'text-start', id: 'txt-1' });
-      await encoder.cancel('cancelled');
+      const publishCountBefore = writer.publishCalls.length;
 
-      const cancelMsg = lastPublish(writer);
-      expect(cancelMsg.name).toBe(EVENT_AI_OUTPUT);
-      expect(headersOf(cancelMsg).type).toBe('abort');
-      expect(cancelMsg.data).toBe('cancelled');
-      expect(headersOf(cancelMsg)[HEADER_STATUS]).toBe('cancelled');
+      await encoder.cancelStreams();
 
+      // The open stream is cancelled (status:cancelled append) ...
       const cancelAppend = writer.appendCalls.find((m) => headersOf(m)[HEADER_STATUS] === 'cancelled');
       expect(cancelAppend).toBeDefined();
+      // ... and no abort discrete is published (cancelStreams is pure mechanics).
+      expect(writer.publishCalls.length).toBe(publishCountBefore);
     });
 
-    it('cancel() is idempotent — second call is a no-op', async () => {
+    it('cancelStreams() is idempotent — a second call appends nothing', async () => {
       const encoder = createEncoder(writer);
       await encoder.publishOutput({ type: 'text-start', id: 'txt-1' });
 
-      await encoder.cancel('cancelled');
-      const publishCountAfterFirst = writer.publishCalls.length;
+      await encoder.cancelStreams();
       const appendCountAfterFirst = writer.appendCalls.length;
 
-      await encoder.cancel('cancelled');
-      expect(writer.publishCalls.length).toBe(publishCountAfterFirst);
+      await encoder.cancelStreams();
       expect(writer.appendCalls.length).toBe(appendCountAfterFirst);
     });
 
-    it('cancel() with no open streams publishes only the abort discrete event with status header', async () => {
+    it('cancelStreams() with no open streams is a no-op', async () => {
       const encoder = createEncoder(writer);
-      await encoder.cancel('user-stop');
+      await encoder.cancelStreams();
 
-      expect(writer.publishCalls).toHaveLength(1);
-      const msg = firstPublish(writer);
-      expect(msg.name).toBe(EVENT_AI_OUTPUT);
-      expect(headersOf(msg).type).toBe('abort');
-      expect(msg.data).toBe('user-stop');
-      expect(headersOf(msg)[HEADER_STATUS]).toBe('cancelled');
+      expect(writer.publishCalls).toHaveLength(0);
       expect(writer.appendCalls).toHaveLength(0);
     });
 

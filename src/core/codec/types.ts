@@ -226,13 +226,13 @@ export interface Encoder<TInput extends CodecInputEvent, TOutput extends CodecOu
    */
   publishOutput(output: TOutput, options?: WriteOptions): Promise<void>;
   /**
-   * Cancel any in-progress streams and emit a codec-specific cancel signal.
-   * Idempotent across repeated calls — a second `cancel` is a no-op. Must not
-   * be called after `close`; doing so throws because the encoder is already
-   * closed.
-   * @param reason - Optional reason string for the cancellation (e.g. 'cancelled').
+   * Close all in-progress streamed messages as cancelled (status:cancelled) and
+   * flush pending appends. Pure transport mechanics — emits no codec output.
+   * Idempotent: streams already cancelled are not re-appended. Must not be
+   * called after `close`; doing so throws because the encoder is already closed.
+   * Run termination is signalled separately by the transport `ai-run-end` event.
    */
-  cancel(reason?: string): Promise<void>;
+  cancelStreams(): Promise<void>;
   /** Flush pending appends and release encoder resources. */
   close(): Promise<void>;
 }

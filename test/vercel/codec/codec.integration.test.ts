@@ -362,7 +362,11 @@ describe('Vercel UIMessageCodec integration', () => {
     await encoder.publishOutput({ type: 'text-start', id: textId });
     void encoder.publishOutput({ type: 'text-delta', id: textId, delta: 'Hello' });
     void encoder.publishOutput({ type: 'text-delta', id: textId, delta: ', wo' });
+    // The agent's stream emits an abort chunk as ordinary content; cancellation
+    // then closes the open text stream as cancelled via cancelStreams() — the
+    // same two steps pipeStream performs on the cancel path.
     await encoder.publishOutput({ type: 'abort', reason: 'user cancelled' });
+    await encoder.cancelStreams();
     await encoder.close();
 
     await cancelled;

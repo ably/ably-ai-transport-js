@@ -23,7 +23,7 @@ export interface ChatTransportSlot {
  * The shape of the single {@link ChatTransportContext} value.
  * Combines the nearest slot with the full registry in one context object.
  */
-export interface ChatTransportContextValue {
+interface ChatTransportContextValue {
   /** The slot from the nearest {@link ChatTransportProvider} in the tree. */
   readonly nearest: ChatTransportSlot | undefined;
   /** All registered slots, keyed by channelName. */

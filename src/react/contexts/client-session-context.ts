@@ -24,7 +24,7 @@ export interface ClientSessionSlot {
  * `nearest` is the slot from the innermost enclosing {@link ClientSessionProvider}.
  * `providers` is the full registry of all enclosing providers, keyed by channelName.
  */
-export interface ClientSessionContextValue {
+interface ClientSessionContextValue {
   /** The innermost {@link ClientSessionProvider}'s slot. `undefined` when no provider is present. */
   nearest: ClientSessionSlot | undefined;
   /** All registered session slots from enclosing providers, keyed by channelName. */

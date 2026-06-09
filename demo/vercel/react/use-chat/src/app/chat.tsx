@@ -22,7 +22,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
 
   // -- Callback & status logging for debug pane ----------------------------
   const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
-  const [statusLog, setStatusLog] = useState<{ time: number; status: string }[]>([]);
+  const [statusLog, setStatusLog] = useState<{ time: number; status: string; error?: string }[]>([]);
   const [clientToolLog, setClientToolLog] = useState<ClientToolLogEntry[]>([]);
   const clearLogs = useCallback(() => {
     setCallbackLog([]);
@@ -43,43 +43,59 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
     });
   }, []);
 
-  const { setMessages, sendMessage, stop, status, regenerate, addToolResult, addToolApprovalResponse } = useChat({
-    id: chatId,
-    transport: chatTransport,
-    // Auto-submit after addToolResult resolves tool calls OR
-    // addToolApprovalResponse resolves approvals, so the assistant can
-    // continue with the tool output / approved execution.
-    sendAutomaticallyWhen: ({ messages: msgs }) =>
-      lastAssistantMessageIsCompleteWithToolCalls({ messages: msgs }) ||
-      lastAssistantMessageIsCompleteWithApprovalResponses({ messages: msgs }),
-    onToolCall: ({ toolCall }) => {
-      setCallbackLog((prev) => [
-        ...prev,
-        {
-          time: Date.now(),
-          type: 'onToolCall',
-          summary: `${toolCall.toolName}(${JSON.stringify(toolCall.input)})`,
-        },
-      ]);
+  const { setMessages, sendMessage, stop, status, error, regenerate, addToolResult, addToolApprovalResponse } = useChat(
+    {
+      id: chatId,
+      transport: chatTransport,
+      // Auto-submit after addToolResult resolves tool calls OR
+      // addToolApprovalResponse resolves approvals, so the assistant can
+      // continue with the tool output / approved execution.
+      sendAutomaticallyWhen: ({ messages: msgs }) =>
+        lastAssistantMessageIsCompleteWithToolCalls({ messages: msgs }) ||
+        lastAssistantMessageIsCompleteWithApprovalResponses({ messages: msgs }),
+      onToolCall: ({ toolCall }) => {
+        setCallbackLog((prev) => [
+          ...prev,
+          {
+            time: Date.now(),
+            type: 'onToolCall',
+            summary: `${toolCall.toolName}(${JSON.stringify(toolCall.input)})`,
+          },
+        ]);
+      },
+      onFinish: ({ message, finishReason }) => {
+        setCallbackLog((prev) => [
+          ...prev,
+          {
+            time: Date.now(),
+            type: 'onFinish',
+            summary: `reason=${String(finishReason)}, parts=${String(message.parts.length)}`,
+          },
+        ]);
+      },
+      onError: (error) => {
+        setCallbackLog((prev) => [
+          ...prev,
+          {
+            time: Date.now(),
+            type: 'onError',
+            summary: error.message,
+          },
+        ]);
+      },
     },
-    onFinish: ({ message, finishReason }) => {
-      setCallbackLog((prev) => [
-        ...prev,
-        {
-          time: Date.now(),
-          type: 'onFinish',
-          summary: `reason=${String(finishReason)}, parts=${String(message.parts.length)}`,
-        },
-      ]);
-    },
-  });
+  );
 
   useMessageSync({ setMessages });
 
-  // Track status transitions
+  // Track status transitions, annotating an `error` transition with the
+  // accompanying error message useChat exposes alongside the status.
   useEffect(() => {
-    setStatusLog((prev) => [...prev, { time: Date.now(), status }]);
-  }, [status]);
+    setStatusLog((prev) => [
+      ...prev,
+      { time: Date.now(), status, error: status === 'error' ? error?.message : undefined },
+    ]);
+  }, [status, error]);
 
   // Show Stop while useChat is mid-request (submitted before stream starts,
   // streaming while chunks arrive). useChat.stop() targets the run it owns.

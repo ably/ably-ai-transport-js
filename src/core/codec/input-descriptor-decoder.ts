@@ -76,12 +76,18 @@ export const createInputDescriptorDecoder = <U extends { kind: string }>(
     bag.type = partType;
 
     // `assemble` takes the erased part (`unknown`); `bag` is the part rebuilt from
-    // its declared fields/data plus the `partType` written to the domain `type` field.
-    const partial = descriptor.assemble(stripUndefined(bag));
-    const codecMessageId = ctx.transportHeaders[HEADER_CODEC_MESSAGE_ID] ?? '';
-    // CAST: the driver stamps the shared `kind` and the reconstructed codec-message-id
-    // onto the assembled one-part input; together they complete the matched member.
-    return [{ kind: descriptor.kind, codecMessageId, ...partial } as unknown as U];
+    // its declared fields/data plus the `partType` written to the domain `type`
+    // field. The header tiers carry the per-message metadata (id, role, …) the
+    // batch stamped on every part, so `assemble` can rebuild the message envelope.
+    const partial = descriptor.assemble(stripUndefined(bag), {
+      codecHeaders: ctx.codecHeaders,
+      transportHeaders: ctx.transportHeaders,
+    });
+    // CAST: the driver stamps the shared `kind` onto the assembled one-part input; together
+    // they complete the matched member. A batch creates a new message (not addressed by a
+    // codec-message-id, unlike `via: 'payload'` events), so none is stamped — the per-message
+    // identity rides the transport header and is recovered by `assemble` when needed.
+    return [{ kind: descriptor.kind, ...partial } as unknown as U];
   };
 
   return {

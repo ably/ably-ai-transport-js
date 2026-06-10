@@ -126,6 +126,34 @@ export interface PartBuilder<P extends { type: string }> {
 }
 
 /**
+ * Per-message wire headers a {@link BatchSpec.messageHeaders} stamps on every
+ * part of one batch. These carry metadata that belongs to the whole message
+ * rather than an individual part (e.g. the message id as a codec header, the
+ * sender role as a transport header), so the decode side can reconstruct the
+ * shared message envelope from any single part. Both tiers are optional.
+ */
+export interface BatchMessageHeaders {
+  /** Codec-tier headers stamped on every part (e.g. a per-message id). */
+  codecHeaders?: Record<string, string>;
+  /** Transport-tier headers stamped on every part (e.g. the sender role). */
+  transportHeaders?: Record<string, string>;
+}
+
+/**
+ * The context a {@link BatchSpec.assemble} receives alongside one decoded part:
+ * the inbound header tiers of the wire event the part was decoded from. A batch
+ * fans out into N independent wire events, so each part arrives carrying the
+ * shared per-message headers ({@link BatchMessageHeaders}); `assemble` reads them
+ * to rebuild the message envelope (id, role, …) around its one part.
+ */
+export interface BatchAssembleContext {
+  /** The inbound codec-tier headers (carries the per-message codec headers). */
+  codecHeaders: Record<string, string>;
+  /** The inbound transport-tier headers (carries the per-message transport headers). */
+  transportHeaders: Record<string, string>;
+}
+
+/**
  * A multi-part input descriptor spec: one domain message decomposed into many
  * atomic wire events sharing the input member's `kind` and codec-message-id, each
  * carrying a `partType` sub-discriminator. The part union `P` is inferred from
@@ -141,8 +169,19 @@ export interface BatchSpec<C, P extends { type: string }> {
   partTypeOf: (part: P) => string;
   /** Declarative per-part wire mapping (a sub-table built via the curried `p`). */
   parts: (p: PartBuilder<P>) => readonly PartDescriptor[];
-  /** DECODE: shape one decoded wire part into a one-part input (the reducer merges parts by codec-message-id). */
-  assemble: (part: P) => Omit<C, 'kind' | 'codecMessageId'>;
+  /**
+   * ENCODE: per-message headers stamped on every part (the driver merges them
+   * onto each part's headers, including the ≥1-event fallback). Use for metadata
+   * shared by the whole message — e.g. a message-id codec header and a role
+   * transport header. Omit when parts carry no shared per-message metadata.
+   */
+  messageHeaders?: (input: C) => BatchMessageHeaders;
+  /**
+   * DECODE: shape one decoded wire part into a one-part input (the reducer merges
+   * parts by codec-message-id). `ctx` exposes the inbound header tiers so the
+   * shared per-message metadata stamped by `messageHeaders` can be read back.
+   */
+  assemble: (part: P, ctx: BatchAssembleContext) => Omit<C, 'kind' | 'codecMessageId'>;
 }
 
 // ---------------------------------------------------------------------------
@@ -193,8 +232,10 @@ export interface BatchDescriptor<U> {
   partTypeOf: (part: unknown) => string;
   /** The per-part wire mappings. */
   parts: readonly PartDescriptor[];
+  /** Build the per-message headers stamped on every part, if any. */
+  messageHeaders?: (input: U) => BatchMessageHeaders;
   /** Shape one decoded part into a one-part input (sans the driver-stamped `kind`/`codecMessageId`). */
-  assemble: (part: unknown) => Omit<U, 'kind' | 'codecMessageId'>;
+  assemble: (part: unknown, ctx: BatchAssembleContext) => Omit<U, 'kind' | 'codecMessageId'>;
 }
 
 /** An erased input descriptor — a single event or a multi-part batch. */
@@ -298,6 +339,7 @@ export const inputBuilder = <U extends { kind: string }>(): InputBuilder<U> => {
         explode: spec.explode,
         partTypeOf: spec.partTypeOf,
         parts,
+        messageHeaders: spec.messageHeaders,
         assemble: spec.assemble,
       } as unknown as InputDescriptor<U>;
     },

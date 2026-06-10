@@ -2,10 +2,11 @@
  * Vercel AI SDK codec — `UIMessageCodec`.
  *
  * Assembled by `defineCodec` from the codec's parts: the reducer
- * (`init`/`fold`/`getMessages`), the declarative output descriptor table
- * (`outputs`), the imperative input adapter (`vercelInputs`), and the decode
- * lifecycle policy. `defineCodec` builds the generic encoder/decoder and merges
- * the well-known input factories internally.
+ * (`init`/`fold`/`getMessages`), the declarative output and input descriptor
+ * tables (`outputs` / `inputs`, each a builder function `defineCodec` injects
+ * the direction-scoped builder into), and the decode lifecycle policy.
+ * `defineCodec` builds the generic encoder/decoder and merges the well-known
+ * input factories internally.
  *
  * ```ts
  * import { UIMessageCodec } from '@ably/ai-transport/vercel';
@@ -19,7 +20,7 @@
 import { defineCodec } from '../../core/codec/define-codec.js';
 import { createVercelDecodeLifecycle } from './decode-lifecycle.js';
 import type { VercelInput, VercelOutput } from './events.js';
-import { vercelInputs } from './inputs.js';
+import { inputs } from './inputs.js';
 import { outputs } from './outputs.js';
 import { fold, getMessages, init } from './reducer.js';
 
@@ -32,8 +33,8 @@ export const UIMessageCodec = defineCodec<VercelInput, VercelOutput>()({
   // Spec: AIT-CT1a3, AIT-ST1a3 — registers this codec as an Ably agent.
   adapterTag: 'vercel-ai-sdk-ui-message',
   reducer: { init, fold, getMessages },
-  outputs,
-  inputs: vercelInputs,
+  output: outputs,
+  input: inputs,
   decodeLifecycle: createVercelDecodeLifecycle,
 });
 

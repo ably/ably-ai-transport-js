@@ -49,15 +49,20 @@ export const writeFields = (
 
 /**
  * Read declared fields out of a codec-headers record into a bag keyed by field key.
+ * A field that reads `undefined` (absent, with no default) contributes no key — the
+ * bag carries only the values that are actually present.
  * @param fields - The declared header fields.
  * @param headers - The inbound codec-tier headers.
- * @returns A bag of field values keyed by each field's key.
+ * @returns A bag of the present field values, keyed by each field's key.
  */
 export const readFields = (
   fields: readonly HeaderField<unknown>[],
   headers: Record<string, string>,
 ): Record<string, unknown> => {
   const bag: Record<string, unknown> = {};
-  for (const field of fields) bag[field.key] = field.read(headers);
+  for (const field of fields) {
+    const value = field.read(headers);
+    if (value !== undefined) bag[field.key] = value;
+  }
   return bag;
 };

@@ -7,6 +7,7 @@ import {
   EVENT_AI_OUTPUT,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_DISCRETE,
+  HEADER_ROLE,
   HEADER_STATUS,
   HEADER_STREAM,
   HEADER_STREAM_ID,
@@ -616,7 +617,7 @@ describe('Vercel encoder', () => {
       expect(input.message.parts).toEqual([{ type: 'text', text: 'round trip' }]);
     });
 
-    it('publishes an empty text part for a message with no parts', async () => {
+    it('publishes an empty text part for a message with no parts so the id and role survive', async () => {
       const encoder = createEncoder(writer);
       const msg: AI.UIMessage = { id: 'msg-1', role: 'user', parts: [] };
 
@@ -628,8 +629,12 @@ describe('Vercel encoder', () => {
       expect(call[0]?.name).toBe(EVENT_AI_INPUT);
       expect(call[0]?.data).toBe('');
       if (call[0]) {
+        // An empty message falls back to one empty text part, so the codec-message-id
+        // and role survive and it round-trips to a one-part message (unchanged wire).
         expect(headersOf(call[0]).kind).toBe('user-message');
         expect(headersOf(call[0]).partType).toBe('text');
+        expect(headersOf(call[0]).messageId).toBe('msg-1');
+        expect(headersOf(call[0])[HEADER_ROLE]).toBe('user');
       }
     });
   });

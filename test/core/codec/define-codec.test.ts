@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { EVENT_AI_INPUT, EVENT_AI_OUTPUT } from '../../../src/constants.js';
 import { defineCodec } from '../../../src/core/codec/define-codec.js';
+import { strField } from '../../../src/core/codec/fields.js';
 import type { ChannelWriter, CodecEvent, CodecMessage, ReducerMeta } from '../../../src/core/codec/types.js';
+import { ErrorCode } from '../../../src/errors.js';
 
 // ---------------------------------------------------------------------------
 // Fixture codec
@@ -165,6 +167,159 @@ describe('defineCodec — encoder wiring', () => {
     // The data decoder rebuilds the domain `kind`; the round-trip lands in outputs.
     expect(outputs).toEqual([{ type: 'quirky', kind: 'looks-like-input' }]);
     expect(inputs).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Table validation
+//
+// defineCodec is the public authoring boundary: a mistake in a descriptor
+// table must throw at module init, not silently last-win at dispatch time.
+// ---------------------------------------------------------------------------
+
+type NoteOutput =
+  | { type: 'note'; text: string }
+  | { type: 'note-start'; id: string }
+  | { type: 'note-delta'; id: string; delta: string }
+  | { type: 'note-end'; id: string };
+
+interface PingInput {
+  kind: 'ping';
+  codecMessageId: string;
+  payload: Record<string, never>;
+}
+
+interface PostInput {
+  kind: 'post';
+  codecMessageId: string;
+  message: { parts: { type: 'text'; text: string }[] };
+}
+
+type ValidationInput = PingInput | PostInput;
+
+interface ValidationProjection {
+  folded: (ValidationInput | NoteOutput)[];
+}
+
+// A defineCodec call with a noop reducer — validation runs before any
+// encode/decode, so only the descriptor tables matter.
+const defineWith = (
+  output: Parameters<ReturnType<typeof defineCodec<ValidationInput, NoteOutput>>>[0]['output'],
+  input: Parameters<ReturnType<typeof defineCodec<ValidationInput, NoteOutput>>>[0]['input'],
+): unknown =>
+  defineCodec<ValidationInput, NoteOutput>()({
+    reducer: {
+      init: (): ValidationProjection => ({ folded: [] }),
+      fold: (state: ValidationProjection): ValidationProjection => state,
+      getMessages: (): CodecMessage<ValidationInput | NoteOutput>[] => [],
+    },
+    output,
+    input,
+  });
+
+const noteStream = {
+  start: 'note-start',
+  delta: 'note-delta',
+  end: 'note-end',
+  idField: 'id',
+  deltaField: 'delta',
+  fields: [],
+} as const;
+
+describe('defineCodec — table validation', () => {
+  it('accepts a table with unique dispatch literals', () => {
+    expect(() =>
+      defineWith(
+        ({ event, stream }) => [event('note'), stream('notes', noteStream)],
+        ({ event }) => [event('ping')],
+      ),
+    ).not.toThrow();
+  });
+
+  it('throws on duplicate output event types', () => {
+    expect(() =>
+      defineWith(
+        ({ event }) => [event('note'), event('note')],
+        ({ event }) => [event('ping')],
+      ),
+    ).toThrowErrorInfo({ code: ErrorCode.InvalidArgument, statusCode: 400 });
+  });
+
+  it('throws when an output event type collides with a stream phase', () => {
+    expect(() =>
+      defineWith(
+        ({ event, stream }) => [event('note-delta'), stream('notes', noteStream)],
+        ({ event }) => [event('ping')],
+      ),
+    ).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
+  });
+
+  it('throws when an output event type collides with a stream family kind', () => {
+    expect(() =>
+      defineWith(
+        ({ event, stream }) => [event('note'), stream('note', noteStream)],
+        ({ event }) => [event('ping')],
+      ),
+    ).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
+  });
+
+  it('throws when two streams share a phase literal', () => {
+    expect(() =>
+      defineWith(
+        ({ stream }) => [stream('notes-a', noteStream), stream('notes-b', noteStream)],
+        ({ event }) => [event('ping')],
+      ),
+    ).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
+  });
+
+  it('throws on duplicate input kinds', () => {
+    expect(() =>
+      defineWith(
+        ({ event }) => [event('note')],
+        ({ event }) => [event('ping'), event('ping')],
+      ),
+    ).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
+  });
+
+  it('throws on duplicate partTypes within a batch', () => {
+    expect(() =>
+      defineWith(
+        ({ event }) => [event('note')],
+        ({ batch }) => [
+          batch('post', {
+            explode: (input) => input.message.parts,
+            partTypeOf: (part) => part.type,
+            parts: (p) => [p('text', {}), p('text', {})],
+            assemble: () => ({ message: { parts: [] } }),
+          }),
+        ],
+      ),
+    ).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
+  });
+
+  it('throws when an output field binds the reserved kind header key', () => {
+    expect(() =>
+      defineWith(
+        ({ event }) => [event('note', { fields: [strField('kind')] })],
+        ({ event }) => [event('ping')],
+      ),
+    ).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
+  });
+
+  it('throws when a batch part field binds the reserved partType header key', () => {
+    expect(() =>
+      defineWith(
+        ({ event }) => [event('note')],
+        ({ batch }) => [
+          batch('post', {
+            explode: (input) => input.message.parts,
+            partTypeOf: (part) => part.type,
+            parts: (p) => [p('text', { fields: [strField('partType')] })],
+            assemble: () => ({ message: { parts: [] } }),
+          }),
+        ],
+      ),
+    ).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
   });
 });
 

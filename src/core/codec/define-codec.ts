@@ -17,14 +17,16 @@
  * encode and decode cannot drift.
  */
 
-import type * as Ably from 'ably';
+import * as Ably from 'ably';
 
 import { EVENT_AI_INPUT, EVENT_AI_OUTPUT, HEADER_RUN_ID } from '../../constants.js';
+import { ErrorCode } from '../../errors.js';
 import type { DecoderCore, DecoderCoreHooks, DecoderCoreOptions } from './decoder.js';
 import { createDecoderCore } from './decoder.js';
 import type { EncoderCore, EncoderCoreOptions } from './encoder.js';
 import { createEncoderCore } from './encoder.js';
-import { KIND_HEADER } from './field-bag.js';
+import { KIND_HEADER, PART_TYPE_HEADER } from './field-bag.js';
+import type { HeaderField } from './fields.js';
 import { createInputDescriptorDecoder, type InputDescriptorDecoder } from './input-descriptor-decoder.js';
 import { createInputDescriptorEncoder, type InputDescriptorEncoder } from './input-descriptor-encoder.js';
 import { type InputBuilder, inputBuilder, type InputDescriptor } from './input-descriptors.js';
@@ -317,6 +319,101 @@ class DefaultCodecDecoder<TInput extends CodecInputEvent, TOutput extends CodecO
 }
 
 // ---------------------------------------------------------------------------
+// Table validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Reserve `literal` in `seen` under a human-readable owner description,
+ * throwing if another descriptor already holds it. Dispatch literals must be
+ * unique within their namespace — a duplicate would silently route through
+ * whichever descriptor registered last.
+ * @param seen - The namespace's literal → owner registry, mutated in place.
+ * @param literal - The dispatch literal to reserve.
+ * @param owner - Human-readable description of the declaring descriptor (used in the error).
+ */
+const reserve = (seen: Map<string, string>, literal: string, owner: string): void => {
+  const holder = seen.get(literal);
+  if (holder !== undefined) {
+    throw new Ably.ErrorInfo(
+      `unable to define codec; dispatch literal '${literal}' is declared by both ${holder} and ${owner}`,
+      ErrorCode.InvalidArgument,
+      400,
+    );
+  }
+  seen.set(literal, owner);
+};
+
+/**
+ * Throw when a declared field binds one of the driver-reserved header keys.
+ * @param fields - The descriptor's declared header fields.
+ * @param owner - Human-readable description of the declaring descriptor (used in the error).
+ */
+const rejectReservedFieldKeys = (fields: readonly HeaderField<unknown>[], owner: string): void => {
+  for (const field of fields) {
+    if (field.key === KIND_HEADER || field.key === PART_TYPE_HEADER) {
+      throw new Ably.ErrorInfo(
+        `unable to define codec; ${owner} binds the driver-reserved header key '${field.key}'`,
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+  }
+};
+
+/**
+ * Fail-fast validation of the assembled descriptor tables, run once per
+ * `defineCodec` call. Catches author mistakes the drivers would otherwise
+ * surface as silent last-wins routing or encode/decode asymmetry:
+ *
+ * - duplicate dispatch literals within a namespace — the domain chunk `type`
+ *   namespace (discrete event types + stream phase types, which drive encode
+ *   dispatch) and the wire `kind` namespace (discrete event types + stream
+ *   family kinds, which drive decode dispatch);
+ * - duplicate input `kind`s and duplicate `partType`s within a batch;
+ * - field bindings on the driver-reserved `kind` / `partType` header keys.
+ * @param outputs - The assembled output descriptor table.
+ * @param inputs - The assembled input descriptor table.
+ */
+const validateTables = <TInput, TOutput>(
+  outputs: readonly OutputDescriptor<TOutput>[],
+  inputs: readonly InputDescriptor<TInput>[],
+): void => {
+  const chunkTypes = new Map<string, string>();
+  const wireKinds = new Map<string, string>();
+  for (const descriptor of outputs) {
+    if (descriptor.construct === 'event') {
+      const owner = `output event '${descriptor.type}'`;
+      reserve(chunkTypes, descriptor.type, owner);
+      reserve(wireKinds, descriptor.type, owner);
+      rejectReservedFieldKeys(descriptor.fields, owner);
+    } else {
+      const owner = `output stream '${descriptor.kind}'`;
+      reserve(wireKinds, descriptor.kind, owner);
+      for (const phase of [descriptor.start, descriptor.delta, descriptor.end]) {
+        reserve(chunkTypes, phase, owner);
+      }
+      rejectReservedFieldKeys(descriptor.fields, owner);
+    }
+  }
+
+  const inputKinds = new Map<string, string>();
+  for (const descriptor of inputs) {
+    const owner = `input ${descriptor.construct} '${descriptor.kind}'`;
+    reserve(inputKinds, descriptor.kind, owner);
+    if (descriptor.construct === 'event') {
+      rejectReservedFieldKeys(descriptor.fields, owner);
+    } else {
+      const partTypes = new Map<string, string>();
+      for (const part of descriptor.parts) {
+        const partOwner = `${owner} part '${part.partType}'`;
+        reserve(partTypes, part.partType, partOwner);
+        rejectReservedFieldKeys(part.fields, partOwner);
+      }
+    }
+  }
+};
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -339,6 +436,7 @@ export const defineCodec =
     // functions, and collect the descriptor arrays the drivers consume.
     const outputs = config.output(outputBuilder<TOutput>());
     const inputs = config.input(inputBuilder<TInput>());
+    validateTables(outputs, inputs);
     return {
       // adapterTag is optional on Codec; only set it when supplied so a codec
       // can opt out of Ably-Agent registration.

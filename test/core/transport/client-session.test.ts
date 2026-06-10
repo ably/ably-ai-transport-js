@@ -34,6 +34,7 @@ import {
 import type {
   ChannelWriter,
   Codec,
+  CodecEvent,
   CodecInputEvent,
   Decoder,
   Encoder,
@@ -261,7 +262,8 @@ const createMockCodec = (decoder?: MockDecoder): MockCodec => {
         foldedEvents: [],
       }),
     ),
-    fold: vi.fn((state: TestProjection, event: TestEvent, meta: ReducerMeta) => {
+    fold: vi.fn((state: TestProjection, codecEvent: CodecEvent<TestInput, TestOutput>, meta: ReducerMeta) => {
+      const event = codecEvent.event;
       state.foldedEvents.push({ event, meta });
       if ('type' in event) {
         // The mock fold treats `text` outputs with a `text` payload as message
@@ -1276,34 +1278,36 @@ describe('ClientSession', () => {
       // Mirrors how the Vercel codec produces UIMessages with codec-messageId
       // as the id field rather than the wire's codec-message-id.
       const customCodec = createMockCodec(decoder);
-      // CAST: the mock fold's parameters mirror the Codec.fold signature.
-      customCodec.fold = vi.fn((state: TestProjection, event: TestInput | TestOutput, meta: ReducerMeta) => {
-        state.foldedEvents.push({ event, meta });
-        if ('kind' in event && event.kind === 'user-message') {
-          // Use a fixed domain id derived from the text — independent of wireMsgId.
-          // Mirrors the Vercel codec where UIMessage.id is the domain id, distinct
-          // from the wire's codec-message-id.
-          const text = event.text ?? event.message?.content ?? '';
-          const domainId = `domain-${text}`;
-          let msg = state.messages.find((m) => m.id === domainId);
-          if (!msg) {
-            msg = { id: domainId, content: text };
-            state.messages.push(msg);
+      customCodec.fold = vi.fn(
+        (state: TestProjection, codecEvent: CodecEvent<TestInput, TestOutput>, meta: ReducerMeta) => {
+          const event = codecEvent.event;
+          state.foldedEvents.push({ event, meta });
+          if ('kind' in event && event.kind === 'user-message') {
+            // Use a fixed domain id derived from the text — independent of wireMsgId.
+            // Mirrors the Vercel codec where UIMessage.id is the domain id, distinct
+            // from the wire's codec-message-id.
+            const text = event.text ?? event.message?.content ?? '';
+            const domainId = `domain-${text}`;
+            let msg = state.messages.find((m) => m.id === domainId);
+            if (!msg) {
+              msg = { id: domainId, content: text };
+              state.messages.push(msg);
+            }
+            return state;
+          }
+          // For outputs, fall back to the keyed-by-meta.messageId shape of the default mock.
+          if ('type' in event && event.type === 'text' && typeof event.text === 'string') {
+            const id = meta.messageId ?? 'unknown';
+            let msg = state.messages.find((m) => m.id === id);
+            if (!msg) {
+              msg = { id, content: '' };
+              state.messages.push(msg);
+            }
+            msg.content += event.text;
           }
           return state;
-        }
-        // For outputs, fall back to the keyed-by-meta.messageId shape of the default mock.
-        if ('type' in event && event.type === 'text' && typeof event.text === 'string') {
-          const id = meta.messageId ?? 'unknown';
-          let msg = state.messages.find((m) => m.id === id);
-          if (!msg) {
-            msg = { id, content: '' };
-            state.messages.push(msg);
-          }
-          msg.content += event.text;
-        }
-        return state;
-      });
+        },
+      );
       const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client: createMockClient(ch),
         channelName: 'test-channel',

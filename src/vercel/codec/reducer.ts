@@ -32,8 +32,8 @@
 
 import type * as AI from 'ai';
 
-import type { CodecMessage, ReducerMeta } from '../../core/codec/types.js';
-import { conflictKeyOf, isInput } from './conflict-key.js';
+import type { CodecEvent, CodecMessage, ReducerMeta } from '../../core/codec/types.js';
+import { conflictKeyOf } from './conflict-key.js';
 import type { VercelInput, VercelOutput } from './events.js';
 import { foldContentPart } from './fold-content.js';
 import { foldDataPart } from './fold-data.js';
@@ -71,7 +71,7 @@ import type { VercelProjection } from './reducer-state.js';
  */
 export const fold = (
   state: VercelProjection,
-  event: VercelInput | VercelOutput,
+  event: CodecEvent<VercelInput, VercelOutput>,
   meta: ReducerMeta,
 ): VercelProjection => {
   if (meta.serial) {
@@ -85,10 +85,11 @@ export const fold = (
     }
   }
 
-  if (isInput(event)) {
-    switch (event.kind) {
+  if (event.direction === 'input') {
+    const input = event.event;
+    switch (input.kind) {
       case 'user-message': {
-        foldUserMessage(state, event.message, meta);
+        foldUserMessage(state, input.message, meta);
         break;
       }
       case 'regenerate': {
@@ -98,20 +99,20 @@ export const fold = (
         break;
       }
       case 'tool-result': {
-        foldClientToolResult(state, event);
+        foldClientToolResult(state, input);
         break;
       }
       case 'tool-result-error': {
-        foldClientToolResultError(state, event);
+        foldClientToolResultError(state, input);
         break;
       }
       case 'tool-approval-response': {
-        foldToolApprovalResponse(state, event);
+        foldToolApprovalResponse(state, input);
         break;
       }
     }
   } else {
-    foldChunk(state, event, meta);
+    foldChunk(state, event.event, meta);
   }
 
   // Re-evaluate pending tool resolutions in case the just-folded event

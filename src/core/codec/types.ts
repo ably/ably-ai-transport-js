@@ -188,6 +188,30 @@ export interface Reducer<TEvent, TProjection> {
   fold(state: TProjection, event: TEvent, meta: ReducerMeta): TProjection;
 }
 
+/**
+ * A decoded event tagged with the wire direction it arrived on. The reducer
+ * folds this union (not a bare `TInput | TOutput`) so it can dispatch on
+ * `direction` rather than inspecting the event's shape. Direction is derived
+ * once, from the Ably message name, at decode time (see `toCodecEvents`) — the
+ * authoritative signal, since a single message is either `ai-input` or
+ * `ai-output` but never both.
+ * @template TInput - The codec's input union.
+ * @template TOutput - The codec's output union.
+ */
+export type CodecEvent<TInput, TOutput> =
+  | {
+      /** The event arrived on the `ai-input` wire. */
+      readonly direction: 'input';
+      /** The decoded input event. */
+      readonly event: TInput;
+    }
+  | {
+      /** The event arrived on the `ai-output` wire. */
+      readonly direction: 'output';
+      /** The decoded output event. */
+      readonly event: TOutput;
+    };
+
 // ---------------------------------------------------------------------------
 // Encoder — direction-typed publication API
 // ---------------------------------------------------------------------------
@@ -518,7 +542,7 @@ export interface Codec<
   TOutput extends CodecOutputEvent,
   TProjection,
   TMessage,
-> extends Reducer<TInput | TOutput, TProjection> {
+> extends Reducer<CodecEvent<TInput, TOutput>, TProjection> {
   /**
    * Optional Ably-Agent identifier. When present, the agent-registration path
    * registers it on the channel (so traffic is attributed to this codec); when

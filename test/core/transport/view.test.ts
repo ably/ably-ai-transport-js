@@ -13,7 +13,7 @@ import {
   HEADER_ROLE,
   HEADER_RUN_ID,
 } from '../../../src/constants.js';
-import type { Codec, CodecInputEvent, ReducerMeta } from '../../../src/core/codec/types.js';
+import type { Codec, CodecEvent, CodecInputEvent, ReducerMeta } from '../../../src/core/codec/types.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
 // Vitest hoists vi.mock above imports, so this static import gets the mock.
 import { loadHistory } from '../../../src/core/transport/load-history.js';
@@ -58,7 +58,8 @@ interface TestProjection {
 
 const makeTestCodec = (): Codec<TestInput, TestOutput, TestProjection, TestMessage> => ({
   init: () => ({ messages: [] }),
-  fold: (state: TestProjection, event: TestInput | TestOutput, meta: ReducerMeta) => {
+  fold: (state: TestProjection, codecEvent: CodecEvent<TestInput, TestOutput>, meta: ReducerMeta) => {
+    const event = codecEvent.event;
     if ('type' in event) {
       // TestOutput has a single variant — append-message — so the type check
       // is sufficient; just stamp the wire codec-message-id onto TMessage.id.

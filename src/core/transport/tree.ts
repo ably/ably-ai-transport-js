@@ -38,7 +38,8 @@ import {
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
-import type { CodecInputEvent, CodecOutputEvent, Reducer } from '../codec/types.js';
+import { toCodecEvents } from '../codec/codec-event.js';
+import type { CodecEvent, CodecInputEvent, CodecOutputEvent, Reducer } from '../codec/types.js';
 import type { ConversationNode, InputNode, OutputEvent, RunLifecycleEvent, RunNode, Tree } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -216,7 +217,7 @@ export class DefaultTree<
   TOutput extends CodecOutputEvent,
   TProjection,
 > implements TreeInternal<TInput, TOutput, TProjection> {
-  private readonly _codec: Reducer<TInput | TOutput, TProjection>;
+  private readonly _codec: Reducer<CodecEvent<TInput, TOutput>, TProjection>;
   private readonly _logger: Logger;
   private readonly _emitter: EventEmitter<TreeEventsMap<TOutput>>;
 
@@ -287,7 +288,7 @@ export class DefaultTree<
    */
   private readonly _eventIdIndex = new Map<string, Ably.InboundMessage>();
 
-  constructor(codec: Reducer<TInput | TOutput, TProjection>, logger: Logger) {
+  constructor(codec: Reducer<CodecEvent<TInput, TOutput>, TProjection>, logger: Logger) {
     this._codec = codec;
     this._logger = logger;
     this._emitter = new EventEmitter<TreeEventsMap<TOutput>>(logger);
@@ -401,7 +402,7 @@ export class DefaultTree<
    */
   private _foldInto(
     entry: InternalNode<TProjection>,
-    events: (TInput | TOutput)[],
+    events: CodecEvent<TInput, TOutput>[],
     serial: string | undefined,
     messageId: string | undefined,
   ): void {
@@ -702,7 +703,7 @@ export class DefaultTree<
     }
 
     // Fold inputs first, then outputs, preserving wire order.
-    const all: (TInput | TOutput)[] = [...events.inputs, ...events.outputs];
+    const all: CodecEvent<TInput, TOutput>[] = toCodecEvents(events);
 
     // Wire-only metadata-carrier messages (e.g. `ait-regenerate`) decode to
     // zero events and don't need a node at the tree level — the eventual reply
@@ -737,13 +738,13 @@ export class DefaultTree<
    * @param codecMessageId - The input node's codec-message-id (its primary key).
    * @param headers - Transport headers from the inbound Ably message.
    * @param serial - Ably channel serial; undefined for an optimistic insert.
-   * @param all - The decoded input events to fold, in wire order.
+   * @param all - The direction-tagged input events to fold, in wire order.
    */
   private _applyInputMessage(
     codecMessageId: string,
     headers: Record<string, string>,
     serial: string | undefined,
-    all: (TInput | TOutput)[],
+    all: CodecEvent<TInput, TOutput>[],
   ): void {
     let entry = this._nodeIndex.get(codecMessageId);
     if (!entry) {
@@ -797,7 +798,7 @@ export class DefaultTree<
     // the `output` event as the stream's causal routing key.
     const inputCodecMessageId = headers[HEADER_INPUT_CODEC_MESSAGE_ID];
     // Fold inputs first, then outputs, preserving wire order.
-    const all: (TInput | TOutput)[] = [...events.inputs, ...events.outputs];
+    const all: CodecEvent<TInput, TOutput>[] = toCodecEvents(events);
     const outputs = events.outputs;
 
     let run = this._nodeIndex.get(wireRunId);
@@ -1184,6 +1185,6 @@ export class DefaultTree<
  *   emitAblyMessage). Public consumers see the narrower {@link Tree} interface.
  */
 export const createTree = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection>(
-  codec: Reducer<TInput | TOutput, TProjection>,
+  codec: Reducer<CodecEvent<TInput, TOutput>, TProjection>,
   logger: Logger,
 ): DefaultTree<TInput, TOutput, TProjection> => new DefaultTree<TInput, TOutput, TProjection>(codec, logger);

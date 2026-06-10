@@ -10,7 +10,7 @@
 
 import type * as AI from 'ai';
 
-import { boolField, enumField, type HeaderField, jsonField, strField } from '../../core/codec/fields.js';
+import { boolField, enumField, type HeaderField, jsonField, strField } from '../../core/codec/index.js';
 
 /** Stream / message id (text & reasoning streams). */
 export const fId = strField('id');

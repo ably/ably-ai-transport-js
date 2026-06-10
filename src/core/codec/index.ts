@@ -1,6 +1,7 @@
 export type {
   ChannelWriter,
   Codec,
+  CodecEvent,
   CodecInputEvent,
   CodecMessage,
   CodecOutputEvent,
@@ -38,16 +39,43 @@ export { createLifecycleTracker } from './lifecycle-tracker.js';
 export type { HeaderField } from './fields.js';
 export { boolField, enumField, jsonField, strField } from './fields.js';
 
-// Well-known input factories
+// Well-known input factories (merged into every codec by defineCodec)
 export type { WellKnownInputFactories } from './well-known-inputs.js';
-export { wellKnownInputs } from './well-known-inputs.js';
+
+// Output descriptor authoring surface
+export type {
+  DataCodec,
+  EscapeHatchCore,
+  HeaderBuilder,
+  OutputDecodeContext,
+  OutputDescriptor,
+  OutputEncodeHatchContext,
+  OutputEventSpec,
+  OutputStreamEndContext,
+  OutputStreamSpec,
+} from './output-descriptors.js';
+
+// Input descriptor authoring surface
+export type {
+  BatchAssembleContext,
+  BatchMessageHeaders,
+  BatchSpec,
+  InputDescriptor,
+  InputEventSpec,
+  PartBuilder,
+  PartSpec,
+} from './input-descriptors.js';
 
 // Codec composition factory
 export type {
+  CodecReducer,
+  DefineCodecConfig,
+  DefinedCodec,
   InputBuilder,
   InputDecodeContext,
   InputEncodeContext,
   InputEncoderCore,
+  LifecycleDiscreteContext,
   LifecyclePolicy,
   OutputBuilder,
 } from './define-codec.js';

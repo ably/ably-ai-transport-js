@@ -32,7 +32,7 @@
 
 import type * as AI from 'ai';
 
-import type { CodecEvent, CodecMessage, ReducerMeta } from '../../core/codec/types.js';
+import type { CodecEvent, CodecMessage, ReducerMeta } from '../../core/codec/index.js';
 import { conflictKeyOf } from './conflict-key.js';
 import type { VercelInput, VercelOutput } from './events.js';
 import { foldContentPart } from './fold-content.js';

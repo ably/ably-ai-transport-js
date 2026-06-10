@@ -12,8 +12,7 @@
 
 import type * as AI from 'ai';
 
-import type { LifecyclePolicy } from '../../core/codec/define-codec.js';
-import { createLifecycleTracker, type LifecycleTracker } from '../../core/codec/lifecycle-tracker.js';
+import { createLifecycleTracker, type LifecyclePolicy, type LifecycleTracker } from '../../core/codec/index.js';
 import { stripUndefined } from '../../utils.js';
 import type { VercelOutput } from './events.js';
 import { fMessageId } from './fields.js';

@@ -7,7 +7,7 @@
  * and are always folded.
  */
 
-import type { CodecEvent, ReducerMeta } from '../../core/codec/types.js';
+import type { CodecEvent, ReducerMeta } from '../../core/codec/index.js';
 import type { VercelInput, VercelOutput } from './events.js';
 
 /**

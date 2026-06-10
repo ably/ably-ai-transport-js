@@ -11,9 +11,8 @@
 
 import * as Ably from 'ably';
 
-import type { OutputBuilder } from '../../core/codec/define-codec.js';
-import { boolField, jsonField, strField } from '../../core/codec/fields.js';
-import type { OutputDescriptor } from '../../core/codec/output-descriptors.js';
+import type { OutputBuilder, OutputDescriptor } from '../../core/codec/index.js';
+import { boolField, jsonField, strField } from '../../core/codec/index.js';
 import { ErrorCode, errorInfoIs } from '../../errors.js';
 import { parseJsonOrString, stripUndefined } from '../../utils.js';
 import type { VercelOutput } from './events.js';

@@ -20,7 +20,7 @@ import type {
   ToolResult,
   ToolResultError,
   UserMessage,
-} from '../../core/codec/types.js';
+} from '../../core/codec/index.js';
 
 // ---------------------------------------------------------------------------
 // Domain payloads

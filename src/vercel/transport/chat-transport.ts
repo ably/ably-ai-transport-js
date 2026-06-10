@@ -31,7 +31,7 @@
 import * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import type { CodecMessage } from '../../core/codec/types.js';
+import type { CodecMessage } from '../../core/codec/index.js';
 import type { ActiveRun, ClientSession, SendOptions } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';

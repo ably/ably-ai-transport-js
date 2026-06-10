@@ -286,21 +286,16 @@ class DefaultCodecDecoder<TInput extends CodecInputEvent, TOutput extends CodecO
 
   decode(message: Ably.InboundMessage): DecodedMessage<TInput, TOutput> {
     const events = this._core.decode(message);
-    const inputs: TInput[] = [];
-    const outputs: TOutput[] = [];
-    for (const event of events) {
-      if (this._isInput(event)) {
-        inputs.push(event);
-      } else {
-        outputs.push(event);
-      }
+    // A single inbound message carries one wire name (ai-input XOR ai-output), so the
+    // name fixes the direction of every event decoded from it. The wire name is the
+    // authoritative direction signal — never the event's in-memory shape.
+    if (message.name === EVENT_AI_INPUT) {
+      // CAST: an ai-input message decodes only to inputs.
+      return { inputs: events as TInput[], outputs: [] };
     }
-    return { inputs, outputs };
-  }
-
-  // Inputs carry `kind`; outputs carry `type` — the codec-agnostic direction guard.
-  private _isInput(event: TInput | TOutput): event is TInput {
-    return 'kind' in event;
+    // CAST: every other message is ai-output — the only other wire name the core decodes
+    // (unrecognised names yield no events) — so its events are all outputs.
+    return { inputs: [], outputs: events as TOutput[] };
   }
 }
 

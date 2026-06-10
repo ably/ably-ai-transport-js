@@ -22,15 +22,20 @@ import type * as Ably from 'ably';
 import { EVENT_AI_INPUT, EVENT_AI_OUTPUT, HEADER_RUN_ID } from '../../constants.js';
 import type { DecoderCore, DecoderCoreHooks, DecoderCoreOptions } from './decoder.js';
 import { createDecoderCore } from './decoder.js';
-import { createDescriptorDecoder } from './descriptor-decoder.js';
-import { createDescriptorEncoder, type DescriptorEncoder } from './descriptor-encoder.js';
-import { defineEvent, defineStream, type Descriptor, type EscapeHatchCore } from './descriptors.js';
 import type { EncoderCore, EncoderCoreOptions } from './encoder.js';
 import { createEncoderCore } from './encoder.js';
 import { KIND_HEADER } from './field-bag.js';
 import { createInputDescriptorDecoder, type InputDescriptorDecoder } from './input-descriptor-decoder.js';
 import { createInputDescriptorEncoder, type InputDescriptorEncoder } from './input-descriptor-encoder.js';
 import { type InputBuilder, inputBuilder, type InputDescriptor } from './input-descriptors.js';
+import { createOutputDescriptorDecoder } from './output-descriptor-decoder.js';
+import { createOutputDescriptorEncoder, type OutputDescriptorEncoder } from './output-descriptor-encoder.js';
+import {
+  type EscapeHatchCore,
+  type OutputBuilder,
+  outputBuilder,
+  type OutputDescriptor,
+} from './output-descriptors.js';
 import type {
   ChannelWriter,
   Codec,
@@ -48,9 +53,10 @@ import type {
 } from './types.js';
 import { type WellKnownInputFactories, wellKnownInputs } from './well-known-inputs.js';
 
-// Re-exported so codec input tables (e.g. the Vercel `inputs.ts`) can type their
-// builder parameter without reaching into the descriptor module directly.
+// Re-exported so codec descriptor tables (e.g. the Vercel `inputs.ts` / `outputs.ts`)
+// can type their builder parameter without reaching into the descriptor modules directly.
 export type { InputBuilder } from './input-descriptors.js';
+export type { OutputBuilder } from './output-descriptors.js';
 
 // ---------------------------------------------------------------------------
 // Input driver core surface
@@ -62,7 +68,7 @@ export type { InputBuilder } from './input-descriptors.js';
  * `publishDiscreteBatch` for the multi-part batch fan-out (not on the output
  * {@link EscapeHatchCore}). The concrete {@link EncoderCore} satisfies this structurally.
  */
-export type InputAdapterCore = EscapeHatchCore & {
+export type InputEncoderCore = EscapeHatchCore & {
   /** Publish multiple discrete messages atomically (the batch fan-out). */
   publishDiscreteBatch(payloads: MessagePayload[], opts?: WriteOptions): Promise<Ably.PublishResult>;
 };
@@ -83,23 +89,6 @@ export interface InputDecodeContext {
   codecHeaders: Record<string, string>;
   /** The inbound transport-tier headers (role, codec-message-id, discrete marker). */
   transportHeaders: Record<string, string>;
-}
-
-// ---------------------------------------------------------------------------
-// Direction-scoped builders
-// ---------------------------------------------------------------------------
-
-/**
- * The direction-scoped output builder `defineCodec` injects into the `output`
- * config function — `event` (single discrete) and `stream` (streamed family),
- * both curried on the codec's output union so author entries narrow cast-free.
- * @template TOutput - The codec's output union.
- */
-export interface OutputBuilder<TOutput extends { type: string }> {
-  /** Define a single discrete output event. */
-  event: ReturnType<typeof defineEvent<TOutput>>;
-  /** Define a streamed output family (start / delta / end). */
-  stream: ReturnType<typeof defineStream<TOutput>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -174,7 +163,7 @@ export interface DefineCodecConfig<
    * The declarative output (`ai-output`) descriptor table, returned from the
    * injected `{ event, stream }` builder (both curried on `TOutput`).
    */
-  output: (b: OutputBuilder<TOutput>) => readonly Descriptor<TOutput>[];
+  output: (b: OutputBuilder<TOutput>) => readonly OutputDescriptor<TOutput>[];
   /**
    * The declarative input (`ai-input`) descriptor table, returned from the
    * injected `{ event, batch }` builder (both curried on `TInput`).
@@ -219,18 +208,18 @@ class DefaultCodecEncoder<TInput extends CodecInputEvent, TOutput extends CodecO
 > {
   private readonly _core: EncoderCore;
   private readonly _messageId: string | undefined;
-  private readonly _outputEncoder: DescriptorEncoder<TOutput>;
+  private readonly _outputEncoder: OutputDescriptorEncoder<TOutput>;
   private readonly _inputEncoder: InputDescriptorEncoder<TInput>;
 
   constructor(
     writer: ChannelWriter,
     options: EncoderCoreOptions,
-    outputs: readonly Descriptor<TOutput>[],
+    outputs: readonly OutputDescriptor<TOutput>[],
     inputs: readonly InputDescriptor<TInput>[],
   ) {
     this._core = createEncoderCore(writer, options);
     this._messageId = options.messageId;
-    this._outputEncoder = createDescriptorEncoder(outputs, EVENT_AI_OUTPUT);
+    this._outputEncoder = createOutputDescriptorEncoder(outputs, EVENT_AI_OUTPUT);
     this._inputEncoder = createInputDescriptorEncoder(inputs, EVENT_AI_INPUT);
   }
 
@@ -260,7 +249,7 @@ class DefaultCodecEncoder<TInput extends CodecInputEvent, TOutput extends CodecO
 
 const decodeDiscretePayload = <TInput extends { kind: string }, TOutput>(
   payload: MessagePayload,
-  outputDecoder: ReturnType<typeof createDescriptorDecoder<TOutput & { type: string }>>,
+  outputDecoder: ReturnType<typeof createOutputDescriptorDecoder<TOutput & { type: string }>>,
   inputDecoder: InputDescriptorDecoder<TInput>,
   lifecycle: LifecyclePolicy<TOutput> | undefined,
 ): (TInput | TOutput)[] => {
@@ -284,11 +273,11 @@ const decodeDiscretePayload = <TInput extends { kind: string }, TOutput>(
 };
 
 const buildHooks = <TInput extends { kind: string }, TOutput extends { type: string }>(
-  outputs: readonly Descriptor<TOutput>[],
+  outputs: readonly OutputDescriptor<TOutput>[],
   inputs: readonly InputDescriptor<TInput>[],
   lifecycle: LifecyclePolicy<TOutput> | undefined,
 ): DecoderCoreHooks<TInput | TOutput> => {
-  const outputDecoder = createDescriptorDecoder(outputs);
+  const outputDecoder = createOutputDescriptorDecoder(outputs);
   const inputDecoder = createInputDescriptorDecoder(inputs);
   return {
     buildStartEvents: (tracker) => {
@@ -348,7 +337,7 @@ export const defineCodec =
     const { reducer, decodeLifecycle } = config;
     // Build the direction-scoped builders, hand them to the codec's table
     // functions, and collect the descriptor arrays the drivers consume.
-    const outputs = config.output({ event: defineEvent<TOutput>(), stream: defineStream<TOutput>() });
+    const outputs = config.output(outputBuilder<TOutput>());
     const inputs = config.input(inputBuilder<TInput>());
     return {
       // adapterTag is optional on Codec; only set it when supplied so a codec

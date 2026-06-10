@@ -1,6 +1,6 @@
 /**
  * Generic input encode driver over an input descriptor set — the input-side
- * sibling of {@link import('./descriptor-encoder.js')}.
+ * sibling of {@link import('./output-descriptor-encoder.js')}.
  *
  * Builds a `kind`→descriptor registry once, then routes each input: a single
  * `event` publishes one discrete message (lensed onto `payload` when
@@ -14,7 +14,7 @@
 import * as Ably from 'ably';
 
 import { ErrorCode } from '../../errors.js';
-import type { InputAdapterCore, InputEncodeContext } from './define-codec.js';
+import type { InputEncodeContext, InputEncoderCore } from './define-codec.js';
 import { prop, writeFields } from './field-bag.js';
 import type {
   BatchDescriptor,
@@ -30,11 +30,11 @@ export interface InputDescriptorEncoder<U> {
   /**
    * Encode one input through its descriptor.
    * @param input - The input to encode.
-   * @param core - The input adapter core to publish through.
+   * @param core - The input encoder core to publish through.
    * @param ctx - Per-write context (write options, carrying the codec-message-id).
    * @returns A promise resolving when the publish operation completes.
    */
-  encode(input: U, core: InputAdapterCore, ctx: InputEncodeContext): Promise<void>;
+  encode(input: U, core: InputEncoderCore, ctx: InputEncodeContext): Promise<void>;
 }
 
 // Resolve the part descriptor for a given partType: an exact match, else a wildcard.
@@ -64,7 +64,7 @@ export const createInputDescriptorEncoder = <U extends { kind: string }>(
   const encodeEvent = async (
     descriptor: InputEventDescriptor<U>,
     input: U,
-    core: InputAdapterCore,
+    core: InputEncoderCore,
     ctx: InputEncodeContext,
   ): Promise<void> => {
     if (descriptor.encode) {
@@ -88,7 +88,7 @@ export const createInputDescriptorEncoder = <U extends { kind: string }>(
   const encodeBatch = async (
     descriptor: BatchDescriptor<U>,
     input: U,
-    core: InputAdapterCore,
+    core: InputEncoderCore,
     ctx: InputEncodeContext,
   ): Promise<void> => {
     // Per-message headers (e.g. message id, role) are stamped on every part so

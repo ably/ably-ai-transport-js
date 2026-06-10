@@ -1,6 +1,6 @@
 /**
  * Declarative input descriptors — the single source of truth for a codec's
- * `ai-input` wire mapping, the input-side sibling of {@link import('./descriptors.js')}.
+ * `ai-input` wire mapping, the input-side sibling of {@link import('./output-descriptors.js')}.
  *
  * Inputs come in two cardinalities: a single domain input ↔ one wire message
  * (the `event` construct), and a single domain message ↔ many atomic wire events
@@ -16,9 +16,9 @@
  * documented cast at each constructor boundary — never in author code.
  */
 
-import type { InputAdapterCore, InputDecodeContext, InputEncodeContext } from './define-codec.js';
-import type { DataCodec } from './descriptors.js';
+import type { InputDecodeContext, InputEncodeContext, InputEncoderCore } from './define-codec.js';
 import type { HeaderField } from './fields.js';
+import type { DataCodec } from './output-descriptors.js';
 
 // ---------------------------------------------------------------------------
 // Type helpers
@@ -43,7 +43,7 @@ export type Lensed<C, V extends 'payload' | undefined> = V extends 'payload'
 
 /**
  * Resolve the part union member a `partType` literal selects, mirroring the
- * output {@link import('./descriptors.js').ResolveType} curry one level down.
+ * output {@link import('./output-descriptors.js').ResolveType} curry one level down.
  * An exact match wins; a wildcard literal (`data-*`) resolves to the template
  * member (`data-${string}`).
  * @template P - The part union.
@@ -78,7 +78,7 @@ export interface InputEventSpec<C, V extends 'payload' | undefined> {
   /** Wire-only signal: encode stamps only the `kind` header (empty data, no fields); decode yields `[]`. */
   wireOnly?: boolean;
   /** Escape-hatch encode — overrides the default discrete publish (unused by Vercel, kept for irregular inputs). */
-  encode?: (input: C, core: InputAdapterCore, ctx: InputEncodeContext) => Promise<void>;
+  encode?: (input: C, core: InputEncoderCore, ctx: InputEncodeContext) => Promise<void>;
   /** Escape-hatch decode — overrides the default field-bag rebuild. */
   decode?: (ctx: InputDecodeContext) => C[];
 }
@@ -203,7 +203,7 @@ export interface InputEventDescriptor<U> {
   /** Wire-only signal flag. */
   wireOnly: boolean;
   /** Escape-hatch encode, if any. */
-  encode?: (input: U, core: InputAdapterCore, ctx: InputEncodeContext) => Promise<void>;
+  encode?: (input: U, core: InputEncoderCore, ctx: InputEncodeContext) => Promise<void>;
   /** Escape-hatch decode, if any. */
   decode?: (ctx: InputDecodeContext) => U[];
 }
@@ -280,8 +280,7 @@ export interface InputBuilder<U extends { kind: string }> {
 /**
  * Build the curried `{ event, batch }` input builder for a codec's input union.
  * `defineCodec` calls this once and hands the result to the `input` config
- * function; mirrors the output side's {@link import('./descriptors.js').defineEvent}
- * / `defineStream` curry.
+ * function; mirrors the output side's {@link import('./output-descriptors.js').outputBuilder}.
  * @template U - The codec's input union.
  * @returns The direction-scoped {@link InputBuilder}.
  */

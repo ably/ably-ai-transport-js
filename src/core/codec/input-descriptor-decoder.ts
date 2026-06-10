@@ -1,6 +1,6 @@
 /**
  * Generic input decode driver over an input descriptor set — the input-side
- * sibling of {@link import('./descriptor-decoder.js')}.
+ * sibling of {@link import('./output-descriptor-decoder.js')}.
  *
  * Rebuilds inputs from one inbound `ai-input` message, dispatching on the codec
  * `kind` header. A single `event` rebuilds its field bag (and `data`) and wraps

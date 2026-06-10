@@ -12,8 +12,8 @@
 import * as Ably from 'ably';
 
 import type { OutputBuilder } from '../../core/codec/define-codec.js';
-import type { Descriptor } from '../../core/codec/descriptors.js';
 import { boolField, jsonField, strField } from '../../core/codec/fields.js';
+import type { OutputDescriptor } from '../../core/codec/output-descriptors.js';
 import { ErrorCode, errorInfoIs } from '../../errors.js';
 import { parseJsonOrString, stripUndefined } from '../../utils.js';
 import type { VercelOutput } from './events.js';
@@ -45,7 +45,7 @@ const asString = (data: unknown): string => (typeof data === 'string' ? data : '
  * @param builder.stream - Define a streamed output family (start / delta / end).
  * @returns The output descriptor table the generic output drivers consume.
  */
-export const outputs = ({ event, stream }: OutputBuilder<VercelOutput>): readonly Descriptor<VercelOutput>[] => [
+export const outputs = ({ event, stream }: OutputBuilder<VercelOutput>): readonly OutputDescriptor<VercelOutput>[] => [
   // --- streamed families -----------------------------------------------------
 
   stream('text', {
@@ -203,7 +203,7 @@ export const outputs = ({ event, stream }: OutputBuilder<VercelOutput>): readonl
   // --- data-* wildcard -------------------------------------------------------
 
   event('data-*', {
-    matchType: (type) => type.startsWith('data-'),
+    match: (type) => type.startsWith('data-'),
     fields: [strField('id'), boolField('transient')],
     ephemeral: (c) => c.transient === true,
     data: { encode: (c) => c.data, decode: (data) => ({ data }) },

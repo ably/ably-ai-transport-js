@@ -1,5 +1,5 @@
 /**
- * Generic decode driver over a descriptor set.
+ * Generic output decode driver over a descriptor set.
  *
  * Rebuilds events from the wire: discrete messages dispatch on the codec `kind`
  * header, streamed families rebuild start/delta/end chunks from the stream
@@ -12,8 +12,13 @@
  */
 
 import { stripUndefined } from '../../utils.js';
-import type { DecodeCtx, Descriptor, EventDescriptor, StreamDescriptor } from './descriptors.js';
 import { KIND_HEADER, readFields } from './field-bag.js';
+import type {
+  OutputDecodeContext,
+  OutputDescriptor,
+  OutputEventDescriptor,
+  OutputStreamDescriptor,
+} from './output-descriptors.js';
 import type { StreamTrackerState } from './types.js';
 
 /**
@@ -25,7 +30,7 @@ import type { StreamTrackerState } from './types.js';
 const TYPE_FIELD = 'type';
 
 /** Decodes wire messages of union `U` from a descriptor set. */
-export interface DescriptorDecoder<U> {
+export interface OutputDescriptorDecoder<U> {
   /** Rebuild the chunk(s) emitted when a stream starts. */
   buildStart(tracker: StreamTrackerState): U[];
   /** Rebuild the chunk(s) for a stream delta. */
@@ -49,21 +54,21 @@ export interface DescriptorDecoder<U> {
 }
 
 /**
- * Build a decode driver for a descriptor set.
+ * Build an output decode driver for a descriptor set.
  * @template U - The codec's event union.
  * @param descriptors - The descriptor set (events + streamed families).
- * @returns A {@link DescriptorDecoder} that reconstructs events from the wire.
+ * @returns An {@link OutputDescriptorDecoder} that reconstructs events from the wire.
  */
-export const createDescriptorDecoder = <U extends { type: string }>(
-  descriptors: readonly Descriptor<U>[],
-): DescriptorDecoder<U> => {
-  const discreteByType = new Map<string, EventDescriptor<U>>();
-  const wildcards: EventDescriptor<U>[] = [];
-  const streamByFamily = new Map<string, StreamDescriptor<U>>();
+export const createOutputDescriptorDecoder = <U extends { type: string }>(
+  descriptors: readonly OutputDescriptor<U>[],
+): OutputDescriptorDecoder<U> => {
+  const discreteByType = new Map<string, OutputEventDescriptor<U>>();
+  const wildcards: OutputEventDescriptor<U>[] = [];
+  const streamByFamily = new Map<string, OutputStreamDescriptor<U>>();
 
   for (const descriptor of descriptors) {
     if (descriptor.kind === 'event') {
-      if (descriptor.matchType) wildcards.push(descriptor);
+      if (descriptor.match) wildcards.push(descriptor);
       else discreteByType.set(descriptor.type, descriptor);
     } else {
       streamByFamily.set(descriptor.familyId, descriptor);
@@ -79,7 +84,7 @@ export const createDescriptorDecoder = <U extends { type: string }>(
     return stripUndefined(bag) as unknown as U;
   };
 
-  const decodeEvent = (descriptor: EventDescriptor<U>, codecKind: string, ctx: DecodeCtx): U[] => {
+  const decodeEvent = (descriptor: OutputEventDescriptor<U>, codecKind: string, ctx: OutputDecodeContext): U[] => {
     if (descriptor.decode) return descriptor.decode(ctx);
     const bag = readFields(descriptor.fields, ctx.codecHeaders);
     if (descriptor.data) Object.assign(bag, descriptor.data.decode(ctx.data));
@@ -90,7 +95,7 @@ export const createDescriptorDecoder = <U extends { type: string }>(
   // family yields no descriptor, and the build* hooks return no events —
   // unreachable in practice, since a tracker only exists because the encoder
   // started a stream stamping a known family id.
-  const familyOf = (tracker: StreamTrackerState): StreamDescriptor<U> | undefined =>
+  const familyOf = (tracker: StreamTrackerState): OutputStreamDescriptor<U> | undefined =>
     streamByFamily.get(tracker.codecHeaders[KIND_HEADER] ?? '');
 
   return {
@@ -126,12 +131,12 @@ export const createDescriptorDecoder = <U extends { type: string }>(
     },
 
     decodeDiscrete: (codecKind, codecHeaders, transportHeaders, data) => {
-      const ctx: DecodeCtx = { codecHeaders, transportHeaders, data };
+      const ctx: OutputDecodeContext = { codecHeaders, transportHeaders, data };
       const evt = discreteByType.get(codecKind);
       if (evt) return decodeEvent(evt, codecKind, ctx);
       const streamDesc = streamByFamily.get(codecKind);
       if (streamDesc?.decodeDiscrete) return streamDesc.decodeDiscrete(ctx);
-      const wildcard = wildcards.find((w) => w.matchType?.(codecKind));
+      const wildcard = wildcards.find((w) => w.match?.(codecKind));
       if (wildcard) return decodeEvent(wildcard, codecKind, ctx);
       return [];
     },

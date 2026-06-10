@@ -68,15 +68,13 @@ import type {
  * each message by the time the lookup resolves, so callers do NOT need to
  * decode the raw matched messages themselves.
  */
-interface InputEventLookupResult<TMessage> {
+interface InputEventLookupResult {
   /** Raw Ably messages matched by the lookup, sorted by serial ascending. */
   rawMessages: Ably.InboundMessage[];
   /** Transport headers of the smallest-serial matched message (run metadata). */
   firstHeaders?: Record<string, string>;
   /** Publisher's Ably channel-level `clientId` from the smallest-serial message. */
   firstClientId?: string;
-  /** Phantom marker so the TMessage generic is referenced (no runtime value). */
-  _phantom?: TMessage;
 }
 
 // ---------------------------------------------------------------------------
@@ -129,6 +127,31 @@ const countReplyRuns = <TProjection>(chain: readonly ConversationNode<TProjectio
   let count = 0;
   for (const node of chain) if (node.kind === 'run') count++;
   return count;
+};
+
+/**
+ * Extract a human-readable message from an unknown thrown value.
+ * @param error - The thrown value.
+ * @returns The error's message, or its string form.
+ */
+const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/**
+ * Wrap an unknown history-walk failure as `Ably.ErrorInfo`, preserving the
+ * original code/statusCode when the failure already carried them and
+ * attaching the original as `cause`. Falls back to `HistoryFetchFailed`.
+ * @param operation - The failed operation, phrased for an `unable to <operation>; <reason>` message.
+ * @param error - The thrown value.
+ * @returns The wrapped error.
+ */
+const wrapHistoryError = (operation: string, error: unknown): Ably.ErrorInfo => {
+  const errInfo = error instanceof Ably.ErrorInfo ? error : undefined;
+  return new Ably.ErrorInfo(
+    `unable to ${operation}; ${errorMessage(error)}`,
+    errInfo?.code ?? ErrorCode.HistoryFetchFailed,
+    errInfo?.statusCode ?? 500,
+    errInfo,
+  );
 };
 
 // ---------------------------------------------------------------------------
@@ -195,8 +218,7 @@ class DefaultAgentSession<
    * keyed by the input codec-message-id, and the `inputCodecMessageId → run`
    * linkage doesn't exist until the lookup completes. `Run.start()` consults
    * this buffer as a PULL once it resolves its `resolvedInputCodecMessageId`,
-   * honouring any cancel that arrived first. Mirrors `_inputEventBuffer`: FIFO
-   * eviction at `_inputEventBufferLimit` entries, cleared on `close()`.
+   * honouring any cancel that arrived first. Cleared on `close()`.
    */
   private readonly _deferredCancels = new Map<string, Ably.InboundMessage>();
   /**
@@ -224,13 +246,14 @@ class DefaultAgentSession<
    */
   private _hydrationMutex: Promise<void> | undefined;
   /**
-   * Suppression flag for the Tree's `update` event during a history page
-   * fold. Each page can fire hundreds of `update` events; with no
-   * subscribers on the agent side they are noise. The flag is checked
-   * inside the Tree (via a setter exposed on `DefaultTree`) — set true
-   * during page replay, false after.
+   * True once a hydration walk has driven channel history to exhaustion for
+   * the current attach epoch: everything older than the attach point is
+   * already folded into the Tree, so a further backwards fetch cannot reveal
+   * more. Lets concurrent / subsequent `loadConversation` calls skip
+   * redundant full-channel re-walks. Reset on continuity-loss Tree swap
+   * (the fresh Tree starts empty and must re-hydrate).
    */
-  private _processingHistory = false;
+  private _historyExhausted = false;
   /**
    * Set of Ably message serials already folded into the Tree. Both the live
    * channel listener and `_hydrateAncestors` consult this before
@@ -326,7 +349,7 @@ class DefaultAgentSession<
       },
       (error: unknown) => {
         const errInfo = new Ably.ErrorInfo(
-          `unable to subscribe to channel; ${error instanceof Error ? error.message : String(error)}`,
+          `unable to subscribe to channel; ${errorMessage(error)}`,
           ErrorCode.SessionSubscriptionError,
           500,
           error instanceof Ably.ErrorInfo ? error : undefined,
@@ -507,7 +530,7 @@ class DefaultAgentSession<
       this._logger?.debug('DefaultAgentSession._cancelRegistration(); run cancelled', { runId });
     } catch (error) {
       const errInfo = new Ably.ErrorInfo(
-        `unable to process cancel for run ${runId}; onCancel handler threw: ${error instanceof Error ? error.message : String(error)}`,
+        `unable to process cancel for run ${runId}; onCancel handler threw: ${errorMessage(error)}`,
         ErrorCode.CancelListenerError,
         500,
         error instanceof Ably.ErrorInfo ? error : undefined,
@@ -556,7 +579,8 @@ class DefaultAgentSession<
 
     // Abort every active run's controller FIRST so in-flight
     // `loadConversation` / `findInputEvent` calls observe the abort before
-    // the Tree changes underneath them and reject with ChannelContinuityLost.
+    // the Tree changes underneath them and reject (InvalidArgument from their
+    // signal checks; the session-level onError carries ChannelContinuityLost).
     for (const reg of this._registeredRuns.values()) {
       reg.controller.abort();
     }
@@ -571,6 +595,7 @@ class DefaultAgentSession<
     );
     this._decoder = this._codec.createDecoder();
     this._foldedSerials = new Set<string>();
+    this._historyExhausted = false;
 
     // Session-level notification: continuity loss is not scoped to any one
     // run. Per-run onError handlers are reserved for errors from that run's
@@ -579,34 +604,47 @@ class DefaultAgentSession<
   }
 
   // -------------------------------------------------------------------------
+  // Wire fold
+  // -------------------------------------------------------------------------
+
+  /**
+   * Fold a single wire message into the session-owned Tree. Mirrors the
+   * ClientSession's live decode loop — same engine, same fold path.
+   * `applyWireMessage` decodes the message and applies the result to the
+   * Tree (or routes lifecycle messages through `applyRunLifecycle`);
+   * `emitAblyMessage` notifies Tree subscribers AND populates the event-id
+   * index used by `findInputEvent`.
+   *
+   * Dedup by serial so the live listener and the history walks
+   * (`_findInputEvent`, `_hydrateAncestors`) don't double-fold a message
+   * that surfaces via more than one path. Wires without a serial bypass the
+   * dedup (we cannot uniquely identify them).
+   * @param wire - The inbound Ably message to fold.
+   */
+  private _foldWire(wire: Ably.InboundMessage): void {
+    if (wire.serial !== undefined) {
+      if (this._foldedSerials.has(wire.serial)) return;
+      this._foldedSerials.add(wire.serial);
+    }
+    applyWireMessage(this._tree, this._decoder, wire);
+    this._tree.emitAblyMessage(wire);
+  }
+
+  // -------------------------------------------------------------------------
   // Channel subscription handler
   // -------------------------------------------------------------------------
 
   private _handleChannelMessage(msg: Ably.InboundMessage): void {
     try {
-      // Fold every message into the session-owned Tree. Mirrors the
-      // ClientSession's live decode loop — same engine, same fold path.
-      // `applyWireMessage` decodes the message and applies the result to the
-      // Tree (or routes lifecycle messages through `applyRunLifecycle`).
-      // `emitAblyMessage` notifies Tree subscribers AND populates the
-      // event-id index used by `findInputEvent`.
-      //
-      // Dedup by serial so live + history paths don't double-fold a message
-      // that surfaces both ways. Wires without a serial bypass the dedup
-      // (we cannot uniquely identify them).
-      if (msg.serial !== undefined && this._foldedSerials.has(msg.serial)) {
-        // Still dispatch cancels (control messages) below; just skip the fold.
-      } else {
-        if (msg.serial !== undefined) this._foldedSerials.add(msg.serial);
-        applyWireMessage(this._tree, this._decoder, msg);
-        this._tree.emitAblyMessage(msg);
-      }
+      // Fold first (no-op for already-folded serials), then dispatch cancel
+      // control messages regardless of whether the fold was skipped.
+      this._foldWire(msg);
 
       if (msg.name === EVENT_CANCEL) {
         // Fire-and-forget async handler — errors are caught internally.
         this._handleCancelMessage(msg).catch((error: unknown) => {
           const errInfo = new Ably.ErrorInfo(
-            `unable to route cancel message; ${error instanceof Error ? error.message : String(error)}`,
+            `unable to route cancel message; ${errorMessage(error)}`,
             ErrorCode.CancelListenerError,
             500,
             error instanceof Ably.ErrorInfo ? error : undefined,
@@ -618,7 +656,7 @@ class DefaultAgentSession<
       }
     } catch (error) {
       const errInfo = new Ably.ErrorInfo(
-        `unable to process channel message; ${error instanceof Error ? error.message : String(error)}`,
+        `unable to process channel message; ${errorMessage(error)}`,
         ErrorCode.SessionSubscriptionError,
         500,
         error instanceof Ably.ErrorInfo ? error : undefined,
@@ -651,15 +689,18 @@ class DefaultAgentSession<
    * Find every message whose `event-id` matches one of `expectedEventIds`,
    * racing three sources:
    *
-   *  1. A scan of the session's `_liveBuffer` for already-delivered messages.
-   *  2. A live listener that catches new arrivals during the call.
+   *  1. A pre-scan of the Tree via `findWireByEventId` for messages already
+   *     folded into it from prior live arrivals.
+   *  2. A live listener on the Tree's `ably-message` event for new arrivals
+   *     during the call.
    *  3. A bounded history scan via `loadHistoryPages` (lookback window).
    *
    * Resolves when every expected event-id has been matched. Per-id race
    * resolution — whichever source surfaces a matched message first wins
    * (dedup by serial). On timeout: cancels the in-flight history scan and
-   * rejects with `InputEventNotFound`. On signal abort: rejects with
-   * `InvalidArgument`.
+   * rejects with `InputEventNotFound`, wrapping any history-scan failure as
+   * `cause` so a broken history fetch isn't masked behind the timeout. On
+   * signal abort: rejects with `InvalidArgument`.
    *
    * `firstHeaders` and `firstClientId` are read from the matched message with
    * the smallest serial (`compareBySerial`), giving stable run-level
@@ -670,8 +711,8 @@ class DefaultAgentSession<
    * @param opts.expectedEventIds - The set of `event-id`s the lookup must observe before resolving.
    * @param opts.timeoutMs - Maximum total wait across live + history sources.
    * @param opts.signal - AbortSignal that aborts the lookup if the run is cancelled.
-   * @returns Decoded MessageNodes for each matched message, sorted by serial,
-   *   plus first-message headers and raw messages for downstream merging.
+   * @returns Raw matched Ably messages sorted by serial ascending, plus the
+   *   smallest-serial message's headers and clientId for downstream metadata.
    */
   private async _findInputEvent(opts: {
     invocationId: string;
@@ -679,7 +720,7 @@ class DefaultAgentSession<
     expectedEventIds: readonly string[];
     timeoutMs: number;
     signal: AbortSignal;
-  }): Promise<InputEventLookupResult<TMessage>> {
+  }): Promise<InputEventLookupResult> {
     const { invocationId, runId, expectedEventIds, timeoutMs, signal } = opts;
     const logger = this._logger;
     const expectedSet = new Set(expectedEventIds);
@@ -691,11 +732,15 @@ class DefaultAgentSession<
     // lets the lookup cancel the in-flight fetch on timeout / abort.
     const historyController = new AbortController();
 
-    return new Promise<InputEventLookupResult<TMessage>>((resolve, reject) => {
+    return new Promise<InputEventLookupResult>((resolve, reject) => {
       let settled = false;
+      // A genuine history-scan failure (not a cancel-induced abort) recorded
+      // so the timeout rejection can surface it as `cause` — the live path
+      // may still win the race, so the failure alone doesn't reject.
+      let historyError: Ably.ErrorInfo | undefined;
       /* eslint-disable prefer-const -- forward-declared so cleanup() / onCancelled() can reference before the listener register or the timeout schedule has run. */
       let unregisterLive: (() => void) | undefined;
-      let timer: ReturnType<typeof setTimeout> | undefined;
+      let timer: ReturnType<typeof setTimeout> | number | undefined;
       /* eslint-enable */
 
       const cleanup = (): void => {
@@ -782,11 +827,13 @@ class DefaultAgentSession<
       });
 
       // 3. Drive a bounded history fetch in parallel; each page's messages
-      //    fold into the Tree via `applyWireMessage`, which triggers the
-      //    listener above. Suppress Tree `update` emits during the fold
-      //    — no subscribers on the agent side, and per-wire updates
-      //    can storm.
+      //    fold into the Tree via `_foldWire`, which triggers the listener
+      //    above.
       (async (): Promise<void> => {
+        // Captured so a continuity-loss Tree swap mid-walk abandons the
+        // fold — a page fetched against the pre-loss attach epoch must not
+        // pollute the fresh Tree.
+        const treeAtStart = this._tree;
         try {
           const cursor = await loadHistoryPages(this._channel, {
             pageLimit: 200,
@@ -795,30 +842,24 @@ class DefaultAgentSession<
             signal: historyController.signal,
             logger,
           });
-          this._processingHistory = true;
-          try {
-            // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- settled mutates via listener / timer callbacks fired on the event loop
-            while (cursor.hasNext() && !settled) {
-              const chunk = await cursor.next();
-              if (!chunk) break;
-              // Ably returns history pages newest-first; fold in chronological
-              // order so codec projections build oldest-to-newest (matches the
-              // live decode loop's fold order).
-              for (const wire of chunk.toReversed()) {
-                if (wire.serial !== undefined && this._foldedSerials.has(wire.serial)) continue;
-                if (wire.serial !== undefined) this._foldedSerials.add(wire.serial);
-                applyWireMessage(this._tree, this._decoder, wire);
-                this._tree.emitAblyMessage(wire);
-              }
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- settled mutates via listener / timer callbacks fired on the event loop
+          while (cursor.hasNext() && !settled) {
+            const chunk = await cursor.next();
+            if (!chunk) break;
+            if (this._tree !== treeAtStart) return;
+            // Ably returns history pages newest-first; fold in chronological
+            // order so codec projections build oldest-to-newest (matches the
+            // live decode loop's fold order).
+            for (const wire of chunk.toReversed()) {
+              this._foldWire(wire);
             }
-          } finally {
-            this._processingHistory = false;
           }
         } catch (error) {
           // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- settled mutates via listener / timer callbacks fired on the event loop
           if (settled) return;
-          logger?.debug('AgentSession._findInputEvent(); history scan failed (continuing on live path)', {
-            error: error instanceof Error ? error.message : String(error),
+          historyError = wrapHistoryError('scan history for input event', error);
+          logger?.warn('AgentSession._findInputEvent(); history scan failed (continuing on live path)', {
+            error: errorMessage(error),
           });
         }
       })().catch(() => {
@@ -836,9 +877,13 @@ class DefaultAgentSession<
             `unable to look up input event; received ${String(matchedByEventId.size)} of ${String(expectedCount)} input events for invocation ${invocationId} within ${String(timeoutMs)}ms`,
             ErrorCode.InputEventNotFound,
             504,
+            historyError,
           ),
         );
       }, timeoutMs);
+      // Node returns an unref-able Timeout; browsers return a number. Unref
+      // so a parked lookup cannot keep a Node process alive by itself.
+      if (typeof timer === 'object') timer.unref();
     });
   }
 
@@ -904,16 +949,24 @@ class DefaultAgentSession<
    * coverage to walk from `anchor` to root (or `maxRuns` reply runs back).
    * Mutex-protected: concurrent callers share a single in-flight fetch.
    *
-   * Pages fold into the Tree via `applyWireMessage`; `_processingHistory`
-   * is set during the walk to suppress Tree `update` emits.
+   * Pages fold into the Tree via `_foldWire`.
    *
-   * Best-effort: if the channel has no more history but the chain still
-   * needs ancestors, the walk simply stops at what's available.
+   * History exhaustion is best-effort: if the channel has no more history
+   * but the chain still needs ancestors, the walk stops at what's available
+   * (and `_historyExhausted` short-circuits further fetches for this attach
+   * epoch). Fetch FAILURES are not best-effort: the caller that owns the
+   * failing fetch rejects (truncating the conversation silently would feed
+   * the LLM partial history with no signal); other callers sharing the mutex
+   * are isolated from it and issue their own fetch.
    * @param runId - The current run's id (its node must be present in the Tree before the walk is complete).
    * @param anchor - The input codec-message-id to walk from. Undefined means
    *   no walk is needed (current run only).
    * @param signal - AbortSignal.
    * @param maxRuns - Optional bound on the ancestor walk.
+   * @throws {Ably.ErrorInfo} `InvalidArgument` when `signal` aborts;
+   *   `HistoryFetchFailed` — or the underlying Ably code when the failure
+   *   carried one — (original as `cause`) when this caller's own history
+   *   fetch fails after retries.
    */
   private async _hydrateAncestors(
     runId: string,
@@ -921,12 +974,6 @@ class DefaultAgentSession<
     signal: AbortSignal,
     maxRuns: number | undefined,
   ): Promise<void> {
-    if (this._hydrationMutex !== undefined) {
-      await this._hydrationMutex;
-      // Another caller's fetch just completed; the Tree may now have enough.
-      // Don't issue a second fetch — the caller can re-call.
-      return;
-    }
     // Check whether the Tree already has what we need: the current run node
     // exists AND (no anchor OR anchor's chain reaches root / maxRuns).
     const needsFetch = (): boolean => {
@@ -938,38 +985,76 @@ class DefaultAgentSession<
       const reachedLimit = maxRuns !== undefined && countReplyRuns(chain) >= maxRuns;
       return !reachedRoot && !reachedLimit;
     };
-    if (!needsFetch()) return;
 
-    this._hydrationMutex = (async (): Promise<void> => {
-      this._processingHistory = true;
-      try {
-        const cursor = await loadHistoryPages(this._channel, {
-          pageLimit: 200,
-          untilAttach: true,
-          signal,
-          logger: this._logger,
-        });
-        while (cursor.hasNext()) {
-          if (signal.aborted) return;
-          const chunk = await cursor.next();
-          if (!chunk) break;
-          // Ably returns history pages newest-first; fold in chronological
-          // order so codec projections build oldest-to-newest.
-          for (const wire of chunk.toReversed()) {
-            if (wire.serial !== undefined && this._foldedSerials.has(wire.serial)) continue;
-            if (wire.serial !== undefined) this._foldedSerials.add(wire.serial);
-            applyWireMessage(this._tree, this._decoder, wire);
-            this._tree.emitAblyMessage(wire);
-          }
-          // Early exit when the Tree has enough for the walk.
-          if (!needsFetch()) return;
-        }
-      } finally {
-        this._processingHistory = false;
-        this._hydrationMutex = undefined;
+    // Loop until the Tree has enough for THIS caller's anchor + maxRuns, the
+    // caller's signal fires, history is exhausted, or this caller's own fetch
+    // fails. Awaiting another caller's in-flight fetch may not be enough: an
+    // earlier caller can early-exit at its own `needsFetch()` and leave a
+    // shorter chain than we need. After sharing, we re-check; if still not
+    // satisfied, we start our own fetch under a fresh mutex slot.
+    while (needsFetch()) {
+      if (signal.aborted) {
+        throw new Ably.ErrorInfo('unable to hydrate ancestors; signal aborted', ErrorCode.InvalidArgument, 400);
       }
-    })();
-    await this._hydrationMutex;
+      // A previous walk (any caller, this attach epoch) already drove history
+      // to exhaustion — fetching again cannot reveal more. Best-effort stop.
+      if (this._historyExhausted) break;
+      if (this._hydrationMutex !== undefined) {
+        await this._hydrationMutex;
+        continue;
+      }
+      // This caller owns the new mutex slot. The shared IIFE never rejects —
+      // followers awaiting it must not alias this caller's failure — so the
+      // owner records its own error in `fetchError` and rethrows it from its
+      // own frame after the await.
+      let fetchError: Ably.ErrorInfo | undefined;
+      this._hydrationMutex = (async (): Promise<void> => {
+        // Captured so a continuity-loss Tree swap mid-walk abandons the
+        // fold — a page fetched against the pre-loss attach epoch must not
+        // pollute the fresh Tree. (The swap also aborts run signals, but
+        // that check only runs between pages, after a fold.)
+        const treeAtStart = this._tree;
+        try {
+          const cursor = await loadHistoryPages(this._channel, {
+            pageLimit: 200,
+            untilAttach: true,
+            signal,
+            logger: this._logger,
+          });
+          while (cursor.hasNext()) {
+            if (signal.aborted) return;
+            const chunk = await cursor.next();
+            if (!chunk) break;
+            if (this._tree !== treeAtStart) return;
+            // Ably returns history pages newest-first; fold in chronological
+            // order so codec projections build oldest-to-newest.
+            for (const wire of chunk.toReversed()) {
+              this._foldWire(wire);
+            }
+            // Early exit when the Tree has enough for the walk.
+            if (!needsFetch()) return;
+          }
+          // The loop also exits via `hasNext()` turning false on signal abort,
+          // and via `!chunk` after a swap/abort — neither means the channel's
+          // history was actually exhausted. Only record exhaustion when the
+          // walk genuinely ran out of pages in the current attach epoch.
+          if (!signal.aborted && this._tree === treeAtStart) {
+            this._historyExhausted = true;
+          }
+        } catch (error) {
+          fetchError = wrapHistoryError('hydrate ancestors', error);
+          // Error level: the owner always rethrows this from loadConversation.
+          this._logger?.error('AgentSession._hydrateAncestors(); history fetch failed', {
+            runId,
+            error: errorMessage(error),
+          });
+        } finally {
+          this._hydrationMutex = undefined;
+        }
+      })();
+      await this._hydrationMutex;
+      if (fetchError !== undefined) throw fetchError;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -1050,11 +1135,16 @@ class DefaultAgentSession<
     // single source of truth. The trigger node may be an input node (fresh
     // send) or a reply run (continuation re-entry with run-id on the
     // triggering message); both expose a projection the codec can read.
-    const tree = this._tree;
+    //
+    // Resolved via an arrow accessor so the closure picks up `this._tree`
+    // after a continuity-loss swap; capturing `this._tree` into a local at
+    // run-creation time would silently keep returning data from the
+    // abandoned Tree.
+    const getTree = (): DefaultTree<TInput, TOutput, TProjection> => this._tree;
     const view: RunView<TMessage> = {
       get messages() {
         if (resolvedInputCodecMessageId === undefined) return [];
-        const node = tree.getNodeByCodecMessageId(resolvedInputCodecMessageId);
+        const node = getTree().getNodeByCodecMessageId(resolvedInputCodecMessageId);
         if (!node) return [];
         const sourceSerial = node.kind === 'input' ? node.serial : node.startSerial;
         const sourceForkOf = node.kind === 'input' ? node.forkOf : undefined;
@@ -1071,11 +1161,11 @@ class DefaultAgentSession<
     };
     /**
      * The reply run's structural-parent fallback, computed once in
-     * `Run.start()` (after the input-event lookup has populated `viewMessages`)
-     * and consumed by every `Run.pipe()` publish. A per-stream
-     * `streamOpts.parent` still overrides it. Storing it here keeps it stable
-     * across pipes and decouples the assistant's structural parent from the
-     * run-start message's own `parent`.
+     * `Run.start()` once the input-event lookup resolves the triggering
+     * input's codec-message-id, and consumed by every `Run.pipe()` publish.
+     * A per-stream `streamOpts.parent` still overrides it. Storing it here
+     * keeps it stable across pipes and decouples the assistant's structural
+     * parent from the run-start message's own `parent`.
      */
     let assistantParentFallback: string | undefined;
     /**
@@ -1114,7 +1204,10 @@ class DefaultAgentSession<
         // back to the input message's `parent` for regenerate carriers whose
         // own codec-message-id has no Tree node) — same anchor
         // `loadConversation` uses. No cache: every read reflects the latest
-        // folded state.
+        // folded state. `getTree()` dereferences `this._tree` live so a
+        // continuity-loss Tree swap is observed instead of returning stale
+        // data from the abandoned tree.
+        const tree = getTree();
         const chain = assistantParentFallback === undefined ? [] : walkAncestorChain(tree, assistantParentFallback);
         const messages: TMessage[] = [];
         for (const node of chain) {
@@ -1165,7 +1258,7 @@ class DefaultAgentSession<
               error instanceof Ably.ErrorInfo
                 ? error
                 : new Ably.ErrorInfo(
-                    `unable to look up input event; ${error instanceof Error ? error.message : String(error)}`,
+                    `unable to look up input event; ${errorMessage(error)}`,
                     ErrorCode.InputEventNotFound,
                     504,
                   );
@@ -1252,7 +1345,7 @@ class DefaultAgentSession<
           });
         } catch (error) {
           const errInfo = new Ably.ErrorInfo(
-            `unable to publish run-start for run ${runId}; ${error instanceof Error ? error.message : String(error)}`,
+            `unable to publish run-start for run ${runId}; ${errorMessage(error)}`,
             ErrorCode.RunLifecycleError,
             500,
             error instanceof Ably.ErrorInfo ? error : undefined,
@@ -1367,7 +1460,7 @@ class DefaultAgentSession<
           await runManager.suspendRun(runId, invocationId, resolvedInputClientId, resolvedInputCodecMessageId);
         } catch (error) {
           const errInfo = new Ably.ErrorInfo(
-            `unable to publish run-suspend for run ${runId}; ${error instanceof Error ? error.message : String(error)}`,
+            `unable to publish run-suspend for run ${runId}; ${errorMessage(error)}`,
             ErrorCode.RunLifecycleError,
             500,
             error instanceof Ably.ErrorInfo ? error : undefined,
@@ -1401,7 +1494,7 @@ class DefaultAgentSession<
           await runManager.endRun(runId, reason, invocationId, resolvedInputClientId, resolvedInputCodecMessageId);
         } catch (error) {
           const errInfo = new Ably.ErrorInfo(
-            `unable to publish run-end for run ${runId}; ${error instanceof Error ? error.message : String(error)}`,
+            `unable to publish run-end for run ${runId}; ${errorMessage(error)}`,
             ErrorCode.RunLifecycleError,
             500,
             error instanceof Ably.ErrorInfo ? error : undefined,

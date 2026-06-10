@@ -94,10 +94,13 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
       reject(new Ably.ErrorInfo('unable to wait; signal aborted', ErrorCode.InvalidArgument, 400));
       return;
     }
-    const timer = setTimeout(() => {
+    const timer: ReturnType<typeof setTimeout> | number = setTimeout(() => {
       signal?.removeEventListener('abort', onAbort);
       resolve();
     }, ms);
+    // Node returns an unref-able Timeout; browsers return a number. Unref so
+    // a retry backoff cannot keep a Node process alive by itself.
+    if (typeof timer === 'object') timer.unref();
     const onAbort = (): void => {
       clearTimeout(timer);
       reject(new Ably.ErrorInfo('unable to wait; signal aborted', ErrorCode.InvalidArgument, 400));
@@ -285,36 +288,4 @@ export const loadHistoryPages = async (
   };
 
   return { hasNext, next };
-};
-
-/**
- * Convenience: collect all pages from {@link loadHistoryPages} into a single
- * deduplicated, chronologically-sorted array. For callers that want the
- * complete result rather than streaming pages.
- *
- * Messages without a serial are dropped (cannot be reliably ordered).
- * Duplicates by serial are dropped (first occurrence kept).
- * @param channel - The Ably channel to read history from.
- * @param options - Pagination options.
- * @returns All collected messages, deduplicated by serial, oldest first.
- */
-export const collectHistoryPages = async (
-  channel: Ably.RealtimeChannel,
-  options: LoadHistoryPagesOptions,
-): Promise<Ably.InboundMessage[]> => {
-  const cursor = await loadHistoryPages(channel, options);
-  const seen = new Set<string>();
-  const result: Ably.InboundMessage[] = [];
-  while (cursor.hasNext()) {
-    const chunk = await cursor.next();
-    if (!chunk) break;
-    for (const msg of chunk) {
-      if (msg.serial === undefined || seen.has(msg.serial)) continue;
-      seen.add(msg.serial);
-      result.push(msg);
-    }
-  }
-  // Ably yields newest-first; reverse to chronological (oldest first).
-  result.sort((a, b) => (a.serial ?? '').localeCompare(b.serial ?? ''));
-  return result;
 };

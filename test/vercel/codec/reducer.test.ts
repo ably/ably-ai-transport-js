@@ -13,10 +13,22 @@ import { describe, expect, it } from 'vitest';
 import type { ReducerMeta } from '../../../src/core/codec/types.js';
 import type { VercelInput, VercelOutput } from '../../../src/vercel/codec/events.js';
 import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
-import { fold, getMessages, init, type VercelProjection } from '../../../src/vercel/codec/reducer.js';
+import { fold as foldEvent, getMessages, init, type VercelProjection } from '../../../src/vercel/codec/reducer.js';
 
 const meta = (serial: string, messageId?: string): ReducerMeta =>
   messageId === undefined ? { serial } : { serial, messageId };
+
+/**
+ * Fold a bare fixture event, tagging it with its wire direction so the terse
+ * call sites below need not spell out the `CodecEvent` wrapper. VercelInput
+ * variants carry `kind`; VercelOutput variants carry `type`.
+ * @param state - The projection to fold into.
+ * @param event - The bare input or output event.
+ * @param m - The reducer metadata (serial, optional messageId).
+ * @returns The updated projection.
+ */
+const fold = (state: VercelProjection, event: VercelInput | VercelOutput, m: ReducerMeta): VercelProjection =>
+  foldEvent(state, 'kind' in event ? { direction: 'input', event } : { direction: 'output', event }, m);
 
 /**
  * Look up a reconstructed message by its codec-message-id — the only key
@@ -518,7 +530,7 @@ describe('Vercel reducer', () => {
       const message: AI.UIMessage = { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'hi' }] };
       const event = UIMessageCodec.createUserMessage(message);
 
-      state = UIMessageCodec.fold(state, event, meta('s1', 'cm-1'));
+      state = UIMessageCodec.fold(state, { direction: 'input', event }, meta('s1', 'cm-1'));
       expect(UIMessageCodec.getMessages(state)).toEqual([{ codecMessageId: 'cm-1', message }]);
     });
   });

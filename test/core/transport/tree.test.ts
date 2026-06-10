@@ -10,7 +10,7 @@ import {
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
 } from '../../../src/constants.js';
-import type { Codec, CodecInputEvent, Regenerate, UserMessage } from '../../../src/core/codec/types.js';
+import type { Codec, CodecEvent, CodecInputEvent, Regenerate, UserMessage } from '../../../src/core/codec/types.js';
 import type { TreeInternal } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
 import type { ConversationNode, InputNode, RunNode } from '../../../src/core/transport/types.js';
@@ -38,7 +38,8 @@ interface TestProjection {
 
 const testCodec: Codec<TestInput, TestOutput, TestProjection, TestMessage> = {
   init: () => ({ messages: [] }),
-  fold: (state: TestProjection, event: TestInput | TestOutput) => {
+  fold: (state: TestProjection, codecEvent: CodecEvent<TestInput, TestOutput>) => {
+    const event = codecEvent.event;
     if ('type' in event) {
       if (event.type === 'append-message') {
         return { messages: [...state.messages, event.message] };

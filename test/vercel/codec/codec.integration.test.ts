@@ -16,6 +16,7 @@ import type * as AI from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { EVENT_AI_INPUT, EVENT_AI_OUTPUT, HEADER_CODEC_MESSAGE_ID, HEADER_RUN_ID } from '../../../src/constants.js';
+import { toCodecEvents } from '../../../src/core/codec/codec-event.js';
 import { getCodecHeaders, getTransportHeaders } from '../../../src/utils.js';
 import {
   UIMessageCodec,
@@ -71,10 +72,7 @@ const foldDecoded = (
   msg: Ably.InboundMessage,
 ): VercelProjection => {
   const meta = metaOf(msg);
-  for (const event of decoded.inputs) {
-    state = UIMessageCodec.fold(state, event, meta);
-  }
-  for (const event of decoded.outputs) {
+  for (const event of toCodecEvents(decoded)) {
     state = UIMessageCodec.fold(state, event, meta);
   }
   return state;

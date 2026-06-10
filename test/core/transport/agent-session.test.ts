@@ -28,6 +28,7 @@ import {
 import type {
   ChannelWriter,
   Codec,
+  CodecEvent,
   Decoder,
   Encoder,
   EncoderOptions,
@@ -222,7 +223,7 @@ const createMockCodec = (overrides?: { encoderFactory?: () => MockEncoder }): Mo
     lastEncoderOpts: () => encoderCalls.at(-1)?.opts,
     init: vi.fn((): TestProjection => ({ messages: [] })),
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- reducer signature; event/meta unused by this stub
-    fold: vi.fn((state: TestProjection, _event: TestInput | TestOutput, _meta: ReducerMeta) => state),
+    fold: vi.fn((state: TestProjection, _event: CodecEvent<TestInput, TestOutput>, _meta: ReducerMeta) => state),
     getMessages: vi.fn((p: TestProjection) => p.messages.map((m) => ({ codecMessageId: m.id, message: m }))),
     createUserMessage: vi.fn((m: TestMessage) => ({ kind: 'user-message' as const, message: m })),
     createRegenerate: vi.fn(
@@ -290,7 +291,8 @@ const captureWarnLogger = (): {
  */
 const codecWithFunctionalDecoder = (): Codec<TestInput, TestOutput, TestProjection, TestMessage> => ({
   init: (): TestProjection => ({ messages: [] }),
-  fold: (state: TestProjection, event: TestInput | TestOutput): TestProjection => {
+  fold: (state: TestProjection, codecEvent: CodecEvent<TestInput, TestOutput>): TestProjection => {
+    const event = codecEvent.event;
     // Inputs: `user-message` carries a message; `regenerate` is a wire-only
     // signal. Outputs (TestOutput) pass through unchanged.
     if ('kind' in event) {

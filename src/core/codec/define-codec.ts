@@ -27,6 +27,7 @@ import { createEncoderCore } from './encoder.js';
 import type {
   ChannelWriter,
   Codec,
+  CodecEvent,
   CodecInputEvent,
   CodecMessage,
   CodecOutputEvent,
@@ -131,8 +132,8 @@ export interface LifecyclePolicy<TOutput> {
 export interface CodecReducer<TInput, TOutput, TProjection, TMessage> {
   /** Build an empty projection for a node. */
   init: () => TProjection;
-  /** Fold one input or output event into the projection. */
-  fold: (state: TProjection, event: TInput | TOutput, meta: ReducerMeta) => TProjection;
+  /** Fold one direction-tagged input or output event into the projection. */
+  fold: (state: TProjection, event: CodecEvent<TInput, TOutput>, meta: ReducerMeta) => TProjection;
   /** Extract the per-message list (each paired with its codec-message-id). */
   getMessages: (projection: TProjection) => CodecMessage<TMessage>[];
 }

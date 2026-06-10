@@ -33,6 +33,7 @@ import {
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
 } from '../../../src/constants.js';
+import { toCodecEvents } from '../../../src/core/codec/codec-event.js';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
 import { buildTransportHeaders } from '../../../src/core/transport/headers.js';
 import type { AgentSession } from '../../../src/core/transport/types.js';
@@ -99,11 +100,8 @@ const collectUntil = (
     allOutputs.push(...outputs);
     const headers = getHeaders(msg);
     const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
-    for (const input of inputs) {
-      projection = UIMessageCodec.fold(projection, input, { serial: msg.serial ?? '', messageId: codecMessageId });
-    }
-    for (const output of outputs) {
-      projection = UIMessageCodec.fold(projection, output, { serial: msg.serial ?? '', messageId: codecMessageId });
+    for (const event of toCodecEvents({ inputs, outputs })) {
+      projection = UIMessageCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: codecMessageId });
     }
     if (predicate(outputs)) resolve();
   });
@@ -480,10 +478,7 @@ describe('AgentSession integration', () => {
       const { inputs, outputs } = decoder.decode(msg);
       const headers = getHeaders(msg);
       const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
-      for (const event of inputs) {
-        projection = UIMessageCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: codecMessageId });
-      }
-      for (const event of outputs) {
+      for (const event of toCodecEvents({ inputs, outputs })) {
         projection = UIMessageCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: codecMessageId });
       }
       if (outputs.some((e) => e.type === 'finish')) {

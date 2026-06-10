@@ -42,6 +42,22 @@ const msgById = (state: VercelProjection, codecMessageId: string): AI.UIMessage 
   state.messages.find((e) => e.codecMessageId === codecMessageId)?.message;
 
 /**
+ * Locate the `dynamic-tool` part for a toolCallId within a message.
+ * @param state - The projection to search.
+ * @param codecMessageId - The codec-message-id owning the part.
+ * @param toolCallId - The tool call to find.
+ * @returns The dynamic-tool part, or undefined.
+ */
+const toolPartOf = (
+  state: VercelProjection,
+  codecMessageId: string,
+  toolCallId: string,
+): AI.DynamicToolUIPart | undefined =>
+  msgById(state, codecMessageId)?.parts.find(
+    (p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool' && p.toolCallId === toolCallId,
+  );
+
+/**
  * Build a baseline projection in which `toolCallId` is in the
  * `input-available` state — the precondition for `transitionToolPart`
  * to apply a `tool-output-available` transition.
@@ -473,6 +489,225 @@ describe('Vercel reducer', () => {
       const message = msgById(state, 'msg-1');
       const textPart = message?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
       expect(textPart?.text).toBe('Hello, world');
+    });
+  });
+
+  // -- content-part folds (file / source-url / source-document) -------------
+
+  describe('content-part folds', () => {
+    it('appends a file part', () => {
+      let state = init();
+      state = fold(state, { type: 'file', mediaType: 'image/png', url: 'https://x/y.png' }, meta('s1', 'msg-1'));
+      expect(msgById(state, 'msg-1')?.parts).toEqual([
+        { type: 'file', mediaType: 'image/png', url: 'https://x/y.png' },
+      ]);
+    });
+
+    it('appends a source-url part, stripping an absent title and keeping a present one', () => {
+      let state = init();
+      state = fold(state, { type: 'source-url', sourceId: 'su-1', url: 'https://a' }, meta('s1', 'msg-1'));
+      state = fold(state, { type: 'source-url', sourceId: 'su-2', url: 'https://b', title: 'B' }, meta('s2', 'msg-1'));
+      const parts = msgById(state, 'msg-1')?.parts;
+      // Absent title is stripped — no `title` key — while a present one is kept.
+      expect(parts?.[0]).toEqual({ type: 'source-url', sourceId: 'su-1', url: 'https://a' });
+      expect(parts?.[1]).toEqual({ type: 'source-url', sourceId: 'su-2', url: 'https://b', title: 'B' });
+    });
+
+    it('appends a source-document part, stripping an absent filename', () => {
+      let state = init();
+      state = fold(
+        state,
+        { type: 'source-document', sourceId: 'sd-1', mediaType: 'application/pdf', title: 'Doc', filename: 'doc.pdf' },
+        meta('s1', 'msg-1'),
+      );
+      state = fold(
+        state,
+        { type: 'source-document', sourceId: 'sd-2', mediaType: 'text/plain', title: 'Plain' },
+        meta('s2', 'msg-1'),
+      );
+      const parts = msgById(state, 'msg-1')?.parts;
+      expect(parts?.[0]).toEqual({
+        type: 'source-document',
+        sourceId: 'sd-1',
+        mediaType: 'application/pdf',
+        title: 'Doc',
+        filename: 'doc.pdf',
+      });
+      expect(parts?.[1]).toEqual({
+        type: 'source-document',
+        sourceId: 'sd-2',
+        mediaType: 'text/plain',
+        title: 'Plain',
+      });
+    });
+
+    it('appends each content part independently — never dedups', () => {
+      let state = init();
+      state = fold(state, { type: 'file', mediaType: 'image/png', url: 'https://x/y.png' }, meta('s1', 'msg-1'));
+      state = fold(state, { type: 'file', mediaType: 'image/png', url: 'https://x/y.png' }, meta('s2', 'msg-1'));
+      expect(msgById(state, 'msg-1')?.parts).toHaveLength(2);
+    });
+  });
+
+  // -- data-* part folds ----------------------------------------------------
+
+  describe('data-part folds', () => {
+    it('drops a transient data part without creating a message', () => {
+      let state = init();
+      state = fold(state, { type: 'data-weather', data: { temp: 1 }, transient: true }, meta('s1', 'msg-1'));
+      expect(state.messages).toHaveLength(0);
+    });
+
+    it('appends a persistent data part, stripping an absent id', () => {
+      let state = init();
+      state = fold(state, { type: 'data-weather', data: { temp: 1 } }, meta('s1', 'msg-1'));
+      expect(msgById(state, 'msg-1')?.parts).toEqual([{ type: 'data-weather', data: { temp: 1 } }]);
+    });
+
+    it('replaces a data part in place when the id matches', () => {
+      let state = init();
+      state = fold(state, { type: 'data-weather', id: 'd-1', data: { temp: 1 } }, meta('s1', 'msg-1'));
+      state = fold(state, { type: 'data-weather', id: 'd-1', data: { temp: 2 } }, meta('s2', 'msg-1'));
+      const parts = msgById(state, 'msg-1')?.parts;
+      expect(parts).toHaveLength(1);
+      expect(parts?.[0]).toEqual({ type: 'data-weather', id: 'd-1', data: { temp: 2 } });
+    });
+
+    it('appends rather than replaces when the id differs', () => {
+      let state = init();
+      state = fold(state, { type: 'data-weather', id: 'd-1', data: { temp: 1 } }, meta('s1', 'msg-1'));
+      state = fold(state, { type: 'data-weather', id: 'd-2', data: { temp: 2 } }, meta('s2', 'msg-1'));
+      expect(msgById(state, 'msg-1')?.parts).toHaveLength(2);
+    });
+  });
+
+  // -- tool-input streaming folds -------------------------------------------
+
+  describe('tool-input streaming folds', () => {
+    it('accumulates input-text deltas and parses JSON only once it is complete', () => {
+      let state = init();
+      state = fold(
+        state,
+        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'search', dynamic: true },
+        meta('s1', 'msg-1'),
+      );
+
+      // First fragment is incomplete JSON → parse fails → input stays undefined.
+      state = fold(
+        state,
+        { type: 'tool-input-delta', toolCallId: 'tc-1', inputTextDelta: '{"q":' },
+        meta('s2', 'msg-1'),
+      );
+      const mid = toolPartOf(state, 'msg-1', 'tc-1');
+      expect(mid?.state).toBe('input-streaming');
+      if (mid?.state !== 'input-streaming') throw new Error('expected input-streaming');
+      expect(mid.input).toBeUndefined();
+
+      // Second fragment completes the JSON → input parses.
+      state = fold(
+        state,
+        { type: 'tool-input-delta', toolCallId: 'tc-1', inputTextDelta: '"hi"}' },
+        meta('s3', 'msg-1'),
+      );
+      const done = toolPartOf(state, 'msg-1', 'tc-1');
+      expect(done?.state).toBe('input-streaming');
+      if (done?.state !== 'input-streaming') throw new Error('expected input-streaming');
+      expect(done.input).toEqual({ q: 'hi' });
+    });
+
+    it('ignores a tool-input-delta for an unknown tool call', () => {
+      let state = init();
+      state = fold(state, { type: 'tool-input-delta', toolCallId: 'tc-x', inputTextDelta: '{}' }, meta('s1', 'msg-1'));
+      expect(msgById(state, 'msg-1')?.parts ?? []).toHaveLength(0);
+    });
+
+    it('transitions to input-available with the resolved input', () => {
+      let state = init();
+      state = fold(state, { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'search' }, meta('s1', 'msg-1'));
+      state = fold(
+        state,
+        { type: 'tool-input-available', toolCallId: 'tc-1', toolName: 'search', input: { q: 'done' } },
+        meta('s2', 'msg-1'),
+      );
+      const part = toolPartOf(state, 'msg-1', 'tc-1');
+      expect(part?.state).toBe('input-available');
+      if (part?.state !== 'input-available') throw new Error('expected input-available');
+      expect(part.input).toEqual({ q: 'done' });
+    });
+
+    it('transitions an existing part to output-error on tool-input-error', () => {
+      let state = init();
+      state = fold(state, { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'search' }, meta('s1', 'msg-1'));
+      state = fold(
+        state,
+        { type: 'tool-input-error', toolCallId: 'tc-1', toolName: 'search', input: { q: 'x' }, errorText: 'bad input' },
+        meta('s2', 'msg-1'),
+      );
+      const part = toolPartOf(state, 'msg-1', 'tc-1');
+      expect(part?.state).toBe('output-error');
+      if (part?.state !== 'output-error') throw new Error('expected output-error');
+      expect(part.errorText).toBe('bad input');
+      expect(part.input).toEqual({ q: 'x' });
+    });
+
+    it('creates an orphan part on tool-input-error with no prior start', () => {
+      let state = init();
+      state = fold(
+        state,
+        { type: 'tool-input-error', toolCallId: 'tc-1', toolName: 'search', input: { q: 'x' }, errorText: 'boom' },
+        meta('s1', 'msg-1'),
+      );
+      const part = toolPartOf(state, 'msg-1', 'tc-1');
+      expect(part?.state).toBe('output-error');
+      if (part?.state !== 'output-error') throw new Error('expected output-error');
+      expect(part.errorText).toBe('boom');
+    });
+  });
+
+  // -- lifecycle folds (finish-step reset, metadata merges) -----------------
+
+  describe('lifecycle folds', () => {
+    it('finish-step resets text/reasoning trackers so a follow-up step reuses stream ids cleanly', () => {
+      let state = init();
+      state = fold(state, { type: 'start' }, meta('s1', 'msg-1'));
+      state = fold(state, { type: 'text-start', id: 't1' }, meta('s2', 'msg-1'));
+      state = fold(state, { type: 'text-delta', id: 't1', delta: 'step-one' }, meta('s3', 'msg-1'));
+      // The in-progress stream is tracked before the step boundary.
+      expect(state.trackers.get('msg-1')?.text.size).toBe(1);
+
+      state = fold(state, { type: 'finish-step' }, meta('s4', 'msg-1'));
+      // The step boundary clears the text/reasoning trackers.
+      expect(state.trackers.get('msg-1')?.text.size).toBe(0);
+
+      // A follow-up step reuses stream id 't1'; the cleared tracker means it
+      // opens a fresh part rather than mis-correlating onto the first.
+      state = fold(state, { type: 'text-start', id: 't1' }, meta('s5', 'msg-1'));
+      state = fold(state, { type: 'text-delta', id: 't1', delta: 'step-two' }, meta('s6', 'msg-1'));
+
+      const texts = msgById(state, 'msg-1')
+        ?.parts.filter((p): p is AI.TextUIPart => p.type === 'text')
+        .map((p) => p.text);
+      expect(texts).toEqual(['step-one', 'step-two']);
+    });
+
+    it('sets messageMetadata from a finish chunk onto the message', () => {
+      let state = init();
+      state = fold(state, { type: 'start' }, meta('s1', 'msg-1'));
+      state = fold(state, { type: 'finish', messageMetadata: { tokens: 42 } }, meta('s2', 'msg-1'));
+      expect(msgById(state, 'msg-1')?.metadata).toEqual({ tokens: 42 });
+    });
+
+    it('overwrites metadata from a message-metadata chunk on the message', () => {
+      let state = init();
+      state = fold(state, { type: 'start', messageMetadata: { a: 1 } }, meta('s1', 'msg-1'));
+      state = fold(state, { type: 'message-metadata', messageMetadata: { b: 2 } }, meta('s2', 'msg-1'));
+      expect(msgById(state, 'msg-1')?.metadata).toEqual({ b: 2 });
+    });
+
+    it('ignores a message-metadata chunk for an unknown message and creates none', () => {
+      let state = init();
+      state = fold(state, { type: 'message-metadata', messageMetadata: { b: 2 } }, meta('s1', 'msg-1'));
+      expect(state.messages).toHaveLength(0);
     });
   });
 

@@ -21,13 +21,14 @@ Create a `ClientSession` and make it available to descendant components. The Rea
 </ClientSessionProvider>
 ```
 
-| Prop          | Type                                            | Description                                                                  |
-| ------------- | ----------------------------------------------- | ---------------------------------------------------------------------------- |
-| `channelName` | `string`                                        | The Ably channel name to subscribe to. Also used as the context registry key |
-| `codec`       | `Codec<TInput, TOutput, TProjection, TMessage>` | The codec for encoding/decoding                                              |
-| `messages`    | `TMessage[]?`                                   | Initial messages to seed the conversation tree                               |
-| `logger`      | `Logger?`                                       | Logger instance                                                              |
-| `children`    | `ReactNode?`                                    | Child components that will have access to this session                       |
+| Prop           | Type                                            | Description                                                                                                                                                                                          |
+| -------------- | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `channelName`  | `string`                                        | The Ably channel name to subscribe to. Also used as the context registry key                                                                                                                         |
+| `codec`        | `Codec<TInput, TOutput, TProjection, TMessage>` | The codec for encoding/decoding                                                                                                                                                                      |
+| `messages`     | `TMessage[]?`                                   | Initial messages to seed the conversation tree                                                                                                                                                       |
+| `channelModes` | `readonly Ably.ChannelMode[]?`                  | Extra channel modes to request, unioned with the modes the SDK always needs. Pass `OBJECT_MODES` to enable [LiveObjects](../features/liveobjects.md). Must stay constant for the provider's lifetime |
+| `logger`       | `Logger?`                                       | Logger instance                                                                                                                                                                                      |
+| `children`     | `ReactNode?`                                    | Child components that will have access to this session                                                                                                                                               |
 
 The session's identity is taken from the Realtime client read from the surrounding `<AblyProvider>` — its `auth.clientId` (set via the Ably token or `ClientOptions.clientId`) is stamped on everything it publishes.
 
@@ -37,7 +38,7 @@ The session subscribes to the Ably channel immediately on creation and `connect(
 
 If `createClientSession` throws during construction, the error is surfaced through `useClientSession` as `sessionError` — the component tree does not crash and children are still rendered.
 
-The provider also renders an ably-js `<ChannelProvider>` for the session's channel, so ably-js's channel hooks — `usePresence`, `usePresenceListener`, `useChannel` — work for any descendant without wrapping the subtree in your own `<ChannelProvider>`. Pass the same `channelName` you gave the provider. See [Presence](../features/presence.md).
+The provider also renders an ably-js `<ChannelProvider>` for the session's channel, so ably-js's channel hooks — `usePresence`, `usePresenceListener`, `useChannel` — work for any descendant without wrapping the subtree in your own `<ChannelProvider>`. Pass the same `channelName` you gave the provider. See [Presence](../features/presence.md). The internal `<ChannelProvider>` is seeded with the same resolved `channelModes` as the session, so the hooks and the session never conflict over channel options.
 
 For multiple sessions, nest providers with distinct `channelName` values:
 
@@ -230,16 +231,17 @@ Create a `ClientSession` and `ChatTransport` and make both available to descenda
 </ChatTransportProvider>
 ```
 
-| Prop          | Type                    | Description                                                                                                                                                          |
-| ------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `channelName` | `string`                | The Ably channel name. Also used as the context registry key                                                                                                         |
-| `api`         | `string?`               | Endpoint the chat transport POSTs the invocation to, to wake the agent. Default `/api/chat`                                                                          |
-| `credentials` | `RequestCredentials?`   | Fetch credentials mode for the invocation POST                                                                                                                       |
-| `fetch`       | `typeof fetch?`         | Custom fetch implementation for the invocation POST                                                                                                                  |
-| `messages`    | `UIMessage[]?`          | Initial messages to seed the conversation tree                                                                                                                       |
-| `logger`      | `Logger?`               | Logger instance                                                                                                                                                      |
-| `chatOptions` | `ChatTransportOptions?` | Optional hooks for customizing the invocation POST (e.g. `prepareSendMessagesRequest`). Must be stable across renders — a new reference recreates the chat transport |
-| `children`    | `ReactNode?`            | Child components that will have access to the chat transport and the session                                                                                         |
+| Prop           | Type                           | Description                                                                                                                                                                                          |
+| -------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `channelName`  | `string`                       | The Ably channel name. Also used as the context registry key                                                                                                                                         |
+| `api`          | `string?`                      | Endpoint the chat transport POSTs the invocation to, to wake the agent. Default `/api/chat`                                                                                                          |
+| `credentials`  | `RequestCredentials?`          | Fetch credentials mode for the invocation POST                                                                                                                                                       |
+| `fetch`        | `typeof fetch?`                | Custom fetch implementation for the invocation POST                                                                                                                                                  |
+| `messages`     | `UIMessage[]?`                 | Initial messages to seed the conversation tree                                                                                                                                                       |
+| `channelModes` | `readonly Ably.ChannelMode[]?` | Extra channel modes to request, unioned with the modes the SDK always needs. Pass `OBJECT_MODES` to enable [LiveObjects](../features/liveobjects.md). Must stay constant for the provider's lifetime |
+| `logger`       | `Logger?`                      | Logger instance                                                                                                                                                                                      |
+| `chatOptions`  | `ChatTransportOptions?`        | Optional hooks for customizing the invocation POST (e.g. `prepareSendMessagesRequest`). Must be stable across renders — a new reference recreates the chat transport                                 |
+| `children`     | `ReactNode?`                   | Child components that will have access to the chat transport and the session                                                                                                                         |
 
 Like `ClientSessionProvider`, this provider takes its identity from the Realtime client in the surrounding `<AblyProvider>` (`auth.clientId`, set via the Ably token or `ClientOptions.clientId`).
 

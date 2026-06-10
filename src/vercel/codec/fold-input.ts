@@ -10,7 +10,7 @@
 
 import type * as AI from 'ai';
 
-import type { ReducerMeta, ToolApprovalResponse, ToolResult, ToolResultError } from '../../core/codec/types.js';
+import type { ReducerMeta, ToolApprovalResponse, ToolResult, ToolResultError } from '../../core/codec/index.js';
 import type {
   VercelToolApprovalResponsePayload,
   VercelToolResultErrorPayload,

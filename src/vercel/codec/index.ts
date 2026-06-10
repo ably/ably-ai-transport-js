@@ -17,7 +17,7 @@
  * ```
  */
 
-import { defineCodec } from '../../core/codec/define-codec.js';
+import { defineCodec } from '../../core/codec/index.js';
 import { createVercelDecodeLifecycle } from './decode-lifecycle.js';
 import type { VercelInput, VercelOutput } from './events.js';
 import { inputs } from './inputs.js';

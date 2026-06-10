@@ -7,7 +7,7 @@
 
 import type * as AI from 'ai';
 
-import type { CodecMessage } from '../../core/codec/types.js';
+import type { CodecMessage } from '../../core/codec/index.js';
 
 // ---------------------------------------------------------------------------
 // Internal tracker state

@@ -16,8 +16,7 @@
 import type * as AI from 'ai';
 
 import { HEADER_ROLE } from '../../constants.js';
-import type { InputBuilder } from '../../core/codec/define-codec.js';
-import type { InputDescriptor } from '../../core/codec/input-descriptors.js';
+import type { InputBuilder, InputDescriptor } from '../../core/codec/index.js';
 import type { VercelInput } from './events.js';
 import { fApproved, fId, fMediaType, fMessageId, fReason, fToolCallId } from './fields.js';
 import { isClientToolResultErrorWireData, isToolOutputAvailableWireData } from './wire-data.js';

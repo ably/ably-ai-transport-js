@@ -27,7 +27,7 @@ import { ErrorCode } from '../../errors.js';
 import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { compareBySerial, getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
-import type { CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
+import type { Codec, CodecInputEvent, CodecOutputEvent, Decoder } from '../codec/types.js';
 import { applyWireMessage } from './decode-fold.js';
 import { buildTransportHeaders } from './headers.js';
 import { evictOldestIfFull } from './internal/bounded-map.js';
@@ -173,7 +173,7 @@ class DefaultAgentSession<
   TMessage,
 > implements AgentSession<TOutput, TProjection, TMessage> {
   private readonly _channel: Ably.RealtimeChannel;
-  private readonly _codec: AgentSessionOptions<TInput, TOutput, TProjection, TMessage>['codec'];
+  private readonly _codec: Codec<TInput, TOutput, TProjection, TMessage>;
   private readonly _logger: Logger | undefined;
   private readonly _onError: ((error: Ably.ErrorInfo) => void) | undefined;
   private readonly _runManager: RunManager;
@@ -213,9 +213,9 @@ class DefaultAgentSession<
    * Single shared inbound decoder threaded through every `applyWireMessage`
    * call (live + history). Streaming-across-pages folds correctly because
    * the decoder keeps stream-tracker state across messages. Outbound encoders
-   * (used by `Run.pipe` / `Run.addEvents`) manage their own decoders.
+   * (used by `Run.pipe`) manage their own decoders.
    */
-  private _decoder: ReturnType<AgentSessionOptions<TInput, TOutput, TProjection, TMessage>['codec']['createDecoder']>;
+  private _decoder: Decoder<TInput, TOutput>;
   /**
    * Single-slot promise mutex for history-page hydration. Concurrent
    * `loadConversation` calls that both need to extend the Tree's ancestor
@@ -262,9 +262,6 @@ class DefaultAgentSession<
     // (options.agents) and channel-attach (params.agent) paths. Idempotent
     // across sessions sharing one client.
     const registerOptions = registerAgent(options.client, options.codec);
-    // No `rewind` param. The `untilAttach: true` history scan plus the
-    // post-attach live subscription cover every message by serial boundary, so
-    // rewind would only duplicate messages the Tree already folds.
     this._channel = options.client.channels.get(options.channelName, registerOptions);
     this._logger = options.logger?.withContext({ component: 'AgentSession' });
     this._onError = options.onError;

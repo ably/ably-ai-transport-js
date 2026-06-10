@@ -17,6 +17,8 @@
  */
 
 import * as Ably from 'ably';
+// Also augments RealtimeChannel with `.object` (ably/liveobjects side-effect).
+import type * as AblyObjects from 'ably/liveobjects';
 
 import {
   EVENT_CANCEL,
@@ -38,6 +40,7 @@ import type { Logger } from '../../logger.js';
 import { LogLevel, makeLogger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
+import { resolveChannelModes } from '../channel-options.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent, Decoder, Encoder } from '../codec/types.js';
 import { applyWireMessage } from './decode-fold.js';
 import { buildTransportHeaders } from './headers.js';
@@ -137,7 +140,10 @@ class DefaultClientSession<
     // Spec: AIT-CT1a, AIT-CT1a2 — register this SDK on both the connection
     // (options.agents) and channel-attach (params.agent) paths. Idempotent
     // across sessions sharing one client.
-    const channelOptions = registerAgent(options.client, options.codec);
+    const channelOptions: Ably.ChannelOptions = registerAgent(options.client, options.codec);
+    // Spec: AIT-CT23 — request object modes etc. when channelModes opts in.
+    const modes = resolveChannelModes(options.channelModes);
+    if (modes) channelOptions.modes = modes;
     this._channel = options.client.channels.get(options.channelName, channelOptions);
     this._client = options.client;
     this._codec = options.codec;
@@ -208,6 +214,11 @@ class DefaultClientSession<
   // Spec: AIT-CT21
   get presence(): Ably.RealtimePresence {
     return this._channel.presence;
+  }
+
+  // Spec: AIT-CT22
+  get object(): AblyObjects.RealtimeObject {
+    return this._channel.object;
   }
 
   // ---------------------------------------------------------------------------

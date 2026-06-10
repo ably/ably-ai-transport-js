@@ -1,6 +1,8 @@
 /** Client session types: options, send options, the ActiveRun handle, and the ClientSession contract. */
 
 import type * as Ably from 'ably';
+// Also augments RealtimeChannel with `.object` (ably/liveobjects side-effect).
+import type * as AblyObjects from 'ably/liveobjects';
 
 import type { Logger } from '../../../logger.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../../codec/types.js';
@@ -43,6 +45,20 @@ export interface ClientSessionOptions<
 
   /** Initial messages to seed the conversation tree with. Forms a linear chain. */
   messages?: TMessage[];
+
+  /**
+   * Extra Ably channel modes to request on the session's channel, on top of the
+   * modes AI Transport always needs. Pass `OBJECT_MODES` (or
+   * `['OBJECT_SUBSCRIBE', 'OBJECT_PUBLISH']`) to use Ably LiveObjects via
+   * {@link ClientSession.object}. Omit to attach with the default mode set
+   * (no mode flags sent).
+   *
+   * The session requests the union of these modes with the modes it always
+   * needs, so passing extra modes never drops the SDK's required modes. The
+   * connection's token/key capability must permit the requested operations,
+   * otherwise the server grants only the permitted subset.
+   */
+  channelModes?: readonly Ably.ChannelMode[];
 
   /** Logger instance for diagnostic output. */
   logger?: Logger;
@@ -176,6 +192,21 @@ export interface ClientSession<
    * been called first.
    */
   readonly presence: Ably.RealtimePresence;
+
+  /**
+   * The Ably LiveObjects entry point for this session's channel.
+   *
+   * Exposed as a convenience so callers can read and mutate shared objects
+   * (LiveMap / LiveCounter) on the same channel the session uses, without
+   * obtaining the channel separately. This is the same `RealtimeObject`
+   * instance the underlying channel exposes; the session applies no additional
+   * semantics. Operating on it requires (a) the Realtime client to have been
+   * constructed with the `LiveObjects` plugin from `ably/liveobjects` and
+   * (b) the object channel modes to have been requested via
+   * {@link ClientSessionOptions.channelModes}. When either is absent the
+   * underlying SDK throws; the session does not suppress the error.
+   */
+  readonly object: AblyObjects.RealtimeObject;
 
   /**
    * Subscribe to the channel and (implicitly) attach. Idempotent —

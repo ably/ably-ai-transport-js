@@ -117,6 +117,13 @@ describe('useClientSession', () => {
       );
     });
 
+    it('stub object getter throws ErrorInfo with InvalidArgument', () => {
+      const { result } = renderHook(() => useClientSession({ skip: true }));
+      expect(() => result.current.session.object).toThrow(
+        expect.objectContaining({ code: ErrorCode.InvalidArgument, statusCode: 400 }),
+      );
+    });
+
     it('stub cancel throws ErrorInfo with InvalidArgument', () => {
       const { result } = renderHook(() => useClientSession({ skip: true }));
       expect(() => {

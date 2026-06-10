@@ -15,11 +15,16 @@ const flushMicrotasks = async (): Promise<void> => {
   });
 };
 
+import { OBJECT_MODES, resolveChannelModes } from '../../../src/core/channel-options.js';
 import type { CodecInputEvent, CodecOutputEvent } from '../../../src/core/codec/types.js';
 import type { ClientSession } from '../../../src/core/transport/types.js';
 import { ClientSessionProvider } from '../../../src/react/contexts/client-session-provider.js';
 import { useClientSession } from '../../../src/react/use-client-session.js';
 import { createMockSession } from '../helper/mock-session.js';
+
+// Capture the options the provider passes to ably-js's <ChannelProvider>.
+// Hoisted so the (hoisted) vi.mock factory can write to it.
+const channelProviderCapture = vi.hoisted(() => ({ options: undefined as Ably.ChannelOptions | undefined }));
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -37,7 +42,10 @@ vi.mock('ably/react', async () => {
   const { createElement, Fragment } = await import('react');
   return {
     useAbly: () => fakeAblyClient,
-    ChannelProvider: ({ children }: { children?: ReactNode }) => createElement(Fragment, undefined, children),
+    ChannelProvider: ({ children, options }: { children?: ReactNode; options?: Ably.ChannelOptions }) => {
+      channelProviderCapture.options = options;
+      return createElement(Fragment, undefined, children);
+    },
   };
 });
 
@@ -97,6 +105,7 @@ describe('ClientSessionProvider', () => {
   beforeEach(() => {
     createClientSessionMock.mockClear();
     createClientSessionMock.mockImplementation(() => createMockSession().session);
+    channelProviderCapture.options = undefined;
   });
 
   it('creates a session and makes it available via useClientSession(channelName)', () => {
@@ -274,5 +283,31 @@ describe('ClientSessionProvider', () => {
     const callArgs = createClientSessionMock.mock.calls[0]?.[0] as { channelName: string; logger: unknown };
     expect(callArgs.channelName).toBe('ai:test');
     expect(callArgs.logger).toBe(logger);
+  });
+
+  it('passes the resolved channel modes to <ChannelProvider> and the session identically', () => {
+    // wrapper closes over OBJECT_MODES — unicorn/consistent-function-scoping does not fire for closures
+    const wrapWithModes = ({ children }: { children: ReactNode }): ReactNode =>
+      createElement(
+        ClientSessionProvider<CodecInputEvent, CodecOutputEvent, unknown, unknown>,
+        // Pass the OBJECT_MODES constant as-is — the documented usage; the
+        // option must accept the readonly array without a copy.
+        { channelName: 'ai:test', codec: {} as never, channelModes: OBJECT_MODES },
+        children,
+      );
+
+    renderHook(() => useClientSession({ channelName: 'ai:test' }), { wrapper: wrapWithModes });
+
+    // The provider must hand <ChannelProvider> the canonically-resolved modes...
+    expect(channelProviderCapture.options?.modes).toEqual(resolveChannelModes(OBJECT_MODES));
+    // ...and the session must receive the same channelModes, so both resolve
+    // to the identical mode set and the provider never reverts the session's.
+    const callArgs = createClientSessionMock.mock.calls[0]?.[0] as { channelModes?: readonly Ably.ChannelMode[] };
+    expect(resolveChannelModes(callArgs.channelModes)).toEqual(channelProviderCapture.options?.modes);
+  });
+
+  it('sets no modes on <ChannelProvider> when channelModes is omitted', () => {
+    renderHook(() => useClientSession({ channelName: 'ai:test' }), { wrapper: wrapDefault });
+    expect(channelProviderCapture.options?.modes).toBeUndefined();
   });
 });

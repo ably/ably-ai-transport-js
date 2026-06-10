@@ -91,6 +91,8 @@ interface MockChannel {
   stateListeners: Set<Ably.channelEventCallback>;
   /** Sentinel presence object — asserted by identity via `session.presence`. */
   presence: Ably.RealtimePresence;
+  /** Sentinel LiveObjects entry point — asserted by identity via `session.object`. */
+  object: unknown;
 }
 
 const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
@@ -102,6 +104,8 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
     state: 'attached',
     // CAST: only identity is asserted in tests; presence methods are unused here.
     presence: { get: vi.fn(), enter: vi.fn(), leave: vi.fn() } as unknown as Ably.RealtimePresence,
+    // Sentinel — only identity is asserted via `session.object`.
+    object: { get: vi.fn() },
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
     publish: vi.fn((msg: Ably.Message | Ably.Message[]) => {
       if (Array.isArray(msg)) mock.publishCalls.push(...msg);
@@ -465,6 +469,58 @@ describe('AgentSession', () => {
         codec,
       });
       expect(s.presence).toBe(ch.presence);
+      await s.close();
+    });
+
+    it("exposes the underlying channel's object entry point", () => {
+      expect(session.object).toBe(channel.object);
+    });
+
+    it('exposes object before connect() is called', async () => {
+      const ch = createMockChannel();
+      const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'agent-channel',
+        codec,
+      });
+      expect(s.object).toBe(ch.object);
+      await s.close();
+    });
+
+    it('requests the resolved modes on the channel when channelModes is supplied', async () => {
+      const ch = createMockChannel();
+      const client = createMockClient(ch);
+      const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client,
+        channelName: 'object-channel',
+        codec,
+        channelModes: ['OBJECT_SUBSCRIBE', 'OBJECT_PUBLISH'],
+      });
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
+      const options = vi.mocked(client.channels.get).mock.calls[0]?.[1];
+      expect(options?.modes).toEqual([
+        'PUBLISH',
+        'SUBSCRIBE',
+        'PRESENCE',
+        'PRESENCE_SUBSCRIBE',
+        'OBJECT_PUBLISH',
+        'OBJECT_SUBSCRIBE',
+        'ANNOTATION_PUBLISH',
+      ]);
+      await s.close();
+    });
+
+    it('sets no modes on the channel when channelModes is omitted', async () => {
+      const ch = createMockChannel();
+      const client = createMockClient(ch);
+      const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client,
+        channelName: 'agent-channel',
+        codec,
+      });
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
+      const options = vi.mocked(client.channels.get).mock.calls[0]?.[1];
+      expect(options?.modes).toBeUndefined();
       await s.close();
     });
 

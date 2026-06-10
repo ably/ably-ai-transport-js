@@ -11,6 +11,8 @@
  */
 
 import * as Ably from 'ably';
+// Also augments RealtimeChannel with `.object` (ably/liveobjects side-effect).
+import type * as AblyObjects from 'ably/liveobjects';
 
 import {
   EVENT_CANCEL,
@@ -27,6 +29,7 @@ import { ErrorCode } from '../../errors.js';
 import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { compareBySerial, getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
+import { resolveChannelModes } from '../channel-options.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
 import { createWireApplier, type WireApplier } from './decode-fold.js';
 import { buildTransportHeaders } from './headers.js';
@@ -300,7 +303,11 @@ class DefaultAgentSession<
     // (options.agents) and channel-attach (params.agent) paths. Idempotent
     // across sessions sharing one client.
     const registerOptions = registerAgent(options.client, options.codec);
-    this._channel = options.client.channels.get(options.channelName, registerOptions);
+    const channelOptions: Ably.ChannelOptions = { ...registerOptions };
+    // Spec: AIT-ST16 — request object modes etc. when channelModes opts in.
+    const modes = resolveChannelModes(options.channelModes);
+    if (modes) channelOptions.modes = modes;
+    this._channel = options.client.channels.get(options.channelName, channelOptions);
     this._logger = options.logger?.withContext({ component: 'AgentSession' });
     this._onError = options.onError;
     this._runManager = createRunManager(this._channel, this._logger);
@@ -339,6 +346,11 @@ class DefaultAgentSession<
   // Spec: AIT-ST14
   get presence(): Ably.RealtimePresence {
     return this._channel.presence;
+  }
+
+  // Spec: AIT-ST15
+  get object(): AblyObjects.RealtimeObject {
+    return this._channel.object;
   }
 
   // -------------------------------------------------------------------------

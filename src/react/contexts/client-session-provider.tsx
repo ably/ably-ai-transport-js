@@ -35,6 +35,7 @@ import { ChannelProvider, useAbly } from 'ably/react';
 import { type PropsWithChildren, type ReactNode, useContext, useEffect, useMemo, useRef } from 'react';
 
 import { channelAgent } from '../../core/agent.js';
+import { resolveChannelModes } from '../../core/channel-options.js';
 import type { CodecInputEvent, CodecOutputEvent } from '../../core/codec/types.js';
 import { createClientSession } from '../../core/transport/client-session.js';
 import type { ClientSession, ClientSessionOptions } from '../../core/transport/types.js';
@@ -93,6 +94,9 @@ export interface ClientSessionProviderProps<
  * const { session: main } = useClientSession({ channelName: 'ai:main' });
  * const { session: aux }  = useClientSession({ channelName: 'ai:aux' });
  * ```
+ * `channelModes` must stay constant for the provider's lifetime: the session is
+ * only recreated when `channelName` changes, and removing the modes after mount
+ * silently reverts the channel's mode set without a reattach.
  * @param props - Provider configuration including `channelName`, `codec`, and all other {@link ClientSessionOptions} except `client`.
  * @param props.children - Descendant components that consume the session via {@link useClientSession}.
  * @returns A React element wrapping children with ClientSessionContext.
@@ -112,10 +116,18 @@ export const ClientSessionProvider = <
   // Seed the ChannelProvider with this SDK's channel agent so ably-js's React
   // hooks append their agent (`channelOptionsForReactHooks`) rather than
   // overwriting it. Memoised on the codec, which determines the agent string.
-  const channelOptions = useMemo<Ably.ChannelOptions>(
-    () => ({ params: { agent: channelAgent(sessionOptions.codec) } }),
-    [sessionOptions.codec],
-  );
+  //
+  // Spec: AIT-CT23 — resolve the channel modes through the same helper the
+  // session uses so the provider and the session request an identical,
+  // identically-ordered mode set. ably-js compares modes order- and
+  // duplicate-sensitively, so matching arrays mean the provider's setOptions
+  // never triggers a reattach and never silently reverts the session's modes.
+  const channelOptions = useMemo<Ably.ChannelOptions>(() => {
+    const options: Ably.ChannelOptions = { params: { agent: channelAgent(sessionOptions.codec) } };
+    const modes = resolveChannelModes(sessionOptions.channelModes);
+    if (modes) options.modes = modes;
+    return options;
+  }, [sessionOptions.codec, sessionOptions.channelModes]);
   const sessionRef = useRef<ClientSession<TInput, TOutput, TProjection, TMessage> | undefined>(undefined);
   const sessionChannelRef = useRef<string>(channelName);
   const sessionsToDisposeRef = useRef<ClientSession<CodecInputEvent, CodecOutputEvent, unknown, unknown>[]>([]);

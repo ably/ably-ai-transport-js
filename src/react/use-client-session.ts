@@ -20,6 +20,8 @@
  */
 
 import * as Ably from 'ably';
+// Also augments RealtimeChannel with `.object` (ably/liveobjects side-effect).
+import type * as AblyObjects from 'ably/liveobjects';
 import { useContext, useEffect, useRef } from 'react';
 
 import type { CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
@@ -36,6 +38,9 @@ const SKIPPED_SESSION: ClientSession<CodecInputEvent, CodecOutputEvent, unknown,
   },
   get presence(): Ably.RealtimePresence {
     throw new Ably.ErrorInfo('unable to access presence; hook is skipped', ErrorCode.InvalidArgument, 400);
+  },
+  get object(): AblyObjects.RealtimeObject {
+    throw new Ably.ErrorInfo('unable to access object; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   connect: () => {
     throw new Ably.ErrorInfo('unable to connect; hook is skipped', ErrorCode.InvalidArgument, 400);

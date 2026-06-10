@@ -13,6 +13,8 @@
  */
 
 import * as Ably from 'ably';
+// Also augments RealtimeChannel with `.object` (ably/liveobjects side-effect).
+import type * as AblyObjects from 'ably/liveobjects';
 import type * as AI from 'ai';
 import { useContext } from 'react';
 
@@ -31,6 +33,9 @@ const SKIPPED_CLIENT_SESSION: ClientSession<VercelInput, VercelOutput, VercelPro
   },
   get presence(): Ably.RealtimePresence {
     throw new Ably.ErrorInfo('unable to access presence; hook is skipped', ErrorCode.InvalidArgument, 400);
+  },
+  get object(): AblyObjects.RealtimeObject {
+    throw new Ably.ErrorInfo('unable to access object; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   connect: () => {
     throw new Ably.ErrorInfo('unable to connect; hook is skipped', ErrorCode.InvalidArgument, 400);

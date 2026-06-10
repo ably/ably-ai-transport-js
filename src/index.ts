@@ -28,6 +28,9 @@ export type {
 } from './core/transport/index.js';
 export { buildTransportHeaders, createAgentSession, createClientSession, Invocation } from './core/transport/index.js';
 
+// Channel modes
+export { OBJECT_MODES } from './core/channel-options.js';
+
 // Core codec
 export type {
   BatchAssembleContext,

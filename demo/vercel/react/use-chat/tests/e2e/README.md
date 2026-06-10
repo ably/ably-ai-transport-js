@@ -24,8 +24,9 @@ pnpm run test:e2e -- --grep "fresh send"   # forward args to Playwright
 pnpm run test:e2e:live                     # real Ably + LLM keys from .env.local
 ```
 
-`test:e2e` runs `scripts/run-e2e.mjs`, which provisions the sandbox app and sets,
-for the Playwright run and the Next.js dev server it spawns:
+`test:e2e` runs the shared launcher (`demo/e2e/run-e2e.mjs`), which provisions
+the sandbox app and sets, for the Playwright run and the Next.js dev server it
+spawns:
 
 | Variable                    | Value             | Used by                          |
 | --------------------------- | ----------------- | -------------------------------- |

@@ -40,6 +40,7 @@ Ably AI Transport SDK is not an agent framework or orchestration layer - it work
 - **History** - The Ably channel is the conversation record. Clients hydrate from channel history on load - no separate database query needed.
 - **Branching** - Regenerate or edit messages to fork the conversation. The SDK tracks parent/child relationships and exposes a navigable tree.
 - **Presence** - The session channel carries Ably Presence. `session.presence` exposes it directly, and ably-js's presence hooks work inside the React providers - see which clients are connected to a session.
+- **LiveObjects** - The session channel can carry Ably LiveObjects: synchronized shared state (maps, counters) alongside the conversation. `session.object` exposes it directly - opt in with the LiveObjects plugin and `channelModes`.
 - **Framework-agnostic** - A codec interface decouples transport from the AI framework. Ships with a Vercel AI SDK codec; bring your own for any other stack.
 
 ### When you need this
@@ -363,7 +364,7 @@ Detailed documentation lives in the [`docs/`](./docs/) directory:
 - **[Concepts](./docs/concepts/)** - [Sessions](./docs/concepts/sessions.md), [Runs](./docs/concepts/runs.md)
 - **[Get started](./docs/get-started/)** - [Vercel AI SDK with useChat](./docs/get-started/vercel-use-chat.md), [Vercel AI SDK with useClientSession](./docs/get-started/vercel-use-client-session.md)
 - **[Frameworks](./docs/frameworks/)** - [Vercel AI SDK](./docs/frameworks/vercel-ai-sdk.md)
-- **[Features](./docs/features/)** - [Streaming](./docs/features/streaming.md), [Cancellation](./docs/features/cancel.md), [Interruption](./docs/features/interruption.md), [Optimistic updates](./docs/features/optimistic-updates.md), [History](./docs/features/history.md), [Branching](./docs/features/branching.md), [Multi-client sync](./docs/features/multi-client.md), [Concurrent runs](./docs/features/concurrent-runs.md), [Presence](./docs/features/presence.md)
+- **[Features](./docs/features/)** - [Streaming](./docs/features/streaming.md), [Cancellation](./docs/features/cancel.md), [Interruption](./docs/features/interruption.md), [Optimistic updates](./docs/features/optimistic-updates.md), [History](./docs/features/history.md), [Branching](./docs/features/branching.md), [Multi-client sync](./docs/features/multi-client.md), [Concurrent runs](./docs/features/concurrent-runs.md), [Presence](./docs/features/presence.md), [LiveObjects](./docs/features/liveobjects.md)
 - **[Reference](./docs/reference/)** - [React hooks](./docs/reference/react-hooks.md), [Error codes](./docs/reference/error-codes.md)
 - **[Internals](./docs/internals/)** - Architecture details for contributors
 

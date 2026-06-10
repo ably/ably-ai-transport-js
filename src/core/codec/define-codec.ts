@@ -20,10 +20,11 @@ import { EVENT_AI_INPUT, EVENT_AI_OUTPUT, HEADER_RUN_ID } from '../../constants.
 import type { DecoderCore, DecoderCoreHooks, DecoderCoreOptions } from './decoder.js';
 import { createDecoderCore } from './decoder.js';
 import { createDescriptorDecoder } from './descriptor-decoder.js';
-import { createDescriptorEncoder, type DescriptorEncoder, KIND_HEADER } from './descriptor-encoder.js';
+import { createDescriptorEncoder, type DescriptorEncoder } from './descriptor-encoder.js';
 import type { Descriptor, EscapeHatchCore } from './descriptors.js';
 import type { EncoderCore, EncoderCoreOptions } from './encoder.js';
 import { createEncoderCore } from './encoder.js';
+import { KIND_HEADER } from './field-bag.js';
 import type {
   ChannelWriter,
   Codec,

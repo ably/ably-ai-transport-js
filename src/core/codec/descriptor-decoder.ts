@@ -12,9 +12,8 @@
  */
 
 import { stripUndefined } from '../../utils.js';
-import { KIND_HEADER } from './descriptor-encoder.js';
 import type { DecodeCtx, Descriptor, EventDescriptor, StreamDescriptor } from './descriptors.js';
-import type { HeaderField } from './fields.js';
+import { KIND_HEADER, readFields } from './field-bag.js';
 import type { StreamTrackerState } from './types.js';
 
 /**
@@ -48,15 +47,6 @@ export interface DescriptorDecoder<U> {
     data: unknown,
   ): U[];
 }
-
-const readFields = (
-  fields: readonly HeaderField<unknown>[],
-  headers: Record<string, string>,
-): Record<string, unknown> => {
-  const bag: Record<string, unknown> = {};
-  for (const field of fields) bag[field.key] = field.read(headers);
-  return bag;
-};
 
 /**
  * Build a decode driver for a descriptor set.

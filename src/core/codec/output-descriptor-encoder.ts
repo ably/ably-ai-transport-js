@@ -57,7 +57,7 @@ export const createOutputDescriptorEncoder = <U extends { type: string }>(
   const streamByPhase = new Map<string, { descriptor: OutputStreamDescriptor<U>; phase: 'start' | 'delta' | 'end' }>();
 
   for (const descriptor of descriptors) {
-    if (descriptor.kind === 'event') {
+    if (descriptor.construct === 'event') {
       if (descriptor.match) wildcards.push(descriptor);
       else discreteByType.set(descriptor.type, descriptor);
     } else {
@@ -74,7 +74,7 @@ export const createOutputDescriptorEncoder = <U extends { type: string }>(
       const streamEntry = streamByPhase.get(type);
       if (streamEntry) {
         const { descriptor, phase } = streamEntry;
-        const h: HeaderBuilder<U> = (c, keys) => writeFields(descriptor.fields, descriptor.familyId, c, keys);
+        const h: HeaderBuilder<U> = (c, keys) => writeFields(descriptor.fields, descriptor.kind, c, keys);
         // CAST: idField/deltaField are string-valued chunk keys by construction.
         const streamId = prop(chunk, descriptor.idField) as string;
         if (phase === 'start') {

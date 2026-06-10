@@ -12,7 +12,7 @@
 import type * as AI from 'ai';
 import { isDataUIPart } from 'ai';
 
-import { EVENT_AI_INPUT, HEADER_CODEC_MESSAGE_ID, HEADER_DISCRETE, HEADER_ROLE } from '../../constants.js';
+import { EVENT_AI_INPUT, HEADER_CODEC_MESSAGE_ID, HEADER_ROLE } from '../../constants.js';
 import type {
   InputAdapter,
   InputAdapterCore,
@@ -22,7 +22,7 @@ import type {
 import type { MessagePayload, UserMessage } from '../../core/codec/types.js';
 import { stripUndefined } from '../../utils.js';
 import type { VercelInput } from './events.js';
-import { fApproved, fId, fMediaType, fMessageId, fReason, fToolCallId, fType } from './fields.js';
+import { fApproved, fId, fKind, fMediaType, fMessageId, fPartType, fReason, fToolCallId } from './fields.js';
 import { isClientToolResultErrorWireData, isToolOutputAvailableWireData } from './wire-data.js';
 
 const isDataEventName = (name: string): name is `data-${string}` => name.startsWith('data-');
@@ -46,14 +46,16 @@ const encodeMessagePayloads = (message: AI.UIMessage): MessagePayload[] => {
     switch (part.type) {
       case 'text': {
         const codecHeaders: Record<string, string> = {};
-        fType.write(codecHeaders, 'text');
+        fKind.write(codecHeaders, 'user-message');
+        fPartType.write(codecHeaders, 'text');
         fMessageId.write(codecHeaders, messageId);
         payloads.push({ name: EVENT_AI_INPUT, data: part.text, codecHeaders });
         break;
       }
       case 'file': {
         const codecHeaders: Record<string, string> = {};
-        fType.write(codecHeaders, 'file');
+        fKind.write(codecHeaders, 'user-message');
+        fPartType.write(codecHeaders, 'file');
         fMessageId.write(codecHeaders, messageId);
         fMediaType.write(codecHeaders, part.mediaType);
         payloads.push({ name: EVENT_AI_INPUT, data: part.url, codecHeaders });
@@ -62,7 +64,8 @@ const encodeMessagePayloads = (message: AI.UIMessage): MessagePayload[] => {
       default: {
         if (isDataUIPart(part)) {
           const codecHeaders: Record<string, string> = {};
-          fType.write(codecHeaders, part.type);
+          fKind.write(codecHeaders, 'user-message');
+          fPartType.write(codecHeaders, part.type);
           fMessageId.write(codecHeaders, messageId);
           fId.write(codecHeaders, part.id);
           payloads.push({ name: EVENT_AI_INPUT, data: part.data, codecHeaders });
@@ -75,7 +78,8 @@ const encodeMessagePayloads = (message: AI.UIMessage): MessagePayload[] => {
   if (payloads.length === 0) {
     // Always emit at least one part so the decoder can reconstruct the codec-message-id and role from headers, even when the user-message carried no encodable parts.
     const codecHeaders: Record<string, string> = {};
-    fType.write(codecHeaders, 'text');
+    fKind.write(codecHeaders, 'user-message');
+    fPartType.write(codecHeaders, 'text');
     fMessageId.write(codecHeaders, messageId);
     payloads.push({ name: EVENT_AI_INPUT, data: '', codecHeaders });
   }
@@ -107,20 +111,20 @@ const encode = async (input: VercelInput, core: InputAdapterCore, { opts }: Inpu
       // Wire-only signal: no domain payload. `parent` / `target` ride the
       // transport headers built by the client-session (via opts).
       const codecHeaders: Record<string, string> = {};
-      fType.write(codecHeaders, 'regenerate');
+      fKind.write(codecHeaders, 'regenerate');
       await core.publishDiscrete({ name: EVENT_AI_INPUT, data: '', codecHeaders }, opts);
       return;
     }
     case 'tool-result': {
       const codecHeaders: Record<string, string> = {};
-      fType.write(codecHeaders, 'tool-result');
+      fKind.write(codecHeaders, 'tool-result');
       fToolCallId.write(codecHeaders, input.payload.toolCallId);
       await core.publishDiscrete({ name: EVENT_AI_INPUT, data: { output: input.payload.output }, codecHeaders }, opts);
       return;
     }
     case 'tool-result-error': {
       const codecHeaders: Record<string, string> = {};
-      fType.write(codecHeaders, 'tool-result-error');
+      fKind.write(codecHeaders, 'tool-result-error');
       fToolCallId.write(codecHeaders, input.payload.toolCallId);
       await core.publishDiscrete(
         { name: EVENT_AI_INPUT, data: { message: input.payload.message }, codecHeaders },
@@ -130,7 +134,7 @@ const encode = async (input: VercelInput, core: InputAdapterCore, { opts }: Inpu
     }
     case 'tool-approval-response': {
       const codecHeaders: Record<string, string> = {};
-      fType.write(codecHeaders, 'tool-approval-response');
+      fKind.write(codecHeaders, 'tool-approval-response');
       fToolCallId.write(codecHeaders, input.payload.toolCallId);
       fApproved.write(codecHeaders, input.payload.approved);
       fReason.write(codecHeaders, input.payload.reason);
@@ -144,20 +148,17 @@ const encode = async (input: VercelInput, core: InputAdapterCore, { opts }: Inpu
 // Decode (ai-input → VercelInput)
 // ---------------------------------------------------------------------------
 
-const isDiscreteMessagePart = (codecType: string, transportHeaders: Record<string, string>): boolean =>
-  (codecType === 'text' || codecType === 'file' || isDataEventName(codecType)) && HEADER_DISCRETE in transportHeaders;
-
 /**
- * Decode one discrete user-message wire part into a one-part UIMessage. The
- * reducer merges parts sharing a codec-message-id into a single message.
- * @param codecType - The codec `type` header (text / file / data-*).
+ * Decode one user-message wire part into a one-part UIMessage. The reducer
+ * merges parts sharing a codec-message-id into a single message. The part type
+ * is read from the dedicated `partType` codec header (the `kind` header is the
+ * uniform `'user-message'` dispatch key for every part).
  * @param data - The wire data.
- * @param codecHeaders - The codec-tier headers.
+ * @param codecHeaders - The codec-tier headers (`partType`, messageId, …).
  * @param transportHeaders - The transport-tier headers (carries the role).
  * @returns A single `user-message` input, or an empty array when the part type is unrecognised.
  */
-const decodeDiscreteMessagePart = (
-  codecType: string,
+const decodeUserMessagePart = (
   data: unknown,
   codecHeaders: Record<string, string>,
   transportHeaders: Record<string, string>,
@@ -165,10 +166,11 @@ const decodeDiscreteMessagePart = (
   // CAST: HEADER_ROLE is wire data; the role string is trusted as a UIMessage role.
   const role = (transportHeaders[HEADER_ROLE] ?? 'user') as AI.UIMessage['role'];
   const messageId = fMessageId.read(codecHeaders) ?? '';
+  const partType = fPartType.read(codecHeaders);
 
   let part: AI.UIMessage['parts'][number] | undefined;
 
-  switch (codecType) {
+  switch (partType) {
     case 'text': {
       part = { type: 'text', text: typeof data === 'string' ? data : '' };
       break;
@@ -182,8 +184,8 @@ const decodeDiscreteMessagePart = (
       break;
     }
     default: {
-      if (isDataEventName(codecType)) {
-        part = stripUndefined({ type: codecType, id: fId.read(codecHeaders), data });
+      if (isDataEventName(partType)) {
+        part = stripUndefined({ type: partType, id: fId.read(codecHeaders), data });
       }
       break;
     }
@@ -241,16 +243,15 @@ const decodeClientToolApprovalResponse = (
   },
 ];
 
-const decode = ({ codecType, data, codecHeaders, transportHeaders }: InputDecodeContext): VercelInput[] => {
-  // Multi-part user-message parts (text / file / data-*) carry the discrete
-  // marker because they ride publishDiscreteBatch; fan them back out.
-  if (isDiscreteMessagePart(codecType, transportHeaders)) {
-    return decodeDiscreteMessagePart(codecType, data, codecHeaders, transportHeaders);
-  }
-
+const decode = ({ codecKind, data, codecHeaders, transportHeaders }: InputDecodeContext): VercelInput[] => {
   const codecMessageId = transportHeaders[HEADER_CODEC_MESSAGE_ID] ?? '';
 
-  switch (codecType) {
+  // A single `kind` switch dispatches every input; `user-message` is uniform
+  // with the rest and carries its part type in the dedicated `partType` header.
+  switch (codecKind) {
+    case 'user-message': {
+      return decodeUserMessagePart(data, codecHeaders, transportHeaders);
+    }
     case 'tool-result': {
       return decodeClientToolResult(codecMessageId, codecHeaders, data);
     }

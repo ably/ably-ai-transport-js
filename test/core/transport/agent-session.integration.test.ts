@@ -691,9 +691,9 @@ describe('AgentSession integration', () => {
       resolve = r;
     });
     const isToolOutputAvailable = (msg: Ably.InboundMessage): boolean =>
-      msg.name === EVENT_AI_OUTPUT && getHeaders(msg).type === 'tool-output-available';
+      msg.name === EVENT_AI_OUTPUT && getHeaders(msg).kind === 'tool-output-available';
     const isText = (msg: Ably.InboundMessage): boolean =>
-      msg.name === EVENT_AI_OUTPUT && getHeaders(msg).type === 'text';
+      msg.name === EVENT_AI_OUTPUT && getHeaders(msg).kind === 'text';
     await subChannel.subscribe((msg) => {
       rawMessages.push(msg);
       if (isToolOutputAvailable(msg)) resolve();

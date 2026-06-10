@@ -16,8 +16,8 @@ import type { EncoderCore } from './encoder.js';
 import type { HeaderField } from './fields.js';
 import type { WriteOptions } from './types.js';
 
-/** The codec header carrying the dispatch type / stream family id. */
-export const TYPE_HEADER = 'type';
+/** The codec header carrying the SDK-controlled dispatch kind / stream family id. */
+export const KIND_HEADER = 'kind';
 
 // CAST: a descriptor indexes chunk props by a declared key. The union member's
 // indexed type isn't statically known here, but a descriptor only ever runs
@@ -72,11 +72,11 @@ export const createDescriptorEncoder = <U extends { type: string }>(
 
   const buildHeaders = (
     fields: readonly HeaderField<unknown>[],
-    typeValue: string,
+    kindValue: string,
     chunk: U,
     keys?: readonly string[],
   ): Record<string, string> => {
-    const rec: Record<string, string> = { [TYPE_HEADER]: typeValue };
+    const rec: Record<string, string> = { [KIND_HEADER]: kindValue };
     for (const field of fields) {
       if (keys && !keys.includes(field.key)) continue;
       field.write(rec, prop(chunk, field.key));

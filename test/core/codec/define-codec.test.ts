@@ -63,11 +63,12 @@ describe('defineCodec — decoder direction routing', () => {
   it('routes an ai-output event to outputs even when it carries a `kind` field', () => {
     const decoder = codec.createDecoder();
 
-    const { inputs, outputs } = decoder.decode(aiMessage(EVENT_AI_OUTPUT, { type: 'quirky' }));
+    const { inputs, outputs } = decoder.decode(aiMessage(EVENT_AI_OUTPUT, { kind: 'quirky' }));
 
     // The decoded event is { type: 'quirky', kind: 'looks-like-input' }. The old
     // `'kind' in event` check would have placed it in `inputs`; routing by the wire
-    // name keeps it in `outputs`.
+    // name keeps it in `outputs`. The domain `kind` field is reconstructed by the
+    // data decoder and is distinct from the `kind` wire dispatch header.
     expect(outputs).toEqual([{ type: 'quirky', kind: 'looks-like-input' }]);
     expect(inputs).toEqual([]);
   });
@@ -75,7 +76,7 @@ describe('defineCodec — decoder direction routing', () => {
   it('routes an ai-input message to inputs', () => {
     const decoder = codec.createDecoder();
 
-    const { inputs, outputs } = decoder.decode(aiMessage(EVENT_AI_INPUT, { type: 'noop' }));
+    const { inputs, outputs } = decoder.decode(aiMessage(EVENT_AI_INPUT, { kind: 'noop' }));
 
     expect(inputs).toEqual([{ kind: 'noop' }]);
     expect(outputs).toEqual([]);
@@ -84,7 +85,7 @@ describe('defineCodec — decoder direction routing', () => {
   it('yields no events for an unrecognised wire name', () => {
     const decoder = codec.createDecoder();
 
-    const { inputs, outputs } = decoder.decode(aiMessage('some-other-event', { type: 'quirky' }));
+    const { inputs, outputs } = decoder.decode(aiMessage('some-other-event', { kind: 'quirky' }));
 
     expect(inputs).toEqual([]);
     expect(outputs).toEqual([]);

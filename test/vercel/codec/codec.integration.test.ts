@@ -668,7 +668,7 @@ describe('Vercel UIMessageCodec integration', () => {
     const msg = received[0];
     expect(msg?.name).toBe(EVENT_AI_INPUT);
     const headers = msg ? getCodecHeaders(msg) : {};
-    expect(headers.type).toBe('tool-result');
+    expect(headers.kind).toBe('tool-result');
     expect(headers.toolCallId).toBe('tc-1');
   });
 
@@ -716,7 +716,7 @@ describe('Vercel UIMessageCodec integration', () => {
     const msg = received[0];
     expect(msg?.name).toBe(EVENT_AI_OUTPUT);
     const headers = msg ? getCodecHeaders(msg) : {};
-    expect(headers.type).toBe('tool-output-available');
+    expect(headers.kind).toBe('tool-output-available');
     expect(headers.toolCallId).toBe('tc-1');
   });
 });

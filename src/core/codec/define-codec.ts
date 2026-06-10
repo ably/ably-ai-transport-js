@@ -20,7 +20,7 @@ import { EVENT_AI_INPUT, EVENT_AI_OUTPUT, HEADER_RUN_ID } from '../../constants.
 import type { DecoderCore, DecoderCoreHooks, DecoderCoreOptions } from './decoder.js';
 import { createDecoderCore } from './decoder.js';
 import { createDescriptorDecoder } from './descriptor-decoder.js';
-import { createDescriptorEncoder, type DescriptorEncoder, TYPE_HEADER } from './descriptor-encoder.js';
+import { createDescriptorEncoder, type DescriptorEncoder, KIND_HEADER } from './descriptor-encoder.js';
 import type { Descriptor, EscapeHatchCore } from './descriptors.js';
 import type { EncoderCore, EncoderCoreOptions } from './encoder.js';
 import { createEncoderCore } from './encoder.js';
@@ -64,8 +64,8 @@ export interface InputEncodeContext {
 
 /** Context passed to an input adapter's `decode` for one inbound `ai-input` message. */
 export interface InputDecodeContext {
-  /** The codec `type` header value (the input adapter's dispatch key). */
-  codecType: string;
+  /** The codec `kind` header value (the input adapter's dispatch key). */
+  codecKind: string;
   /** The inbound message data. */
   data: unknown;
   /** The inbound codec-tier headers. */
@@ -109,7 +109,7 @@ export interface LifecycleDiscreteContext {
  */
 export interface LifecyclePolicy<TOutput> {
   /**
-   * Keyed on the discrete codec `type`. Returns lead-in events to prepend
+   * Keyed on the discrete codec `kind`. Returns lead-in events to prepend
    * (empty array = none) after applying any tracker side effect.
    */
   onDiscrete?: Record<string, (runId: string, ctx: LifecycleDiscreteContext) => TOutput[]>;
@@ -240,18 +240,18 @@ const decodeDiscretePayload = <TInput, TOutput>(
 ): (TInput | TOutput)[] => {
   const codecHeaders = payload.codecHeaders ?? {};
   const transportHeaders = payload.transportHeaders ?? {};
-  const codecType = codecHeaders[TYPE_HEADER] ?? '';
+  const codecKind = codecHeaders[KIND_HEADER] ?? '';
 
   if (payload.name === EVENT_AI_INPUT) {
-    return inputs.decode({ codecType, data: payload.data, codecHeaders, transportHeaders });
+    return inputs.decode({ codecKind, data: payload.data, codecHeaders, transportHeaders });
   }
 
   if (payload.name === EVENT_AI_OUTPUT) {
     const runId = transportHeaders[HEADER_RUN_ID] ?? '';
     // Lifecycle repair runs its side effect and returns lead-in events; the
     // descriptor driver always decodes after and its output is appended.
-    const pre = lifecycle?.onDiscrete?.[codecType]?.(runId, { codecHeaders }) ?? [];
-    return [...pre, ...outputDecoder.decodeDiscrete(codecType, codecHeaders, transportHeaders, payload.data)];
+    const pre = lifecycle?.onDiscrete?.[codecKind]?.(runId, { codecHeaders }) ?? [];
+    return [...pre, ...outputDecoder.decodeDiscrete(codecKind, codecHeaders, transportHeaders, payload.data)];
   }
 
   return [];

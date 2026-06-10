@@ -1517,7 +1517,7 @@ describe('ClientSession integration', () => {
     await observerChannel.subscribe((msg) => {
       if (msg.name === EVENT_AI_INPUT) {
         inputMessages.push(msg);
-        if (getHeaders(msg).type === 'tool-result') resolveInput();
+        if (getHeaders(msg).kind === 'tool-result') resolveInput();
       } else if (msg.name === EVENT_AI_OUTPUT) {
         outputMessages.push(msg);
       }
@@ -1538,14 +1538,14 @@ describe('ClientSession integration', () => {
 
     await gotInput;
 
-    const toolResult = inputMessages.find((m) => getHeaders(m).type === 'tool-result');
+    const toolResult = inputMessages.find((m) => getHeaders(m).kind === 'tool-result');
     expect(toolResult).toBeDefined();
     if (toolResult) {
       const headers = getHeaders(toolResult);
       expect(headers.toolCallId).toBe(toolCallId);
     }
     // Crucially, no client tool result should ever appear on the ai-output wire.
-    expect(outputMessages.some((m) => getHeaders(m).type === 'tool-result')).toBe(false);
+    expect(outputMessages.some((m) => getHeaders(m).kind === 'tool-result')).toBe(false);
   });
 
   /**
@@ -1577,7 +1577,7 @@ describe('ClientSession integration', () => {
         inputMessages.push(msg);
       } else if (msg.name === EVENT_AI_OUTPUT) {
         outputMessages.push(msg);
-        if (getHeaders(msg).type === 'tool-output-available') resolveOutput();
+        if (getHeaders(msg).kind === 'tool-output-available') resolveOutput();
       }
     });
 
@@ -1602,9 +1602,9 @@ describe('ClientSession integration', () => {
 
     await gotOutput;
 
-    expect(outputMessages.some((m) => getHeaders(m).type === 'tool-output-available')).toBe(true);
+    expect(outputMessages.some((m) => getHeaders(m).kind === 'tool-output-available')).toBe(true);
     // The agent must NOT publish tool outputs on the input wire.
-    expect(inputMessages.some((m) => getHeaders(m).type === 'tool-output-available')).toBe(false);
+    expect(inputMessages.some((m) => getHeaders(m).kind === 'tool-output-available')).toBe(false);
   });
 
   // -------------------------------------------------------------------------

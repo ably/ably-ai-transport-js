@@ -37,8 +37,10 @@ export const fSourceId = strField('sourceId', '');
 
 // --- input-side bindings (shared by the imperative input encode/decode) ---
 
-/** The codec dispatch type header — defaulted to total so decode reads mirror `strOr(key, '')`. */
-export const fType = strField('type', '');
+/** The SDK-controlled codec dispatch `kind` header — defaulted to total so decode reads mirror `strOr(key, '')`. */
+export const fKind = strField('kind', '');
+/** The user-message part type (`text` / `file` / `data-*`) — defaulted to total. */
+export const fPartType = strField('partType', '');
 /** Codec-message id stamped on user-message parts. */
 export const fMessageId = strField('messageId');
 /** Whether the user approved a tool execution. */

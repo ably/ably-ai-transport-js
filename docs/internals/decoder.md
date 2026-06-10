@@ -1,8 +1,8 @@
 # Decoder core
 
-The decoder core (`src/core/codec/decoder.ts`) converts inbound Ably messages into domain events. It handles all four Ably [message actions](wire-protocol.md#streamed-messages) (create, append, update, delete), tracks stream state via serials, and delegates to [codec-provided hooks](codec-interface.md#decoder-architecture) for domain-specific event building.
+The decoder core (`src/core/codec/decoder.ts`) converts inbound Ably messages into domain events. It handles all four Ably [message actions](wire-protocol.md#streamed-messages) (create, append, update, delete), tracks stream state via serials, and delegates to [codec-provided hooks](codec-interface.md#defining-a-codec) for domain-specific event building.
 
-Domain codecs provide hooks that know how to build events from stream state. The decoder core handles the Ably-specific machinery - action dispatch, serial tracking, prefix-match accumulation - so codecs don't need to.
+The decoder core handles the Ably-specific machinery - action dispatch, serial tracking, prefix-match accumulation - so codecs don't need to. The hooks it delegates to are not hand-written by each codec: [`defineCodec`](codec-interface.md#defining-a-codec) builds them (`buildHooks` in `src/core/codec/define-codec.ts`) over the codec's declarative descriptor tables. The hooks rebuild events by dispatching on the SDK-controlled [`kind` codec header](wire-protocol.md#codec-headers) and reading the descriptors' declared fields - the decoder never inspects message shape to decide what an event is.
 
 ## Action dispatch
 
@@ -23,7 +23,7 @@ For each streamed message, the decoder maintains a `StreamTrackerState` keyed by
 
 ```typescript
 interface StreamTrackerState {
-  name: string; // Ably message name (e.g. "text", "reasoning")
+  name: string; // Ably message name (the wire direction — "ai-output" for streamed outputs), not the codec kind / stream family
   streamId: string; // From stream-id header
   accumulated: string; // Full text accumulated so far
   codecHeaders: Record<string, string>; // Current codec-tier headers (extras.ai.codec)
@@ -43,9 +43,11 @@ The decoder core delegates event building to four hooks provided by the domain c
 | `buildStartEvents(tracker)`                    | A new stream starts                   | Events for stream start (e.g. `text-start` chunk)        |
 | `buildDeltaEvents(tracker, delta)`             | Text delta received                   | Events for the delta (e.g. `text-delta` chunk)           |
 | `buildEndEvents(tracker, closingCodecHeaders)` | Stream completes (status: `complete`) | Events for stream end (e.g. `text-end`, `finish` chunks) |
-| `decodeDiscrete(payload)`                      | Discrete message received             | Events                                                   |
+| `decodeDiscrete(payload)`                      | Discrete (non-streamed) message       | Events                                                   |
 
 Every hook returns a flat `TEvent[]` — there is no event-vs-message union. `decodeDiscrete` receives a `MessagePayload` (name, data, and the codec/transport header tiers) rather than a tracker; `buildEndEvents` receives the closing codec-tier headers, which may differ from `tracker.codecHeaders` when the closing append carried updated headers.
+
+The codec-built `decodeDiscrete` (in `define-codec.ts`) first routes on the Ably message `name` — `ai-input` vs `ai-output` (`EVENT_AI_INPUT` / `EVENT_AI_OUTPUT`) — then dispatches on the codec `kind` header (`KIND_HEADER = "kind"`) within that direction. An `ai-input` message goes to the [input descriptor decoder](codec-interface.md#descriptor-tables), which looks the `kind` up in its descriptor table and rebuilds the input; an `ai-output` message goes to the output descriptor decoder's `decodeDiscrete`, which matches the `kind` against discrete descriptors, then a stream family's discrete fallback, then `data-*`-style wildcards. The `buildStart`/`buildDelta`/`buildEnd` hooks likewise resolve the stream family from the tracker's `kind` header. Dispatch is always by header, never by message shape.
 
 ## Append handling
 
@@ -102,8 +104,10 @@ On `message.delete`:
 
 ## Decoder output
 
-`decode()` returns a flat `TEvent[]` — a list of domain events for the single inbound message. The decoder core does not distinguish events from messages and does not tag events with any identity: it is purely the action-dispatch and stream-accumulation machinery.
+The decoder core's `decode()` returns a flat `TEvent[]` — a list of domain events for the single inbound message. The core does not distinguish events from messages and does not tag events with any identity: it is purely the action-dispatch and stream-accumulation machinery.
 
-Per-message routing is the SDK's job, not the decoder's. The transport's decode-and-apply engine (`src/core/transport/decode-fold.ts`) folds each event into the run's projection via the codec's `fold(state, event, meta)`, passing a [`ReducerMeta`](codec-interface.md#decoder-architecture) that carries the message `serial` and the [`codec-message-id`](wire-protocol.md#message-identity-codec-message-id) read from the inbound message. The reducer uses `serial` for idempotency and `messageId` to route an event to the correct message within the projection — for example, correlating a `text-delta` to the message it belongs to. The resulting projection surfaces on the [conversation tree](conversation-tree.md)'s `output` event.
+The public codec `Decoder.decode()` (the wrapper built by `defineCodec`) returns a `DecodedMessage<TInput, TOutput>` — `{ inputs, outputs }` — splitting the core's flat list by the inbound message's wire `name`: an `ai-input` message yields only inputs, an `ai-output` message only outputs. The wire name is the authoritative direction signal, never the event's in-memory shape.
+
+Per-message routing is the SDK's job, not the decoder's. The transport's decode-and-apply engine (`src/core/transport/decode-fold.ts`) tags each event with its wire direction via `toCodecEvents` (`src/core/codec/codec-event.ts`), producing a [`CodecEvent`](codec-interface.md#reducer-and-projection) — `{ direction: "input" | "output"; event }` — then folds it into the run's projection via the codec's `fold(state, event, meta)`. The `meta` is a [`ReducerMeta`](codec-interface.md#reducermeta--transport-derived-metadata) carrying the message `serial` and the [`codec-message-id`](wire-protocol.md#message-identity-codec-message-id) read from the inbound message. The reducer dispatches on `event.direction` (rather than inspecting shape), uses `serial` for idempotency, and uses `messageId` to route an event to the correct message within the projection — for example, correlating a `text-delta` to the message it belongs to. The resulting projection surfaces on the [conversation tree](conversation-tree.md)'s `output` event.
 
 See [Wire protocol](wire-protocol.md) for the message actions and header specification. See [Encoder](encoder.md) for the encoding side, including the recovery mechanism that produces `message.update` actions. See [Codec interface](codec-interface.md) for how domain codecs provide decoder hooks.

@@ -4,7 +4,7 @@ The codec is the boundary between the [transport layer and domain layer](glossar
 
 ## The Codec interface
 
-The codec is an [event-sourced](glossary.md) reducer. It extends `Reducer<TInput | TOutput, TProjection>` (the `init()` / `fold()` pair) and adds encoder/decoder factories plus the input-construction helpers:
+The codec is an [event-sourced](glossary.md) reducer. It extends `Reducer<CodecEvent<TInput, TOutput>, TProjection>` (the `init()` / `fold()` pair) and adds encoder/decoder factories plus the input-construction helpers:
 
 ```typescript
 interface Codec<
@@ -12,10 +12,13 @@ interface Codec<
   TOutput extends CodecOutputEvent,
   TProjection,
   TMessage,
-> extends Reducer<TInput | TOutput, TProjection> {
+> extends Reducer<CodecEvent<TInput, TOutput>, TProjection> {
   // from Reducer
   init(): TProjection;
-  fold(state: TProjection, event: TInput | TOutput, meta: ReducerMeta): TProjection;
+  fold(state: TProjection, event: CodecEvent<TInput, TOutput>, meta: ReducerMeta): TProjection;
+
+  // optional Ably-Agent identifier (registered on the channel when present)
+  readonly adapterTag?: string;
 
   // wire mapping
   createEncoder(channel: ChannelWriter, options?: EncoderOptions): Encoder<TInput, TOutput>;
@@ -36,7 +39,7 @@ interface Codec<
 | Method                              | Purpose                                                                                     |
 | ----------------------------------- | ------------------------------------------------------------------------------------------- |
 | `init()`                            | Builds an empty per-node `TProjection` (from `Reducer`)                                     |
-| `fold()`                            | Folds one `TInput` / `TOutput` event into the projection (from `Reducer`)                   |
+| `fold()`                            | Folds one direction-tagged `CodecEvent` into the projection (from `Reducer`)                |
 | `createEncoder()`                   | Creates an [encoder](encoder.md) that maps domain events to Ably publish operations         |
 | `createDecoder()`                   | Creates a [decoder](decoder.md) that converts inbound Ably messages to typed inputs/outputs |
 | `getMessages()`                     | Extracts `TMessage[]` (each paired with its `codec-message-id`) from a projection           |
@@ -47,58 +50,96 @@ interface Codec<
 
 `TInput` is the union of input variants the client publishes on the `ai-input` wire (each extends `CodecInputEvent`, discriminated by `kind`); `TOutput` is the union of agent-published output variants on the `ai-output` wire (each extends `CodecOutputEvent`, discriminated by `type`). `TProjection` is the opaque per-node state the reducer folds into - the SDK never inspects it directly. `TMessage` is the per-message domain object the tree consumes.
 
+The reducer folds the **direction-tagged** `CodecEvent<TInput, TOutput>` union, not a bare `TInput | TOutput`, so it dispatches on the wire direction rather than re-inferring it from each event's shape:
+
+```typescript
+type CodecEvent<TInput, TOutput> =
+  | { readonly direction: 'input'; readonly event: TInput }
+  | { readonly direction: 'output'; readonly event: TOutput };
+```
+
+Direction is derived once, from the Ably message name (`ai-input` xor `ai-output`), at decode time - a single message is one direction, never both.
+
+Codec authors rarely implement this interface by hand. The [`defineCodec`](#defining-a-codec) factory assembles a conforming codec from a reducer, declarative descriptor tables, and an optional decode-lifecycle policy; it supplies the encoder/decoder skeletons and the well-known input factories for you.
+
 ## How the session uses the codec
 
 ### Agent session
 
-The agent session uses `createEncoder()` to get an `Encoder<TInput, TOutput>`. The encoder exposes two direction-typed publish methods - `publishInput()` for client-originated inputs on the `ai-input` wire and `publishOutput()` for agent-originated outputs on the `ai-output` wire - plus `cancel()` and `close()`. A run streams its response by pushing each `TOutput` through `publishOutput()`.
+The agent session uses `createEncoder()` to get an `Encoder<TInput, TOutput>`. The encoder exposes two direction-typed publish methods - `publishInput()` for client-originated inputs on the `ai-input` wire and `publishOutput()` for agent-originated outputs on the `ai-output` wire - plus `cancelStreams()` (close all in-flight streams as `status:cancelled`) and `close()`. A run streams its response by pushing each `TOutput` through `publishOutput()`.
 
-Internally the encoder translates streamed events into [encoder core](encoder.md#stream-lifecycle) operations (`startStream()`, `appendStream()`, `closeStream()`) and discrete events into `publishDiscrete()`. The encoder core handles Ably primitives.
+Internally the encoder is built by `defineCodec` and is codec-agnostic: it routes each event through the codec's [descriptor tables](#defining-a-codec), which translate streamed families into [encoder core](encoder.md#stream-lifecycle) operations (`startStream()`, `appendStream()`, `closeStream()`) and discrete events into `publishDiscrete()`. The encoder core handles Ably primitives.
 
 ### Client session
 
 The client session uses:
 
 - `createDecoder()` - decodes inbound Ably messages into `{ inputs, outputs }` via `DecodedMessage`
-- `init()` / `fold()` - folds each decoded event (with its `ReducerMeta` serial and `messageId`) into the owning node's projection
+- `init()` / `fold()` - the SDK tags each decoded event with its wire direction (via `toCodecEvents`, yielding the `CodecEvent` union) and folds it, with its `ReducerMeta` serial and `messageId`, into the owning node's projection
 - `getMessages()` - extracts the message list from the projection to populate the [conversation tree](conversation-tree.md)
 
-## Encoder architecture
+## Defining a codec
 
-A domain encoder composes the encoder core rather than extending it:
+Codecs are assembled by the `defineCodec` factory (`src/core/codec/define-codec.ts`) rather than hand-written encoder/decoder classes. A codec author supplies only its parts; `defineCodec` builds the codec-agnostic encoder/decoder skeletons, wires the descriptor drivers, and merges the well-known input factories:
 
-```
-Domain Encoder (e.g. UIMessageEncoder)
-  └── EncoderCore
-        └── ChannelWriter (Ably channel)
-```
+```typescript
+import { defineCodec } from '@ably/ai-transport';
 
-The domain encoder maps events to core operations:
-
-| Domain event (Vercel)            | Core operation                  |
-| -------------------------------- | ------------------------------- |
-| `text-start`                     | `core.startStream(id, payload)` |
-| `text-delta`                     | `core.appendStream(id, delta)`  |
-| `text-end`                       | `core.closeStream(id, payload)` |
-| `start`, `finish`, `error`, etc. | `core.publishDiscrete(payload)` |
-
-Every Vercel event publishes under the single `ai-output` wire name (`EVENT_AI_OUTPUT`); the chunk's own type (`text`, `reasoning`, `tool-input`, …) travels in the codec `type` [codec header](wire-protocol.md#codec-headers) so the decoder can dispatch.
-
-The [encoder core](encoder.md) handles all Ably-specific concerns: serial tracking, append queuing, [flush/recovery](encoder.md#recovery-mechanism), [header persistence](encoder.md#closing-appends-repeat-all-headers).
-
-## Decoder architecture
-
-A domain decoder provides hooks to the decoder core:
-
-```
-DecoderCore
-  ├── buildStartEvents(tracker)    → domain-specific start events
-  ├── buildDeltaEvents(tracker, δ) → domain-specific delta events
-  ├── buildEndEvents(tracker, h)   → domain-specific end events
-  └── decodeDiscrete(payload)      → domain-specific messages/events
+export const UIMessageCodec = defineCodec<VercelInput, VercelOutput>()({
+  adapterTag: 'vercel-ai-sdk-ui-message',
+  reducer: { init, fold, getMessages },
+  output: outputs, // (b: OutputBuilder<TOutput>) => readonly OutputDescriptor<TOutput>[]
+  input: inputs, //  (b: InputBuilder<TInput>) => readonly InputDescriptor<TInput>[]
+  decodeLifecycle: createVercelDecodeLifecycle,
+});
 ```
 
-The [decoder core](decoder.md) handles [action dispatch](decoder.md#action-dispatch), serial tracking, and [prefix-match accumulation](decoder.md#known-serial-prefix-match). The hooks transform stream state into domain events without knowing about Ably message actions.
+`defineCodec` is curried on the input/output unions (`defineCodec<TInput, TOutput>()({ … })`) so `TProjection` and `TMessage` infer from `config.reducer` - a caller never spells them out. It returns a `DefinedCodec` (a conforming `Codec` whose well-known input factories are typed concretely, callable without a guard).
+
+| Config field       | Purpose                                                                                |
+| ------------------ | -------------------------------------------------------------------------------------- |
+| `adapterTag?`      | Optional Ably-Agent identifier; only set on the codec when supplied                    |
+| `reducer`          | `{ init, fold, getMessages }` - `TProjection` / `TMessage` infer from here             |
+| `output`           | Returns the `ai-output` descriptor table from the injected `{ event, stream }` builder |
+| `input`            | Returns the `ai-input` descriptor table from the injected `{ event, batch }` builder   |
+| `decodeLifecycle?` | Factory called once per decoder instance for mid-stream-join repair; omit for none     |
+
+### Descriptor tables
+
+Both directions are declarative descriptor tables driven by the generic encode/decode drivers, so encode and decode cannot drift. Each builder is curried on the codec's union, so every callback receives the exact narrowed member with no casts.
+
+The **output** builder offers two constructs:
+
+- `event(type, spec)` - one discrete output event. `spec` declares header `fields`, an optional wire `data` codec, an `ephemeral` predicate, a wildcard `match`, and `encode` / `decode` escape hatches.
+- `stream(familyId, spec)` - a streamed family (`start` / `delta` / `end` chunk `type`s, an `idField`, a `deltaField`, header `fields`, and `onEnd` / `decodeEnd` / `decodeDiscrete` hatches). The driver routes start/delta/end to `startStream()` / `appendStream()` / `closeStream()`.
+
+The **input** builder mirrors it:
+
+- `event(kind, spec)` - one discrete input ↔ one wire message. `fields` and `data` operate on the member's nested `payload`; `wireOnly: true` stamps only the `kind` header (empty data) and decodes to `[]`.
+- `batch(kind, spec)` - one domain message ↔ many atomic wire events. `explode` decomposes the message into parts, each published as one wire event sharing the input's `kind` and codec-message-id with a `partType` sub-discriminator; `assemble` rebuilds one part on decode and the reducer merges parts by codec-message-id.
+
+### Header-field bindings
+
+Descriptor `fields` are typed `HeaderField` bindings from `src/core/codec/fields.ts` - a thin bidirectional string (de)serializer over the raw headers record, **not** a schema library. A single binding drives both encode (`write`) and decode (`read`), so a key cannot drift between directions. Four constructors cover every header value shape:
+
+| Constructor         | Value type                                            | Notes                                                           |
+| ------------------- | ----------------------------------------------------- | --------------------------------------------------------------- |
+| `strField(key)`     | `string \| undefined` (or `string` with a fallback)   | Plain string                                                    |
+| `boolField(key)`    | `boolean \| undefined` (or `boolean` with a fallback) | Serialized as `"true"` / `"false"`                              |
+| `jsonField<V>(key)` | `V \| undefined`                                      | `JSON.stringify` / `JSON.parse`; malformed reads as `undefined` |
+| `enumField(key, …)` | one of the allowed literals (total via fallback)      | Validated against an allow-list (e.g. a finish reason)          |
+
+`write` skips `undefined` (and `null`, for JSON) and type-mismatched values, leaving the key unset. Passing a fallback to `strField` / `boolField` makes `read` total.
+
+### Well-known input factories
+
+The five well-known input factories (`createUserMessage`, `createRegenerate`, `createToolResult`, `createToolResultError`, `createToolApprovalResponse`) are provided once by the core (`src/core/codec/well-known-inputs.ts`) and merged into the codec internally by `defineCodec` (it spreads `wellKnownInputs<TInput>()`). Their bodies are fully determined by the well-known variant shapes - e.g. `createUserMessage(message)` returns `{ kind: 'user-message', message }` and `createToolResult(codecMessageId, payload)` returns `{ kind: 'tool-result', codecMessageId, payload }` - so codec authors never re-implement them.
+
+### Decode lifecycle policy
+
+`decodeLifecycle` is a factory returning a fresh `LifecyclePolicy<TOutput>` per decoder instance, used to repair mid-stream joins (history compaction, rewind miss, partial page). `onDiscrete` (keyed on codec `kind`) and `onStreamStart` perform a side effect on the per-decoder lifecycle tracker and **return lead-in events to prepend**; the descriptor driver always runs after and its output is appended - the policy never replaces a decode. See [Lifecycle tracker](#lifecycle-tracker) below.
+
+The [encoder core](encoder.md) handles all Ably-specific concerns: serial tracking, append queuing, [flush/recovery](encoder.md#recovery-mechanism), [header persistence](encoder.md#closing-appends-repeat-all-headers). The [decoder core](decoder.md) handles [action dispatch](decoder.md#action-dispatch), serial tracking, and [prefix-match accumulation](decoder.md#known-serial-prefix-match), invoking the descriptor-driven build/decode hooks `defineCodec` supplies.
 
 ## Reducer and projection
 
@@ -165,38 +206,41 @@ For the Vercel codec, this means: if a client joins a stream after `text-start` 
 
 The Vercel codec (`src/vercel/codec/`) is the concrete implementation for the Vercel AI SDK. It maps between `UIMessageChunk` events and `UIMessage` messages.
 
+Its output table (`src/vercel/codec/outputs.ts`) and input table (`src/vercel/codec/inputs.ts`) are built with the `defineCodec` descriptor builders; the reducer is split into `reducer.ts` + `reducer-state.ts` and per-concern `fold-*` modules. (The previous hand-written `vercel/codec/encoder.ts` and `decoder.ts` were removed.)
+
 ### Event mapping
 
-All Vercel events publish under the `ai-output` wire name, with the chunk type carried in the codec `type` header.
+All Vercel output events publish under the `ai-output` wire name, with the stream family id (for streamed chunks) or the discrete event type carried in the codec `kind` [header](#codec-headers) so the decoder can dispatch.
 
-| UIMessageChunk type        | Wire representation                           |
-| -------------------------- | --------------------------------------------- |
-| `text-start`               | Streamed message create (`type: "text"`)      |
-| `text-delta`               | Streamed message append                       |
-| `text-end`                 | Streamed message close (status: `"complete"`) |
-| `start`, `finish`, `error` | Discrete message                              |
-| `data-*`                   | Discrete message                              |
+| UIMessageChunk type        | Wire representation                             |
+| -------------------------- | ----------------------------------------------- |
+| `text-start`               | Streamed family start (`kind: "text"`)          |
+| `text-delta`               | Streamed family append                          |
+| `text-end`                 | Streamed family close (status: `"complete"`)    |
+| `start`, `finish`, `error` | Discrete message (`kind` = the event type)      |
+| `data-*`                   | Discrete message (`data-*` wildcard descriptor) |
 
 ### Codec headers
 
 The Vercel codec uses [codec headers](wire-protocol.md#codec-headers) (under `extras.ai.codec`) to carry Vercel-specific metadata:
 
-- `type` - the codec event type (e.g. `text`, `reasoning`, `tool-input`), used by the decoder to dispatch
+- `kind` - the SDK-controlled dispatch discriminator: the stream family id (`text`, `reasoning`, `tool-input`) for streamed chunks, or the discrete event type otherwise. The decoder routes on this header value, never on message shape.
 - `id` - chunk/part ID
 - `providerMetadata` - JSON-serialized `ProviderMetadata`
 - `finishReason` - why the LLM stopped (on `finish`)
 
-Error text and `data-*` payloads ride in the message `data`, not in a header. These headers are written and read with the `headerWriter()` and `headerReader()` utilities over the bare codec-tier keys. See [Headers](headers.md) for the full reader/writer API.
+Error text and `data-*` payloads ride in the message `data`, not in a header. These headers are declared as typed [header-field bindings](#header-field-bindings) (`src/vercel/codec/fields.ts`) so encode and decode share one definition per key. Tool wire-data payloads in the message `data` are validated by runtime guards (`src/vercel/codec/wire-data.ts`) before being read.
 
 ## Writing a new codec
 
-To support a new AI framework, implement the `Codec<TInput, TOutput, TProjection, TMessage>` interface:
+To support a new AI framework, assemble a codec with [`defineCodec`](#defining-a-codec):
 
 1. **Define the type parameters** - the input/output event unions (`TInput` extending `CodecInputEvent`, `TOutput` extending `CodecOutputEvent`), the per-node projection, and the domain message type
-2. **Implement the reducer** - `init()` and `fold()`, folding events into the projection idempotently by serial
-3. **Implement the encoder** - map domain events to encoder core operations (startStream, appendStream, closeStream, publishDiscrete)
-4. **Implement the decoder hooks** - build domain events from stream tracker state
-5. **Implement `getMessages()`** - extract `CodecMessage<TMessage>[]` from the projection
-6. **Implement the input factories** - `createUserMessage` and `createRegenerate` are required; the tool-result and tool-approval factories are optional
+2. **Implement the reducer** - `init()`, `fold()` (dispatching on `event.direction`), and `getMessages()`, folding events into the projection idempotently by serial
+3. **Declare the output table** - the `output` builder function returning `event` / `stream` descriptors built on [header-field bindings](#header-field-bindings)
+4. **Declare the input table** - the `input` builder function returning `event` / `batch` descriptors
+5. **Optionally supply `decodeLifecycle`** - a policy factory for mid-stream-join repair
 
-See [Vercel codec](vercel-codec.md) for the concrete Vercel implementation details. See [Encoder](encoder.md) for the encoder core that domain encoders delegate to. See [Decoder](decoder.md) for the decoder core and its hook interface. See [Wire protocol](wire-protocol.md) for the transport vs domain header discipline.
+The well-known input factories (`createUserMessage`, `createRegenerate`, and the optional tool-result / tool-approval factories) are merged in by `defineCodec` - you do not implement them.
+
+See [Vercel codec](vercel-codec.md) for the concrete Vercel implementation details. See [Encoder](encoder.md) for the encoder core the descriptor drivers delegate to. See [Decoder](decoder.md) for the decoder core. See [Wire protocol](wire-protocol.md) for the transport vs domain header discipline.

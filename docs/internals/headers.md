@@ -1,70 +1,92 @@
 # Header utilities
 
-The SDK uses two distinct header tiers on every Ably message: **transport headers** under `extras.ai.transport`, managed by the transport layer, and **codec headers** under `extras.ai.codec`, managed by codec implementations. Both are unprefixed — the tiers isolate them. Two sets of utilities handle reading and writing these headers.
+The SDK uses two distinct header tiers on every Ably message: **transport headers** under `extras.ai.transport`, managed by the transport layer, and **codec headers** under `extras.ai.codec`, managed by codec implementations. Both are unprefixed — the tiers isolate them. Each tier has its own builder.
 
 ## Transport headers
 
 Transport headers are built by [`buildTransportHeaders()`](transport-components.md#buildtransportheaders) in `src/core/transport/headers.ts`. See [Wire protocol](wire-protocol.md#transport-headers) for the full specification.
 
-## Codec header utilities
+## Codec header fields
 
-Codec headers (`src/utils.ts`) carry codec-specific metadata - field names like `id`, `providerMetadata`, `finishReason`. They live under `extras.ai.codec` and carry no prefix — the tier isolates them from transport headers.
+Codec headers carry codec-specific metadata — field names like `id`, `providerMetadata`, `finishReason` — plus the SDK-controlled dispatch header `kind`. They live under `extras.ai.codec` and carry no prefix; the tier isolates them from transport headers.
 
-### headerWriter
+Codecs no longer build these headers with an ad-hoc fluent writer. Instead, each header key is bound **once** to its value type via a typed `HeaderField` (`src/core/codec/fields.ts`), and the encode and decode sides both go through that single binding — so a key cannot be misspelled on one side and silently read as absent on the other.
 
-A fluent builder for constructing codec header records under their bare keys, returning the builder for chaining.
+### HeaderField
 
-```typescript
-import { headerWriter } from '@ably/ai-transport';
-
-const headers = headerWriter()
-  .str('id', chunk.id)
-  .str('finishReason', chunk.finishReason)
-  .json('providerMetadata', chunk.providerMetadata)
-  .build();
-// → { 'id': 'msg-1', 'finishReason': 'stop', ... }
-```
-
-| Method             | Value type             | Serialization                                         |
-| ------------------ | ---------------------- | ----------------------------------------------------- |
-| `str(key, value)`  | `string \| undefined`  | Stored directly. Skipped if undefined.                |
-| `bool(key, value)` | `boolean \| undefined` | Stored as `"true"` / `"false"`. Skipped if undefined. |
-| `json(key, value)` | `unknown`              | `JSON.stringify()`. Skipped if undefined or null.     |
-| `build()`          | -                      | Returns the accumulated `Record<string, string>`.     |
-
-### headerReader
-
-A typed accessor for reading domain headers. Mirrors `headerWriter` with the same method names for symmetry.
+A `HeaderField<V>` binds a header key to its decoded value type `V` and exposes a symmetric read/write pair over a raw `Record<string, string>`:
 
 ```typescript
-import { headerReader } from '@ably/ai-transport';
-
-const r = headerReader(headers);
-const id = r.str('id'); // string | undefined
-const finishReason = r.strOr('finishReason', ''); // string (with fallback)
-const error = r.str('error'); // string | undefined
-const metadata = r.json('providerMetadata'); // unknown (parsed JSON)
+interface HeaderField<V> {
+  readonly key: string;
+  read(headers: Record<string, string>): V;
+  // value is `unknown`, not `V`, so heterogeneous fields share a HeaderField<unknown>[]
+  write(headers: Record<string, string>, value: unknown): void;
+}
 ```
 
-| Method                 | Return type            | Behavior                                                          |
-| ---------------------- | ---------------------- | ----------------------------------------------------------------- |
-| `str(key)`             | `string \| undefined`  | Raw value, or undefined if absent.                                |
-| `strOr(key, fallback)` | `string`               | Raw value, or fallback if absent.                                 |
-| `bool(key)`            | `boolean \| undefined` | `"true"` → `true`, anything else → `false`, absent → `undefined`. |
-| `json(key)`            | `unknown`              | `JSON.parse()` the value, or undefined if absent or invalid.      |
+`write` is a no-op when the value is `undefined` (and `null`, for JSON), or when its runtime type doesn't match the field — the key is left unset rather than written.
 
-### Vercel-specific extension
+This is deliberately **not** a schema library — it is a thin bidirectional string (de)serializer over the headers record. Four constructors cover every header value shape the codecs use:
 
-The Vercel codec (`src/vercel/codec/decoder.ts`) extends `headerReader` with a `providerMetadata()` method that casts the parsed JSON to `AI.ProviderMetadata`:
+| Constructor                         | `read` yields            | Serialization                                                                    |
+| ----------------------------------- | ------------------------ | -------------------------------------------------------------------------------- |
+| `strField(key)`                     | `string \| undefined`    | Stored directly; absent → `undefined`.                                           |
+| `strField(key, fallback)`           | `string` (total)         | Stored directly; absent → `fallback`.                                            |
+| `boolField(key)`                    | `boolean \| undefined`   | `"true"` / `"false"`; absent → `undefined`.                                      |
+| `boolField(key, fallback)`          | `boolean` (total)        | `"true"` / `"false"`; absent → `fallback`.                                       |
+| `jsonField<V>(key)`                 | `V \| undefined`         | `JSON.stringify` / `JSON.parse`; absent or malformed → `undefined`.              |
+| `enumField(key, allowed, fallback)` | one of `allowed` (total) | Stored directly; absent or not in `allowed` → `fallback` (validated allow-list). |
+
+Passing a fallback to `strField` / `boolField` makes the field **total**: its `read` returns `V` rather than `V | undefined`, for required headers that should always decode to a concrete value. The `enumField` allow-list is the same shape used for a finish reason.
 
 ```typescript
-const r = headerReader(headers);
-const pm = r.providerMetadata(); // AI.ProviderMetadata | undefined
+import { boolField, enumField, jsonField, strField } from '../../core/codec/fields.js';
+
+const fId = strField('id'); // string | undefined
+const fApproved = boolField('approved', false); // total: absent → false
+const fMeta = jsonField<AI.ProviderMetadata>('providerMetadata'); // parsed JSON | undefined
+const fFinishReason = enumField('finishReason', ['stop', 'length', 'error'] as const, 'stop');
 ```
+
+### Vercel codec field bindings
+
+The Vercel `UIMessageCodec` declares its domain header bindings in `src/vercel/codec/fields.ts` — for example `fId`, `fMeta`, `fToolCallId`, `fFinishReason`, and the input-side `fKind` / `fPartType` / `fApproved`. Domain field names live in the Vercel layer, not core, per the header-discipline rule. The output and input descriptors and the escape hatches all read and write through these bindings, so a header key cannot drift between encode and decode. Provider metadata is read directly through the `fMeta` binding (`fMeta.read(codecHeaders)`), which decodes to `AI.ProviderMetadata | undefined`.
+
+### The `kind` dispatch header
+
+The codec tier carries one SDK-controlled header, `kind` (`KIND_HEADER = 'kind'` in `src/core/codec/field-bag.ts`). It holds the dispatch discriminator the decoder routes on — for discrete messages the descriptor `kind`, and for streamed messages the stream-family id. The decoder dispatches on this header value within the wire direction fixed by the Ably message name (`ai-input` vs `ai-output`), never on the in-memory event shape. `kind` values are codec-defined: each descriptor's `kind` literal becomes a valid wire value.
+
+### writeFields / readFields
+
+The descriptor drivers move whole field sets through the bindings using the helpers in `field-bag.ts`:
+
+- `writeFields(fields, kindValue, source, keys?)` seeds the record with `{ kind: kindValue }`, then writes each field's value (read off `source` by the field's key). An optional `keys` subset restricts which fields are written.
+- `readFields(fields, headers)` reads each field out of the inbound codec headers into a bag keyed by `field.key`; a field that reads `undefined` contributes no key.
+
+## headerWriter / headerReader
+
+`src/utils.ts` also exports a fluent `headerWriter()` builder and a `headerReader()` accessor (with `DomainHeaderWriter` / `DomainHeaderReader` interfaces). These predate the typed field bindings and are no longer used to build or read the codec tier — prefer `HeaderField` bindings for codec headers. They remain part of the public API for ad-hoc header records.
+
+`headerWriter()` returns a builder for chaining; `headerReader(headers)` wraps a record for reading:
+
+| `headerWriter` method | Value type             | Serialization                                         |
+| --------------------- | ---------------------- | ----------------------------------------------------- |
+| `str(key, value)`     | `string \| undefined`  | Stored directly. Skipped if undefined.                |
+| `bool(key, value)`    | `boolean \| undefined` | Stored as `"true"` / `"false"`. Skipped if undefined. |
+| `json(key, value)`    | `unknown`              | `JSON.stringify()`. Skipped if undefined or null.     |
+| `build()`             | -                      | Returns the accumulated `Record<string, string>`.     |
+
+| `headerReader` method  | Return type            | Behavior                                                                    |
+| ---------------------- | ---------------------- | --------------------------------------------------------------------------- |
+| `str(key)`             | `string \| undefined`  | Raw value, or undefined if absent.                                          |
+| `strOr(key, fallback)` | `string`               | Raw value, or fallback if absent.                                           |
+| `bool(key)`            | `boolean \| undefined` | `"true"` → `true`, any other present value → `false`, absent → `undefined`. |
+| `json(key)`            | `unknown`              | `JSON.parse()` the value, or undefined if absent or invalid.                |
 
 ## Low-level utilities
 
-These back `headerReader` / `headerWriter` and the transport layer. Codec implementations should prefer the typed reader/writer over calling these directly.
+These back the `HeaderField` bindings (`boolField` uses `parseBool`, `jsonField` uses `parseJson`), the `headerReader` / `headerWriter` accessors, and the transport layer. Codec implementations should prefer the typed `HeaderField` bindings over calling these directly.
 
 | Function                        | Purpose                                                                                         |
 | ------------------------------- | ----------------------------------------------------------------------------------------------- |

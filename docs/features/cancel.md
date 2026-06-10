@@ -13,7 +13,7 @@ Cancel a specific run by ID:
 // preferred form: run.cancel() keys on the input's codec-message-id, which the
 // client owns synchronously, so a cancel issued before the agent has minted the
 // run id is still honoured (the agent buffers it until its run is known).
-const run = await view.send(userMessage);
+const run = await view.send(UIMessageCodec.createUserMessage(message));
 await run.cancel();
 
 // Or cancel by runId from anywhere that holds the id. The agent mints the run
@@ -98,12 +98,12 @@ sequenceDiagram
     Note right of S: onCancel() → true
     Note right of S: fire AbortSignal
     Note right of S: onCancelled(write)
-    S->>Ch: publish cancel append
-    S->>Ch: publish run-end (cancelled)
-    Ch->>C: deliver run-end
+    Note right of S: cancelStreams() closes in-flight streams as cancelled
+    S->>Ch: publish ai-run-end (cancelled)
+    Ch->>C: deliver ai-run-end
 ```
 
-Publishing the cancel signal is all the core does — it doesn't wait for the server to confirm. The consumer-facing stream lives in the layer that built it: the Vercel `ChatTransport` closes its stream on cancel. The server-side run ends with `reason: 'cancelled'`, which all clients see via run lifecycle events.
+Publishing the cancel signal is all the core does — it doesn't wait for the server to confirm. The consumer-facing stream lives in the layer that built it: the Vercel `ChatTransport` closes its stream on cancel. Run cancellation is a transport-tier concern: when the run's `AbortSignal` fires, `pipeStream` calls `encoder.cancelStreams()` to close any in-flight streamed messages as `status: cancelled` (pure transport mechanics — no codec output is emitted), and `Run.pipe` then ends the run with `reason: 'cancelled'`, which publishes the transport `ai-run-end` event that all clients see via run lifecycle events.
 
 ## Platform-level cancellation
 

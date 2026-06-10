@@ -39,7 +39,7 @@ ensurePhases("run-1", { messageId: "msg-abc" })
 
 ### markEmitted
 
-Called when the real event arrives from the wire, so the tracker doesn't re-synthesize it. The [Vercel decoder](vercel-codec.md) calls this when it decodes a `start` or `start-step` event.
+Called when the real event arrives from the wire, so the tracker doesn't re-synthesize it. The [Vercel decode lifecycle policy](vercel-codec.md) calls this from its `onDiscrete` entries when a `start` or `start-step` event is decoded.
 
 ### resetPhase
 
@@ -58,20 +58,35 @@ Removes all tracking state for a scope. Called on run completion (`finish`, `err
 | `resetPhase(scopeId, phaseKey)`  | Resets a phase for re-emission (repeating phases)               |
 | `clearScope(scopeId)`            | Removes all state for a scope                                   |
 
+## Wiring the tracker: the decode lifecycle policy
+
+A codec no longer calls the tracker from hand-written decoder hooks. Instead it supplies `defineCodec` with a `decodeLifecycle` factory - a function returning a `LifecyclePolicy<TOutput>` (`src/core/codec/define-codec.ts`). `defineCodec` invokes the factory once per decoder instance, so each decoder gets its own tracker and independent per-run phase state. The policy is the seam where the tracker plugs into the generic [descriptor-driven decoder](decoder.md); the descriptor driver always runs after the policy, and the policy's returned events are **prepended** to the driver's output - the policy never replaces a decode.
+
+```typescript
+interface LifecyclePolicy<TOutput> {
+  // keyed on the discrete codec `kind`; runs a tracker side effect and returns lead-in events to prepend.
+  // LifecycleDiscreteContext carries the inbound codec headers (e.g. to recover a stream's message id).
+  onDiscrete?: Record<string, (runId: string, ctx: LifecycleDiscreteContext) => TOutput[]>;
+  // lead-in prepended to a stream's start events (the mid-stream-join pre-roll)
+  onStreamStart?: (runId: string, tracker: StreamTrackerState) => TOutput[];
+}
+```
+
 ## Vercel codec usage
 
-The Vercel decoder creates a lifecycle tracker with two phases: `start` and `start-step`. It composes the tracker into the decoder hooks:
+The Vercel decode lifecycle (`src/vercel/codec/decode-lifecycle.ts`, `createVercelDecodeLifecycle`) builds a tracker with two phases - `start` and `start-step` - and returns a policy that drives it:
 
-- **Before every streamed event** - `ensurePhases()` is called with the run ID and a context containing the `messageId` from headers. Any missing lifecycle events are prepended to the decoder output.
-- **On `start` event** - `markEmitted(runId, 'start')`
-- **On `start-step` event** - `markEmitted(runId, 'start-step')`
-- **On `finish-step` event** - `resetPhase(runId, 'start-step')` (next step needs a new start-step)
-- **On `finish`, `error`, or `abort`** - `clearScope(runId)`
+- **`onStreamStart`** - calls `ensurePhases()` with the run ID and the `messageId` recovered from the stream tracker's codec headers. Any missing lifecycle events are prepended ahead of the stream's `start` events.
+- **`onDiscrete['tool-input']`** - also calls `ensurePhases()` (a tool-input discrete needs the same `start` / `start-step` pre-roll).
+- **`onDiscrete.start`** - `markEmitted(runId, 'start')`
+- **`onDiscrete['start-step']`** - `markEmitted(runId, 'start-step')`
+- **`onDiscrete['finish-step']`** - `resetPhase(runId, 'start-step')` (next step needs a new start-step)
+- **`onDiscrete.finish` / `.error` / `.abort`** - `clearScope(runId)`
 
 This means a mid-stream join produces the sequence: synthetic `start` → synthetic `start-step` → real `text-delta` (from decoder first-contact) - which the reducer can process correctly.
 
 ## Design
 
-The tracker is generic - it knows nothing about Vercel's event types or the specific phases. Codecs configure it with their own phase list and call it from their decoder hooks. The `context` parameter passes through codec-specific data (like `messageId`) without the tracker needing to interpret it.
+The tracker is generic - it knows nothing about Vercel's event types or the specific phases. Codecs configure it with their own phase list and drive it from a `LifecyclePolicy`. The `context` parameter passes through codec-specific data (like `messageId`) without the tracker needing to interpret it.
 
 See [Decoder](decoder.md) for how the decoder core handles stream-level reconstruction (first-contact, prefix-match). See [Vercel codec](vercel-codec.md) for the full Vercel decoder integration. See [Codec interface: reducer and projection](codec-interface.md#reducer-and-projection) for how folded events build messages.

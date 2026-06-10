@@ -1,9 +1,13 @@
 /**
- * End-to-end test launcher.
+ * Shared end-to-end test launcher for the demos.
  *
- * Provisions a throwaway Ably sandbox app over the sandbox REST API (no key or
- * secret needed; mirrors test/helper/test-setup.ts), then runs the Playwright
- * suite with the deterministic mock LLM enabled.
+ * Invoked from a demo directory (its `test:e2e` script runs
+ * `node ../../../e2e/run-e2e.mjs`). Provisions a throwaway Ably sandbox app over
+ * the sandbox REST API (no key or secret needed; mirrors test/helper/test-setup.ts),
+ * then runs that demo's Playwright suite with the deterministic mock LLM enabled.
+ *
+ * It resolves Playwright and the ably-common submodule relative to the invoking
+ * demo (process.cwd()), so a single copy serves every demo.
  *
  * It sets, for the Playwright run and the Next.js dev server it spawns:
  *   ABLY_API_KEY              the provisioned sandbox key
@@ -12,14 +16,13 @@
  *   MOCK_LLM                  1
  *
  * Extra arguments are forwarded to `playwright test`, e.g.
- *   node scripts/run-e2e.mjs --grep "fresh send"
+ *   pnpm run test:e2e -- --grep "fresh send"
  */
 
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const SANDBOX_REST_URL = 'https://sandbox-rest.ably.io/apps';
 
@@ -39,12 +42,11 @@ function findTestAppSetup(startDir) {
 
 /** Provision a sandbox app and return a key with full channel permissions. */
 async function provisionSandboxKey() {
-  const scriptDir = dirname(fileURLToPath(import.meta.url));
-  const setupPath = findTestAppSetup(scriptDir);
+  const setupPath = findTestAppSetup(process.cwd());
   const setup = JSON.parse(readFileSync(setupPath, 'utf8'));
 
   // AIT streams by appending/updating Ably messages, which the channel
-  // namespace must permit (mutableMessages). The demo publishes under the `ai:`
+  // namespace must permit (mutableMessages). The demos publish under the `ai:`
   // namespace, so the sandbox app needs an `ai` namespace with that feature,
   // plus persistence so refresh/history-reconstruction tests can replay it. The
   // shared test-app-setup.json only ships a `mutable` namespace (used by the
@@ -74,9 +76,12 @@ async function provisionSandboxKey() {
   return key;
 }
 
-/** Locate the @playwright/test CLI entry (cli.js at the package root). */
+/**
+ * Locate the @playwright/test CLI entry (cli.js at the package root), resolved
+ * from the invoking demo so we use the demo's own Playwright install.
+ */
 function playwrightCli() {
-  const require = createRequire(import.meta.url);
+  const require = createRequire(join(process.cwd(), 'package.json'));
   let dir = dirname(require.resolve('@playwright/test'));
   while (!existsSync(join(dir, 'package.json'))) dir = dirname(dir);
   return join(dir, 'cli.js');

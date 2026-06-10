@@ -38,7 +38,7 @@ import type { Logger } from '../../logger.js';
 import { LogLevel, makeLogger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
-import type { CodecInputEvent, CodecOutputEvent, Decoder, Encoder } from '../codec/types.js';
+import type { Codec, CodecInputEvent, CodecOutputEvent, Decoder, Encoder } from '../codec/types.js';
 import { applyWireMessage } from './decode-fold.js';
 import { buildTransportHeaders } from './headers.js';
 import { Invocation } from './invocation.js';
@@ -83,7 +83,7 @@ class DefaultClientSession<
   TMessage,
 > implements ClientSession<TInput, TOutput, TProjection, TMessage> {
   private readonly _channel: Ably.RealtimeChannel;
-  private readonly _codec: ClientSessionOptions<TInput, TOutput, TProjection, TMessage>['codec'];
+  private readonly _codec: Codec<TInput, TOutput, TProjection, TMessage>;
   private readonly _clientId: string | undefined;
   private readonly _logger: Logger;
 

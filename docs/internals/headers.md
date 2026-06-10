@@ -51,7 +51,7 @@ const fFinishReason = enumField('finishReason', ['stop', 'length', 'error'] as c
 
 ### Vercel codec field bindings
 
-The Vercel `UIMessageCodec` declares its domain header bindings in `src/vercel/codec/fields.ts` — for example `fId`, `fMeta`, `fToolCallId`, `fFinishReason`, and the input-side `fKind` / `fPartType` / `fApproved`. Domain field names live in the Vercel layer, not core, per the header-discipline rule. The output and input descriptors and the escape hatches all read and write through these bindings, so a header key cannot drift between encode and decode. Provider metadata is read directly through the `fMeta` binding (`fMeta.read(codecHeaders)`), which decodes to `AI.ProviderMetadata | undefined`.
+The Vercel `UIMessageCodec` declares its domain header bindings in `src/vercel/codec/fields.ts` — for example `fId`, `fMeta`, `fToolCallId`, `fFinishReason`, and the input-side `fApproved`. Domain field names live in the Vercel layer, not core, per the header-discipline rule. The `kind` and `partType` dispatch headers are not codec field bindings — they are owned and stamped by the core descriptor drivers (`KIND_HEADER` / `PART_TYPE_HEADER` in `src/core/codec/field-bag.ts`), so a codec author never binds them. The output and input descriptors and the escape hatches all read and write through the domain bindings, so a header key cannot drift between encode and decode. Provider metadata is read directly through the `fMeta` binding (`fMeta.read(codecHeaders)`), which decodes to `AI.ProviderMetadata | undefined`.
 
 ### The `kind` dispatch header
 

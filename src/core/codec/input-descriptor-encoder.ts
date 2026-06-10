@@ -15,7 +15,7 @@ import * as Ably from 'ably';
 
 import { ErrorCode } from '../../errors.js';
 import type { InputEncodeContext, InputEncoderCore } from './define-codec.js';
-import { prop, writeFields } from './field-bag.js';
+import { PART_TYPE_HEADER, prop, writeFields } from './field-bag.js';
 import type {
   BatchDescriptor,
   BatchMessageHeaders,
@@ -105,7 +105,7 @@ export const createInputDescriptorEncoder = <U extends { kind: string }>(
       const codecHeaders = {
         ...writeFields(partDesc.fields, descriptor.kind, source),
         ...message?.codecHeaders,
-        partType,
+        [PART_TYPE_HEADER]: partType,
       };
       const data = partDesc.data ? partDesc.data.encode(part) : '';
       payloads.push(withMessageTransport({ name: wireName, data, codecHeaders }, message));

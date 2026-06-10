@@ -13,6 +13,14 @@ import type { HeaderField } from './fields.js';
 export const KIND_HEADER = 'kind';
 
 /**
+ * The codec header carrying a batch part's sub-discriminator. A batch stamps it
+ * on every exploded part on encode; the decoder reads it back to resolve the
+ * matching part descriptor. Centralised so the key has one home across the
+ * input encode and decode drivers and cannot drift between them.
+ */
+export const PART_TYPE_HEADER = 'partType';
+
+/**
  * Read the value at a declared field key off a source object.
  * @param source - The object to index (a chunk, or a lensed sub-object such as a payload).
  * @param key - The declared field key.

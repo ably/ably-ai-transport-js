@@ -17,10 +17,8 @@
 import { HEADER_CODEC_MESSAGE_ID } from '../../constants.js';
 import { stripUndefined } from '../../utils.js';
 import type { InputDecodeContext } from './define-codec.js';
-import { readFields } from './field-bag.js';
+import { PART_TYPE_HEADER, readFields } from './field-bag.js';
 import type { BatchDescriptor, InputDescriptor, InputEventDescriptor, PartDescriptor } from './input-descriptors.js';
-
-const PART_TYPE_FIELD = 'partType';
 
 /** Decodes inbound `ai-input` messages of union `U` from an input descriptor set. */
 export interface InputDescriptorDecoder<U> {
@@ -63,7 +61,7 @@ export const createInputDescriptorDecoder = <U extends { kind: string }>(
   };
 
   const decodeBatch = (descriptor: BatchDescriptor<U>, ctx: InputDecodeContext): U[] => {
-    const partType = ctx.codecHeaders[PART_TYPE_FIELD] ?? '';
+    const partType = ctx.codecHeaders[PART_TYPE_HEADER] ?? '';
     const partDesc = partFor(descriptor.parts, partType);
     if (!partDesc) return [];
 

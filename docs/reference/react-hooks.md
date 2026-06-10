@@ -37,6 +37,8 @@ The session subscribes to the Ably channel immediately on creation and `connect(
 
 If `createClientSession` throws during construction, the error is surfaced through `useClientSession` as `sessionError` — the component tree does not crash and children are still rendered.
 
+The provider also renders an ably-js `<ChannelProvider>` for the session's channel, so ably-js's channel hooks — `usePresence`, `usePresenceListener`, `useChannel` — work for any descendant without wrapping the subtree in your own `<ChannelProvider>`. Pass the same `channelName` you gave the provider. See [Presence](../features/presence.md).
+
 For multiple sessions, nest providers with distinct `channelName` values:
 
 ```tsx
@@ -241,7 +243,7 @@ Create a `ClientSession` and `ChatTransport` and make both available to descenda
 
 Like `ClientSessionProvider`, this provider takes its identity from the Realtime client in the surrounding `<AblyProvider>` (`auth.clientId`, set via the Ably token or `ClientOptions.clientId`).
 
-Unlike the generic `ClientSessionProvider`, this provider issues the agent-invocation POST for you (that's what `api`/`credentials`/`fetch` configure) — `useChat`'s transport contract is request-driven. Inside the subtree, `useChatTransport()` reads the chat transport and the session, and `useClientSession()` reads the underlying `ClientSession`. All generic hooks (`useView`, `useTree`, `useAblyMessages`, `useCreateView`) work without explicit session arguments.
+Unlike the generic `ClientSessionProvider`, this provider issues the agent-invocation POST for you (that's what `api`/`credentials`/`fetch` configure) — `useChat`'s transport contract is request-driven. Inside the subtree, `useChatTransport()` reads the chat transport and the session, and `useClientSession()` reads the underlying `ClientSession`. All generic hooks (`useView`, `useTree`, `useAblyMessages`, `useCreateView`) work without explicit session arguments. Because it wraps `ClientSessionProvider`, it also renders an ably-js `<ChannelProvider>` for the channel, so `usePresence`, `usePresenceListener`, and `useChannel` work in the subtree (see [Presence](../features/presence.md)).
 
 For multiple providers, nest them with distinct `channelName` values:
 

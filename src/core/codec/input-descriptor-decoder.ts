@@ -4,8 +4,8 @@
  *
  * Rebuilds inputs from one inbound `ai-input` message, dispatching on the codec
  * `kind` header. A single `event` rebuilds its field bag (and `data`) and wraps
- * it into the `{ kind, codecMessageId, payload }` envelope (for `via: 'payload'`)
- * or the flat `{ kind, ...bag }` shape; `wireOnly` events decode to `[]`. A
+ * it into the `{ kind, codecMessageId, payload }` envelope; `wireOnly` events
+ * decode to `[]`. A
  * `batch` reads the `partType` sub-discriminator, rebuilds the part via its
  * sub-table, `assemble`s it into a one-part input, and the driver stamps the
  * `kind` plus the codec-message-id reconstructed from the transport header.
@@ -55,15 +55,11 @@ export const createInputDescriptorDecoder = <U extends { kind: string }>(
     const bag = readFields(descriptor.fields, ctx.codecHeaders);
     if (descriptor.data) Object.assign(bag, descriptor.data.decode(ctx.data));
 
-    if (descriptor.via === 'payload') {
-      const codecMessageId = ctx.transportHeaders[HEADER_CODEC_MESSAGE_ID] ?? '';
-      // CAST: the rebuild seam — `bag` is assembled from the descriptor's declared
-      // fields and data codec onto the payload lens, so the envelope conforms to the
-      // matched member by construction.
-      return [stripUndefined({ kind: descriptor.kind, codecMessageId, payload: bag }) as unknown as U];
-    }
-    // CAST: flat rebuild — `bag` carries the member's fields/data; seeded with `kind`.
-    return [stripUndefined({ kind: descriptor.kind, ...bag }) as unknown as U];
+    const codecMessageId = ctx.transportHeaders[HEADER_CODEC_MESSAGE_ID] ?? '';
+    // CAST: the rebuild seam — `bag` is assembled from the descriptor's declared
+    // fields and data codec onto the payload, so the `{ kind, codecMessageId, payload }`
+    // envelope conforms to the matched member by construction.
+    return [stripUndefined({ kind: descriptor.kind, codecMessageId, payload: bag }) as unknown as U];
   };
 
   const decodeBatch = (descriptor: BatchDescriptor<U>, ctx: InputDecodeContext): U[] => {
@@ -85,7 +81,7 @@ export const createInputDescriptorDecoder = <U extends { kind: string }>(
     });
     // CAST: the driver stamps the shared `kind` onto the assembled one-part input; together
     // they complete the matched member. A batch creates a new message (not addressed by a
-    // codec-message-id, unlike `via: 'payload'` events), so none is stamped — the per-message
+    // codec-message-id, unlike single `event`s), so none is stamped — the per-message
     // identity rides the transport header and is recovered by `assemble` when needed.
     return [{ kind: descriptor.kind, ...partial } as unknown as U];
   };

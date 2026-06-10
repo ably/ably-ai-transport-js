@@ -12,8 +12,7 @@ import type { MessagePayload, WriteOptions } from '../../../src/core/codec/types
 // Fixture input union
 //
 // A small codec-shaped input union exercising every input construct:
-//   - a flat single event (no via)               → `ping`
-//   - a `via: 'payload'` single event            → `tool-result-like`
+//   - a single event (payload-nested)            → `tool-result-like`
 //   - a wire-only signal                         → `signal`
 //   - a multi-part batch (text / file / data-*)  → `doc`
 // ---------------------------------------------------------------------------
@@ -35,7 +34,6 @@ interface DocMessage {
 }
 
 type FixtureInput =
-  | { kind: 'ping'; note: string }
   | { kind: 'tool-result-like'; codecMessageId: string; payload: ToolResultLikePayload }
   | { kind: 'signal' }
   | { kind: 'doc'; codecMessageId: string; message: DocMessage };
@@ -44,7 +42,6 @@ type FixtureInput =
 // Fields
 // ---------------------------------------------------------------------------
 
-const fNote = strField('note', '');
 const fToolCallId = strField('toolCallId', '');
 const fMediaType = strField('mediaType', '');
 const fDataId = strField('id');
@@ -60,14 +57,8 @@ const asString = (d: unknown): string => (typeof d === 'string' ? d : '');
 const { event, batch } = inputBuilder<FixtureInput>();
 
 const descriptors = [
-  // flat single event — fields read off the member directly
-  event('ping', {
-    fields: [fNote],
-  }),
-
-  // via: 'payload' — fields/data lens onto chunk.payload; `p` here is the payload
+  // single event — fields/data lens onto the member's payload; `p` here is the payload
   event('tool-result-like', {
-    via: 'payload',
     fields: [fToolCallId],
     data: {
       encode: (p) => ({ output: p.output }),
@@ -166,30 +157,9 @@ describe('input descriptor drivers', () => {
   const encoder = createInputDescriptorEncoder<FixtureInput>(descriptors, EVENT_AI_INPUT);
   const decoder = createInputDescriptorDecoder<FixtureInput>(descriptors);
 
-  // -- flat event ----------------------------------------------------------
+  // -- payload-nested event ------------------------------------------------
 
-  it('round-trips a flat event (fields off the member)', async () => {
-    const core = createMockCore();
-    await encoder.encode({ kind: 'ping', note: 'hi' }, core, { opts: undefined });
-
-    expect(core.discreteCalls).toHaveLength(1);
-    const { payload } = at(core.discreteCalls, 0);
-    expect(payload.name).toBe(EVENT_AI_INPUT);
-    expect(codecHeadersOf(payload).kind).toBe('ping');
-    expect(codecHeadersOf(payload).note).toBe('hi');
-
-    const decoded = decoder.decode({
-      codecKind: 'ping',
-      data: payload.data,
-      codecHeaders: codecHeadersOf(payload),
-      transportHeaders: {},
-    });
-    expect(decoded).toEqual([{ kind: 'ping', note: 'hi' }]);
-  });
-
-  // -- via: 'payload' event ------------------------------------------------
-
-  it('round-trips a via:payload event and rebuilds the envelope + codecMessageId', async () => {
+  it('round-trips a payload-nested event and rebuilds the envelope + codecMessageId', async () => {
     const core = createMockCore();
     await encoder.encode(
       { kind: 'tool-result-like', codecMessageId: 'cm-1', payload: { toolCallId: 't1', output: { ok: true } } },

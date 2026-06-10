@@ -28,18 +28,15 @@ import type { DataCodec } from './output-descriptors.js';
 export type ResolveInput<U extends { kind: string }, K extends U['kind']> = Extract<U, { kind: K }>;
 
 /**
- * The lens target an input `event` spec's `fields` / `data` operate on: the
- * member's `payload` when `via: 'payload'`, else the member itself. Tool inputs
- * nest their domain data under `payload` and are addressed by codec-message-id;
- * flat inputs (none in Vercel today) read the member directly.
+ * The payload an input `event`'s `fields` / `data` operate on. Inputs nest their
+ * domain data under `payload` (the `{ kind, codecMessageId, payload }` envelope of
+ * the well-known input variants), so a single event's spec is authored against the
+ * payload, and the driver wraps/unwraps the envelope. A member with no `payload`
+ * (a `wireOnly` signal) resolves to `never` — such an event declares no `fields` /
+ * `data`, so the payload type is never used.
  * @template C - The narrowed input member.
- * @template V - The `via` literal (`'payload'` or `undefined`).
  */
-export type Lensed<C, V extends 'payload' | undefined> = V extends 'payload'
-  ? C extends { payload: infer P }
-    ? P
-    : never
-  : C;
+export type PayloadOf<C> = C extends { payload: infer P } ? P : never;
 
 /**
  * Resolve the part union member a `partType` literal selects, mirroring the
@@ -61,20 +58,17 @@ export type ResolvePart<P extends { type: string }, T extends string> =
 // ---------------------------------------------------------------------------
 
 /**
- * A single-event input descriptor spec, narrowed to input member `C` and lensed
- * by `via`. `fields` and `data` operate on the lens target ({@link Lensed}); on
- * decode the driver rebuilds the `{ kind, codecMessageId, payload }` envelope
- * (for `via: 'payload'`) or the flat `{ kind, ...bag }` shape.
+ * A single-event input descriptor spec, narrowed to input member `C`. `fields`
+ * and `data` operate on the member's {@link PayloadOf payload}; the driver wraps
+ * the `{ kind, codecMessageId, payload }` envelope on decode and unwraps it on
+ * encode. A `wireOnly` event carries no payload (kind only).
  * @template C - The narrowed input member.
- * @template V - The `via` literal (`'payload'` or `undefined`).
  */
-export interface InputEventSpec<C, V extends 'payload' | undefined> {
-  /** Lens `fields` / `data` onto `chunk.payload` when `'payload'`; omit to read the member directly. */
-  via?: V;
-  /** Declared header fields, written on encode and read on decode by key. Omit for none. */
+export interface InputEventSpec<C> {
+  /** Declared header fields (over the payload), written on encode and read on decode by key. Omit for none. */
   fields?: readonly HeaderField<unknown>[];
-  /** Wire `data` codec over the lens target. Omit when the input carries no data (`data: ''`). */
-  data?: DataCodec<Lensed<C, V>>;
+  /** Wire `data` codec over the payload. Omit when the input carries no data (`data: ''`). */
+  data?: DataCodec<PayloadOf<C>>;
   /** Wire-only signal: encode stamps only the `kind` header (empty data, no fields); decode yields `[]`. */
   wireOnly?: boolean;
   /** Escape-hatch encode — overrides the default discrete publish (unused by Vercel, kept for irregular inputs). */
@@ -194,9 +188,7 @@ export interface InputEventDescriptor<U> {
   construct: 'event';
   /** The wire `kind` this input dispatches on. */
   kind: string;
-  /** The lens (`'payload'` to read `chunk.payload`, else the member directly). */
-  via: 'payload' | undefined;
-  /** Declared header fields. */
+  /** Declared header fields (read/written against the member's payload). */
   fields: readonly HeaderField<unknown>[];
   /** Wire `data` codec, if any. */
   data?: DataCodec<unknown>;
@@ -253,16 +245,13 @@ export type InputDescriptor<U> = InputEventDescriptor<U> | BatchDescriptor<U>;
  */
 export interface InputBuilder<U extends { kind: string }> {
   /**
-   * Declare a single-event input. Narrows `spec` to the member `kind` selects and
-   * lenses `fields` / `data` per `via`.
+   * Declare a single-event input. Narrows `spec` to the member `kind` selects;
+   * `fields` / `data` operate on that member's payload.
    * @param kind - The input member's `kind` literal (the wire dispatch key).
-   * @param spec - The narrowed, lensed input spec. Omit for a bare-`kind` input.
+   * @param spec - The narrowed input spec. Omit for a bare-`kind` input.
    * @returns An erased {@link InputDescriptor}.
    */
-  event: <K extends U['kind'], V extends 'payload' | undefined = undefined>(
-    kind: K,
-    spec?: InputEventSpec<ResolveInput<U, K>, V>,
-  ) => InputDescriptor<U>;
+  event: <K extends U['kind']>(kind: K, spec?: InputEventSpec<ResolveInput<U, K>>) => InputDescriptor<U>;
   /**
    * Declare a multi-part (batch) input. Narrows the spec to the message-bearing
    * member `kind` selects; `explode`'s return type fixes the part union `P`, which
@@ -311,14 +300,13 @@ export const inputBuilder = <U extends { kind: string }>(): InputBuilder<U> => {
 
   return {
     event: (kind, spec) =>
-      // CAST: `spec` is narrowed to the member `kind` selects and lensed by `via`;
-      // the descriptor erases that to the codec's union `U` so heterogeneous
-      // descriptors share one array type. The drivers only ever invoke a
-      // descriptor's callbacks with the matching member, so the erasure is sound.
+      // CAST: `spec` is narrowed to the member `kind` selects; the descriptor erases
+      // that to the codec's union `U` so heterogeneous descriptors share one array
+      // type. The drivers only ever invoke a descriptor's callbacks with the matching
+      // member, so the erasure is sound.
       ({
         construct: 'event',
         kind,
-        via: spec?.via,
         fields: spec?.fields ?? [],
         data: spec?.data,
         wireOnly: spec?.wireOnly ?? false,

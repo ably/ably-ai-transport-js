@@ -20,6 +20,8 @@ interface QuirkyOutput {
 
 interface NoopInput {
   kind: 'noop';
+  codecMessageId: string;
+  payload: Record<string, never>;
 }
 
 const codec = defineCodec<NoopInput, QuirkyOutput>()({
@@ -36,7 +38,7 @@ const codec = defineCodec<NoopInput, QuirkyOutput>()({
       data: { encode: () => '', decode: () => ({ kind: 'looks-like-input' }) },
     }),
   ],
-  // A flat single event with no fields/data rebuilds to { kind: 'noop' }.
+  // A single event with no fields/data rebuilds to the { kind, codecMessageId, payload } envelope.
   input: ({ event }) => [event('noop')],
 });
 
@@ -73,7 +75,7 @@ describe('defineCodec — decoder direction routing', () => {
 
     const { inputs, outputs } = decoder.decode(aiMessage(EVENT_AI_INPUT, { kind: 'noop' }));
 
-    expect(inputs).toEqual([{ kind: 'noop' }]);
+    expect(inputs).toEqual([{ kind: 'noop', codecMessageId: '', payload: {} }]);
     expect(outputs).toEqual([]);
   });
 

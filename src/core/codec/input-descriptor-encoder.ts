@@ -3,8 +3,8 @@
  * sibling of {@link import('./output-descriptor-encoder.js')}.
  *
  * Builds a `kind`→descriptor registry once, then routes each input: a single
- * `event` publishes one discrete message (lensed onto `payload` when
- * `via: 'payload'`, kind-only when `wireOnly`); a `batch` explodes the domain
+ * `event` publishes one discrete message (fields/data lensed onto the member's
+ * `payload`, or kind-only when `wireOnly`); a `batch` explodes the domain
  * message into one wire event per part and publishes them atomically, with a
  * built-in ≥1-event guarantee so the codec-message-id and role survive an empty
  * decomposition. Headers are always built through the descriptor's declared
@@ -76,10 +76,9 @@ export const createInputDescriptorEncoder = <U extends { kind: string }>(
       await core.publishDiscrete({ name: wireName, data: '', codecHeaders: { kind: descriptor.kind } }, ctx.opts);
       return;
     }
-    // CAST: `via: 'payload'` reads the member's `payload` lens; the member carries
-    // it by construction (only payload-bearing inputs declare `via`). Without `via`
-    // the source is the member itself.
-    const source = descriptor.via === 'payload' ? (prop(input, 'payload') as object) : input;
+    // CAST: a non-wireOnly input nests its domain data under `payload`; the member
+    // carries it by construction. `fields` / `data` are authored against the payload.
+    const source = prop(input, 'payload') as object;
     const codecHeaders = writeFields(descriptor.fields, descriptor.kind, source);
     const data = descriptor.data ? descriptor.data.encode(source) : '';
     await core.publishDiscrete({ name: wireName, data, codecHeaders }, ctx.opts);

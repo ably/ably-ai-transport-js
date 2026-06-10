@@ -31,7 +31,7 @@ const EMPTY_MESSAGE_PARTS: AI.UIMessage['parts'] = [{ type: 'text', text: '' }];
  * The Vercel codec's `ai-input` descriptors, built from the injected
  * direction-scoped builder.
  * @param builder - The `{ event, batch }` builder curried on `VercelInput`.
- * @param builder.event - Define a single-event input (flat, `via:'payload'`, or `wireOnly`).
+ * @param builder.event - Define a single-event input (payload-nested, or `wireOnly`).
  * @param builder.batch - Define a multi-part (batch) input that fans out into one wire event per part.
  * @returns The input descriptor table the generic input drivers consume.
  */
@@ -39,7 +39,6 @@ export const inputs = ({ event, batch }: InputBuilder<VercelInput>): readonly In
   // --- tool inputs: nested payload, codec-message-id-addressed ----------------
 
   event('tool-result', {
-    via: 'payload',
     fields: [fToolCallId],
     data: {
       encode: (p) => ({ output: p.output }),
@@ -48,14 +47,13 @@ export const inputs = ({ event, batch }: InputBuilder<VercelInput>): readonly In
     },
   }),
   event('tool-result-error', {
-    via: 'payload',
     fields: [fToolCallId],
     data: {
       encode: (p) => ({ message: p.message }),
       decode: (d) => ({ message: isClientToolResultErrorWireData(d) ? (d.message ?? '') : '' }),
     },
   }),
-  event('tool-approval-response', { via: 'payload', fields: [fToolCallId, fApproved, fReason] }),
+  event('tool-approval-response', { fields: [fToolCallId, fApproved, fReason] }),
 
   // --- wire-only signal -------------------------------------------------------
 

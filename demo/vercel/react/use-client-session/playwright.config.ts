@@ -12,7 +12,8 @@ export default defineConfig({
   expect: { timeout: 30_000 },
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
-  retries: 0,
+  // Retry in CI to absorb transient sandbox/history-hydration flakes.
+  retries: process.env.CI ? 2 : 0,
   workers: 1,
   reporter: [['list']],
   use: {

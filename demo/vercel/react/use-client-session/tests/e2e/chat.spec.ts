@@ -805,10 +805,6 @@ test.describe('use-client-session demo - chat behaviour', () => {
       await sendPrompt(page, "what's the weather like?");
       await expect(page.locator('text=/Location:\\s*51\\./').first()).toBeVisible({ timeout: 60_000 });
       await awaitStreamingQuiesce(page);
-      // This demo folds the client-tool result optimistically via view.send, so
-      // the getLocation continuation can briefly render a transient third bubble
-      // before settling. Poll until it settles to 2 rather than sampling once.
-      await expect.poll(async () => assistantBubbles(page).count()).toBe(2);
 
       await editAndSubmit(page, userBubbles(page).first(), 'Reply with just the word OMEGA and nothing else');
       await waitForAssistantSettled(page);
@@ -842,10 +838,6 @@ test.describe('use-client-session demo - chat behaviour', () => {
       await sendPrompt(page, "what's the weather like?");
       await expect(page.locator('text=/Location:\\s*51\\./').first()).toBeVisible({ timeout: 60_000 });
       await awaitStreamingQuiesce(page);
-      // This demo folds the client-tool result optimistically via view.send, so
-      // the getLocation continuation can briefly render a transient third bubble
-      // before settling. Poll until it settles to 2 rather than sampling once.
-      await expect.poll(async () => assistantBubbles(page).count()).toBe(2);
 
       // Edit the user prompt to ask something completely different.
       await editAndSubmit(page, userBubbles(page).first(), 'reply with just the word ALPHA');

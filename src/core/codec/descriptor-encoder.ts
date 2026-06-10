@@ -13,16 +13,8 @@ import * as Ably from 'ably';
 import { ErrorCode } from '../../errors.js';
 import type { Descriptor, EventDescriptor, HeaderBuilder, StreamDescriptor } from './descriptors.js';
 import type { EncoderCore } from './encoder.js';
-import type { HeaderField } from './fields.js';
+import { prop, writeFields } from './field-bag.js';
 import type { WriteOptions } from './types.js';
-
-/** The codec header carrying the SDK-controlled dispatch kind / stream family id. */
-export const KIND_HEADER = 'kind';
-
-// CAST: a descriptor indexes chunk props by a declared key. The union member's
-// indexed type isn't statically known here, but a descriptor only ever runs
-// against the member it matches, so the value has the field's type at runtime.
-const prop = (chunk: object, key: string): unknown => (chunk as Record<string, unknown>)[key];
 
 /** Per-write encode context threaded from the encoder. */
 export interface EncodeContext {
@@ -70,20 +62,6 @@ export const createDescriptorEncoder = <U extends { type: string }>(
     }
   }
 
-  const buildHeaders = (
-    fields: readonly HeaderField<unknown>[],
-    kindValue: string,
-    chunk: U,
-    keys?: readonly string[],
-  ): Record<string, string> => {
-    const rec: Record<string, string> = { [KIND_HEADER]: kindValue };
-    for (const field of fields) {
-      if (keys && !keys.includes(field.key)) continue;
-      field.write(rec, prop(chunk, field.key));
-    }
-    return rec;
-  };
-
   return {
     encode: async (chunk, core, ctx) => {
       const { type } = chunk;
@@ -91,7 +69,7 @@ export const createDescriptorEncoder = <U extends { type: string }>(
       const streamEntry = streamByPhase.get(type);
       if (streamEntry) {
         const { descriptor, phase } = streamEntry;
-        const h: HeaderBuilder<U> = (c, keys) => buildHeaders(descriptor.fields, descriptor.familyId, c, keys);
+        const h: HeaderBuilder<U> = (c, keys) => writeFields(descriptor.fields, descriptor.familyId, c, keys);
         // CAST: idField/deltaField are string-valued chunk keys by construction.
         const streamId = prop(chunk, descriptor.idField) as string;
         if (phase === 'start') {
@@ -111,7 +89,7 @@ export const createDescriptorEncoder = <U extends { type: string }>(
         throw new Ably.ErrorInfo(`unable to publish; unsupported event type '${type}'`, ErrorCode.InvalidArgument, 400);
       }
 
-      const h: HeaderBuilder<U> = (c, keys) => buildHeaders(descriptor.fields, c.type, c, keys);
+      const h: HeaderBuilder<U> = (c, keys) => writeFields(descriptor.fields, c.type, c, keys);
       if (descriptor.encode) {
         await descriptor.encode(chunk, core, { h, name: wireName, messageId: ctx.messageId, opts: ctx.opts });
         return;

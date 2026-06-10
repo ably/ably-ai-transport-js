@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { EVENT_AI_INPUT, HEADER_CODEC_MESSAGE_ID } from '../../../src/constants.js';
-import type { InputAdapterCore } from '../../../src/core/codec/define-codec.js';
+import type { InputEncoderCore } from '../../../src/core/codec/define-codec.js';
 import { strField } from '../../../src/core/codec/fields.js';
 import { createInputDescriptorDecoder } from '../../../src/core/codec/input-descriptor-decoder.js';
 import { createInputDescriptorEncoder } from '../../../src/core/codec/input-descriptor-encoder.js';
@@ -109,7 +109,7 @@ const descriptors = [
 // Mock cores
 // ---------------------------------------------------------------------------
 
-interface MockEncodeCore extends InputAdapterCore {
+interface MockEncodeCore extends InputEncoderCore {
   discreteCalls: { payload: MessagePayload; messageId: string | undefined }[];
   batchCalls: { payloads: MessagePayload[]; messageId: string | undefined }[];
 }

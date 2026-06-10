@@ -1,5 +1,5 @@
 /**
- * Generic encode driver over a descriptor set.
+ * Generic output encode driver over a descriptor set.
  *
  * Builds a chunk→descriptor registry once, then routes each event: discrete
  * descriptors publish a single message, streamed families drive
@@ -11,13 +11,18 @@
 import * as Ably from 'ably';
 
 import { ErrorCode } from '../../errors.js';
-import type { Descriptor, EventDescriptor, HeaderBuilder, StreamDescriptor } from './descriptors.js';
 import type { EncoderCore } from './encoder.js';
 import { prop, writeFields } from './field-bag.js';
+import type {
+  HeaderBuilder,
+  OutputDescriptor,
+  OutputEventDescriptor,
+  OutputStreamDescriptor,
+} from './output-descriptors.js';
 import type { WriteOptions } from './types.js';
 
-/** Per-write encode context threaded from the encoder. */
-export interface EncodeContext {
+/** Per-write output encode context threaded from the encoder. */
+export interface OutputEncodeContext {
   /** The encoder's configured fallback message id, if any. */
   messageId: string | undefined;
   /** Per-write overrides. */
@@ -25,7 +30,7 @@ export interface EncodeContext {
 }
 
 /** Encodes events of union `U` to channel operations via a descriptor set. */
-export interface DescriptorEncoder<U> {
+export interface OutputDescriptorEncoder<U> {
   /**
    * Encode one event through its descriptor.
    * @param chunk - The event to encode.
@@ -33,27 +38,27 @@ export interface DescriptorEncoder<U> {
    * @param ctx - Per-write context (fallback message id, write options).
    * @returns A promise resolving when the publish/stream operation completes.
    */
-  encode(chunk: U, core: EncoderCore, ctx: EncodeContext): Promise<void>;
+  encode(chunk: U, core: EncoderCore, ctx: OutputEncodeContext): Promise<void>;
 }
 
 /**
- * Build an encode driver for a descriptor set bound to a wire message name.
+ * Build an output encode driver for a descriptor set bound to a wire message name.
  * @template U - The codec's event union.
  * @param descriptors - The descriptor set (events + streamed families).
  * @param wireName - The Ably message name for this direction (`ai-output` / `ai-input`).
- * @returns A {@link DescriptorEncoder} routing each event through its descriptor.
+ * @returns An {@link OutputDescriptorEncoder} routing each event through its descriptor.
  */
-export const createDescriptorEncoder = <U extends { type: string }>(
-  descriptors: readonly Descriptor<U>[],
+export const createOutputDescriptorEncoder = <U extends { type: string }>(
+  descriptors: readonly OutputDescriptor<U>[],
   wireName: string,
-): DescriptorEncoder<U> => {
-  const discreteByType = new Map<string, EventDescriptor<U>>();
-  const wildcards: EventDescriptor<U>[] = [];
-  const streamByPhase = new Map<string, { descriptor: StreamDescriptor<U>; phase: 'start' | 'delta' | 'end' }>();
+): OutputDescriptorEncoder<U> => {
+  const discreteByType = new Map<string, OutputEventDescriptor<U>>();
+  const wildcards: OutputEventDescriptor<U>[] = [];
+  const streamByPhase = new Map<string, { descriptor: OutputStreamDescriptor<U>; phase: 'start' | 'delta' | 'end' }>();
 
   for (const descriptor of descriptors) {
     if (descriptor.kind === 'event') {
-      if (descriptor.matchType) wildcards.push(descriptor);
+      if (descriptor.match) wildcards.push(descriptor);
       else discreteByType.set(descriptor.type, descriptor);
     } else {
       streamByPhase.set(descriptor.start, { descriptor, phase: 'start' });
@@ -84,7 +89,7 @@ export const createDescriptorEncoder = <U extends { type: string }>(
         return;
       }
 
-      const descriptor = discreteByType.get(type) ?? wildcards.find((w) => w.matchType?.(type));
+      const descriptor = discreteByType.get(type) ?? wildcards.find((w) => w.match?.(type));
       if (!descriptor) {
         throw new Ably.ErrorInfo(`unable to publish; unsupported event type '${type}'`, ErrorCode.InvalidArgument, 400);
       }

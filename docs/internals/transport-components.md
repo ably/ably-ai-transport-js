@@ -33,14 +33,14 @@ The run manager publishes `ai-run-end` **before** deleting local state. If the p
 
 `src/core/transport/pipe-stream.ts` - server-side only.
 
-A pure function that reads events from a `ReadableStream`, writes them through a [streaming encoder](codec-interface.md#encoder-architecture), and handles cancel/error. No dependencies on run state or transport internals.
+A pure function that reads events from a `ReadableStream`, writes them through a [streaming encoder](encoder.md#stream-lifecycle), and handles cancel/error. No dependencies on run state or transport internals.
 
 ### Flow
 
 ```
 while true:
   race(reader.read(), abortPromise)
-    → cancelled?  call onCancelled(), then encoder.cancel('cancelled')
+    → cancelled?  call onCancelled(), then encoder.cancelStreams()
     → done?       call encoder.close()
     → value?      call encoder.publishOutput(value)
     → error?      call encoder.close() (best-effort), return 'error'
@@ -52,8 +52,8 @@ The `AbortSignal` is converted to a promise (`abortPromise`) and raced against `
 
 When cancelled:
 
-1. The `onCancelled` callback fires (if provided) - the server can write final events before the stream closes (e.g. `[generation cancelled]`)
-2. `encoder.cancel('cancelled')` cancels all in-progress streams
+1. The `onCancelled` callback fires (if provided) - it is handed a `write(output)` function so the server can publish final outputs before the stream closes (e.g. `[generation cancelled]`)
+2. `encoder.cancelStreams()` closes every in-flight streamed message as `status:cancelled` — pure transport mechanics that emits no codec output. Run termination is signalled separately by the transport `ai-run-end` event
 3. The reader lock is released
 
 ### Error handling
@@ -62,7 +62,7 @@ When the stream throws or `publishOutput()` fails, `pipeStream` catches the erro
 
 ### Return value
 
-Returns `{ reason, error? }` where reason is `'complete'`, `'cancelled'`, or `'error'`; `error` is present only when reason is `'error'` and carries the original provider error. The agent session passes the reason to `run.end()`.
+Returns `{ reason, error? }` where reason is `'complete'`, `'cancelled'`, or `'error'`; `error` is present only when reason is `'error'` and carries the original provider error. `Run.pipe()` returns this result to the caller, and on a `'cancelled'` reason it calls `run.end('cancelled')` itself so the transport `ai-run-end` terminal fires even if the developer's handler omits it (a later `run.end()` is a no-op).
 
 ## Cancel routing (agent session)
 

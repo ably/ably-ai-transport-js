@@ -2,7 +2,7 @@
 
 The encoder core (`src/core/codec/encoder.ts`) translates domain events into Ably publish operations. It implements the [message append](glossary.md#message-actions-ably) lifecycle - creating, appending to, closing, and cancelling streamed messages - and handles recovery when appends fail.
 
-Domain codecs don't interact with Ably directly. They call encoder core methods (`startStream()`, `appendStream()`, `closeStream()`) and the core handles serialization, header merging, and error recovery.
+Domain codecs don't interact with Ably directly, and they no longer hand-write an encoder. A codec is assembled declaratively through `defineCodec` (`src/core/codec/define-codec.ts`) from an output descriptor table and an input descriptor table. `defineCodec` builds a `DefaultCodecEncoder` that wires the descriptor drivers (`createOutputDescriptorEncoder`, `createInputDescriptorEncoder`) to a single encoder core. The drivers route each event to the right core method (`startStream()`, `appendStream()`, `closeStream()`, `publishDiscrete()`, `publishDiscreteBatch()`) based on its descriptor, and the core handles serialization, header merging, and error recovery. See [Codec interface](codec-interface.md) for how the descriptor tables drive encode and decode.
 
 ## Two message modes
 
@@ -79,7 +79,7 @@ The transport tier (`_buildTransport`) is merged in priority order (later wins):
 2. Per-write override extras headers - passed to individual write calls (`WriteOptions.extras.headers`)
 3. Payload transport headers - transport-tier headers the codec stamps directly on the payload (`payload.transportHeaders`, e.g. `role`, `status`)
 
-The codec tier is taken verbatim from `payload.codecHeaders` and is omitted from the wire entirely when empty.
+The codec tier is taken verbatim from `payload.codecHeaders` and is omitted from the wire entirely when empty. The descriptor drivers build that record through `writeFields` (`src/core/codec/field-bag.ts`), which always seeds the SDK-controlled dispatch header `kind` (`KIND_HEADER = "kind"`) before layering each declared field. The `kind` value is the dispatch discriminator the [decoder](decoder.md) routes on - a discrete event's domain type, or a streamed family's id - so the wire carries it on every message in the codec tier. The encoder core itself treats the codec tier opaquely; it neither reads nor writes `kind`.
 
 If `WriteOptions.messageId` is set, the encoder stamps it as [`codec-message-id`](wire-protocol.md#message-identity-codec-message-id) (a transport-tier header) during header merging. For streamed messages, this header is included in `persistentTransport` - so every append and the closing append carry the same codec-message-id, giving the entire message append lifecycle a single identity.
 
@@ -103,4 +103,4 @@ interface ChannelWriter {
 
 `Ably.RealtimeChannel` satisfies this interface directly.
 
-See [Wire protocol](wire-protocol.md) for the full header specification. See [Decoder](decoder.md) for how the decoder handles encoder output, including recovery via `message.update`. See [Codec interface](codec-interface.md) for how domain encoders compose the encoder core.
+See [Wire protocol](wire-protocol.md) for the full header specification. See [Decoder](decoder.md) for how the decoder handles encoder output, including recovery via `message.update`. See [Codec interface](codec-interface.md) for how `defineCodec` and the descriptor tables drive the encoder core.

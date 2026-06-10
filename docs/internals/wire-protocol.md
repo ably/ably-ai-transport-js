@@ -15,7 +15,7 @@ Transport headers are set by the generic transport layer and live under `extras.
 | `stream`                 | `"true"` / `"false"`                         | Whether this message uses the message append lifecycle                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `status`                 | `"streaming"` / `"complete"` / `"cancelled"` | Current lifecycle state of a streamed message                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `stream-id`              | string                                       | Identity of the streamed message (correlates create → appends → close)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `discrete`               | `"true"`                                     | Marks a discrete message part (from a batch `writeMessages` publish). Distinguishes content message parts from lifecycle events, which are also `stream: "false"`. Only set on discrete message parts                                                                                                                                                                                                                                                                                                                                                              |
+| `discrete`               | `"true"`                                     | Marks a discrete message part (from a batch `publishDiscreteBatch` publish). Distinguishes content message parts from lifecycle events, which are also `stream: "false"`. Only set on discrete message parts                                                                                                                                                                                                                                                                                                                                                       |
 | `run-id`                 | string                                       | [Run](glossary.md#run-id-vs-invocation-id-vs-message-id) correlation ID. Every agent-published event in a run carries this. A client `ai-input` carries it only for a **continuation** - the existing run the input re-enters; a fresh input omits it (the agent mints the run-id on `ai-run-start`). The agent reads a `run-id` on the triggering input to choose `ai-run-resume` over `ai-run-start`                                                                                                                                                             |
 | `codec-message-id`       | string                                       | [Message identity](#message-identity-codec-message-id). One per domain message (user or assistant). Used for [optimistic reconciliation](#optimistic-reconciliation)                                                                                                                                                                                                                                                                                                                                                                                               |
 | `run-client-id`          | string                                       | ClientId that owns the run — the client whose initiating `ai-input` started the run. Constant for the run's lifetime. See [Client identity](#client-identity)                                                                                                                                                                                                                                                                                                                                                                                                      |
@@ -35,18 +35,20 @@ Transport headers are set by the generic transport layer and live under `extras.
 
 Codec headers are set by the codec layer and live under `extras.ai.codec`. They carry framework-specific metadata - field IDs, provider metadata. The transport layer passes them through without interpreting them.
 
-For the Vercel `UIMessageCodec`, codec headers include:
+Every codec message carries one SDK-controlled header — `kind` — that the decoder dispatches on. It is set by the descriptor drivers (not the codec author directly) and is shared by both layers; the remaining codec headers are codec-defined field bindings.
 
-| Header             | Purpose                                                                                 |
-| ------------------ | --------------------------------------------------------------------------------------- |
-| `type`             | Codec event type (e.g. `text`, `reasoning`, `tool-input`); the decoder dispatches on it |
-| `id`               | Chunk/message ID                                                                        |
-| `providerMetadata` | JSON-serialized provider metadata                                                       |
-| `finishReason`     | Why the LLM stopped generating (on `finish`)                                            |
+| Header             | Purpose                                                                                                                                                                                                         |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kind`             | SDK-controlled dispatch discriminator (`KIND_HEADER`). Selects which descriptor decodes a discrete message; for a streamed message it is the stream-family id. The decoder routes on it, never on message shape |
+| `id`               | Chunk/message ID                                                                                                                                                                                                |
+| `providerMetadata` | JSON-serialized provider metadata                                                                                                                                                                               |
+| `finishReason`     | Why the LLM stopped generating (on `finish`)                                                                                                                                                                    |
+
+For the Vercel `UIMessageCodec`, `kind` carries the codec event's domain discriminator: a discrete output stamps its chunk `type` (e.g. `start`, `finish`, `tool-output-available`, the `data-*` wildcard); a streamed output stamps its family id (`text`, `reasoning`, `tool-input`); an input stamps its `kind` (`user-message`, `tool-result`, `tool-result-error`, `tool-approval-response`, `regenerate`). The set of valid `kind` values is codec-defined — each descriptor's literal becomes one — not a fixed SDK enum.
 
 Error text and `data-*` payloads ride in the message `data`, not in a header.
 
-Codec headers carry no prefix — the `extras.ai.codec` tier isolates them. Codecs use the `headerWriter()` and `headerReader()` utilities to build and read this tier.
+Codec headers carry no prefix — the `extras.ai.codec` tier isolates them. Codecs declare each header as a typed [`HeaderField`](codec-interface.md) binding (`strField`, `boolField`, `jsonField`, `enumField`); the descriptor drivers read and write the tier through those bindings.
 
 ## Client identity
 
@@ -98,7 +100,7 @@ A discrete message is a single, immutable Ably publish. It carries `stream: "fal
 
 Used for: user messages, data parts, lifecycle events (start, finish).
 
-Content message parts (from a batch `writeMessages` publish) additionally carry `discrete: "true"`. Lifecycle events are also `stream: "false"`, so this marker is what lets the decoder tell a discrete content part apart from a lifecycle event.
+Content message parts (from a batch `publishDiscreteBatch` publish) additionally carry `discrete: "true"`. Lifecycle events are also `stream: "false"`, so this marker is what lets the decoder tell a discrete content part apart from a lifecycle event.
 
 ```
 Ably message:
@@ -112,11 +114,14 @@ Ably message:
     role: "user"
     event-id: "evt-1"
   extras.ai.codec:
-    type: "text"     (codec event type - dispatched on by the decoder)
-    id: "ui-msg-1"   (codec-specific)
+    kind: "user-message"   (SDK-controlled dispatch discriminator)
+    partType: "text"       (codec-specific batch sub-discriminator)
+    messageId: "ui-msg-1"  (codec-specific)
 ```
 
-Every publish rides one of two wire names: `ai-input` for client-published events (user-message parts, tool results, approval responses, regenerate signals) and `ai-output` for agent-published events (text, reasoning, tool calls, lifecycle, etc.). The codec event's own type is carried in the `type` header rather than on the Ably message `name`; the decoder dispatches first on `name` (direction) then on `type`.
+Every publish rides one of two wire names: `ai-input` for client-published events (user-message parts, tool results, approval responses, regenerate signals) and `ai-output` for agent-published events (text, reasoning, tool calls, lifecycle, etc.). This name fixes the message's **direction** — a message is one direction, never both — and is the authoritative direction signal, never the event's in-memory shape. The codec event's own discriminator is carried in the `kind` header rather than on the Ably message `name`; the decoder dispatches first on `name` (direction) then on `kind`.
+
+Input events decode into an envelope `{ kind, codecMessageId, payload }` — the event-specific fields always live nested under `payload`, never spread onto the top-level event. `regenerate` is the exception: it is wire-only (only the `kind` header is stamped, no payload), and its `parent` / `target` ride transport headers. When the JSON-parsed `data` of a tool input or output is read back, the typed envelope fields are validated by runtime guards (`wire-data.ts` — e.g. `isToolOutputAvailableWireData`, `isClientToolResultErrorWireData`, `isToolInputErrorWireData`, `isAgentToolOutputErrorWireData`) at this trust boundary; on rejection the decoder falls back to field defaults. The tool-defined `output` / `input` values themselves stay unconstrained.
 
 ### Streamed messages
 
@@ -211,7 +216,7 @@ Every domain message - user or assistant - gets a unique `codec-message-id` (a `
 The message ID flows through the header pipeline:
 
 1. The transport calls `buildTransportHeaders({ codecMessageId, ... })` which sets `headers['codec-message-id'] = codecMessageId`.
-2. For **discrete messages** (user messages, lifecycle events), these headers are passed to the encoder via `WriteOptions.messageId`. The [encoder core's](encoder.md#header-merging) `_buildHeaders()` stamps it into the Ably message's `extras.ai`.
+2. For **discrete messages** (user messages, lifecycle events), these headers are passed to the encoder via `WriteOptions.messageId`. The [encoder core's](encoder.md#header-merging) `_buildTransport()` stamps it into the Ably message's `extras.ai`.
 3. For **streamed messages** (assistant text, reasoning), the codec-message-id is included in the persistent headers captured at `startStream()`. Every append - including the closing append - carries the same `codec-message-id`, so the entire message append lifecycle shares one identity.
 
 ### How it's consumed

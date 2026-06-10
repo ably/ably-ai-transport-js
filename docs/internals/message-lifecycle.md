@@ -14,9 +14,9 @@ The entire generic layer is parameterized by four types: `TInput`, `TOutput`, `T
 
 The codec defines how these types map to and from the wire:
 
-- **Encoding**: the encoder publishes input/output events as discrete Ably publishes (e.g. user messages via `publishDiscreteBatch`) or as streamed Ably operations (`startStream` / `appendStream` / `closeStream`).
-- **Decoding**: the decoder runs inbound Ably messages back into a `DecodedMessage` - `{ inputs: TInput[]; outputs: TOutput[] }`, a flat split of decoded events by wire direction.
-- **Reduction**: the codec's `fold(state, event, meta)` bridges events → projection; `getMessages(projection)` assembles complete `TMessage` instances out of it.
+- **Encoding**: the encoder publishes input/output events as discrete Ably publishes (e.g. user messages via `publishDiscreteBatch`) or as streamed Ably operations (`startStream` / `appendStream` / `closeStream`). Every message carries the SDK-controlled `kind` codec header — the dispatch discriminator (and, for streamed families, the stream-family id) the decoder routes on.
+- **Decoding**: the decoder runs inbound Ably messages back into a `DecodedMessage` - `{ inputs: TInput[]; outputs: TOutput[] }`, a flat split of decoded events by wire direction. Direction is fixed by the Ably message name (`ai-input` populates `inputs`, `ai-output` populates `outputs`); within a direction the decoder dispatches on the `kind` header value, never on the event's shape.
+- **Reduction**: the codec's `fold(state, event, meta)` bridges events → projection. `event` is a direction-tagged `CodecEvent<TInput, TOutput>` — `{ direction: 'input'; event: TInput } | { direction: 'output'; event: TOutput }` — so the reducer dispatches on `direction` rather than re-inferring it from shape (the decoded `{ inputs, outputs }` split is folded into this tagged stream by `toCodecEvents`, inputs first). `getMessages(projection)` assembles complete `TMessage` instances out of it.
 
 This is why the type parameters exist: input/output events are the streaming unit (what flows in real time), the projection is the accumulation state, and messages are the state unit (what gets stored and rendered).
 

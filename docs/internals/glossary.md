@@ -118,7 +118,7 @@ The streaming fragment types that the generic layer is parameterized by, split b
 
 ### TMessage
 
-The complete domain message type that the generic layer is parameterized by. For the Vercel codec, this is `UIMessage`. Messages are the unit of state - what each node's projection yields via `getMessages()`, what the view's `getMessages()` returns, what React hooks render. The codec's [reducer](codec-interface.md#reducer-and-projection) bridges events → projection → `TMessage`; the encoder bridges `TMessage → wire` (for discrete publishes like user messages). See [Message lifecycle](message-lifecycle.md#tinput-toutput-tprojection-and-tmessage) for the full relationship.
+The complete domain message type that the generic layer is parameterized by. For the Vercel codec, this is `UIMessage`. Messages are the unit of state - what each node's projection yields via `getMessages()`, what the view's `getMessages()` returns, what React hooks render. The codec's [reducer](codec-interface.md#reducer-and-projection) bridges events → projection → `TMessage`; on the write path the codec's `createUserMessage(message)` wraps a `TMessage` into a [user-message](codec-interface.md#well-known-input-factories) input, which the encoder fans out onto the wire (for the Vercel codec, one `ai-input` event per `UIMessage` part). See [Message lifecycle](message-lifecycle.md#tinput-toutput-tprojection-and-tmessage) for the full relationship.
 
 ## Message state
 

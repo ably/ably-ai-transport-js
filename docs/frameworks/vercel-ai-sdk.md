@@ -133,16 +133,22 @@ session.close();
 
 ## Codec details
 
-`UIMessageCodec` maps between Vercel AI SDK types and Ably messages:
+`UIMessageCodec` maps between Vercel AI SDK types and Ably messages. It is assembled by `defineCodec` from declarative descriptor tables rather than hand-written encoder/decoder classes — `inputs.ts` declares the `ai-input` events, `outputs.ts` declares the `ai-output` events, and the reducer (`init`/`fold`/`getMessages`) folds decoded events into `UIMessage` objects.
 
-| UIMessageChunk type | Ably encoding                            |
-| ------------------- | ---------------------------------------- |
-| `text-delta`        | Message append (text accumulation)       |
-| `reasoning-delta`   | Message append (reasoning accumulation)  |
-| `finish`            | Discrete message (lifecycle event)       |
-| `error`             | Discrete message (error lifecycle event) |
+Each output descriptor is either a **streamed family** (start / delta / end chunks accumulated into one Ably message) or a **discrete event** (one Ably message):
 
-The codec handles the full `UIMessageChunk` union. On the decode side, it reconstructs `UIMessage` objects with the correct `parts` array (text, reasoning) from the streamed chunks.
+| UIMessageChunk type(s)                                                                      | Ably encoding                                             |
+| ------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `text-start` / `text-delta` / `text-end`                                                    | Streamed family — message appends, text accumulation      |
+| `reasoning-start` / `reasoning-delta` / `reasoning-end`                                     | Streamed family — message appends, reasoning accumulation |
+| `tool-input-start` / `tool-input-delta` / `tool-input-available`                            | Streamed family — input-text deltas accumulated           |
+| `finish`, `start`, `start-step`, `finish-step`                                              | Discrete message (lifecycle event)                        |
+| `error`, `abort`                                                                            | Discrete message (content event)                          |
+| `file`, `source-url`, `source-document`                                                     | Discrete message (content part)                           |
+| `tool-output-available`, `tool-output-error`, `tool-approval-request`, `tool-output-denied` | Discrete message (tool lifecycle)                         |
+| `data-*`                                                                                    | Discrete message (matched by wildcard)                    |
+
+Each output message carries an SDK-controlled `kind` codec header (the dispatch discriminator / stream-family id); the decoder routes on that header, never on message shape. The codec handles the full `UIMessageChunk` union. On the decode side, the reducer reconstructs `UIMessage` objects with the correct `parts` array (text, reasoning, tool calls, files, sources, data parts) from the streamed and discrete chunks.
 
 ## Status
 

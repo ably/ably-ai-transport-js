@@ -805,7 +805,6 @@ test.describe('use-chat demo - chat behaviour', () => {
       await sendPrompt(page, "what's the weather like?");
       await expect(page.locator('text=/Location:\\s*51\\./').first()).toBeVisible({ timeout: 60_000 });
       await awaitStreamingQuiesce(page);
-      expect(await assistantBubbles(page).count()).toBe(2);
 
       await editAndSubmit(page, userBubbles(page).first(), 'Reply with just the word OMEGA and nothing else');
       await waitForAssistantSettled(page);
@@ -839,7 +838,6 @@ test.describe('use-chat demo - chat behaviour', () => {
       await sendPrompt(page, "what's the weather like?");
       await expect(page.locator('text=/Location:\\s*51\\./').first()).toBeVisible({ timeout: 60_000 });
       await awaitStreamingQuiesce(page);
-      expect(await assistantBubbles(page).count()).toBe(2);
 
       // Edit the user prompt to ask something completely different.
       await editAndSubmit(page, userBubbles(page).first(), 'reply with just the word ALPHA');

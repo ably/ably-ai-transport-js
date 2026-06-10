@@ -73,9 +73,11 @@ await session.close();
 
 The agent session also handles cancel routing - when a client publishes a cancel signal, the session matches it to the right run and fires the run's `AbortSignal`.
 
+The session channel is an ordinary Ably channel, so `session.presence` exposes its `Ably.RealtimePresence` directly - an agent can enter and leave presence to advertise that it is online without obtaining the channel separately. See [Presence](../features/presence.md).
+
 ## Client session
 
-The client session manages conversation state: the message list, conversation tree (for branching), active runs, and history. It subscribes to the Ably channel before attaching, so no messages are lost.
+The client session manages conversation state: the message list, conversation tree (for branching), active runs, and history. It subscribes to the Ably channel before attaching, so no messages are lost. It also exposes the channel's presence object as `session.presence`, so a client can observe which clients are connected (see [Presence](../features/presence.md)).
 
 ```typescript
 import { createClientSession, UIMessageCodec } from '@ably/ai-transport/vercel';

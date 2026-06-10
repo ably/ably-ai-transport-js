@@ -19,11 +19,6 @@ interface RealtimeWithOptions extends Ably.Realtime {
 
 const SDK_NAME = 'ai-transport-js';
 
-/** Internal shape a codec may carry to opt into Ably-Agent header registration. */
-interface AdapterTagHolder {
-  readonly adapterTag?: string;
-}
-
 /**
  * Merge `agents` into `client.options.agents` and return the space-separated
  * `params.agent` string for channel ATTACH.
@@ -45,12 +40,12 @@ const injectAgents = (
 
 /**
  * Build the agent-name → version map this SDK registers for the given codec.
- * @param codec - The codec instance; cast to {@link AdapterTagHolder} to detect an optional identifier.
+ * @param codec - The codec instance whose optional identifier opts into registration.
+ * @param codec.adapterTag - The optional Ably-Agent identifier; registered as an agent when present.
  * @returns Map of agent name to version, always including this SDK.
  */
-const buildAgents = (codec?: unknown): Record<string, string> => {
-  // CAST: AdapterTagHolder is an internal opt-in shape — not part of the public Codec interface.
-  const adapterTag = (codec as AdapterTagHolder | undefined)?.adapterTag;
+const buildAgents = (codec?: { readonly adapterTag?: string }): Record<string, string> => {
+  const adapterTag = codec?.adapterTag;
   const agents: Record<string, string> = { [SDK_NAME]: VERSION };
   if (adapterTag) agents[adapterTag] = VERSION;
   return agents;
@@ -72,23 +67,26 @@ const joinAgents = (agents: Record<string, string>): string =>
  * unlike {@link registerAgent} it does not mutate the client. Use it to seed a
  * `<ChannelProvider options>` so ably-js's React hooks append their own agent
  * additively (`channelOptionsForReactHooks`) rather than overwriting this SDK's.
- * @param codec - The codec instance; cast to {@link AdapterTagHolder} to detect an optional identifier.
+ * @param codec - The codec instance whose optional identifier opts into registration.
+ * @param codec.adapterTag - The optional Ably-Agent identifier; registered as an agent when present.
  * @returns The channel `params.agent` string.
  */
-export const channelAgent = (codec?: unknown): string => joinAgents(buildAgents(codec));
+export const channelAgent = (codec?: { readonly adapterTag?: string }): string => joinAgents(buildAgents(codec));
 
 /**
  * Register this SDK (and optionally a codec) on the supplied Realtime client
  * and return the channel options the caller should pass to
  * `client.channels.get(...)` so the agent is also carried on channel ATTACH.
- * Sets `options.agents['ai-transport-js'] = VERSION`. When the codec carries
- * an internal `adapterTag` field (via {@link AdapterTagHolder}), also sets
- * `options.agents[adapterTag] = VERSION`.
+ * Sets `options.agents['ai-transport-js'] = VERSION`. When the codec carries an
+ * `adapterTag`, also sets `options.agents[adapterTag] = VERSION`.
  * Idempotent — repeated calls with the same client and codec produce the same keys/values.
  * Spec: AIT-CT1a, AIT-CT1a2, AIT-CT1a3, AIT-ST1a, AIT-ST1a2, AIT-ST1a3.
  * @param client - The Ably Realtime client to register on.
- * @param codec - The codec instance; cast to {@link AdapterTagHolder} to detect an optional identifier.
+ * @param codec - The codec instance whose optional identifier opts into registration.
+ * @param codec.adapterTag - The optional Ably-Agent identifier; registered as an agent when present.
  * @returns Channel options containing `params.agent` for `channels.get`.
  */
-export const registerAgent = (client: Ably.Realtime, codec?: unknown): { params: { agent: string } } =>
-  injectAgents(client, buildAgents(codec));
+export const registerAgent = (
+  client: Ably.Realtime,
+  codec?: { readonly adapterTag?: string },
+): { params: { agent: string } } => injectAgents(client, buildAgents(codec));

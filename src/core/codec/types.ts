@@ -519,6 +519,12 @@ export interface Codec<
   TProjection,
   TMessage,
 > extends Reducer<TInput | TOutput, TProjection> {
+  /**
+   * Optional Ably-Agent identifier. When present, the agent-registration path
+   * registers it on the channel (so traffic is attributed to this codec); when
+   * absent, the codec opts out of registration. Read directly by `registerAgent`.
+   */
+  readonly adapterTag?: string;
   /** Create a stateful encoder bound to the given channel. */
   createEncoder(channel: ChannelWriter, options?: EncoderOptions): Encoder<TInput, TOutput>;
   /** Create a stateful decoder for converting Ably inbound messages into typed inputs and outputs. */

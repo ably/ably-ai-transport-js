@@ -139,8 +139,8 @@ export interface DataCodec<C> {
  * @template C - The narrowed chunk member.
  */
 export interface OutputEventSpec<C> {
-  /** Declared header fields, written on encode and read on decode by key. */
-  fields: readonly HeaderField<unknown>[];
+  /** Declared header fields, written on encode and read on decode by key. Omit for a header-less event. */
+  fields?: readonly HeaderField<unknown>[];
   /** Wire `data` codec. Omit when the event carries no data (`data: ''`). */
   data?: DataCodec<C>;
   /** Whether the publish is ephemeral (not persisted). Default false. */
@@ -156,7 +156,7 @@ export interface OutputEventSpec<C> {
 /**
  * A streamed-family descriptor spec. `start`/`delta`/`end` are the domain chunk
  * `type` literals; the family id (the {@link OutputBuilder.stream} first argument)
- * is the codec `type` header all three phases stamp.
+ * is the wire `kind` header all three phases stamp.
  * @template U - The codec's event union.
  * @template S - The start chunk `type` literal.
  * @template D - The delta chunk `type` literal.
@@ -190,7 +190,7 @@ export interface OutputStreamSpec<
   decodeEnd?: (ctx: OutputStreamEndContext) => ResolveType<U, E>[];
   /**
    * Escape-hatch decode for when the family arrives as a discrete (non-streamed)
-   * message — codec `type` equals the family id but the wire wasn't streamed
+   * message — the wire `kind` equals the family id but the wire wasn't streamed
    * (e.g. history compaction). Reconstructs the start/end chunk pair.
    */
   decodeDiscrete?: (ctx: OutputDecodeContext) => ResolveType<U, S | E>[];
@@ -202,9 +202,9 @@ export interface OutputStreamSpec<
 
 /** A discrete output event descriptor erased to the codec's union `U`. */
 export interface OutputEventDescriptor<U> {
-  /** Discriminator. */
-  kind: 'event';
-  /** The dispatch `type` literal (or wildcard sentinel). */
+  /** Discriminator — the construct this descriptor was built with. */
+  construct: 'event';
+  /** The dispatch `type` literal (or wildcard sentinel), stamped as the wire `kind` header. */
   type: string;
   /** Declared header fields. */
   fields: readonly HeaderField<unknown>[];
@@ -222,10 +222,10 @@ export interface OutputEventDescriptor<U> {
 
 /** A streamed-family descriptor erased to the codec's union `U`. */
 export interface OutputStreamDescriptor<U> {
-  /** Discriminator. */
-  kind: 'stream';
-  /** The family id stamped as the codec `type` header for every phase. */
-  familyId: string;
+  /** Discriminator — the construct this descriptor was built with. */
+  construct: 'stream';
+  /** The stream family id, stamped as the wire `kind` header on every phase. */
+  kind: string;
   /** The start chunk `type`. */
   start: string;
   /** The delta chunk `type`. */
@@ -262,25 +262,26 @@ export type OutputDescriptor<U> = OutputEventDescriptor<U> | OutputStreamDescrip
 export interface OutputBuilder<U extends { type: string }> {
   /**
    * Declare a single discrete output event. Curried on the output union; narrows
-   * `spec` to the member the `type` literal selects.
-   * @param type - The event's `type` literal (or a `*-*` wildcard).
-   * @param spec - The narrowed output event spec.
+   * `spec` to the member the `type` literal selects. The `type` literal is stamped
+   * as the wire `kind` dispatch header.
+   * @param type - The event's `type` literal (or a `*-*` wildcard); stamped as the wire `kind` header.
+   * @param spec - The narrowed output event spec. Omit for a header-less event with no data.
    * @returns An erased {@link OutputDescriptor}.
    */
   event: <T extends U['type'] | `${string}-*`>(
     type: T,
-    spec: OutputEventSpec<ResolveType<U, T>>,
+    spec?: OutputEventSpec<ResolveType<U, T>>,
   ) => OutputDescriptor<U>;
   /**
    * Declare a streamed output family (start / delta / end). `start`/`delta`/`end`
-   * are domain chunk `type` literals and `familyId` is the codec `type` header
-   * every phase stamps.
-   * @param familyId - The codec `type` header every phase stamps.
+   * are domain chunk `type` literals; the first argument is the family id, stamped
+   * as the wire `kind` dispatch header on every phase.
+   * @param kind - The stream family id, stamped as the wire `kind` header on every phase.
    * @param spec - The narrowed stream spec.
    * @returns An erased {@link OutputDescriptor}.
    */
   stream: <S extends U['type'], D extends U['type'], E extends U['type']>(
-    familyId: string,
+    kind: string,
     spec: OutputStreamSpec<U, S, D, E>,
   ) => OutputDescriptor<U>;
 }
@@ -297,9 +298,19 @@ export const outputBuilder = <U extends { type: string }>(): OutputBuilder<U> =>
     // CAST: `spec` is narrowed to the member selected by `type`; the descriptor
     // erases that to the codec's union `U` so heterogeneous descriptors share one
     // array type. The drivers only ever invoke a descriptor's callbacks with the
-    // matching member, so the erasure is sound by construction.
-    ({ kind: 'event', type, ...spec }) as unknown as OutputDescriptor<U>,
-  stream: (familyId, spec) =>
+    // matching member, so the erasure is sound by construction. `fields` defaults
+    // to `[]` so a header-less event needs no spec (mirrors the input `event` builder).
+    ({
+      construct: 'event',
+      type,
+      fields: spec?.fields ?? [],
+      data: spec?.data,
+      ephemeral: spec?.ephemeral,
+      match: spec?.match,
+      encode: spec?.encode,
+      decode: spec?.decode,
+    }) as unknown as OutputDescriptor<U>,
+  stream: (kind, spec) =>
     // CAST: see `event` — the narrowed stream spec erases to `OutputDescriptor<U>`.
-    ({ kind: 'stream', familyId, ...spec }) as unknown as OutputDescriptor<U>,
+    ({ construct: 'stream', kind, ...spec }) as unknown as OutputDescriptor<U>,
 });

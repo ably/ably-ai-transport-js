@@ -134,14 +134,13 @@ export const outputs = ({ event, stream }: OutputBuilder<VercelOutput>): readonl
       );
     },
   }),
-  event('start-step', { fields: [] }),
-  event('finish-step', { fields: [] }),
+  event('start-step'),
+  event('finish-step'),
   event('finish', {
     fields: [fFinishReason, jsonField('messageMetadata')],
   }),
   event('message-metadata', { fields: [jsonField('messageMetadata')] }),
   event('error', {
-    fields: [],
     data: { encode: (c) => c.errorText, decode: (data) => ({ errorText: asString(data) }) },
   }),
 
@@ -150,7 +149,6 @@ export const outputs = ({ event, stream }: OutputBuilder<VercelOutput>): readonl
   // streams via the encoder's cancelStreams() and terminates via the transport
   // ai-run-end event — this chunk is content, not the run terminator.
   event('abort', {
-    fields: [],
     data: {
       encode: (c) => c.reason ?? '',
       decode: (data) => (typeof data === 'string' && data ? { reason: data } : {}),

@@ -64,14 +64,14 @@ export const createOutputDescriptorDecoder = <U extends { type: string }>(
 ): OutputDescriptorDecoder<U> => {
   const discreteByType = new Map<string, OutputEventDescriptor<U>>();
   const wildcards: OutputEventDescriptor<U>[] = [];
-  const streamByFamily = new Map<string, OutputStreamDescriptor<U>>();
+  const streamByKind = new Map<string, OutputStreamDescriptor<U>>();
 
   for (const descriptor of descriptors) {
-    if (descriptor.kind === 'event') {
+    if (descriptor.construct === 'event') {
       if (descriptor.match) wildcards.push(descriptor);
       else discreteByType.set(descriptor.type, descriptor);
     } else {
-      streamByFamily.set(descriptor.familyId, descriptor);
+      streamByKind.set(descriptor.kind, descriptor);
     }
   }
 
@@ -96,7 +96,7 @@ export const createOutputDescriptorDecoder = <U extends { type: string }>(
   // unreachable in practice, since a tracker only exists because the encoder
   // started a stream stamping a known family id.
   const familyOf = (tracker: StreamTrackerState): OutputStreamDescriptor<U> | undefined =>
-    streamByFamily.get(tracker.codecHeaders[KIND_HEADER] ?? '');
+    streamByKind.get(tracker.codecHeaders[KIND_HEADER] ?? '');
 
   return {
     buildStart: (tracker) => {
@@ -134,7 +134,7 @@ export const createOutputDescriptorDecoder = <U extends { type: string }>(
       const ctx: OutputDecodeContext = { codecHeaders, transportHeaders, data };
       const evt = discreteByType.get(codecKind);
       if (evt) return decodeEvent(evt, codecKind, ctx);
-      const streamDesc = streamByFamily.get(codecKind);
+      const streamDesc = streamByKind.get(codecKind);
       if (streamDesc?.decodeDiscrete) return streamDesc.decodeDiscrete(ctx);
       const wildcard = wildcards.find((w) => w.match?.(codecKind));
       if (wildcard) return decodeEvent(wildcard, codecKind, ctx);

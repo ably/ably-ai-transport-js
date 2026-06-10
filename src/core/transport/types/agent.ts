@@ -209,13 +209,16 @@ export interface RunView<TMessage> {
 /** Options for {@link Run.loadConversation}. */
 export interface LoadConversationOptions {
   /**
-   * Maximum number of reply RunNodes to walk back through the ancestor
-   * chain. Input nodes encountered alongside don't count toward the
-   * bound. Default unbounded (walks to the conversation root).
+   * Maximum number of ANCESTOR reply RunNodes to walk back through the
+   * chain. Input nodes encountered alongside don't count toward the bound,
+   * and neither does the current run's own node (it is the conversation
+   * tail, not ancestor context). Default unbounded (walks to the
+   * conversation root).
    *
    * Set this to bound the LLM context window — `maxRuns: 5` returns the
-   * 5 most-recent reply runs and their associated input nodes, in
-   * chronological order.
+   * 5 most-recent prior reply runs and their associated input nodes
+   * (each bounded run's triggering input included, so the chain never
+   * starts assistant-first), in chronological order.
    */
   maxRuns?: number;
 }

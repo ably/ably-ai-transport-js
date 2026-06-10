@@ -8,9 +8,7 @@
  *
  *  - cursor `hasNext()` reflects the underlying paginated result
  *  - `next()` returns wires newest-first within each page
- *  - `maxMessages` bounds total served wires
  *  - `lookbackMs` stops paginating once the oldest in a page is older than the threshold
- *  - `endTimestamp` swaps `untilAttach` for the `end` history param
  *  - per-page failures are retried with bounded backoff
  *  - signal aborts surface as `InvalidArgument`
  */
@@ -108,31 +106,6 @@ describe('loadHistoryPages', () => {
     expect(historyMock).toHaveBeenCalledWith({ limit: 10, untilAttach: true });
   });
 
-  it('swaps `untilAttach` for `end` when an `endTimestamp` is provided', async () => {
-    const { channel, historyMock } = createMockChannel([[ablyMsg()]]);
-    await loadHistoryPages(channel, { pageLimit: 10, endTimestamp: 12345 });
-    expect(historyMock).toHaveBeenCalledWith({ limit: 10, end: 12345 });
-  });
-
-  it('stops paginating once `maxMessages` raw wires have been served', async () => {
-    const a = ablyMsg();
-    const b = ablyMsg();
-    const c = ablyMsg();
-    const d = ablyMsg();
-    const { channel } = createMockChannel([
-      [a, b],
-      [c, d],
-    ]);
-
-    const cursor = await loadHistoryPages(channel, { pageLimit: 2, maxMessages: 2 });
-    const first = await cursor.next();
-    expect(first).toEqual([a, b]);
-    // maxMessages reached — cursor reports no more.
-    expect(cursor.hasNext()).toBe(false);
-    const second = await cursor.next();
-    expect(second).toBeUndefined();
-  });
-
   it('stops paginating when the oldest message in a page is past the lookback threshold', async () => {
     const now = Date.now();
     // Recent wires in the first page, older wires in the second.
@@ -212,6 +185,79 @@ describe('loadHistoryPages', () => {
     } finally {
       setTimeoutSpy.mockRestore();
     }
+  });
+
+  it('retries a mid-walk page.next() failure with backoff before succeeding', async () => {
+    const m1 = ablyMsg();
+    const m2 = ablyMsg();
+    let nextCalls = 0;
+    // `hasNext()` is false, so the cursor never calls `page2.next()`.
+    const page2: MockPage = {
+      items: [m2],
+      hasNext: () => false,
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+      next: () => Promise.resolve(page2),
+    };
+    const page1: MockPage = {
+      items: [m1],
+      hasNext: () => true,
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+      next: () => {
+        nextCalls += 1;
+        return nextCalls === 1 ? Promise.reject(new Error('transient')) : Promise.resolve(page2);
+      },
+    };
+    const channel = {
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+      attach: vi.fn(() => Promise.resolve()),
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+      history: vi.fn(() => Promise.resolve(page1)),
+    };
+
+    const cursor = await loadHistoryPages(channel as unknown as Ably.RealtimeChannel, {
+      pageLimit: 1,
+      maxRetries: 2,
+      retryBackoffMs: 1,
+    });
+    expect(await cursor.next()).toEqual([m1]);
+    // The failing page.next() is retried transparently — the second cursor
+    // call still yields the second page's messages.
+    expect(await cursor.next()).toEqual([m2]);
+    expect(nextCalls).toBe(2);
+  });
+
+  it('rejects `HistoryFetchFailed` when a mid-walk page.next() exhausts retries', async () => {
+    const m1 = ablyMsg();
+    const page1: MockPage = {
+      items: [m1],
+      hasNext: () => true,
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+      next: () => Promise.reject(new Error('permanent')),
+    };
+    const channel = {
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+      attach: vi.fn(() => Promise.resolve()),
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+      history: vi.fn(() => Promise.resolve(page1)),
+    };
+
+    const cursor = await loadHistoryPages(channel as unknown as Ably.RealtimeChannel, {
+      pageLimit: 1,
+      maxRetries: 1,
+      retryBackoffMs: 1,
+    });
+    expect(await cursor.next()).toEqual([m1]);
+    await expect(cursor.next()).rejects.toBeErrorInfoWithCode(ErrorCode.HistoryFetchFailed);
+  });
+
+  it('hasNext() returns false once the signal aborts', async () => {
+    const ctrl = new AbortController();
+    const { channel } = createMockChannel([[ablyMsg()], [ablyMsg()]]);
+
+    const cursor = await loadHistoryPages(channel, { pageLimit: 1, signal: ctrl.signal });
+    expect(cursor.hasNext()).toBe(true);
+    ctrl.abort();
+    expect(cursor.hasNext()).toBe(false);
   });
 
   it('rejects `HistoryFetchFailed` after retries are exhausted', async () => {

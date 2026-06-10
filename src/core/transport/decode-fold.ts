@@ -11,7 +11,7 @@ import type * as Ably from 'ably';
 
 import { HEADER_RUN_ID } from '../../constants.js';
 import { getTransportHeaders } from '../../utils.js';
-import type { Codec, CodecInputEvent, CodecOutputEvent, Decoder } from '../codec/types.js';
+import type { CodecInputEvent, CodecOutputEvent, Decoder } from '../codec/types.js';
 import { isRunLifecycleName, parseRunLifecycle } from './headers.js';
 import type { TreeInternal } from './tree.js';
 import type { RunLifecycleEvent } from './types.js';
@@ -55,37 +55,4 @@ export const applyWireMessage = <TInput extends CodecInputEvent, TOutput extends
     tree.applyMessage({ inputs, outputs }, headers, serial);
   }
   return undefined;
-};
-
-/**
- * Decode one wire message with `decoder` and fold its events into `projection`,
- * returning the updated projection. Unlike {@link applyWireMessage} this builds
- * a standalone projection rather than applying to a tree — used by the agent's
- * conversation reconstruction. The caller owns the decoder so its streaming
- * state can span the messages of a run, and chooses the reducer routing key.
- * @param codec - The codec whose inherited Reducer `fold` method folds each decoded event into the projection.
- * @param decoder - The caller-owned codec decoder (reused across a run's wires).
- * @param projection - The projection to fold the message's events into.
- * @param rawMsg - The wire message to decode and fold.
- * @param messageId - The reducer routing key (codec-message-id) for this message.
- * @returns The projection after folding all of the message's decoded events.
- */
-export const foldMessageInto = <
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-  TProjection,
-  TMessage,
->(
-  codec: Codec<TInput, TOutput, TProjection, TMessage>,
-  decoder: Decoder<TInput, TOutput>,
-  projection: TProjection,
-  rawMsg: Ably.InboundMessage,
-  messageId: string,
-): TProjection => {
-  const { inputs, outputs } = decoder.decode(rawMsg);
-  let next = projection;
-  for (const event of [...inputs, ...outputs]) {
-    next = codec.fold(next, event, { serial: rawMsg.serial ?? '', messageId });
-  }
-  return next;
 };

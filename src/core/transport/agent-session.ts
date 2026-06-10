@@ -84,32 +84,44 @@ interface InputEventLookupResult {
 /**
  * Walk parent pointers from an anchor codec-message-id back through the
  * Tree to the conversation root, returning nodes in root-first order. When
- * `maxRuns` is set, the walk stops after collecting that many reply
- * RunNodes (input nodes encountered alongside don't count toward the bound).
+ * `maxRuns` is set, the walk stops before the RunNode that would exceed the
+ * bound, so the bounding run's own input node(s) are still included (input
+ * nodes never count toward the bound). The chain therefore starts with the
+ * input that triggered its oldest run, never with an assistant reply.
  *
  * Returns an empty array when the anchor isn't in the Tree.
  * @param tree - The materialisation tree to walk.
  * @param anchor - The codec-message-id to start from (typically the current run's input).
- * @param maxRuns - Optional bound on the number of reply RunNodes in the chain.
+ * @param maxRuns - Optional bound on the number of ancestor reply RunNodes in the chain.
+ * @param currentRunId - The current run's id. Its own RunNode (reachable when
+ * the anchor's wire carried the run-id) is conversation tail, not ancestor
+ * context, so it never counts toward `maxRuns`.
  * @returns Nodes from root to anchor in chronological order.
  */
 const walkAncestorChain = <TOutput extends CodecOutputEvent, TProjection>(
   tree: Tree<TOutput, TProjection>,
   anchor: string | undefined,
   maxRuns?: number,
+  currentRunId?: string,
 ): readonly ConversationNode<TProjection>[] => {
   if (anchor === undefined) return [];
   const chain: ConversationNode<TProjection>[] = [];
   let current = tree.getNodeByCodecMessageId(anchor);
   const seen = new Set<string>();
+  let runs = 0;
   while (current !== undefined) {
     // Defensive cycle guard — `parentCodecMessageId` chains should be DAGs;
     // a cycle indicates Tree corruption but we don't want to infinite-loop.
     const key = current.kind === 'run' ? current.runId : current.codecMessageId;
     if (seen.has(key)) break;
+    if (current.kind === 'run' && current.runId !== currentRunId) {
+      // Stop before a run that would exceed the bound — the input node(s)
+      // above the last in-bound run belong to its turn and stay included.
+      if (maxRuns !== undefined && runs >= maxRuns) break;
+      runs += 1;
+    }
     seen.add(key);
     chain.unshift(current);
-    if (maxRuns !== undefined && countReplyRuns(chain) >= maxRuns) break;
     const parentId = current.parentCodecMessageId;
     if (parentId === undefined) break;
     current = tree.getNodeByCodecMessageId(parentId);
@@ -118,14 +130,18 @@ const walkAncestorChain = <TOutput extends CodecOutputEvent, TProjection>(
 };
 
 /**
- * Count the reply RunNodes in an ancestor chain. Used to bound the walk
- * via the `maxRuns` option.
+ * Count the ancestor reply RunNodes in a chain. Used to bound the walk via
+ * the `maxRuns` option; the current run's own node never counts.
  * @param chain - Ancestor chain to count over.
- * @returns Number of reply RunNodes in the chain.
+ * @param currentRunId - The current run's id, excluded from the count.
+ * @returns Number of ancestor reply RunNodes in the chain.
  */
-const countReplyRuns = <TProjection>(chain: readonly ConversationNode<TProjection>[]): number => {
+const countReplyRuns = <TProjection>(
+  chain: readonly ConversationNode<TProjection>[],
+  currentRunId?: string,
+): number => {
   let count = 0;
-  for (const node of chain) if (node.kind === 'run') count++;
+  for (const node of chain) if (node.kind === 'run' && node.runId !== currentRunId) count++;
   return count;
 };
 
@@ -908,6 +924,10 @@ class DefaultAgentSession<
    * @param assistantParentFallback - The current run's input node codec-message-id.
    * @param signal - AbortSignal; rejects with InvalidArgument when aborted.
    * @param maxRuns - Optional bound on the parent walk; counts reply RunNodes.
+   * @param runIdAdopted - True when the run-id came from outside (runtime
+   *   override or continuation), so its node may exist in channel history;
+   *   false for agent-minted ids, whose run-start only ever arrives via the
+   *   live echo.
    * @returns The branch's messages (root-first) and the current run's projection.
    */
   private async _walkConversation(
@@ -915,6 +935,7 @@ class DefaultAgentSession<
     assistantParentFallback: string | undefined,
     signal: AbortSignal,
     maxRuns: number | undefined,
+    runIdAdopted: boolean,
   ): Promise<{ messages: TMessage[]; projection: TProjection }> {
     if (signal.aborted) {
       throw new Ably.ErrorInfo(
@@ -924,9 +945,9 @@ class DefaultAgentSession<
       );
     }
 
-    await this._hydrateAncestors(runId, assistantParentFallback, signal, maxRuns);
+    await this._hydrateAncestors(runId, assistantParentFallback, signal, maxRuns, runIdAdopted);
 
-    const chain = walkAncestorChain(this._tree, assistantParentFallback, maxRuns);
+    const chain = walkAncestorChain(this._tree, assistantParentFallback, maxRuns, runId);
     const messages: TMessage[] = [];
     for (const node of chain) {
       for (const m of this._codec.getMessages(node.projection)) {
@@ -958,11 +979,13 @@ class DefaultAgentSession<
    * failing fetch rejects (truncating the conversation silently would feed
    * the LLM partial history with no signal); other callers sharing the mutex
    * are isolated from it and issue their own fetch.
-   * @param runId - The current run's id (its node must be present in the Tree before the walk is complete).
+   * @param runId - The current run's id (when adopted, its node must be present in the Tree before the walk is complete).
    * @param anchor - The input codec-message-id to walk from. Undefined means
    *   no walk is needed (current run only).
    * @param signal - AbortSignal.
    * @param maxRuns - Optional bound on the ancestor walk.
+   * @param runIdAdopted - Whether the run-id came from outside (override or
+   *   continuation) and so may name a run present in channel history.
    * @throws {Ably.ErrorInfo} `InvalidArgument` when `signal` aborts;
    *   `HistoryFetchFailed` — or the underlying Ably code when the failure
    *   carried one — (original as `cause`) when this caller's own history
@@ -973,16 +996,33 @@ class DefaultAgentSession<
     anchor: string | undefined,
     signal: AbortSignal,
     maxRuns: number | undefined,
+    runIdAdopted: boolean,
   ): Promise<void> {
     // Check whether the Tree already has what we need: the current run node
     // exists AND (no anchor OR anchor's chain reaches root / maxRuns).
     const needsFetch = (): boolean => {
-      if (this._tree.getRunNode(runId) === undefined) return true;
+      // Only an adopted run-id (runtime override or continuation) can name a
+      // run already present in channel history. A fresh agent-minted run's
+      // run-start is published after attach, so the `untilAttach` walk can
+      // never surface it; demanding it would page the whole channel to
+      // exhaustion. Fresh runs are satisfied by start()'s optimistic insert.
+      // For adopted ids the node must be serial-CONFIRMED: an override id's
+      // optimistic insert is serial-less, and its history content (if any)
+      // still needs hydrating.
+      if (runIdAdopted && this._tree.getRunNode(runId)?.startSerial === undefined) return true;
       if (anchor === undefined) return false;
       if (this._tree.getNodeByCodecMessageId(anchor) === undefined) return true;
-      const chain = walkAncestorChain(this._tree, anchor, maxRuns);
-      const reachedRoot = chain.length > 0 && chain[0]?.parentCodecMessageId === undefined;
-      const reachedLimit = maxRuns !== undefined && countReplyRuns(chain) >= maxRuns;
+      const chain = walkAncestorChain(this._tree, anchor, maxRuns, runId);
+      const head = chain[0];
+      const reachedRoot = head !== undefined && head.parentCodecMessageId === undefined;
+      // The bound is only satisfied once the bounding run's triggering input
+      // is in the chain — a head that is still an ancestor RunNode means the
+      // input above it hasn't been hydrated yet (assistant-first context).
+      const reachedLimit =
+        maxRuns !== undefined &&
+        countReplyRuns(chain, runId) >= maxRuns &&
+        head !== undefined &&
+        (head.kind !== 'run' || head.runId === runId);
       return !reachedRoot && !reachedLimit;
     };
 
@@ -1069,6 +1109,12 @@ class DefaultAgentSession<
     // off the triggering input event's message headers (the run it re-enters).
     // Mirrors the invocationId mint below.
     let runId = runtime.runId ?? crypto.randomUUID();
+    // Whether the run-id was supplied via the runtime override. Together with
+    // `resolvedContinuation` (set in start() when the triggering input carries
+    // a wire run-id) this decides whether the id is "adopted" — an adopted id
+    // can name a run that already exists in channel history; a freshly-minted
+    // UUID cannot, so hydration must not demand its node from history.
+    const runIdOverridden = runtime.runId !== undefined;
     // The agent mints the invocation id — one per HTTP request that invokes
     // it. A per-run override (runtime.invocationId) supports deterministic ids
     // in tests and in-process drivers.
@@ -1354,6 +1400,27 @@ class DefaultAgentSession<
           throw errInfo;
         }
 
+        // Optimistically insert the fresh run's node into the session Tree so
+        // reads that follow start() (loadConversation, Run.messages) see the
+        // run immediately rather than depending on the channel echo of the
+        // run-start just published. The echo (or a history fold) reconciles
+        // through the Tree's run-start handling, promoting startSerial onto
+        // this serial-less node. Continuations re-enter an existing run via
+        // run-resume, which creates no structure — their node comes from
+        // history hydration instead.
+        if (!resolvedContinuation) {
+          getTree().applyRunLifecycle({
+            type: 'start',
+            runId,
+            clientId: resolvedClientId ?? '',
+            serial: undefined,
+            invocationId,
+            ...(assistantParentFallback !== undefined && { parent: assistantParentFallback }),
+            ...(resolvedForkOf !== undefined && { forkOf: resolvedForkOf }),
+            ...(resolvedRegenerates !== undefined && { regenerates: resolvedRegenerates }),
+          });
+        }
+
         logger?.debug('Run.start(); run started', { runId, inputEventId });
       },
 
@@ -1364,7 +1431,13 @@ class DefaultAgentSession<
         // and computes a fresh snapshot of the parent-chain messages at
         // return time. After this call, `Run.messages` continues to work
         // as a live Tree read.
-        const { messages } = await walkConversation(runId, assistantParentFallback, signal, options?.maxRuns);
+        const { messages } = await walkConversation(
+          runId,
+          assistantParentFallback,
+          signal,
+          options?.maxRuns,
+          runIdOverridden || resolvedContinuation,
+        );
         return messages;
       },
 

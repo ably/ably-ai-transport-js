@@ -1855,6 +1855,116 @@ describe('AgentSession input-event lookup', () => {
     expect(channel.publishCalls.find((m) => m.name === 'ai-run-start')).toBeUndefined();
     await session.close();
   });
+
+  it('start() resolves from channel history when the trigger was published before the agent attached', async () => {
+    // The agent may be spun up after the client's POST: the triggering input
+    // event is already in channel history and will never arrive live. The
+    // lookup's parallel history scan must surface it and resolve start().
+    const ch = createMockChannel();
+    const triggerWire = {
+      name: 'text',
+      serial: 's-hist-01',
+      extras: {
+        ai: {
+          transport: {
+            [HEADER_ROLE]: 'user',
+            [HEADER_CODEC_MESSAGE_ID]: 'u1',
+            [HEADER_EVENT_ID]: 'p-u1',
+            [HEADER_INVOCATION_ID]: 'inv-hist',
+          },
+        },
+      },
+    } as unknown as Ably.InboundMessage;
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises -- mock returns Promise directly
+    ch.history.mockImplementation(singlePageHistory([triggerWire]));
+
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'history-only-trigger',
+      codec: codecWithFunctionalDecoder(),
+      inputEventLookupTimeoutMs: 5000,
+    });
+    await session.connect();
+
+    const run = createRunFromOpts(session, { runId: 'run-h', invocationId: 'inv-hist', inputEventId: 'p-u1' });
+    // No deliverInputEvent — history is the only source for the trigger.
+    await expect(run.start()).resolves.toBeUndefined();
+
+    expect(ch.history).toHaveBeenCalled();
+    expect(run.view.messages.map((m) => m.codecMessageId)).toEqual(['u1']);
+    await session.close();
+  });
+
+  it('start() rejects promptly when channel continuity is lost mid-lookup (no timeout wait)', async () => {
+    // Continuity loss aborts every registered run BEFORE swapping the Tree,
+    // so an in-flight input-event lookup must reject via its run signal
+    // instead of idling on the abandoned Tree's listener until the lookup
+    // timeout. The deliberately huge timeout makes a regression hang the
+    // test past the suite's per-test timeout rather than pass slowly.
+    const ch = createMockChannel();
+    const onError = vi.fn();
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'continuity-mid-lookup',
+      codec: codecWithFunctionalDecoder(),
+      inputEventLookupTimeoutMs: 600_000,
+      onError,
+    });
+    await session.connect();
+
+    const run = createRunFromOpts(session, { runId: 'run-c5', invocationId: 'inv-c5', inputEventId: 'p-never' });
+    const startPromise = run.start();
+
+    simulateStateChange(ch, { current: 'suspended', previous: 'attached' } as Ably.ChannelStateChange);
+
+    await expect(startPromise).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+    expect(onError).toHaveBeenCalledWith(expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost }));
+    await session.close();
+  });
+
+  it('unrefs the lookup timeout timer so a parked lookup cannot hold a Node process open', async () => {
+    // The lookup timer must be unref'd: an abandoned lookup (caller gone,
+    // nothing else awaiting) must not keep the event loop alive for the
+    // full timeout on its own.
+    const unrefSpy = vi.fn();
+    const realSetTimeout = globalThis.setTimeout.bind(globalThis);
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((handler: () => void, ms?: number) => {
+      const timer = realSetTimeout(handler, ms);
+      const realUnref = timer.unref.bind(timer);
+      timer.unref = () => {
+        unrefSpy();
+        return realUnref();
+      };
+      return timer;
+    }) as typeof setTimeout);
+
+    try {
+      const ch = createMockChannel();
+      const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'unref-lookup',
+        codec: codecWithFunctionalDecoder(),
+        inputEventLookupTimeoutMs: 5000,
+      });
+      await session.connect();
+
+      const run = createRunFromOpts(session, { runId: 'run-u', invocationId: 'inv-u', inputEventId: 'p-u1' });
+      const startPromise = run.start();
+      // Wait for the lookup to park (its history scan fires after the
+      // timeout timer is armed) — delivering the trigger any earlier
+      // resolves the lookup from the pre-scan before the timer exists.
+      await vi.waitFor(() => {
+        expect(ch.history).toHaveBeenCalled();
+      });
+      deliverInputEvent(ch, { invocationId: 'inv-u', codecMessageId: 'u1', serial: 's-01', inputEventId: 'p-u1' });
+      await startPromise;
+
+      expect(unrefSpy).toHaveBeenCalled();
+      await session.close();
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2748,6 +2858,582 @@ describe('agent loadConversation ≡ client View.getMessages (cross-engine equiv
 
     expect(agentIds).toEqual(['u1', 'a1', 'u2', 'a2', 'u3', 'a3']);
     expect(agentIds).toEqual(viewIds);
+    await session.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR #180 review regressions: hydration mutex + continuity-loss swap
+// ---------------------------------------------------------------------------
+
+/**
+ * Multi-page history mock. Each `next()` returns the following page in order;
+ * `hasNext()` reports whether more pages remain. Pages contain Ably messages
+ * in newest-first order (Ably's native convention) — the caller arranges them
+ * so page[0] is the newest slice.
+ * @param pages - Pages of wires, each in newest-first order.
+ * @returns A `channel.history()` implementation that walks the pages on `.next()`.
+ */
+const multiPageHistory =
+  (pages: Ably.InboundMessage[][]) =>
+  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise directly
+  () => {
+    let idx = 0;
+    const makePage = (): {
+      items: Ably.InboundMessage[];
+      hasNext: () => boolean;
+      next: () => Promise<unknown>;
+    } => ({
+      items: pages[idx] ?? [],
+      hasNext: () => idx + 1 < pages.length,
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
+      next: () => {
+        idx++;
+        return Promise.resolve(makePage());
+      },
+    });
+    return Promise.resolve(makePage());
+  };
+
+/**
+ * Shape of a hand-rolled Ably history page for tests that gate pagination
+ * manually (parking a walk on an unresolved `next()`).
+ */
+interface HistoryPage {
+  items: Ably.InboundMessage[];
+  hasNext: () => boolean;
+  next: () => Promise<HistoryPage>;
+}
+
+describe('Run.loadConversation concurrency + continuity-loss', () => {
+  it('two concurrent loadConversation calls each receive a chain that matches their maxRuns', async () => {
+    // Forward-looking guard for the silent-truncation class of bug: when A
+    // holds the hydration mutex and exits early on its own `needsFetch`, B
+    // must not silently inherit a Tree that's only fully hydrated for A's
+    // walk depth. The fix re-loops B until ITS own needsFetch is satisfied.
+    // Asserts both walks produce the correct chain for their maxRuns under
+    // mutex sharing.
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+
+    // 3 turns laid out as two history pages so a maxRuns=1 fetch can satisfy
+    // its needsFetch on page 1 alone (chain reaches run-2 via u3's parent a2):
+    //   page 1 (newest, in Ably newest-first order): u3, run-3, u2, run-2 wires
+    //   page 2 (older, newest-first within the page): u1, run-1 wires
+    const page1: Ably.InboundMessage[] = [
+      makeContentMsg('run-3', 'a3', 's-08'),
+      makeRunStartMsg('run-3', 'u3', { serial: 's-075' }),
+      makeInputMsg('u3', 's-07', { parent: 'a2' }),
+      makeContentMsg('run-2', 'a2', 's-06'),
+      makeRunStartMsg('run-2', 'u2', { serial: 's-055' }),
+      makeInputMsg('u2', 's-05', { parent: 'a1' }),
+    ];
+    const page2: Ably.InboundMessage[] = [
+      makeContentMsg('run-1', 'a1', 's-04'),
+      makeRunStartMsg('run-1', 'u1', { serial: 's-03' }),
+      makeInputMsg('u1', 's-02'),
+    ];
+
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises -- mock returns Promise directly
+    ch.history.mockImplementation(multiPageHistory([page1, page2]));
+
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'concurrency',
+      codec,
+      inputEventLookupTimeoutMs: 5000,
+    });
+    await session.connect();
+
+    // Both runs target the same triggering input wire u3 (no run-id on the
+    // delivered live wire, so the agent classifies it as an input node and
+    // mints fresh run-ids per call). Same anchor → they share the hydration
+    // mutex when they race into _hydrateAncestors.
+    const runA = createRunFromOpts(session, { runId: 'run-a', invocationId: 'inv-a', inputEventId: 'p-u3' });
+    const runB = createRunFromOpts(session, { runId: 'run-b', invocationId: 'inv-b', inputEventId: 'p-u3' });
+
+    const startA = runA.start();
+    const startB = runB.start();
+    deliverInputEvent(ch, {
+      invocationId: 'inv-a',
+      codecMessageId: 'u3',
+      serial: 's-07',
+      inputEventId: 'p-u3',
+      parent: 'a2',
+    });
+    deliverInputEvent(ch, {
+      invocationId: 'inv-b',
+      codecMessageId: 'u3',
+      serial: 's-07',
+      inputEventId: 'p-u3',
+      parent: 'a2',
+    });
+    await Promise.all([startA, startB]);
+
+    // Race both walks; A is content with 1 reply run, B wants the full chain.
+    const [messagesA, messagesB] = await Promise.all([
+      runA.loadConversation({ maxRuns: 1 }),
+      runB.loadConversation({ maxRuns: 10 }),
+    ]);
+
+    // A's walk with maxRuns=1 includes the most recent ancestor reply run
+    // (run-2 via u3.parent=a2) plus u3 itself, then appends current run-a's
+    // (empty) projection.
+    expect(messagesA.map((m) => m.id)).toEqual(['a2', 'u3']);
+    // B's deeper walk must reach the full 3-turn ancestor chain, not the
+    // shorter prefix A's fetch satisfied.
+    expect(messagesB.map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2', 'u3']);
+
+    await session.close();
+  });
+
+  it('B with a healthy signal completes loadConversation when A aborts before its own call starts', async () => {
+    // Forward-looking guard for the shared-error-bleed class of bug:
+    // A's signal aborting during a shared IIFE used to reject every B
+    // awaiting the same mutex promise. The fix swallows fetch failures
+    // inside the IIFE so B re-loops and starts its own fetch under its
+    // own (healthy) signal. Asserts A surfaces its abort while B's
+    // unrelated walk completes.
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+
+    const page1: Ably.InboundMessage[] = [
+      makeContentMsg('run-2', 'a2', 's-04'),
+      makeRunStartMsg('run-2', 'u2', { serial: 's-035' }),
+      makeInputMsg('u2', 's-03', { parent: 'a1' }),
+      makeContentMsg('run-1', 'a1', 's-02'),
+      makeRunStartMsg('run-1', 'u1', { serial: 's-015' }),
+      makeInputMsg('u1', 's-01'),
+    ];
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises -- mock
+    ch.history.mockImplementation(singlePageHistory(page1));
+
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'error-isolation',
+      codec,
+      inputEventLookupTimeoutMs: 5000,
+    });
+    await session.connect();
+
+    const ctrlA = new AbortController();
+    const ctrlB = new AbortController();
+    const runA = createRunFromOpts(session, {
+      runId: 'run-a',
+      invocationId: 'inv-a',
+      inputEventId: 'p-u2',
+      signal: ctrlA.signal,
+    });
+    const runB = createRunFromOpts(session, {
+      runId: 'run-b',
+      invocationId: 'inv-b',
+      inputEventId: 'p-u2',
+      signal: ctrlB.signal,
+    });
+
+    const startA = runA.start();
+    const startB = runB.start();
+    deliverInputEvent(ch, {
+      invocationId: 'inv-a',
+      codecMessageId: 'u2',
+      serial: 's-03',
+      inputEventId: 'p-u2',
+      parent: 'a1',
+    });
+    deliverInputEvent(ch, {
+      invocationId: 'inv-b',
+      codecMessageId: 'u2',
+      serial: 's-03',
+      inputEventId: 'p-u2',
+      parent: 'a1',
+    });
+    await Promise.all([startA, startB]);
+
+    // Abort A immediately so its loadConversation throws InvalidArgument
+    // without ever starting (its first loop iteration trips the signal
+    // check). The mutex slot stays clean. B's own loadConversation runs
+    // under a healthy signal and must complete.
+    ctrlA.abort();
+    const aPromise = runA.loadConversation({ maxRuns: 5 });
+    const bPromise = runB.loadConversation({ maxRuns: 5 });
+
+    await expect(aPromise).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+    const messagesB = await bPromise;
+    // B walks u2 → a1 → run-1 → u1 (full chain back to the root).
+    expect(messagesB.map((m) => m.id)).toEqual(['u1', 'a1', 'u2']);
+
+    await session.close();
+  });
+
+  it('Run.view.messages and Run.messages read the fresh Tree after continuity-loss swap', async () => {
+    // Regression for stale-closure bug: getters used to close over the
+    // tree captured at run-creation time. After a continuity-loss swap
+    // they kept returning the abandoned Tree's content. The fix
+    // dereferences `this._tree` live via `getTree()`.
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+
+    // Single-turn fixture: u1 input + run-1 with content a1.
+    const page1: Ably.InboundMessage[] = [
+      makeContentMsg('run-1', 'a1', 's-02'),
+      makeRunStartMsg('run-1', 'u1', { serial: 's-015' }),
+      makeInputMsg('u1', 's-01'),
+    ];
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises -- mock
+    ch.history.mockImplementation(singlePageHistory(page1));
+
+    const onError = vi.fn();
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'continuity-swap',
+      codec,
+      inputEventLookupTimeoutMs: 5000,
+      onError,
+    });
+    await session.connect();
+
+    const run = createRunFromOpts(session, { runId: 'run-a', invocationId: 'inv-1', inputEventId: 'p-u1' });
+    const startPromise = run.start();
+    deliverInputEvent(ch, {
+      invocationId: 'inv-1',
+      codecMessageId: 'u1',
+      serial: 's-01',
+      inputEventId: 'p-u1',
+    });
+    await startPromise;
+    await run.loadConversation();
+
+    // Sanity: the Tree is populated and the getters see content.
+    expect(run.messages.length).toBeGreaterThan(0);
+    expect(run.view.messages.length).toBeGreaterThan(0);
+
+    // Trigger continuity loss — swaps `this._tree` for a fresh empty
+    // instance and aborts every registered run's controller.
+    simulateStateChange(ch, { current: 'suspended', previous: 'attached' } as Ably.ChannelStateChange);
+    expect(onError).toHaveBeenCalledWith(expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost }));
+
+    // After the swap the new Tree is empty, so both getters return [].
+    // Stale-closure code would still return data from the abandoned Tree.
+    expect(run.messages).toEqual([]);
+    expect(run.view.messages).toEqual([]);
+
+    await session.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hydration failure, exhaustion short-circuit, and mid-walk continuity loss
+// ---------------------------------------------------------------------------
+
+describe('Run.loadConversation history failure + exhaustion', () => {
+  it('rejects with HistoryFetchFailed when the history fetch persistently fails (no infinite retry)', async () => {
+    // Regression: a persistent history failure (capability error, outage)
+    // used to be swallowed inside the shared hydration fetch, sending the
+    // hydration loop back around to issue a fresh fetch forever. The owner
+    // of the failing fetch must reject instead.
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
+    ch.history.mockImplementation(() => Promise.reject(new Error('history offline')));
+
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'history-failure',
+      codec,
+      inputEventLookupTimeoutMs: 5000,
+    });
+    await session.connect();
+
+    const run = createRunFromOpts(session, { runId: 'run-a', invocationId: 'inv-a', inputEventId: 'p-u1' });
+    const startPromise = run.start();
+    deliverInputEvent(ch, { invocationId: 'inv-a', codecMessageId: 'u1', serial: 's-01', inputEventId: 'p-u1' });
+    await startPromise;
+
+    // The walk's own fetch fails after retries; the conversation is never
+    // silently truncated — the caller gets the wrapped fetch error.
+    await expect(run.loadConversation()).rejects.toBeErrorInfo({
+      code: ErrorCode.HistoryFetchFailed,
+      cause: { code: ErrorCode.HistoryFetchFailed },
+    });
+
+    await session.close();
+  });
+
+  it('does not re-fetch history once a prior walk drove the channel to exhaustion', async () => {
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    // A chain that cannot reach the conversation root: u2's parent a1 was
+    // never published (retention expired the first turn). Every walk pages
+    // to exhaustion and stops best-effort at u2.
+    const page: Ably.InboundMessage[] = [
+      makeContentMsg('run-2', 'a2', 's-04'),
+      makeRunStartMsg('run-2', 'u2', { serial: 's-035' }),
+      makeInputMsg('u2', 's-03', { parent: 'a1' }),
+    ];
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises -- mock returns Promise directly
+    ch.history.mockImplementation(singlePageHistory(page));
+
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'history-exhaustion',
+      codec,
+      inputEventLookupTimeoutMs: 5000,
+    });
+    await session.connect();
+
+    const run = createRunFromOpts(session, { runId: 'run-a', invocationId: 'inv-a', inputEventId: 'p-u2' });
+    const startPromise = run.start();
+    deliverInputEvent(ch, {
+      invocationId: 'inv-a',
+      codecMessageId: 'u2',
+      serial: 's-03',
+      inputEventId: 'p-u2',
+      parent: 'a1',
+    });
+    await startPromise;
+
+    const first = await run.loadConversation();
+    expect(first.map((m) => m.id)).toEqual(['u2']);
+    const historyCallsAfterFirst = ch.history.mock.calls.length;
+
+    // Second walk: history is known-exhausted for this attach epoch, so the
+    // walk short-circuits without issuing another history fetch.
+    const second = await run.loadConversation();
+    expect(second.map((m) => m.id)).toEqual(['u2']);
+    expect(ch.history.mock.calls.length).toBe(historyCallsAfterFirst);
+
+    await session.close();
+  });
+
+  it('input-event lookup timeout surfaces the history-scan failure as cause', async () => {
+    // Regression: a broken history fetch used to be masked behind the
+    // lookup timeout — the caller saw a bare InputEventNotFound with no clue
+    // that history (not a missing event) was the problem.
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
+    ch.history.mockImplementation(() => Promise.reject(new Error('history offline')));
+
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'lookup-cause',
+      codec,
+      // Must exceed the history retry/backoff envelope (~700ms) so the scan
+      // failure is recorded before the timeout fires.
+      inputEventLookupTimeoutMs: 1500,
+    });
+    await session.connect();
+
+    // No matching input event is ever delivered; the lookup times out.
+    const run = createRunFromOpts(session, { runId: 'run-a', invocationId: 'inv-a', inputEventId: 'p-never' });
+    await expect(run.start()).rejects.toBeErrorInfo({
+      code: ErrorCode.InputEventNotFound,
+      cause: { code: ErrorCode.HistoryFetchFailed },
+    });
+
+    await session.close();
+  });
+
+  it('a history page resolving after continuity loss is not folded into the fresh Tree', async () => {
+    // Regression: a page fetched against the pre-loss attach epoch whose
+    // await resolves AFTER the continuity-loss Tree swap used to fold into
+    // the fresh Tree (the abort check only ran at the top of the next
+    // iteration). The walk must abandon the fold when the Tree changed.
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+
+    const stalePage: HistoryPage = {
+      items: [
+        makeContentMsg('run-1', 'a1', 's-02'),
+        makeRunStartMsg('run-1', 'u1', { serial: 's-015' }),
+        makeInputMsg('u1', 's-01'),
+      ],
+      hasNext: () => false,
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
+      next: () => Promise.resolve(stalePage),
+    };
+    // Page 2 is gated so the test can trigger continuity loss while the
+    // hydration walk is parked awaiting it.
+    let resolvePage2: ((page: HistoryPage) => void) | undefined;
+    const page2Promise = new Promise<HistoryPage>((res) => {
+      resolvePage2 = res;
+    });
+    let page2Requested: (() => void) | undefined;
+    const page2RequestedPromise = new Promise<void>((res) => {
+      page2Requested = res;
+    });
+    const page1: HistoryPage = {
+      items: [
+        makeContentMsg('run-2', 'a2', 's-04'),
+        makeRunStartMsg('run-2', 'u2', { serial: 's-035' }),
+        makeInputMsg('u2', 's-03'),
+      ],
+      hasNext: () => true,
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
+      next: () => {
+        page2Requested?.();
+        return page2Promise;
+      },
+    };
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
+    ch.history.mockImplementation(() => Promise.resolve(page1));
+
+    const onError = vi.fn();
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'swap-mid-walk',
+      codec,
+      inputEventLookupTimeoutMs: 5000,
+      onError,
+    });
+    await session.connect();
+
+    // loadConversation without start(): run-a never appears on the channel,
+    // so the walk keeps paging and parks on the gated page 2.
+    const run = createRunFromOpts(session, { runId: 'run-a', invocationId: 'inv-a' });
+    const conversationPromise = run.loadConversation();
+    await page2RequestedPromise;
+
+    // Continuity loss while page 2 is in flight: swaps the Tree for a fresh
+    // instance and aborts the run's controller.
+    simulateStateChange(ch, { current: 'suspended', previous: 'attached' } as Ably.ChannelStateChange);
+    expect(onError).toHaveBeenCalledWith(expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost }));
+    resolvePage2?.(stalePage);
+
+    await expect(conversationPromise).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+    // The stale page must not pollute the fresh Tree.
+    expect(session.tree.getNodeByCodecMessageId('u1')).toBeUndefined();
+    expect(session.tree.getRunNode('run-1')).toBeUndefined();
+
+    await session.close();
+  });
+
+  it('a mid-walk signal abort does not mark history as exhausted', async () => {
+    // Regression: the cursor's hasNext() returns false once the signal
+    // aborts, so an abort while a page fetch was in flight used to fall
+    // through to the exhaustion flag even though pages remained. Later
+    // walks in the same attach epoch then short-circuited and silently
+    // returned a truncated conversation.
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+
+    // Flipped to false before the healthy walk so IT can terminate at a
+    // genuine exhaustion; true while the aborted walk runs — pages remain.
+    let morePages = true;
+    const page2: HistoryPage = {
+      items: [],
+      hasNext: () => morePages,
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
+      next: () => Promise.resolve(page2),
+    };
+    let resolvePage2: ((page: HistoryPage) => void) | undefined;
+    const page2Promise = new Promise<HistoryPage>((res) => {
+      resolvePage2 = res;
+    });
+    let page2Requested: (() => void) | undefined;
+    const page2RequestedPromise = new Promise<void>((res) => {
+      page2Requested = res;
+    });
+    const page1: HistoryPage = {
+      items: [
+        makeContentMsg('run-1', 'a1', 's-02'),
+        makeRunStartMsg('run-1', 'u1', { serial: 's-015' }),
+        makeInputMsg('u1', 's-01'),
+      ],
+      hasNext: () => true,
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
+      next: () => {
+        page2Requested?.();
+        return page2Promise;
+      },
+    };
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
+    ch.history.mockImplementation(() => Promise.resolve(page1));
+
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'abort-not-exhausted',
+      codec,
+      inputEventLookupTimeoutMs: 5000,
+    });
+    await session.connect();
+
+    // Park run A's walk on the gated page 2 (run-a never appears on the
+    // channel, so the walk keeps paging), then abort its signal.
+    const ctrlA = new AbortController();
+    const runA = createRunFromOpts(session, { runId: 'run-a', invocationId: 'inv-a', signal: ctrlA.signal });
+    const aPromise = runA.loadConversation();
+    await page2RequestedPromise;
+    ctrlA.abort();
+    resolvePage2?.(page2);
+    await expect(aPromise).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+    expect(ch.history.mock.calls.length).toBe(1);
+
+    // A healthy walk in the same attach epoch must issue its own fetch —
+    // the aborted walk must not have recorded the channel as exhausted.
+    morePages = false;
+    const runB = createRunFromOpts(session, { runId: 'run-b', invocationId: 'inv-b' });
+    await runB.loadConversation();
+    expect(ch.history.mock.calls.length).toBe(2);
+
+    await session.close();
+  });
+
+  it("a follower awaiting the hydration mutex is isolated from the owner's fetch failure", async () => {
+    // Regression guard for the shared-error-bleed invariant under a LIVE
+    // failure: the shared hydration IIFE must never reject, so a follower
+    // parked on the mutex while the owner's fetch fails must re-loop and
+    // issue its own fetch rather than alias the owner's error.
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+
+    const fullPage: Ably.InboundMessage[] = [
+      makeContentMsg('run-1', 'a1', 's-02'),
+      makeRunStartMsg('run-1', 'u1', { serial: 's-015' }),
+      makeInputMsg('u1', 's-01'),
+    ];
+    let calls = 0;
+    let firstFetchRequested: (() => void) | undefined;
+    const firstFetchRequestedPromise = new Promise<void>((res) => {
+      firstFetchRequested = res;
+    });
+    // Calls 1-4 (A's initial fetch + 3 retries) fail; call 5+ (B's own
+    // fetch after re-looping) succeeds.
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
+    ch.history.mockImplementation(() => {
+      calls++;
+      if (calls === 1) firstFetchRequested?.();
+      if (calls <= 4) return Promise.reject(new Error('history offline'));
+      return singlePageHistory(fullPage)();
+    });
+
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'follower-isolation',
+      codec,
+      inputEventLookupTimeoutMs: 5000,
+    });
+    await session.connect();
+
+    // A claims the mutex (its fetch is failing through the retry envelope);
+    // once A's first history call has been issued, B joins as a follower.
+    const runA = createRunFromOpts(session, { runId: 'run-a', invocationId: 'inv-a' });
+    const runB = createRunFromOpts(session, { runId: 'run-b', invocationId: 'inv-b' });
+    const aPromise = runA.loadConversation();
+    await firstFetchRequestedPromise;
+    const bPromise = runB.loadConversation();
+
+    // The owner rejects from its own frame with the wrapped fetch error...
+    await expect(aPromise).rejects.toBeErrorInfo({
+      code: ErrorCode.HistoryFetchFailed,
+      cause: { code: ErrorCode.HistoryFetchFailed },
+    });
+    // ...while the follower re-loops, fetches under its own mutex slot, and
+    // completes. Aliasing the shared promise's failure would reject here.
+    await bPromise;
+    expect(session.tree.getNodeByCodecMessageId('u1')).toBeDefined();
+    expect(calls).toBe(5);
+
     await session.close();
   });
 });

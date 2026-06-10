@@ -279,23 +279,24 @@ export interface Run<TOutput extends CodecOutputEvent, TProjection, TMessage> {
 
   /**
    * Reconstruct the full multi-turn conversation by walking the ancestor
-   * run chain and concatenating each run's messages, oldest turn first.
+   * run chain over the session's Tree, concatenating each ancestor's
+   * projection (oldest turn first) plus the current run's projection.
    *
-   * Uses the session's history cache (extended backwards as needed) to
-   * build projections for all ancestor runs plus the current run; the
-   * session also merges any live Ably messages published after the channel
-   * attached into the result. After this call:
-   * - {@link Run.messages} returns the complete conversation (all ancestor
-   *   turns followed by the current run's messages), making it ready to
-   *   pass directly to the LLM.
-   * - The current run's projection is cached for {@link Run.pipe}.
-   * - The result is cached on this Run; a second call returns the cached
-   *   value without re-fetching.
+   * Hydrates the Tree as needed from channel history if the chain from
+   * the run's structural-parent anchor isn't already fully present;
+   * subsequent reads of {@link Run.messages} re-walk the same Tree and
+   * reflect any further folds (e.g. live arrivals from concurrent runs).
+   * No cache: every call computes a fresh snapshot from the live Tree.
    *
-   * Walks to the conversation root by default; bound the walk via channel
-   * retention or the operator-set page tuning.
-   * @param options - Optional tuning for history pagination.
-   * @returns The same message list now accessible via {@link Run.messages}.
+   * Walks to the conversation root by default; bound the walk via the
+   * optional {@link LoadConversationOptions.maxRuns} cap. If channel
+   * retention has expired older turns, the walk stops at what is available.
+   * @param options - Optional walk bounds.
+   * @returns The conversation messages in chronological order, ready to pass to an LLM.
+   * @throws {Ably.ErrorInfo} `HistoryFetchFailed` — or the underlying Ably
+   *   code when the failure carried one — when the history fetch fails after
+   *   retries (the conversation is never silently truncated on fetch
+   *   failure); `InvalidArgument` when the run's signal aborts.
    */
   loadConversation(options?: LoadConversationOptions): Promise<TMessage[]>;
 

@@ -178,6 +178,42 @@ describe('loadHistoryPages', () => {
     expect(first?.length).toBe(1);
   });
 
+  it('unrefs the retry backoff timer so a parked retry cannot hold a Node process open', async () => {
+    const unrefSpy = vi.fn();
+    const realSetTimeout = globalThis.setTimeout.bind(globalThis);
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((handler: () => void, ms?: number) => {
+      const timer = realSetTimeout(handler, ms);
+      const realUnref = timer.unref.bind(timer);
+      timer.unref = () => {
+        unrefSpy();
+        return realUnref();
+      };
+      return timer;
+    }) as typeof setTimeout);
+
+    try {
+      const channel = {
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+        attach: vi.fn(() => Promise.resolve()),
+        history: vi
+          .fn()
+          .mockRejectedValueOnce(new Error('transient'))
+          .mockResolvedValueOnce(buildPageChain([[ablyMsg()]])),
+      };
+
+      await loadHistoryPages(channel as unknown as Ably.RealtimeChannel, {
+        pageLimit: 1,
+        maxRetries: 1,
+        retryBackoffMs: 1,
+      });
+      // The single backoff sleep between the failed and successful attempts
+      // must have unref'd its timer.
+      expect(unrefSpy).toHaveBeenCalled();
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+  });
+
   it('rejects `HistoryFetchFailed` after retries are exhausted', async () => {
     const channel = {
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock

@@ -34,12 +34,10 @@ export async function POST(req: Request) {
   const invocation = Invocation.fromJSON(data);
 
   // A fresh Ably client per request. The agent is ephemeral: it attaches the
-  // channel with rewind, replays the just-published input event, streams the
-  // response, and closes. A client shared across requests would keep the
-  // channel attached, so a later request would NOT re-attach with rewind and
-  // would miss inputs published while no agent was subscribed (the second
-  // message's input-event lookup would time out). A per-request client also
-  // keeps concurrent runs on the same channel from detaching each other.
+  // channel, looks up the triggering input event via `untilAttach: true`
+  // history (scoped by `inputEventLookbackMs`), streams the response, and
+  // closes. A per-request client keeps concurrent runs on the same channel
+  // from detaching each other.
   // `ABLY_ENDPOINT` lets the e2e tests point the agent at the Ably sandbox
   // (`nonprod:sandbox`); unset in normal use, so it defaults to production.
   const ably = new Ably.Realtime({

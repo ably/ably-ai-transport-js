@@ -23,7 +23,11 @@ import {
   HEADER_STREAM,
   HEADER_STREAM_ID,
 } from '../../../src/constants.js';
-import { createDecoder } from '../../../src/vercel/codec/decoder.js';
+import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
+
+// The codec is now assembled by defineCodec; createDecoder is the generic
+// factory it produces (a plain closure, safe to destructure).
+const createDecoder = UIMessageCodec.createDecoder;
 
 // ---------------------------------------------------------------------------
 // Helpers

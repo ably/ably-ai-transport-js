@@ -41,3 +41,13 @@ export { boolField, enumField, jsonField, strField } from './fields.js';
 // Well-known input factories
 export type { WellKnownInputFactories } from './well-known-inputs.js';
 export { wellKnownInputs } from './well-known-inputs.js';
+
+// Codec composition factory
+export type {
+  InputAdapter,
+  InputAdapterCore,
+  InputDecodeContext,
+  InputEncodeContext,
+  LifecyclePolicy,
+} from './define-codec.js';
+export { defineCodec } from './define-codec.js';

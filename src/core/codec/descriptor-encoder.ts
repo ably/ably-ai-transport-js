@@ -17,7 +17,7 @@ import type { HeaderField } from './fields.js';
 import type { WriteOptions } from './types.js';
 
 /** The codec header carrying the dispatch type / stream family id. */
-const TYPE_HEADER = 'type';
+export const TYPE_HEADER = 'type';
 
 // CAST: a descriptor indexes chunk props by a declared key. The union member's
 // indexed type isn't statically known here, but a descriptor only ever runs

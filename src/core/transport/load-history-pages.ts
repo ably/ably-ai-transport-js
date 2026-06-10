@@ -17,8 +17,6 @@
  *    `Ably.ErrorInfo` (InvalidArgument) when aborted.
  *  - Optional `lookbackMs` stops paginating when the oldest message in a
  *    page is older than `Date.now() - lookbackMs`.
- *  - Optional `maxMessages` stops paginating once that many raw messages have
- *    been served.
  *
  * Spec: AIT-CT11 / AIT-ST hydration.
  */
@@ -40,19 +38,6 @@ export interface LoadHistoryPagesOptions {
    * bound the lookback window. Omit for unbounded walks.
    */
   lookbackMs?: number;
-  /**
-   * Stop paginating once `maxMessages` raw messages have been served.
-   * Operator-opt-in; no default. Silent truncation is worse than slow load.
-   */
-  maxMessages?: number;
-  /**
-   * Resume pagination from before this timestamp (Unix ms). Used by the
-   * agent's session-owned cache to extend backwards without re-reading what
-   * it already has — pass the oldest cached message's `timestamp - 1`
-   * Incompatible with `untilAttach` (set internally when `endTimestamp` is
-   * provided).
-   */
-  endTimestamp?: number;
   /** AbortSignal checked between pages. Rejects with InvalidArgument when aborted. */
   signal?: AbortSignal;
   /** Max retries per `page.next()` / initial `history()` failure. Default: 3. */
@@ -75,9 +60,8 @@ export interface HistoryPagesCursor {
   hasNext(): boolean;
   /**
    * Fetch the next Ably page's messages (newest-first within the page).
-   * Returns `undefined` when no more pages are available, the
-   * `maxMessages` / `lookbackMs` limit has been reached, or the abort
-   * signal has fired.
+   * Returns `undefined` when no more pages are available, the `lookbackMs`
+   * limit has been reached, or the abort signal has fired.
    */
   next(): Promise<readonly Ably.InboundMessage[] | undefined>;
 }
@@ -177,17 +161,7 @@ export const loadHistoryPages = async (
   channel: Ably.RealtimeChannel,
   options: LoadHistoryPagesOptions,
 ): Promise<HistoryPagesCursor> => {
-  const {
-    pageLimit,
-    untilAttach = true,
-    lookbackMs,
-    maxMessages,
-    endTimestamp,
-    signal,
-    maxRetries = 3,
-    retryBackoffMs = 100,
-    logger,
-  } = options;
+  const { pageLimit, untilAttach = true, lookbackMs, signal, maxRetries = 3, retryBackoffMs = 100, logger } = options;
 
   if (signal?.aborted) {
     throw new Ably.ErrorInfo('unable to load history; signal aborted', ErrorCode.InvalidArgument, 400);
@@ -195,15 +169,7 @@ export const loadHistoryPages = async (
 
   await channel.attach();
 
-  // Compose Ably history params. `untilAttach` is incompatible with an explicit
-  // `end` upper bound (Ably semantics: untilAttach uses attachSerial as the
-  // upper bound). When `endTimestamp` is set the caller is explicitly
-  // extending backwards from a known timestamp — drop untilAttach for that
-  // call.
-  const historyParams: Ably.RealtimeHistoryParams = {
-    limit: pageLimit,
-    ...(endTimestamp === undefined ? { untilAttach } : { end: endTimestamp }),
-  };
+  const historyParams: Ably.RealtimeHistoryParams = { limit: pageLimit, untilAttach };
 
   const lookbackThreshold = lookbackMs === undefined ? undefined : Date.now() - lookbackMs;
 
@@ -216,7 +182,6 @@ export const loadHistoryPages = async (
     logger,
   );
   let firstYielded = false;
-  let totalServed = 0;
 
   // Walk an Ably page to determine whether the lookback boundary has been
   // crossed (the oldest message in the page is older than the threshold).
@@ -229,11 +194,10 @@ export const loadHistoryPages = async (
 
   // Compute whether the cursor has another page available. Cheap — no
   // network. Reflects the latest fetched page's `hasNext()` plus our own
-  // bound checks (maxMessages, lookbackMs, signal).
+  // bound checks (lookbackMs, signal).
   const hasNext = (): boolean => {
     if (currentPage === undefined) return false;
     if (signal?.aborted) return false;
-    if (maxMessages !== undefined && totalServed >= maxMessages) return false;
     if (!firstYielded) return true;
     if (oldestPastThreshold(currentPage)) return false;
     return currentPage.hasNext();
@@ -244,12 +208,10 @@ export const loadHistoryPages = async (
     if (signal?.aborted) {
       throw new Ably.ErrorInfo('unable to load history; signal aborted', ErrorCode.InvalidArgument, 400);
     }
-    if (maxMessages !== undefined && totalServed >= maxMessages) return undefined;
 
     if (!firstYielded) {
       firstYielded = true;
       const items = currentPage.items;
-      totalServed += items.length;
       if (oldestPastThreshold(currentPage)) {
         logger?.debug('loadHistoryPages.next(); oldest message past lookback threshold', {
           lookbackThreshold,
@@ -277,7 +239,6 @@ export const loadHistoryPages = async (
     }
     currentPage = nextPage;
     const items = nextPage.items;
-    totalServed += items.length;
     if (oldestPastThreshold(nextPage)) {
       logger?.debug('loadHistoryPages.next(); oldest message past lookback threshold', {
         lookbackThreshold,

@@ -1222,6 +1222,56 @@ describe('AgentSession', () => {
       await s.close();
     });
 
+    it('FIFO-evicts the oldest deferred cancel beyond the buffer limit', async () => {
+      const ch = createMockChannel();
+      const { logger, warn } = captureWarnLogger();
+      const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'cancel-evict',
+        codec: codecWithFunctionalDecoder(),
+        logger,
+        inputEventLookupTimeoutMs: 5000,
+      });
+      await s.connect();
+
+      // The deferred-cancel buffer is bounded at 200. Fill it, then push one
+      // more — the oldest ('m-0') is FIFO-evicted with a warn.
+      for (let i = 0; i <= 200; i++) {
+        simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: `m-${String(i)}` });
+      }
+      // Cancel handling is dispatched fire-and-forget; let the microtasks run.
+      await new Promise((r) => setTimeout(r, 5));
+
+      const evictWarns = warn.mock.calls.filter(
+        (call) => typeof call[0] === 'string' && call[0].includes('deferred-cancel buffer full'),
+      );
+      expect(evictWarns).toHaveLength(1);
+      // CAST: warn-logger context is untyped; narrow to the fields under test.
+      const ctx = evictWarns[0]?.[1] as { evictedInputCodecMessageId?: string; limit?: number } | undefined;
+      expect(ctx?.evictedInputCodecMessageId).toBe('m-0');
+      expect(ctx?.limit).toBe(200);
+
+      // The evicted cancel ('m-0') no longer fires; the newest ('m-200') does.
+      const evicted = createRunFromOpts(s, { runId: 'run-old', invocationId: 'inv-old', inputEventId: 'p-old' });
+      const evictedStart = evicted.start();
+      deliverInputEvent(ch, { invocationId: 'inv-old', codecMessageId: 'm-0', serial: 's-old', inputEventId: 'p-old' });
+      await evictedStart;
+      expect(evicted.abortSignal.aborted).toBe(false);
+
+      const retained = createRunFromOpts(s, { runId: 'run-new', invocationId: 'inv-new', inputEventId: 'p-new' });
+      const retainedStart = retained.start();
+      deliverInputEvent(ch, {
+        invocationId: 'inv-new',
+        codecMessageId: 'm-200',
+        serial: 's-new',
+        inputEventId: 'p-new',
+      });
+      await retainedStart;
+      expect(retained.abortSignal.aborted).toBe(true);
+
+      await s.close();
+    });
+
     it('clears deferred cancels on close so they are not honoured by a later run', async () => {
       const { session: s, ch } = lookupSession();
       await s.connect();
@@ -2312,6 +2362,56 @@ describe('Run.loadConversation', () => {
     await session.close();
   });
 
+  it('does not page history for a fresh agent-minted run id (optimistic run node)', async () => {
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    // A fresh run's run-start is published after attach, so the untilAttach
+    // history walk can never surface it. Hydration must be satisfied by the
+    // optimistic run node inserted at start() — not page the channel to
+    // exhaustion looking for a node history cannot contain.
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
+    ch.history.mockImplementation(() => {
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
+      const page = { items: [], hasNext: () => false, next: () => Promise.resolve(page) };
+      return Promise.resolve(page);
+    });
+
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'test-channel',
+      codec,
+      inputEventLookupTimeoutMs: 5000,
+    });
+    await session.connect();
+    // No runtime.runId override — the agent mints a fresh UUID.
+    const run = session.createRun(Invocation.fromJSON({ inputEventId: 'p-u1', sessionName: 'test' }), {
+      invocationId: 'inv-1',
+    });
+    const startPromise = run.start();
+    deliverInputEvent(ch, { invocationId: 'inv-1', codecMessageId: 'u1', serial: 's-01', inputEventId: 'p-u1' });
+    await startPromise;
+
+    const historyCallsAfterStart = ch.history.mock.calls.length;
+    const history = await run.loadConversation();
+    expect(history).toEqual([{ id: 'u1', content: 'u1' }]);
+    // The fresh run's node came from start()'s optimistic insert — hydration
+    // must not issue any history fetch on its behalf.
+    expect(ch.history.mock.calls.length).toBe(historyCallsAfterStart);
+
+    // The channel echo of the run-start reconciles with the optimistic node
+    // (startSerial promotion) rather than creating a duplicate run: content
+    // streamed after the echo folds into the reconciled node and surfaces in
+    // the conversation.
+    ch.listener?.(makeRunStartMsg(run.runId, 'u1', { serial: 's-02' }));
+    ch.listener?.(makeContentMsg(run.runId, 'a1', 's-03'));
+    expect(await run.loadConversation()).toEqual([
+      { id: 'u1', content: 'u1' },
+      { id: 'a1', content: 'a1' },
+    ]);
+    expect(ch.history.mock.calls.length).toBe(historyCallsAfterStart);
+    await session.close();
+  });
+
   it('concatenates ancestor messages then current run messages in a two-turn conversation', async () => {
     const ch = createMockChannel();
     const codec = codecWithFunctionalDecoder();
@@ -2406,6 +2506,47 @@ describe('Run.loadConversation', () => {
       { id: 'u3', content: 'u3' },
     ]);
     expect(run.messages).toEqual(history);
+    await session.close();
+  });
+
+  it("maxRuns includes the bounding run's triggering input node, never starting assistant-first", async () => {
+    // Regression: the bounded walk used to break immediately after the
+    // maxRuns-th reply RunNode, dropping the input node above it — maxRuns: 1
+    // on u1→a1→u2→a2→u3 returned [a2, u3], an assistant-first conversation
+    // missing the user message that triggered a2.
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    const page: Ably.InboundMessage[] = [
+      makeRunStartMsg('run-3', 'u3'),
+      makeInputMsg('u3', 's-07', { parent: 'a2' }),
+      makeContentMsg('run-2', 'a2', 's-06'),
+      makeRunStartMsg('run-2', 'u2'),
+      makeInputMsg('u2', 's-05', { parent: 'a1' }),
+      makeContentMsg('run-1', 'a1', 's-04'),
+      makeRunStartMsg('run-1', 'u1'),
+      makeInputMsg('u1', 's-02'),
+    ];
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises -- mock
+    ch.history.mockImplementation(singlePageHistory(page));
+
+    const runId = 'run-3';
+    const invocationId = 'inv-3';
+    const inputEventId = 'p-u3';
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'test-channel',
+      codec,
+      inputEventLookupTimeoutMs: 5000,
+    });
+    await session.connect();
+    const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
+    const startPromise = run.start();
+    deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'u3', serial: 's-07', inputEventId, parent: 'a2' });
+    await startPromise;
+
+    // One reply run back: run-2's reply a2 AND its triggering input u2.
+    const history = await run.loadConversation({ maxRuns: 1 });
+    expect(history.map((m) => m.id)).toEqual(['u2', 'a2', 'u3']);
     await session.close();
   });
 
@@ -2977,9 +3118,9 @@ describe('Run.loadConversation concurrency + continuity-loss', () => {
     ]);
 
     // A's walk with maxRuns=1 includes the most recent ancestor reply run
-    // (run-2 via u3.parent=a2) plus u3 itself, then appends current run-a's
-    // (empty) projection.
-    expect(messagesA.map((m) => m.id)).toEqual(['a2', 'u3']);
+    // (run-2 via u3.parent=a2) AND its triggering input u2 — the chain must
+    // start with a user message, never an assistant reply — plus u3 itself.
+    expect(messagesA.map((m) => m.id)).toEqual(['u2', 'a2', 'u3']);
     // B's deeper walk must reach the full 3-turn ancestor chain, not the
     // shorter prefix A's fetch satisfied.
     expect(messagesB.map((m) => m.id)).toEqual(['u1', 'a1', 'u2', 'a2', 'u3']);

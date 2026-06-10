@@ -30,6 +30,7 @@ type DocPart =
 
 interface DocMessage {
   id: string;
+  origin?: string;
   parts: DocPart[];
 }
 
@@ -77,7 +78,9 @@ const descriptors = [
   // wire-only signal — kind only, decodes to []
   event('signal', { wireOnly: true }),
 
-  // multi-part batch — `x` narrows to the selected part in each `p(...)`
+  // multi-part batch — `x` narrows to the selected part in each `p(...)`;
+  // `messageHeaders` stamps per-message metadata (a codec `docId`, a transport
+  // `origin`) on every part, and `assemble` reconstructs it from the context.
   batch('doc', {
     explode: (input) => input.message.parts,
     partTypeOf: (part) => part.type,
@@ -87,12 +90,18 @@ const descriptors = [
         fields: [fMediaType],
         data: { encode: (x) => x.url, decode: (d) => ({ url: asString(d) }) },
       }),
-      p.wildcard((pt) => pt.startsWith('data-'), {
+      p.wildcard<'data-*'>((pt) => pt.startsWith('data-'), {
         fields: [fDataId],
         data: { encode: (x) => x.data, decode: (d) => ({ data: d }) },
       }),
     ],
-    assemble: (part) => ({ message: { id: '', parts: [part] } }),
+    messageHeaders: (input) => ({
+      codecHeaders: { docId: input.message.id },
+      transportHeaders: { origin: 'client' },
+    }),
+    assemble: (part, { codecHeaders, transportHeaders }) => ({
+      message: { id: codecHeaders.docId ?? '', origin: transportHeaders.origin ?? '', parts: [part] },
+    }),
   }),
 ];
 
@@ -134,6 +143,7 @@ const createMockCore = (): MockEncodeCore => {
 };
 
 const codecHeadersOf = (payload: MessagePayload): Record<string, string> => payload.codecHeaders ?? {};
+const transportHeadersOf = (payload: MessagePayload): Record<string, string> => payload.transportHeaders ?? {};
 
 /**
  * Index an array, throwing if the element is absent — keeps assertions free of
@@ -264,9 +274,11 @@ describe('input descriptor drivers', () => {
     const { payloads } = at(core.batchCalls, 0);
     expect(payloads).toHaveLength(3);
 
-    // text part
+    // text part — per-message headers (docId codec, origin transport) ride every part
     expect(codecHeadersOf(at(payloads, 0)).kind).toBe('doc');
     expect(codecHeadersOf(at(payloads, 0)).partType).toBe('text');
+    expect(codecHeadersOf(at(payloads, 0)).docId).toBe('m1');
+    expect(transportHeadersOf(at(payloads, 0)).origin).toBe('client');
     expect(at(payloads, 0).data).toBe('hello');
     // file part
     expect(codecHeadersOf(at(payloads, 1)).partType).toBe('file');
@@ -277,28 +289,32 @@ describe('input descriptor drivers', () => {
     expect(codecHeadersOf(at(payloads, 2)).id).toBe('d1');
     expect(at(payloads, 2).data).toEqual({ n: 7 });
 
-    // each part decodes back to a one-part input, kind + codecMessageId stamped by the driver
+    // each part decodes back to a one-part input; the driver stamps `kind` (a batch is
+    // not codec-message-id-addressed), and `assemble` reconstructs the message id + origin
+    // from the per-message headers
     const decodedText = decoder.decode({
       codecKind: 'doc',
       data: at(payloads, 0).data,
       codecHeaders: codecHeadersOf(at(payloads, 0)),
-      transportHeaders: { [HEADER_CODEC_MESSAGE_ID]: 'cm-doc' },
+      transportHeaders: transportHeadersOf(at(payloads, 0)),
     });
     expect(decodedText).toEqual([
-      { kind: 'doc', codecMessageId: 'cm-doc', message: { id: '', parts: [{ type: 'text', text: 'hello' }] } },
+      {
+        kind: 'doc',
+        message: { id: 'm1', origin: 'client', parts: [{ type: 'text', text: 'hello' }] },
+      },
     ]);
 
     const decodedData = decoder.decode({
       codecKind: 'doc',
       data: at(payloads, 2).data,
       codecHeaders: codecHeadersOf(at(payloads, 2)),
-      transportHeaders: { [HEADER_CODEC_MESSAGE_ID]: 'cm-doc' },
+      transportHeaders: transportHeadersOf(at(payloads, 2)),
     });
     expect(decodedData).toEqual([
       {
         kind: 'doc',
-        codecMessageId: 'cm-doc',
-        message: { id: '', parts: [{ type: 'data-foo', id: 'd1', data: { n: 7 } }] },
+        message: { id: 'm1', origin: 'client', parts: [{ type: 'data-foo', id: 'd1', data: { n: 7 } }] },
       },
     ]);
   });
@@ -312,6 +328,10 @@ describe('input descriptor drivers', () => {
     expect(core.batchCalls).toHaveLength(1);
     const { payloads } = at(core.batchCalls, 0);
     expect(payloads).toHaveLength(1);
+    // The bare fallback part still carries the shared per-message headers so the
+    // message id and origin survive an empty decomposition.
     expect(codecHeadersOf(at(payloads, 0)).kind).toBe('doc');
+    expect(codecHeadersOf(at(payloads, 0)).docId).toBe('m0');
+    expect(transportHeadersOf(at(payloads, 0)).origin).toBe('client');
   });
 });

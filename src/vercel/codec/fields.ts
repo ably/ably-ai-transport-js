@@ -35,7 +35,7 @@ export const fMediaType = strField('mediaType', '');
 /** Source id for source-url / source-document parts — defaulted to total. */
 export const fSourceId = strField('sourceId', '');
 
-// --- input-side bindings (shared by the imperative input encode/decode) ---
+// --- input-side bindings (shared by the input descriptors' encode/decode) ---
 
 /** The SDK-controlled codec dispatch `kind` header — defaulted to total so decode reads mirror `strOr(key, '')`. */
 export const fKind = strField('kind', '');
@@ -43,8 +43,8 @@ export const fKind = strField('kind', '');
 export const fPartType = strField('partType', '');
 /** Codec-message id stamped on user-message parts. */
 export const fMessageId = strField('messageId');
-/** Whether the user approved a tool execution. */
-export const fApproved = boolField('approved');
+/** Whether the user approved a tool execution — defaulted to total so an absent header reads `false`. */
+export const fApproved = boolField('approved', false);
 /** Optional human-readable reason on a tool-approval response. */
 export const fReason = strField('reason');
 

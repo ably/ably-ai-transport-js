@@ -44,10 +44,11 @@ export { wellKnownInputs } from './well-known-inputs.js';
 
 // Codec composition factory
 export type {
-  InputAdapter,
   InputAdapterCore,
+  InputBuilder,
   InputDecodeContext,
   InputEncodeContext,
   LifecyclePolicy,
+  OutputBuilder,
 } from './define-codec.js';
 export { defineCodec } from './define-codec.js';

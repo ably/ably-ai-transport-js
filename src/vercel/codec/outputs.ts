@@ -1,16 +1,18 @@
 /**
  * Vercel output (`ai-output`) event descriptors — the single source of truth for
- * encoding/decoding `UIMessageChunk` outputs. The generic drivers consume this
- * array; adding an ordinary output event is one entry here.
+ * encoding/decoding `UIMessageChunk` outputs. `defineCodec` injects the
+ * direction-scoped `{ event, stream }` builder; the generic drivers consume the
+ * returned array. Adding an ordinary output event is one entry here.
  *
  * Author-facing acceptance gate: this file contains **zero `as` casts**. The
- * curried `defineEvent`/`defineStream` helpers narrow each chunk member, so the
+ * injected `event`/`stream` builders narrow each chunk member, so the
  * `data`/`encode`/`decode` callbacks are fully typed.
  */
 
 import * as Ably from 'ably';
 
-import { defineEvent, defineStream, type Descriptor } from '../../core/codec/descriptors.js';
+import type { OutputBuilder } from '../../core/codec/define-codec.js';
+import type { Descriptor } from '../../core/codec/descriptors.js';
 import { boolField, jsonField, strField } from '../../core/codec/fields.js';
 import { ErrorCode, errorInfoIs } from '../../errors.js';
 import { parseJsonOrString, stripUndefined } from '../../utils.js';
@@ -33,13 +35,17 @@ import {
   isToolOutputAvailableWireData,
 } from './wire-data.js';
 
-const event = defineEvent<VercelOutput>();
-const stream = defineStream<VercelOutput>();
-
 const asString = (data: unknown): string => (typeof data === 'string' ? data : '');
 
-/** The Vercel codec's `ai-output` descriptors. */
-export const outputs: Descriptor<VercelOutput>[] = [
+/**
+ * The Vercel codec's `ai-output` descriptors, built from the injected
+ * direction-scoped builder.
+ * @param builder - The `{ event, stream }` builder curried on `VercelOutput`.
+ * @param builder.event - Define a single discrete output event.
+ * @param builder.stream - Define a streamed output family (start / delta / end).
+ * @returns The output descriptor table the generic output drivers consume.
+ */
+export const outputs = ({ event, stream }: OutputBuilder<VercelOutput>): readonly Descriptor<VercelOutput>[] => [
   // --- streamed families -----------------------------------------------------
 
   stream('text', {

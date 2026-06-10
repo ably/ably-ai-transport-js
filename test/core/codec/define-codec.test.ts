@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 
 import { EVENT_AI_INPUT, EVENT_AI_OUTPUT } from '../../../src/constants.js';
 import { defineCodec } from '../../../src/core/codec/define-codec.js';
-import { defineEvent } from '../../../src/core/codec/descriptors.js';
 import type { CodecMessage } from '../../../src/core/codec/types.js';
 
 // ---------------------------------------------------------------------------
@@ -29,20 +28,16 @@ const codec = defineCodec<NoopInput, QuirkyOutput>()({
     fold: (state) => state,
     getMessages: (): CodecMessage<unknown>[] => [],
   },
-  outputs: [
-    defineEvent<QuirkyOutput>()('quirky', {
+  output: ({ event }) => [
+    event('quirky', {
       fields: [],
       // Rebuilds to { type: 'quirky', kind: 'looks-like-input' } — an output that
       // structurally resembles an input.
       data: { encode: () => '', decode: () => ({ kind: 'looks-like-input' }) },
     }),
   ],
-  inputs: {
-    encode: async () => {
-      // Unused by these decode-routing tests.
-    },
-    decode: (): NoopInput[] => [{ kind: 'noop' }],
-  },
+  // A flat single event with no fields/data rebuilds to { kind: 'noop' }.
+  input: ({ event }) => [event('noop')],
 });
 
 const aiMessage = (name: string, codecHeaders: Record<string, string>): Ably.InboundMessage =>

@@ -16,7 +16,13 @@ import * as Ably from 'ably';
 import { ErrorCode } from '../../errors.js';
 import type { InputAdapterCore, InputEncodeContext } from './define-codec.js';
 import { prop, writeFields } from './field-bag.js';
-import type { BatchDescriptor, InputDescriptor, InputEventDescriptor, PartDescriptor } from './input-descriptors.js';
+import type {
+  BatchDescriptor,
+  BatchMessageHeaders,
+  InputDescriptor,
+  InputEventDescriptor,
+  PartDescriptor,
+} from './input-descriptors.js';
 import type { MessagePayload } from './types.js';
 
 /** Encodes inputs of union `U` to channel operations via an input descriptor set. */
@@ -34,6 +40,12 @@ export interface InputDescriptorEncoder<U> {
 // Resolve the part descriptor for a given partType: an exact match, else a wildcard.
 const partFor = (parts: readonly PartDescriptor[], partType: string): PartDescriptor | undefined =>
   parts.find((part) => part.partType === partType) ?? parts.find((part) => part.match?.(partType));
+
+// Layer the batch's per-message transport headers onto a part payload, if any.
+const withMessageTransport = (payload: MessagePayload, message: BatchMessageHeaders | undefined): MessagePayload =>
+  message?.transportHeaders === undefined
+    ? payload
+    : { ...payload, transportHeaders: { ...payload.transportHeaders, ...message.transportHeaders } };
 
 /**
  * Build an input encode driver for an input descriptor set bound to a wire name.
@@ -79,6 +91,9 @@ export const createInputDescriptorEncoder = <U extends { kind: string }>(
     core: InputAdapterCore,
     ctx: InputEncodeContext,
   ): Promise<void> => {
+    // Per-message headers (e.g. message id, role) are stamped on every part so
+    // the decode side can reconstruct the shared message envelope from any one.
+    const message = descriptor.messageHeaders?.(input);
     const payloads: MessagePayload[] = [];
     for (const part of descriptor.explode(input)) {
       const partType = descriptor.partTypeOf(part);
@@ -88,16 +103,24 @@ export const createInputDescriptorEncoder = <U extends { kind: string }>(
       // runs against the part its predicate/literal matched, so the source has the
       // field's type at runtime. The wire `partType` is the resolved part type.
       const source = part as object;
-      const codecHeaders = writeFields(partDesc.fields, descriptor.kind, source);
-      codecHeaders.partType = partType;
+      const codecHeaders = {
+        ...writeFields(partDesc.fields, descriptor.kind, source),
+        ...message?.codecHeaders,
+        partType,
+      };
       const data = partDesc.data ? partDesc.data.encode(part) : '';
-      payloads.push({ name: wireName, data, codecHeaders });
+      payloads.push(withMessageTransport({ name: wireName, data, codecHeaders }, message));
     }
 
     if (payloads.length === 0) {
-      // ≥1-event guarantee: emit one bare part so the codec-message-id and role
-      // (transport headers stamped by the client session) survive an empty explode.
-      payloads.push({ name: wireName, data: '', codecHeaders: { kind: descriptor.kind } });
+      // ≥1-event guarantee: emit one bare part so the per-message headers (e.g. the
+      // message id and role) survive an empty explode.
+      payloads.push(
+        withMessageTransport(
+          { name: wireName, data: '', codecHeaders: { kind: descriptor.kind, ...message?.codecHeaders } },
+          message,
+        ),
+      );
     }
 
     await core.publishDiscreteBatch(payloads, ctx.opts);

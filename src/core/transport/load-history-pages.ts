@@ -93,22 +93,23 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
   });
 
 /**
- * Invoke `fn`, retrying on failure with exponential backoff. Throws the
- * last failure wrapped as `HistoryFetchFailed` once retries are exhausted.
- * @param fn - The operation to retry.
+ * Invoke `fetchPage`, retrying on failure with exponential backoff. Throws
+ * the last failure wrapped as `HistoryFetchFailed` once retries are
+ * exhausted.
+ * @param fetchPage - The page fetch to retry (initial `channel.history()` call or a `page.next()`).
  * @param maxRetries - Maximum number of attempts after the initial call.
  * @param initialBackoffMs - Starting backoff delay (doubled per attempt).
  * @param signal - Optional abort signal; cancels remaining retries.
  * @param logger - Optional logger.
- * @returns The successful result of `fn`.
+ * @returns The fetched page, or `undefined` when pagination is exhausted.
  */
-const withRetry = async <T>(
-  fn: () => Promise<T>,
+const fetchPageWithRetry = async (
+  fetchPage: () => Promise<Ably.PaginatedResult<Ably.InboundMessage> | undefined>,
   maxRetries: number,
   initialBackoffMs: number,
   signal: AbortSignal | undefined,
   logger: Logger | undefined,
-): Promise<T> => {
+): Promise<Ably.PaginatedResult<Ably.InboundMessage> | undefined> => {
   let lastError: unknown;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     if (signal?.aborted) {
@@ -120,12 +121,12 @@ const withRetry = async <T>(
       );
     }
     try {
-      return await fn();
+      return await fetchPage();
     } catch (error) {
       lastError = error;
       if (attempt === maxRetries) break;
       const backoff = initialBackoffMs * 2 ** attempt;
-      logger?.debug('loadHistoryPages.withRetry(); page fetch failed, retrying', {
+      logger?.debug('loadHistoryPages.fetchPageWithRetry(); page fetch failed, retrying', {
         attempt: attempt + 1,
         maxRetries,
         backoff,
@@ -173,7 +174,7 @@ export const loadHistoryPages = async (
 
   const lookbackThreshold = lookbackMs === undefined ? undefined : Date.now() - lookbackMs;
 
-  let currentPage: Ably.PaginatedResult<Ably.InboundMessage> | undefined = await withRetry(
+  let currentPage: Ably.PaginatedResult<Ably.InboundMessage> | undefined = await fetchPageWithRetry(
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- channel.history returns a real Promise
     () => channel.history(historyParams),
     maxRetries,
@@ -226,7 +227,7 @@ export const loadHistoryPages = async (
       return undefined;
     }
 
-    const nextPage: Ably.PaginatedResult<Ably.InboundMessage> | undefined = await withRetry(
+    const nextPage: Ably.PaginatedResult<Ably.InboundMessage> | undefined = await fetchPageWithRetry(
       async () => (await currentPage?.next()) ?? undefined,
       maxRetries,
       retryBackoffMs,

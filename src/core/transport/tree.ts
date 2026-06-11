@@ -282,7 +282,7 @@ export class DefaultTree<
    * Index from `event-id` header to the raw Ably message that carried it.
    * Populated incrementally as messages arrive via {@link emitAblyMessage};
    * reads back the raw message for the agent's input-event lookup
-   * ({@link findWireByEventId}). Bounded by the Tree's lifetime — cleared
+   * ({@link findAblyMessageByEventId}). Bounded by the Tree's lifetime — cleared
    * when the Tree is replaced on continuity loss / session close.
    */
   private readonly _eventIdIndex = new Map<string, Ably.InboundMessage>();
@@ -1151,8 +1151,8 @@ export class DefaultTree<
 
   /**
    * Forward a raw Ably message event to tree subscribers. Also indexes the
-   * wire by `event-id` header (if present) for {@link findWireByEventId}
-   * lookups.
+   * Ably message by `event-id` header (if present) for
+   * {@link findAblyMessageByEventId} lookups.
    * @param msg - The raw Ably message to emit.
    */
   emitAblyMessage(msg: Ably.InboundMessage): void {
@@ -1165,7 +1165,7 @@ export class DefaultTree<
     this._emitter.emit('ably-message', msg);
   }
 
-  findWireByEventId(eventId: string): Ably.InboundMessage | undefined {
+  findAblyMessageByEventId(eventId: string): Ably.InboundMessage | undefined {
     return this._eventIdIndex.get(eventId);
   }
 }

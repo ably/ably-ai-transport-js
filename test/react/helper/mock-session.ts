@@ -90,7 +90,7 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     getRunNode: vi.fn(),
     getNodeByCodecMessageId: vi.fn(),
     getSiblingNodes: vi.fn(() => []),
-    findWireByEventId: vi.fn(),
+    findAblyMessageByEventId: vi.fn(),
     on: makeTreeOn(treeHandlers),
   };
 

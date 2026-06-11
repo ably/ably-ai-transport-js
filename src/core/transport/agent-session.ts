@@ -58,7 +58,7 @@ import type {
 
 /**
  * Result of {@link DefaultAgentSession._findInputEvent}. The lookup races
- * the session's Tree (`findWireByEventId` pre-scan + `'ably-message'` event
+ * the session's Tree (`findAblyMessageByEventId` pre-scan + `'ably-message'` event
  * for live arrivals) against a bounded `loadHistoryPages` fetch; resolves
  * with the matched messages sorted by Ably `serial` ascending.
  *
@@ -80,6 +80,14 @@ interface InputEventLookupResult {
 // ---------------------------------------------------------------------------
 // Ancestor-chain walk over the Tree
 // ---------------------------------------------------------------------------
+
+/**
+ * Upper bound on buffered deferred cancels. Deferred cancels are bounded so
+ * a pathological burst can't grow the map without bound. 200 outstanding
+ * fresh-send cancels in flight is ample — a typical agent process sees one
+ * per HTTP request.
+ */
+const DEFERRED_CANCEL_LIMIT = 200;
 
 /**
  * Walk parent pointers from an anchor codec-message-id back through the
@@ -473,17 +481,13 @@ class DefaultAgentSession<
 
   /**
    * Buffer a cancel that arrived before its target run was known, keyed by the
-   * triggering input's codec-message-id. FIFO-evicts the oldest entry at the
-   * fixed limit below. A later cancel for the same input replaces the earlier
+   * triggering input's codec-message-id. FIFO-evicts the oldest entry at
+   * {@link DEFERRED_CANCEL_LIMIT}. A later cancel for the same input replaces the earlier
    * one — the intent is identical.
    * @param inputCodecMessageId - The triggering input's codec-message-id.
    * @param msg - The raw cancel message (passed to `onCancel`).
    */
   private _bufferDeferredCancel(inputCodecMessageId: string, msg: Ably.InboundMessage): void {
-    // Deferred cancels are bounded so a pathological burst can't grow the
-    // map without bound. 200 outstanding fresh-send cancels in flight is
-    // ample — a typical agent process sees one per HTTP request.
-    const DEFERRED_CANCEL_LIMIT = 200;
     const evicted = evictOldestIfFull(this._deferredCancels, inputCodecMessageId, DEFERRED_CANCEL_LIMIT);
     if (evicted !== undefined) {
       this._logger?.warn('DefaultAgentSession._bufferDeferredCancel(); deferred-cancel buffer full, dropping oldest', {
@@ -705,7 +709,7 @@ class DefaultAgentSession<
    * Find every message whose `event-id` matches one of `expectedEventIds`,
    * racing three sources:
    *
-   *  1. A pre-scan of the Tree via `findWireByEventId` for messages already
+   *  1. A pre-scan of the Tree via `findAblyMessageByEventId` for messages already
    *     folded into it from prior live arrivals.
    *  2. A live listener on the Tree's `ably-message` event for new arrivals
    *     during the call.
@@ -825,9 +829,9 @@ class DefaultAgentSession<
       //    Multi-run sessions where a prior run folded the message hit here
       //    synchronously.
       for (const id of expectedEventIds) {
-        const wire = this._tree.findWireByEventId(id);
+        const ablyMessage = this._tree.findAblyMessageByEventId(id);
         // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- settled may mutate via synchronous callbacks during consider()
-        if (wire && consider(wire) && !settled) {
+        if (ablyMessage && consider(ablyMessage) && !settled) {
           finishOk();
           return;
         }

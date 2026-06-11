@@ -1,7 +1,7 @@
 /**
  * Shared Vercel codec header-field bindings.
  *
- * Each field binds a codec header key to its value type once (see PR-1
+ * Each field binds a codec header key to its value type once (see
  * {@link HeaderField}); the output/input descriptors and escape hatches all
  * read and write through these bindings, so a header key cannot drift between
  * the encode and decode side. Domain field names live in the Vercel layer, not
@@ -23,7 +23,7 @@ export const fMeta: HeaderField<AI.ProviderMetadata | undefined, 'providerMetada
   AI.ProviderMetadata,
   'providerMetadata'
 >('providerMetadata');
-/** Tool call id — defaulted to total so reads mirror the codec's `strOr(key, '')`. */
+/** Tool call id — defaulted to total: an absent header reads as `''`. */
 export const fToolCallId = strField('toolCallId', '');
 /** Tool name — defaulted to total. */
 export const fToolName = strField('toolName', '');
@@ -40,7 +40,7 @@ export const fSourceId = strField('sourceId', '');
 
 // --- input-side bindings (shared by the input descriptors' encode/decode) ---
 
-/** Codec-message id stamped on user-message parts. */
+/** Domain message id (`message.id`) stamped on every user-message part — distinct from the wire codec-message-id transport header. */
 export const fMessageId = strField('messageId');
 /** Whether the user approved a tool execution — defaulted to total so an absent header reads `false`. */
 export const fApproved = boolField('approved', false);
@@ -49,8 +49,7 @@ export const fReason = strField('reason');
 
 /**
  * Validated finish reason. Mirrors the AI SDK's `FinishReason` literals and
- * falls back to `'stop'` for an absent or unrecognized value — preserving the
- * decoder's `parseFinishReason` behaviour.
+ * falls back to `'stop'` for an absent or unrecognized value.
  */
 export const fFinishReason = enumField(
   'finishReason',

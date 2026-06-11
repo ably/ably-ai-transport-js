@@ -175,8 +175,10 @@ export interface BatchSpec<C, P extends { type: string }> {
    * DECODE: shape one decoded wire part into a one-part input (the reducer merges
    * parts by codec-message-id). `ctx` exposes the inbound header tiers so the
    * shared per-message metadata stamped by `messageHeaders` can be read back.
+   * The driver stamps only `kind`; the per-message identity rides the
+   * transport header and is recovered through `ctx` when needed.
    */
-  assemble: (part: P, ctx: BatchAssembleContext) => Omit<C, 'kind' | 'codecMessageId'>;
+  assemble: (part: P, ctx: BatchAssembleContext) => Omit<C, 'kind'>;
 }
 
 // ---------------------------------------------------------------------------
@@ -223,8 +225,8 @@ export interface BatchDescriptor<U> {
   parts: readonly PartDescriptor[];
   /** Build the per-message headers stamped on every part, if any. */
   messageHeaders?: (input: U) => BatchMessageHeaders;
-  /** Shape one decoded part into a one-part input (sans the driver-stamped `kind`/`codecMessageId`). */
-  assemble: (part: unknown, ctx: BatchAssembleContext) => Omit<U, 'kind' | 'codecMessageId'>;
+  /** Shape one decoded part into a one-part input (sans the driver-stamped `kind`). */
+  assemble: (part: unknown, ctx: BatchAssembleContext) => Omit<U, 'kind'>;
 }
 
 /** An erased input descriptor — a single event or a multi-part batch. */

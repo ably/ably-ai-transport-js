@@ -164,14 +164,14 @@ export const EVENT_RUN_END = 'ai-run-end';
  * Message name: every agent-published codec event (text, reasoning, tool calls,
  * tool outputs, lifecycle helpers, file / source parts, data-* chunks) rides
  * this single wire name. The codec event's own `type` is carried in the
- * codec-level `type` header so the decoder can dispatch.
+ * SDK-controlled codec-level `kind` header so the decoder can dispatch.
  */
 export const EVENT_AI_OUTPUT = 'ai-output';
 
 /**
  * Message name: every client-published codec event (user-message parts,
  * tool-approval responses, regenerate signals) rides this single wire
- * name. The codec event's own kind is carried in the codec-level `type`
+ * name. The codec event's own kind is carried in the codec-level `kind`
  * header so the decoder can dispatch.
  */
 export const EVENT_AI_INPUT = 'ai-input';

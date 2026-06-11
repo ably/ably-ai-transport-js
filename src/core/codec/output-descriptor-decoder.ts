@@ -23,7 +23,7 @@ import type { StreamTrackerState } from './types.js';
 
 /**
  * The reconstructed chunk's domain discriminator field — the codec model's own
- * `type` (e.g. `AI.UIMessageChunk.type`), per `CodecOutputEvent.type`. Distinct
+ * `type` discriminator, per `CodecOutputEvent.type`. Distinct
  * from {@link KIND_HEADER}: this is the rebuilt object's property, never the
  * wire dispatch key.
  */

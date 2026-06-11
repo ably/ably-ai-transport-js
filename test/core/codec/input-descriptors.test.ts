@@ -37,7 +37,7 @@ interface DocMessage {
 type FixtureInput =
   | { kind: 'tool-result-like'; codecMessageId: string; payload: ToolResultLikePayload }
   | { kind: 'signal' }
-  | { kind: 'doc'; codecMessageId: string; message: DocMessage };
+  | { kind: 'doc'; codecMessageId?: string; message: DocMessage };
 
 // ---------------------------------------------------------------------------
 // Fields

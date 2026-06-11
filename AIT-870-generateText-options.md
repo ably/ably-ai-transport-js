@@ -68,6 +68,33 @@ streaming remains the right default for the things Ably sells (resumable
 streaming, multi-device continuity, live steering). This is gap-filling, in the
 spirit of the AIT-716 epic's "no gaps or DX smells".
 
+### Not considering for now: a single-message wire format
+
+In the same spirit of scope, one option we are **deliberately setting aside for
+now** (rather than rejecting): packing a whole one-shot output into a **single**
+Ably message, instead of the several messages it lands as today (one per content
+part, plus lifecycle events).
+
+It's a real option with a real upside: **fewer messages means a lower message
+count, which is genuine money to customers at volume.** We shouldn't pretend that
+away. But we aren't pursuing it for now, for two reasons:
+
+- **Demand is unconfirmed (see above).** We don't yet know whether — or how much
+  — `generateText` will be used. The responsible first move is the technically
+  low-cost option that reuses the wire as-is; investing in a new wire shape to
+  save messages is premature before we know anyone is sending these messages at
+  all. The cost saving is the _only_ upside (the client reassembles the same
+  result either way — §4), and it's not one worth chasing speculatively.
+- **It would fork the wire format.** The wire is part-per-message _precisely to
+  enable streaming_ — each streamed part needs its own appendable message. A
+  "whole output in one message" envelope is a second serialization that the
+  streaming path can't share, so we'd be carrying two wire shapes. That's a
+  genuine, lasting cost.
+
+So: parked, not killed. Worth revisiting if `generateText` sees real adoption and
+the per-message cost proves to matter — at which point the message-count saving
+is weighed against forking the wire.
+
 ---
 
 ## 3. Relevant facts about the Vercel SDK

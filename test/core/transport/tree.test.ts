@@ -352,6 +352,110 @@ describe('Tree', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Canonical fold order (refold on out-of-order arrival)
+  // -------------------------------------------------------------------------
+
+  describe('canonical fold order', () => {
+    it('folds a late, earlier-serial wire into its canonical position', () => {
+      // The higher serial arrives first, then a genuinely new lower-serial wire
+      // (cross-publisher reorder). The node must end folded in serial order,
+      // not arrival order.
+      apply(tree, { runId: 'R1', codecMessageId: 'm2', message: { id: 'b', content: 'second' }, serial: 's2' });
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'first' }, serial: 's1' });
+
+      expect(messagesOf(tree, 'R1')).toEqual([
+        { id: 'a', content: 'first' },
+        { id: 'b', content: 'second' },
+      ]);
+    });
+
+    it('leaves in-order delivery untouched (no refold)', () => {
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'first' }, serial: 's1' });
+      apply(tree, { runId: 'R1', codecMessageId: 'm2', message: { id: 'b', content: 'second' }, serial: 's2' });
+      apply(tree, { runId: 'R1', codecMessageId: 'm3', message: { id: 'c', content: 'third' }, serial: 's3' });
+
+      expect(messagesOf(tree, 'R1')).toEqual([
+        { id: 'a', content: 'first' },
+        { id: 'b', content: 'second' },
+        { id: 'c', content: 'third' },
+      ]);
+    });
+
+    it('reorders three wires delivered fully out of order', () => {
+      apply(tree, { runId: 'R1', codecMessageId: 'm3', message: { id: 'c', content: 'third' }, serial: 's3' });
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'first' }, serial: 's1' });
+      apply(tree, { runId: 'R1', codecMessageId: 'm2', message: { id: 'b', content: 'second' }, serial: 's2' });
+
+      expect(messagesOf(tree, 'R1')).toEqual([
+        { id: 'a', content: 'first' },
+        { id: 'b', content: 'second' },
+        { id: 'c', content: 'third' },
+      ]);
+    });
+
+    it('refolds an input node when its parts arrive out of order', () => {
+      // A multi-message input node whose later-serial wire lands before the
+      // earlier one — the refold path also covers run-less input nodes.
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'a', content: 'q2' }, serial: 's2' });
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'a', content: 'q1' }, serial: 's1' });
+
+      const node = tree.getNode('u1');
+      const messages = node ? testCodec.getMessages(node.projection).map((cm) => cm.message) : [];
+      expect(messages).toEqual([
+        { id: 'a', content: 'q1' },
+        { id: 'a', content: 'q2' },
+      ]);
+    });
+
+    it('isolates a throwing fold during a refold', () => {
+      // Seed with a throwing event at the higher serial, then deliver a lower
+      // serial to force a refold that replays the throwing event.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm2',
+        events: [{ type: 'append-message', message: { id: 'b', content: 'second' } }, { type: 'throw' }],
+        serial: 's2',
+      });
+      expect(() => {
+        apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'first' }, serial: 's1' });
+      }).not.toThrow();
+
+      // Refold replays s1 then s2; the throwing event is skipped, the rest survive in serial order.
+      expect(messagesOf(tree, 'R1')).toEqual([
+        { id: 'a', content: 'first' },
+        { id: 'b', content: 'second' },
+      ]);
+    });
+
+    it('does not refold on a same-serial append at the tail', () => {
+      // Two deliveries at the same serial (create + append) extend the tail
+      // entry; the second folds incrementally rather than triggering a refold.
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'first' }, serial: 's1' });
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'b', content: 'append' }, serial: 's1' });
+
+      expect(messagesOf(tree, 'R1')).toEqual([
+        { id: 'a', content: 'first' },
+        { id: 'b', content: 'append' },
+      ]);
+    });
+
+    it('refolds on a late same-serial append to an earlier (non-tail) entry', () => {
+      // s1 then s2 (in order), then a second delivery at s1 — an append to the
+      // earlier, non-tail entry. Its events must land in canonical position
+      // (within s1, before s2), which only the refold path produces.
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 's1-first' }, serial: 's1' });
+      apply(tree, { runId: 'R1', codecMessageId: 'm2', message: { id: 'b', content: 's2' }, serial: 's2' });
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'c', content: 's1-append' }, serial: 's1' });
+
+      expect(messagesOf(tree, 'R1')).toEqual([
+        { id: 'a', content: 's1-first' },
+        { id: 'c', content: 's1-append' },
+        { id: 'b', content: 's2' },
+      ]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // startSerial promotion
   // -------------------------------------------------------------------------
 

@@ -28,21 +28,27 @@ export interface WireLogEntry<TEvent> {
 
 /**
  * Record a wire message's decoded events in a node's event log, mutating `log`
- * in place. Events for an already-logged serial are pushed onto that entry's
- * `events` (arrival order); otherwise a new entry is inserted at the position
- * that keeps the log ascending by serial (Ably serials order
- * lexicographically).
+ * in place, and return the index of the entry the events landed in. Events for
+ * an already-logged serial are pushed onto that entry's `events` (arrival
+ * order); otherwise a new entry is inserted at the position that keeps the log
+ * ascending by serial (Ably serials order lexicographically).
+ *
+ * The returned index lets the caller decide how to fold: when it equals
+ * `log.length - 1` the events extend the tail and fold incrementally in
+ * canonical order; otherwise an earlier-serial wire arrived late and the node
+ * must be refolded from the whole log.
  * @param log - The node's event log, ascending by serial. Mutated in place.
  * @param serial - The Ably channel serial of the wire message.
  * @param messageId - The wire's codec-message-id, or undefined.
  * @param events - The decoded events to record, in arrival order.
+ * @returns The index of the entry the events were recorded into.
  */
 export const recordWire = <TEvent>(
   log: WireLogEntry<TEvent>[],
   serial: string,
   messageId: string | undefined,
   events: TEvent[],
-): void => {
+): number => {
   // Scan from the tail: live delivery appends at (or extends) the end, so the
   // match is almost always within the last entry or two.
   for (let i = log.length - 1; i >= 0; i--) {
@@ -50,13 +56,14 @@ export const recordWire = <TEvent>(
     if (!entry) break; // unreachable
     if (entry.serial === serial) {
       entry.events.push(...events);
-      return;
+      return i;
     }
     if (entry.serial < serial) {
       log.splice(i + 1, 0, { serial, messageId, events: [...events] });
-      return;
+      return i + 1;
     }
   }
   // Lower than every logged serial (or the log is empty): insert at the head.
   log.unshift({ serial, messageId, events: [...events] });
+  return 0;
 };

@@ -57,6 +57,7 @@ export async function POST(req: Request) {
 
   await run.start();
   await run.loadConversation();
+  console.dir(run.messages, { depth: null });
 
   // Demo toggle (AIT-870): when DEMO_GENERATION_MODE=complete the agent uses the
   // one-shot `generateText()` instead of `streamText()`. The client (useChat)
@@ -86,6 +87,7 @@ export async function POST(req: Request) {
         const pipeResult = await run.pipe(generateTextToUIMessageStream(result));
         outcome = vercelGenerateTextOutcome(pipeResult, result.finishReason);
       } catch (error) {
+        console.log("generateText threw error", error);
         // generateText rejects on abort (cancellation) or generation failure.
         // Mirror the streamText path: forward the failure to clients so they
         // can show why the run failed.

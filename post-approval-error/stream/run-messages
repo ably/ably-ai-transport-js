@@ -1,0 +1,132 @@
+[
+  {
+    id: '1mLgW8znNZWrwcqr',
+    role: 'user',
+    parts: [
+      { type: 'text', text: "what's the weather forecast for London?" }
+    ]
+  },
+  {
+    id: '38db12ec-914f-4118-815c-a5368e91d93a',
+    role: 'assistant',
+    parts: [
+      { type: 'step-start' },
+      {
+        type: 'text',
+        text: "I'll get the 5-day weather forecast for London right away!"
+      },
+      {
+        type: 'dynamic-tool',
+        toolCallId: 'toolu_01N4ztrYafRu2aWABn49R4X5',
+        toolName: 'getWeatherForecast',
+        state: 'output-available',
+        input: { location: 'London, UK' },
+        output: {
+          location: 'London, UK',
+          forecast: [
+            {
+              day: 'Mon',
+              high: 89,
+              low: 59,
+              conditions: 'Thunderstorms'
+            },
+            { day: 'Tue', high: 73, low: 36, conditions: 'Rainy' },
+            { day: 'Wed', high: 60, low: 47, conditions: 'Cloudy' },
+            {
+              day: 'Thu',
+              high: 73,
+              low: 45,
+              conditions: 'Thunderstorms'
+            },
+            { day: 'Fri', high: 59, low: 54, conditions: 'Rainy' }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    id: 'b87a06b5-588b-41d6-b1b5-220e4cfbe53a',
+    role: 'assistant',
+    parts: [
+      { type: 'step-start' },
+      {
+        type: 'text',
+        text: "Here's the 5-day weather forecast for **London, UK**:\n" +
+          '\n' +
+          '| Day | High | Low | Conditions |\n' +
+          '|-----------|------|-----|-----------------|\n' +
+          '| Monday | 89°F | 59°F | ⛈️ Thunderstorms |\n' +
+          '| Tuesday | 73°F | 36°F | 🌧️ Rainy |\n' +
+          '| Wednesday | 60°F | 47°F | ☁️ Cloudy |\n' +
+          '| Thursday | 73°F | 45°F | ⛈️ Thunderstorms |\n' +
+          '| Friday | 59°F | 54°F | 🌧️ Rainy |\n' +
+          '\n' +
+          'It looks like a fairly unsettled week ahead for London, with thunderstorms expected on **Monday and Thursday**, rain on **Tuesday and Friday**, and cloudy skies on **Wednesday**. Be sure to keep an umbrella handy! ☂️'
+      }
+    ]
+  },
+  {
+    id: '38db12ec-914f-4118-815c-a5368e91d93a',
+    role: 'assistant',
+    parts: [
+      { type: 'step-start' },
+      {
+        type: 'text',
+        text: "I'll get the 5-day weather forecast for London right away!"
+      },
+      {
+        type: 'dynamic-tool',
+        toolCallId: 'toolu_01N4ztrYafRu2aWABn49R4X5',
+        toolName: 'getWeatherForecast',
+        state: 'output-available',
+        input: { location: 'London, UK' },
+        output: {
+          location: 'London, UK',
+          forecast: [
+            {
+              day: 'Mon',
+              high: 89,
+              low: 59,
+              conditions: 'Thunderstorms'
+            },
+            { day: 'Tue', high: 73, low: 36, conditions: 'Rainy' },
+            { day: 'Wed', high: 60, low: 47, conditions: 'Cloudy' },
+            {
+              day: 'Thu',
+              high: 73,
+              low: 45,
+              conditions: 'Thunderstorms'
+            },
+            { day: 'Fri', high: 59, low: 54, conditions: 'Rainy' }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    id: 'b87a06b5-588b-41d6-b1b5-220e4cfbe53a',
+    role: 'assistant',
+    parts: [
+      { type: 'step-start' },
+      {
+        type: 'text',
+        text: "Here's the 5-day weather forecast for **London, UK**:\n" +
+          '\n' +
+          '| Day | High | Low | Conditions |\n' +
+          '|-----------|------|-----|-----------------|\n' +
+          '| Monday | 89°F | 59°F | ⛈️ Thunderstorms |\n' +
+          '| Tuesday | 73°F | 36°F | 🌧️ Rainy |\n' +
+          '| Wednesday | 60°F | 47°F | ☁️ Cloudy |\n' +
+          '| Thursday | 73°F | 45°F | ⛈️ Thunderstorms |\n' +
+          '| Friday | 59°F | 54°F | 🌧️ Rainy |\n' +
+          '\n' +
+          'It looks like a fairly unsettled week ahead for London, with thunderstorms expected on **Monday and Thursday**, rain on **Tuesday and Friday**, and cloudy skies on **Wednesday**. Be sure to keep an umbrella handy! ☂️'
+      }
+    ]
+  },
+  {
+    id: 'FLZM9Bal9kPhSKaz',
+    role: 'user',
+    parts: [ { type: 'text', text: 'Hello' } ]
+  }
+]

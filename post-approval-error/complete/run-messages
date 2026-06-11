@@ -1,0 +1,94 @@
+[
+  {
+    id: 'JcHeZtFgtle8J6Yn',
+    role: 'user',
+    parts: [
+      { type: 'text', text: "what's the weather forecast for London?" }
+    ]
+  },
+  {
+    id: 'a3b34245-d030-44b4-8adc-e17648f8606d',
+    role: 'assistant',
+    parts: [
+      { type: 'step-start' },
+      {
+        type: 'text',
+        text: "I'll get the 5-day weather forecast for London right away!"
+      },
+      {
+        type: 'dynamic-tool',
+        toolCallId: 'toolu_01WpfzrK2cehqFvEZs1kCvHa',
+        toolName: 'getWeatherForecast',
+        state: 'approval-responded',
+        input: { location: 'London, UK' },
+        approval: { id: 'aitxt-dYwohB5SwVAELViWdyKRDDwG', approved: true }
+      }
+    ]
+  },
+  {
+    id: 'f78cdb80-ef0f-4913-905b-7c0bde790697',
+    role: 'assistant',
+    parts: [
+      { type: 'step-start' },
+      {
+        type: 'text',
+        text: "Here's the **5-day weather forecast for London, UK**:\n" +
+          '\n' +
+          '| Day | High | Low | Conditions |\n' +
+          '|-----------|------|-----|----------------|\n' +
+          '| Monday | 90°F | 38°F | 🌧️ Rainy |\n' +
+          '| Tuesday | 65°F | 37°F | ⛅ Partly Cloudy |\n' +
+          '| Wednesday | 76°F | 44°F | 🌧️ Rainy |\n' +
+          '| Thursday | 75°F | 48°F | 🌧️ Rainy |\n' +
+          '| Friday | 70°F | 37°F | ⛈️ Thunderstorms |\n' +
+          '\n' +
+          'It looks like a **wet week ahead** for London! Rain is expected most days, with thunderstorms arriving by Friday. Monday will see an unusually high of 90°F, while temperatures drop quite a bit overnight throughout the week. You may want to pack an umbrella! ☂️'
+      }
+    ]
+  },
+  {
+    id: 'a3b34245-d030-44b4-8adc-e17648f8606d',
+    role: 'assistant',
+    parts: [
+      { type: 'step-start' },
+      {
+        type: 'text',
+        text: "I'll get the 5-day weather forecast for London right away!"
+      },
+      {
+        type: 'dynamic-tool',
+        toolCallId: 'toolu_01WpfzrK2cehqFvEZs1kCvHa',
+        toolName: 'getWeatherForecast',
+        state: 'approval-responded',
+        input: { location: 'London, UK' },
+        approval: { id: 'aitxt-dYwohB5SwVAELViWdyKRDDwG', approved: true }
+      }
+    ]
+  },
+  {
+    id: 'f78cdb80-ef0f-4913-905b-7c0bde790697',
+    role: 'assistant',
+    parts: [
+      { type: 'step-start' },
+      {
+        type: 'text',
+        text: "Here's the **5-day weather forecast for London, UK**:\n" +
+          '\n' +
+          '| Day | High | Low | Conditions |\n' +
+          '|-----------|------|-----|----------------|\n' +
+          '| Monday | 90°F | 38°F | 🌧️ Rainy |\n' +
+          '| Tuesday | 65°F | 37°F | ⛅ Partly Cloudy |\n' +
+          '| Wednesday | 76°F | 44°F | 🌧️ Rainy |\n' +
+          '| Thursday | 75°F | 48°F | 🌧️ Rainy |\n' +
+          '| Friday | 70°F | 37°F | ⛈️ Thunderstorms |\n' +
+          '\n' +
+          'It looks like a **wet week ahead** for London! Rain is expected most days, with thunderstorms arriving by Friday. Monday will see an unusually high of 90°F, while temperatures drop quite a bit overnight throughout the week. You may want to pack an umbrella! ☂️'
+      }
+    ]
+  },
+  {
+    id: 'BkQeAakDuWyqqTec',
+    role: 'user',
+    parts: [ { type: 'text', text: 'Hello' } ]
+  }
+]

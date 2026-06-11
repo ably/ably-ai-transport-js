@@ -8,9 +8,10 @@
  * signal; the multi-part user message is a `batch` that fans each
  * `UIMessage` part out into one wire event (reassembled by the reducer).
  *
- * Author-facing acceptance gate: this file contains **zero `as` casts**. The
- * injected `event`/`batch` builders narrow each member, so every `data` /
- * `fields` / `parts` / `assemble` callback is fully typed.
+ * Author-facing acceptance gate: the injected `event`/`batch` builders narrow
+ * each member, so every `data` / `fields` / `parts` / `assemble` callback is
+ * fully typed. The file's single `as` cast is the wire trust boundary on the
+ * inbound role header (see `assemble`).
  */
 
 import type * as AI from 'ai';

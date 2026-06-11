@@ -2,7 +2,7 @@
  * Wire-data shapes and runtime guards for the tool payloads whose `data`
  * envelope is JSON-parsed from the network (a trust boundary). The guards
  * validate the typed envelope fields; tool-defined `output`/`input` stay
- * unconstrained. Shared by the output descriptors (decode) and the decoder.
+ * unconstrained. Shared by the output and input descriptor tables.
  */
 
 /** Wire format for the agent-side `tool-input-error` chunk data payload. */

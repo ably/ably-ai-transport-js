@@ -73,7 +73,7 @@ export interface WriteOptions {
  * (strings, objects, etc.) — Ably handles serialization natively.
  */
 export interface MessagePayload {
-  /** Ably message name (e.g. "text", "tool-input", "user-message"). */
+  /** Ably message name — the wire direction (`ai-output` / `ai-input`). */
   name: string;
   /** Message data. Ably handles serialization — strings, objects, and arrays are all valid. */
   data: unknown;
@@ -95,7 +95,7 @@ export interface MessagePayload {
  * concatenated for recovery and prefix-matching on the decoder.
  */
 export interface StreamPayload {
-  /** Ably message name (e.g. "text", "reasoning", "tool-input"). */
+  /** Ably message name — `ai-output` (only outputs stream); not the codec `kind` / stream family. */
   name: string;
   /** Initial or closing data for the stream. Must be a string for append/accumulate semantics. */
   data: string;
@@ -117,7 +117,7 @@ export interface StreamPayload {
  * Accumulates text across appends and tracks lifecycle (open/closed).
  */
 export interface StreamTrackerState {
-  /** Ably message name (e.g. "text", "reasoning", "tool-input"). */
+  /** Ably message name — `ai-output` (only outputs stream); not the codec `kind` / stream family. */
   name: string;
   /** Stream identifier (e.g. chunk.id for text, toolCallId for tool-input). */
   streamId: string;
@@ -223,8 +223,10 @@ export interface EncoderOptions {
   /** Hook called before each Ably message is published. Mutate the message in place to add transport-level headers under `extras.ai`. */
   onMessage?: (message: Ably.Message) => void;
   /**
-   * Default `codec-message-id` for messages where the event payload doesn't
-   * supply one. Overridden by `WriteOptions.messageId` per-publish.
+   * Fallback domain message id surfaced to output escape hatches as
+   * `ctx.messageId` (e.g. the Vercel `start` hatch injects it when a chunk
+   * carries no `messageId` of its own). Unrelated to the wire
+   * codec-message-id transport header, which `WriteOptions.messageId` stamps.
    */
   messageId?: string;
 }
@@ -239,13 +241,13 @@ export interface EncoderOptions {
 export interface Encoder<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> {
   /**
    * Encode and publish a single client input on the `ai-input` wire.
-   * Throws synchronously if the codec cannot encode the given input
+   * Rejects if the codec cannot encode the given input
    * variant.
    */
   publishInput(input: TInput, options?: WriteOptions): Promise<void>;
   /**
    * Encode and publish a single agent output on the `ai-output` wire.
-   * Throws synchronously if the codec cannot encode the given output
+   * Rejects if the codec cannot encode the given output
    * variant.
    */
   publishOutput(output: TOutput, options?: WriteOptions): Promise<void>;
@@ -322,10 +324,11 @@ export interface CodecInputEvent {
    * Pointer to another codec-message this input references. The semantic
    * depends on `kind` — for `regenerate`, the assistant codec-message to
    * regenerate; codec-specific `kind`s may give it other meanings. The
-   * input event itself does not create a fork — it requests one. The fork
+   * input event itself does not create a fork — it requests one: the
+   * transport reads `target` off the input (e.g. the client session maps a
+   * regenerate's target into its transport headers) and the fork
    * relationship is established on the agent's response (and on
-   * `ai-run-start`), which the codec encoder maps `target` to via the
-   * wire's `fork-of` header.
+   * `ai-run-start`).
    */
   target?: string;
   /**
@@ -379,7 +382,7 @@ export interface Regenerate extends CodecInputEvent {
  * The core is domain-independent: it knows only that this input amends the
  * assistant at `codecMessageId` and carries a codec-defined `payload`. The
  * shape of `payload` (e.g. the tool-call id and output value) is supplied
- * by the codec via `TPayload` — see the Vercel layer's payload type.
+ * by the codec via `TPayload` (e.g. a tool-call id and output value).
  *
  * Codecs opt in to client-side tool resolution by including this variant
  * in their `TInput` union. Codecs whose domain model doesn't natively
@@ -402,7 +405,7 @@ export interface ToolResult<TPayload> extends CodecInputEvent {
  * Well-known input variant: client-published tool result (failure). The
  * tool ran and failed. Mutates the assistant codec-message addressed by
  * `codecMessageId`. The failure detail (e.g. tool-call id and error text)
- * is the codec's domain `payload` — see the Vercel layer's payload type.
+ * is the codec's domain `payload`.
  * @template TPayload - The codec's domain payload for a tool-result failure.
  */
 export interface ToolResultError<TPayload> extends CodecInputEvent {
@@ -420,7 +423,7 @@ export interface ToolResultError<TPayload> extends CodecInputEvent {
  * codec-message addressed by `codecMessageId` — flipping the targeted
  * tool call from pending-approval to approved or denied. The decision
  * detail (e.g. tool-call id, approved flag, reason) is the codec's domain
- * `payload` — see the Vercel layer's payload type.
+ * `payload`.
  *
  * Codecs may layer approval semantics on top of domain models that don't
  * natively support gating tool execution behind an approval — the codec
@@ -481,9 +484,8 @@ export type UserMessageOf<TInput> = TInput extends UserMessage<infer M> ? M : ne
  * fields on outputs without a breaking generic-arity change.
  *
  * The `type` discriminator is required on every variant so the codec's
- * reducer can switch on it. `AI.UIMessageChunk` already satisfies this
- * constraint structurally — its `type` literal is assignable to
- * `string` — so the Vercel codec needs no implementation changes.
+ * reducer can switch on it — any domain union whose members carry a `type`
+ * string literal satisfies it structurally.
  *
  * No routing fields today: outputs carry no per-event `codecMessageId` /
  * `parent` / `forkOf` overrides. Those move onto this base when a concrete

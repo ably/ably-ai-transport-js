@@ -1,10 +1,9 @@
 /**
- * Vercel decode lifecycle policy — mid-stream-join repair lifted from the
- * decoder's open-coded `switch`.
+ * Vercel decode lifecycle policy — mid-stream-join repair.
  *
  * When a client joins a stream mid-flight (history compaction, rewind miss,
  * partial page), the reducer must still see a clean `start` / `start-step`
- * pre-roll. This policy keys that repair on the discrete codec `type` and on
+ * pre-roll. This policy keys that repair on the discrete codec `kind` and on
  * stream start; each entry performs its tracker side effect and returns the
  * lead-in chunks the generic decoder prepends before running the descriptor
  * driver. A fresh policy (and tracker) is built per decoder instance.

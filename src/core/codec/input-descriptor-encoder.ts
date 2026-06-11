@@ -116,7 +116,7 @@ export const createInputDescriptorEncoder = <U extends { kind: string }>(
       // matched a descriptor. This fallback carries no partType, so the batch
       // decode path yields no input for it — a codec that needs an empty
       // message to round-trip must guarantee ≥1 encodable part in `explode`
-      // (as the Vercel user-message batch does).
+      // (e.g. by substituting a canonical empty part).
       payloads.push(
         withMessageTransport(
           { name: wireName, data: '', codecHeaders: { kind: descriptor.kind, ...message?.codecHeaders } },

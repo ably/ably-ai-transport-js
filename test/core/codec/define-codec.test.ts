@@ -234,7 +234,6 @@ interface PingInput {
 
 interface PostInput {
   kind: 'post';
-  codecMessageId: string;
   message: { parts: { type: 'text'; text: string; partType?: string }[] };
 }
 

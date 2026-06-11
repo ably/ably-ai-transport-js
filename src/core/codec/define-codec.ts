@@ -267,7 +267,12 @@ const decodeDiscretePayload = <TInput extends { kind: string }, TOutput>(
     const runId = transportHeaders[HEADER_RUN_ID] ?? '';
     // Lifecycle repair runs its side effect and returns lead-in events; the
     // descriptor driver always decodes after and its output is appended.
-    const pre = lifecycle?.onDiscrete?.[codecKind]?.(runId, { codecHeaders }) ?? [];
+    // The `kind` comes off the wire, so the policy lookup must be own-property
+    // only — a crafted kind such as 'valueOf' or 'toString' would otherwise
+    // resolve through Object.prototype and corrupt the decode.
+    const onDiscrete = lifecycle?.onDiscrete;
+    const repair = onDiscrete !== undefined && Object.hasOwn(onDiscrete, codecKind) ? onDiscrete[codecKind] : undefined;
+    const pre = repair?.(runId, { codecHeaders }) ?? [];
     return [...pre, ...outputDecoder.decodeDiscrete(codecKind, codecHeaders, transportHeaders, payload.data)];
   }
 

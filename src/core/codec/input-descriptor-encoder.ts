@@ -37,9 +37,12 @@ export interface InputDescriptorEncoder<U> {
   encode(input: U, core: InputEncoderCore, ctx: InputEncodeContext): Promise<void>;
 }
 
-// Resolve the part descriptor for a given partType: an exact match, else a wildcard.
+// Resolve the part descriptor for a given partType: an exact non-wildcard
+// match, else a wildcard whose predicate accepts it. Wildcards are excluded
+// from the exact pass — their '' sentinel must not exact-match an empty
+// partType.
 const partFor = (parts: readonly PartDescriptor[], partType: string): PartDescriptor | undefined =>
-  parts.find((part) => part.partType === partType) ?? parts.find((part) => part.match?.(partType));
+  parts.find((part) => !part.match && part.partType === partType) ?? parts.find((part) => part.match?.(partType));
 
 // Layer the batch's per-message transport headers onto a part payload, if any.
 const withMessageTransport = (payload: MessagePayload, message: BatchMessageHeaders | undefined): MessagePayload =>
@@ -112,8 +115,12 @@ export const createInputDescriptorEncoder = <U extends { kind: string }>(
     }
 
     if (payloads.length === 0) {
-      // ≥1-event guarantee: emit one bare part so the per-message headers (e.g. the
-      // message id and role) survive an empty explode.
+      // ≥1-event guarantee: emit one bare part so the per-message headers (e.g.
+      // the message id and role) reach the wire even when no exploded part
+      // matched a descriptor. This fallback carries no partType, so the batch
+      // decode path yields no input for it — a codec that needs an empty
+      // message to round-trip must guarantee ≥1 encodable part in `explode`
+      // (as the Vercel user-message batch does).
       payloads.push(
         withMessageTransport(
           { name: wireName, data: '', codecHeaders: { kind: descriptor.kind, ...message?.codecHeaders } },

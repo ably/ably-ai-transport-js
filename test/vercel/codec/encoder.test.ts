@@ -637,6 +637,26 @@ describe('Vercel encoder', () => {
         expect(headersOf(call[0])[HEADER_ROLE]).toBe('user');
       }
     });
+
+    it('publishes the empty text fallback when every part is unmapped, so the message round-trips', async () => {
+      const encoder = createEncoder(writer);
+      // step-start has no wire mapping. Without the explode-level fallback the
+      // batch would publish a bare-headers event with no partType, which the
+      // decode side cannot round-trip — the message would silently vanish.
+      const msg: AI.UIMessage = { id: 'msg-2', role: 'user', parts: [{ type: 'step-start' }] };
+
+      await encoder.publishInput({ kind: 'user-message', message: msg });
+
+      const call = writer.publishCalls[0];
+      if (!Array.isArray(call)) throw new Error('expected batch publish');
+      expect(call).toHaveLength(1);
+      if (call[0]) {
+        expect(headersOf(call[0]).kind).toBe('user-message');
+        expect(headersOf(call[0]).partType).toBe('text');
+        expect(headersOf(call[0]).messageId).toBe('msg-2');
+        expect(headersOf(call[0])[HEADER_ROLE]).toBe('user');
+      }
+    });
   });
 
   // -- tool-approval-response inputs (publishInput) -------------------------

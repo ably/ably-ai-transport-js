@@ -24,7 +24,7 @@ import { streamText, convertToModelMessages, stepCountIs } from 'ai';
 import Ably from 'ably';
 import { createAgentSession, vercelRunOutcome } from '@ably/ai-transport/vercel';
 import type { InvocationData } from '@ably/ai-transport';
-import { Invocation } from '@ably/ai-transport';
+import { Invocation, LogLevel, makeLogger } from '@ably/ai-transport';
 import { createModel } from './model';
 import { tools } from './tools';
 
@@ -45,7 +45,12 @@ export async function POST(req: Request) {
     ...(process.env.ABLY_ENDPOINT ? { endpoint: process.env.ABLY_ENDPOINT } : {}),
   });
 
-  const session = createAgentSession({ client: ably, channelName: invocation.sessionName });
+  // Set AGENT_LOG=1 to trace the agent's channel traffic, including whether
+  // each inbound message arrived via the live subscription (rewind replays
+  // included) or a history walk.
+  const logger = process.env.AGENT_LOG ? makeLogger({ logLevel: LogLevel.Trace }) : undefined;
+
+  const session = createAgentSession({ client: ably, channelName: invocation.sessionName, logger });
   await session.connect();
   const run = session.createRun(invocation, { signal: req.signal });
 

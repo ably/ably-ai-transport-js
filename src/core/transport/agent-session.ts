@@ -90,6 +90,16 @@ interface InputEventLookupResult {
 const DEFERRED_CANCEL_LIMIT = 200;
 
 /**
+ * Rewind window for the agent's channel attach. The client publishes (and
+ * receives the ack for) the trigger input before POSTing the invocation, so
+ * the input is always on the channel before the agent attaches — but it is
+ * pre-attach, so the live subscription never delivers it. A short rewind
+ * replays it from the channel buffer on attach, making input-event lookup
+ * immediate in the common case instead of racing history-API read lag.
+ */
+const AGENT_ATTACH_REWIND = '10s';
+
+/**
  * Walk parent pointers from an anchor codec-message-id back through the
  * Tree to the conversation root, returning nodes in root-first order. When
  * `maxRuns` is set, the walk stops before the RunNode that would exceed the
@@ -309,7 +319,17 @@ class DefaultAgentSession<
     // (options.agents) and channel-attach (params.agent) paths. Idempotent
     // across sessions sharing one client.
     const registerOptions = registerAgent(options.client, options.codec);
-    this._channel = options.client.channels.get(options.channelName, registerOptions);
+    // Attach with a rewind window. The trigger input is
+    // published (and acked) by the client *before* it POSTs the invocation,
+    // so it always lands pre-attach and is invisible to the live
+    // subscription. Rewind replays it from the channel's own buffer on
+    // attach, closing the race where the one-shot untilAttach history scan
+    // loses to history-API read lag. Replays overlap with the history scan;
+    // _foldedSerials dedups. The history scan remains the fallback for
+    // inputs older than the rewind window.
+    this._channel = options.client.channels.get(options.channelName, {
+      params: { ...registerOptions.params, rewind: AGENT_ATTACH_REWIND },
+    });
     this._logger = options.logger?.withContext({ component: 'AgentSession' });
     this._onError = options.onError;
     this._runManager = createRunManager(this._channel, this._logger);
@@ -640,12 +660,26 @@ class DefaultAgentSession<
    * that surfaces via more than one path. Wires without a serial bypass the
    * dedup (we cannot uniquely identify them).
    * @param wire - The inbound Ably message to fold.
+   * @param source - Which delivery path surfaced the message: the live
+   * subscription (including rewind replays) or a history walk.
    */
-  private _foldWire(wire: Ably.InboundMessage): void {
+  private _foldWire(wire: Ably.InboundMessage, source: 'live' | 'history'): void {
     if (wire.serial !== undefined) {
-      if (this._foldedSerials.has(wire.serial)) return;
+      if (this._foldedSerials.has(wire.serial)) {
+        this._logger?.trace('DefaultAgentSession._foldWire(); skipping already-folded message', {
+          source,
+          serial: wire.serial,
+          name: wire.name,
+        });
+        return;
+      }
       this._foldedSerials.add(wire.serial);
     }
+    this._logger?.trace('DefaultAgentSession._foldWire(); folding message', {
+      source,
+      serial: wire.serial,
+      name: wire.name,
+    });
     applyWireMessage(this._tree, this._decoder, wire);
     this._tree.emitAblyMessage(wire);
   }
@@ -658,7 +692,7 @@ class DefaultAgentSession<
     try {
       // Fold first (no-op for already-folded serials), then dispatch cancel
       // control messages regardless of whether the fold was skipped.
-      this._foldWire(msg);
+      this._foldWire(msg, 'live');
 
       if (msg.name === EVENT_CANCEL) {
         // Fire-and-forget async handler — errors are caught internally.
@@ -871,7 +905,7 @@ class DefaultAgentSession<
             // order so codec projections build oldest-to-newest (matches the
             // live decode loop's fold order).
             for (const wire of chunk.toReversed()) {
-              this._foldWire(wire);
+              this._foldWire(wire, 'history');
             }
           }
         } catch (error) {
@@ -1073,7 +1107,7 @@ class DefaultAgentSession<
             // Ably returns history pages newest-first; fold in chronological
             // order so codec projections build oldest-to-newest.
             for (const wire of chunk.toReversed()) {
-              this._foldWire(wire);
+              this._foldWire(wire, 'history');
             }
             // Early exit when the Tree has enough for the walk.
             if (!needsFetch()) return;

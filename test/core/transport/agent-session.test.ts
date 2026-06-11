@@ -470,7 +470,7 @@ describe('AgentSession', () => {
       await s.close();
     });
 
-    it('attaches the channel without a rewind window (untilAttach + Tree covers continuity)', async () => {
+    it('attaches the channel with a rewind window so pre-attach trigger inputs are replayed', async () => {
       const ch = createMockChannel();
       const client = createMockClient(ch);
       const c = createMockCodec();
@@ -481,7 +481,7 @@ describe('AgentSession', () => {
       });
       // eslint-disable-next-line @typescript-eslint/unbound-method -- accessing vi mock
       expect(client.channels.get).toHaveBeenCalledWith('rewind-channel', {
-        params: { agent: `ai-transport-js/${VERSION}` },
+        params: { agent: `ai-transport-js/${VERSION}`, rewind: '10s' },
       });
       await s.close();
     });

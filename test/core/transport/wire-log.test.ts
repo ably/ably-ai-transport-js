@@ -22,8 +22,21 @@ const serialsOf = (log: WireLogEntry<TestEvent>[]): string[] => log.map((e) => e
 describe('recordWire', () => {
   it('records into an empty log', () => {
     const log: WireLogEntry<TestEvent>[] = [];
-    recordWire(log, 's1', 'm1', [ev('a')]);
+    const index = recordWire(log, 's1', 'm1', [ev('a')]);
     expect(log).toEqual([{ serial: 's1', messageId: 'm1', events: [{ tag: 'a' }] }]);
+    expect(index).toBe(0);
+  });
+
+  it('returns the touched index — tail for in-order, earlier for late arrivals', () => {
+    const log: WireLogEntry<TestEvent>[] = [];
+    // In-order: each lands at (and is reported as) the tail.
+    expect(recordWire(log, 's1', 'm1', [ev('a')])).toBe(0);
+    expect(recordWire(log, 's3', 'm3', [ev('c')])).toBe(1);
+    expect(recordWire(log, 's3', 'm3', [ev('c2')])).toBe(1); // same-serial tail extend
+    // Late, earlier-serial arrivals report a non-tail index (< log.length - 1).
+    expect(recordWire(log, 's2', 'm2', [ev('b')])).toBe(1); // inserted between s1 and s3
+    expect(recordWire(log, 's0', 'm0', [ev('z')])).toBe(0); // head insert
+    expect(recordWire(log, 's1', 'm1', [ev('a2')])).toBe(1); // non-tail same-serial extend
   });
 
   it('appends a new entry at the tail for a higher serial', () => {

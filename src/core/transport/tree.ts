@@ -429,6 +429,80 @@ export class DefaultTree<
     }
   }
 
+  /**
+   * Record a serial-bearing wire in the node's event log and fold it. Events
+   * extending the log tail (the common case — in-order live delivery) fold
+   * incrementally onto the existing projection, identical to a bare
+   * {@link _foldInto}. Events that land earlier in the log (an earlier-serial
+   * wire delivered late — cross-publisher reorder, or a history page applying
+   * an older message after a newer one) cannot be folded incrementally without
+   * corrupting serial order, so the node is refolded from the whole log via
+   * {@link _refold}.
+   *
+   * Optimistic (serial-less) applies and empty event batches are not logged;
+   * they fold incrementally and never trigger a refold, so an optimistic seed
+   * is never replayed by a refold. This is sound: a refold needs at least two
+   * logged wires (one inserted before another), so a node's first
+   * serial-bearing wire — which also promotes its serial — is always logged
+   * and folded before any refold is possible. A codec that seeds state
+   * optimistically therefore relies on that first wire (the echo of the
+   * optimistic input) re-delivering the seeded content; the refold rebuilds
+   * from the logged echoes, not the seed.
+   * @param entry - The internal node whose log and projection are updated.
+   * @param events - The decoded events to fold, in wire order.
+   * @param serial - Ably channel serial; undefined for an optimistic insert.
+   * @param messageId - The reducer routing key (codec-message-id), or undefined.
+   */
+  private _recordAndFold(
+    entry: InternalNode<TInput, TOutput, TProjection>,
+    events: CodecEvent<TInput, TOutput>[],
+    serial: string | undefined,
+    messageId: string | undefined,
+  ): void {
+    if (serial !== undefined && events.length > 0) {
+      const index = recordWire(entry.log, serial, messageId, events);
+      if (index !== entry.log.length - 1) {
+        this._refold(entry);
+        return;
+      }
+    }
+    this._foldInto(entry, events, serial, messageId);
+  }
+
+  /**
+   * Rebuild a node's projection from its event log in canonical serial order:
+   * a fresh {@link Reducer.init} folded through every logged event, each with
+   * its own wire's serial and messageId. Used when a late, earlier-serial wire
+   * makes incremental folding unsound. Reducer purity (a fold is a function of
+   * its inputs alone) is what makes the rebuild faithful; the per-fold
+   * try/catch mirrors {@link _foldInto} so one throwing event can't abort the
+   * rebuild.
+   *
+   * Rebuilds the projection only; the surrounding apply emits its usual
+   * `output` event carrying just the triggering wire's events. Consumers read
+   * the rebuilt state from `node.projection` (the View recomputes its message
+   * list from it), so on the refold path the event's `events` payload is not a
+   * delta of the full projection change.
+   * @param entry - The internal node whose projection is rebuilt in place.
+   */
+  private _refold(entry: InternalNode<TInput, TOutput, TProjection>): void {
+    let projection = this._codec.init();
+    for (const logEntry of entry.log) {
+      for (const event of logEntry.events) {
+        try {
+          projection = this._codec.fold(projection, event, { serial: logEntry.serial, messageId: logEntry.messageId });
+        } catch (error) {
+          this._logger.error('Tree._refold(); fold threw', {
+            key: nodeKey(entry.node),
+            messageId: logEntry.messageId,
+            err: error,
+          });
+        }
+      }
+    }
+    entry.node.projection = projection;
+  }
+
   // -------------------------------------------------------------------------
   // Parent index maintenance
   // -------------------------------------------------------------------------
@@ -773,13 +847,9 @@ export class DefaultTree<
       this._promoteSerial(entry);
     }
 
-    // Record the decoded events in the node's log — only serial-bearing wires
-    // are logged (optimistic applies have no canonical position yet).
-    if (serial !== undefined && all.length > 0) {
-      recordWire(entry.log, serial, codecMessageId, all);
-    }
-
-    this._foldInto(entry, all, serial, codecMessageId);
+    // Log the wire and fold it — incrementally onto the tail in the common
+    // case, or by refolding the node if this wire arrived out of serial order.
+    this._recordAndFold(entry, all, serial, codecMessageId);
 
     // An input node owns no agent outputs; the event still fires (empty
     // outputs) so consumers observe the projection change. It has no run-id —
@@ -848,15 +918,11 @@ export class DefaultTree<
     const ownerKey = nodeKey(run.node);
     if (codecMessageId) this._codecMessageIdToNodeKey.set(codecMessageId, ownerKey);
 
-    // Record the decoded events in the node's log — only serial-bearing wires
-    // are logged (optimistic applies have no canonical position yet). `run`
-    // may be a reconciled optimistic node: record on whichever entry owns the
-    // fold.
-    if (serial !== undefined && all.length > 0) {
-      recordWire(run.log, serial, codecMessageId, all);
-    }
-
-    this._foldInto(run, all, serial, codecMessageId);
+    // Log the wire and fold it — incrementally onto the tail in the common
+    // case, or by refolding the node if this wire arrived out of serial order.
+    // `run` may be a reconciled optimistic node: record on whichever entry
+    // owns the fold.
+    this._recordAndFold(run, all, serial, codecMessageId);
 
     this._emitter.emit('output', { runId: ownerKey, inputCodecMessageId, codecMessageId, serial, events: outputs });
   }

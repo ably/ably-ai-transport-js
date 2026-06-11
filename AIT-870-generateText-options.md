@@ -37,7 +37,7 @@ pinning this down**, because it changes the scope. Our best speculation is one
   JSON repair, redaction) — something streaming can't do, because you've
   already sent tokens before you can check them.
 
-### The sharper question: who is the *consumer*?
+### The sharper question: who is the _consumer_?
 
 It is **not clear who consumes a durable session whose agent uses
 `generateText()`** — i.e. what we're enabling client-side. This cuts
@@ -48,7 +48,7 @@ differently for the two motivations:
   so their consumer is typically a request/response flow (`await` the full text)
   or a server-side pipeline. So "drop-in" is murky: we'd be offering durable
   sessions / multi-device for a flow that was previously plain request/response,
-  and they'd have to adopt our *client* too — not really "drop-in".
+  and they'd have to adopt our _client_ too — not really "drop-in".
 - Under **(b)**, the consumer is a `useChat`-style streaming UI and the developer
   just wants server-side control before emitting. This maps cleanly onto our
   existing demos.
@@ -209,9 +209,11 @@ can live with a cosmetic header inaccuracy → A.
 
 ```ts
 try {
-  const result = await generateText({ /* ..., abortSignal: run.abortSignal */ });
+  const result = await generateText({
+    /* ..., abortSignal: run.abortSignal */
+  });
   await run.pipe(toUIMessageChunkStream(result)); // or discrete equivalent
-  return oneShotOutcome(result);                   // suspend / complete / error
+  return oneShotOutcome(result); // suspend / complete / error
 } catch (error) {
   // emit an `error` output chunk (encoder already supports `type: error`)
   // then run.end('error')
@@ -240,9 +242,7 @@ so the two modes are tiny sibling leaves, selected by a flag — the streaming l
 stays byte-for-byte what it is today:
 
 ```ts
-export const POST = withAgentRun(req, async (run) =>
-  MODE === 'complete' ? handleOneShot(run) : handleStreaming(run),
-);
+export const POST = withAgentRun(req, async (run) => (MODE === 'complete' ? handleOneShot(run) : handleStreaming(run)));
 ```
 
 (There's already appetite for this — the e2e launcher was recently extracted to a

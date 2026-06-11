@@ -327,7 +327,7 @@ export interface Tree<TOutput extends CodecOutputEvent, TProjection> {
    * @returns The matching raw Ably message, or undefined when the Tree has
    *   not observed an event with that id.
    */
-  findWireByEventId(eventId: string): Ably.InboundMessage | undefined;
+  findAblyMessageByEventId(eventId: string): Ably.InboundMessage | undefined;
 
   // --- Events ---
 

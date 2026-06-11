@@ -199,12 +199,14 @@ function ChatInner({ chatId }: { chatId: string }) {
   );
 }
 
-export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
+export function Chat({ chatId }: { chatId: string }) {
   return (
     // ChatTransportProvider creates both ClientSession and ChatTransport.
     // The Realtime client is read from the surrounding <AblyProvider>; the
-    // session resolves the channel from channelName itself. No codec argument needed.
-    <ChatTransportProvider channelName={chatId} clientId={clientId}>
+    // session resolves the channel from channelName itself, and takes its
+    // identity from the client's clientId (set via the token below). No codec
+    // argument needed.
+    <ChatTransportProvider channelName={chatId}>
       <ChatInner chatId={chatId} />
     </ChatTransportProvider>
   );

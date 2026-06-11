@@ -51,8 +51,6 @@ export interface Extras {
 
 /** Per-write overrides for encoder operations. */
 export interface WriteOptions {
-  /** Override the default clientId for this write. */
-  clientId?: string;
   /** Override the default extras for this write. */
   extras?: Extras;
   /** Message identity for projection routing. Stamped as `codec-message-id`. */
@@ -66,7 +64,7 @@ export interface WriteOptions {
 /**
  * A codec-agnostic description of a discrete Ably message. Used on both sides:
  * - **Encode:** the domain encoder describes what to publish; the encoder core
- *   handles header merging, clientId resolution, and the actual publish.
+ *   handles header merging and the actual publish.
  * - **Decode:** the decoder core extracts these fields from an
  *   `Ably.InboundMessage` before calling domain hooks, keeping hooks free of
  *   Ably SDK types.
@@ -196,8 +194,6 @@ export interface Reducer<TEvent, TProjection> {
 
 /** Options passed to a codec's `createEncoder` factory. */
 export interface EncoderOptions {
-  /** Default clientId for all writes. */
-  clientId?: string;
   /** Default extras (e.g. headers) merged into every Ably message. */
   extras?: Extras;
   /** Hook called before each Ably message is published. Mutate the message in place to add transport-level headers under `extras.ai`. */

@@ -57,7 +57,6 @@ describe('useChat error propagation', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: clientClient.auth.clientId,
     });
     await clientSession.connect();
 
@@ -126,7 +125,6 @@ describe('useChat error propagation', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: clientClient.auth.clientId,
     });
     await clientSession.connect();
 

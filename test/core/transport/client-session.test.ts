@@ -381,10 +381,9 @@ const createFixture = async (overrides?: { clientId?: string }): Promise<Session
   const decoder = createMockDecoder();
   const codec = createMockCodec(decoder);
   const session = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
-    client: createMockClient(channel),
+    client: createMockClient(channel, overrides?.clientId ?? 'client-1'),
     channelName: 'test-channel',
     codec,
-    clientId: overrides?.clientId ?? 'client-1',
   });
   await session.connect();
   return { channel, decoder, codec, session };
@@ -599,6 +598,47 @@ describe('ClientSession', () => {
       // publisher's Ably `clientId` already conveys that on the input event
       // itself. The agent re-stamps it on its own subsequent publishes.
       expect(opts?.extras?.headers?.['input-client-id']).toBeUndefined();
+    });
+
+    it('stamps run-client-id on published input from the Ably client auth.clientId', async () => {
+      // The session takes its identity from the Ably client's `auth.clientId`,
+      // read at publish time (guaranteed populated because send() awaits
+      // connect(), which only resolves after CONNECTED).
+      const channel = createMockChannel();
+      const codec = createMockCodec(createMockDecoder());
+      const session = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(channel, 'client-9'),
+        channelName: 'test-channel',
+        codec,
+      });
+      await session.connect();
+
+      await session.view.send({ kind: 'user-message', text: 'hi' });
+
+      const call = codec.lastEncoder()?.publishCalls.at(-1);
+      expect(call?.opts?.extras?.headers?.[HEADER_RUN_CLIENT_ID]).toBe('client-9');
+      await session.close();
+    });
+
+    it('omits run-client-id when the connection has no concrete identity', async () => {
+      // An anonymous connection (no clientId) or a wildcard `*` token has no
+      // single identity to attribute the run to, so no run-client-id is stamped.
+      for (const clientId of [undefined, '*']) {
+        const channel = createMockChannel();
+        const codec = createMockCodec(createMockDecoder());
+        const session = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
+          client: createMockClient(channel, clientId),
+          channelName: 'test-channel',
+          codec,
+        });
+        await session.connect();
+
+        await session.view.send({ kind: 'user-message', text: 'hi' });
+
+        const call = codec.lastEncoder()?.publishCalls.at(-1);
+        expect(call?.opts?.extras?.headers?.[HEADER_RUN_CLIENT_ID]).toBeUndefined();
+        await session.close();
+      }
     });
 
     it('pins the wire codec-message-id from TInput.codecMessageId instead of minting a fresh id', async () => {
@@ -882,7 +922,6 @@ describe('ClientSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: failingPublishCodec,
-        clientId: 'client-1',
       });
       await s.connect();
 
@@ -911,7 +950,6 @@ describe('ClientSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: failingPublishCodec,
-        clientId: 'client-1',
       });
       await s.connect();
       s.on('error', () => {
@@ -939,7 +977,6 @@ describe('ClientSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: failingPublishCodec,
-        clientId: 'client-1',
       });
       await s.connect();
       s.on('error', () => {
@@ -964,7 +1001,6 @@ describe('ClientSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
-        clientId: 'client-1',
       });
       await s.connect();
       // No run-start is ever simulated — send() must still resolve once the
@@ -982,7 +1018,6 @@ describe('ClientSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec,
-        clientId: 'client-1',
       });
       await s.connect();
 
@@ -1273,7 +1308,6 @@ describe('ClientSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: customCodec,
-        clientId: 'client-1',
       });
       await s.connect();
 
@@ -1364,7 +1398,6 @@ describe('ClientSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec,
-        clientId: 'client-1',
       });
       await s.connect();
 
@@ -1432,7 +1465,6 @@ describe('ClientSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec,
-        clientId: 'client-1',
       });
       await s.connect();
 
@@ -1819,7 +1851,6 @@ describe('ClientSession', () => {
         client,
         channelName: 'no-client-close',
         codec: createMockCodec(),
-        clientId: 'client-1',
       });
       await s.connect();
       await s.close();
@@ -1832,7 +1863,6 @@ describe('ClientSession', () => {
         client: createMockClient(ch),
         channelName: 'never-connected',
         codec: createMockCodec(),
-        clientId: 'client-1',
       });
       await s.close();
       expect(ch.detach).not.toHaveBeenCalled();
@@ -1856,7 +1886,6 @@ describe('ClientSession', () => {
         client: createMockClient(ch),
         channelName: 'detach-fail',
         codec: createMockCodec(),
-        clientId: 'client-1',
         logger,
       });
       await s.connect();
@@ -1889,7 +1918,6 @@ describe('ClientSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec,
-        clientId: 'client-1',
       });
       await s.connect();
       s.on('error', () => {
@@ -1998,7 +2026,6 @@ describe('ClientSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
-        clientId: 'client-1',
       });
       await s.connect();
       const errors: Ably.ErrorInfo[] = [];

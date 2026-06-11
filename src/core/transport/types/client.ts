@@ -22,6 +22,12 @@ export interface ClientSessionOptions<
   /**
    * The Ably Realtime client. The caller owns its lifecycle —
    * `session.close()` does not close the client.
+   *
+   * The session's identity is taken from this client's `auth.clientId` (set
+   * via the Ably token or `ClientOptions.clientId`) — it is read at publish
+   * time and stamped on the wire as the run/input client id so other clients
+   * can attribute messages. A connection without a concrete clientId
+   * (anonymous, or a wildcard `*` token) publishes without one.
    */
   client: Ably.Realtime;
 
@@ -34,13 +40,6 @@ export interface ClientSessionOptions<
 
   /** The codec to use for encoding/decoding. */
   codec: Codec<TInput, TOutput, TProjection, TMessage>;
-
-  /**
-   * The client's identity, used as the Ably publisher `clientId` on
-   * everything this session publishes. Surfaces on the wire as the
-   * run/input client id so other clients can attribute messages.
-   */
-  clientId?: string;
 
   /** Initial messages to seed the conversation tree with. Forms a linear chain. */
   messages?: TMessage[];

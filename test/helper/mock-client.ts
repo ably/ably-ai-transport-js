@@ -7,10 +7,18 @@ import { vi } from 'vitest';
  * `options.agents` map. Suitable for unit tests that previously injected a
  * pre-resolved channel directly into a session factory — pair it with the
  * file-local `createMockChannel()` helper.
+ *
+ * The mock also exposes `auth.clientId`, which `ClientSession` reads to
+ * determine its publish identity. Omit it (or pass `undefined`) to model an
+ * anonymous connection, and pass `'*'` to model a wildcard token — both of
+ * which a client session treats as having no concrete identity. Agent sessions
+ * never read it.
  * @param channel - The mock channel to return from `channels.get(...)`.
+ * @param clientId - The mock connection identity exposed as `auth.clientId`;
+ *   `undefined` (the default) models an anonymous connection.
  * @returns A mock `Ably.Realtime` instance.
  */
-export const createMockClient = (channel: Ably.RealtimeChannel): Ably.Realtime => {
+export const createMockClient = (channel: Ably.RealtimeChannel, clientId?: string): Ably.Realtime => {
   const client = {
     channels: {
       get: vi.fn((name: string) => {
@@ -21,9 +29,11 @@ export const createMockClient = (channel: Ably.RealtimeChannel): Ably.Realtime =
         return channel;
       }),
     },
+    auth: { clientId },
     options: {} as { agents?: Record<string, string | undefined> },
   };
-  // CAST: minimal stub — only `channels.get` and `options.agents` are exercised
-  // in unit tests; other Ably.Realtime members are unused.
+  // CAST: minimal stub — only `channels.get`, `auth.clientId`, and
+  // `options.agents` are exercised in unit tests; other Ably.Realtime members
+  // are unused.
   return client as unknown as Ably.Realtime;
 };

@@ -119,18 +119,6 @@ describe('createEncoderCore', () => {
       expect(headersOf(msg)['x-custom']).toBe('val');
     });
 
-    it('includes clientId from options', async () => {
-      const core = createEncoderCore(writer, { clientId: 'user-1' });
-      await core.publishDiscrete(payload());
-      expect((first(writer.publishCalls) as Ably.Message).clientId).toBe('user-1');
-    });
-
-    it('per-write clientId overrides default', async () => {
-      const core = createEncoderCore(writer, { clientId: 'default' });
-      await core.publishDiscrete(payload(), { clientId: 'override' });
-      expect((first(writer.publishCalls) as Ably.Message).clientId).toBe('override');
-    });
-
     it('calls onMessage hook', async () => {
       const hook = vi.fn();
       const core = createEncoderCore(writer, { onMessage: hook });

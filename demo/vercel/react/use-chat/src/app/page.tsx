@@ -17,10 +17,7 @@ function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; 
   }
 
   return (
-    <ChatTransportProvider
-      channelName={channelName}
-      clientId={clientId}
-    >
+    <ChatTransportProvider channelName={channelName}>
       <Chat
         chatId={channelName}
         clientId={clientId}

@@ -11,13 +11,13 @@ All clients subscribe to the same Ably channel and handle every run identically:
 No special API is needed. Connect two clients to the same channel name, and messages sync automatically:
 
 ```tsx
-// Client A — in its own browser tab
-<ClientSessionProvider channelName="ai:demo" codec={UIMessageCodec} clientId="user-a">
+// Client A — its <AblyProvider> client authenticates as "user-a"
+<ClientSessionProvider channelName="ai:demo" codec={UIMessageCodec}>
   <Chat />
 </ClientSessionProvider>
 
-// Client B — in a different browser tab, device, or user session
-<ClientSessionProvider channelName="ai:demo" codec={UIMessageCodec} clientId="user-b">
+// Client B — its <AblyProvider> client authenticates as "user-b"
+<ClientSessionProvider channelName="ai:demo" codec={UIMessageCodec}>
   <Chat />
 </ClientSessionProvider>
 
@@ -25,6 +25,8 @@ No special API is needed. Connect two clients to the same channel name, and mess
 // Client B sees both the user message and the assistant response
 // through its channel subscription.
 ```
+
+Each client's identity comes from its Ably client (`auth.clientId`) — set it via the token or `ClientOptions.clientId` when constructing the Realtime client behind each `<AblyProvider>`. See [Identity](#identity) below.
 
 ## Observer message flow
 
@@ -78,7 +80,7 @@ Without `useMessageSync()`, `useChat()` would only show messages from its own se
 
 ## Identity
 
-Each client is identified by a `clientId` passed to the session. The session stamps it on every outgoing message. Two identity tiers ride on every server-published event:
+Each client is identified by its Ably client's `clientId` (`auth.clientId`), established when the Realtime client is constructed — via the Ably token or `ClientOptions.clientId`. The session reads it and stamps it on every outgoing message. Two identity tiers ride on every server-published event:
 
 - **`runClientId`** — the client that owns the run (the one whose initiating `ai-input` started it). Constant for the run's lifetime.
 - **`inputClientId`** — the clientId of the input event currently driving the agent. The agent reads it from the publisher's Ably `clientId` on the triggering `ai-input` and re-stamps it on its own publishes. May differ from `runClientId` when a continuation invocation is triggered by an input from a non-owner (e.g. another client publishes a tool result for someone else's run).

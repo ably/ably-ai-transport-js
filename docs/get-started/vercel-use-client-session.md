@@ -156,7 +156,6 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
     <ClientSessionProvider
       channelName={chatId}
       codec={UIMessageCodec}
-      clientId={clientId}
     >
       <ChatInner chatId={chatId} clientId={clientId} />
     </ClientSessionProvider>

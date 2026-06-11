@@ -16,20 +16,20 @@ Create a `ClientSession` and make it available to descendant components. The Rea
 <ClientSessionProvider
   channelName="ai:demo"
   codec={UIMessageCodec}
-  clientId={clientId}
 >
   <Chat />
 </ClientSessionProvider>
 ```
 
-| Prop          | Type                                            | Description                                                                               |
-| ------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `channelName` | `string`                                        | The Ably channel name to subscribe to. Also used as the context registry key              |
-| `codec`       | `Codec<TInput, TOutput, TProjection, TMessage>` | The codec for encoding/decoding                                                           |
-| `clientId`    | `string?`                                       | Client identity, used as the Ably publisher `clientId` stamped on everything it publishes |
-| `messages`    | `TMessage[]?`                                   | Initial messages to seed the conversation tree                                            |
-| `logger`      | `Logger?`                                       | Logger instance                                                                           |
-| `children`    | `ReactNode?`                                    | Child components that will have access to this session                                    |
+| Prop          | Type                                            | Description                                                                  |
+| ------------- | ----------------------------------------------- | ---------------------------------------------------------------------------- |
+| `channelName` | `string`                                        | The Ably channel name to subscribe to. Also used as the context registry key |
+| `codec`       | `Codec<TInput, TOutput, TProjection, TMessage>` | The codec for encoding/decoding                                              |
+| `messages`    | `TMessage[]?`                                   | Initial messages to seed the conversation tree                               |
+| `logger`      | `Logger?`                                       | Logger instance                                                              |
+| `children`    | `ReactNode?`                                    | Child components that will have access to this session                       |
+
+The session's identity is taken from the Realtime client read from the surrounding `<AblyProvider>` — its `auth.clientId` (set via the Ably token or `ClientOptions.clientId`) is stamped on everything it publishes.
 
 The session is a pure Ably-channel transport — it never sends HTTP. To wake a serverless agent, POST `run.toInvocation().toJSON()` to your endpoint from the `ActiveRun` that `view.send`/`regenerate`/`edit` returns. (For the `useChat` integration, use `ChatTransportProvider`, which issues this POST for you.)
 
@@ -223,10 +223,7 @@ Import from `@ably/ai-transport/vercel/react`.
 Create a `ClientSession` and `ChatTransport` and make both available to descendant components. A convenience wrapper around `ClientSessionProvider` with `UIMessageCodec` pre-bound — no `codec` prop needed.
 
 ```tsx
-<ChatTransportProvider
-  channelName="ai:demo"
-  clientId={clientId}
->
+<ChatTransportProvider channelName="ai:demo">
   <Chat />
 </ChatTransportProvider>
 ```
@@ -234,7 +231,6 @@ Create a `ClientSession` and `ChatTransport` and make both available to descenda
 | Prop          | Type                    | Description                                                                                                                                                          |
 | ------------- | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `channelName` | `string`                | The Ably channel name. Also used as the context registry key                                                                                                         |
-| `clientId`    | `string?`               | Client identity, used as the Ably publisher `clientId` stamped on everything it publishes                                                                            |
 | `api`         | `string?`               | Endpoint the chat transport POSTs the invocation to, to wake the agent. Default `/api/chat`                                                                          |
 | `credentials` | `RequestCredentials?`   | Fetch credentials mode for the invocation POST                                                                                                                       |
 | `fetch`       | `typeof fetch?`         | Custom fetch implementation for the invocation POST                                                                                                                  |
@@ -242,6 +238,8 @@ Create a `ClientSession` and `ChatTransport` and make both available to descenda
 | `logger`      | `Logger?`               | Logger instance                                                                                                                                                      |
 | `chatOptions` | `ChatTransportOptions?` | Optional hooks for customizing the invocation POST (e.g. `prepareSendMessagesRequest`). Must be stable across renders — a new reference recreates the chat transport |
 | `children`    | `ReactNode?`            | Child components that will have access to the chat transport and the session                                                                                         |
+
+Like `ClientSessionProvider`, this provider takes its identity from the Realtime client in the surrounding `<AblyProvider>` (`auth.clientId`, set via the Ably token or `ClientOptions.clientId`).
 
 Unlike the generic `ClientSessionProvider`, this provider issues the agent-invocation POST for you (that's what `api`/`credentials`/`fetch` configure) — `useChat`'s transport contract is request-driven. Inside the subtree, `useChatTransport()` reads the chat transport and the session, and `useClientSession()` reads the underlying `ClientSession`. All generic hooks (`useView`, `useTree`, `useAblyMessages`, `useCreateView`) work without explicit session arguments.
 

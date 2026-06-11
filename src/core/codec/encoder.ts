@@ -116,7 +116,6 @@ export interface EncoderCore {
 // Spec: AIT-CD1
 class DefaultEncoderCore implements EncoderCore {
   private readonly _writer: ChannelWriter;
-  private readonly _defaultClientId: string | undefined;
   private readonly _defaultExtras: Extras | undefined;
   private readonly _onMessageHook: (message: Ably.Message) => void;
   private readonly _logger: Logger | undefined;
@@ -127,7 +126,6 @@ class DefaultEncoderCore implements EncoderCore {
 
   constructor(writer: ChannelWriter, options: EncoderCoreOptions = {}) {
     this._writer = writer;
-    this._defaultClientId = options.clientId;
     this._defaultExtras = options.extras;
     this._onMessageHook =
       options.onMessage ??
@@ -164,12 +162,10 @@ class DefaultEncoderCore implements EncoderCore {
     transport[HEADER_STREAM_ID] = streamId;
     const codec = payload.codecHeaders ?? {};
 
-    const clientId = this._resolveClientId(opts);
     const msg: Ably.Message = {
       name: payload.name,
       data: payload.data,
       extras: { ai: this._aiExtras(transport, codec) },
-      ...(clientId ? { clientId } : {}),
     };
 
     this._invokeOnMessage(msg);
@@ -432,10 +428,6 @@ class DefaultEncoderCore implements EncoderCore {
     }
   }
 
-  private _resolveClientId(opts?: WriteOptions): string | undefined {
-    return opts?.clientId ?? this._defaultClientId;
-  }
-
   /**
    * Build the transport-tier header record for a message: caller-configured
    * transport headers (default extras + per-write overrides) layered with any
@@ -476,8 +468,6 @@ class DefaultEncoderCore implements EncoderCore {
       // events that also happen to be discrete (stream: false).
       transport[HEADER_DISCRETE] = 'true';
     }
-    const clientId = this._resolveClientId(opts);
-
     const msg: Ably.Message = {
       name: payload.name,
       data: payload.data,
@@ -485,7 +475,6 @@ class DefaultEncoderCore implements EncoderCore {
         ai: this._aiExtras(transport, payload.codecHeaders ?? {}),
         ...(payload.ephemeral ? { ephemeral: true } : {}),
       },
-      ...(clientId ? { clientId } : {}),
     };
 
     this._invokeOnMessage(msg);
@@ -520,7 +509,7 @@ class DefaultEncoderCore implements EncoderCore {
 /**
  * Create an encoder core bound to the given channel writer.
  * @param writer - The channel writer to publish messages through.
- * @param options - Encoder configuration (clientId, extras, hooks, logger).
+ * @param options - Encoder configuration (extras, hooks, logger).
  * @returns A new {@link EncoderCore} instance.
  */
 export const createEncoderCore = (writer: ChannelWriter, options: EncoderCoreOptions = {}): EncoderCore =>

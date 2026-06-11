@@ -213,11 +213,14 @@ describe('Vercel reducer', () => {
         kind: 'user-message',
         message: { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'b' }] },
       };
-      // The conflict key derives from the wire codec-message-id, never the
-      // domain `message.id` — both folds carry codec-message-id `cm-x`.
+      // The conflict key derives from the wire codec-message-id plus the wire
+      // serial, never the domain `message.id` — each wire part of one user
+      // message records its own key, so distinct parts never compete while a
+      // replay of the same part (same serial) is dropped.
       state = fold(state, userA, meta('s1', 'cm-x'));
       state = fold(state, userB, meta('s5', 'cm-x'));
-      expect(state.conflictSerials.get('user-msg:cm-x')).toBe('s5');
+      expect(state.conflictSerials.get('user-msg:cm-x:s1')).toBe('s1');
+      expect(state.conflictSerials.get('user-msg:cm-x:s5')).toBe('s5');
     });
   });
 
@@ -238,16 +241,70 @@ describe('Vercel reducer', () => {
       expect(state.messages[0]?.message.id).toBe('u-1');
     });
 
-    it('replaces a user message that shares the same codec-message-id', () => {
+    it('merges parts of a user message sharing the same codec-message-id', () => {
       let state = init();
-      const original: AI.UIMessage = { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'old' }] };
-      const replacement: AI.UIMessage = { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'new' }] };
+      // A multi-part user message fans out into one wire event per part; the
+      // reducer reassembles them by codec-message-id, in serial order.
+      const textPart: AI.UIMessage = { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'hello' }] };
+      const filePart: AI.UIMessage = {
+        id: 'u-1',
+        role: 'user',
+        parts: [{ type: 'file', mediaType: 'image/png', url: 'https://x/y.png' }],
+      };
 
-      state = fold(state, { kind: 'user-message', message: original }, meta('s1', 'cm-1'));
-      state = fold(state, { kind: 'user-message', message: replacement }, meta('s2', 'cm-1'));
+      state = fold(state, { kind: 'user-message', message: textPart }, meta('s1', 'cm-1'));
+      state = fold(state, { kind: 'user-message', message: filePart }, meta('s2', 'cm-1'));
 
       expect(state.messages).toHaveLength(1);
-      expect(state.messages[0]).toEqual({ codecMessageId: 'cm-1', message: replacement });
+      expect(state.messages[0]?.message.id).toBe('u-1');
+      expect(state.messages[0]?.message.parts).toEqual([
+        { type: 'text', text: 'hello' },
+        { type: 'file', mediaType: 'image/png', url: 'https://x/y.png' },
+      ]);
+    });
+
+    it('replaces an optimistic seed with its own wire relay instead of duplicating parts', () => {
+      let state = init();
+      // The client seeds the full message optimistically with no serial; the
+      // relay then re-delivers the same message part by part with serials.
+      const seeded: AI.UIMessage = {
+        id: 'u-1',
+        role: 'user',
+        parts: [
+          { type: 'text', text: 'hello' },
+          { type: 'file', mediaType: 'image/png', url: 'https://x/y.png' },
+        ],
+      };
+      const wireText: AI.UIMessage = { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'hello' }] };
+      const wireFile: AI.UIMessage = {
+        id: 'u-1',
+        role: 'user',
+        parts: [{ type: 'file', mediaType: 'image/png', url: 'https://x/y.png' }],
+      };
+
+      state = fold(state, { kind: 'user-message', message: seeded }, meta('', 'cm-1'));
+      state = fold(state, { kind: 'user-message', message: wireText }, meta('s1', 'cm-1'));
+      state = fold(state, { kind: 'user-message', message: wireFile }, meta('s2', 'cm-1'));
+
+      expect(state.messages).toHaveLength(1);
+      // The first wire part replaces the seed; the second merges — no duplicates.
+      expect(state.messages[0]?.message.parts).toEqual([
+        { type: 'text', text: 'hello' },
+        { type: 'file', mediaType: 'image/png', url: 'https://x/y.png' },
+      ]);
+    });
+
+    it('drops a replay of an already-folded part (same wire serial)', () => {
+      let state = init();
+      const textPart: AI.UIMessage = { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'hello' }] };
+
+      state = fold(state, { kind: 'user-message', message: textPart }, meta('s1', 'cm-1'));
+      // History replay re-delivers the same wire message with the same serial;
+      // the per-serial conflict key drops it, so the merge stays idempotent.
+      state = fold(state, { kind: 'user-message', message: textPart }, meta('s1', 'cm-1'));
+
+      expect(state.messages).toHaveLength(1);
+      expect(state.messages[0]?.message.parts).toEqual([{ type: 'text', text: 'hello' }]);
     });
   });
 

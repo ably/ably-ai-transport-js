@@ -21,9 +21,14 @@ import { toolBase, transitionToolPart } from './tool-transitions.js';
 
 /**
  * Fold a user message into the projection, correlating on the wire
- * codec-message-id (the caller's `message.id` is preserved verbatim).
+ * codec-message-id (the caller's `message.id` is preserved verbatim). A
+ * multi-part user message fans out into one wire event per part, all sharing
+ * the codec-message-id — folding appends the incoming parts to the existing
+ * entry, reassembling the message part by part. Replays of an
+ * already-folded wire part are dropped upstream by the per-serial conflict
+ * key (see `conflictKeyOf`), keeping the merge idempotent.
  * @param state - Projection to fold into.
- * @param message - The user message to add or replace.
+ * @param message - The user message (or one decoded part of it) to add or merge.
  * @param meta - Transport-derived metadata carrying the codec-message-id.
  * @returns The same projection reference.
  */
@@ -41,11 +46,22 @@ export const foldUserMessage = (
     state.messages.push({ codecMessageId: message.id, message });
     return state;
   }
-  const existingIdx = state.messages.findIndex((e) => e.codecMessageId === codecMessageId);
-  if (existingIdx === -1) {
+  const fromWire = meta.serial !== '';
+  const existing = state.messages.find((e) => e.codecMessageId === codecMessageId);
+  if (existing === undefined) {
     state.messages.push({ codecMessageId, message });
+    if (!fromWire) state.optimisticUserMessages.add(codecMessageId);
+  } else if (fromWire && state.optimisticUserMessages.has(codecMessageId)) {
+    // The first wire-serialed fold replaces an optimistic (serial-less) seed
+    // wholesale: the wire re-delivers the entire message, so keeping the
+    // seeded parts would duplicate every one of them.
+    existing.message = message;
+    state.optimisticUserMessages.delete(codecMessageId);
   } else {
-    state.messages[existingIdx] = { codecMessageId, message };
+    // Merge by codec-message-id: keep the existing envelope (id and role are
+    // stamped identically on every part of one message) and append the
+    // incoming parts in fold order — wire serials preserve publish order.
+    existing.message.parts.push(...message.parts);
   }
   return state;
 };

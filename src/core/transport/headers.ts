@@ -162,6 +162,9 @@ export const isRunLifecycleName = (name: string | undefined): name is RunLifecyc
  * @param headers - Transport headers from the inbound Ably message.
  * @param serial - Ably channel serial of the message, or `undefined` for an
  *   optimistic local event. Stamped onto the returned event.
+ * @param timestamp - Ably server timestamp (epoch ms) of the message, or
+ *   `undefined` for an optimistic local event. Stamped onto the returned
+ *   event; drives the Tree's event-log retention clock.
  * @returns The lifecycle event, or `undefined` when `name` is not a
  *   run-lifecycle event name or the message carries no `run-id`.
  */
@@ -169,11 +172,13 @@ export const parseRunLifecycle = (
   name: string,
   headers: Record<string, string>,
   serial: string | undefined,
+  timestamp: number | undefined,
 ): RunLifecycleEvent | undefined => {
   const runId = headers[HEADER_RUN_ID];
   if (!runId) return undefined;
 
   const clientId = headers[HEADER_RUN_CLIENT_ID] ?? '';
+  const stamped = timestamp === undefined ? {} : { timestamp };
 
   if (name === EVENT_RUN_START) {
     const parent = headers[HEADER_PARENT];
@@ -185,6 +190,7 @@ export const parseRunLifecycle = (
       clientId,
       serial,
       invocationId: headers[HEADER_INVOCATION_ID] ?? '',
+      ...stamped,
       ...(parent !== undefined && { parent }),
       ...(forkOf !== undefined && { forkOf }),
       ...(regenerates !== undefined && { regenerates }),
@@ -192,17 +198,25 @@ export const parseRunLifecycle = (
   }
 
   if (name === EVENT_RUN_SUSPEND) {
-    return { type: 'suspend', runId, clientId, serial, invocationId: headers[HEADER_INVOCATION_ID] ?? '' };
+    return { type: 'suspend', runId, clientId, serial, invocationId: headers[HEADER_INVOCATION_ID] ?? '', ...stamped };
   }
 
   if (name === EVENT_RUN_RESUME) {
-    return { type: 'resume', runId, clientId, serial, invocationId: headers[HEADER_INVOCATION_ID] ?? '' };
+    return { type: 'resume', runId, clientId, serial, invocationId: headers[HEADER_INVOCATION_ID] ?? '', ...stamped };
   }
 
   if (name === EVENT_RUN_END) {
     // CAST: agent always writes a valid RunEndReason; default to 'complete' for robustness.
     const reason = (headers[HEADER_RUN_REASON] ?? 'complete') as RunEndReason;
-    return { type: 'end', runId, clientId, serial, invocationId: headers[HEADER_INVOCATION_ID] ?? '', reason };
+    return {
+      type: 'end',
+      runId,
+      clientId,
+      serial,
+      invocationId: headers[HEADER_INVOCATION_ID] ?? '',
+      reason,
+      ...stamped,
+    };
   }
 
   return undefined;

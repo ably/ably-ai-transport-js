@@ -12,7 +12,7 @@ import {
 } from '../../../src/constants.js';
 import type { Codec, CodecEvent, CodecInputEvent, Regenerate, UserMessage } from '../../../src/core/codec/types.js';
 import type { TreeInternal } from '../../../src/core/transport/tree.js';
-import { createTree } from '../../../src/core/transport/tree.js';
+import { createTree, REORDER_WINDOW_MS } from '../../../src/core/transport/tree.js';
 import type { ConversationNode, InputNode, RunNode } from '../../../src/core/transport/types.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 
@@ -83,6 +83,7 @@ interface ApplyOpts {
   clientId?: string;
   inputCodecMessageId?: string;
   serial?: string;
+  timestamp?: number;
   message?: TestMessage;
   /** Override events entirely. When set, `message` is ignored. */
   events?: (TestInput | TestOutput)[];
@@ -104,7 +105,7 @@ const apply = (tree: TreeInternal<TestInput, TestOutput, TestProjection>, opts: 
   const events: TreeEvent[] = opts.events ?? (opts.message ? [{ type: 'append-message', message: opts.message }] : []);
   const inputs = events.filter((e): e is TestInput => 'kind' in e);
   const outputs = events.filter((e): e is TestOutput => 'type' in e);
-  tree.applyMessage({ inputs, outputs }, h, opts.serial);
+  tree.applyMessage({ inputs, outputs }, h, opts.serial, opts.timestamp);
 };
 
 const messagesOf = (tree: TreeInternal<TestInput, TestOutput, TestProjection>, runId: string): TestMessage[] => {
@@ -115,12 +116,47 @@ const messagesOf = (tree: TreeInternal<TestInput, TestOutput, TestProjection>, r
 // Apply a run-LESS user input wire (an input node keyed by its codec-message-id).
 const applyInput = (
   tree: TreeInternal<TestInput, TestOutput, TestProjection>,
-  opts: { codecMessageId: string; parent?: string; forkOf?: string; message: TestMessage; serial?: string },
+  opts: {
+    codecMessageId: string;
+    parent?: string;
+    forkOf?: string;
+    message: TestMessage;
+    serial?: string;
+    timestamp?: number;
+  },
 ): void => {
   const h: Record<string, string> = { [HEADER_CODEC_MESSAGE_ID]: opts.codecMessageId, [HEADER_ROLE]: 'user' };
   if (opts.parent) h[HEADER_PARENT] = opts.parent;
   if (opts.forkOf) h[HEADER_FORK_OF] = opts.forkOf;
-  tree.applyMessage({ inputs: [{ kind: 'append-input', message: opts.message }], outputs: [] }, h, opts.serial);
+  tree.applyMessage(
+    { inputs: [{ kind: 'append-input', message: opts.message }], outputs: [] },
+    h,
+    opts.serial,
+    opts.timestamp,
+  );
+};
+
+// Apply a run-start or run-end lifecycle event with a timestamp (retention tests).
+const lifecycle = (
+  tree: TreeInternal<TestInput, TestOutput, TestProjection>,
+  type: 'start' | 'end',
+  runId: string,
+  serial: string | undefined,
+  timestamp: number | undefined,
+): void => {
+  if (type === 'start') {
+    tree.applyRunLifecycle({ type: 'start', runId, clientId: 'c1', invocationId: '', serial, timestamp });
+  } else {
+    tree.applyRunLifecycle({
+      type: 'end',
+      runId,
+      clientId: 'c1',
+      invocationId: '',
+      serial,
+      timestamp,
+      reason: 'complete',
+    });
+  }
 };
 
 // The visible node keys (runId for runs, codec-message-id for inputs), in order.
@@ -452,6 +488,331 @@ describe('Tree', () => {
         { id: 'c', content: 's1-append' },
         { id: 'b', content: 's2' },
       ]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Event-log retention (sweep)
+  // -------------------------------------------------------------------------
+
+  describe('event-log retention', () => {
+    const T = REORDER_WINDOW_MS;
+    let warns: string[];
+
+    beforeEach(() => {
+      warns = [];
+      tree = createTree<TestInput, TestOutput, TestProjection>(
+        testCodec,
+        makeLogger({
+          logLevel: LogLevel.Warn,
+          logHandler: (message, level) => {
+            if (level === LogLevel.Warn) warns.push(message);
+          },
+        }),
+      );
+    });
+
+    it('retains the log of a run whose run-start is unseen, regardless of age', () => {
+      // R1 is created from a mid-run content wire — its run-start may still be
+      // in an unloaded older history page, so its log must survive any amount
+      // of clock advance.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm14',
+        message: { id: 'b', content: 'later' },
+        serial: 's14',
+        timestamp: 1000,
+      });
+      lifecycle(tree, 'end', 'R1', 's16', 1100);
+
+      // Advance the clock far past the window.
+      apply(tree, {
+        runId: 'R9',
+        codecMessageId: 'x1',
+        message: { id: 'x', content: 'live' },
+        serial: 's99',
+        timestamp: 1100 + T * 3,
+      });
+
+      // The older page arrives: a lower-serial wire for R1 still refolds into
+      // canonical position — the log was retained.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm12',
+        message: { id: 'a', content: 'earlier' },
+        serial: 's12',
+        timestamp: 900,
+      });
+
+      expect(messagesOf(tree, 'R1')).toEqual([
+        { id: 'a', content: 'earlier' },
+        { id: 'b', content: 'later' },
+      ]);
+      expect(warns).toEqual([]);
+    });
+
+    it('does not sweep a run whose run-end is unseen, even when the clock passes its window', () => {
+      // Forward hydration: R1's run-start and a content wire load (run still
+      // open — no run-end). The clock then jumps far past R1's window via
+      // another run. R1 is not structurally complete, so it is never queued and
+      // must not be swept; its log survives for a later same-run wire to refold.
+      lifecycle(tree, 'start', 'R1', 's10', 800);
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm14',
+        message: { id: 'b', content: 'later' },
+        serial: 's14',
+        timestamp: 1000,
+      });
+      apply(tree, {
+        runId: 'R9',
+        codecMessageId: 'x1',
+        message: { id: 'x', content: 'live' },
+        serial: 's99',
+        timestamp: 1000 + T * 2,
+      });
+
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm12',
+        message: { id: 'a', content: 'earlier' },
+        serial: 's12',
+        timestamp: 900,
+      });
+
+      expect(messagesOf(tree, 'R1')).toEqual([
+        { id: 'a', content: 'earlier' },
+        { id: 'b', content: 'later' },
+      ]);
+      expect(warns).toEqual([]);
+    });
+
+    it('sweeps a structurally complete run at the next clock advance, degrading later wires to arrival order', () => {
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm14',
+        message: { id: 'b', content: 'later' },
+        serial: 's14',
+        timestamp: 1000,
+      });
+      lifecycle(tree, 'end', 'R1', 's16', 1100);
+      // The run-start loads from an older page (old timestamp): R1 is now
+      // structurally complete and already aged, but nothing is swept until the
+      // clock next advances.
+      lifecycle(tree, 'start', 'R1', 's10', 800);
+
+      apply(tree, {
+        runId: 'R9',
+        codecMessageId: 'x1',
+        message: { id: 'x', content: 'live' },
+        serial: 's99',
+        timestamp: 1100 + T + 1,
+      });
+
+      // The log is gone: a very late wire folds in arrival order with a warn.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm12',
+        message: { id: 'a', content: 'earlier' },
+        serial: 's12',
+        timestamp: 900,
+      });
+
+      expect(messagesOf(tree, 'R1')).toEqual([
+        { id: 'b', content: 'later' },
+        { id: 'a', content: 'earlier' },
+      ]);
+      expect(warns).toHaveLength(1);
+      expect(warns[0]).toContain('retention window');
+    });
+
+    it('retains a complete run inside the reorder window and refolds its late wires', () => {
+      lifecycle(tree, 'start', 'R1', 's10', 1000);
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm14',
+        message: { id: 'b', content: 'later' },
+        serial: 's14',
+        timestamp: 1100,
+      });
+      lifecycle(tree, 'end', 'R1', 's16', 1200);
+
+      // Clock advances to exactly the window boundary — not yet lapsed.
+      apply(tree, {
+        runId: 'R9',
+        codecMessageId: 'x1',
+        message: { id: 'x', content: 'live' },
+        serial: 's99',
+        timestamp: 1200 + T,
+      });
+
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm12',
+        message: { id: 'a', content: 'earlier' },
+        serial: 's12',
+        timestamp: 1150,
+      });
+
+      expect(messagesOf(tree, 'R1')).toEqual([
+        { id: 'a', content: 'earlier' },
+        { id: 'b', content: 'later' },
+      ]);
+      expect(warns).toEqual([]);
+    });
+
+    it('does not sweep on applies carrying older timestamps (history pages never advance the clock)', () => {
+      // Push the clock high first, then complete R1 with old timestamps: R1 is
+      // aged and queued, but only a clock ADVANCE drains the queue.
+      apply(tree, {
+        runId: 'R9',
+        codecMessageId: 'x1',
+        message: { id: 'x', content: 'live' },
+        serial: 's99',
+        timestamp: 10_000 + T,
+      });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm14',
+        message: { id: 'b', content: 'later' },
+        serial: 's14',
+        timestamp: 1000,
+      });
+      lifecycle(tree, 'end', 'R1', 's16', 1100);
+      lifecycle(tree, 'start', 'R1', 's10', 800);
+
+      // An older-timestamp apply (a history page) must not trigger the sweep…
+      apply(tree, {
+        runId: 'R8',
+        codecMessageId: 'y1',
+        message: { id: 'y', content: 'old' },
+        serial: 's50',
+        timestamp: 5000,
+      });
+      // …so R1 still refolds canonically.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm12',
+        message: { id: 'a', content: 'earlier' },
+        serial: 's12',
+        timestamp: 900,
+      });
+      expect(messagesOf(tree, 'R1')).toEqual([
+        { id: 'a', content: 'earlier' },
+        { id: 'b', content: 'later' },
+      ]);
+      expect(warns).toEqual([]);
+
+      // A genuine clock advance drains the queue and sweeps R1.
+      apply(tree, {
+        runId: 'R9',
+        codecMessageId: 'x2',
+        message: { id: 'x2', content: 'live' },
+        serial: 's100',
+        timestamp: 10_000 + T + 1,
+      });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm11',
+        message: { id: 'c', content: 'earliest' },
+        serial: 's11',
+        timestamp: 850,
+      });
+      expect(messagesOf(tree, 'R1')).toEqual([
+        { id: 'a', content: 'earlier' },
+        { id: 'b', content: 'later' },
+        { id: 'c', content: 'earliest' },
+      ]);
+      expect(warns).toHaveLength(1);
+    });
+
+    it('never sweeps input-node logs', () => {
+      applyInput(tree, {
+        codecMessageId: 'u1',
+        message: { id: 'p2', content: 'part-2' },
+        serial: 's2',
+        timestamp: 1000,
+      });
+
+      // Age the world far past the window.
+      apply(tree, {
+        runId: 'R9',
+        codecMessageId: 'x1',
+        message: { id: 'x', content: 'live' },
+        serial: 's99',
+        timestamp: 1000 + T * 3,
+      });
+
+      // A late earlier part still refolds into canonical position.
+      applyInput(tree, {
+        codecMessageId: 'u1',
+        message: { id: 'p1', content: 'part-1' },
+        serial: 's1',
+        timestamp: 900,
+      });
+
+      const node = tree.getNode('u1');
+      const messages = node ? testCodec.getMessages(node.projection).map((cm) => cm.message) : [];
+      expect(messages).toEqual([
+        { id: 'p1', content: 'part-1' },
+        { id: 'p2', content: 'part-2' },
+      ]);
+      expect(warns).toEqual([]);
+    });
+
+    it('does not resurrect a terminal run when its run-start is observed after run-end', () => {
+      // History pages replay newest-first: the run-end is applied before the
+      // run-start. The late start must not flip the status back to active.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm14',
+        message: { id: 'b', content: 'later' },
+        serial: 's14',
+        timestamp: 1000,
+      });
+      lifecycle(tree, 'end', 'R1', 's16', 1100);
+      expect(tree.getRunNode('R1')?.status).toBe('complete');
+
+      lifecycle(tree, 'start', 'R1', 's10', 800);
+      expect(tree.getRunNode('R1')?.status).toBe('complete');
+    });
+
+    it('stays swept when its lifecycle events are replayed', () => {
+      // Sweep R1, then replay its run-start and run-end (e.g. a redundant
+      // history pass). The node must not re-queue or resume recording — a
+      // partial rebuilt log would refold to partial state.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm14',
+        message: { id: 'b', content: 'later' },
+        serial: 's14',
+        timestamp: 1000,
+      });
+      lifecycle(tree, 'end', 'R1', 's16', 1100);
+      lifecycle(tree, 'start', 'R1', 's10', 800);
+      apply(tree, {
+        runId: 'R9',
+        codecMessageId: 'x1',
+        message: { id: 'x', content: 'live' },
+        serial: 's99',
+        timestamp: 1100 + T + 1,
+      });
+
+      lifecycle(tree, 'start', 'R1', 's10', 800);
+      lifecycle(tree, 'end', 'R1', 's16', 1100);
+
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm12',
+        message: { id: 'a', content: 'earlier' },
+        serial: 's12',
+        timestamp: 900,
+      });
+      expect(messagesOf(tree, 'R1')).toEqual([
+        { id: 'b', content: 'later' },
+        { id: 'a', content: 'earlier' },
+      ]);
+      expect(warns).toHaveLength(1);
     });
   });
 

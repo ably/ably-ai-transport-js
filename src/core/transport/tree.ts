@@ -47,6 +47,15 @@ import { recordWire, type WireLogEntry } from './wire-log.js';
 // Internal node type
 // ---------------------------------------------------------------------------
 
+/**
+ * How long (in ms, on the Ably message-timestamp timeline) a structurally
+ * complete run's event log is retained after the node's last observed
+ * activity. Bounds cross-publisher live delivery reorder: a wire can be
+ * delivered after a higher-serial wire by at most this window. Conservative
+ * placeholder pending confirmation of the actual cross-region bound.
+ */
+export const REORDER_WINDOW_MS = 120_000;
+
 interface InternalNode<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection> {
   node: ConversationNode<TProjection>;
   /** Insertion sequence — tiebreaker for nodes with no sort serial (optimistic). */
@@ -57,6 +66,27 @@ interface InternalNode<TInput extends CodecInputEvent, TOutput extends CodecOutp
    * (serial-less) applies are not recorded.
    */
   log: WireLogEntry<CodecEvent<TInput, TOutput>>[];
+  /**
+   * Max Ably message timestamp (epoch ms) of everything applied to this node,
+   * including its run lifecycle events; 0 until a timestamped apply. The
+   * retention sweep measures {@link REORDER_WINDOW_MS} from here.
+   */
+  lastActivityTs: number;
+  /**
+   * Whether this run's `ai-run-start` has been observed (run nodes only —
+   * always false for input nodes). The structural half of log retention:
+   * run-start is the run's serial floor, so once it is observed no older
+   * history page can deliver further wires for this node.
+   */
+  runStartSeen: boolean;
+  /**
+   * Whether the retention sweep has dropped this node's log. A swept node
+   * folds any late wire incrementally (with a warn) and never refolds — a
+   * partial rebuilt log would refold to partial state.
+   */
+  swept: boolean;
+  /** Whether this node is already queued for sweeping (guards double-enqueue). */
+  sweepQueued: boolean;
 }
 
 /**
@@ -155,11 +185,16 @@ export interface TreeInternal<
    * @param events.outputs - Agent-published events (`ai-output` wire).
    * @param headers - Transport headers from the inbound Ably message.
    * @param serial - Ably channel serial; undefined for optimistic inserts.
+   * @param timestamp - Ably server timestamp (epoch ms) of the message —
+   *   top-level `Message.timestamp`, the current version's receive time —
+   *   or undefined for optimistic inserts. Advances the Tree's event-log
+   *   retention clock and the owning node's last-activity time.
    */
   applyMessage(
     events: { inputs: TInput[]; outputs: TOutput[] },
     headers: Record<string, string>,
     serial?: string,
+    timestamp?: number,
   ): void;
 
   /**
@@ -294,6 +329,24 @@ export class DefaultTree<
    * when the Tree is replaced on continuity loss / session close.
    */
   private readonly _eventIdIndex = new Map<string, Ably.InboundMessage>();
+
+  /**
+   * Event-log retention logical clock: the max Ably message timestamp (epoch
+   * ms) observed across every apply, 0 until the first timestamped one. Only
+   * ever advances — older-page history application carries smaller timestamps
+   * and leaves it (and therefore the sweep) untouched.
+   */
+  private _clock = 0;
+
+  /**
+   * Keys of structurally complete run nodes (run-start and run-end both
+   * observed) whose event logs await the retention window, in completion
+   * order. Drained from the front whenever {@link _clock} advances; sweeping
+   * only at clock advances keeps a history page's batch atomic — applying an
+   * older page can never advance the clock, so a node cannot be swept between
+   * its run-start and the rest of its wires in the same page.
+   */
+  private readonly _sweepQueue: string[] = [];
 
   constructor(codec: Reducer<CodecEvent<TInput, TOutput>, TProjection>, logger: Logger) {
     this._codec = codec;
@@ -459,6 +512,20 @@ export class DefaultTree<
     serial: string | undefined,
     messageId: string | undefined,
   ): void {
+    if (entry.swept) {
+      // The retention sweep already dropped this node's log: a refold is no
+      // longer possible (a partial log would rebuild partial state), so fold
+      // incrementally and accept arrival order. A serial-bearing wire here is
+      // outside the reorder window — it should not occur.
+      if (serial !== undefined && events.length > 0) {
+        this._logger.warn('Tree._recordAndFold(); late wire after log retention window; folding in arrival order', {
+          key: nodeKey(entry.node),
+          serial,
+        });
+      }
+      this._foldInto(entry, events, serial, messageId);
+      return;
+    }
     if (serial !== undefined && events.length > 0) {
       const index = recordWire(entry.log, serial, messageId, events);
       if (index !== entry.log.length - 1) {
@@ -501,6 +568,73 @@ export class DefaultTree<
       }
     }
     entry.node.projection = projection;
+  }
+
+  // -------------------------------------------------------------------------
+  // Event-log retention
+  // -------------------------------------------------------------------------
+
+  /**
+   * Record activity on a node and advance the retention clock. Updates the
+   * node's `lastActivityTs` and the Tree-wide `_clock` to the given timestamp
+   * when it is newer; a clock advance drains the sweep queue. `undefined`
+   * (an optimistic local apply) advances nothing.
+   * @param entry - The node the activity belongs to.
+   * @param timestamp - Ably message timestamp (epoch ms), or undefined.
+   */
+  private _recordActivity(entry: InternalNode<TInput, TOutput, TProjection>, timestamp: number | undefined): void {
+    if (timestamp === undefined) return;
+    if (timestamp > entry.lastActivityTs) entry.lastActivityTs = timestamp;
+    if (timestamp > this._clock) {
+      this._clock = timestamp;
+      this._drainSweepQueue();
+    }
+  }
+
+  /**
+   * Queue a run node's event log for retention sweeping once the node is
+   * structurally complete: its run-start (serial floor — no older history page
+   * can add to it) and its run-end (no further agent output) have both been
+   * observed. The actual drop happens in {@link _drainSweepQueue} once the
+   * reorder window has also lapsed. No-op for input nodes (never swept — no
+   * floor marker, and their logs are bounded by one user message), for nodes
+   * already queued or swept, and while either marker is missing.
+   * @param entry - The node to consider for sweeping.
+   */
+  private _maybeQueueSweep(entry: InternalNode<TInput, TOutput, TProjection>): void {
+    const node = entry.node;
+    if (node.kind !== 'run') return;
+    if (entry.swept || entry.sweepQueued) return;
+    if (!entry.runStartSeen) return;
+    if (node.status === 'active' || node.status === 'suspended') return;
+    entry.sweepQueued = true;
+    this._sweepQueue.push(node.runId);
+  }
+
+  /**
+   * Drop the event logs of queued nodes whose retention window has lapsed:
+   * `lastActivityTs + REORDER_WINDOW_MS < _clock`. Drains from the front and
+   * stops at the first node still inside the window — completion order is
+   * time-ordered for live traffic, so this is amortised O(1) per apply, and
+   * stopping early only ever over-retains (memory, never correctness). Called
+   * only when the clock advances, so applying an older history page (smaller
+   * timestamps) can never sweep mid-batch. Deleted nodes are skipped.
+   */
+  private _drainSweepQueue(): void {
+    while (this._sweepQueue.length > 0) {
+      const key = this._sweepQueue[0];
+      const entry = key === undefined ? undefined : this._nodeIndex.get(key);
+      if (!entry || entry.swept) {
+        this._sweepQueue.shift();
+        continue;
+      }
+      if (entry.lastActivityTs + REORDER_WINDOW_MS >= this._clock) return;
+      this._sweepQueue.shift();
+      entry.swept = true;
+      entry.sweepQueued = false;
+      entry.log.length = 0;
+      this._logger.debug('Tree._drainSweepQueue(); dropped event log', { key, lastActivityTs: entry.lastActivityTs });
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -768,6 +902,7 @@ export class DefaultTree<
     events: { inputs: TInput[]; outputs: TOutput[] },
     headers: Record<string, string>,
     serial?: string,
+    timestamp?: number,
   ): void {
     const wireRunId = headers[HEADER_RUN_ID];
     const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
@@ -810,9 +945,9 @@ export class DefaultTree<
     const structuralBefore = this._structuralVersion;
 
     if (inputNodeCodecMessageId !== undefined) {
-      this._applyInputMessage(inputNodeCodecMessageId, headers, serial, all);
+      this._applyInputMessage(inputNodeCodecMessageId, headers, serial, timestamp, all);
     } else if (wireRunId !== undefined) {
-      this._applyRunMessage(wireRunId, events, headers, serial);
+      this._applyRunMessage(wireRunId, events, headers, serial, timestamp);
     }
 
     if (this._structuralVersion !== structuralBefore) this._emitter.emit('update');
@@ -826,12 +961,14 @@ export class DefaultTree<
    * @param codecMessageId - The input node's codec-message-id (its primary key).
    * @param headers - Transport headers from the inbound Ably message.
    * @param serial - Ably channel serial; undefined for an optimistic insert.
+   * @param timestamp - Ably server timestamp (epoch ms); undefined for an optimistic insert.
    * @param all - The direction-tagged input events to fold, in wire order.
    */
   private _applyInputMessage(
     codecMessageId: string,
     headers: Record<string, string>,
     serial: string | undefined,
+    timestamp: number | undefined,
     all: CodecEvent<TInput, TOutput>[],
   ): void {
     let entry = this._nodeIndex.get(codecMessageId);
@@ -846,6 +983,8 @@ export class DefaultTree<
       entry.node.serial = serial;
       this._promoteSerial(entry);
     }
+
+    this._recordActivity(entry, timestamp);
 
     // Log the wire and fold it — incrementally onto the tail in the common
     // case, or by refolding the node if this wire arrived out of serial order.
@@ -876,12 +1015,14 @@ export class DefaultTree<
    * @param events.outputs - Agent-published events (`ai-output` wire).
    * @param headers - Transport headers from the inbound Ably message.
    * @param serial - Ably channel serial; undefined for an optimistic insert.
+   * @param timestamp - Ably server timestamp (epoch ms); undefined for an optimistic insert.
    */
   private _applyRunMessage(
     wireRunId: string,
     events: { inputs: TInput[]; outputs: TOutput[] },
     headers: Record<string, string>,
     serial: string | undefined,
+    timestamp: number | undefined,
   ): void {
     const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
     // The triggering input's codec-message-id (the agent's echo), surfaced on
@@ -917,6 +1058,8 @@ export class DefaultTree<
     // Index the codec-message-id against the node that actually owns it.
     const ownerKey = nodeKey(run.node);
     if (codecMessageId) this._codecMessageIdToNodeKey.set(codecMessageId, ownerKey);
+
+    this._recordActivity(run, timestamp);
 
     // Log the wire and fold it — incrementally onto the tail in the common
     // case, or by refolding the node if this wire arrived out of serial order.
@@ -982,7 +1125,11 @@ export class DefaultTree<
     const existing = this._nodeIndex.get(event.runId);
     if (existing?.node.kind === 'run') {
       const node = existing.node;
-      if (node.status !== 'active') {
+      // Activate only a suspended run. A run-start can be observed AFTER the
+      // run's terminal event (history pages replay newest-first, so an older
+      // page delivers the start last) — like a stray resume, it must never
+      // resurrect a run that has ended.
+      if (node.status === 'suspended') {
         node.status = 'active';
       }
       if (event.serial && !node.startSerial) {
@@ -1025,10 +1172,18 @@ export class DefaultTree<
       if (node.invocationId === '' && event.invocationId !== '') {
         node.invocationId = event.invocationId;
       }
+      // The run's serial floor is now observed: no older history page can
+      // deliver further wires for this node. With a terminal status this
+      // makes the node structurally complete — eligible for log retention
+      // sweeping once the reorder window lapses.
+      existing.runStartSeen = true;
+      this._recordActivity(existing, event.timestamp);
+      this._maybeQueueSweep(existing);
     } else if (!existing) {
       const run = this._createRunFromLifecycle(event);
       this._insertNode(event.runId, run, run.node.parentCodecMessageId);
       this._indexReplyRun(run.node, event.runId);
+      this._recordActivity(run, event.timestamp);
     }
   }
 
@@ -1045,6 +1200,7 @@ export class DefaultTree<
     if (run?.node.kind === 'run') {
       run.node.status = 'suspended';
       run.node.endSerial = event.serial;
+      this._recordActivity(run, event.timestamp);
     }
   }
 
@@ -1063,6 +1219,7 @@ export class DefaultTree<
     const run = this._nodeIndex.get(event.runId);
     if (run?.node.kind === 'run' && run.node.status === 'suspended') {
       run.node.status = 'active';
+      this._recordActivity(run, event.timestamp);
     }
   }
 
@@ -1071,6 +1228,13 @@ export class DefaultTree<
    * status and the serial it ended at. Status/endSerial are content, not
    * structure, so this never mutates `_structuralVersion`; the caller owns the
    * emits.
+   *
+   * A run-end for an unknown runId is a no-op: nothing else is known about the
+   * run yet, so there is no node to mark. When that happens during history
+   * replay (a page boundary falling just before the run-end, so the run's
+   * other wires arrive in later pages), the run is never marked terminal and
+   * its event log is retained for the Tree's lifetime — over-retention, never
+   * corruption.
    * @param event - The run-end lifecycle event.
    */
   private _applyRunEnd(event: RunLifecycleEvent & { type: 'end' }): void {
@@ -1078,6 +1242,8 @@ export class DefaultTree<
     if (run?.node.kind === 'run') {
       run.node.status = event.reason;
       run.node.endSerial = event.serial;
+      this._recordActivity(run, event.timestamp);
+      this._maybeQueueSweep(run);
     }
   }
 
@@ -1130,6 +1296,9 @@ export class DefaultTree<
       clientId: headers[HEADER_RUN_CLIENT_ID] ?? '',
       invocationId: headers[HEADER_INVOCATION_ID] ?? '',
       startSerial: serial,
+      // Created from a content wire — the run's ai-run-start has not been
+      // observed (it may still be in an unloaded older history page).
+      runStartSeen: false,
     });
   }
 
@@ -1145,6 +1314,7 @@ export class DefaultTree<
    * @param params.clientId - The publishing client's id.
    * @param params.invocationId - The agent invocation id.
    * @param params.startSerial - Ably channel serial; undefined for optimistic inserts.
+   * @param params.runStartSeen - Whether the run's ai-run-start has been observed (true only for lifecycle-created runs).
    * @returns A newly-allocated internal run node ready for insertion.
    */
   private _buildRunNode(params: {
@@ -1155,6 +1325,7 @@ export class DefaultTree<
     clientId: string;
     invocationId: string;
     startSerial: string | undefined;
+    runStartSeen: boolean;
   }): InternalNode<TInput, TOutput, TProjection> {
     const node: RunNode<TProjection> = {
       kind: 'run',
@@ -1170,7 +1341,15 @@ export class DefaultTree<
       endSerial: undefined,
     };
 
-    return { node, insertSeq: this._seqCounter++, log: [] };
+    return {
+      node,
+      insertSeq: this._seqCounter++,
+      log: [],
+      lastActivityTs: 0,
+      runStartSeen: params.runStartSeen,
+      swept: false,
+      sweepQueued: false,
+    };
   }
 
   /**
@@ -1196,7 +1375,15 @@ export class DefaultTree<
       projection: this._codec.init(),
       serial,
     };
-    return { node, insertSeq: this._seqCounter++, log: [] };
+    return {
+      node,
+      insertSeq: this._seqCounter++,
+      log: [],
+      lastActivityTs: 0,
+      runStartSeen: false,
+      swept: false,
+      sweepQueued: false,
+    };
   }
 
   /**
@@ -1218,6 +1405,8 @@ export class DefaultTree<
       clientId: event.clientId,
       invocationId: event.invocationId,
       startSerial: event.serial,
+      // Created from the run-start itself — the serial floor is observed.
+      runStartSeen: true,
     });
   }
 

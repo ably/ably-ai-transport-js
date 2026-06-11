@@ -56,12 +56,18 @@ const makeDecoder = (inputs: TestInput[], outputs: TestOutput[]): Decoder<TestIn
   decode: vi.fn(() => ({ inputs: [...inputs], outputs: [...outputs] })),
 });
 
-const msg = (opts: { name?: string; headers?: Record<string, string>; serial?: string }): Ably.InboundMessage =>
+const msg = (opts: {
+  name?: string;
+  headers?: Record<string, string>;
+  serial?: string;
+  timestamp?: number;
+}): Ably.InboundMessage =>
   ({
     name: opts.name ?? 'msg',
     action: 'message.create',
     extras: { ai: { transport: opts.headers ?? {} } },
     serial: opts.serial ?? 's1',
+    timestamp: opts.timestamp ?? 1000,
   }) as unknown as Ably.InboundMessage;
 
 // ---------------------------------------------------------------------------
@@ -85,7 +91,10 @@ describe('applyWireMessage', () => {
 
       expect(event).toMatchObject({ type: 'start', runId: 'R1', serial: 's1' });
       expect(tree.applyRunLifecycle).toHaveBeenCalledTimes(1);
-      expect(tree.applyRunLifecycle).toHaveBeenCalledWith(expect.objectContaining({ type: 'start', runId: 'R1' }));
+      // The message timestamp (fixture default 1000) is threaded onto the event.
+      expect(tree.applyRunLifecycle).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'start', runId: 'R1', timestamp: 1000 }),
+      );
       // Lifecycle messages never touch the codec decoder or applyMessage.
       expect(decode).not.toHaveBeenCalled();
       expect(tree.applyMessage).not.toHaveBeenCalled();
@@ -120,7 +129,11 @@ describe('applyWireMessage', () => {
       const tree = makeTree();
       const decoder = makeDecoder([], [{ type: 'out' }]);
 
-      const event = applyWireMessage(asTree(tree), decoder, msg({ headers: { [HEADER_RUN_ID]: 'R1' }, serial: 's2' }));
+      const event = applyWireMessage(
+        asTree(tree),
+        decoder,
+        msg({ headers: { [HEADER_RUN_ID]: 'R1' }, serial: 's2', timestamp: 1234 }),
+      );
 
       expect(event).toBeUndefined();
       expect(tree.applyRunLifecycle).not.toHaveBeenCalled();
@@ -129,6 +142,7 @@ describe('applyWireMessage', () => {
         { inputs: [], outputs: [{ type: 'out' }] },
         expect.objectContaining({ [HEADER_RUN_ID]: 'R1' }),
         's2',
+        1234,
       );
     });
 

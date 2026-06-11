@@ -183,7 +183,7 @@ describe('buildLifecycleHeaders', () => {
 
 describe('parseRunLifecycle', () => {
   it('parses a minimal run-start', () => {
-    const event = parseRunLifecycle(EVENT_RUN_START, { [HEADER_RUN_ID]: 'run-1' }, 's1');
+    const event = parseRunLifecycle(EVENT_RUN_START, { [HEADER_RUN_ID]: 'run-1' }, 's1', 1000);
 
     expect(event).toEqual({
       type: 'start',
@@ -191,6 +191,7 @@ describe('parseRunLifecycle', () => {
       clientId: '',
       serial: 's1',
       invocationId: '',
+      timestamp: 1000,
     });
   });
 
@@ -206,6 +207,7 @@ describe('parseRunLifecycle', () => {
         [HEADER_MSG_REGENERATE]: 'asst-original',
       },
       's2',
+      2000,
     );
 
     expect(event).toEqual({
@@ -214,6 +216,7 @@ describe('parseRunLifecycle', () => {
       clientId: 'user-a',
       serial: 's2',
       invocationId: 'inv-1',
+      timestamp: 2000,
       parent: 'parent-msg',
       forkOf: 'fork-msg',
       regenerates: 'asst-original',
@@ -221,6 +224,7 @@ describe('parseRunLifecycle', () => {
   });
 
   it('omits optional run-start fields when their headers are absent', () => {
+    const noTimestamp: number | undefined = undefined;
     const event = parseRunLifecycle(
       EVENT_RUN_START,
       {
@@ -229,9 +233,11 @@ describe('parseRunLifecycle', () => {
         [HEADER_INVOCATION_ID]: 'inv-1',
       },
       's1',
+      noTimestamp,
     );
 
     expect(event).not.toHaveProperty('parent');
+    expect(event).not.toHaveProperty('timestamp');
     expect(event).not.toHaveProperty('forkOf');
     expect(event).not.toHaveProperty('regenerates');
   });
@@ -246,6 +252,7 @@ describe('parseRunLifecycle', () => {
         [HEADER_RUN_REASON]: 'cancelled',
       },
       's5',
+      5000,
     );
 
     expect(event).toEqual({
@@ -255,12 +262,14 @@ describe('parseRunLifecycle', () => {
       serial: 's5',
       invocationId: 'inv-1',
       reason: 'cancelled',
+      timestamp: 5000,
     });
   });
 
   it('defaults the run-end reason to "complete" and invocationId to "" when absent, and stamps an undefined serial', () => {
     const noSerial: string | undefined = undefined;
-    const event = parseRunLifecycle(EVENT_RUN_END, { [HEADER_RUN_ID]: 'run-1' }, noSerial);
+    const noTimestamp: number | undefined = undefined;
+    const event = parseRunLifecycle(EVENT_RUN_END, { [HEADER_RUN_ID]: 'run-1' }, noSerial, noTimestamp);
 
     expect(event).toEqual({
       type: 'end',
@@ -281,6 +290,7 @@ describe('parseRunLifecycle', () => {
         [HEADER_INVOCATION_ID]: 'inv-1',
       },
       's4',
+      4000,
     );
 
     expect(event).toEqual({
@@ -289,12 +299,14 @@ describe('parseRunLifecycle', () => {
       clientId: 'user-a',
       serial: 's4',
       invocationId: 'inv-1',
+      timestamp: 4000,
     });
   });
 
   it('defaults run-suspend clientId and invocationId to "" when absent and stamps an undefined serial', () => {
     const noSerial: string | undefined = undefined;
-    const event = parseRunLifecycle(EVENT_RUN_SUSPEND, { [HEADER_RUN_ID]: 'run-1' }, noSerial);
+    const noTimestamp: number | undefined = undefined;
+    const event = parseRunLifecycle(EVENT_RUN_SUSPEND, { [HEADER_RUN_ID]: 'run-1' }, noSerial, noTimestamp);
 
     expect(event).toEqual({
       type: 'suspend',
@@ -314,6 +326,7 @@ describe('parseRunLifecycle', () => {
         [HEADER_INVOCATION_ID]: 'inv-2',
       },
       's6',
+      6000,
     );
 
     expect(event).toEqual({
@@ -322,17 +335,18 @@ describe('parseRunLifecycle', () => {
       clientId: 'user-a',
       serial: 's6',
       invocationId: 'inv-2',
+      timestamp: 6000,
     });
   });
 
   it('returns undefined when run-id is missing', () => {
-    expect(parseRunLifecycle(EVENT_RUN_START, {}, 's1')).toBeUndefined();
-    expect(parseRunLifecycle(EVENT_RUN_SUSPEND, {}, 's1')).toBeUndefined();
-    expect(parseRunLifecycle(EVENT_RUN_RESUME, {}, 's1')).toBeUndefined();
-    expect(parseRunLifecycle(EVENT_RUN_END, {}, 's1')).toBeUndefined();
+    expect(parseRunLifecycle(EVENT_RUN_START, {}, 's1', 1000)).toBeUndefined();
+    expect(parseRunLifecycle(EVENT_RUN_SUSPEND, {}, 's1', 1000)).toBeUndefined();
+    expect(parseRunLifecycle(EVENT_RUN_RESUME, {}, 's1', 1000)).toBeUndefined();
+    expect(parseRunLifecycle(EVENT_RUN_END, {}, 's1', 1000)).toBeUndefined();
   });
 
   it('returns undefined for a non-lifecycle message name', () => {
-    expect(parseRunLifecycle('ai-output', { [HEADER_RUN_ID]: 'run-1' }, 's1')).toBeUndefined();
+    expect(parseRunLifecycle('ai-output', { [HEADER_RUN_ID]: 'run-1' }, 's1', 1000)).toBeUndefined();
   });
 });

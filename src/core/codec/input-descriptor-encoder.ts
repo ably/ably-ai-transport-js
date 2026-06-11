@@ -14,12 +14,13 @@
 import * as Ably from 'ably';
 
 import { ErrorCode } from '../../errors.js';
-import type { InputEncodeContext, InputEncoderCore } from './define-codec.js';
-import { PART_TYPE_HEADER, partFor, prop, writeFields } from './field-bag.js';
+import { KIND_HEADER, PART_TYPE_HEADER, partFor, prop, writeFields } from './field-bag.js';
 import type {
   BatchDescriptor,
   BatchMessageHeaders,
   InputDescriptor,
+  InputEncodeContext,
+  InputEncoderCore,
   InputEventDescriptor,
 } from './input-descriptors.js';
 import type { MessagePayload } from './types.js';
@@ -64,7 +65,10 @@ export const createInputDescriptorEncoder = <U extends { kind: string }>(
   ): Promise<void> => {
     if (descriptor.wireOnly) {
       // Kind only: no fields, no data — the parent/target ride transport headers.
-      await core.publishDiscrete({ name: wireName, data: '', codecHeaders: { kind: descriptor.kind } }, ctx.opts);
+      await core.publishDiscrete(
+        { name: wireName, data: '', codecHeaders: { [KIND_HEADER]: descriptor.kind } },
+        ctx.opts,
+      );
       return;
     }
     // A non-wireOnly input nests its domain data under `payload` — fields and
@@ -119,7 +123,7 @@ export const createInputDescriptorEncoder = <U extends { kind: string }>(
       // (e.g. by substituting a canonical empty part).
       payloads.push(
         withMessageTransport(
-          { name: wireName, data: '', codecHeaders: { kind: descriptor.kind, ...message?.codecHeaders } },
+          { name: wireName, data: '', codecHeaders: { [KIND_HEADER]: descriptor.kind, ...message?.codecHeaders } },
           message,
         ),
       );

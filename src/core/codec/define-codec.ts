@@ -21,7 +21,7 @@ import * as Ably from 'ably';
 
 import { EVENT_AI_INPUT, EVENT_AI_OUTPUT, HEADER_RUN_ID } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
-import type { DecoderCore, DecoderCoreHooks, DecoderCoreOptions } from './decoder.js';
+import type { DecoderCore, DecoderCoreHooks } from './decoder.js';
 import { createDecoderCore } from './decoder.js';
 import type { EncoderCore, EncoderCoreOptions } from './encoder.js';
 import { createEncoderCore } from './encoder.js';
@@ -54,40 +54,6 @@ import { type WellKnownInputFactories, wellKnownInputs } from './well-known-inpu
 // can type their builder parameter without reaching into the descriptor modules directly.
 export type { InputBuilder } from './input-descriptors.js';
 export type { OutputBuilder } from './output-descriptors.js';
-
-// ---------------------------------------------------------------------------
-// Input driver core surface
-// ---------------------------------------------------------------------------
-
-/**
- * The encoder-core view the input encode driver receives: discrete publishes
- * only — inputs never stream. The concrete {@link EncoderCore} satisfies this
- * structurally.
- */
-export interface InputEncoderCore {
-  /** Publish a single discrete message. */
-  publishDiscrete(payload: MessagePayload, opts?: WriteOptions): Promise<Ably.PublishResult>;
-  /** Publish multiple discrete messages atomically (the batch fan-out). */
-  publishDiscreteBatch(payloads: MessagePayload[], opts?: WriteOptions): Promise<Ably.PublishResult>;
-}
-
-/** Per-write context passed to the input encode driver. */
-export interface InputEncodeContext {
-  /** Per-write overrides (the wire codec-message-id is stamped here by the client session). */
-  opts: WriteOptions | undefined;
-}
-
-/** Per-message context the input decode driver receives for one inbound `ai-input` message. */
-export interface InputDecodeContext {
-  /** The codec `kind` header value (the input descriptor's dispatch key). */
-  codecKind: string;
-  /** The inbound message data. */
-  data: unknown;
-  /** The inbound codec-tier headers. */
-  codecHeaders: Record<string, string>;
-  /** The inbound transport-tier headers (role, codec-message-id, discrete marker). */
-  transportHeaders: Record<string, string>;
-}
 
 // ---------------------------------------------------------------------------
 // Decode lifecycle policy
@@ -272,18 +238,26 @@ const decodeDiscretePayload = <TInput extends { kind: string }, TOutput>(
   return [];
 };
 
+// Only outputs stream: a streamed message under any other wire name (a
+// foreign or crafted ai-input stream) must not rebuild through the output
+// stream path — its events would be mislabelled as inputs by the
+// direction-routing decode. Enforces the invariant the decode cast relies on.
+const isOutputStream = (tracker: StreamTrackerState): boolean => tracker.name === EVENT_AI_OUTPUT;
+
 const buildHooks = <TInput extends { kind: string }, TOutput extends { type: string }>(
   outputDecoder: ReturnType<typeof createOutputDescriptorDecoder<TOutput>>,
   inputDecoder: InputDescriptorDecoder<TInput>,
   lifecycle: LifecyclePolicy<TOutput> | undefined,
 ): DecoderCoreHooks<TInput | TOutput> => ({
   buildStartEvents: (tracker) => {
+    if (!isOutputStream(tracker)) return [];
     const runId = tracker.transportHeaders[HEADER_RUN_ID] ?? '';
     const pre = lifecycle?.onStreamStart?.(runId, tracker) ?? [];
     return [...pre, ...outputDecoder.buildStart(tracker)];
   },
-  buildDeltaEvents: (tracker, delta) => outputDecoder.buildDelta(tracker, delta),
-  buildEndEvents: (tracker, closingCodecHeaders) => outputDecoder.buildEnd(tracker, closingCodecHeaders),
+  buildDeltaEvents: (tracker, delta) => (isOutputStream(tracker) ? outputDecoder.buildDelta(tracker, delta) : []),
+  buildEndEvents: (tracker, closingCodecHeaders) =>
+    isOutputStream(tracker) ? outputDecoder.buildEnd(tracker, closingCodecHeaders) : [],
   decodeDiscrete: (payload) => decodeDiscretePayload(payload, outputDecoder, inputDecoder, lifecycle),
 });
 
@@ -445,11 +419,13 @@ export const defineCodec =
       fold: reducer.fold,
       getMessages: reducer.getMessages,
       createEncoder: (writer, options = {}) => new DefaultCodecEncoder(writer, options, outputEncoder, inputEncoder),
-      createDecoder: (options: DecoderCoreOptions = {}) =>
+      createDecoder: () =>
         new DefaultCodecDecoder<TInput, TOutput>(
           // The lifecycle policy (and its tracker) stays per-decoder: each
-          // decoder instance gets independent per-run phase state.
-          createDecoderCore(buildHooks(outputDecoder, inputDecoder, decodeLifecycle?.()), options),
+          // decoder instance gets independent per-run phase state. No options
+          // thread through: Codec.createDecoder takes none, so accepting any
+          // here would be unreachable surface.
+          createDecoderCore(buildHooks(outputDecoder, inputDecoder, decodeLifecycle?.()), {}),
         ),
       ...wellKnownInputs<TInput>(),
     };

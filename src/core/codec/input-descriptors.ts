@@ -16,8 +16,10 @@
  * documented cast at each constructor boundary — never in author code.
  */
 
-import type { FieldFor, HeaderField } from './fields.js';
-import type { DataCodec } from './output-descriptors.js';
+import type * as Ably from 'ably';
+
+import type { DataCodec, FieldFor, HeaderField } from './fields.js';
+import type { MessagePayload, WriteOptions } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Type helpers
@@ -55,6 +57,40 @@ export type ResolvePart<P extends { type: string }, T extends string> =
 // ---------------------------------------------------------------------------
 // Author-facing specs (narrowed)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Input driver core surface + contexts
+// ---------------------------------------------------------------------------
+
+/**
+ * The encoder-core view the input encode driver receives: discrete publishes
+ * only — inputs never stream. The concrete {@link EncoderCore} satisfies this
+ * structurally.
+ */
+export interface InputEncoderCore {
+  /** Publish a single discrete message. */
+  publishDiscrete(payload: MessagePayload, opts?: WriteOptions): Promise<Ably.PublishResult>;
+  /** Publish multiple discrete messages atomically (the batch fan-out). */
+  publishDiscreteBatch(payloads: MessagePayload[], opts?: WriteOptions): Promise<Ably.PublishResult>;
+}
+
+/** Per-write context passed to the input encode driver. */
+export interface InputEncodeContext {
+  /** Per-write overrides (the wire codec-message-id is stamped here by the client session). */
+  opts: WriteOptions | undefined;
+}
+
+/** Per-message context the input decode driver receives for one inbound `ai-input` message. */
+export interface InputDecodeContext {
+  /** The codec `kind` header value (the input descriptor's dispatch key). */
+  codecKind: string;
+  /** The inbound message data. */
+  data: unknown;
+  /** The inbound codec-tier headers. */
+  codecHeaders: Record<string, string>;
+  /** The inbound transport-tier headers (role, codec-message-id, discrete marker). */
+  transportHeaders: Record<string, string>;
+}
 
 /**
  * The spec the input `event` construct accepts for member `C`. A member with

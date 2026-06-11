@@ -31,6 +31,9 @@ type CallOptions = Parameters<LanguageModelV3['doStream']>[0];
 type ModelPrompt = CallOptions['prompt'];
 type StreamResult = Awaited<ReturnType<LanguageModelV3['doStream']>>;
 type ModelStream = StreamResult['stream'];
+type GenerateOptions = Parameters<LanguageModelV3['doGenerate']>[0];
+type GenerateResult = Awaited<ReturnType<LanguageModelV3['doGenerate']>>;
+type GenerateContent = GenerateResult['content'];
 
 /**
  * High-level description of what the mock should emit for one `doStream` call.
@@ -215,13 +218,44 @@ function buildStream(plan: ResponsePlan, abortSignal: AbortSignal | undefined): 
 }
 
 /**
+ * Build the SDK content array for a plan — the non-streamed `doGenerate`
+ * counterpart of {@link buildStream}, used by `generateText()`.
+ */
+function buildContent(plan: ResponsePlan): GenerateContent {
+  if (plan.kind === 'tool') {
+    return [
+      {
+        type: 'tool-call',
+        toolCallId: `mock-${plan.toolName}-${crypto.randomUUID()}`,
+        toolName: plan.toolName,
+        input: JSON.stringify(plan.input),
+      },
+    ];
+  }
+  return [{ type: 'text', text: plan.text }];
+}
+
+/**
  * Create the deterministic mock model. Typed as `LanguageModel` so it is a
- * drop-in for the real provider models returned by `createModel()`.
+ * drop-in for the real provider models returned by `createModel()`. Implements
+ * both `doStream` (for `streamText`) and `doGenerate` (for `generateText`) from
+ * the same prompt-scripted plan, so either generation mode works under
+ * `MOCK_LLM`.
  */
 export function createMockModel(): LanguageModel {
   return new MockLanguageModelV3({
     modelId: 'mock-llm',
     doStream: (options: CallOptions): Promise<StreamResult> =>
       Promise.resolve({ stream: buildStream(planResponse(options.prompt), options.abortSignal) }),
+    doGenerate: (options: GenerateOptions): Promise<GenerateResult> => {
+      const plan = planResponse(options.prompt);
+      return Promise.resolve({
+        content: buildContent(plan),
+        finishReason:
+          plan.kind === 'tool' ? { unified: 'tool-calls', raw: 'tool-calls' } : { unified: 'stop', raw: 'stop' },
+        usage: TOKEN_USAGE,
+        warnings: [],
+      });
+    },
   });
 }

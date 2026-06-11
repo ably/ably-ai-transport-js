@@ -142,6 +142,39 @@ const _toErrorInfo = (error: unknown): Ably.ErrorInfo => {
 };
 
 /**
+ * Derive the {@link VercelRunOutcome} for a Vercel `generateText` response that
+ * was converted with `generateTextToUIMessageStream` and piped through
+ * `Run.pipe`.
+ *
+ * Unlike a `streamText` result, a `generateText` result is awaited in full
+ * before conversion: its `finishReason` is a settled value (not a promise), and
+ * a generation failure surfaces as a thrown/rejected `generateText` call the
+ * caller catches — not as a non-`'complete'` pipe result. This helper therefore
+ * only needs to (a) preserve a transport-level failure from the pipe itself
+ * (`'cancelled'` / `'error'`, e.g. a channel publish failure — the error wrapped
+ * as an `Ably.ErrorInfo` just as {@link vercelRunOutcome} does) and (b) map a
+ * clean completion: `'suspend'` when the model requested tools the SDK did not
+ * auto-execute (`finishReason === 'tool-calls'`), `'complete'` otherwise. It is
+ * the simpler, synchronous counterpart to {@link vercelRunOutcome}.
+ * @param pipeResult - The result returned by `Run.pipe`.
+ * @param finishReason - The settled `finishReason` from the `generateText` result.
+ * @returns The {@link VercelRunOutcome}: `'suspend'` when the run should suspend
+ *   awaiting tool input, or the terminal outcome to pass to `Run.end` otherwise.
+ */
+export const vercelGenerateTextOutcome = (
+  pipeResult: StreamResult,
+  finishReason: AI.FinishReason,
+): VercelRunOutcome => {
+  if (pipeResult.reason !== 'complete') {
+    if (pipeResult.reason === 'error') {
+      return { reason: 'error', error: _toErrorInfo(pipeResult.error) };
+    }
+    return { reason: pipeResult.reason };
+  }
+  return finishReason === 'tool-calls' ? { reason: 'suspend' } : { reason: 'complete' };
+};
+
+/**
  * Heuristic for "this error came from an AbortSignal aborting".
  * Covers `DOMException` aborts (browser / Node 20+ `streamText`),
  * plain `Error` objects whose `name` is `'AbortError'`, and anything

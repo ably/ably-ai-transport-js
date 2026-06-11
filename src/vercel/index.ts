@@ -13,5 +13,6 @@ export type {
 export { createAgentSession, createChatTransport, createClientSession } from './transport/index.js';
 
 // Vercel-shaped helpers
+export { generateTextToUIMessageStream } from './generate-text.js';
 export type { VercelRunOutcome } from './run-end-reason.js';
-export { vercelRunOutcome } from './run-end-reason.js';
+export { vercelGenerateTextOutcome, vercelRunOutcome } from './run-end-reason.js';

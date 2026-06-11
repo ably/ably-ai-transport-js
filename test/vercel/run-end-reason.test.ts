@@ -3,7 +3,7 @@ import type * as AI from 'ai';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { ErrorCode } from '../../src/errors.js';
-import { vercelRunOutcome } from '../../src/vercel/run-end-reason.js';
+import { vercelGenerateTextOutcome, vercelRunOutcome } from '../../src/vercel/run-end-reason.js';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -21,6 +21,32 @@ const createDeferred = <T>(): Deferred<T> => {
   });
   return { promise, resolve, reject };
 };
+
+describe('vercelGenerateTextOutcome', () => {
+  it('returns suspend when pipe completed and finishReason is tool-calls', () => {
+    expect(vercelGenerateTextOutcome({ reason: 'complete' }, 'tool-calls').reason).toBe('suspend');
+  });
+
+  it('returns complete when pipe completed and finishReason is stop', () => {
+    expect(vercelGenerateTextOutcome({ reason: 'complete' }, 'stop').reason).toBe('complete');
+  });
+
+  it('returns complete when pipe completed and finishReason is length', () => {
+    expect(vercelGenerateTextOutcome({ reason: 'complete' }, 'length').reason).toBe('complete');
+  });
+
+  it('preserves a transport-level error from the pipe and wraps it', () => {
+    const result = vercelGenerateTextOutcome({ reason: 'error', error: new Error('boom') }, 'stop');
+    expect(result.reason).toBe('error');
+    expect(result.error).toBeInstanceOf(Ably.ErrorInfo);
+    expect(result.error?.code).toBe(ErrorCode.StreamError);
+    expect(result.error?.message).toContain('boom');
+  });
+
+  it('preserves a transport-level cancel from the pipe', () => {
+    expect(vercelGenerateTextOutcome({ reason: 'cancelled' }, 'tool-calls').reason).toBe('cancelled');
+  });
+});
 
 describe('vercelRunOutcome', () => {
   it('returns cancelled when pipe was cancelled without using finishReason value', async () => {

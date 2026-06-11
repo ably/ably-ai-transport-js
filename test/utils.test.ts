@@ -5,8 +5,6 @@ import {
   compareBySerial,
   getCodecHeaders,
   getTransportHeaders,
-  headerReader,
-  headerWriter,
   mergeHeaders,
   parseBool,
   parseJson,
@@ -180,104 +178,5 @@ describe('stripUndefined', () => {
     const result = stripUndefined(input);
     expect(result).not.toBe(input);
     expect(input).toHaveProperty('b');
-  });
-});
-
-describe('headerReader', () => {
-  const headers = {
-    toolCallId: 'tc-1',
-    dynamic: 'true',
-    providerExecuted: 'false',
-    providerMetadata: '{"anthropic":{"cacheControl":"ephemeral"}}',
-  };
-
-  it('reads string values with str()', () => {
-    const r = headerReader(headers);
-    expect(r.str('toolCallId')).toBe('tc-1');
-    expect(r.str('missing')).toBeUndefined();
-  });
-
-  it('reads string values with fallback via strOr()', () => {
-    const r = headerReader(headers);
-    expect(r.strOr('toolCallId', '')).toBe('tc-1');
-    expect(r.strOr('missing', 'default')).toBe('default');
-  });
-
-  it('reads boolean values with bool()', () => {
-    const r = headerReader(headers);
-    expect(r.bool('dynamic')).toBe(true);
-    expect(r.bool('providerExecuted')).toBe(false);
-    expect(r.bool('missing')).toBeUndefined();
-  });
-
-  it('reads JSON values with json()', () => {
-    const r = headerReader(headers);
-    expect(r.json('providerMetadata')).toEqual({ anthropic: { cacheControl: 'ephemeral' } });
-    expect(r.json('missing')).toBeUndefined();
-  });
-});
-
-describe('headerWriter', () => {
-  it('writes string values with str()', () => {
-    const h = headerWriter().str('toolCallId', 'tc-1').build();
-    expect(h).toEqual({ toolCallId: 'tc-1' });
-  });
-
-  it('skips undefined string values', () => {
-    const title: string | undefined = undefined;
-    const h = headerWriter().str('toolCallId', 'tc-1').str('title', title).build();
-    expect(h).toEqual({ toolCallId: 'tc-1' });
-  });
-
-  it('writes boolean values with bool()', () => {
-    const h = headerWriter().bool('dynamic', true).bool('providerExecuted', false).build();
-    expect(h).toEqual({ dynamic: 'true', providerExecuted: 'false' });
-  });
-
-  it('skips undefined boolean values', () => {
-    const dynamic: boolean | undefined = undefined;
-    const h = headerWriter().bool('dynamic', dynamic).build();
-    expect(h).toEqual({});
-  });
-
-  it('writes JSON values with json()', () => {
-    const h = headerWriter()
-      .json('providerMetadata', { anthropic: { key: 'val' } })
-      .build();
-    expect(h).toEqual({ providerMetadata: '{"anthropic":{"key":"val"}}' });
-  });
-
-  it('skips undefined and null JSON values', () => {
-    const absent: unknown = undefined;
-    // eslint-disable-next-line unicorn/no-null -- testing null handling
-    const h = headerWriter().json('a', absent).json('b', null).build();
-    expect(h).toEqual({});
-  });
-
-  it('supports fluent chaining', () => {
-    const h = headerWriter()
-      .str('toolCallId', 'tc-1')
-      .str('toolName', 'search')
-      .bool('dynamic', true)
-      .json('providerMetadata', { k: 'v' })
-      .build();
-    expect(h).toEqual({
-      toolCallId: 'tc-1',
-      toolName: 'search',
-      dynamic: 'true',
-      providerMetadata: '{"k":"v"}',
-    });
-  });
-
-  it('produces headers readable by headerReader', () => {
-    const h = headerWriter()
-      .str('toolCallId', 'tc-1')
-      .bool('dynamic', true)
-      .json('providerMetadata', { k: 'v' })
-      .build();
-    const r = headerReader(h);
-    expect(r.str('toolCallId')).toBe('tc-1');
-    expect(r.bool('dynamic')).toBe(true);
-    expect(r.json('providerMetadata')).toEqual({ k: 'v' });
   });
 });

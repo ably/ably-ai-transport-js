@@ -85,7 +85,6 @@ export const createOutputDescriptorDecoder = <U extends { type: string }>(
   };
 
   const decodeEvent = (descriptor: OutputEventDescriptor<U>, codecKind: string, ctx: OutputDecodeContext): U[] => {
-    if (descriptor.decode) return descriptor.decode(ctx);
     const bag = readFields(descriptor.fields, ctx.codecHeaders);
     if (descriptor.data) Object.assign(bag, descriptor.data.decode(ctx.data));
     return [rebuild(codecKind, bag)];

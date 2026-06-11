@@ -16,7 +16,6 @@
  * documented cast at each constructor boundary — never in author code.
  */
 
-import type { InputDecodeContext, InputEncodeContext, InputEncoderCore } from './define-codec.js';
 import type { FieldFor, HeaderField } from './fields.js';
 import type { DataCodec } from './output-descriptors.js';
 
@@ -65,7 +64,7 @@ export type ResolvePart<P extends { type: string }, T extends string> =
  * @template C - The narrowed input member.
  */
 export type InputEventSpecFor<C> = [PayloadOf<C>] extends [never]
-  ? Pick<InputEventSpec<C>, 'wireOnly' | 'encode' | 'decode'>
+  ? Pick<InputEventSpec<C>, 'wireOnly'>
   : InputEventSpec<C>;
 
 /**
@@ -86,10 +85,6 @@ export interface InputEventSpec<C> {
   data?: DataCodec<PayloadOf<C>>;
   /** Wire-only signal: encode stamps only the `kind` header (empty data, no fields); decode yields `[]`. */
   wireOnly?: boolean;
-  /** Escape-hatch encode — overrides the default discrete publish (unused by Vercel, kept for irregular inputs). */
-  encode?: (input: C, core: InputEncoderCore, ctx: InputEncodeContext) => Promise<void>;
-  /** Escape-hatch decode — overrides the default field-bag rebuild. */
-  decode?: (ctx: InputDecodeContext) => C[];
 }
 
 /**
@@ -189,7 +184,7 @@ export interface BatchSpec<C, P extends { type: string }> {
 // ---------------------------------------------------------------------------
 
 /** A single-event input descriptor erased to the codec's input union `U`. */
-export interface InputEventDescriptor<U> {
+export interface InputEventDescriptor {
   /** Discriminator. */
   construct: 'event';
   /** The wire `kind` this input dispatches on. */
@@ -200,10 +195,6 @@ export interface InputEventDescriptor<U> {
   data?: DataCodec<unknown>;
   /** Wire-only signal flag. */
   wireOnly: boolean;
-  /** Escape-hatch encode, if any. */
-  encode?: (input: U, core: InputEncoderCore, ctx: InputEncodeContext) => Promise<void>;
-  /** Escape-hatch decode, if any. */
-  decode?: (ctx: InputDecodeContext) => U[];
 }
 
 /** An erased per-part wire mapping within a {@link BatchDescriptor}. */
@@ -237,7 +228,7 @@ export interface BatchDescriptor<U> {
 }
 
 /** An erased input descriptor — a single event or a multi-part batch. */
-export type InputDescriptor<U> = InputEventDescriptor<U> | BatchDescriptor<U>;
+export type InputDescriptor<U> = InputEventDescriptor | BatchDescriptor<U>;
 
 // ---------------------------------------------------------------------------
 // Builder factory
@@ -318,8 +309,6 @@ export const inputBuilder = <U extends { kind: string }>(): InputBuilder<U> => {
         fields: bag?.fields ?? [],
         data: bag?.data,
         wireOnly: bag?.wireOnly ?? false,
-        encode: bag?.encode,
-        decode: bag?.decode,
       } as unknown as InputDescriptor<U>;
     },
     batch: (kind, spec) => {

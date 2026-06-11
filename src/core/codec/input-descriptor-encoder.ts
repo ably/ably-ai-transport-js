@@ -15,13 +15,12 @@ import * as Ably from 'ably';
 
 import { ErrorCode } from '../../errors.js';
 import type { InputEncodeContext, InputEncoderCore } from './define-codec.js';
-import { PART_TYPE_HEADER, prop, writeFields } from './field-bag.js';
+import { PART_TYPE_HEADER, partFor, prop, writeFields } from './field-bag.js';
 import type {
   BatchDescriptor,
   BatchMessageHeaders,
   InputDescriptor,
   InputEventDescriptor,
-  PartDescriptor,
 } from './input-descriptors.js';
 import type { MessagePayload } from './types.js';
 
@@ -36,12 +35,6 @@ export interface InputDescriptorEncoder<U> {
    */
   encode(input: U, core: InputEncoderCore, ctx: InputEncodeContext): Promise<void>;
 }
-
-// Resolve the part descriptor for a given partType: an exact non-wildcard
-// match, else a wildcard whose predicate accepts it. Wildcards are excluded
-// from the exact pass — only their derived predicate may route to them.
-const partFor = (parts: readonly PartDescriptor[], partType: string): PartDescriptor | undefined =>
-  parts.find((part) => !part.match && part.partType === partType) ?? parts.find((part) => part.match?.(partType));
 
 // Layer the batch's per-message transport headers onto a part payload, if any.
 const withMessageTransport = (payload: MessagePayload, message: BatchMessageHeaders | undefined): MessagePayload =>
@@ -64,15 +57,11 @@ export const createInputDescriptorEncoder = <U extends { kind: string }>(
   for (const descriptor of descriptors) byKind.set(descriptor.kind, descriptor);
 
   const encodeEvent = async (
-    descriptor: InputEventDescriptor<U>,
+    descriptor: InputEventDescriptor,
     input: U,
     core: InputEncoderCore,
     ctx: InputEncodeContext,
   ): Promise<void> => {
-    if (descriptor.encode) {
-      await descriptor.encode(input, core, ctx);
-      return;
-    }
     if (descriptor.wireOnly) {
       // Kind only: no fields, no data — the parent/target ride transport headers.
       await core.publishDiscrete({ name: wireName, data: '', codecHeaders: { kind: descriptor.kind } }, ctx.opts);

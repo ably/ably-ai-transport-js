@@ -32,12 +32,7 @@ import { createInputDescriptorEncoder, type InputDescriptorEncoder } from './inp
 import { type InputBuilder, inputBuilder, type InputDescriptor } from './input-descriptors.js';
 import { createOutputDescriptorDecoder } from './output-descriptor-decoder.js';
 import { createOutputDescriptorEncoder, type OutputDescriptorEncoder } from './output-descriptor-encoder.js';
-import {
-  type EscapeHatchCore,
-  type OutputBuilder,
-  outputBuilder,
-  type OutputDescriptor,
-} from './output-descriptors.js';
+import { type OutputBuilder, outputBuilder, type OutputDescriptor } from './output-descriptors.js';
 import type {
   ChannelWriter,
   Codec,
@@ -65,15 +60,16 @@ export type { OutputBuilder } from './output-descriptors.js';
 // ---------------------------------------------------------------------------
 
 /**
- * The encoder-core view the input encode driver (and an input event's escape-hatch
- * `encode`) receives: the escape-hatch publish/stream operations plus
- * `publishDiscreteBatch` for the multi-part batch fan-out (not on the output
- * {@link EscapeHatchCore}). The concrete {@link EncoderCore} satisfies this structurally.
+ * The encoder-core view the input encode driver receives: discrete publishes
+ * only — inputs never stream. The concrete {@link EncoderCore} satisfies this
+ * structurally.
  */
-export type InputEncoderCore = EscapeHatchCore & {
+export interface InputEncoderCore {
+  /** Publish a single discrete message. */
+  publishDiscrete(payload: MessagePayload, opts?: WriteOptions): Promise<Ably.PublishResult>;
   /** Publish multiple discrete messages atomically (the batch fan-out). */
   publishDiscreteBatch(payloads: MessagePayload[], opts?: WriteOptions): Promise<Ably.PublishResult>;
-};
+}
 
 /** Per-write context passed to the input encode driver. */
 export interface InputEncodeContext {
@@ -81,7 +77,7 @@ export interface InputEncodeContext {
   opts: WriteOptions | undefined;
 }
 
-/** Context passed to an input descriptor's escape-hatch `decode` for one inbound `ai-input` message. */
+/** Per-message context the input decode driver receives for one inbound `ai-input` message. */
 export interface InputDecodeContext {
   /** The codec `kind` header value (the input descriptor's dispatch key). */
   codecKind: string;
@@ -194,10 +190,7 @@ export type DefinedCodec<
   TOutput extends CodecOutputEvent,
   TProjection,
   TMessage,
-> = Omit<
-  Codec<TInput, TOutput, TProjection, TMessage>,
-  'createUserMessage' | 'createRegenerate' | 'createToolResult' | 'createToolResultError' | 'createToolApprovalResponse'
-> &
+> = Omit<Codec<TInput, TOutput, TProjection, TMessage>, keyof WellKnownInputFactories<TInput>> &
   WellKnownInputFactories<TInput>;
 
 // ---------------------------------------------------------------------------
@@ -216,13 +209,13 @@ class DefaultCodecEncoder<TInput extends CodecInputEvent, TOutput extends CodecO
   constructor(
     writer: ChannelWriter,
     options: EncoderCoreOptions,
-    outputs: readonly OutputDescriptor<TOutput>[],
-    inputs: readonly InputDescriptor<TInput>[],
+    outputEncoder: OutputDescriptorEncoder<TOutput>,
+    inputEncoder: InputDescriptorEncoder<TInput>,
   ) {
     this._core = createEncoderCore(writer, options);
     this._messageId = options.messageId;
-    this._outputEncoder = createOutputDescriptorEncoder(outputs, EVENT_AI_OUTPUT);
-    this._inputEncoder = createInputDescriptorEncoder(inputs, EVENT_AI_INPUT);
+    this._outputEncoder = outputEncoder;
+    this._inputEncoder = inputEncoder;
   }
 
   async publishInput(input: TInput, options?: WriteOptions): Promise<void> {
@@ -280,23 +273,19 @@ const decodeDiscretePayload = <TInput extends { kind: string }, TOutput>(
 };
 
 const buildHooks = <TInput extends { kind: string }, TOutput extends { type: string }>(
-  outputs: readonly OutputDescriptor<TOutput>[],
-  inputs: readonly InputDescriptor<TInput>[],
+  outputDecoder: ReturnType<typeof createOutputDescriptorDecoder<TOutput>>,
+  inputDecoder: InputDescriptorDecoder<TInput>,
   lifecycle: LifecyclePolicy<TOutput> | undefined,
-): DecoderCoreHooks<TInput | TOutput> => {
-  const outputDecoder = createOutputDescriptorDecoder(outputs);
-  const inputDecoder = createInputDescriptorDecoder(inputs);
-  return {
-    buildStartEvents: (tracker) => {
-      const runId = tracker.transportHeaders[HEADER_RUN_ID] ?? '';
-      const pre = lifecycle?.onStreamStart?.(runId, tracker) ?? [];
-      return [...pre, ...outputDecoder.buildStart(tracker)];
-    },
-    buildDeltaEvents: (tracker, delta) => outputDecoder.buildDelta(tracker, delta),
-    buildEndEvents: (tracker, closingCodecHeaders) => outputDecoder.buildEnd(tracker, closingCodecHeaders),
-    decodeDiscrete: (payload) => decodeDiscretePayload(payload, outputDecoder, inputDecoder, lifecycle),
-  };
-};
+): DecoderCoreHooks<TInput | TOutput> => ({
+  buildStartEvents: (tracker) => {
+    const runId = tracker.transportHeaders[HEADER_RUN_ID] ?? '';
+    const pre = lifecycle?.onStreamStart?.(runId, tracker) ?? [];
+    return [...pre, ...outputDecoder.buildStart(tracker)];
+  },
+  buildDeltaEvents: (tracker, delta) => outputDecoder.buildDelta(tracker, delta),
+  buildEndEvents: (tracker, closingCodecHeaders) => outputDecoder.buildEnd(tracker, closingCodecHeaders),
+  decodeDiscrete: (payload) => decodeDiscretePayload(payload, outputDecoder, inputDecoder, lifecycle),
+});
 
 class DefaultCodecDecoder<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> implements Decoder<
   TInput,
@@ -442,6 +431,12 @@ export const defineCodec =
     const outputs = config.output(outputBuilder<TOutput>());
     const inputs = config.input(inputBuilder<TInput>());
     validateTables(outputs, inputs);
+    // The descriptor drivers are pure functions of the (fixed) tables — build
+    // them once here and share them across every encoder/decoder instance.
+    const outputEncoder = createOutputDescriptorEncoder(outputs, EVENT_AI_OUTPUT);
+    const inputEncoder = createInputDescriptorEncoder(inputs, EVENT_AI_INPUT);
+    const outputDecoder = createOutputDescriptorDecoder(outputs);
+    const inputDecoder = createInputDescriptorDecoder(inputs);
     return {
       // adapterTag is optional on Codec; only set it when supplied so a codec
       // can opt out of Ably-Agent registration.
@@ -449,10 +444,12 @@ export const defineCodec =
       init: reducer.init,
       fold: reducer.fold,
       getMessages: reducer.getMessages,
-      createEncoder: (writer, options = {}) => new DefaultCodecEncoder(writer, options, outputs, inputs),
+      createEncoder: (writer, options = {}) => new DefaultCodecEncoder(writer, options, outputEncoder, inputEncoder),
       createDecoder: (options: DecoderCoreOptions = {}) =>
         new DefaultCodecDecoder<TInput, TOutput>(
-          createDecoderCore(buildHooks(outputs, inputs, decodeLifecycle?.()), options),
+          // The lifecycle policy (and its tracker) stays per-decoder: each
+          // decoder instance gets independent per-run phase state.
+          createDecoderCore(buildHooks(outputDecoder, inputDecoder, decodeLifecycle?.()), options),
         ),
       ...wellKnownInputs<TInput>(),
     };

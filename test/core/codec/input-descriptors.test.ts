@@ -118,18 +118,6 @@ const createMockCore = (): MockEncodeCore => {
       core.batchCalls.push({ payloads, messageId: opts?.messageId });
       return await Promise.resolve({ serials: payloads.map((_p, i) => `s${String(i)}`) });
     }),
-    startStream: vi.fn(async () => {
-      await Promise.resolve();
-    }),
-    appendStream: vi.fn(() => {
-      /* noop */
-    }),
-    closeStream: vi.fn(async () => {
-      await Promise.resolve();
-    }),
-    cancelAllStreams: vi.fn(async () => {
-      await Promise.resolve();
-    }),
   };
   return core;
 };

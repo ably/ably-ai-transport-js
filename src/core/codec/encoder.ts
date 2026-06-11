@@ -47,6 +47,8 @@ interface StreamState {
   /** Codec-tier headers repeated on every append (`extras.ai.codec`). */
   persistentCodec: Record<string, string>;
   cancelled: boolean;
+  /** Set by `closeStream` — a completed stream must never receive a cancelled terminal. */
+  completed: boolean;
 }
 
 /**
@@ -189,6 +191,7 @@ class DefaultEncoderCore implements EncoderCore {
       persistentTransport: transport,
       persistentCodec: codec,
       cancelled: false,
+      completed: false,
     });
 
     this._logger?.debug('DefaultEncoderCore.startStream(); stream started', {
@@ -240,6 +243,9 @@ class DefaultEncoderCore implements EncoderCore {
 
     // Accumulate closing data so recovery has the full content
     tracker.accumulated += payload.data;
+    // Mark completed so a later cancelAllStreams (e.g. pipeStream terminating
+    // streams left open by an agent self-abort) skips this stream.
+    tracker.completed = true;
 
     const { transport, codec } = this._buildClosing(tracker, payload);
     transport[HEADER_STATUS] = 'complete';
@@ -273,6 +279,13 @@ class DefaultEncoderCore implements EncoderCore {
       );
     }
 
+    // Idempotent and complete-safe, matching cancelAllStreams: a stream that
+    // already received a terminal (cancelled or complete) is left untouched.
+    // Still flush so the "pending appends flushed before returning" contract holds.
+    if (tracker.cancelled || tracker.completed) {
+      await this._flushPending();
+      return;
+    }
     tracker.cancelled = true;
 
     const { transport, codec } = this._buildClosing(tracker, undefined, opts);
@@ -299,9 +312,10 @@ class DefaultEncoderCore implements EncoderCore {
     this._logger?.trace('DefaultEncoderCore.cancelAllStreams();', { streamCount: this._trackers.size });
 
     for (const tracker of this._trackers.values()) {
-      // Idempotent: a stream already cancelled must not be re-appended on a
-      // repeat call (e.g. cancelStreams() invoked twice on the cancel path).
-      if (tracker.cancelled) continue;
+      // Idempotent and complete-safe: a stream already cancelled must not be
+      // re-appended on a repeat call, and a stream that closed with
+      // status:complete must never receive a cancelled terminal.
+      if (tracker.cancelled || tracker.completed) continue;
       tracker.cancelled = true;
 
       const { transport, codec } = this._buildClosing(tracker, undefined, opts);

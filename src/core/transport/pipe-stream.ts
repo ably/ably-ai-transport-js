@@ -89,6 +89,12 @@ export const pipeStream = async <TInput extends CodecInputEvent, TOutput extends
 
       const { done, value } = result;
       if (done) {
+        // An agent-side self-abort (e.g. the AI SDK's abort signal firing)
+        // completes the stream without end chunks for in-flight streamed
+        // messages. Terminate any still-open wire streams with a cancelled
+        // status so decoders and history see a terminal; streams that closed
+        // normally are skipped (no-op on a clean completion).
+        await encoder.cancelStreams();
         await encoder.close();
         logger?.debug('pipeStream(); stream completed');
         break;

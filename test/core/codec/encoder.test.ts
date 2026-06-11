@@ -310,6 +310,20 @@ describe('createEncoderCore', () => {
       expect(headersOf(first(writer.appendCalls))[HEADER_STATUS]).toBe('cancelled');
     });
 
+    it('is a no-op on a stream that already received a terminal', async () => {
+      const core = createEncoderCore(writer);
+      await core.startStream('s1', streamPayload({ name: 'text' }));
+      await core.closeStream('s1', streamPayload({ name: 'text' }));
+
+      await core.cancelStream('s1');
+      // Repeat cancels are equally inert.
+      await core.cancelStream('s1');
+
+      // Only the complete terminal from closeStream — no cancelled append.
+      const statuses = writer.appendCalls.map((msg) => headersOf(msg)[HEADER_STATUS]);
+      expect(statuses).toEqual(['complete']);
+    });
+
     it('only cancels the specified stream, not others', async () => {
       writer.nextPublishResult = { serials: ['serial-1'] };
       const core = createEncoderCore(writer);
@@ -359,6 +373,23 @@ describe('createEncoderCore', () => {
       const core = createEncoderCore(writer);
       await core.cancelAllStreams();
       expect(writer.appendCalls).toHaveLength(0);
+    });
+
+    it('skips streams already closed with status:complete', async () => {
+      writer.nextPublishResult = { serials: ['serial-1'] };
+      const core = createEncoderCore(writer);
+      await core.startStream('s1', streamPayload({ name: 'text' }));
+      await core.closeStream('s1', streamPayload({ name: 'text' }));
+
+      writer.nextPublishResult = { serials: ['serial-2'] };
+      await core.startStream('s2', streamPayload({ name: 'reasoning' }));
+
+      await core.cancelAllStreams();
+
+      // One complete terminal (s1's closeStream) and one cancelled terminal
+      // (s2) — the completed stream must not receive a second, cancelled one.
+      const statuses = writer.appendCalls.map((msg) => headersOf(msg)[HEADER_STATUS]);
+      expect(statuses).toEqual(['complete', 'cancelled']);
     });
 
     it('rejects after close', async () => {

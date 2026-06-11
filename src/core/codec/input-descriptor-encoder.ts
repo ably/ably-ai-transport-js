@@ -39,8 +39,7 @@ export interface InputDescriptorEncoder<U> {
 
 // Resolve the part descriptor for a given partType: an exact non-wildcard
 // match, else a wildcard whose predicate accepts it. Wildcards are excluded
-// from the exact pass — their '' sentinel must not exact-match an empty
-// partType.
+// from the exact pass — only their derived predicate may route to them.
 const partFor = (parts: readonly PartDescriptor[], partType: string): PartDescriptor | undefined =>
   parts.find((part) => !part.match && part.partType === partType) ?? parts.find((part) => part.match?.(partType));
 
@@ -79,9 +78,17 @@ export const createInputDescriptorEncoder = <U extends { kind: string }>(
       await core.publishDiscrete({ name: wireName, data: '', codecHeaders: { kind: descriptor.kind } }, ctx.opts);
       return;
     }
-    // CAST: a non-wireOnly input nests its domain data under `payload`; the member
-    // carries it by construction. `fields` / `data` are authored against the payload.
-    const source = prop(input, 'payload') as object;
+    // A non-wireOnly input nests its domain data under `payload` — fields and
+    // data are authored against it. Fail fast on a payload-less member instead
+    // of silently publishing empty data the decoder can't rebuild from.
+    const source = prop(input, 'payload');
+    if (typeof source !== 'object' || source === null) {
+      throw new Ably.ErrorInfo(
+        `unable to encode input; event '${descriptor.kind}' carries no payload object — declare it wireOnly or use an encode escape hatch`,
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
     const codecHeaders = writeFields(descriptor.fields, descriptor.kind, source);
     const data = descriptor.data ? descriptor.data.encode(source) : '';
     await core.publishDiscrete({ name: wireName, data, codecHeaders }, ctx.opts);

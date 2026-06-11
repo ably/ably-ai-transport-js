@@ -19,7 +19,10 @@ export const fId = strField('id');
  * the inferred type resolves to the AI SDK's internal `SharedV3ProviderMetadata`
  * alias, which isn't portably nameable across the package boundary.
  */
-export const fMeta: HeaderField<AI.ProviderMetadata | undefined> = jsonField<AI.ProviderMetadata>('providerMetadata');
+export const fMeta: HeaderField<AI.ProviderMetadata | undefined, 'providerMetadata'> = jsonField<
+  AI.ProviderMetadata,
+  'providerMetadata'
+>('providerMetadata');
 /** Tool call id — defaulted to total so reads mirror the codec's `strOr(key, '')`. */
 export const fToolCallId = strField('toolCallId', '');
 /** Tool name — defaulted to total. */

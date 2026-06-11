@@ -36,7 +36,7 @@ export type { LifecycleTracker, PhaseConfig } from './lifecycle-tracker.js';
 export { createLifecycleTracker } from './lifecycle-tracker.js';
 
 // Typed header-field bindings
-export type { HeaderField } from './fields.js';
+export type { FieldFor, HeaderField } from './fields.js';
 export { boolField, enumField, jsonField, strField } from './fields.js';
 
 // Well-known input factories (merged into every codec by defineCodec)

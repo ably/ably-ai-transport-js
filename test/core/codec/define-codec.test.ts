@@ -221,7 +221,7 @@ describe('defineCodec — wire-controlled kind robustness', () => {
 // ---------------------------------------------------------------------------
 
 type NoteOutput =
-  | { type: 'note'; text: string }
+  | { type: 'note'; text: string; kind?: string }
   | { type: 'note-start'; id: string }
   | { type: 'note-delta'; id: string; delta: string }
   | { type: 'note-end'; id: string };
@@ -235,7 +235,7 @@ interface PingInput {
 interface PostInput {
   kind: 'post';
   codecMessageId: string;
-  message: { parts: { type: 'text'; text: string }[] };
+  message: { parts: { type: 'text'; text: string; partType?: string }[] };
 }
 
 type ValidationInput = PingInput | PostInput;

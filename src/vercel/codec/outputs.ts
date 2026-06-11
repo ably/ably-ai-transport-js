@@ -200,7 +200,6 @@ export const outputs = ({ event, stream }: OutputBuilder<VercelOutput>): readonl
   // --- data-* wildcard -------------------------------------------------------
 
   event('data-*', {
-    match: (type) => type.startsWith('data-'),
     fields: [strField('id'), boolField('transient')],
     ephemeral: (c) => c.transient === true,
     data: { encode: (c) => c.data, decode: (data) => ({ data }) },

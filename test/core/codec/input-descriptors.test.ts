@@ -7,6 +7,7 @@ import { createInputDescriptorDecoder } from '../../../src/core/codec/input-desc
 import { createInputDescriptorEncoder } from '../../../src/core/codec/input-descriptor-encoder.js';
 import { inputBuilder } from '../../../src/core/codec/input-descriptors.js';
 import type { MessagePayload, WriteOptions } from '../../../src/core/codec/types.js';
+import { ErrorCode } from '../../../src/errors.js';
 
 // ---------------------------------------------------------------------------
 // Fixture input union
@@ -81,7 +82,7 @@ const descriptors = [
         fields: [fMediaType],
         data: { encode: (x) => x.url, decode: (d) => ({ url: asString(d) }) },
       }),
-      p.wildcard<'data-*'>((pt) => pt.startsWith('data-'), {
+      p('data-*', {
         fields: [fDataId],
         data: { encode: (x) => x.data, decode: (d) => ({ data: d }) },
       }),
@@ -309,7 +310,7 @@ describe('input descriptor drivers', () => {
 
   it('drops a batch wire event whose partType header is absent or empty', () => {
     // The driver's bare fallback (and any foreign message) carries no partType;
-    // the wildcard's '' sentinel must not exact-match it.
+    // neither an exact part nor the wildcard's derived predicate may match it.
     const headerVariants: Record<string, string>[] = [
       { kind: 'doc', docId: 'm0' },
       { kind: 'doc', docId: 'm0', partType: '' },
@@ -318,6 +319,20 @@ describe('input descriptor drivers', () => {
       const decoded = decoder.decode({ codecKind: 'doc', data: '', codecHeaders, transportHeaders: {} });
       expect(decoded).toEqual([]);
     }
+  });
+
+  it('rejects encoding a payload-less event that is not wireOnly', async () => {
+    // `signal` has no payload: with neither `wireOnly: true` nor an encode
+    // hatch the driver has nothing to publish — fail fast instead of putting
+    // an empty, undecodable event on the wire.
+    const { event: bareEvent } = inputBuilder<FixtureInput>();
+    const badEncoder = createInputDescriptorEncoder<FixtureInput>([bareEvent('signal')], EVENT_AI_INPUT);
+    const core = createMockCore();
+
+    await expect(badEncoder.encode({ kind: 'signal' }, core, { opts: undefined })).rejects.toBeErrorInfoWithCode(
+      ErrorCode.InvalidArgument,
+    );
+    expect(core.discreteCalls).toHaveLength(0);
   });
 
   it('strips decode-contributed undefined props from the rebuilt payload', () => {

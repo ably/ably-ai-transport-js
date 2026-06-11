@@ -75,15 +75,14 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
     [api],
   );
 
-  // Derive "is a run in progress?" from the latest visible message's
-  // owning Run status: 'complete' and 'cancelled' are terminal and hide
-  // the Stop button; any other status ('active', 'error', 'suspended')
-  // leaves Stop available so the user can still abort a stuck or paused
-  // run. The Run also carries the runId Stop needs to cancel.
-  const latestRun = runOf(messages.at(-1)?.codecMessageId ?? '');
+  // The latest visible Run drives the Stop button: the Run is live while its
+  // status is 'active' or 'suspended' — including a stuck run whose agent
+  // died without publishing run-end — and ends once a terminal run-end
+  // ('complete', 'cancelled', 'error') is observed. The Run also carries the
+  // runId Stop needs to cancel.
+  const latestRun = view.latestRun();
   const latestRunId = latestRun?.runId;
-  const latestStatus = latestRun?.status;
-  const isRunInProgress = latestRunId !== undefined && latestStatus !== 'complete' && latestStatus !== 'cancelled';
+  const isRunInProgress = latestRun?.status === 'active' || latestRun?.status === 'suspended';
   const status = isRunInProgress ? 'running' : 'idle';
 
   useEffect(() => {

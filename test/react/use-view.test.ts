@@ -145,7 +145,12 @@ describe('useView', () => {
   describe('Run lookup callbacks', () => {
     it('runOf forwards to view.runOf', () => {
       const mock = createMockSession();
-      const info: RunInfo = { runId: 'run-1', clientId: 'c1', status: 'active', invocationId: 'inv-1' };
+      const info: RunInfo = {
+        runId: 'run-1',
+        clientId: 'c1',
+        status: 'active',
+        invocationId: 'inv-1',
+      };
       (mock.view.runOf as ReturnType<typeof vi.fn>).mockReturnValue(info);
       const { result } = renderHook(() => useView({ session: mock.session }));
       expect(result.current.runOf('msg-1')).toEqual(info);
@@ -153,7 +158,12 @@ describe('useView', () => {
 
     it('run forwards to view.run', () => {
       const mock = createMockSession();
-      const info: RunInfo = { runId: 'run-1', clientId: 'c1', status: 'complete', invocationId: 'inv-1' };
+      const info: RunInfo = {
+        runId: 'run-1',
+        clientId: 'c1',
+        status: 'complete',
+        invocationId: 'inv-1',
+      };
       (mock.view.run as ReturnType<typeof vi.fn>).mockReturnValue(info);
       const { result } = renderHook(() => useView({ session: mock.session }));
       expect(result.current.run('run-1')).toEqual(info);
@@ -170,11 +180,25 @@ describe('useView', () => {
       expect(result.current.runs()).toEqual(list);
     });
 
+    it('latestRun forwards to view.latestRun', () => {
+      const mock = createMockSession();
+      const info: RunInfo = {
+        runId: 'run-2',
+        clientId: 'c1',
+        status: 'active',
+        invocationId: 'inv-2',
+      };
+      (mock.view.latestRun as ReturnType<typeof vi.fn>).mockReturnValue(info);
+      const { result } = renderHook(() => useView({ session: mock.session }));
+      expect(result.current.latestRun()).toEqual(info);
+    });
+
     it('safe defaults when no session is available', () => {
       const { result } = renderHook(() => useView());
       expect(result.current.runOf('msg-1')).toBeUndefined();
       expect(result.current.run('run-1')).toBeUndefined();
       expect(result.current.runs()).toEqual([]);
+      expect(result.current.latestRun()).toBeUndefined();
     });
   });
 

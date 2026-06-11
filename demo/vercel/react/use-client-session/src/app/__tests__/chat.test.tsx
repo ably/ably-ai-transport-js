@@ -75,6 +75,7 @@ vi.mock('../providers', () => ({
         selectSibling: () => {},
         runOf: () => undefined,
         run: () => undefined,
+        latestRun: () => undefined,
         send: mockSend,
         regenerate: vi.fn(),
         edit: vi.fn(),

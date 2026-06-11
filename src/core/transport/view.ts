@@ -534,6 +534,12 @@ export class DefaultView<
     return run ? _toRunInfo(run) : undefined;
   }
 
+  latestRun(): RunInfo | undefined {
+    this._logger.trace('DefaultView.latestRun();');
+    const latest = this._cachedNodes.findLast((node): node is RunNode<TProjection> => node.kind === 'run');
+    return latest ? _toRunInfo(latest) : undefined;
+  }
+
   // -------------------------------------------------------------------------
   // Branch navigation (msg-anchored)
   // -------------------------------------------------------------------------

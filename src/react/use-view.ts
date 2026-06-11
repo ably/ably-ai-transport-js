@@ -79,6 +79,18 @@ export interface ViewHandle<TInput extends CodecInputEvent, TMessage> {
    */
   runs: () => RunInfo[];
   /**
+   * The most recent visible Run along the selected branch, or `undefined`
+   * when no Run is visible or the view isn't resolved. Derive UI run state
+   * from its `status`:
+   * ```ts
+   * const status = latestRun()?.status;
+   * const isStreaming = status === 'active';                       // output flowing
+   * const showStop = status === 'active' || status === 'suspended'; // cancellable
+   * ```
+   * See {@link View.latestRun}.
+   */
+  latestRun: () => RunInfo | undefined;
+  /**
    * Resolve the {@link BranchSelection} bundle anchored at
    * `codecMessageId`. Always returns a safe object — see
    * {@link BranchSelection}. See {@link View.branchSelection}.
@@ -212,6 +224,8 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
 
   const runs = useCallback((): RunInfo[] => resolvedView?.runs() ?? [], [resolvedView]);
 
+  const latestRun = useCallback((): RunInfo | undefined => resolvedView?.latestRun(), [resolvedView]);
+
   // Branch navigation
   const branchSelection = useCallback(
     (codecMessageId: string): BranchSelection<TMessage> =>
@@ -266,6 +280,7 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
     runOf,
     run,
     runs,
+    latestRun,
     branchSelection,
     selectSibling,
     send,

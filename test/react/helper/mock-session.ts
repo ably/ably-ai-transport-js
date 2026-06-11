@@ -122,6 +122,8 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     runOf: vi.fn(() => undefined),
     // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires explicit undefined return for the contract
     run: vi.fn(() => undefined),
+    // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires explicit undefined return for the contract
+    latestRun: vi.fn(() => undefined),
     branchSelection: vi.fn(emptyBranchSelection),
     selectSibling: vi.fn(),
     send,

@@ -262,6 +262,7 @@ describe('DefaultView', () => {
     it('returns an empty list for an empty tree', () => {
       expect(view.runs()).toEqual([]);
       expect(view.getMessages()).toEqual([]);
+      expect(view.latestRun()).toBeUndefined();
     });
 
     it('keeps messages visible after a run-resume re-entry (no self-parent cycle)', () => {
@@ -590,6 +591,28 @@ describe('DefaultView', () => {
         serial: 's4',
       });
       expect(view.runOf('m2')?.status).toBe('complete');
+    });
+
+    it('latestRun returns the last visible Run along the selected branch', () => {
+      expect(view.latestRun()?.runId).toBe('R2');
+    });
+
+    it('latestRun reflects live and suspended status', () => {
+      expect(view.latestRun()?.status).toBe('active');
+
+      tree.applyRunLifecycle({ type: 'suspend', runId: 'R2', clientId: 'c', invocationId: '', serial: 's3' });
+      expect(view.latestRun()?.status).toBe('suspended');
+    });
+
+    it('latestRun surfaces every terminal RunEndReason as status', () => {
+      for (const [runId, reason] of [
+        ['R2', 'complete'],
+        ['R2', 'cancelled'],
+        ['R2', 'error'],
+      ] as const) {
+        tree.applyRunLifecycle({ type: 'end', runId, clientId: 'c', invocationId: '', reason, serial: 's3' });
+        expect(view.latestRun()?.status).toBe(reason);
+      }
     });
   });
 

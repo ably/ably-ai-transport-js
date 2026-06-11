@@ -54,6 +54,11 @@ export interface RunInfo {
    * continuation re-activates it); otherwise the {@link RunEndReason} the Run
    * terminated with. Literal lifecycle vocabulary — UIs that want `'streaming'`
    * rendering language translate at the component boundary.
+   *
+   * A Run is live — and cancellable — while `status` is `'active'` or
+   * `'suspended'`; a suspended Run is awaiting user input, so don't gate
+   * input on it. A live-but-stuck Run (agent died without publishing
+   * run-end) stays `'active'` and remains cancellable.
    */
   status: 'active' | 'suspended' | RunEndReason;
   /**
@@ -174,6 +179,19 @@ export interface View<TInput extends CodecInputEvent, TMessage> {
    * @param runId - The Run id to look up.
    */
   run(runId: string): RunInfo | undefined;
+
+  /**
+   * The most recent visible Run along the selected branch — the last entry
+   * of {@link runs}. `undefined` when no Run is visible (no run has started
+   * yet, or the view isn't resolved). The one-stop lookup for deriving UI
+   * run state from {@link RunInfo.status}:
+   * ```ts
+   * const status = view.latestRun()?.status;
+   * const isStreaming = status === 'active';                       // output flowing
+   * const showStop = status === 'active' || status === 'suspended'; // cancellable
+   * ```
+   */
+  latestRun(): RunInfo | undefined;
 
   // --- Branch navigation ---
 

@@ -137,7 +137,7 @@ export const tools: Record<string, Tool> = {
           : 'an unknown area';
 
       const { object } = await generateObject({
-        model: anthropic('claude-3-haiku-20240307'),
+        model: anthropic('claude-haiku-4-5'),
         schema: storeSchema,
         prompt: `Generate 3 fictional Acme Electronics store locations near ${locationHint}. Use realistic street addresses, landmarks, and area codes for that region. Distances should be 0.5–6 miles.`,
       });

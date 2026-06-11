@@ -315,7 +315,7 @@ function makeSummaryCallback(taskDescription: string): SummaryCallback {
     ].join('\n');
 
     const result = streamText({
-      model: anthropic('claude-3-haiku-20240307'),
+      model: anthropic('claude-haiku-4-5'),
       system: `You are a support agent sub-task that just completed a workflow. Write a brief, friendly summary (2-3 sentences) of what was accomplished for the customer. Be specific — reference order IDs, product names, return statuses, etc. from the tool results. Do not use bullet points. Do not repeat the task list.`,
       prompt: context,
     });
@@ -373,7 +373,7 @@ async function runReviews(
 
   for (const rating of ratings) {
     const result = streamText({
-      model: anthropic('claude-3-haiku-20240307'),
+      model: anthropic('claude-haiku-4-5'),
       system: REVIEW_PROMPT,
       prompt: `${productName} (SKU: ${sku}) — write ${rating}`,
       abortSignal: turn.abortSignal,

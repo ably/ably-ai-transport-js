@@ -25,6 +25,12 @@ interface RunLifecycleBase {
    * Empty string if the wire didn't carry an invocation-id.
    */
   invocationId: string;
+  /**
+   * Ably server timestamp (epoch ms) of the lifecycle message; absent for an
+   * optimistic local event. Advances the Tree's event-log retention clock and
+   * the target run's last-activity time.
+   */
+  timestamp?: number;
 }
 
 /**

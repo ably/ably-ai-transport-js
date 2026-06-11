@@ -43,16 +43,19 @@ export const applyWireMessage = <TInput extends CodecInputEvent, TOutput extends
 ): RunLifecycleEvent | undefined => {
   const headers = getTransportHeaders(rawMsg);
   const serial = rawMsg.serial;
+  // Top-level timestamp (the current version's receive time), not
+  // `version.timestamp` — see the Tree's event-log retention clock.
+  const timestamp = rawMsg.timestamp;
 
   if (isRunLifecycleName(rawMsg.name)) {
-    const event = parseRunLifecycle(rawMsg.name, headers, serial);
+    const event = parseRunLifecycle(rawMsg.name, headers, serial, timestamp);
     if (event) tree.applyRunLifecycle(event);
     return event;
   }
 
   const { inputs, outputs } = decoder.decode(rawMsg);
   if (inputs.length > 0 || outputs.length > 0 || headers[HEADER_RUN_ID]) {
-    tree.applyMessage({ inputs, outputs }, headers, serial);
+    tree.applyMessage({ inputs, outputs }, headers, serial, timestamp);
   }
   return undefined;
 };

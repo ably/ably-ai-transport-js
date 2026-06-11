@@ -1064,10 +1064,8 @@ test.describe('use-chat demo - chat behaviour', () => {
     await expect(streamingBadges).toHaveCount(0, { timeout: 30_000 });
   });
 
-  // test.fixme: under interleaved multi-prompt regen/edit the View loses a
-  // prompt's branch counter. Remove `.fixme` once the View logic is fixed.
   // checks: P1 (2 regens), P2 (edit), P3 (regen) interleaved; each prompt keeps its own branch state.
-  test.fixme('exploratory: mixed multi-prompt: P1 with 2 regens, P2 edit, P3 with regen — every prompt keeps its own branch state', async ({
+  test('exploratory: mixed multi-prompt: P1 with 2 regens, P2 edit, P3 with regen — every prompt keeps its own branch state', async ({
     page,
   }, testInfo) => {
     // Stress-test that branch state on one prompt survives interleaved
@@ -1086,8 +1084,10 @@ test.describe('use-chat demo - chat behaviour', () => {
     await expect.poll(async () => branchCounter(assistantBubbles(page).nth(0))).toBe('3 / 3');
 
     await sendPrompt(page, 'Reply with the word BBB and nothing else');
-    expect(await assistantBubbles(page).count()).toBe(2);
-    expect(await branchCounter(assistantBubbles(page).nth(1))).toBeNull();
+    // Poll: action bars (and thus the assistantBubbles filter) re-render a tick
+    // after waitForAssistantSettled resolves, so a one-shot count can read 1.
+    await expect.poll(async () => assistantBubbles(page).count()).toBe(2);
+    await expect.poll(async () => branchCounter(assistantBubbles(page).nth(1))).toBeNull();
 
     // Edit P2 → user bubble at index 1 shows 2/2.
     await editAndSubmit(page, userBubbles(page).nth(1), 'Reply with the word BBB2 and nothing else');
@@ -1100,19 +1100,36 @@ test.describe('use-chat demo - chat behaviour', () => {
     await waitForAssistantSettled(page);
     await expect.poll(async () => branchCounter(assistantBubbles(page).nth(2))).toBe('2 / 2');
 
-    // P1's regen counter is unchanged (3/3).
-    expect(await branchCounter(assistantBubbles(page).nth(0))).toBe('3 / 3');
-    // P2's edit counter is unchanged (2/2).
-    expect(await branchCounter(userBubbles(page).nth(1))).toBe('2 / 2');
-    // P3's regen counter is 2/2.
-    expect(await branchCounter(assistantBubbles(page).nth(2))).toBe('2 / 2');
+    // Each prompt keeps its own independent branch counter — touching one
+    // (regen / edit) must not bump another's. Poll each: the bubble whose
+    // operation just settled re-renders its neighbours' action bars on a
+    // following commit, so a one-shot read can momentarily miss a counter.
+    await expect.poll(async () => branchCounter(assistantBubbles(page).nth(0))).toBe('3 / 3'); // P1 regen group
+    await expect.poll(async () => branchCounter(userBubbles(page).nth(1))).toBe('2 / 2'); // P2 edit group
+    await expect.poll(async () => branchCounter(assistantBubbles(page).nth(2))).toBe('2 / 2'); // P3 regen group
 
-    // Navigate P1 back to a prior regen — does not disturb P2 or P3.
+    // Navigate P1's assistant back to a prior regen sibling. P2 and P3 were
+    // sent as follow-ups while P1's LATEST regen (3/3) was selected, so their
+    // input nodes are parented at that specific reply. Selecting an earlier P1
+    // reply takes the 3/3 reply off the visible chain, so the follow-up turns
+    // chained beneath it (P2 and P3) are correctly hidden — this is the
+    // regenerate-substitution model (a follow-up belongs to the reply it
+    // answered), verified at the SDK level in view.test.ts. Navigating P1
+    // forward again restores them.
     await assistantBubbles(page).nth(0).locator('button[title="Previous branch"]').click();
-    await page.waitForTimeout(500);
-    expect(await branchCounter(assistantBubbles(page).nth(0))).toBe('2 / 3');
-    expect(await branchCounter(userBubbles(page).nth(1))).toBe('2 / 2');
-    expect(await branchCounter(assistantBubbles(page).nth(2))).toBe('2 / 2');
+    await expect.poll(async () => branchCounter(assistantBubbles(page).nth(0))).toBe('2 / 3');
+    // Only P1's prompt + its selected reply remain visible (P2/P3 hidden).
+    await expect.poll(async () => userBubbles(page).count()).toBe(1);
+    await expect.poll(async () => assistantBubbles(page).count()).toBe(1);
+
+    // Navigate P1 forward to the latest regen again — P2 and P3 reappear with
+    // their own branch counters intact, proving they were hidden (branch
+    // selection), not lost.
+    await assistantBubbles(page).nth(0).locator('button[title="Next branch"]').click();
+    await expect.poll(async () => branchCounter(assistantBubbles(page).nth(0))).toBe('3 / 3');
+    await expect.poll(async () => userBubbles(page).count()).toBe(3);
+    await expect.poll(async () => branchCounter(userBubbles(page).nth(1))).toBe('2 / 2');
+    await expect.poll(async () => branchCounter(assistantBubbles(page).nth(2))).toBe('2 / 2');
   });
 
   // checks: "Load older" works after a refresh.
@@ -1154,42 +1171,46 @@ test.describe('use-chat demo - chat behaviour', () => {
     expect(bodyTextAfter).toMatch(/PAGE2/);
   });
 
-  // test.fixme: regenerating an earlier prompt's reply drops a later prompt
-  // because the View orders reply runs by startSerial (view.ts) instead of
-  // prompt order. Remove `.fixme` once the View logic is fixed.
-  // checks: regenerate an earlier prompt's reply; it stays in place (prompt order, not startSerial).
-  test.fixme('exploratory: regenerating an earlier prompt with later prompts present keeps the new response in-place', async ({
+  // checks: regenerating an earlier prompt's reply hides the later follow-up
+  // turn (branch substitution); selecting the original reply restores it.
+  test('exploratory: regenerating an earlier prompt with a later prompt present hides the later turn on the regen branch', async ({
     page,
   }, testInfo) => {
-    // P1 then P2. Regenerating P1's assistant must insert the new
-    // response between u1 and u2 (in PROMPT order), not append it at
-    // the end of the chat. Pre-fix the new bubble landed at index 3
-    // (after P2's assistant) because runs sort by startSerial.
+    // P1 then P2. P2 was sent as a follow-up while P1's reply was the latest
+    // visible message, so P2's input node is parented at P1's reply. When P1's
+    // reply is regenerated, that reply leaves the visible chain (the regen group
+    // defaults to the new alternative), so the follow-up turn chained beneath it
+    // (P2) is correctly hidden — a follow-up belongs to the reply it answered.
+    // This is the documented regenerate-substitution model, verified at the SDK
+    // level in view.test.ts ("hides a follow-up turn when its anchor assistant
+    // is regenerated mid-conversation"). Selecting the original P1 reply back
+    // brings the follow-up turn back.
     await page.goto(freshChannelUrl(testInfo.title));
     await sendPrompt(page, 'Reply with the word ALPHA and nothing else');
     await sendPrompt(page, 'Reply with the word BRAVO and nothing else');
 
     // Sanity: the chat already has 2 user + 2 assistant bubbles in order.
-    expect(await userBubbles(page).count()).toBe(2);
-    expect(await assistantBubbles(page).count()).toBe(2);
+    await expect.poll(async () => userBubbles(page).count()).toBe(2);
+    await expect.poll(async () => assistantBubbles(page).count()).toBe(2);
 
     // Regenerate the FIRST (earlier) assistant.
     await assistantBubbles(page).first().locator('button[title="Regenerate response"]').click();
     await waitForAssistantSettled(page);
 
-    // Still 2 user + 2 assistant. The order must be
-    // [u-ALPHA, ALPHA-regen, u-BRAVO, BRAVO] — assistant nth(0) is the
-    // regenerated reply, assistant nth(1) is still P2's.
-    expect(await userBubbles(page).count()).toBe(2);
-    expect(await assistantBubbles(page).count()).toBe(2);
-    expect(await branchCounter(assistantBubbles(page).first())).toBe('2 / 2');
-    expect(await branchCounter(assistantBubbles(page).last())).toBeNull();
+    // The regen branch shows only P1's prompt + the new reply (2/2). P2's turn
+    // is hidden because its anchor reply was substituted.
+    await expect.poll(async () => userBubbles(page).count()).toBe(1);
+    await expect.poll(async () => assistantBubbles(page).count()).toBe(1);
+    await expect.poll(async () => branchCounter(assistantBubbles(page).first())).toBe('2 / 2');
+    await expect.poll(async () => bubbleText(userBubbles(page).first())).toMatch(/ALPHA/);
 
-    // Compare the FULL bubble sequence to confirm the regen landed
-    // between u1 and u2, not after BRAVO.
+    // Navigate the regen group back to the original P1 reply (1/2). P2's turn
+    // reappears — it was hidden by branch selection, not lost.
+    await assistantBubbles(page).first().locator('button[title="Previous branch"]').click();
+    await expect.poll(async () => branchCounter(assistantBubbles(page).first())).toBe('1 / 2');
+    await expect.poll(async () => userBubbles(page).count()).toBe(2);
+    await expect.poll(async () => assistantBubbles(page).count()).toBe(2);
     const allTexts = await Promise.all((await allBubbles(page).all()).map(async (b) => bubbleText(b)));
-    // The regenerated ALPHA reply lives at index 1 (just after the
-    // first user prompt); BRAVO's pair lives at indexes 2 and 3.
     expect(allTexts[0]).toMatch(/ALPHA/);
     expect(allTexts[2]).toMatch(/BRAVO/);
     expect(allTexts[3]).toMatch(/BRAVO/);

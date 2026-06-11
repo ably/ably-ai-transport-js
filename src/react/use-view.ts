@@ -157,6 +157,11 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
   const [hasOlder, setHasOlder] = useState(() => resolvedView?.hasOlder() ?? false);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<Ably.ErrorInfo | undefined>();
+  // Run lifecycle transitions (suspend/resume/end) mutate Run status without
+  // changing the visible message list, so they emit 'run' but not 'update'.
+  // Bump a version so render-time RunInfo reads (latestRun/runOf/run/runs)
+  // re-derive — most visibly `status` flipping terminal on run-end.
+  const [, setRunVersion] = useState(0);
   const loadingRef = useRef(false);
 
   // Auto-load first page on mount when limit is provided (SWR-style).
@@ -182,11 +187,17 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
     setHasOlder(resolvedView.hasOlder());
     setLoadError(undefined);
 
-    const unsub = resolvedView.on('update', () => {
+    const unsubUpdate = resolvedView.on('update', () => {
       setMessages(resolvedView.getMessages());
       setHasOlder(resolvedView.hasOlder());
     });
-    return unsub;
+    const unsubRun = resolvedView.on('run', () => {
+      setRunVersion((v) => v + 1);
+    });
+    return () => {
+      unsubUpdate();
+      unsubRun();
+    };
   }, [resolvedView]);
 
   const loadOlder = useCallback(async () => {

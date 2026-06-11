@@ -200,6 +200,42 @@ describe('useView', () => {
       expect(result.current.runs()).toEqual([]);
       expect(result.current.latestRun()).toBeUndefined();
     });
+
+    it("re-renders on the view's run event so render-time RunInfo reads refresh", () => {
+      // Run lifecycle transitions (e.g. run-end) change Run status without
+      // changing the visible messages, so the view emits 'run' but not
+      // 'update'. A component deriving latestRun()?.status during render
+      // must still see the flip — the hook re-renders on 'run'.
+      const mock = createMockSession();
+      const live: RunInfo = {
+        runId: 'run-1',
+        clientId: 'c1',
+        status: 'active',
+        invocationId: 'inv-1',
+      };
+      (mock.view.latestRun as ReturnType<typeof vi.fn>).mockReturnValue(live);
+
+      const { result } = renderHook(() => {
+        const handle = useView({ session: mock.session });
+        return handle.latestRun();
+      });
+      expect(result.current?.status).toBe('active');
+
+      const ended: RunInfo = { ...live, status: 'complete' };
+      (mock.view.latestRun as ReturnType<typeof vi.fn>).mockReturnValue(ended);
+      act(() => {
+        mock.emitTree('run', {
+          type: 'end',
+          runId: 'run-1',
+          clientId: 'c1',
+          invocationId: 'inv-1',
+          reason: 'complete',
+          serial: 's2',
+        });
+      });
+
+      expect(result.current?.status).toBe('complete');
+    });
   });
 
   // ---------------------------------------------------------------------------

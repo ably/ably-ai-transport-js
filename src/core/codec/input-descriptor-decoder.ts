@@ -17,8 +17,8 @@
 import { HEADER_CODEC_MESSAGE_ID } from '../../constants.js';
 import { stripUndefined } from '../../utils.js';
 import type { InputDecodeContext } from './define-codec.js';
-import { PART_TYPE_HEADER, readFields } from './field-bag.js';
-import type { BatchDescriptor, InputDescriptor, InputEventDescriptor, PartDescriptor } from './input-descriptors.js';
+import { PART_TYPE_HEADER, partFor, readFields } from './field-bag.js';
+import type { BatchDescriptor, InputDescriptor, InputEventDescriptor } from './input-descriptors.js';
 
 /** Decodes inbound `ai-input` messages of union `U` from an input descriptor set. */
 export interface InputDescriptorDecoder<U> {
@@ -29,12 +29,6 @@ export interface InputDescriptorDecoder<U> {
    */
   decode(ctx: InputDecodeContext): U[];
 }
-
-// Resolve the part descriptor for an inbound partType: an exact non-wildcard
-// match, else a wildcard whose predicate accepts it. Wildcards are excluded
-// from the exact pass — only their derived predicate may route to them.
-const partFor = (parts: readonly PartDescriptor[], partType: string): PartDescriptor | undefined =>
-  parts.find((part) => !part.match && part.partType === partType) ?? parts.find((part) => part.match?.(partType));
 
 /**
  * Build an input decode driver for an input descriptor set.
@@ -48,8 +42,7 @@ export const createInputDescriptorDecoder = <U extends { kind: string }>(
   const byKind = new Map<string, InputDescriptor<U>>();
   for (const descriptor of descriptors) byKind.set(descriptor.kind, descriptor);
 
-  const decodeEvent = (descriptor: InputEventDescriptor<U>, ctx: InputDecodeContext): U[] => {
-    if (descriptor.decode) return descriptor.decode(ctx);
+  const decodeEvent = (descriptor: InputEventDescriptor, ctx: InputDecodeContext): U[] => {
     if (descriptor.wireOnly) return [];
 
     const bag = readFields(descriptor.fields, ctx.codecHeaders);

@@ -64,29 +64,9 @@ The descriptor drivers move whole field sets through the bindings using the help
 - `writeFields(fields, kindValue, source, keys?)` seeds the record with `{ kind: kindValue }`, then writes each field's value (read off `source` by the field's key). An optional `keys` subset restricts which fields are written.
 - `readFields(fields, headers)` reads each field out of the inbound codec headers into a bag keyed by `field.key`; a field that reads `undefined` contributes no key.
 
-## headerWriter / headerReader
-
-`src/utils.ts` also exports a fluent `headerWriter()` builder and a `headerReader()` accessor (with `DomainHeaderWriter` / `DomainHeaderReader` interfaces). These predate the typed field bindings and are no longer used to build or read the codec tier — prefer `HeaderField` bindings for codec headers. They remain part of the public API for ad-hoc header records.
-
-`headerWriter()` returns a builder for chaining; `headerReader(headers)` wraps a record for reading:
-
-| `headerWriter` method | Value type             | Serialization                                         |
-| --------------------- | ---------------------- | ----------------------------------------------------- |
-| `str(key, value)`     | `string \| undefined`  | Stored directly. Skipped if undefined.                |
-| `bool(key, value)`    | `boolean \| undefined` | Stored as `"true"` / `"false"`. Skipped if undefined. |
-| `json(key, value)`    | `unknown`              | `JSON.stringify()`. Skipped if undefined or null.     |
-| `build()`             | -                      | Returns the accumulated `Record<string, string>`.     |
-
-| `headerReader` method  | Return type            | Behavior                                                                    |
-| ---------------------- | ---------------------- | --------------------------------------------------------------------------- |
-| `str(key)`             | `string \| undefined`  | Raw value, or undefined if absent.                                          |
-| `strOr(key, fallback)` | `string`               | Raw value, or fallback if absent.                                           |
-| `bool(key)`            | `boolean \| undefined` | `"true"` → `true`, any other present value → `false`, absent → `undefined`. |
-| `json(key)`            | `unknown`              | `JSON.parse()` the value, or undefined if absent or invalid.                |
-
 ## Low-level utilities
 
-These back the `HeaderField` bindings (`boolField` uses `parseBool`, `jsonField` uses `parseJson`), the `headerReader` / `headerWriter` accessors, and the transport layer. Codec implementations should prefer the typed `HeaderField` bindings over calling these directly.
+These back the `HeaderField` bindings (`boolField` uses `parseBool`, `jsonField` uses `parseJson`) and the transport layer. Codec implementations should prefer the typed `HeaderField` bindings over calling these directly.
 
 | Function                        | Purpose                                                                                         |
 | ------------------------------- | ----------------------------------------------------------------------------------------------- |

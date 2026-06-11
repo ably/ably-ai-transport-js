@@ -19,9 +19,7 @@ import { HEADER_ROLE } from '../../constants.js';
 import type { InputBuilder, InputDescriptor } from '../../core/codec/index.js';
 import type { VercelInput } from './events.js';
 import { fApproved, fId, fMediaType, fMessageId, fReason, fToolCallId } from './fields.js';
-import { isClientToolResultErrorWireData, isToolOutputAvailableWireData } from './wire-data.js';
-
-const asString = (data: unknown): string => (typeof data === 'string' ? data : '');
+import { asString, isClientToolResultErrorWireData, isToolOutputAvailableWireData } from './wire-data.js';
 
 /** Fallback for a message with no encodable parts (see the `user-message` batch). */
 const EMPTY_MESSAGE_PARTS: AI.UIMessage['parts'] = [{ type: 'text', text: '' }];

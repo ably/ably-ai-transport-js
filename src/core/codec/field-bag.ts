@@ -63,6 +63,26 @@ export const writeFields = (
  * @param headers - The inbound codec-tier headers.
  * @returns A bag of the present field values, keyed by each field's key.
  */
+/** The structural slice of a part descriptor {@link partFor} dispatches on. */
+interface PartDispatch {
+  /** The exact `partType` literal, or the `-*` wildcard literal for a family. */
+  partType: string;
+  /** Wildcard dispatch predicate; absent for an exact part. */
+  match?: (partType: string) => boolean;
+}
+
+/**
+ * Resolve the part descriptor for a `partType`: an exact non-wildcard match,
+ * else a wildcard whose derived predicate accepts it. Wildcards are excluded
+ * from the exact pass — only their predicate may route to them. Shared by the
+ * input encode and decode drivers.
+ * @param parts - The batch's part descriptor sub-table.
+ * @param partType - The `partType` to resolve (from `partTypeOf` on encode, the wire header on decode).
+ * @returns The matching part descriptor, or undefined when none matches.
+ */
+export const partFor = <P extends PartDispatch>(parts: readonly P[], partType: string): P | undefined =>
+  parts.find((part) => !part.match && part.partType === partType) ?? parts.find((part) => part.match?.(partType));
+
 export const readFields = (
   fields: readonly HeaderField<unknown>[],
   headers: Record<string, string>,

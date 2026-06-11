@@ -156,8 +156,6 @@ export interface OutputEventSpec<C> {
   ephemeral?: (chunk: C) => boolean;
   /** Escape-hatch encode — overrides the default discrete publish. */
   encode?: (chunk: C, core: EscapeHatchCore, ctx: OutputEncodeHatchContext<C>) => Promise<void>;
-  /** Escape-hatch decode — overrides the default field-bag rebuild. */
-  decode?: (ctx: OutputDecodeContext) => C[];
 }
 
 /**
@@ -227,8 +225,6 @@ export interface OutputEventDescriptor<U> {
   match?: (type: string) => boolean;
   /** Escape-hatch encode, if any. */
   encode?: (chunk: U, core: EscapeHatchCore, ctx: OutputEncodeHatchContext<U>) => Promise<void>;
-  /** Escape-hatch decode, if any. */
-  decode?: (ctx: OutputDecodeContext) => U[];
 }
 
 /** A streamed-family descriptor erased to the codec's union `U`. */
@@ -321,7 +317,6 @@ export const outputBuilder = <U extends { type: string }>(): OutputBuilder<U> =>
       // derived from the literal's prefix so the two can never disagree.
       match: type.endsWith('-*') ? (t: string): boolean => t.startsWith(type.slice(0, -1)) : undefined,
       encode: spec?.encode,
-      decode: spec?.decode,
     }) as unknown as OutputDescriptor<U>,
   stream: (kind, spec) =>
     // CAST: see `event` — the narrowed stream spec erases to `OutputDescriptor<U>`.

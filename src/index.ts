@@ -58,10 +58,7 @@ export type {
   HeaderBuilder,
   HeaderField,
   InputBuilder,
-  InputDecodeContext,
   InputDescriptor,
-  InputEncodeContext,
-  InputEncoderCore,
   InputEventSpec,
   LifecycleDiscreteContext,
   LifecyclePolicy,
@@ -122,15 +119,8 @@ export {
 } from './constants.js';
 
 // Utilities
-export type { DomainHeaderReader, DomainHeaderWriter, Stripped } from './utils.js';
-export {
-  getCodecHeaders,
-  getTransportHeaders,
-  headerReader,
-  headerWriter,
-  mergeHeaders,
-  stripUndefined,
-} from './utils.js';
+export type { Stripped } from './utils.js';
+export { getCodecHeaders, getTransportHeaders, mergeHeaders, stripUndefined } from './utils.js';
 
 // Event emitter
 export { EventEmitter } from './event-emitter.js';

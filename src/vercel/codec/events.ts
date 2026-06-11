@@ -83,5 +83,3 @@ export type VercelOutput = AI.UIMessageChunk;
 // ---------------------------------------------------------------------------
 // Projection re-export
 // ---------------------------------------------------------------------------
-
-export type { VercelProjection } from './reducer.js';

@@ -33,6 +33,14 @@ const isRecord = (data: unknown): data is Record<string, unknown> => typeof data
 
 // Validates the typed `errorText` field; `input` is tool-defined and
 // intentionally left unconstrained.
+/**
+ * Coerce wire `data` to a string, falling back to `''` for any non-string
+ * payload — the defensive read for descriptors whose data is plain text.
+ * @param data - The inbound wire data.
+ * @returns The string payload, or `''` when the data is not a string.
+ */
+export const asString = (data: unknown): string => (typeof data === 'string' ? data : '');
+
 export const isToolInputErrorWireData = (data: unknown): data is ToolInputErrorWireData =>
   isRecord(data) && (data.errorText === undefined || typeof data.errorText === 'string');
 

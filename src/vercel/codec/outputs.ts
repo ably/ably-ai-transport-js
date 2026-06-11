@@ -21,6 +21,7 @@ import {
   fFinishReason,
   fId,
   fMediaType,
+  fMessageId,
   fMeta,
   fProviderExecuted,
   fSourceId,
@@ -29,12 +30,11 @@ import {
   fToolName,
 } from './fields.js';
 import {
+  asString,
   isAgentToolOutputErrorWireData,
   isToolInputErrorWireData,
   isToolOutputAvailableWireData,
 } from './wire-data.js';
-
-const asString = (data: unknown): string => (typeof data === 'string' ? data : '');
 
 /**
  * The Vercel codec's `ai-output` descriptors, built from the injected
@@ -125,7 +125,7 @@ export const outputs = ({ event, stream }: OutputBuilder<VercelOutput>): readonl
   // `start` injects the encoder's configured messageId as a fallback, so it
   // builds its headers through a hatch rather than a pure descriptor.
   event('start', {
-    fields: [strField('messageId'), jsonField('messageMetadata')],
+    fields: [fMessageId, jsonField('messageMetadata')],
     encode: async (c, core, { h, name, messageId, opts }) => {
       await core.publishDiscrete(
         { name, data: '', codecHeaders: h({ ...c, messageId: c.messageId ?? messageId }) },
@@ -200,7 +200,7 @@ export const outputs = ({ event, stream }: OutputBuilder<VercelOutput>): readonl
   // --- data-* wildcard -------------------------------------------------------
 
   event('data-*', {
-    fields: [strField('id'), boolField('transient')],
+    fields: [fId, boolField('transient')],
     ephemeral: (c) => c.transient === true,
     data: { encode: (c) => c.data, decode: (data) => ({ data }) },
   }),

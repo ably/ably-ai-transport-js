@@ -16,7 +16,13 @@ import type {
   VercelToolResultErrorPayload,
   VercelToolResultPayload,
 } from './events.js';
-import { ensureTrackers, getToolPart, type OwnerLookup, type VercelProjection } from './reducer-state.js';
+import {
+  ensureTrackers,
+  getToolPart,
+  type OwnerLookup,
+  type PendingToolResolution,
+  type VercelProjection,
+} from './reducer-state.js';
 import { toolBase, transitionToolPart } from './tool-transitions.js';
 
 /**
@@ -81,22 +87,7 @@ export const foldClientToolResult = (
   event: ToolResult<VercelToolResultPayload>,
 ): VercelProjection => {
   const { toolCallId, output } = event.payload;
-  const owner = findOwner(state, event.codecMessageId, toolCallId);
-  if (owner) {
-    owner.message.parts[owner.tracker.partIndex] = transitionToolPart(owner.part, {
-      type: 'tool-output-available',
-      toolCallId,
-      output,
-    });
-    return state;
-  }
-
-  state.pendingToolResolutions.push({
-    targetCodecMessageId: event.codecMessageId,
-    toolCallId,
-    resolution: { kind: 'tool-result', output },
-  });
-  return state;
+  return resolveOrPend(state, event.codecMessageId, toolCallId, { kind: 'tool-result', output });
 };
 
 /**
@@ -111,22 +102,7 @@ export const foldClientToolResultError = (
   event: ToolResultError<VercelToolResultErrorPayload>,
 ): VercelProjection => {
   const { toolCallId, message } = event.payload;
-  const owner = findOwner(state, event.codecMessageId, toolCallId);
-  if (owner) {
-    owner.message.parts[owner.tracker.partIndex] = transitionToolPart(owner.part, {
-      type: 'tool-output-error',
-      toolCallId,
-      errorText: message,
-    });
-    return state;
-  }
-
-  state.pendingToolResolutions.push({
-    targetCodecMessageId: event.codecMessageId,
-    toolCallId,
-    resolution: { kind: 'tool-result-error', message },
-  });
-  return state;
+  return resolveOrPend(state, event.codecMessageId, toolCallId, { kind: 'tool-result-error', message });
 };
 
 /**
@@ -143,22 +119,76 @@ export const foldToolApprovalResponse = (
   event: ToolApprovalResponse<VercelToolApprovalResponsePayload>,
 ): VercelProjection => {
   const { toolCallId, approved, reason } = event.payload;
-  const owner = findOwner(state, event.codecMessageId, toolCallId);
-  if (owner) {
-    owner.message.parts[owner.tracker.partIndex] = approvalTransition(owner.part, approved, reason);
-    return state;
-  }
-
-  state.pendingToolResolutions.push({
-    targetCodecMessageId: event.codecMessageId,
-    toolCallId,
-    resolution: {
-      kind: 'tool-approval-response',
-      approved,
-      ...(reason === undefined ? {} : { reason }),
-    },
+  return resolveOrPend(state, event.codecMessageId, toolCallId, {
+    kind: 'tool-approval-response',
+    approved,
+    ...(reason === undefined ? {} : { reason }),
   });
+};
+
+/**
+ * Apply a resolution when its tool part is present, otherwise buffer it in
+ * `pendingToolResolutions` for {@link retryPendingResolutions}.
+ * @param state - Projection to fold into.
+ * @param codecMessageId - The assistant the resolution targets.
+ * @param toolCallId - The tool call being resolved.
+ * @param resolution - The resolution variant to apply or buffer.
+ * @returns The same projection reference.
+ */
+const resolveOrPend = (
+  state: VercelProjection,
+  codecMessageId: string,
+  toolCallId: string,
+  resolution: PendingToolResolution['resolution'],
+): VercelProjection => {
+  const owner = findOwner(state, codecMessageId, toolCallId);
+  if (owner) {
+    applyResolution(owner, toolCallId, resolution);
+  } else {
+    state.pendingToolResolutions.push({ targetCodecMessageId: codecMessageId, toolCallId, resolution });
+  }
   return state;
+};
+
+/**
+ * Apply one tool resolution onto its located `dynamic-tool` part, replacing
+ * the part with the transitioned shape — the single application point shared
+ * by the direct folds and {@link retryPendingResolutions}.
+ * @param owner - The located owner (message + tracker + part).
+ * @param toolCallId - The tool call being resolved.
+ * @param resolution - The resolution variant to apply.
+ */
+const applyResolution = (
+  owner: OwnerLookup,
+  toolCallId: string,
+  resolution: PendingToolResolution['resolution'],
+): void => {
+  switch (resolution.kind) {
+    case 'tool-result': {
+      owner.message.parts[owner.tracker.partIndex] = transitionToolPart(owner.part, {
+        type: 'tool-output-available',
+        toolCallId,
+        output: resolution.output,
+      });
+      break;
+    }
+    case 'tool-result-error': {
+      owner.message.parts[owner.tracker.partIndex] = transitionToolPart(owner.part, {
+        type: 'tool-output-error',
+        toolCallId,
+        errorText: resolution.message,
+      });
+      break;
+    }
+    case 'tool-approval-response': {
+      owner.message.parts[owner.tracker.partIndex] = approvalTransition(
+        owner.part,
+        resolution.approved,
+        resolution.reason,
+      );
+      break;
+    }
+  }
 };
 
 /**
@@ -175,32 +205,7 @@ export const retryPendingResolutions = (state: VercelProjection): void => {
       next.push(pending);
       continue;
     }
-    switch (pending.resolution.kind) {
-      case 'tool-result': {
-        owner.message.parts[owner.tracker.partIndex] = transitionToolPart(owner.part, {
-          type: 'tool-output-available',
-          toolCallId: pending.toolCallId,
-          output: pending.resolution.output,
-        });
-        break;
-      }
-      case 'tool-result-error': {
-        owner.message.parts[owner.tracker.partIndex] = transitionToolPart(owner.part, {
-          type: 'tool-output-error',
-          toolCallId: pending.toolCallId,
-          errorText: pending.resolution.message,
-        });
-        break;
-      }
-      case 'tool-approval-response': {
-        owner.message.parts[owner.tracker.partIndex] = approvalTransition(
-          owner.part,
-          pending.resolution.approved,
-          pending.resolution.reason,
-        );
-        break;
-      }
-    }
+    applyResolution(owner, pending.toolCallId, pending.resolution);
   }
   state.pendingToolResolutions = next;
 };

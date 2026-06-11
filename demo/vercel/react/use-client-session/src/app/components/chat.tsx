@@ -75,15 +75,18 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
     [api],
   );
 
-  // Derive "is a run in progress?" from the latest visible message's
-  // owning Run status: 'complete' and 'cancelled' are terminal and hide
-  // the Stop button; any other status ('active', 'error', 'suspended')
-  // leaves Stop available so the user can still abort a stuck or paused
-  // run. The Run also carries the runId Stop needs to cancel.
+  // Derive "is a run in progress?" from the latest visible message's owning
+  // Run status. Stop is shown ONLY while the run is actively streaming
+  // ('active'). A 'suspended' run is paused awaiting input - a client tool
+  // result, or a tool-approval decision - so there is no live stream to abort:
+  // the user proceeds via the approval card, and the bar shows Send. This
+  // mirrors the useChat demo, where Stop shows only for status
+  // 'submitted' | 'streaming'. Terminal statuses ('complete' | 'cancelled' |
+  // 'error') also show Send. The Run carries the runId Stop needs to cancel.
   const latestRun = runOf(messages.at(-1)?.codecMessageId ?? '');
   const latestRunId = latestRun?.runId;
   const latestStatus = latestRun?.status;
-  const isRunInProgress = latestRunId !== undefined && latestStatus !== 'complete' && latestStatus !== 'cancelled';
+  const isRunInProgress = latestRunId !== undefined && latestStatus === 'active';
   const status = isRunInProgress ? 'running' : 'idle';
 
   useEffect(() => {
@@ -203,6 +206,9 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
             onSend={(text) => wake(view.send(UIMessageCodec.createUserMessage(userMessage(text))))}
             onStop={() => {
               if (!latestRunId) return;
+              // Stop only shows for an ACTIVE run, so a live agent is attached:
+              // publishing the cancel signal makes it abort and publish run-end,
+              // which flips the run to a terminal status and reverts Stop to Send.
               void session.cancel(latestRunId);
             }}
             hasAnyRuns={isRunInProgress}

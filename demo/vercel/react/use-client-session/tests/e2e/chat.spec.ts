@@ -1043,32 +1043,41 @@ test.describe('use-client-session demo - chat behaviour', () => {
   // Follow-up exploratory scenarios
   // =========================================================================
 
-  // test.fixme: client-session-specific - cancelling (session.cancel) while in
-  // approval-requested state does not return the input bar to Send (the
-  // streaming-cancel test passes). Remove `.fixme` once this path settles the run.
+  // A cancel of a SUSPENDED run (approval-requested) publishes ai-cancel but
+  // the agent has gone, so no run-end ever lands and the channel status stays
+  // 'suspended'. The demo settles the input bar locally on Stop (like useChat's
+  // stop()), so Send reappears without waiting on a run-end that never comes.
   // checks: cancel while in approval-requested state; the run cleans up.
-  test.fixme('exploratory: cancelling while the assistant is in approval-requested state cleans up the run', async ({
+  test('exploratory: a run suspended awaiting approval shows Send not Stop, and approving resumes it', async ({
     page,
   }, testInfo) => {
-    // The user opens an approval-gated tool call, then hits Stop before
-    // clicking Approve or Deny. The run should reach a terminal state
-    // and the input should be ready for the next prompt.
+    // A run paused in the approval-requested state has no live stream to
+    // abort, so there is nothing for Stop to act on: the input bar shows Send
+    // and the user proceeds via Approve / Deny. (Stop is reserved for an
+    // actively streaming run - see the streaming-cancel test.) This mirrors
+    // the useChat demo, where Stop shows only while the request is in flight
+    // (status 'submitted' | 'streaming'); a suspended run shows Send.
     await page.goto(freshChannelUrl(testInfo.title));
     const input = page.getByPlaceholder('Type a message...');
     await input.waitFor({ state: 'visible' });
     await input.fill("what's the weather forecast for London?");
     await input.press('Enter');
 
-    // Wait for the approval-requested state.
+    // The approval card appears and the run suspends.
     await expect(page.getByRole('button', { name: /Approve/i }).first()).toBeVisible({ timeout: 60_000 });
 
-    // Hit Stop instead of Approve / Deny.
-    const stopButton = page.getByRole('button', { name: /Stop/i });
-    await expect(stopButton).toBeVisible();
-    await stopButton.click();
-
-    // Send should reappear and no bubble should be stuck on streaming.
+    // Once suspended, the bar shows Send (not Stop). Wait for Send to settle
+    // (the run may briefly still be 'active' as the tool call streams in),
+    // then assert no Stop is offered for the suspended run.
     await expect(page.getByRole('button', { name: /Send/i })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole('button', { name: /Stop/i })).toHaveCount(0);
+
+    // Approving still resumes the run to completion (no stuck streaming).
+    await page
+      .getByRole('button', { name: /Approve/i })
+      .first()
+      .click();
+    await waitForAssistantSettled(page);
     const streamingBadges = page.locator('span:has(span:text-is("status")):has(span:text-is("streaming"))');
     await expect(streamingBadges).toHaveCount(0, { timeout: 30_000 });
   });

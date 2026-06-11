@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { useEffect, useState, type ReactNode } from 'react';
 import type * as AI from 'ai';
 import { Invocation } from '@ably/ai-transport';
-import type { ActiveRun, BranchSelection, ClientSession, SendOptions } from '@ably/ai-transport';
+import type { ActiveRun, BranchSelection, ClientSession, RunInfo, SendOptions } from '@ably/ai-transport';
 import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
 
 // jsdom doesn't implement Element.prototype.scrollIntoView; MessageList's
@@ -19,6 +19,10 @@ Element.prototype.scrollIntoView = () => {};
 // ---------------------------------------------------------------------------
 
 let setMockViewMessages: ((messages: AI.UIMessage[]) => void) | null = null;
+
+// Lets a test stub the View's runOf so the demo derives a Run status (and thus
+// the Stop / Send button state) for the rendered messages. Default: no Run.
+let mockRunOf: (codecMessageId: string) => RunInfo | undefined = () => undefined;
 
 const mockSend = vi.fn(
   (_input: VercelInput | VercelInput[], _opts?: SendOptions): Promise<ActiveRun> =>
@@ -73,7 +77,7 @@ vi.mock('../providers', () => ({
         loadOlder: async () => {},
         branchSelection: emptyBranchSelection,
         selectSibling: () => {},
-        runOf: () => undefined,
+        runOf: (codecMessageId: string) => mockRunOf(codecMessageId),
         run: () => undefined,
         send: mockSend,
         regenerate: vi.fn(),
@@ -107,6 +111,8 @@ const assistantText = (text: string): AI.UIMessage => ({
 describe('<Chat>', () => {
   beforeEach(() => {
     mockSend.mockClear();
+    mockRunOf = () => undefined;
+    vi.mocked(mockSession.cancel).mockClear();
     // The demo wakes the agent by POSTing the invocation after each send.
     // Stub fetch so that POST succeeds rather than hitting the network; the
     // agent route returns the minted invocation-id, which wakeAgent reads.
@@ -118,6 +124,11 @@ describe('<Chat>', () => {
   });
 
   afterEach(() => {
+    // vitest isn't configured with globals, so @testing-library/react's
+    // auto-cleanup hook isn't registered — unmount explicitly so each test
+    // starts from an empty DOM (otherwise a second render duplicates the
+    // input bar and role queries find multiple matches).
+    cleanup();
     vi.unstubAllGlobals();
   });
 
@@ -154,5 +165,69 @@ describe('<Chat>', () => {
     });
 
     expect(screen.queryByText('Hi there')).not.toBeNull();
+  });
+
+  it('shows Send (not Stop) when the latest run is suspended awaiting approval', async () => {
+    // A run paused in the approval-requested state has no live stream to abort
+    // (the serverless agent terminated on suspend), so there is nothing for
+    // Stop to act on: the input bar shows Send and the user proceeds via the
+    // approval card. This mirrors the useChat demo, where Stop shows only while
+    // the request is in flight (status 'submitted' | 'streaming'). Showing Stop
+    // here was the bug - pressing it published a dead ai-cancel that no agent
+    // acted on, leaving the run suspended on a refresh.
+    mockRunOf = () => ({ runId: 'run-suspended-1', clientId: 'user-a', status: 'suspended', invocationId: 'inv-1' });
+
+    render(
+      <Chat
+        chatId="ai:test"
+        api="api/chat"
+      />,
+    );
+
+    act(() => {
+      setMockViewMessages?.([assistantText('Calling getWeatherForecast...')]);
+    });
+
+    // Scope the button assertions to the input bar's <form> so descriptive
+    // copy / suggestion chips elsewhere on the page (which also mention "Stop"
+    // and "Send") can't satisfy the role query.
+    const inputForm = screen.getByPlaceholderText('Type a message...').closest('form');
+    if (!inputForm) throw new Error('input is not nested in a <form>');
+    const inputBar = within(inputForm);
+
+    // Suspended run -> Send is offered, Stop is not.
+    expect(await inputBar.findByRole('button', { name: /Send/i })).not.toBeNull();
+    expect(inputBar.queryByRole('button', { name: /Stop/i })).toBeNull();
+  });
+
+  it('shows Stop while the latest run is actively streaming, and Stop publishes a cancel for it', async () => {
+    // An 'active' run is genuinely in flight, so Stop is offered; pressing it
+    // publishes session.cancel for that run (a live agent then aborts and ends
+    // the run, flipping it terminal and reverting Stop to Send).
+    mockRunOf = () => ({ runId: 'run-active-1', clientId: 'user-a', status: 'active', invocationId: 'inv-1' });
+
+    render(
+      <Chat
+        chatId="ai:test"
+        api="api/chat"
+      />,
+    );
+
+    act(() => {
+      setMockViewMessages?.([assistantText('streaming a reply...')]);
+    });
+
+    const inputForm = screen.getByPlaceholderText('Type a message...').closest('form');
+    if (!inputForm) throw new Error('input is not nested in a <form>');
+    const inputBar = within(inputForm);
+
+    // Active run -> Stop is offered, Send is not.
+    const stop = await inputBar.findByRole('button', { name: /Stop/i });
+    expect(inputBar.queryByRole('button', { name: /Send/i })).toBeNull();
+
+    fireEvent.click(stop);
+    await waitFor(() => {
+      expect(mockSession.cancel).toHaveBeenCalledWith('run-active-1');
+    });
   });
 });

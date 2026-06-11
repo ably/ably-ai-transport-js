@@ -117,6 +117,26 @@ describe('pipeStream', () => {
       expect(encoder.closed).toBe(true);
     });
 
+    it('terminates still-open wire streams before close when the source completes', async () => {
+      // An agent self-abort completes the source stream without end chunks for
+      // in-flight streamed messages; the done path must give those streams a
+      // status terminal (a no-op when every stream closed normally).
+      const callOrder: string[] = [];
+      // eslint-disable-next-line @typescript-eslint/unbound-method, @typescript-eslint/require-await -- vi mock
+      vi.mocked(encoder.cancelStreams).mockImplementation(async () => {
+        callOrder.push('cancelStreams');
+      });
+      // eslint-disable-next-line @typescript-eslint/unbound-method, @typescript-eslint/require-await -- vi mock
+      vi.mocked(encoder.close).mockImplementation(async () => {
+        callOrder.push('close');
+      });
+      const stream = streamOf({ type: 'text', text: 'aborted midway' });
+
+      await pipeStream(stream, encoder, noSignal);
+
+      expect(callOrder).toEqual(['cancelStreams', 'close']);
+    });
+
     it('handles empty stream', async () => {
       const stream = streamOf();
 

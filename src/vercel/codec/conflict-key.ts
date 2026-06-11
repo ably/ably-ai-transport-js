@@ -25,11 +25,15 @@ export const conflictKeyOf = (event: CodecEvent<VercelInput, VercelOutput>, meta
     const input = event.event;
     switch (input.kind) {
       case 'user-message': {
-        // Dedup re-publishes of the same user message by its wire
-        // codec-message-id, never by the domain `message.id`. Without a
-        // codec-message-id there is nothing to correlate on, so the fold
-        // is left unconditional.
-        return meta.messageId === undefined ? undefined : `user-msg:${meta.messageId}`;
+        // Dedup replays of the same wire part by codec-message-id + serial,
+        // never by the domain `message.id`. The serial is part of the key
+        // because one user message fans out into one wire event per part, all
+        // sharing the codec-message-id — distinct parts must not compete,
+        // while a replay of the same part (same serial) must drop so the
+        // merge in foldUserMessage stays idempotent. Without a
+        // codec-message-id there is nothing to correlate on, so the fold is
+        // left unconditional.
+        return meta.messageId === undefined ? undefined : `user-msg:${meta.messageId}:${meta.serial}`;
       }
       case 'tool-approval-response': {
         return `tool-approval:${input.payload.toolCallId}`;

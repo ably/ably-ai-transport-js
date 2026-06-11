@@ -54,6 +54,7 @@ export type {
   EncoderOptions,
   EscapeHatchCore,
   Extras,
+  FieldFor,
   HeaderBuilder,
   HeaderField,
   InputBuilder,

@@ -17,7 +17,7 @@
  */
 
 import type { InputDecodeContext, InputEncodeContext, InputEncoderCore } from './define-codec.js';
-import type { HeaderField } from './fields.js';
+import type { FieldFor, HeaderField } from './fields.js';
 import type { DataCodec } from './output-descriptors.js';
 
 // ---------------------------------------------------------------------------
@@ -58,6 +58,17 @@ export type ResolvePart<P extends { type: string }, T extends string> =
 // ---------------------------------------------------------------------------
 
 /**
+ * The spec the input `event` construct accepts for member `C`. A member with
+ * no `payload` has nothing for `fields` / `data` to lens onto, so it may only
+ * be declared `wireOnly` or escape-hatched; the driver also rejects a
+ * payload-less encode at runtime.
+ * @template C - The narrowed input member.
+ */
+export type InputEventSpecFor<C> = [PayloadOf<C>] extends [never]
+  ? Pick<InputEventSpec<C>, 'wireOnly' | 'encode' | 'decode'>
+  : InputEventSpec<C>;
+
+/**
  * A single-event input descriptor spec, narrowed to input member `C`. `fields`
  * and `data` operate on the member's {@link PayloadOf payload}; the driver wraps
  * the `{ kind, codecMessageId, payload }` envelope on decode and unwraps it on
@@ -65,8 +76,12 @@ export type ResolvePart<P extends { type: string }, T extends string> =
  * @template C - The narrowed input member.
  */
 export interface InputEventSpec<C> {
-  /** Declared header fields (over the payload), written on encode and read on decode by key. Omit for none. */
-  fields?: readonly HeaderField<unknown>[];
+  /**
+   * Declared header fields over the member's payload, written on encode and
+   * read on decode. Each field's key names both the wire header and the
+   * payload property it carries (see {@link FieldFor}). Omit for none.
+   */
+  fields?: readonly FieldFor<PayloadOf<C>>[];
   /** Wire `data` codec over the payload. Omit when the input carries no data (`data: ''`). */
   data?: DataCodec<PayloadOf<C>>;
   /** Wire-only signal: encode stamps only the `kind` header (empty data, no fields); decode yields `[]`. */
@@ -85,39 +100,30 @@ export interface InputEventSpec<C> {
  * @template Q - The narrowed part member.
  */
 export interface PartSpec<Q> {
-  /** Declared header fields for this part, written on encode and read on decode. Omit for none. */
-  fields?: readonly HeaderField<unknown>[];
+  /**
+   * Declared header fields for this part, written on encode and read on
+   * decode. Each field's key names both the wire header and the part property
+   * it carries (see {@link FieldFor}). Omit for none.
+   */
+  fields?: readonly FieldFor<Q>[];
   /** Wire `data` codec over the part. Omit when the part carries no data. */
   data?: DataCodec<Q>;
 }
 
 /**
- * The curried part sub-builder a {@link BatchSpec.parts} function receives. Mirrors
- * the {@link inputBuilder} `event` curry one level down: `p(partType, spec)`
- * narrows `spec` to the part member the literal selects, and `p.wildcard(pred, spec)`
- * matches a family (e.g. `data-*`) against the template member — both cast-free
- * in author code.
+ * The curried part sub-builder a {@link BatchSpec.parts} function receives.
+ * Mirrors the {@link inputBuilder} `event` curry one level down — and the
+ * output builder's wildcard idiom: `p(partType, spec)` narrows `spec` to the
+ * part member the literal selects, and a `-*` literal (e.g. `data-*`) declares
+ * a wildcard family whose dispatch predicate is derived from the literal's
+ * prefix, narrowing `spec` to the template member. Both forms are cast-free in
+ * author code.
  * @template P - The part union.
  */
-export interface PartBuilder<P extends { type: string }> {
-  /**
-   * Declare an exact-`partType` part. Narrows `spec` to the selected part member.
-   * @param partType - The part's `type` literal (the `partType` wire sub-discriminator).
-   * @param spec - The narrowed part spec.
-   * @returns An erased {@link PartDescriptor}.
-   */
-  <T extends P['type']>(partType: T, spec: PartSpec<ResolvePart<P, T>>): PartDescriptor;
-  /**
-   * Declare a wildcard part matched by predicate (e.g. `(t) => t.startsWith('data-')`).
-   * @param match - Decode-dispatch predicate over the inbound `partType`.
-   * @param spec - The narrowed part spec (the template family member).
-   * @returns An erased {@link PartDescriptor}.
-   */
-  wildcard<T extends `${string}-*`>(
-    match: (partType: string) => boolean,
-    spec: PartSpec<ResolvePart<P, T>>,
-  ): PartDescriptor;
-}
+export type PartBuilder<P extends { type: string }> = <T extends P['type'] | `${string}-*`>(
+  partType: T,
+  spec: PartSpec<ResolvePart<P, T>>,
+) => PartDescriptor;
 
 /**
  * Per-message wire headers a {@link BatchSpec.messageHeaders} stamps on every
@@ -251,7 +257,7 @@ export interface InputBuilder<U extends { kind: string }> {
    * @param spec - The narrowed input spec. Omit for a bare-`kind` input.
    * @returns An erased {@link InputDescriptor}.
    */
-  event: <K extends U['kind']>(kind: K, spec?: InputEventSpec<ResolveInput<U, K>>) => InputDescriptor<U>;
+  event: <K extends U['kind']>(kind: K, spec?: InputEventSpecFor<ResolveInput<U, K>>) => InputDescriptor<U>;
   /**
    * Declare a multi-part (batch) input. Narrows the spec to the message-bearing
    * member `kind` selects; `explode`'s return type fixes the part union `P`, which
@@ -282,37 +288,40 @@ export const inputBuilder = <U extends { kind: string }>(): InputBuilder<U> => {
   }
   const part = (partType: string, spec: ErasedPartSpec): PartDescriptor => ({
     partType,
-    fields: spec.fields ?? [],
-    data: spec.data,
-  });
-  const wildcard = (match: (partType: string) => boolean, spec: ErasedPartSpec): PartDescriptor => ({
-    partType: '',
-    match,
+    // A `-*` literal declares a wildcard family: the dispatch predicate is
+    // derived from the literal's prefix so the two can never disagree
+    // (mirrors the output builder's wildcard idiom).
+    ...(partType.endsWith('-*') ? { match: (t: string): boolean => t.startsWith(partType.slice(0, -1)) } : {}),
     fields: spec.fields ?? [],
     data: spec.data,
   });
   // CAST: the part sub-builder is exposed to authors narrowed (PartBuilder<P>) so
-  // each `p(partType, spec)` / `p.wildcard(...)` narrows its spec to the selected
-  // part. Internally it reads only the structural `fields`/`data`, so the narrowed
-  // specs erase to the structural `ErasedPartSpec` at this boundary; a descriptor's
-  // part callbacks only ever run against the part their literal/predicate matched.
-  const p = Object.assign(part, { wildcard }) as unknown as PartBuilder<{ type: string }>;
+  // each `p(partType, spec)` narrows its spec to the selected part. Internally it
+  // reads only the structural `fields`/`data`, so the narrowed specs erase to the
+  // structural `ErasedPartSpec` at this boundary; a descriptor's part callbacks
+  // only ever run against the part their literal/predicate matched.
+  const p = part as unknown as PartBuilder<{ type: string }>;
 
   return {
-    event: (kind, spec) =>
+    event: (kind, spec) => {
+      // CAST: the author-facing spec is conditional (a payload-less member may
+      // only declare wireOnly / escape hatches); both branches erase to one
+      // structural bag here, and the impl only reads optional properties off it.
+      const bag = spec as InputEventSpec<{ kind: string; payload: unknown }> | undefined;
       // CAST: `spec` is narrowed to the member `kind` selects; the descriptor erases
       // that to the codec's union `U` so heterogeneous descriptors share one array
       // type. The drivers only ever invoke a descriptor's callbacks with the matching
       // member, so the erasure is sound.
-      ({
+      return {
         construct: 'event',
         kind,
-        fields: spec?.fields ?? [],
-        data: spec?.data,
-        wireOnly: spec?.wireOnly ?? false,
-        encode: spec?.encode,
-        decode: spec?.decode,
-      }) as unknown as InputDescriptor<U>,
+        fields: bag?.fields ?? [],
+        data: bag?.data,
+        wireOnly: bag?.wireOnly ?? false,
+        encode: bag?.encode,
+        decode: bag?.decode,
+      } as unknown as InputDescriptor<U>;
+    },
     batch: (kind, spec) => {
       // CAST: `p` is the single structural sub-builder; the author's `parts`
       // function is typed to the narrowed `PartBuilder<P>`, so we hand it `p`

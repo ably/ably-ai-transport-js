@@ -97,7 +97,7 @@ export const inputs = ({ event, batch }: InputBuilder<VercelInput>): readonly In
         fields: [fMediaType],
         data: { encode: (x) => x.url, decode: (d) => ({ url: asString(d) }) },
       }),
-      p.wildcard<'data-*'>((pt) => pt.startsWith('data-'), {
+      p('data-*', {
         fields: [fId],
         data: { encode: (x) => x.data, decode: (d) => ({ data: d }) },
       }),

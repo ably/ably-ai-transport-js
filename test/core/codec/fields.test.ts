@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 
+import type { FieldFor } from '../../../src/core/codec/fields.js';
 import { boolField, enumField, jsonField, strField } from '../../../src/core/codec/fields.js';
 
 describe('header-field bindings', () => {
@@ -157,6 +158,25 @@ describe('header-field bindings', () => {
     it('reads as the allowed union, total (type check)', () => {
       const value: (typeof finishReasons)[number] = enumField('finishReason', finishReasons, 'stop').read({});
       expect(value).toBe('stop');
+    });
+  });
+  describe('FieldFor (type contract)', () => {
+    interface Member {
+      id: string;
+      done?: boolean;
+    }
+
+    it('accepts fields whose key names a member property with a compatible value type', () => {
+      expectTypeOf(strField('id')).toExtend<FieldFor<Member>>();
+      expectTypeOf(boolField('done')).toExtend<FieldFor<Member>>();
+      expectTypeOf(strField('id', '')).toExtend<FieldFor<Member>>();
+    });
+
+    it('rejects a mistyped key and a wrong-typed field', () => {
+      // A typo'd key names no member property...
+      expectTypeOf(strField('idd')).not.toExtend<FieldFor<Member>>();
+      // ...and a boolean field cannot bind a string property.
+      expectTypeOf(boolField('id')).not.toExtend<FieldFor<Member>>();
     });
   });
 });

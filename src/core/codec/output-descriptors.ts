@@ -17,7 +17,7 @@
 
 import type * as Ably from 'ably';
 
-import type { HeaderField } from './fields.js';
+import type { FieldFor, HeaderField } from './fields.js';
 import type { MessagePayload, StreamPayload, WriteOptions } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -144,14 +144,16 @@ export interface DataCodec<C> {
  * @template C - The narrowed chunk member.
  */
 export interface OutputEventSpec<C> {
-  /** Declared header fields, written on encode and read on decode by key. Omit for a header-less event. */
-  fields?: readonly HeaderField<unknown>[];
+  /**
+   * Declared header fields, written on encode and read on decode. Each field's
+   * key names both the wire header and the chunk property it carries (see
+   * {@link FieldFor}). Omit for a header-less event.
+   */
+  fields?: readonly FieldFor<C>[];
   /** Wire `data` codec. Omit when the event carries no data (`data: ''`). */
   data?: DataCodec<C>;
   /** Whether the publish is ephemeral (not persisted). Default false. */
   ephemeral?: (chunk: C) => boolean;
-  /** Decode-dispatch predicate for wildcard types (e.g. `data-*`). Default exact `type` match. */
-  match?: (type: string) => boolean;
   /** Escape-hatch encode — overrides the default discrete publish. */
   encode?: (chunk: C, core: EscapeHatchCore, ctx: OutputEncodeHatchContext<C>) => Promise<void>;
   /** Escape-hatch decode — overrides the default field-bag rebuild. */
@@ -183,8 +185,12 @@ export interface OutputStreamSpec<
   idField: StringKeyOf<ResolveType<U, S>> & StringKeyOf<ResolveType<U, D>> & StringKeyOf<ResolveType<U, E>>;
   /** The string-valued delta chunk key carrying the appended fragment. */
   deltaField: StringKeyOf<ResolveType<U, D>>;
-  /** Declared header fields written/read on start and end. */
-  fields: readonly HeaderField<unknown>[];
+  /**
+   * Declared header fields written/read on the start and end chunks. Each
+   * field's key names both the wire header and the chunk property (see
+   * {@link FieldFor}); a field may bind a property carried by either phase.
+   */
+  fields: readonly (FieldFor<ResolveType<U, S>> | FieldFor<ResolveType<U, E>>)[];
   /** Escape-hatch override for the stream-close step only (e.g. close-or-discrete fallback). */
   onEnd?: (
     chunk: ResolveType<U, E>,
@@ -217,7 +223,7 @@ export interface OutputEventDescriptor<U> {
   data?: DataCodec<U>;
   /** Ephemeral predicate, if any. */
   ephemeral?: (chunk: U) => boolean;
-  /** Wildcard decode-dispatch predicate, if any. */
+  /** Wildcard dispatch predicate (both directions), derived by the builder from a `-*` type literal. */
   match?: (type: string) => boolean;
   /** Escape-hatch encode, if any. */
   encode?: (chunk: U, core: EscapeHatchCore, ctx: OutputEncodeHatchContext<U>) => Promise<void>;
@@ -311,7 +317,9 @@ export const outputBuilder = <U extends { type: string }>(): OutputBuilder<U> =>
       fields: spec?.fields ?? [],
       data: spec?.data,
       ephemeral: spec?.ephemeral,
-      match: spec?.match,
+      // A `-*` literal declares a wildcard family: the dispatch predicate is
+      // derived from the literal's prefix so the two can never disagree.
+      match: type.endsWith('-*') ? (t: string): boolean => t.startsWith(type.slice(0, -1)) : undefined,
       encode: spec?.encode,
       decode: spec?.decode,
     }) as unknown as OutputDescriptor<U>,

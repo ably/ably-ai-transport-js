@@ -30,11 +30,18 @@ import { parseBool, parseJson } from '../../utils.js';
  * A header key bound to its value type, with symmetric read/write over a raw
  * headers record. Created via {@link strField}, {@link boolField}, {@link
  * jsonField}, or {@link enumField}.
+ *
+ * The `key` plays a dual role in descriptor `fields` tables: it is the wire
+ * header key AND the property name the drivers read off the source object on
+ * encode and write back into the rebuilt object on decode. {@link FieldFor}
+ * enforces this — a declared field's key must name a real property of the
+ * member it lenses onto.
  * @template V - The decoded value type this field reads and writes.
+ * @template K - The header key literal (preserved so {@link FieldFor} can match it against the member's property names).
  */
-export interface HeaderField<V> {
-  /** The raw header key this field reads from and writes to. */
-  readonly key: string;
+export interface HeaderField<V, K extends string = string> {
+  /** The raw header key this field reads from and writes to — also the source/rebuilt property name in descriptor tables. */
+  readonly key: K;
   /**
    * Read and decode this field's value from a headers record.
    * @param headers - The raw codec headers record to read from.
@@ -58,19 +65,31 @@ export interface HeaderField<V> {
 }
 
 /**
+ * The header fields a descriptor may declare against member `C`. For each
+ * string-keyed property of `C`, a field is acceptable when its key IS that
+ * property name and its value type can hold the property. A mistyped key or a
+ * wrong-typed field (e.g. a `boolField` on a string property) is a compile
+ * error instead of a silently absent header.
+ * @template C - The member (chunk, payload, or part) the fields lens onto.
+ */
+export type FieldFor<C> = {
+  [K in keyof C & string]-?: HeaderField<C[K] | undefined, K>;
+}[keyof C & string];
+
+/**
  * Bind a string-valued header field.
- * @param key - The header key.
+ * @param key - The header key (and source property name in descriptor tables).
  * @returns A field whose `read` yields `string | undefined` (absent → `undefined`).
  */
-export function strField(key: string): HeaderField<string | undefined>;
+export function strField<K extends string>(key: K): HeaderField<string | undefined, K>;
 /**
  * Bind a string-valued header field with a default, making it total.
- * @param key - The header key.
+ * @param key - The header key (and source property name in descriptor tables).
  * @param fallback - Value returned by `read` when the header is absent.
  * @returns A field whose `read` yields `string` (absent → `fallback`).
  */
-export function strField(key: string, fallback: string): HeaderField<string>;
-export function strField(key: string, fallback?: string): HeaderField<string | undefined> {
+export function strField<K extends string>(key: K, fallback: string): HeaderField<string, K>;
+export function strField<K extends string>(key: K, fallback?: string): HeaderField<string | undefined, K> {
   return {
     key,
     read: (headers) => headers[key] ?? fallback,
@@ -82,18 +101,18 @@ export function strField(key: string, fallback?: string): HeaderField<string | u
 
 /**
  * Bind a boolean-valued header field, serialized as `"true"`/`"false"`.
- * @param key - The header key.
+ * @param key - The header key (and source property name in descriptor tables).
  * @returns A field whose `read` yields `boolean | undefined` (absent → `undefined`).
  */
-export function boolField(key: string): HeaderField<boolean | undefined>;
+export function boolField<K extends string>(key: K): HeaderField<boolean | undefined, K>;
 /**
  * Bind a boolean-valued header field with a default, making it total.
- * @param key - The header key.
+ * @param key - The header key (and source property name in descriptor tables).
  * @param fallback - Value returned by `read` when the header is absent.
  * @returns A field whose `read` yields `boolean` (absent → `fallback`).
  */
-export function boolField(key: string, fallback: boolean): HeaderField<boolean>;
-export function boolField(key: string, fallback?: boolean): HeaderField<boolean | undefined> {
+export function boolField<K extends string>(key: K, fallback: boolean): HeaderField<boolean, K>;
+export function boolField<K extends string>(key: K, fallback?: boolean): HeaderField<boolean | undefined, K> {
   return {
     key,
     read: (headers) => parseBool(headers[key]) ?? fallback,
@@ -109,10 +128,11 @@ export function boolField(key: string, fallback?: boolean): HeaderField<boolean 
  * `undefined`. The decoded shape is a trust boundary — the caller asserts it
  * via the `V` type parameter.
  * @template V - The expected decoded shape of the JSON value.
- * @param key - The header key.
+ * @template K - The header key literal. Inferred when `V` is omitted; pass it explicitly alongside `V` when the field participates in a typed descriptor `fields` table.
+ * @param key - The header key (and source property name in descriptor tables).
  * @returns A field whose `read` yields `V | undefined` (absent or malformed → `undefined`).
  */
-export const jsonField = <V>(key: string): HeaderField<V | undefined> => ({
+export const jsonField = <V, K extends string = string>(key: K): HeaderField<V | undefined, K> => ({
   key,
   // CAST: header values are wire data parsed via JSON.parse — a trust
   // boundary. The caller declares the expected shape through `V`; malformed
@@ -130,16 +150,17 @@ export const jsonField = <V>(key: string): HeaderField<V | undefined> => ({
  * falling back to a given value when the header is absent or unrecognized. Use
  * for headers with a small closed set of valid values (e.g. a finish reason).
  * @template T - The union of allowed string literals, inferred from `allowed`.
- * @param key - The header key.
+ * @template K - The header key literal, inferred from `key`.
+ * @param key - The header key (and source property name in descriptor tables).
  * @param allowed - The exhaustive list of valid values.
  * @param fallback - Value returned by `read` when the header is absent or not in `allowed`.
  * @returns A total field whose `read` yields one of the allowed literals.
  */
-export const enumField = <const T extends string>(
-  key: string,
+export const enumField = <const T extends string, K extends string>(
+  key: K,
   allowed: readonly T[],
   fallback: NoInfer<T>,
-): HeaderField<T> => ({
+): HeaderField<T, K> => ({
   key,
   read: (headers) => {
     const raw = headers[key];

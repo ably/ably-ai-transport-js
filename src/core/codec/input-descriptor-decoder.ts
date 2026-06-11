@@ -32,8 +32,7 @@ export interface InputDescriptorDecoder<U> {
 
 // Resolve the part descriptor for an inbound partType: an exact non-wildcard
 // match, else a wildcard whose predicate accepts it. Wildcards are excluded
-// from the exact pass — their '' sentinel must not exact-match an absent or
-// empty partType header.
+// from the exact pass — only their derived predicate may route to them.
 const partFor = (parts: readonly PartDescriptor[], partType: string): PartDescriptor | undefined =>
   parts.find((part) => !part.match && part.partType === partType) ?? parts.find((part) => part.match?.(partType));
 

@@ -32,15 +32,15 @@ Dispatch is by the SDK-controlled codec `kind` [header](headers.md) (`KIND_HEADE
 
 Streamed families and discrete events:
 
-| Family / event                                                                                                  | Kind on the wire | Mechanism                                                                 |
-| --------------------------------------------------------------------------------------------------------------- | ---------------- | ------------------------------------------------------------------------- |
-| `text` (`text-start` / `-delta` / `-end`)                                                                       | `text`           | `stream(...)` — `startStream` / `appendStream` / `closeStream`            |
-| `reasoning` (`reasoning-start` / `-delta` / `-end`)                                                             | `reasoning`      | `stream(...)`                                                             |
-| `tool-input` (`tool-input-start` / `-delta` / `tool-input-available`)                                           | `tool-input`     | `stream(...)` with `onEnd` / `decodeEnd` / `decodeDiscrete` hatches       |
-| `start`, `start-step`, `finish-step`, `finish`, `message-metadata`, `error`, `abort`                            | the chunk `type` | `event(...)` — discrete publish                                           |
-| `file`, `source-url`, `source-document`                                                                         | the chunk `type` | `event(...)`                                                              |
-| `tool-input-error`, `tool-output-available`, `tool-output-error`, `tool-approval-request`, `tool-output-denied` | the chunk `type` | `event(...)`                                                              |
-| `data-*`                                                                                                        | the chunk `type` | `event('data-*', { match, ephemeral })` — wildcard, transient → ephemeral |
+| Family / event                                                                                                  | Kind on the wire | Mechanism                                                                                                    |
+| --------------------------------------------------------------------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------ |
+| `text` (`text-start` / `-delta` / `-end`)                                                                       | `text`           | `stream(...)` — `startStream` / `appendStream` / `closeStream`                                               |
+| `reasoning` (`reasoning-start` / `-delta` / `-end`)                                                             | `reasoning`      | `stream(...)`                                                                                                |
+| `tool-input` (`tool-input-start` / `-delta` / `tool-input-available`)                                           | `tool-input`     | `stream(...)` with `onEnd` / `decodeEnd` / `decodeDiscrete` hatches                                          |
+| `start`, `start-step`, `finish-step`, `finish`, `message-metadata`, `error`, `abort`                            | the chunk `type` | `event(...)` — discrete publish                                                                              |
+| `file`, `source-url`, `source-document`                                                                         | the chunk `type` | `event(...)`                                                                                                 |
+| `tool-input-error`, `tool-output-available`, `tool-output-error`, `tool-approval-request`, `tool-output-denied` | the chunk `type` | `event(...)`                                                                                                 |
+| `data-*`                                                                                                        | the chunk `type` | `event('data-*', { ephemeral })` — wildcard (predicate derived from the `-*` literal), transient → ephemeral |
 
 The `tool-input` family's `onEnd` hatch closes the matching stream; if no stream is open (the input was never streamed) it catches the core's `InvalidArgument` and falls back to a `publishDiscrete()` carrying the full input. Its `decodeDiscrete` hatch rebuilds the `tool-input-start` + `tool-input-available` pair from a non-streamed publish.
 

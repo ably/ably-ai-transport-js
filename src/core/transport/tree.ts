@@ -41,15 +41,22 @@ import { getTransportHeaders } from '../../utils.js';
 import { toCodecEvents } from '../codec/codec-event.js';
 import type { CodecEvent, CodecInputEvent, CodecOutputEvent, Reducer } from '../codec/types.js';
 import type { ConversationNode, InputNode, OutputEvent, RunLifecycleEvent, RunNode, Tree } from './types.js';
+import { recordWire, type WireLogEntry } from './wire-log.js';
 
 // ---------------------------------------------------------------------------
 // Internal node type
 // ---------------------------------------------------------------------------
 
-interface InternalNode<TProjection> {
+interface InternalNode<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection> {
   node: ConversationNode<TProjection>;
   /** Insertion sequence — tiebreaker for nodes with no sort serial (optimistic). */
   insertSeq: number;
+  /**
+   * The node's event log: the decoded events of every serial-bearing wire
+   * message applied to this node, ascending by serial. Optimistic
+   * (serial-less) applies are not recorded.
+   */
+  log: WireLogEntry<CodecEvent<TInput, TOutput>>[];
 }
 
 /**
@@ -225,7 +232,7 @@ export class DefaultTree<
    * All nodes indexed by their primary key ({@link nodeKey}): a reply run's
    * runId, or an input node's codec-message-id.
    */
-  private readonly _nodeIndex = new Map<string, InternalNode<TProjection>>();
+  private readonly _nodeIndex = new Map<string, InternalNode<TInput, TOutput, TProjection>>();
 
   /**
    * Maps every observed `codec-message-id` to its owning node's key
@@ -243,7 +250,7 @@ export class DefaultTree<
    * serial (optimistic) sort after all serial-bearing nodes, ordered among
    * themselves by insertion sequence.
    */
-  private readonly _sortedNodes: InternalNode<TProjection>[] = [];
+  private readonly _sortedNodes: InternalNode<TInput, TOutput, TProjection>[] = [];
 
   /**
    * Parent index: parent node key (the key its children's
@@ -276,7 +283,7 @@ export class DefaultTree<
    * the View calls `getSiblingNodes` once per visible node plus extra
    * per-message branch-anchor probes from React components.
    */
-  private _siblingCache = new Map<string, InternalNode<TProjection>[]>();
+  private _siblingCache = new Map<string, InternalNode<TInput, TOutput, TProjection>[]>();
   private _siblingCacheVersion = -1;
 
   /**
@@ -314,7 +321,10 @@ export class DefaultTree<
    * @returns Negative if a sorts before b, positive if after, zero if equal.
    */
   // Spec: AIT-CT13a
-  private _compareNodes(a: InternalNode<TProjection>, b: InternalNode<TProjection>): number {
+  private _compareNodes(
+    a: InternalNode<TInput, TOutput, TProjection>,
+    b: InternalNode<TInput, TOutput, TProjection>,
+  ): number {
     const sa = sortSerial(a.node);
     const sb = sortSerial(b.node);
     if (sa === undefined && sb === undefined) return a.insertSeq - b.insertSeq;
@@ -329,7 +339,7 @@ export class DefaultTree<
    * Insert a node into the sorted list at the correct position via binary search.
    * @param internal - The node to insert.
    */
-  private _insertSortedNode(internal: InternalNode<TProjection>): void {
+  private _insertSortedNode(internal: InternalNode<TInput, TOutput, TProjection>): void {
     const startSerial = sortSerial(internal.node);
 
     // Fast path: null-startSerial always appends to end.
@@ -357,7 +367,7 @@ export class DefaultTree<
    * Remove a node from the sorted list.
    * @param internal - The node to remove.
    */
-  private _removeSortedNode(internal: InternalNode<TProjection>): void {
+  private _removeSortedNode(internal: InternalNode<TInput, TOutput, TProjection>): void {
     const idx = this._sortedNodes.indexOf(internal);
     if (idx !== -1) this._sortedNodes.splice(idx, 1);
   }
@@ -371,7 +381,11 @@ export class DefaultTree<
    * @param entry - The internal node to insert.
    * @param parentCodecMessageId - The node's structural parent, or undefined for a root.
    */
-  private _insertNode(key: string, entry: InternalNode<TProjection>, parentCodecMessageId: string | undefined): void {
+  private _insertNode(
+    key: string,
+    entry: InternalNode<TInput, TOutput, TProjection>,
+    parentCodecMessageId: string | undefined,
+  ): void {
     this._nodeIndex.set(key, entry);
     this._addToParentIndex(parentCodecMessageId, key);
     this._insertSortedNode(entry);
@@ -385,7 +399,7 @@ export class DefaultTree<
    * optimistic-serial promotion paths when the server relay/echo arrives.
    * @param entry - The internal node whose serial was just promoted.
    */
-  private _promoteSerial(entry: InternalNode<TProjection>): void {
+  private _promoteSerial(entry: InternalNode<TInput, TOutput, TProjection>): void {
     this._removeSortedNode(entry);
     this._insertSortedNode(entry);
     this._structuralVersion++;
@@ -401,7 +415,7 @@ export class DefaultTree<
    * @param messageId - The reducer routing key (codec-message-id), or undefined.
    */
   private _foldInto(
-    entry: InternalNode<TProjection>,
+    entry: InternalNode<TInput, TOutput, TProjection>,
     events: CodecEvent<TInput, TOutput>[],
     serial: string | undefined,
     messageId: string | undefined,
@@ -483,7 +497,7 @@ export class DefaultTree<
    * @returns The ordered list of sibling nodes.
    */
   // Spec: AIT-CT13b
-  private _getSiblingGroup(key: string): InternalNode<TProjection>[] {
+  private _getSiblingGroup(key: string): InternalNode<TInput, TOutput, TProjection>[] {
     if (this._siblingCacheVersion !== this._structuralVersion) {
       this._siblingCache.clear();
       this._siblingCacheVersion = this._structuralVersion;
@@ -507,7 +521,7 @@ export class DefaultTree<
     // still files/groups correctly — the parent codec-message-id is known at
     // creation, the resolved key may not be.
     const parentKey = original.parentCodecMessageId;
-    const siblings: InternalNode<TProjection>[] = [];
+    const siblings: InternalNode<TInput, TOutput, TProjection>[] = [];
     const candidateKeys = this._parentIndex.get(parentKey);
     if (candidateKeys) {
       for (const childKey of candidateKeys) {
@@ -759,6 +773,12 @@ export class DefaultTree<
       this._promoteSerial(entry);
     }
 
+    // Record the decoded events in the node's log — only serial-bearing wires
+    // are logged (optimistic applies have no canonical position yet).
+    if (serial !== undefined && all.length > 0) {
+      recordWire(entry.log, serial, codecMessageId, all);
+    }
+
     this._foldInto(entry, all, serial, codecMessageId);
 
     // An input node owns no agent outputs; the event still fires (empty
@@ -827,6 +847,14 @@ export class DefaultTree<
     // Index the codec-message-id against the node that actually owns it.
     const ownerKey = nodeKey(run.node);
     if (codecMessageId) this._codecMessageIdToNodeKey.set(codecMessageId, ownerKey);
+
+    // Record the decoded events in the node's log — only serial-bearing wires
+    // are logged (optimistic applies have no canonical position yet). `run`
+    // may be a reconciled optimistic node: record on whichever entry owns the
+    // fold.
+    if (serial !== undefined && all.length > 0) {
+      recordWire(run.log, serial, codecMessageId, all);
+    }
 
     this._foldInto(run, all, serial, codecMessageId);
 
@@ -1024,7 +1052,7 @@ export class DefaultTree<
     runId: string,
     headers: Record<string, string>,
     serial: string | undefined,
-  ): InternalNode<TProjection> {
+  ): InternalNode<TInput, TOutput, TProjection> {
     const forkOfMsgId = headers[HEADER_FORK_OF];
     return this._buildRunNode({
       runId,
@@ -1061,7 +1089,7 @@ export class DefaultTree<
     clientId: string;
     invocationId: string;
     startSerial: string | undefined;
-  }): InternalNode<TProjection> {
+  }): InternalNode<TInput, TOutput, TProjection> {
     const node: RunNode<TProjection> = {
       kind: 'run',
       runId: params.runId,
@@ -1076,7 +1104,7 @@ export class DefaultTree<
       endSerial: undefined,
     };
 
-    return { node, insertSeq: this._seqCounter++ };
+    return { node, insertSeq: this._seqCounter++, log: [] };
   }
 
   /**
@@ -1090,7 +1118,7 @@ export class DefaultTree<
     codecMessageId: string,
     headers: Record<string, string>,
     serial: string | undefined,
-  ): InternalNode<TProjection> {
+  ): InternalNode<TInput, TOutput, TProjection> {
     const forkOfMsgId = headers[HEADER_FORK_OF];
     const node: InputNode<TProjection> = {
       kind: 'input',
@@ -1102,7 +1130,7 @@ export class DefaultTree<
       projection: this._codec.init(),
       serial,
     };
-    return { node, insertSeq: this._seqCounter++ };
+    return { node, insertSeq: this._seqCounter++, log: [] };
   }
 
   /**
@@ -1112,7 +1140,9 @@ export class DefaultTree<
    *   its channel serial.
    * @returns A newly-allocated internal run node ready for insertion.
    */
-  private _createRunFromLifecycle(event: RunLifecycleEvent & { type: 'start' }): InternalNode<TProjection> {
+  private _createRunFromLifecycle(
+    event: RunLifecycleEvent & { type: 'start' },
+  ): InternalNode<TInput, TOutput, TProjection> {
     const forkOfMsgId = event.forkOf;
     return this._buildRunNode({
       runId: event.runId,

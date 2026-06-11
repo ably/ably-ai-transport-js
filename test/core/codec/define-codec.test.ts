@@ -171,6 +171,49 @@ describe('defineCodec — encoder wiring', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Wire-controlled kind robustness
+//
+// The decode lifecycle policy's onDiscrete is a plain-object Record indexed by
+// the wire-controlled `kind` header. A crafted kind naming an Object.prototype
+// member ('valueOf', 'toString', …) must not resolve through the prototype
+// chain — it has to be treated as an unknown kind and dropped.
+// ---------------------------------------------------------------------------
+
+describe('defineCodec — wire-controlled kind robustness', () => {
+  const lifecycleCodec = defineCodec<NoopInput, QuirkyOutput>()({
+    reducer: {
+      init: (): FixtureProjection => ({ folded: [] }),
+      fold: (state: FixtureProjection): FixtureProjection => state,
+      getMessages: (): CodecMessage<NoopInput | QuirkyOutput>[] => [],
+    },
+    output: ({ event }) => [event('quirky', { data: { encode: () => '', decode: () => ({ kind: 'decoded' }) } })],
+    input: ({ event }) => [event('noop')],
+    decodeLifecycle: () => ({
+      onDiscrete: { quirky: () => [{ type: 'quirky', kind: 'lead-in' }] },
+    }),
+  });
+
+  it.each(['valueOf', 'toString', 'constructor', 'hasOwnProperty'])(
+    'drops a discrete ai-output with crafted kind %j',
+    (kind) => {
+      const decoder = lifecycleCodec.createDecoder();
+      const { inputs, outputs } = decoder.decode(aiMessage(EVENT_AI_OUTPUT, { kind }));
+      expect(inputs).toEqual([]);
+      expect(outputs).toEqual([]);
+    },
+  );
+
+  it('still runs the lifecycle policy for a declared kind, prepending its lead-in', () => {
+    const decoder = lifecycleCodec.createDecoder();
+    const { outputs } = decoder.decode(aiMessage(EVENT_AI_OUTPUT, { kind: 'quirky' }));
+    expect(outputs).toEqual([
+      { type: 'quirky', kind: 'lead-in' },
+      { type: 'quirky', kind: 'decoded' },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Table validation
 //
 // defineCodec is the public authoring boundary: a mistake in a descriptor

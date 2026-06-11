@@ -30,9 +30,12 @@ export interface InputDescriptorDecoder<U> {
   decode(ctx: InputDecodeContext): U[];
 }
 
-// Resolve the part descriptor for an inbound partType: an exact match, else a wildcard.
+// Resolve the part descriptor for an inbound partType: an exact non-wildcard
+// match, else a wildcard whose predicate accepts it. Wildcards are excluded
+// from the exact pass — their '' sentinel must not exact-match an absent or
+// empty partType header.
 const partFor = (parts: readonly PartDescriptor[], partType: string): PartDescriptor | undefined =>
-  parts.find((part) => part.partType === partType) ?? parts.find((part) => part.match?.(partType));
+  parts.find((part) => !part.match && part.partType === partType) ?? parts.find((part) => part.match?.(partType));
 
 /**
  * Build an input decode driver for an input descriptor set.
@@ -54,10 +57,13 @@ export const createInputDescriptorDecoder = <U extends { kind: string }>(
     if (descriptor.data) Object.assign(bag, descriptor.data.decode(ctx.data));
 
     const codecMessageId = ctx.transportHeaders[HEADER_CODEC_MESSAGE_ID] ?? '';
+    // The payload bag is stripped of undefined-valued props — the same rule
+    // every rebuild seam applies to its innermost bag (absent and undefined
+    // are indistinguishable on the wire). The envelope keys are always defined.
     // CAST: the rebuild seam — `bag` is assembled from the descriptor's declared
     // fields and data codec onto the payload, so the `{ kind, codecMessageId, payload }`
     // envelope conforms to the matched member by construction.
-    return [stripUndefined({ kind: descriptor.kind, codecMessageId, payload: bag }) as unknown as U];
+    return [{ kind: descriptor.kind, codecMessageId, payload: stripUndefined(bag) } as unknown as U];
   };
 
   const decodeBatch = (descriptor: BatchDescriptor<U>, ctx: InputDecodeContext): U[] => {

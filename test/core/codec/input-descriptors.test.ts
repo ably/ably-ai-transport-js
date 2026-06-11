@@ -304,4 +304,33 @@ describe('input descriptor drivers', () => {
     expect(codecHeadersOf(at(payloads, 0)).docId).toBe('m0');
     expect(transportHeadersOf(at(payloads, 0)).origin).toBe('client');
   });
+
+  // -- wire robustness -------------------------------------------------------
+
+  it('drops a batch wire event whose partType header is absent or empty', () => {
+    // The driver's bare fallback (and any foreign message) carries no partType;
+    // the wildcard's '' sentinel must not exact-match it.
+    const headerVariants: Record<string, string>[] = [
+      { kind: 'doc', docId: 'm0' },
+      { kind: 'doc', docId: 'm0', partType: '' },
+    ];
+    for (const codecHeaders of headerVariants) {
+      const decoded = decoder.decode({ codecKind: 'doc', data: '', codecHeaders, transportHeaders: {} });
+      expect(decoded).toEqual([]);
+    }
+  });
+
+  it('strips decode-contributed undefined props from the rebuilt payload', () => {
+    const [decoded] = decoder.decode({
+      codecKind: 'tool-result-like',
+      data: { output: undefined },
+      codecHeaders: { kind: 'tool-result-like', toolCallId: 't9' },
+      transportHeaders: { [HEADER_CODEC_MESSAGE_ID]: 'cm-9' },
+    });
+    if (decoded?.kind !== 'tool-result-like') throw new Error('expected a tool-result-like input');
+    // Absent and undefined are indistinguishable on the wire; the rebuild seam
+    // strips undefined so the payload carries only defined props.
+    expect('output' in decoded.payload).toBe(false);
+    expect(decoded.payload.toolCallId).toBe('t9');
+  });
 });

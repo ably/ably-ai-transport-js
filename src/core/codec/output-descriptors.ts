@@ -126,7 +126,12 @@ export interface OutputStreamEndContext {
 export interface DataCodec<C> {
   /** Produce the wire `data` from the chunk. */
   encode: (chunk: C) => unknown;
-  /** Extract the chunk props this envelope contributes from the wire `data`. */
+  /**
+   * Extract the chunk props this envelope contributes from the wire `data`.
+   * Undefined-valued props are stripped when the driver rebuilds the object —
+   * every rebuild seam (output chunk, input payload, batch part) applies the
+   * same rule, since absent and undefined are indistinguishable on the wire.
+   */
   decode: (data: unknown) => Partial<C>;
 }
 

@@ -27,6 +27,17 @@ const asString = (data: unknown): string => (typeof data === 'string' ? data : '
 const EMPTY_MESSAGE_PARTS: AI.UIMessage['parts'] = [{ type: 'text', text: '' }];
 
 /**
+ * Part types the `user-message` batch's `parts` sub-table can encode — must
+ * stay in step with that table. Parts outside this set (e.g. `step-start`,
+ * tool parts) have no wire mapping; `explode` filters them so the batch always
+ * yields at least one encodable part and the message round-trips.
+ * @param part - The UIMessage part to test.
+ * @returns Whether the part has a wire mapping in the batch's part table.
+ */
+const isEncodablePart = (part: AI.UIMessage['parts'][number]): boolean =>
+  part.type === 'text' || part.type === 'file' || part.type.startsWith('data-');
+
+/**
  * The Vercel codec's `ai-input` descriptors, built from the injected
  * direction-scoped builder.
  * @param builder - The `{ event, batch }` builder curried on `VercelInput`.
@@ -41,7 +52,8 @@ export const inputs = ({ event, batch }: InputBuilder<VercelInput>): readonly In
     fields: [fToolCallId],
     data: {
       encode: (p) => ({ output: p.output }),
-      // `output` is a required payload field — keep it present (undefined on malformed data).
+      // Malformed wire data decodes to undefined, which the rebuild seam strips
+      // — the folded payload then has no `output` key (reads as undefined).
       decode: (d) => ({ output: isToolOutputAvailableWireData(d) ? d.output : undefined }),
     },
   }),
@@ -69,9 +81,15 @@ export const inputs = ({ event, batch }: InputBuilder<VercelInput>): readonly In
   // stamped on every part so the decode side can rebuild the envelope from any
   // one; the reducer merges parts sharing a codec-message-id.
   batch('user-message', {
-    // A message with no encodable parts still publishes one empty text part, so the
-    // codec-message-id and role survive and it round-trips to a one-part message.
-    explode: (input) => (input.message.parts.length > 0 ? input.message.parts : EMPTY_MESSAGE_PARTS),
+    // A message with no encodable parts (empty, or only unmapped types like
+    // step-start) still publishes one empty text part, so the codec-message-id
+    // and role survive and it round-trips to a one-part message. The driver's
+    // bare-headers fallback cannot round-trip (it carries no partType), so the
+    // ≥1-encodable-part guarantee lives here.
+    explode: (input) => {
+      const encodable = input.message.parts.filter((part) => isEncodablePart(part));
+      return encodable.length > 0 ? encodable : EMPTY_MESSAGE_PARTS;
+    },
     partTypeOf: (part) => part.type,
     parts: (p) => [
       p('text', { data: { encode: (x) => x.text, decode: (d) => ({ text: asString(d) }) } }),

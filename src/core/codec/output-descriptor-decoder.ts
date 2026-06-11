@@ -130,7 +130,7 @@ export const createOutputDescriptorDecoder = <U extends { type: string }>(
     },
 
     decodeDiscrete: (codecKind, codecHeaders, transportHeaders, data) => {
-      const ctx: OutputDecodeContext = { codecHeaders, transportHeaders, data };
+      const ctx: OutputDecodeContext = { codecKind, codecHeaders, transportHeaders, data };
       const evt = discreteByType.get(codecKind);
       if (evt) return decodeEvent(evt, codecKind, ctx);
       const streamDesc = streamByKind.get(codecKind);

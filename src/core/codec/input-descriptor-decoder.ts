@@ -16,9 +16,13 @@
 
 import { HEADER_CODEC_MESSAGE_ID } from '../../constants.js';
 import { stripUndefined } from '../../utils.js';
-import type { InputDecodeContext } from './define-codec.js';
 import { PART_TYPE_HEADER, partFor, readFields } from './field-bag.js';
-import type { BatchDescriptor, InputDescriptor, InputEventDescriptor } from './input-descriptors.js';
+import type {
+  BatchDescriptor,
+  InputDecodeContext,
+  InputDescriptor,
+  InputEventDescriptor,
+} from './input-descriptors.js';
 
 /** Decodes inbound `ai-input` messages of union `U` from an input descriptor set. */
 export interface InputDescriptorDecoder<U> {

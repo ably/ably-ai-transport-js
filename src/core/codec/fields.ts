@@ -65,6 +65,26 @@ export interface HeaderField<V, K extends string = string> {
 }
 
 /**
+ * Symmetric codec for a descriptor's wire `data`. Many wire payloads are object
+ * envelopes a decode reads several chunk props out of (e.g. `{ errorText, input }`),
+ * so a single field can't model them. `encode` produces the wire data from the
+ * chunk; `decode` returns the chunk props the envelope contributes, merged into
+ * the rebuilt chunk by the driver.
+ * @template C - The narrowed chunk member.
+ */
+export interface DataCodec<C> {
+  /** Produce the wire `data` from the chunk. */
+  encode: (chunk: C) => unknown;
+  /**
+   * Extract the chunk props this envelope contributes from the wire `data`.
+   * Undefined-valued props are stripped when the driver rebuilds the object —
+   * every rebuild seam (output chunk, input payload, batch part) applies the
+   * same rule, since absent and undefined are indistinguishable on the wire.
+   */
+  decode: (data: unknown) => Partial<C>;
+}
+
+/**
  * The header fields a descriptor may declare against member `C`. For each
  * string-keyed property of `C`, a field is acceptable when its key IS that
  * property name and its value type can hold the property. A mistyped key or a

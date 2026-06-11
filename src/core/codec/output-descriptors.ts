@@ -17,7 +17,7 @@
 
 import type * as Ably from 'ably';
 
-import type { FieldFor, HeaderField } from './fields.js';
+import type { DataCodec, FieldFor, HeaderField } from './fields.js';
 import type { MessagePayload, StreamPayload, WriteOptions } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -91,6 +91,8 @@ export interface OutputEncodeHatchContext<C> {
 
 /** Context passed to a discrete escape-hatch `decode` function. */
 export interface OutputDecodeContext {
+  /** The codec `kind` header value the message dispatched on (mirrors the input context's `codecKind`). */
+  codecKind: string;
   /** The inbound codec-tier headers. */
   codecHeaders: Record<string, string>;
   /** The inbound transport-tier headers. */
@@ -114,26 +116,6 @@ export interface OutputStreamEndContext {
 // ---------------------------------------------------------------------------
 // Data codec
 // ---------------------------------------------------------------------------
-
-/**
- * Symmetric codec for a descriptor's wire `data`. Many wire payloads are object
- * envelopes a decode reads several chunk props out of (e.g. `{ errorText, input }`),
- * so a single field can't model them. `encode` produces the wire data from the
- * chunk; `decode` returns the chunk props the envelope contributes, merged into
- * the rebuilt chunk by the driver.
- * @template C - The narrowed chunk member.
- */
-export interface DataCodec<C> {
-  /** Produce the wire `data` from the chunk. */
-  encode: (chunk: C) => unknown;
-  /**
-   * Extract the chunk props this envelope contributes from the wire `data`.
-   * Undefined-valued props are stripped when the driver rebuilds the object —
-   * every rebuild seam (output chunk, input payload, batch part) applies the
-   * same rule, since absent and undefined are indistinguishable on the wire.
-   */
-  decode: (data: unknown) => Partial<C>;
-}
 
 // ---------------------------------------------------------------------------
 // Author-facing specs (narrowed)

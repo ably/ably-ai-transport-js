@@ -203,6 +203,26 @@ describe('defineCodec — wire-controlled kind robustness', () => {
     },
   );
 
+  it('drops a streamed ai-input instead of rebuilding it through the output stream path', () => {
+    const decoder = lifecycleCodec.createDecoder();
+    // A streamed message under the ai-input wire name (foreign or crafted —
+    // the SDK never publishes one) must not rebuild via the output stream
+    // hooks, where its events would be mislabelled as inputs.
+    const streamed = {
+      serial: 's-in',
+      action: 'message.create',
+      name: EVENT_AI_INPUT,
+      data: 'partial',
+      extras: { ai: { codec: { kind: 'quirky' }, transport: { stream: 'true', 'stream-id': 'st-1' } } },
+      // CAST: minimal InboundMessage stub — only the fields the decoder reads.
+    } as Ably.InboundMessage;
+
+    const { inputs, outputs } = decoder.decode(streamed);
+
+    expect(inputs).toEqual([]);
+    expect(outputs).toEqual([]);
+  });
+
   it('still runs the lifecycle policy for a declared kind, prepending its lead-in', () => {
     const decoder = lifecycleCodec.createDecoder();
     const { outputs } = decoder.decode(aiMessage(EVENT_AI_OUTPUT, { kind: 'quirky' }));

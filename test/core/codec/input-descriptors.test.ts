@@ -1,11 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { EVENT_AI_INPUT, HEADER_CODEC_MESSAGE_ID } from '../../../src/constants.js';
-import type { InputEncoderCore } from '../../../src/core/codec/define-codec.js';
 import { strField } from '../../../src/core/codec/fields.js';
 import { createInputDescriptorDecoder } from '../../../src/core/codec/input-descriptor-decoder.js';
 import { createInputDescriptorEncoder } from '../../../src/core/codec/input-descriptor-encoder.js';
-import { inputBuilder } from '../../../src/core/codec/input-descriptors.js';
+import { inputBuilder, type InputEncoderCore } from '../../../src/core/codec/input-descriptors.js';
 import type { MessagePayload, WriteOptions } from '../../../src/core/codec/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 

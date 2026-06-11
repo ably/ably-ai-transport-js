@@ -22,7 +22,6 @@ function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; 
     <ClientSessionProvider
       channelName={channelName}
       codec={UIMessageCodec}
-      clientId={clientId}
     >
       <Chat
         chatId={channelName}

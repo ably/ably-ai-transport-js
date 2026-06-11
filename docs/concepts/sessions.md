@@ -80,7 +80,7 @@ The client session manages conversation state: the message list, conversation tr
 ```typescript
 import { createClientSession, UIMessageCodec } from '@ably/ai-transport/vercel';
 
-const session = createClientSession({ client: ably, channelName, clientId });
+const session = createClientSession({ client: ably, channelName });
 await session.connect();
 const view = session.view;
 
@@ -107,6 +107,8 @@ view.on('update', () => {
 // build a ReadableStream from it; most apps use the view instead.
 ```
 
+The session's identity is taken from the Ably client — its `auth.clientId` is stamped on everything the session publishes so other clients can attribute messages. It comes from the client either via the Ably token (the usual path — the token endpoint embeds the `clientId`) or, for an API-key client, via `ClientOptions.clientId` when you construct `new Ably.Realtime(...)`. A client with no identity (anonymous, or a wildcard `*` token) publishes without one.
+
 In React, `ClientSessionProvider` creates the session and `useClientSession` reads it from context (the app still POSTs the invocation itself, as above):
 
 ```typescript
@@ -116,7 +118,7 @@ import type { VercelInput, VercelProjection } from '@ably/ai-transport/vercel';
 import type * as AI from 'ai';
 
 // In your layout or page component:
-<ClientSessionProvider channelName="ai:demo" codec={UIMessageCodec} clientId={clientId}>
+<ClientSessionProvider channelName="ai:demo" codec={UIMessageCodec}>
   <Chat />
 </ClientSessionProvider>
 

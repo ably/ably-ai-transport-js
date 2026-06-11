@@ -83,8 +83,8 @@ class DefaultClientSession<
   TMessage,
 > implements ClientSession<TInput, TOutput, TProjection, TMessage> {
   private readonly _channel: Ably.RealtimeChannel;
+  private readonly _client: Ably.Realtime;
   private readonly _codec: Codec<TInput, TOutput, TProjection, TMessage>;
-  private readonly _clientId: string | undefined;
   private readonly _logger: Logger;
 
   // Typed event emitter — the session emits only 'error'; all data events live on Tree/View
@@ -139,8 +139,8 @@ class DefaultClientSession<
     // across sessions sharing one client.
     const channelOptions = registerAgent(options.client, options.codec);
     this._channel = options.client.channels.get(options.channelName, channelOptions);
+    this._client = options.client;
     this._codec = options.codec;
-    this._clientId = options.clientId;
     this._logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
       component: 'ClientSession',
     });
@@ -159,10 +159,7 @@ class DefaultClientSession<
       onClose: () => this._views.delete(this._view),
     });
     this._decoder = this._codec.createDecoder();
-    this._encoder = this._codec.createEncoder(
-      this._channel,
-      this._clientId === undefined ? undefined : { clientId: this._clientId },
-    );
+    this._encoder = this._codec.createEncoder(this._channel);
 
     this._views.add(this._view);
 
@@ -244,6 +241,22 @@ class DefaultClientSession<
       },
     );
     return this._connectPromise;
+  }
+
+  /**
+   * The session's identity, read from the Ably client's `auth.clientId`. Read
+   * lazily (never cached at construction): under token auth the client only
+   * learns its clientId once the connection reaches CONNECTED, which is
+   * guaranteed by the time any write runs — every write awaits `connect()`,
+   * and the channel cannot attach before the connection is CONNECTED. A
+   * connection with no concrete identity (anonymous, or a wildcard `*` token)
+   * resolves to `undefined`, so no run/input client id is stamped.
+   * @returns The client's concrete identity, or `undefined` if it has none.
+   */
+  // Spec: AIT-CT1b
+  private _resolveClientId(): string | undefined {
+    const clientId = this._client.auth.clientId;
+    return clientId && clientId !== '*' ? clientId : undefined;
   }
 
   private async _requireConnected(method: string): Promise<void> {
@@ -515,7 +528,7 @@ class DefaultClientSession<
         role: 'user',
         runId,
         codecMessageId,
-        runClientId: this._clientId,
+        runClientId: this._resolveClientId(),
         ...(parent !== undefined && { parent }),
         ...(forkOf !== undefined && { forkOf }),
         ...(regenerates !== undefined && { regenerates }),
@@ -583,7 +596,6 @@ class DefaultClientSession<
           await this._encoder.publishInput(item.input, {
             extras: { headers: item.headers },
             messageId: item.codecMessageId,
-            ...(this._clientId !== undefined && { clientId: this._clientId }),
           });
         }
       } catch (error) {

@@ -264,15 +264,15 @@ describe('ClientSessionProvider', () => {
     const wrapWithLogger = ({ children }: { children: ReactNode }): ReactNode =>
       createElement(
         ClientSessionProvider<CodecInputEvent, CodecOutputEvent, unknown, unknown>,
-        { channelName: 'ai:test', codec: {} as never, clientId: 'client-x', logger },
+        { channelName: 'ai:test', codec: {} as never, logger },
         children,
       );
 
     renderHook(() => useClientSession({ channelName: 'ai:test' }), { wrapper: wrapWithLogger });
 
     // CAST: accessing vitest mock call args as the known options type
-    const callArgs = createClientSessionMock.mock.calls[0]?.[0] as { clientId: string; logger: unknown };
-    expect(callArgs.clientId).toBe('client-x');
+    const callArgs = createClientSessionMock.mock.calls[0]?.[0] as { channelName: string; logger: unknown };
+    expect(callArgs.channelName).toBe('ai:test');
     expect(callArgs.logger).toBe(logger);
   });
 });

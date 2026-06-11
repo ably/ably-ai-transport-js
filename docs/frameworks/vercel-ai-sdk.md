@@ -24,10 +24,7 @@ import { ChatTransportProvider, useChatTransport, useMessageSync } from '@ably/a
 import { useChat } from '@ai-sdk/react';
 
 // Wrap your component tree with ChatTransportProvider (no codec needed — UIMessageCodec is pre-bound)
-<ChatTransportProvider
-  channelName={chatId}
-  clientId={clientId}
->
+<ChatTransportProvider channelName={chatId}>
   <ChatInner chatId={chatId} />
 </ChatTransportProvider>;
 
@@ -59,7 +56,6 @@ import type * as AI from 'ai';
 <ClientSessionProvider
   channelName={chatId}
   codec={UIMessageCodec}
-  clientId={clientId}
 >
   <ChatInner />
 </ClientSessionProvider>;

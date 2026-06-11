@@ -539,7 +539,7 @@ const encodeMessagePayloads = (message: AI.UIMessage): MessagePayload[] => {
  * Create a Vercel AI SDK encoder that maps VercelInput / VercelOutput to
  * Ably channel operations via the encoder core.
  * @param writer - The channel writer to publish messages through.
- * @param options - Encoder configuration (clientId, extras, hooks, logger).
+ * @param options - Encoder configuration (extras, hooks, logger).
  * @returns An {@link Encoder} typed in both directions for the Vercel codec.
  */
 export const createEncoder = (

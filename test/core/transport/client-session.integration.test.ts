@@ -425,7 +425,6 @@ describe('ClientSession integration', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: clientClient.auth.clientId,
     });
     await clientSession.connect();
 
@@ -494,7 +493,6 @@ describe('ClientSession integration', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: clientClient.auth.clientId,
     });
     await clientSession.connect();
 
@@ -540,7 +538,6 @@ describe('ClientSession integration', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: clientClient.auth.clientId,
     });
     await clientSession.connect();
 
@@ -590,7 +587,6 @@ describe('ClientSession integration', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: clientClient.auth.clientId,
     });
     await clientSession.connect();
 
@@ -633,7 +629,6 @@ describe('ClientSession integration', () => {
       client: historyClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: historyClient.auth.clientId,
     });
     await clientSession.connect();
 
@@ -681,7 +676,6 @@ describe('ClientSession integration', () => {
       client: historyClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: historyClient.auth.clientId,
     });
     await clientSession.connect();
 
@@ -744,7 +738,6 @@ describe('ClientSession integration', () => {
       client: historyClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: historyClient.auth.clientId,
     });
     await clientSession.connect();
     await clientSession.view.loadOlder(10);
@@ -814,7 +807,6 @@ describe('ClientSession integration', () => {
       client: historyClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: historyClient.auth.clientId,
     });
     await clientSession.connect();
     await clientSession.view.loadOlder(10);
@@ -858,7 +850,6 @@ describe('ClientSession integration', () => {
       client: aClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: aClient.auth.clientId,
     });
     await clientSession.connect();
 
@@ -866,7 +857,6 @@ describe('ClientSession integration', () => {
       client: bClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: bClient.auth.clientId,
     });
     await observer.connect();
 
@@ -972,7 +962,6 @@ describe('ClientSession integration', () => {
       client: historyClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: historyClient.auth.clientId,
     });
     await clientSession.connect();
 
@@ -1046,7 +1035,6 @@ describe('ClientSession integration', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: clientClient.auth.clientId,
     });
     await clientSession.connect();
 
@@ -1136,7 +1124,6 @@ describe('ClientSession integration', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: clientClient.auth.clientId,
     });
     await clientSession.connect();
 
@@ -1185,7 +1172,6 @@ describe('ClientSession integration', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: clientClient.auth.clientId,
     });
     await clientSession.connect();
 
@@ -1249,7 +1235,6 @@ describe('ClientSession integration', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: clientClient.auth.clientId,
     });
     await clientSession.connect();
 
@@ -1302,7 +1287,6 @@ describe('ClientSession integration', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: clientClient.auth.clientId,
     });
     await clientSession.connect();
 
@@ -1361,7 +1345,6 @@ describe('ClientSession integration', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: clientClient.auth.clientId,
     });
     await clientSession.connect();
 
@@ -1473,7 +1456,6 @@ describe('ClientSession integration', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: clientClient.auth.clientId,
     });
     await clientSession.connect();
 
@@ -1545,7 +1527,6 @@ describe('ClientSession integration', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: clientClient.auth.clientId,
     });
     await clientSession.connect();
 
@@ -1662,7 +1643,6 @@ describe('ClientSession integration', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: clientClient.auth.clientId,
     });
     await clientSession.connect();
 
@@ -1741,7 +1721,6 @@ describe('ClientSession integration', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: clientClient.auth.clientId,
     });
     await clientSession.connect();
 

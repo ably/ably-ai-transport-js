@@ -94,7 +94,6 @@ describe('Vercel createClientSession', () => {
     const session = createClientSession({
       client: createMockClient(channel),
       channelName: 'test-channel',
-      clientId: 'user-1',
     });
     await session.connect();
 

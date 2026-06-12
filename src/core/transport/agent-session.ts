@@ -158,19 +158,25 @@ const countReplyRuns = <TProjection>(
 };
 
 /**
- * Flatten a conversation branch into its messages: walk the ancestor chain
- * from `anchor` to root (root-first), concatenate each node's projection
- * messages, then append the current run's own messages at the tail unless the
- * walk already reached the run node. Shared by `Run.messages` (live read) and
- * `_walkConversation` (post-hydration read) so the two read paths can't drift
- * on the tail-append guard.
+ * Flatten a conversation branch into its messages: walk the ancestor chain from
+ * `anchor` to root (root-first), concatenate each node's projection messages,
+ * then append the current run's own messages at the tail unless the walk already
+ * reached the run node. Shared by `Run.messages` (live read) and
+ * `_walkConversation` (post-hydration read) so the two can't drift on the
+ * tail-append guard.
+ *
+ * `regenerateTarget`, when set, stops the walk before that message: a regenerate
+ * of a non-head message anchors the new run at the target's predecessor in the
+ * same owner run, so flattening that run whole would re-emit the target and end
+ * the history on the assistant message being replaced (which the model rejects).
  * @param codec - Codec used to extract per-node messages.
  * @param tree - The Tree to walk.
  * @param anchor - The codec-message-id to start from (the run's input node).
  * @param runId - The current run's id, for the tail run-node lookup.
  * @param maxRuns - Optional bound on ancestor reply RunNodes in the walk.
+ * @param regenerateTarget - The codec-message-id being regenerated; the walk stops before it.
  * @returns The branch messages (root-first), and the current run node's
- *   projection when one exists (for callers that need the run's projection).
+ *   projection when one exists.
  */
 const collectBranchMessages = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>(
   codec: Codec<TInput, TOutput, TProjection, TMessage>,
@@ -178,13 +184,19 @@ const collectBranchMessages = <TInput extends CodecInputEvent, TOutput extends C
   anchor: string | undefined,
   runId: string,
   maxRuns?: number,
+  regenerateTarget?: string,
 ): { messages: TMessage[]; runProjection: TProjection | undefined } => {
   const chain = walkAncestorChain(tree, anchor, maxRuns, runId);
+  const runNode = tree.getRunNode(runId);
   const messages: TMessage[] = [];
   for (const node of chain) {
-    for (const m of codec.getMessages(node.projection)) messages.push(m.message);
+    for (const m of codec.getMessages(node.projection)) {
+      if (regenerateTarget !== undefined && m.codecMessageId === regenerateTarget) {
+        return { messages, runProjection: runNode?.projection };
+      }
+      messages.push(m.message);
+    }
   }
-  const runNode = tree.getRunNode(runId);
   if (runNode !== undefined && !chain.some((n) => n.kind === 'run' && n.runId === runId)) {
     for (const m of codec.getMessages(runNode.projection)) messages.push(m.message);
   }
@@ -932,6 +944,9 @@ class DefaultAgentSession<
    *   override or continuation), so its node may exist in channel history;
    *   false for agent-minted ids, whose run-start only ever arrives via the
    *   live echo.
+   * @param regenerateTarget - The codec-message-id being regenerated (the
+   *   run-start's `msg-regenerate`), or undefined; the run that owns it is
+   *   flattened only up to that message (see `collectBranchMessages`).
    * @returns The branch's messages (root-first) and the current run's projection.
    */
   private async _walkConversation(
@@ -940,6 +955,7 @@ class DefaultAgentSession<
     signal: AbortSignal,
     maxRuns: number | undefined,
     runIdAdopted: boolean,
+    regenerateTarget: string | undefined,
   ): Promise<{ messages: TMessage[]; projection: TProjection }> {
     if (signal.aborted) {
       throw new Ably.ErrorInfo(
@@ -957,6 +973,7 @@ class DefaultAgentSession<
       assistantParentFallback,
       runId,
       maxRuns,
+      regenerateTarget,
     );
     return { messages, projection: runProjection ?? this._codec.init() };
   }
@@ -1277,7 +1294,8 @@ class DefaultAgentSession<
         // folded state. `getTree()` dereferences `this._tree` live so a
         // continuity-loss Tree swap is observed instead of returning stale
         // data from the abandoned tree.
-        return collectBranchMessages(codec, getTree(), assistantParentFallback, runId).messages;
+        return collectBranchMessages(codec, getTree(), assistantParentFallback, runId, undefined, resolvedRegenerates)
+          .messages;
       },
 
       // Spec: AIT-ST4, AIT-ST4a, AIT-ST4b
@@ -1442,6 +1460,7 @@ class DefaultAgentSession<
           signal,
           options?.maxRuns,
           runIdOverridden || resolvedContinuation,
+          resolvedRegenerates,
         );
         return messages;
       },

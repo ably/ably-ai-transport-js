@@ -68,6 +68,8 @@ const withHeaders = (msg: Partial<Ably.InboundMessage>, headers: Record<string, 
     action: 'message.create',
     name: 'text',
     data: '',
+    // `version` is required on InboundMessage; its `serial` is optional.
+    version: {},
     ...msg,
     extras: { ai: { transport, codec } },
     // CAST: Tests construct a minimal Ably.InboundMessage stub; full shape isn't needed.

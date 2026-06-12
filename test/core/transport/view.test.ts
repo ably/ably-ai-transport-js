@@ -13,7 +13,8 @@ import {
   HEADER_ROLE,
   HEADER_RUN_ID,
 } from '../../../src/constants.js';
-import type { Codec, CodecEvent, CodecInputEvent, ReducerMeta } from '../../../src/core/codec/types.js';
+import type { Codec, CodecEvent, CodecInputEvent, Decoder, ReducerMeta } from '../../../src/core/codec/types.js';
+import { createWireApplier } from '../../../src/core/transport/decode-fold.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
 // Vitest hoists vi.mock above imports, so this static import gets the mock.
 import { loadHistory } from '../../../src/core/transport/load-history.js';
@@ -202,18 +203,51 @@ describe('DefaultView', () => {
   let sendDelegate: SendDelegate<TestInput>;
   let codec: Codec<TestInput, TestOutput, TestProjection, TestMessage>;
 
+  /**
+   * Build a View over the shared tree, binding an applier around `decoder`
+   * (defaults to the test codec's no-op decoder). Each call creates its own
+   * applier — sufficient here because no view test feeds the same stream
+   * through two routes; the session-level one-decoder-per-Tree wiring is
+   * covered in client-session.test.ts.
+   * @param decoder - Optional decoder to bind into the View's applier.
+   * @returns A new DefaultView over the shared tree.
+   */
+  const makeView = (
+    decoder?: Decoder<TestInput, TestOutput>,
+  ): DefaultView<TestInput, TestOutput, TestProjection, TestMessage> =>
+    new DefaultView({
+      tree,
+      channel: createMockChannel(),
+      codec,
+      applier: createWireApplier(tree, decoder ?? codec.createDecoder()),
+      sendDelegate,
+      logger: silentLogger,
+    });
+
+  /**
+   * Decoder stub for history-replay tests: turns any wire message into a
+   * single append-message output whose id is the wire's codec-message-id.
+   * @returns The decoder stub.
+   */
+  const headerDecoder = (): Decoder<TestInput, TestOutput> => ({
+    decode: (msg: Ably.InboundMessage) => {
+      // CAST: test fixtures always stamp extras.ai.transport.
+      const id =
+        (msg.extras as { ai: { transport: Record<string, string> } }).ai.transport[HEADER_CODEC_MESSAGE_ID] ??
+        'unknown';
+      return {
+        inputs: [],
+        outputs: [{ type: 'append-message' as const, message: { id, content: id } }],
+      };
+    },
+  });
+
   beforeEach(() => {
     vi.mocked(loadHistory).mockReset();
     codec = makeTestCodec();
     tree = createTree<TestInput, TestOutput, TestProjection>(codec, silentLogger);
     sendDelegate = createMockSendDelegate();
-    view = new DefaultView({
-      tree,
-      channel: createMockChannel(),
-      codec,
-      sendDelegate,
-      logger: silentLogger,
-    });
+    view = makeView();
   });
 
   // -------------------------------------------------------------------------
@@ -634,13 +668,7 @@ describe('DefaultView', () => {
      */
     const freshViewAfterSeed = (): DefaultView<TestInput, TestOutput, TestProjection, TestMessage> => {
       seedFork();
-      return new DefaultView({
-        tree,
-        channel: createMockChannel(),
-        codec,
-        sendDelegate,
-        logger: silentLogger,
-      });
+      return makeView();
     };
 
     it('default selection picks the latest sibling Run (fresh view after fork)', () => {
@@ -1548,6 +1576,7 @@ describe('DefaultView', () => {
         tree: noopTree,
         channel: createMockChannel(),
         codec: noopCodec,
+        applier: createWireApplier(noopTree, noopCodec.createDecoder()),
         sendDelegate,
         logger: silentLogger,
       });
@@ -1585,13 +1614,7 @@ describe('DefaultView', () => {
     let viewB: DefaultView<TestInput, TestOutput, TestProjection, TestMessage>;
 
     beforeEach(() => {
-      viewB = new DefaultView({
-        tree,
-        channel: createMockChannel(),
-        codec,
-        sendDelegate,
-        logger: silentLogger,
-      });
+      viewB = makeView();
     });
 
     it('both views receive update when the shared tree changes', () => {
@@ -1674,19 +1697,15 @@ describe('DefaultView', () => {
         extras: { ai: { transport: { [HEADER_RUN_ID]: 'R0', [HEADER_CODEC_MESSAGE_ID]: 'mh1' } } },
       } as unknown as Ably.InboundMessage;
 
-      // The View's _processHistoryPage uses page.rawMessages and decodes
-      // them through a fresh codec.createDecoder(). Since our test codec's
-      // decoder returns no events, we need to override decode to produce one.
-      const decodeSpy = vi.fn(() => ({
-        inputs: [],
-        outputs: [{ type: 'append-message' as const, message: { id: 'h1', content: 'old' } }],
-      }));
-      codec.createDecoder = vi.fn(() => ({ decode: decodeSpy }));
+      // _processHistoryPage feeds page.rawMessages through the View's
+      // applier (the Tree's shared decoder). The test codec's decoder
+      // returns no events, so bind a view to a decoder that produces one.
+      const v = makeView(headerDecoder());
 
       vi.mocked(loadHistory).mockResolvedValueOnce(makePage([rawMsg]));
 
-      await view.loadOlder(10);
-      expect(view.runs().map((r) => r.runId)).toContain('R0');
+      await v.loadOlder(10);
+      expect(v.runs().map((r) => r.runId)).toContain('R0');
     });
 
     it('hasOlder becomes true when history page reports hasNext', async () => {
@@ -1695,16 +1714,12 @@ describe('DefaultView', () => {
         serial: 's0',
         extras: { ai: { transport: { [HEADER_RUN_ID]: 'R0', [HEADER_CODEC_MESSAGE_ID]: 'mh1' } } },
       } as unknown as Ably.InboundMessage;
-      const decodeSpy = vi.fn(() => ({
-        inputs: [],
-        outputs: [{ type: 'append-message' as const, message: { id: 'h1', content: 'old' } }],
-      }));
-      codec.createDecoder = vi.fn(() => ({ decode: decodeSpy }));
+      const v = makeView(headerDecoder());
 
       vi.mocked(loadHistory).mockResolvedValueOnce(makePage([rawMsg], true));
 
-      await view.loadOlder(10);
-      expect(view.hasOlder()).toBe(true);
+      await v.loadOlder(10);
+      expect(v.hasOlder()).toBe(true);
     });
 
     it('is a no-op when called while already loading', async () => {
@@ -1738,35 +1753,25 @@ describe('DefaultView', () => {
             extras: { ai: { transport: linearChainHeaders(i) } },
           }) as unknown as Ably.InboundMessage,
       );
-      codec.createDecoder = vi.fn(() => ({
-        decode: (msg: Ably.InboundMessage) => {
-          const id =
-            (msg.extras as { ai: { transport: Record<string, string> } }).ai.transport[HEADER_CODEC_MESSAGE_ID] ??
-            'unknown';
-          return {
-            inputs: [],
-            outputs: [{ type: 'append-message' as const, message: { id, content: 'x' } }],
-          };
-        },
-      }));
+      const v = makeView(headerDecoder());
 
       vi.mocked(loadHistory).mockResolvedValueOnce(makePage(rawMessages));
 
-      await view.loadOlder(2);
+      await v.loadOlder(2);
       // The newest 2 by startSerial (R1, R2) are revealed; R0 is withheld.
       expect(
-        view
+        v
           .runs()
           .map((r) => r.runId)
           .toSorted(),
       ).toEqual(['R1', 'R2']);
-      expect(view.hasOlder()).toBe(true);
+      expect(v.hasOlder()).toBe(true);
 
       // Second loadOlder drains the withheld buffer (R0). loadHistory is
       // NOT called again — the buffer drain path returns without fetching.
-      await view.loadOlder(2);
+      await v.loadOlder(2);
       expect(
-        view
+        v
           .runs()
           .map((r) => r.runId)
           .toSorted(),
@@ -1790,25 +1795,15 @@ describe('DefaultView', () => {
             extras: { ai: { transport: it.headers } },
           }) as unknown as Ably.InboundMessage,
       );
-      codec.createDecoder = vi.fn(() => ({
-        decode: (msg: Ably.InboundMessage) => {
-          const id =
-            (msg.extras as { ai: { transport: Record<string, string> } }).ai.transport[HEADER_CODEC_MESSAGE_ID] ??
-            'unknown';
-          return {
-            inputs: [],
-            outputs: [{ type: 'append-message' as const, message: { id, content: 'x' } }],
-          };
-        },
-      }));
+      const v = makeView(headerDecoder());
 
       vi.mocked(loadHistory).mockResolvedValueOnce(makePage(rawMessages));
-      await view.loadOlder(2);
+      await v.loadOlder(2);
 
       // R0 is withheld at this point. An ably-message for R0 must be
       // suppressed; an ably-message for R1 (visible) must pass through.
       const handler = vi.fn();
-      view.on('ably-message', handler);
+      v.on('ably-message', handler);
 
       const withheldMsg = {
         name: 'fake',
@@ -1846,16 +1841,7 @@ describe('DefaultView', () => {
         extras: { ai: { transport: headersB } },
       } as unknown as Ably.InboundMessage;
 
-      codec.createDecoder = vi.fn(() => ({
-        decode: (msg: Ably.InboundMessage) => {
-          const id =
-            (msg.extras as { ai: { transport: Record<string, string> } }).ai.transport[HEADER_CODEC_MESSAGE_ID] ?? '?';
-          return {
-            inputs: [],
-            outputs: [{ type: 'append-message' as const, message: { id, content: id } }],
-          };
-        },
-      }));
+      const v = makeView(headerDecoder());
 
       const page2 = makePage([rawB]);
       const page1 = makePage(
@@ -1866,13 +1852,13 @@ describe('DefaultView', () => {
       );
       vi.mocked(loadHistory).mockResolvedValueOnce(page1);
 
-      await view.loadOlder(2);
+      await v.loadOlder(2);
 
       // The single Run R-multi materialised from both pages; both messages
       // belong to one RunNode.
-      const nodes = view.runs();
+      const nodes = v.runs();
       expect(nodes.map((n) => n.runId)).toEqual(['R-multi']);
-      expect(view.getMessages().map((m) => m.message.id)).toEqual(['m-multi-a', 'm-multi-b']);
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['m-multi-a', 'm-multi-b']);
     });
 
     it('includes a Run with zero codec-fold output in the visible chain but contributes no messages to getMessages', async () => {
@@ -1966,6 +1952,7 @@ describe('DefaultView', () => {
         tree,
         channel: createMockChannel(),
         codec,
+        applier: createWireApplier(tree, codec.createDecoder()),
         sendDelegate,
         logger: silentLogger,
         onClose,
@@ -1999,6 +1986,7 @@ describe('DefaultView', () => {
         tree,
         channel: createMockChannel(),
         codec,
+        applier: createWireApplier(tree, codec.createDecoder()),
         sendDelegate,
         logger: silentLogger,
         onClose,

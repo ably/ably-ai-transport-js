@@ -519,6 +519,23 @@ describe('ClientSession', () => {
       v.close();
     });
 
+    it('creates exactly one decoder per session, shared by the live loop and every view', async () => {
+      // One decoder per Tree: the session binds a single decoder into the
+      // Tree's WireApplier; View history replay feeds pages through it rather
+      // than creating a per-page decoder, so an in-flight stream that spans
+      // the attach boundary is continued by hydration instead of re-decoded.
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock check
+      expect(fix.codec.createDecoder).toHaveBeenCalledTimes(1);
+
+      const v = fix.session.createView();
+      await fix.session.view.loadOlder(5);
+      await v.loadOlder(5);
+
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi mock check
+      expect(fix.codec.createDecoder).toHaveBeenCalledTimes(1);
+      v.close();
+    });
+
     it('seeds initial messages into the tree', async () => {
       const ch = createMockChannel();
       const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({

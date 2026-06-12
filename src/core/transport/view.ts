@@ -26,7 +26,7 @@ import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
 import type { Codec, CodecInputEvent, CodecMessage, CodecOutputEvent } from '../codec/types.js';
-import { applyWireMessage } from './decode-fold.js';
+import type { WireApplier } from './decode-fold.js';
 import { loadHistory } from './load-history.js';
 import { nodeKey, type TreeInternal } from './tree.js';
 import type {
@@ -87,8 +87,14 @@ interface ViewOptions<TInput extends CodecInputEvent, TOutput extends CodecOutpu
   tree: TreeInternal<TInput, TOutput, TProjection>;
   /** The Ably channel to load history from. */
   channel: Ably.RealtimeChannel;
-  /** The codec used to project messages, mint regenerate inputs, and decode history. */
+  /** The codec used to project messages and mint regenerate inputs. */
   codec: Codec<TInput, TOutput, TProjection, TMessage>;
+  /**
+   * The Tree's single decode-and-apply engine, owned by the session and
+   * shared with the live decode loop. History replay feeds pages through it
+   * so the one decoder instance sees every route into the Tree.
+   */
+  applier: WireApplier;
   /** Delegate for executing sends through the session. */
   sendDelegate: SendDelegate<TInput>;
   /** Logger for diagnostic output. */
@@ -205,6 +211,7 @@ export class DefaultView<
   private readonly _tree: TreeInternal<TInput, TOutput, TProjection>;
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: Codec<TInput, TOutput, TProjection, TMessage>;
+  private readonly _applier: WireApplier;
   private readonly _sendDelegate: SendDelegate<TInput>;
   private readonly _logger: Logger;
   private readonly _emitter: EventEmitter<ViewEventsMap>;
@@ -277,6 +284,7 @@ export class DefaultView<
     this._tree = options.tree;
     this._channel = options.channel;
     this._codec = options.codec;
+    this._applier = options.applier;
     this._sendDelegate = options.sendDelegate;
     this._onClose = options.onClose;
     this._logger = options.logger.withContext({ component: 'View' });
@@ -1010,20 +1018,20 @@ export class DefaultView<
   }
 
   /**
-   * Replay a history page's raw messages into the Tree. Dispatches by Ably
-   * message name to run-lifecycle vs. regular wire messages, mirroring the
-   * live `client-session._handleMessage` decode loop. Uses a fresh decoder
-   * since the session's live decoder maintains its own stream-tracker state.
+   * Replay a history page's raw messages into the Tree through the Tree's
+   * single decode-and-apply engine — the same applier (and decoder instance)
+   * the client's live loop uses, so history replay can't drift from it. The
+   * shared decoder's version-guarded trackers make the overlap between the
+   * two routes safe: an in-flight stream that spans the attach boundary is
+   * continued rather than re-started, and content the live route already
+   * incorporated decodes to nothing.
    * @param page - The history page returned by `loadHistory`.
    */
   private _processHistoryPage(page: HistoryPage): void {
     this._processingHistory = true;
     try {
-      // Reconstruct the tree via the shared decode-fold engine — the same path
-      // the client's live loop uses, so history replay can't drift from it.
-      const decoder = this._codec.createDecoder();
       for (const rawMsg of page.rawMessages) {
-        applyWireMessage(this._tree, decoder, rawMsg);
+        this._applier.apply(rawMsg);
       }
 
       // Emit ably-message in a batch AFTER the whole page is applied, so a

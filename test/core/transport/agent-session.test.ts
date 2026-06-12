@@ -38,6 +38,7 @@ import type {
   WriteOptions,
 } from '../../../src/core/codec/types.js';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
+import { createWireApplier } from '../../../src/core/transport/decode-fold.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
@@ -1868,8 +1869,8 @@ describe('AgentSession', () => {
 
     it('times out with InputEventNotFound when wire decode fails (decode error → no Tree emit)', async () => {
       const ch = createMockChannel();
-      // Decoder throws on any input. Tree-based lookup folds via
-      // `applyWireMessage`; a decode throw skips both the fold and the
+      // Decoder throws on any input. Tree-based lookup folds via the
+      // applier; a decode throw skips both the fold and the
       // Tree's `ably-message` emit, so the lookup never sees the wire and
       // eventually times out with `InputEventNotFound`. Session-level
       // `onError` fires for the decode failure (not asserted here).
@@ -3004,6 +3005,7 @@ const viewMessageIds = (wiresOldestFirst: Ably.InboundMessage[]): string[] => {
     tree,
     channel: createMockChannel(),
     codec,
+    applier: createWireApplier(tree, codec.createDecoder()),
     sendDelegate,
     logger,
   });

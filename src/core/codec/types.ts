@@ -133,6 +133,16 @@ export interface StreamTrackerState {
    * Initially set from the first publish, but may be replaced on update.
    */
   transportHeaders: Record<string, string>;
+  /**
+   * Highest `Message.version.serial` incorporated into this tracker.
+   * Versions are lexicographically comparable within one message serial, so
+   * a delivery carrying a version at or below this value is already
+   * incorporated and decodes to nothing. Stamped at first contact (a
+   * never-mutated message's version serial equals the message serial, which
+   * is also the fallback when the version carries no serial) and advanced by
+   * each version-bearing delivery.
+   */
+  version: string;
   /** Whether this stream has been closed (complete or cancelled). */
   closed: boolean;
 }
@@ -285,6 +295,12 @@ export interface DecodedMessage<TInput extends CodecInputEvent, TOutput extends 
  * compaction, partial-history page boundary, rewind miss) synthesizes any
  * missing start events before deltas reach the SDK — the reducer always
  * sees a clean `(start, delta*, end)` sequence.
+ *
+ * Trackers are version-guarded: a delivery whose `Message.version.serial`
+ * is at or below the version already incorporated decodes to nothing. One
+ * decoder instance can therefore be shared by the live subscription and
+ * history hydration — whichever route delivers a message's content first
+ * wins, and the other route's covered deliveries are no-ops.
  */
 export interface Decoder<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> {
   /** Decode one Ably inbound message into the input/output halves. */

@@ -38,8 +38,8 @@ import type { Logger } from '../../logger.js';
 import { LogLevel, makeLogger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
-import type { Codec, CodecInputEvent, CodecOutputEvent, Decoder, Encoder } from '../codec/types.js';
-import { applyWireMessage } from './decode-fold.js';
+import type { Codec, CodecInputEvent, CodecOutputEvent, Encoder } from '../codec/types.js';
+import { createWireApplier, type WireApplier } from './decode-fold.js';
 import { buildTransportHeaders } from './headers.js';
 import { Invocation } from './invocation.js';
 import type { DefaultTree } from './tree.js';
@@ -94,7 +94,13 @@ class DefaultClientSession<
   private readonly _tree: DefaultTree<TInput, TOutput, TProjection>;
   private readonly _view: DefaultView<TInput, TOutput, TProjection, TMessage>;
   private readonly _views = new Set<DefaultView<TInput, TOutput, TProjection, TMessage>>();
-  private readonly _decoder: Decoder<TInput, TOutput>;
+  /**
+   * The Tree's single decode-and-apply engine, binding the session's one
+   * decoder instance. Shared by the live decode loop and every View's history
+   * replay so an attach-boundary in-flight stream is continued (not
+   * re-started) by hydration, and re-delivered content decodes to nothing.
+   */
+  private readonly _applier: WireApplier;
   /**
    * Shared encoder for the lifetime of the session. The client only ever
    * uses `publishInput` (input wire), so the encoder's stream tracker map
@@ -150,15 +156,16 @@ class DefaultClientSession<
 
     // Compose sub-components
     this._tree = createTree<TInput, TOutput, TProjection>(this._codec, this._logger);
+    this._applier = createWireApplier(this._tree, this._codec.createDecoder());
     this._view = createView<TInput, TOutput, TProjection, TMessage>({
       tree: this._tree,
       channel: this._channel,
       codec: this._codec,
+      applier: this._applier,
       sendDelegate: this._internalSend.bind(this),
       logger: this._logger,
       onClose: () => this._views.delete(this._view),
     });
-    this._decoder = this._codec.createDecoder();
     this._encoder = this._codec.createEncoder(this._channel);
 
     this._views.add(this._view);
@@ -304,9 +311,11 @@ class DefaultClientSession<
         }
       }
 
-      // Reconstruct the tree via the shared decode-fold engine — the same path
-      // the View's history replay uses, so the live loop can't drift from it.
-      const event = applyWireMessage(this._tree, this._decoder, ablyMessage);
+      // Reconstruct the tree via the Tree's single decode-and-apply engine —
+      // the same applier (and decoder instance) the Views' history replay
+      // uses, so the live loop can't drift from it and an attach-boundary
+      // stream isn't double-decoded.
+      const event = this._applier.apply(ablyMessage);
 
       // Live-only: resolve the pending `runId` promise on a fresh run-start or
       // a continuation run-resume. Key by the echoed `input-codec-message-id`
@@ -428,6 +437,7 @@ class DefaultClientSession<
       tree: this._tree,
       channel: this._channel,
       codec: this._codec,
+      applier: this._applier,
       sendDelegate: this._internalSend.bind(this),
       logger: this._logger,
       onClose: () => this._views.delete(view),

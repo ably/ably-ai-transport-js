@@ -213,6 +213,7 @@ describe('defineCodec — wire-controlled kind robustness', () => {
       action: 'message.create',
       name: EVENT_AI_INPUT,
       data: 'partial',
+      version: {},
       extras: { ai: { codec: { kind: 'quirky' }, transport: { stream: 'true', 'stream-id': 'st-1' } } },
       // CAST: minimal InboundMessage stub — only the fields the decoder reads.
     } as Ably.InboundMessage;

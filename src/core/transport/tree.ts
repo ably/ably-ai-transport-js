@@ -186,7 +186,8 @@ export interface TreeInternal<
    * @param headers - Transport headers from the inbound Ably message.
    * @param serial - Ably channel serial; undefined for optimistic inserts.
    * @param timestamp - Ably server timestamp (epoch ms) of the message —
-   *   top-level `Message.timestamp`, the current version's receive time —
+   *   top-level `Message.timestamp`, the message's create time on every
+   *   delivery (an append's own receive time lives in `version.timestamp`) —
    *   or undefined for optimistic inserts. Advances the Tree's event-log
    *   retention clock and the owning node's last-activity time.
    */

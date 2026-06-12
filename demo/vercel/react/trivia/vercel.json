@@ -1,0 +1,6 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "installCommand": "cd ../../../.. && pnpm install && pnpm run build && pnpm install --dir demo/vercel/react/trivia",
+  "buildCommand": "pnpm exec tsc --noEmit && pnpm exec next build"
+}

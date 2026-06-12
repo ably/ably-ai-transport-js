@@ -108,6 +108,7 @@ jobs:
         demo:
           - demo/vercel/react/use-chat
           - demo/vercel/react/use-client-session
+          - demo/vercel/react/trivia
     name: demo ${{ matrix.demo }}
     steps:
       - uses: actions/checkout@v6

@@ -104,18 +104,12 @@ export async function POST(req: Request) {
   const run = session.createRun(invocation, { signal: req.signal });
 
   await run.start();
-
-  if (invocation.messages.length > 0) {
-    await run.addMessages(invocation.messages, { clientId: invocation.clientId });
-  }
-
-  const historyMsgs = invocation.history.map((h) => h.message);
-  const newMsgs = invocation.messages.map((m) => m.message);
+  await run.loadConversation();
 
   const result = streamText({
     model: anthropic('claude-sonnet-4-6'),
     system: 'You are a helpful assistant.',
-    messages: await convertToModelMessages([...historyMsgs, ...newMsgs]),
+    messages: await convertToModelMessages(run.messages),
     abortSignal: run.abortSignal,
   });
 
@@ -177,12 +171,9 @@ function ChatInner({ chatId }: { chatId: string }) {
   );
 }
 
-function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
+function Chat({ chatId }: { chatId: string }) {
   return (
-    <ChatTransportProvider
-      channelName={chatId}
-      clientId={clientId}
-    >
+    <ChatTransportProvider channelName={chatId}>
       <ChatInner chatId={chatId} />
     </ChatTransportProvider>
   );
@@ -234,8 +225,6 @@ const session = createClientSession({
   client: ably, // Ably.Realtime
   channelName: 'ai:demo',
   codec: myCodec,
-  clientId: 'user-123',
-  api: '/api/chat',
 });
 await session.connect();
 
@@ -261,7 +250,7 @@ await session.connect();
 const run = session.createRun(invocation);
 
 await run.start();
-await run.addMessages(invocation.messages, { clientId: invocation.clientId });
+await run.loadConversation();
 
 const { reason } = await run.pipe(aiStream);
 await run.end(reason);

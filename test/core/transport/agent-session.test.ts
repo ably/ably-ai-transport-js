@@ -2787,6 +2787,69 @@ describe('Run.loadConversation', () => {
     await session.close();
   });
 
+  it('excludes the regenerate target when regenerating a non-head message of a multi-message run', async () => {
+    // Turn 1: input u1 -> reply run-1 that produced TWO messages, a tool call
+    // tc1 (head) and a follow-up text tt1 (non-head). The user regenerates the
+    // follow-up text tt1: the agent serves a NEW reply run-2 parented at tt1's
+    // PREDECESSOR tc1, a message INSIDE run-1. run-2's regenerate carrier decodes
+    // to zero MessageNodes, so assistantParentFallback resolves from the
+    // carrier's parent header (tc1).
+    //
+    // The owning run-1 lands on the chain (it owns tc1). Folding it whole would
+    // re-emit tt1 and end the reconstructed conversation on the assistant message
+    // about to be replaced (the prefill the model rejects). The walk stops at
+    // tt1, so the history ends at its predecessor tc1.
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
+    ch.history.mockImplementation(() => {
+      const items = [
+        makeRunStartMsg('run-2', 'tc1', { regenerates: 'tt1' }),
+        makeContentMsg('run-1', 'tt1', 's-04'),
+        makeContentMsg('run-1', 'tc1', 's-03'),
+        makeRunStartMsg('run-1', 'u1'),
+        makeInputMsg('u1', 's-02'),
+      ];
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
+      const page = { items, hasNext: () => false, next: () => Promise.resolve(page) };
+      return Promise.resolve(page);
+    });
+
+    const runId = 'run-2';
+    const invocationId = 'inv-regen-midrun';
+    const inputEventId = 'p-regen-midrun';
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'test-channel',
+      codec,
+      inputEventLookupTimeoutMs: 5000,
+    });
+    await session.connect();
+    const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
+    const startPromise = run.start();
+    deliverInputEvent(ch, {
+      invocationId,
+      runId,
+      codecMessageId: 'rc',
+      serial: 's-05',
+      inputEventId,
+      parent: 'tc1',
+      regenerates: 'tt1',
+    });
+    await startPromise;
+
+    const history = await run.loadConversation();
+    // tt1 (the regenerate target) and anything after it in run-1 is excluded;
+    // the history ends at its predecessor tc1. Without the slice this would be
+    // [u1, tc1, tt1], ending on the assistant message being replaced.
+    expect(history).toEqual([
+      { id: 'u1', content: 'u1' },
+      { id: 'tc1', content: 'tc1' },
+    ]);
+    expect(run.messages).toEqual(history);
+    await session.close();
+  });
+
   it('excludes the edited prompt and its reply (un-taken fork) when editing a user message', async () => {
     // Two-node model. Conversation: u1 → run-1(a1) → u2 → run-2(a2). The user
     // edits u2: the edit creates a NEW input node u2b that forks off u2

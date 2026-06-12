@@ -145,15 +145,48 @@ type RegenSelection =
   | { kind: 'pending'; carrierCodecMessageId: string };
 
 /**
- * A resolved branch point: the group `kind` plus the sibling nodes that make
- * up the alternatives. `fork-of` is an edit-style branch anchored at the user
- * input node; `regen` is a regenerate-style branch anchored at the assistant
- * slot. `groupRoot` is the group's key (input group root for fork-of, the
- * original reply's group root for regen).
+ * One alternative inside a {@link MessageBranchPoint}. The representative is the
+ * member's own head message for fork-of and whole-reply regen groups, but the
+ * *regenerate target* (a non-head message) for a non-head regen group - so it is
+ * tracked explicitly rather than re-derived from the node's head.
  */
-type MessageBranchPoint<TProjection> =
-  | { kind: 'fork-of'; groupRoot: string; siblings: ConversationNode<TProjection>[] }
-  | { kind: 'regen'; groupRoot: string; siblings: ConversationNode<TProjection>[] };
+interface BranchMember {
+  /**
+   * The member node's `nodeKey` (tree.ts): a runId for a reply/regenerator run,
+   * a codecMessageId for an input node. Matched by `_resolveSelectedIndex`.
+   */
+  memberNodeKey: string;
+  /** The codec-message-id rendered in this member's branch-arrow slot. */
+  representativeCodecMessageId: string;
+}
+
+/**
+ * A resolved branch point: the group `kind` plus the member alternatives.
+ *
+ * Terms: "regenerate target" = the message being replaced; "regenerator run" =
+ * the run that replaces it; "non-head message" = any message after a run's
+ * first (index > 0, includes the tail).
+ *
+ * The three kinds, by anchor:
+ * - `fork-of` — edit-style branch anchored at the user input node; members are
+ *   the alternate prompts (input-node sibling group).
+ * - `regen` — whole-reply regenerate branch anchored at the assistant slot;
+ *   members are the original reply + its regenerator runs (same-input-node
+ *   sibling reply runs).
+ * - `non-head-regen` — a regenerate that replaced a non-head message inside a
+ *   multi-message reply run; members are the owner run (the regenerate target in
+ *   place) plus each regenerator run. Not expressible as a same-parent
+ *   sibling-run group, so the View resolves and renders it itself (see
+ *   `_extractMessages`).
+ *
+ * `groupRoot` is the selection-map key: the input group root for fork-of, the
+ * original reply's group root for regen, and the regenerate target's
+ * codec-message-id for non-head-regen.
+ */
+type MessageBranchPoint =
+  | { kind: 'fork-of'; groupRoot: string; members: BranchMember[] }
+  | { kind: 'regen'; groupRoot: string; members: BranchMember[] }
+  | { kind: 'non-head-regen'; groupRoot: string; members: BranchMember[] };
 
 // ---------------------------------------------------------------------------
 // Send-input normalisation
@@ -257,6 +290,17 @@ export class DefaultView<
    * landed).
    */
   private readonly _regenSelections = new Map<string, RegenSelection>();
+
+  /**
+   * Non-head regenerate selections, keyed by the regenerate target's
+   * codec-message-id. Separate from {@link _regenSelections} because a non-head
+   * regenerator parents inside the owner run rather than as a same-parent
+   * sibling, so it lives outside the Tree's `visibleNodes` selection space and
+   * is resolved at extraction (see `_extractMessages`). Value is the selected
+   * member's nodeKey (the owner run id, or a regenerator run id); absent groups
+   * default to the newest regenerator.
+   */
+  private readonly _nonHeadRegenSelections = new Map<string, RegenSelection>();
 
   /** Spec: AIT-CT11c — runIds loaded from history but not yet revealed to the UI. */
   private readonly _withheldRunIds = new Set<string>();
@@ -436,29 +480,121 @@ export class DefaultView<
   }
 
   /**
-   * Extract the flat TMessage[] from a visible node chain.
-   *
-   * In the two-node model the Tree's `visibleNodes` has already selected one
-   * member per sibling group (the chosen edit version, the chosen regenerate
-   * run), so a regenerate is just a sibling reply run that appears in place of
-   * the original. Each visible node contributes its own messages in projection
-   * order; the flat list is their concatenation.
-   *
-   * Deferred caveat: a mid-reply regenerate that replaces a non-head message
-   * inside a multi-message reply run is not expressible as a sibling run in
-   * this model and is not handled here (see the `regenerate-of-multi-message`
-   * golden test).
-   * @param nodes - The visible nodes (inputs + reply runs) in chronological order.
-   * @returns The flat message list, each message paired with its codec-message-id.
+   * The regenerator runs that replaced a non-head message of a reply run. They
+   * file under the target's predecessor (not the owner run's input node), so the
+   * Tree's `visibleNodes` cannot collapse them into the owner's slot; this
+   * surfaces them for the View to resolve and render. Head-message (index 0)
+   * regenerates are excluded - those are whole-reply sibling runs the Tree
+   * already groups.
+   * @param targetCodecMessageId - The regenerate target's (non-head) message id.
+   * @param predecessorCodecMessageId - The codec-message-id immediately before it in the owner run.
+   * @returns The regenerator runs in startSerial order (oldest first).
+   */
+  private _nonHeadRegenerators(
+    targetCodecMessageId: string,
+    predecessorCodecMessageId: string,
+  ): RunNode<TProjection>[] {
+    return this._tree
+      .getReplyRuns(predecessorCodecMessageId)
+      .filter((r) => r.regeneratesCodecMessageId === targetCodecMessageId)
+      .toSorted((a, b) => (a.startSerial ?? '￿').localeCompare(b.startSerial ?? '￿'));
+  }
+
+  /**
+   * Resolve the selected member of a non-head regenerate group anchored at
+   * `targetCodecMessageId`. Members are the owner run `O` (memberNodeKey =
+   * `ownerRunId`, the regenerate target in place) followed by each regenerator
+   * run. Honours an explicit {@link _nonHeadRegenSelections} entry, else
+   * defaults to the latest member (newest regenerator), mirroring the
+   * whole-reply regenerate default.
+   * @param targetCodecMessageId - The regenerate target's message id (the group anchor).
+   * @param ownerRunId - The runId of the run that owns the regenerate target.
+   * @param regenerators - The regenerator runs (oldest first) from `_nonHeadRegenerators`.
+   * @returns The selected member's node key (`ownerRunId` or a regenerator runId).
+   */
+  private _selectedNonHeadMember(
+    targetCodecMessageId: string,
+    ownerRunId: string,
+    regenerators: RunNode<TProjection>[],
+  ): string {
+    const sel = this._nonHeadRegenSelections.get(targetCodecMessageId);
+    if (sel && sel.kind !== 'pending') {
+      const keys = [ownerRunId, ...regenerators.map((r) => r.runId)];
+      if (keys.includes(sel.selectedRunId)) return sel.selectedRunId;
+    }
+    // Default: latest member = newest regenerator (regenerators is oldest-first).
+    return regenerators.at(-1)?.runId ?? ownerRunId;
+  }
+
+  /**
+   * Flatten visible nodes to messages, collapsing a non-head regenerate into the
+   * slot it replaces: while emitting a reply run, at each non-head message that
+   * has a selected regenerator, drop that message and the run's tail and emit the
+   * selected regenerator instead (recursive for regen-of-regen). Whole-reply
+   * regenerates need nothing here - visibleNodes already picks the sibling.
+   * @param nodes - Visible nodes (inputs + reply runs), chronological.
+   * @returns The flat message list, each paired with its codec-message-id.
    */
   private _extractMessages(nodes: ConversationNode<TProjection>[]): CodecMessage<TMessage>[] {
     const messages: CodecMessage<TMessage>[] = [];
+    // Regenerator runs already emitted via substitution at their anchor — skip
+    // them when the node walk reaches them directly.
+    const consumedRunIds = new Set<string>();
+
     for (const node of nodes) {
-      for (const m of this._codec.getMessages(node.projection)) {
-        messages.push(m);
-      }
+      if (node.kind === 'run' && consumedRunIds.has(node.runId)) continue;
+      this._emitNodeMessages(node, messages, consumedRunIds);
     }
     return messages;
+  }
+
+  /**
+   * Emit one visible node's messages into `out`, applying non-head regenerate
+   * substitution for a reply run (see `_extractMessages`). Input nodes and runs
+   * with no non-head regenerators emit their projection verbatim.
+   * @param node - The node to emit.
+   * @param out - The accumulating flat message list (mutated in place).
+   * @param consumedRunIds - Set of regenerator runIds already emitted via substitution (mutated in place).
+   */
+  private _emitNodeMessages(
+    node: ConversationNode<TProjection>,
+    out: CodecMessage<TMessage>[],
+    consumedRunIds: Set<string>,
+  ): void {
+    const own = this._codec.getMessages(node.projection);
+    if (node.kind !== 'run') {
+      out.push(...own);
+      return;
+    }
+    for (let i = 0; i < own.length; i++) {
+      const m = own[i];
+      if (!m) continue;
+      // Head message (i === 0) regenerates are whole-reply sibling runs, already
+      // resolved by visibleNodes — only non-head messages anchor a non-head group.
+      const predecessor = i > 0 ? own[i - 1]?.codecMessageId : undefined;
+      if (predecessor !== undefined) {
+        const regenerators = this._nonHeadRegenerators(m.codecMessageId, predecessor);
+        if (regenerators.length > 0) {
+          // Every regenerator (and any same-anchor sibling the Tree already
+          // collapsed in `visibleNodes`) is an alternative at THIS one slot, so
+          // mark them all consumed up front — the node walk must not re-emit the
+          // Tree's default-latest sibling once we render a different member here.
+          for (const r of regenerators) consumedRunIds.add(r.runId);
+          const selectedKey = this._selectedNonHeadMember(m.codecMessageId, node.runId, regenerators);
+          if (selectedKey !== node.runId) {
+            // A regenerator is selected: drop M and the rest of O, emit the
+            // selected regenerator in M's place (recursively for nested regen).
+            const chosen = regenerators.find((r) => r.runId === selectedKey);
+            if (chosen) {
+              this._emitNodeMessages(chosen, out, consumedRunIds);
+              return;
+            }
+          }
+          // Original (owner run) selected: fall through and emit M from O.
+        }
+      }
+      out.push(m);
+    }
   }
 
   hasOlder(): boolean {
@@ -581,12 +717,18 @@ export class DefaultView<
   branchSelection(codecMessageId: string): BranchSelection<TMessage> {
     const branch = this._resolveMessageBranchPoint(codecMessageId);
     if (branch) {
-      // Each sibling contributes its head message as the branch-arrow slot:
-      // for an edit fork that is the alternate user prompt; for a regenerate
-      // group it is the variant's first (anchor-equivalent) message.
-      const siblings = branch.siblings.flatMap((s) => {
-        const first = this._codec.getMessages(s.projection).at(0);
-        return first ? [first.message] : [];
+      // Each member contributes its representative message as the branch-arrow
+      // slot: for an edit fork that is the alternate user prompt; for a
+      // whole-reply regenerate group the variant's first message; for a non-head
+      // regenerate group the regenerate target (original) or the regenerator's
+      // first message.
+      const siblings = branch.members.flatMap((member) => {
+        const owner = this._tree.getNodeByCodecMessageId(member.representativeCodecMessageId);
+        if (!owner) return [];
+        const found = this._codec
+          .getMessages(owner.projection)
+          .find((m) => m.codecMessageId === member.representativeCodecMessageId);
+        return found ? [found.message] : [];
       });
 
       if (siblings.length > 0) {
@@ -629,22 +771,32 @@ export class DefaultView<
     this._logger.trace('DefaultView.selectSibling();', { codecMessageId, index });
     const branch = this._resolveMessageBranchPoint(codecMessageId);
     if (!branch) return;
-    const clamped = Math.max(0, Math.min(index, branch.siblings.length - 1));
-    const selected = branch.siblings[clamped];
+    const clamped = Math.max(0, Math.min(index, branch.members.length - 1));
+    const selected = branch.members[clamped];
     if (!selected) return; // unreachable: clamped is always in bounds
     if (branch.kind === 'fork-of') {
-      this._branchSelections.set(branch.groupRoot, { kind: 'user', selectedKey: nodeKey(selected) });
+      this._branchSelections.set(branch.groupRoot, { kind: 'user', selectedKey: selected.memberNodeKey });
       this._logger.debug('DefaultView.selectSibling(); fork-of', {
         codecMessageId,
         index: clamped,
-        selectedKey: nodeKey(selected),
+        selectedKey: selected.memberNodeKey,
+      });
+    } else if (branch.kind === 'non-head-regen') {
+      // Non-head groups live outside the visibleNodes sibling space — store in
+      // the dedicated map the message-extraction substitution reads.
+      this._nonHeadRegenSelections.set(branch.groupRoot, { kind: 'user', selectedRunId: selected.memberNodeKey });
+      this._logger.debug('DefaultView.selectSibling(); non-head-regen', {
+        codecMessageId,
+        index: clamped,
+        selectedRunId: selected.memberNodeKey,
+        anchor: branch.groupRoot,
       });
     } else {
-      this._regenSelections.set(branch.groupRoot, { kind: 'user', selectedRunId: nodeKey(selected) });
+      this._regenSelections.set(branch.groupRoot, { kind: 'user', selectedRunId: selected.memberNodeKey });
       this._logger.debug('DefaultView.selectSibling(); regenerate', {
         codecMessageId,
         index: clamped,
-        selectedRunId: nodeKey(selected),
+        selectedRunId: selected.memberNodeKey,
         groupRoot: branch.groupRoot,
       });
     }
@@ -658,41 +810,32 @@ export class DefaultView<
    * @param branch - Resolved branch-point descriptor from `_resolveMessageBranchPoint`.
    * @returns The selected sibling's index within `branch.siblings`.
    */
-  private _resolveSelectedIndex(branch: MessageBranchPoint<TProjection>): number {
+  private _resolveSelectedIndex(branch: MessageBranchPoint): number {
     if (branch.kind === 'fork-of') {
       const sel = this._branchSelections.get(branch.groupRoot);
-      if (!sel) return branch.siblings.length - 1;
-      const idx = branch.siblings.findIndex((n) => nodeKey(n) === sel.selectedKey);
-      return idx === -1 ? branch.siblings.length - 1 : idx;
+      if (!sel) return branch.members.length - 1;
+      const idx = branch.members.findIndex((m) => m.memberNodeKey === sel.selectedKey);
+      return idx === -1 ? branch.members.length - 1 : idx;
     }
-    const sel = this._regenSelections.get(branch.groupRoot);
-    if (!sel || sel.kind === 'pending') return branch.siblings.length - 1;
-    const idx = branch.siblings.findIndex((n) => nodeKey(n) === sel.selectedRunId);
-    return idx === -1 ? branch.siblings.length - 1 : idx;
+    const sel =
+      branch.kind === 'non-head-regen'
+        ? this._nonHeadRegenSelections.get(branch.groupRoot)
+        : this._regenSelections.get(branch.groupRoot);
+    if (!sel || sel.kind === 'pending') return branch.members.length - 1;
+    const idx = branch.members.findIndex((m) => m.memberNodeKey === sel.selectedRunId);
+    return idx === -1 ? branch.members.length - 1 : idx;
   }
 
   /**
-   * Resolve the branch point anchored at `codecMessageId`, if any.
-   *
-   * Returns the resolved group `kind` along with the sibling list so the
-   * caller can update the correct selection map without re-entering the
-   * runId-based `select()` dispatch (which biases to fork-of first and
-   * would mis-route a regen-anchor codec-message-id when the owning Run is in
-   * BOTH groups — e.g. R1 owns both a user prompt that got edited and
-   * an assistant that got regenerated).
-   *
-   * Two anchor cases:
-   * - **fork-of** — `codecMessageId` is the first message of a Run in a fork-of
-   *   sibling group (edit-style branch point anchored at the user prompt).
-   * - **regen** — `codecMessageId` is the regen-anchor itself (in the owner Run)
-   *   or content of a regenerator Run (regen-style branch point anchored
-   *   at the assistant slot).
+   * Resolve the branch point anchored at `codecMessageId`, if any, returning the
+   * group `kind` + members + groupRoot so the caller routes to the correct
+   * selection map directly (not via a runId dispatch that would mis-route when
+   * the owning Run is in both a fork-of and a regen group).
    * @param codecMessageId - The codec-message-id to look up.
-   * @returns The kind + sibling list + group key (runId for fork-of,
-   *   anchor codec-message-id for regen), or undefined when `codecMessageId` is not an
-   *   anchor in either group type.
+   * @returns The resolved branch point, or undefined when `codecMessageId`
+   *   anchors no group.
    */
-  private _resolveMessageBranchPoint(codecMessageId: string): MessageBranchPoint<TProjection> | undefined {
+  private _resolveMessageBranchPoint(codecMessageId: string): MessageBranchPoint | undefined {
     const node = this._tree.getNodeByCodecMessageId(codecMessageId);
     if (!node) return undefined;
 
@@ -702,24 +845,120 @@ export class DefaultView<
     if (node.kind === 'input') {
       const siblings = this._tree.getSiblingNodes(node.codecMessageId);
       if (siblings.length > 1) {
-        return { kind: 'fork-of', groupRoot: this._tree.getGroupRoot(node.codecMessageId), siblings };
+        return {
+          kind: 'fork-of',
+          groupRoot: this._tree.getGroupRoot(node.codecMessageId),
+          members: this._nodeHeadMembers(siblings),
+        };
       }
       return undefined;
     }
+
+    // Non-head regenerate branch point: `codecMessageId` is the rendered slot for
+    // a regenerate that replaced a non-head message inside a multi-message reply
+    // run. Resolved BEFORE the same-parent `regen` group below: several non-head
+    // regenerators of one anchor share a parent (the anchor's predecessor), so
+    // the Tree files them as their own sibling group excluding the owner run; the
+    // non-head resolver instead gathers the owner plus every regenerator into one
+    // anchor-keyed group.
+    const ownMessages = this._codec.getMessages(node.projection);
+    const nonHead = this._resolveNonHeadBranchPoint(node, ownMessages, codecMessageId);
+    if (nonHead) return nonHead;
 
     // Regenerate branch point: `codecMessageId` is owned by a reply run that has
     // sibling reply runs (the original reply + its regenerators, all parented at
     // the same input node). Anchor on the head message of the run so arrows
     // appear once per variant, not on every follow-up message.
     const siblings = this._tree.getSiblingNodes(node.runId);
-    if (siblings.length > 1) {
-      const firstMsg = this._codec.getMessages(node.projection).at(0);
-      if (firstMsg?.codecMessageId === codecMessageId) {
-        return { kind: 'regen', groupRoot: this._tree.getGroupRoot(node.runId), siblings };
-      }
+    if (siblings.length > 1 && ownMessages.at(0)?.codecMessageId === codecMessageId) {
+      return {
+        kind: 'regen',
+        groupRoot: this._tree.getGroupRoot(node.runId),
+        members: this._nodeHeadMembers(siblings),
+      };
     }
 
     return undefined;
+  }
+
+  /**
+   * Resolve a non-head regenerate branch point from a reply-run message, if any.
+   * `codecMessageId` is either (a) a non-head message `M` of its owner run with
+   * regenerators, or (b) a regenerator run's head; both resolve to the same group
+   * anchored at `M` (key matching {@link _nonHeadRegenSelections}).
+   * @param node - The reply run owning `codecMessageId`.
+   * @param ownMessages - That run's projected messages (already extracted).
+   * @param codecMessageId - The slot's codec-message-id (an `M`, or a regenerator head).
+   * @returns The non-head branch point, or undefined when `codecMessageId` anchors none.
+   */
+  private _resolveNonHeadBranchPoint(
+    node: RunNode<TProjection>,
+    ownMessages: CodecMessage<TMessage>[],
+    codecMessageId: string,
+  ): MessageBranchPoint | undefined {
+    // Case (b): `codecMessageId` is a regenerator run's head. Re-anchor on the
+    // message it regenerates and resolve from the owner run's perspective.
+    const isHead = ownMessages.at(0)?.codecMessageId === codecMessageId;
+    if (isHead && node.regeneratesCodecMessageId !== undefined) {
+      const anchorId = node.regeneratesCodecMessageId;
+      const owner = this._runByCodecMessageId(anchorId);
+      if (owner) {
+        const ownerMsgs = this._codec.getMessages(owner.projection);
+        const idx = ownerMsgs.findIndex((mm) => mm.codecMessageId === anchorId);
+        const predecessor = idx > 0 ? ownerMsgs[idx - 1]?.codecMessageId : undefined;
+        if (predecessor !== undefined) {
+          return this._buildNonHeadGroup(anchorId, owner.runId, predecessor);
+        }
+      }
+      return undefined;
+    }
+
+    // Case (a): `codecMessageId` is a non-head message of its owner run.
+    const idx = ownMessages.findIndex((mm) => mm.codecMessageId === codecMessageId);
+    const predecessor = idx > 0 ? ownMessages[idx - 1]?.codecMessageId : undefined;
+    if (predecessor === undefined) return undefined;
+    return this._buildNonHeadGroup(codecMessageId, node.runId, predecessor);
+  }
+
+  /**
+   * Build the {@link MessageBranchPoint} for a non-head regenerate group, or
+   * undefined when the anchor has no regenerators. The owner member's
+   * representative is the anchor message (the regenerate target); each
+   * regenerator's is its head message.
+   * @param anchorCodecMessageId - The regenerate target's (non-head) message id.
+   * @param ownerRunId - The runId owning the regenerate target.
+   * @param predecessorCodecMessageId - The codec-message-id immediately before the anchor in the owner run.
+   * @returns The non-head branch point, or undefined when there are no regenerators.
+   */
+  private _buildNonHeadGroup(
+    anchorCodecMessageId: string,
+    ownerRunId: string,
+    predecessorCodecMessageId: string,
+  ): MessageBranchPoint | undefined {
+    const regenerators = this._nonHeadRegenerators(anchorCodecMessageId, predecessorCodecMessageId);
+    if (regenerators.length === 0) return undefined;
+    const members: BranchMember[] = [{ memberNodeKey: ownerRunId, representativeCodecMessageId: anchorCodecMessageId }];
+    for (const r of regenerators) {
+      const head = this._codec.getMessages(r.projection).at(0);
+      if (head) members.push({ memberNodeKey: r.runId, representativeCodecMessageId: head.codecMessageId });
+    }
+    return { kind: 'non-head-regen', groupRoot: anchorCodecMessageId, members };
+  }
+
+  /**
+   * Project nodes to {@link BranchMember}s for fork-of / whole-reply regen
+   * groups, where each member's branch-arrow representative is its own head
+   * message and its memberNodeKey is its node key.
+   * @param nodes - The sibling nodes.
+   * @returns One member per node that has a head message.
+   */
+  private _nodeHeadMembers(nodes: ConversationNode<TProjection>[]): BranchMember[] {
+    const members: BranchMember[] = [];
+    for (const n of nodes) {
+      const head = this._codec.getMessages(n.projection).at(0);
+      if (head) members.push({ memberNodeKey: nodeKey(n), representativeCodecMessageId: head.codecMessageId });
+    }
+    return members;
   }
 
   // -------------------------------------------------------------------------
@@ -786,6 +1025,26 @@ export class DefaultView<
     // (`result.inputCodecMessageId`) so we can promote when the new reply run lands.
     const anchorRun = this._runByCodecMessageId(anchorCodecMessageId);
     if (!anchorRun) return;
+
+    // Non-head regenerate: the anchor is a non-head message of its owner run, so
+    // the new run won't be a same-parent sibling — it parents at the anchor's
+    // predecessor. Defer in the dedicated non-head map (keyed by the anchor
+    // message), not the sibling-group regen map.
+    const anchorMsgs = this._codec.getMessages(anchorRun.projection);
+    if (anchorMsgs.at(0)?.codecMessageId !== anchorCodecMessageId) {
+      this._nonHeadRegenSelections.set(anchorCodecMessageId, {
+        kind: 'pending',
+        carrierCodecMessageId: result.inputCodecMessageId,
+      });
+      this._logger.debug('DefaultView._applyRegenerateAutoSelect(); deferring non-head regenerate selection', {
+        anchorCodecMessageId,
+        carrier: result.inputCodecMessageId,
+      });
+      this._resolvePendingNonHeadRegenSelections();
+      this._recomputeAndEmitIfChanged();
+      return;
+    }
+
     const groupRoot = this._tree.getGroupRoot(anchorRun.runId);
 
     this._regenSelections.set(groupRoot, {
@@ -974,6 +1233,7 @@ export class DefaultView<
     this._emitter.off();
     this._branchSelections.clear();
     this._regenSelections.clear();
+    this._nonHeadRegenSelections.clear();
     this._withheldRunIds.clear();
     this._withheldBuffer.length = 0;
     this._onClose?.();
@@ -1133,6 +1393,7 @@ export class DefaultView<
     // shifting this view to a branch the user didn't navigate to.
     this._pinBranchSelections();
     this._resolvePendingRegenSelections();
+    this._resolvePendingNonHeadRegenSelections();
 
     this._recomputeAndEmitIfChanged();
   }
@@ -1212,6 +1473,31 @@ export class DefaultView<
       const newest = group.at(-1);
       if (!newest) continue;
       this._regenSelections.set(groupRoot, { kind: 'auto', selectedRunId: newest.runId });
+    }
+  }
+
+  /**
+   * Roll `pending` and `auto` non-head regenerate selections forward to the
+   * newest regenerator of their anchor message. Mirrors
+   * {@link _resolvePendingRegenSelections} for the non-head group, which lives in
+   * a separate selection map (anchored by the regenerate target rather than a
+   * sibling-group root): a `user` selection pins and is left untouched; a
+   * `pending`/`auto` slot adopts the newest regenerator once one lands. The
+   * anchor's predecessor — the key the regenerators file under — is recovered
+   * from the owning run's projection.
+   */
+  private _resolvePendingNonHeadRegenSelections(): void {
+    for (const [anchorId, sel] of this._nonHeadRegenSelections) {
+      if (sel.kind === 'user') continue;
+      const owner = this._runByCodecMessageId(anchorId);
+      if (!owner) continue;
+      const ownerMsgs = this._codec.getMessages(owner.projection);
+      const idx = ownerMsgs.findIndex((m) => m.codecMessageId === anchorId);
+      const predecessor = idx > 0 ? ownerMsgs[idx - 1]?.codecMessageId : undefined;
+      if (predecessor === undefined) continue;
+      const newest = this._nonHeadRegenerators(anchorId, predecessor).at(-1);
+      if (!newest) continue;
+      this._nonHeadRegenSelections.set(anchorId, { kind: 'auto', selectedRunId: newest.runId });
     }
   }
 

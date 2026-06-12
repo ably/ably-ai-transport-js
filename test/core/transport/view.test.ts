@@ -166,6 +166,60 @@ const applyInput = (tree: DefaultTree<TestInput, TestOutput, TestProjection>, op
   tree.applyMessage({ inputs, outputs: [] }, h, opts.serial);
 };
 
+/**
+ * Seed a tool-call turn R1 = [u1, TC, TT] in the two-node model: a user input
+ * node `u1`, then one reply run `R1` carrying a tool-call message `TC` followed
+ * by a follow-up text message `TT`. Mirrors the demo's approval-flow shape.
+ * @param tree - The tree to seed.
+ */
+const seedToolCallTurn = (tree: DefaultTree<TestInput, TestOutput, TestProjection>): void => {
+  applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'weather?' }, serial: 's1' });
+  apply(tree, {
+    runId: 'R1',
+    codecMessageId: 'TC',
+    parent: 'u1',
+    role: 'assistant',
+    message: { id: 'TC', content: 'tool-call' },
+    serial: 's2',
+  });
+  apply(tree, {
+    runId: 'R1',
+    codecMessageId: 'TT',
+    role: 'assistant',
+    message: { id: 'TT', content: 'follow-up text' },
+    serial: 's3',
+  });
+};
+
+/**
+ * Land a non-head regenerator reply run that replaces the follow-up text `TT`.
+ * The agent wires a non-head regenerate to parent at the regenerate target's
+ * predecessor (`TC`) with `regenerates: 'TT'`, so the run is reachable as a
+ * child of the owner run yet renders in place of `TT`.
+ * @param tree - The tree to apply to.
+ * @param runId - The regenerator run's id.
+ * @param msgId - The regenerated text's new codec-message-id.
+ * @param content - The new text content.
+ * @param serial - The Ably serial for the regenerator message.
+ */
+const landTTRegen = (
+  tree: DefaultTree<TestInput, TestOutput, TestProjection>,
+  runId: string,
+  msgId: string,
+  content: string,
+  serial: string,
+): void => {
+  apply(tree, {
+    runId,
+    codecMessageId: msgId,
+    parent: 'TC',
+    regenerates: 'TT',
+    role: 'assistant',
+    message: { id: msgId, content },
+    serial,
+  });
+};
+
 const makePage = (
   rawMessages: Ably.InboundMessage[] = [],
   hasNextPage = false,
@@ -380,58 +434,54 @@ describe('DefaultView', () => {
       expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1', 'u2', 'a2']);
     });
 
-    // TODO(AIT-831): deferred — regenerating a NON-HEAD message inside a
-    // multi-message reply run's projection. The two-node node-walk selects a
-    // whole sibling reply run; it can't slice inside one run's projection, so
-    // intra-run mid-reply substitution is out of scope for the flip. Re-enable
-    // with the planned regenerate-of-multi-message golden test (see
-    // pr2-execution-plan.md §Tests).
-    it.skip('substitutes nested regenerator content recursively at each anchor position', () => {
-      // P1 → [u1, a1]. Regen a1 → R2 = [a1', extra']. Then regen the
-      // trailing follow-up extra' inside R2 → R3 = [extra''] (anchored
-      // at extra', NOT rebased to a1 per the trailing-target rule).
-      // Walking R1 hits a1 → substitute R2 → emits a1', then hits
-      // extra' → substitute R3 → emits extra''. Final chain:
-      // [u1, a1', extra''].
-      apply(tree, {
-        runId: 'R1',
-        codecMessageId: 'u1',
-        role: 'user',
-        message: { id: 'u1', content: 'q' },
-        serial: 's1',
-      });
+    // Regenerating a NON-HEAD message inside a multi-message
+    // reply run. The two-node node-walk can't slice inside one run's projection,
+    // so the View resolves the non-head substitution itself at message-extraction
+    // time. A non-head regenerator parents at the regenerate target's
+    // PREDECESSOR (the agent wires it that way — see View.regenerate's
+    // `_findParentMsgId`), so it's reachable as a child of the owner run yet
+    // renders in place of the message it replaced.
+    it('substitutes nested regenerator content recursively at each anchor position', () => {
+      // u1 → R1 = [a1, extra] (head a1 + trailing follow-up extra). Regen the
+      // HEAD a1 → R2 = [a1p] (whole-reply sibling parented at u1). Then regen
+      // the trailing follow-up `extra` (a non-head message of R1) → R3 = [extrap]
+      // parented at a1 (extra's predecessor), regenerates=extra. On the original
+      // branch (R1 selected), walking R1 emits a1, then hits `extra` →
+      // substitute R3 → emits extrap. Final chain: [u1, a1, extrap].
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'q' }, serial: 's1' });
       apply(tree, {
         runId: 'R1',
         codecMessageId: 'a1',
+        parent: 'u1',
         role: 'assistant',
         message: { id: 'a1', content: 'orig' },
         serial: 's2',
       });
       apply(tree, {
-        runId: 'R2',
-        codecMessageId: 'a1p',
-        regenerates: 'a1',
-        role: 'assistant',
-        message: { id: 'a1p', content: 'regen-1' },
-        serial: 's3',
-      });
-      apply(tree, {
-        runId: 'R2',
+        runId: 'R1',
         codecMessageId: 'extra',
         role: 'assistant',
         message: { id: 'extra', content: 'extra-1' },
-        serial: 's4',
+        serial: 's3',
       });
       apply(tree, {
         runId: 'R3',
         codecMessageId: 'extrap',
+        parent: 'a1',
         regenerates: 'extra',
         role: 'assistant',
         message: { id: 'extrap', content: 'regen-extra' },
-        serial: 's5',
+        serial: 's4',
       });
 
-      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1p', 'extrap']);
+      // Non-head substitution at the `extra` slot: extrap replaces extra.
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1', 'extrap']);
+      // The `extra` slot is a navigable 2-member group (extra ↔ extrap).
+      expect(view.branchSelection('extrap').siblings.length).toBe(2);
+
+      // Navigate back to the original trailing follow-up.
+      view.selectSibling('extrap', 0);
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1', 'extra']);
     });
 
     // -----------------------------------------------------------------------
@@ -2757,6 +2807,201 @@ describe('DefaultView', () => {
         expect(view.branchSelection('u1').index).toBe(0);
         expect(view.branchSelection('a1p').index).toBe(1);
       });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Regenerate of a NON-HEAD message (the follow-up text after a tool call)
+  // -------------------------------------------------------------------------
+  //
+  // A tool-call turn is ONE run with several messages: [tool-call (TC),
+  // follow-up text (TT)]. Regenerating the follow-up TEXT (a non-head message)
+  // mints a new reply run R' parented at TT's predecessor (TC, a message INSIDE
+  // the owner run) with regeneratesCodecMessageId = TT. R' is therefore NOT a
+  // same-parent sibling of the owner run — it's reachable as a child of it — so
+  // the Tree's `visibleNodes` cannot collapse it into TT's slot. The View
+  // resolves the substitution at message-extraction time: it truncates the
+  // owner run at TT and renders R' in its place, and exposes a message-level
+  // navigator at the TT slot.
+
+  describe('regenerate of a non-head message', () => {
+    it('hides the orphaned original text and renders the regenerator in its place', () => {
+      seedToolCallTurn(tree);
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'TC', 'TT']);
+
+      landTTRegen(tree, 'Rp', 'TTp', 'follow-up text 2', 's4');
+
+      // TT is hidden; TTp replaces it. NOT [u1, TC, TT, TTp] (the pre-fix orphan).
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'TC', 'TTp']);
+    });
+
+    it('forms a message-level navigator at the text slot and selectSibling toggles the two variants', () => {
+      seedToolCallTurn(tree);
+      landTTRegen(tree, 'Rp', 'TTp', 'follow-up text 2', 's4');
+
+      // The rendered slot (TTp) is a 2-member group, defaulting to the latest.
+      const branch = view.branchSelection('TTp');
+      expect(branch.hasSiblings).toBe(true);
+      expect(branch.siblings.map((m) => m.id)).toEqual(['TT', 'TTp']);
+      expect(branch.index).toBe(1);
+
+      // Navigate to the original.
+      view.selectSibling('TTp', 0);
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'TC', 'TT']);
+      // Resolving from the now-rendered original yields the same group, index 0.
+      const back = view.branchSelection('TT');
+      expect(back.siblings.map((m) => m.id)).toEqual(['TT', 'TTp']);
+      expect(back.index).toBe(0);
+
+      // Navigate forward again.
+      view.selectSibling('TT', 1);
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'TC', 'TTp']);
+    });
+
+    it('the tool-call (head) slot has no non-head navigator', () => {
+      seedToolCallTurn(tree);
+      landTTRegen(tree, 'Rp', 'TTp', 'follow-up text 2', 's4');
+      // TC is a head message; regenerating it would be a whole-reply sibling, not
+      // a non-head group. With only a TT-regen present, TC has no navigator.
+      expect(view.branchSelection('TC').hasSiblings).toBe(false);
+    });
+
+    it('keeps the regenerator run in runs() and the visible-key set (events still scope to it)', () => {
+      seedToolCallTurn(tree);
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: 'Rp',
+        clientId: 'agent',
+        invocationId: 'inv',
+        parent: 'TC',
+        regenerates: 'TT',
+        serial: 's4-start',
+      });
+      landTTRegen(tree, 'Rp', 'TTp', 'follow-up text 2', 's4');
+      // The regenerator is a real run: it must remain queryable and event-scoped
+      // even though its messages render in the owner run's slot.
+      expect(view.runs().map((r) => r.runId)).toContain('Rp');
+    });
+
+    it('chained regen of the regenerated text rolls forward and grows one navigable group', () => {
+      seedToolCallTurn(tree);
+      landTTRegen(tree, 'Rp', 'TTp', 'text2', 's4');
+      // Regen TTp again — anchors back at TT (the canonical anchor), so a third
+      // alternative joins the SAME group rather than spawning a nested one.
+      landTTRegen(tree, 'Rp2', 'TTp2', 'text3', 's5');
+
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'TC', 'TTp2']);
+      const branch = view.branchSelection('TTp2');
+      expect(branch.siblings.map((m) => m.id)).toEqual(['TT', 'TTp', 'TTp2']);
+      expect(branch.index).toBe(2);
+
+      // Navigate to the middle alternative.
+      view.selectSibling('TTp2', 1);
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'TC', 'TTp']);
+    });
+
+    it('regenerating the tool call after a text regen hides the orphaned text regenerator', () => {
+      seedToolCallTurn(tree);
+      // Step 1: regenerate the follow-up text TT; its regenerator TTp is shown.
+      landTTRegen(tree, 'Rp', 'TTp', 'text2', 's4');
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'TC', 'TTp']);
+
+      // Step 2: regen TC (the head) → whole-reply sibling run R2 = [TC2, TT2].
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'TC2',
+        parent: 'u1',
+        regenerates: 'TC',
+        role: 'assistant',
+        message: { id: 'TC2', content: 'tool-call 2' },
+        serial: 's5',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'TT2',
+        role: 'assistant',
+        message: { id: 'TT2', content: 'text new' },
+        serial: 's6',
+      });
+
+      // The TT regenerator (Rp) lived on R1's timeline, which is no longer the
+      // selected sibling — it must be hidden. Two bubbles, navigator on the TC.
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'TC2', 'TT2']);
+      expect(view.branchSelection('TC2').siblings.map((m) => m.id)).toEqual(['TC', 'TC2']);
+      expect(view.branchSelection('TT2').hasSiblings).toBe(false);
+
+      // Selecting the original tool call brings back R1 fully — including its
+      // own non-head text group (TT ↔ TTp, defaulting to the latest TTp).
+      view.selectSibling('TC2', 0);
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'TC', 'TTp']);
+      expect(view.branchSelection('TTp').siblings.map((m) => m.id)).toEqual(['TT', 'TTp']);
+    });
+
+    it('drives the regenerate write path: non-head anchor and parent are resolved from the visible chain', async () => {
+      seedToolCallTurn(tree);
+
+      vi.mocked(sendDelegate).mockResolvedValueOnce({
+        inputCodecMessageId: 'TT',
+        runId: Promise.resolve('Rp'),
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+        cancel: () => Promise.resolve(),
+        optimisticCodecMessageIds: [],
+        inputEventId: '',
+        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
+      });
+
+      await view.regenerate('TT');
+
+      // The regenerate input must anchor at TT and parent at TC (TT's
+      // predecessor inside the owner run), so the agent re-answers the right
+      // message and truncates the run there.
+      const [inputs] = vi.mocked(sendDelegate).mock.calls[0] ?? [];
+      const event = inputs?.[0];
+      if (!event || !('kind' in event) || event.kind !== 'regenerate') {
+        throw new Error('expected regenerate input');
+      }
+      expect(event.target).toBe('TT');
+      expect(event.parent).toBe('TC');
+
+      // When the regenerator lands it auto-rolls forward (latest member).
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: 'Rp',
+        clientId: 'agent',
+        invocationId: 'inv',
+        parent: 'TC',
+        regenerates: 'TT',
+        serial: 's4-start',
+      });
+      landTTRegen(tree, 'Rp', 'TTp', 'text2', 's4');
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'TC', 'TTp']);
+    });
+
+    it('reconstructs the same view from history replay order (parity with live)', () => {
+      // Same end state as the live path, but applied in pure serial order as a
+      // page replay would deliver it — the rendered chain must match.
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'weather?' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'TC',
+        parent: 'u1',
+        role: 'assistant',
+        message: { id: 'TC', content: 'tool-call' },
+        serial: 's2',
+      });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'TT',
+        role: 'assistant',
+        message: { id: 'TT', content: 'text' },
+        serial: 's3',
+      });
+      landTTRegen(tree, 'Rp', 'TTp', 'text2', 's4');
+
+      // Default (latest) selection after a cold rebuild — exactly what a page
+      // refresh shows.
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'TC', 'TTp']);
+      expect(view.branchSelection('TTp').siblings.map((m) => m.id)).toEqual(['TT', 'TTp']);
     });
   });
 });

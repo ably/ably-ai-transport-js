@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../../src/constants.js';
 import type { DecoderCoreHooks } from '../../../src/core/codec/decoder.js';
 import { createDecoderCore } from '../../../src/core/codec/decoder.js';
+import type { Logger } from '../../../src/logger.js';
 
 // ---------------------------------------------------------------------------
 // Test event type
@@ -38,10 +39,32 @@ const withHeaders = (msg: Partial<Ably.InboundMessage>, headers: Record<string, 
     action: 'message.create',
     name: 'text',
     data: '',
+    // `version` is required on InboundMessage; its `serial` is optional.
+    // Fixtures that exercise the version guard override it.
+    version: {},
     ...msg,
     extras: { ai: { transport: headers } },
     // CAST: Tests construct a minimal Ably.InboundMessage stub; full shape isn't needed for these tests.
   }) as Ably.InboundMessage;
+
+/**
+ * Capture-friendly Logger stub: records `warn` calls, no-ops everything else,
+ * and returns itself from `withContext` so the decoder's child logger shares
+ * the same spies.
+ * @returns The stub logger and its `warn` spy.
+ */
+const createMockLogger = (): { logger: Logger; warn: ReturnType<typeof vi.fn> } => {
+  const warn = vi.fn();
+  const logger: Logger = {
+    trace: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn,
+    error: vi.fn(),
+    withContext: () => logger,
+  };
+  return { logger, warn };
+};
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -495,6 +518,224 @@ describe('createDecoderCore', () => {
       );
 
       expect(cancel).toHaveLength(0);
+    });
+  });
+
+  // -- version guard ---------------------------------------------------------
+
+  describe('version guard', () => {
+    // A subscriber that attaches while a message is mid-stream receives the
+    // first post-attach append as a full-contents update (platform
+    // conversion), so the live route and the history-hydration route both
+    // deliver full state. The version guard decides which deliveries the
+    // shared tracker has already incorporated.
+
+    const streamedHeaders = {
+      [HEADER_STREAM]: 'true',
+      [HEADER_STATUS]: 'streaming',
+      [HEADER_STREAM_ID]: 'id-1',
+    };
+
+    it('decodes the history aggregate to nothing when the live converted update arrived first', () => {
+      const decoder = createDecoderCore(hooks);
+
+      // Live route wins the race: converted full-contents update.
+      const live = decoder.decode(
+        withHeaders(
+          { action: 'message.update', serial: 's1', name: 'text', data: 'hello', version: { serial: 's1:03' } },
+          streamedHeaders,
+        ),
+      );
+      expect(live).toEqual([
+        { type: 'start', streamId: 'id-1' },
+        { type: 'delta', streamId: 'id-1', delta: 'hello' },
+      ]);
+
+      // Hydration lands later: the untilAttach aggregate is bounded at attach,
+      // so it carries a strictly older version and a prefix of the content.
+      const aggregate = decoder.decode(
+        withHeaders(
+          { action: 'message.update', serial: 's1', name: 'text', data: 'hel', version: { serial: 's1:02' } },
+          streamedHeaders,
+        ),
+      );
+      expect(aggregate).toEqual([]);
+    });
+
+    it('drops a stale aggregate after the live route has advanced past it', () => {
+      const decoder = createDecoderCore(hooks);
+
+      decoder.decode(
+        withHeaders(
+          { action: 'message.update', serial: 's1', name: 'text', data: 'hello', version: { serial: 's1:02' } },
+          streamedHeaders,
+        ),
+      );
+      const delta = decoder.decode(
+        withHeaders({ action: 'message.append', serial: 's1', data: ' world', version: { serial: 's1:03' } }, {}),
+      );
+      expect(delta).toEqual([{ type: 'delta', streamId: 'id-1', delta: ' world' }]);
+
+      // The stale aggregate's data is not a prefix extension of the tracker's
+      // accumulated text — without the version guard it would be treated as a
+      // stream replacement and corrupt the projection.
+      const stale = decoder.decode(
+        withHeaders(
+          { action: 'message.update', serial: 's1', name: 'text', data: 'hello', version: { serial: 's1:02' } },
+          streamedHeaders,
+        ),
+      );
+      expect(stale).toEqual([]);
+    });
+
+    it('decodes a same-version full-state redelivery to nothing', () => {
+      const decoder = createDecoderCore(hooks);
+
+      const aggregate = decoder.decode(
+        withHeaders(
+          { action: 'message.update', serial: 's1', name: 'text', data: 'hello', version: { serial: 's1:02' } },
+          streamedHeaders,
+        ),
+      );
+      expect(aggregate).toEqual([
+        { type: 'start', streamId: 'id-1' },
+        { type: 'delta', streamId: 'id-1', delta: 'hello' },
+      ]);
+
+      // The same full-state delivery again (whole-wire replay): same mutation,
+      // same version, already incorporated.
+      const redelivered = decoder.decode(
+        withHeaders(
+          { action: 'message.update', serial: 's1', name: 'text', data: 'hello', version: { serial: 's1:02' } },
+          streamedHeaders,
+        ),
+      );
+      expect(redelivered).toEqual([]);
+    });
+
+    it('folds exactly the suffix when the converted update is newer than the hydration aggregate', () => {
+      const decoder = createDecoderCore(hooks);
+
+      // Hydration lands first: the untilAttach aggregate is bounded at attach.
+      const aggregate = decoder.decode(
+        withHeaders(
+          { action: 'message.update', serial: 's1', name: 'text', data: 'hello', version: { serial: 's1:02' } },
+          streamedHeaders,
+        ),
+      );
+      expect(aggregate).toEqual([
+        { type: 'start', streamId: 'id-1' },
+        { type: 'delta', streamId: 'id-1', delta: 'hello' },
+      ]);
+
+      // The converted update is the first post-attach mutation — always a
+      // strictly newer superset of the attach-bounded aggregate, so it must
+      // continue the stream, not be dropped.
+      const converted = decoder.decode(
+        withHeaders(
+          { action: 'message.update', serial: 's1', name: 'text', data: 'hello world', version: { serial: 's1:03' } },
+          streamedHeaders,
+        ),
+      );
+      expect(converted).toEqual([{ type: 'delta', streamId: 'id-1', delta: ' world' }]);
+
+      // Plain appends continue from the advanced version.
+      const next = decoder.decode(
+        withHeaders({ action: 'message.append', serial: 's1', data: '!', version: { serial: 's1:04' } }, {}),
+      );
+      expect(next).toEqual([{ type: 'delta', streamId: 'id-1', delta: '!' }]);
+    });
+
+    it('advances on a version-bearing append and drops its replay', () => {
+      const decoder = createDecoderCore(hooks);
+      decoder.decode(withHeaders({ action: 'message.create', serial: 's1', name: 'text' }, streamedHeaders));
+
+      const first = decoder.decode(
+        withHeaders({ action: 'message.append', serial: 's1', data: 'a', version: { serial: 's1:01' } }, {}),
+      );
+      expect(first).toEqual([{ type: 'delta', streamId: 'id-1', delta: 'a' }]);
+
+      // Resume retransmission: the same mutation carries the same version.
+      const replay = decoder.decode(
+        withHeaders({ action: 'message.append', serial: 's1', data: 'a', version: { serial: 's1:01' } }, {}),
+      );
+      expect(replay).toEqual([]);
+
+      const next = decoder.decode(
+        withHeaders({ action: 'message.append', serial: 's1', data: 'b', version: { serial: 's1:02' } }, {}),
+      );
+      expect(next).toEqual([{ type: 'delta', streamId: 'id-1', delta: 'b' }]);
+    });
+
+    it('drops a duplicate create for a tracked stream', () => {
+      const decoder = createDecoderCore(hooks);
+      const create = withHeaders({ action: 'message.create', serial: 's1', name: 'text' }, streamedHeaders);
+
+      expect(decoder.decode(create)).toEqual([{ type: 'start', streamId: 'id-1' }]);
+      decoder.decode(withHeaders({ action: 'message.append', serial: 's1', data: 'hello' }, {}));
+
+      // A replayed create must not reset the tracker's accumulated state.
+      expect(decoder.decode(create)).toEqual([]);
+      const delta = decoder.decode(
+        withHeaders({ action: 'message.update', serial: 's1', name: 'text', data: 'hello world' }, streamedHeaders),
+      );
+      expect(delta).toEqual([{ type: 'delta', streamId: 'id-1', delta: ' world' }]);
+    });
+
+    it('decodes a replayed aggregate for a closed stream to nothing', () => {
+      const decoder = createDecoderCore(hooks);
+      decoder.decode(withHeaders({ action: 'message.create', serial: 's1', name: 'text' }, streamedHeaders));
+      decoder.decode(
+        withHeaders({ action: 'message.append', serial: 's1', data: 'hello', version: { serial: 's1:01' } }, {}),
+      );
+      decoder.decode(
+        withHeaders(
+          { action: 'message.append', serial: 's1', data: '', version: { serial: 's1:02' } },
+          { [HEADER_STATUS]: 'complete' },
+        ),
+      );
+
+      // Whole-wire replay (second hydration): the history aggregate carries
+      // the closed stream's full contents at its final version.
+      const replay = decoder.decode(
+        withHeaders(
+          { action: 'message.update', serial: 's1', name: 'text', data: 'hello', version: { serial: 's1:02' } },
+          { [HEADER_STREAM]: 'true', [HEADER_STATUS]: 'complete', [HEADER_STREAM_ID]: 'id-1' },
+        ),
+      );
+      expect(replay).toEqual([]);
+    });
+
+    it('drops an out-of-contract version-less delivery for a closed stream', () => {
+      const decoder = createDecoderCore(hooks);
+      decoder.decode(withHeaders({ action: 'message.create', serial: 's1', name: 'text' }, streamedHeaders));
+      decoder.decode(withHeaders({ action: 'message.append', serial: 's1', data: 'hello' }, {}));
+      decoder.decode(
+        withHeaders({ action: 'message.append', serial: 's1', data: '' }, { [HEADER_STATUS]: 'complete' }),
+      );
+
+      // The closed tracker's accumulated text is tombstoned, so a late
+      // version-less delta must be dropped rather than folded.
+      const late = decoder.decode(withHeaders({ action: 'message.append', serial: 's1', data: 'more' }, {}));
+      expect(late).toEqual([]);
+    });
+
+    it('warns and falls back to first contact for a bare no-tracker append', () => {
+      const { logger, warn } = createMockLogger();
+      const decoder = createDecoderCore(hooks, { logger });
+
+      // Out of contract: the platform converts the first post-attach append of
+      // an in-flight message into a full-contents update, so a bare append
+      // should never be first contact — but the heuristic still recovers it.
+      const outputs = decoder.decode(
+        withHeaders({ action: 'message.append', serial: 's1', name: 'text', data: 'hello' }, streamedHeaders),
+      );
+
+      expect(outputs).toEqual([
+        { type: 'start', streamId: 'id-1' },
+        { type: 'delta', streamId: 'id-1', delta: 'hello' },
+      ]);
+      expect(warn).toHaveBeenCalledOnce();
     });
   });
 });

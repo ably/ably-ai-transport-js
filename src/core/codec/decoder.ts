@@ -3,7 +3,10 @@
  *
  * Handles the Ably message action patterns (create, append, update, delete)
  * and delegates to domain-specific hooks for event building and discrete
- * event decoding.
+ * event decoding. Stream trackers are version-guarded: a delivery whose
+ * `Message.version.serial` the tracker has already incorporated decodes to
+ * nothing, so the same decoder instance can serve both the live
+ * subscription and history hydration without double-decoding.
  *
  * Domain decoders call `createDecoderCore(hooks, options)` and provide hooks
  * for stream classification, event building, and discrete decoding. Hooks
@@ -102,7 +105,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
       case 'message.create': {
         const payload = this._toPayload(message);
         return payload.transportHeaders?.[HEADER_STREAM] === 'true'
-          ? this._decodeStreamedCreate(payload, message.serial)
+          ? this._decodeStreamedCreate(payload, message.serial, message.version.serial)
           : this._hooks.decodeDiscrete(payload);
       }
 
@@ -170,11 +173,82 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
   }
 
   // -------------------------------------------------------------------------
+  // Private: version guard
+  // -------------------------------------------------------------------------
+
+  /**
+   * Whether a delivery is already incorporated into (or out of contract for)
+   * an existing tracker, and so must decode to nothing. Covers two cases:
+   *
+   * - The delivery carries a `version.serial` at or below the tracker's —
+   *   the mutation it describes is already incorporated (a history aggregate
+   *   covered by live deltas, a resume retransmission, a whole-wire replay).
+   * - The tracker is closed — the stream has ended and its accumulated text
+   *   has been dropped, so nothing further can fold into it. In-contract
+   *   replays are already covered by the version check; this catches
+   *   out-of-contract version-less deliveries for an ended stream.
+   *
+   * A version-bearing delivery that passes advances the tracker's version.
+   * @param method - Calling method name, for log messages.
+   * @param serial - The message serial (the tracker's key).
+   * @param tracker - The existing tracker for the serial.
+   * @param version - The delivery's `Message.version.serial`, if present.
+   * @returns True when the delivery must decode to nothing.
+   */
+  private _alreadyIncorporated(
+    method: string,
+    serial: string,
+    tracker: StreamTrackerState,
+    version: string | undefined,
+  ): boolean {
+    if (version !== undefined && version <= tracker.version) {
+      this._logger?.debug(`DefaultDecoderCore.${method}(); delivery already incorporated`, {
+        serial,
+        version,
+        trackerVersion: tracker.version,
+      });
+      return true;
+    }
+    if (tracker.closed) {
+      this._logger?.debug(`DefaultDecoderCore.${method}(); stream closed, dropping delivery`, { serial, version });
+      return true;
+    }
+    if (version !== undefined) tracker.version = version;
+    return false;
+  }
+
+  /**
+   * Close a tracker, dropping its accumulated text. What remains is a
+   * `{version, closed}` tombstone: enough to recognise covered replays and
+   * out-of-contract post-close deliveries, without retaining the stream's
+   * full content for the decoder's lifetime.
+   * @param tracker - The tracker to close.
+   */
+  private _closeTracker(tracker: StreamTrackerState): void {
+    tracker.closed = true;
+    tracker.accumulated = '';
+  }
+
+  // -------------------------------------------------------------------------
   // Private: streamed message create
   // -------------------------------------------------------------------------
 
-  private _decodeStreamedCreate(payload: MessagePayload, serial: string | undefined): TEvent[] {
+  private _decodeStreamedCreate(
+    payload: MessagePayload,
+    serial: string | undefined,
+    version: string | undefined,
+  ): TEvent[] {
     if (!serial) return [];
+
+    const existing = this._serialState.get(serial);
+    if (existing) {
+      // A create is the message's first version, so a tracker for this serial
+      // has already incorporated it (resume retransmission, whole-wire replay).
+      this._logger?.debug('DefaultDecoderCore._decodeStreamedCreate(); duplicate create for tracked stream', {
+        serial,
+      });
+      return [];
+    }
 
     const streamId = payload.transportHeaders?.[HEADER_STREAM_ID] ?? '';
 
@@ -184,6 +258,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
       accumulated: '',
       codecHeaders: { ...payload.codecHeaders },
       transportHeaders: { ...payload.transportHeaders },
+      version: version ?? serial,
       closed: false,
     };
     this._serialState.set(serial, tracker);
@@ -208,9 +283,17 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
 
     const tracker = this._serialState.get(serial);
     if (!tracker) {
-      // Unknown serial on append — treat as first-contact update
+      // Out of contract: the platform converts the first post-attach append
+      // of an in-flight message into a full-contents update, so an append
+      // should never be a stream's first contact. Keep the first-contact
+      // heuristic as a defensive fallback.
+      this._logger?.warn('DefaultDecoderCore._decodeAppend(); append with no tracker, treating as first contact', {
+        serial,
+      });
       return this._decodeUpdate(message);
     }
+
+    if (this._alreadyIncorporated('_decodeAppend', serial, tracker, message.version.serial)) return [];
 
     const transport = getTransportHeaders(message);
     const closingCodec = getCodecHeaders(message);
@@ -223,12 +306,12 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
       outputs.push(...this._hooks.buildDeltaEvents(tracker, delta));
     }
 
-    if (status === 'complete' && !tracker.closed) {
-      tracker.closed = true;
+    if (status === 'complete') {
       outputs.push(...this._hooks.buildEndEvents(tracker, closingCodec));
+      this._closeTracker(tracker);
       this._logger?.debug('DefaultDecoderCore._decodeAppend(); stream complete', { streamId: tracker.streamId });
-    } else if (status === 'cancelled' && !tracker.closed) {
-      tracker.closed = true;
+    } else if (status === 'cancelled') {
+      this._closeTracker(tracker);
       this._logger?.debug('DefaultDecoderCore._decodeAppend(); stream cancelled', { streamId: tracker.streamId });
     }
 
@@ -253,8 +336,10 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
     const tracker = this._serialState.get(serial);
 
     if (!tracker) {
-      return this._decodeFirstContact(payload, isStreamed, status, serial);
+      return this._decodeFirstContact(payload, isStreamed, status, serial, message.version.serial);
     }
+
+    if (this._alreadyIncorporated('_decodeUpdate', serial, tracker, message.version.serial)) return [];
 
     // Updates to tracked streams use string data for prefix-match accumulation
     const data = this._stringData(message);
@@ -269,11 +354,11 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
         outputs.push(...this._hooks.buildDeltaEvents(tracker, delta));
       }
 
-      if (status === 'complete' && !tracker.closed) {
-        tracker.closed = true;
+      if (status === 'complete') {
         outputs.push(...this._hooks.buildEndEvents(tracker, codec));
-      } else if (status === 'cancelled' && !tracker.closed) {
-        tracker.closed = true;
+        this._closeTracker(tracker);
+      } else if (status === 'cancelled') {
+        this._closeTracker(tracker);
       }
 
       return outputs;
@@ -294,6 +379,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
     isStreamed: boolean,
     status: string | undefined,
     serial: string,
+    version: string | undefined,
   ): TEvent[] {
     // Non-streamed messages are discrete
     if (!isStreamed) {
@@ -317,7 +403,8 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
       accumulated: data,
       codecHeaders: { ...codec },
       transportHeaders: { ...payload.transportHeaders },
-      closed: status === 'complete' || status === 'cancelled',
+      version: version ?? serial,
+      closed: false,
     };
     this._serialState.set(serial, newTracker);
 
@@ -330,6 +417,10 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
 
     if (status === 'complete') {
       outputs.push(...this._hooks.buildEndEvents(newTracker, codec));
+    }
+
+    if (status === 'complete' || status === 'cancelled') {
+      this._closeTracker(newTracker);
     }
 
     return outputs;
@@ -349,8 +440,10 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
     this._invokeOnStreamDelete(serial, tracker);
 
     if (tracker) {
-      tracker.accumulated = '';
-      tracker.closed = true;
+      // No need to advance the tracker's version here: `_closeTracker` leaves a
+      // closed tombstone, and `_alreadyIncorporated`'s closed check drops every
+      // later delivery regardless of version.
+      this._closeTracker(tracker);
     }
 
     this._logger?.debug('DefaultDecoderCore._decodeDelete();', { serial });

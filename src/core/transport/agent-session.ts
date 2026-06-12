@@ -27,8 +27,8 @@ import { ErrorCode } from '../../errors.js';
 import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { compareBySerial, getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
-import type { Codec, CodecInputEvent, CodecOutputEvent, Decoder } from '../codec/types.js';
-import { applyWireMessage } from './decode-fold.js';
+import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
+import { createWireApplier, type WireApplier } from './decode-fold.js';
 import { buildTransportHeaders } from './headers.js';
 import { evictOldestIfFull } from './internal/bounded-map.js';
 import { Invocation } from './invocation.js';
@@ -247,8 +247,8 @@ class DefaultAgentSession<
   private readonly _deferredCancels = new Map<string, Ably.InboundMessage>();
   /**
    * Session-owned materialisation tree. Every message (live + history) folds
-   * through `applyWireMessage(this._tree, this._decoder, msg)`; conversation
-   * state is read by walking parent pointers from the input node.
+   * through `this._applier.apply(msg)`; conversation state is read by
+   * walking parent pointers from the input node.
    *
    * Replaced (not cleared in place) on channel continuity loss so that the
    * fresh tree starts empty. The old tree is abandoned to GC once in-flight
@@ -256,12 +256,14 @@ class DefaultAgentSession<
    */
   private _tree: DefaultTree<TInput, TOutput, TProjection>;
   /**
-   * Single shared inbound decoder threaded through every `applyWireMessage`
-   * call (live + history). Streaming-across-pages folds correctly because
-   * the decoder keeps stream-tracker state across messages. Outbound encoders
-   * (used by `Run.pipe`) manage their own decoders.
+   * The Tree's single decode-and-apply engine, binding one inbound decoder
+   * instance shared by every fold route (live + history). Streaming across
+   * pages folds correctly because the decoder keeps stream-tracker state
+   * across messages. Replaced alongside the Tree on continuity loss so the
+   * fresh Tree gets a fresh decoder. Outbound encoders (used by `Run.pipe`)
+   * manage their own decoders.
    */
-  private _decoder: Decoder<TInput, TOutput>;
+  private _applier: WireApplier;
   /**
    * Single-slot promise mutex for history-page hydration. Concurrent
    * `loadConversation` calls that both need to extend the Tree's ancestor
@@ -280,11 +282,11 @@ class DefaultAgentSession<
   private _historyExhausted = false;
   /**
    * Set of Ably message serials already folded into the Tree. Both the live
-   * channel listener and `_hydrateAncestors` consult this before
-   * `applyWireMessage` — guards against double-folds when a message is
-   * delivered live AND returned by a subsequent history fetch (overlap can
-   * happen at the attachSerial boundary or in test mocks that don't
-   * partition live vs history).
+   * channel listener and `_hydrateAncestors` consult this before applying a
+   * wire — guards against double-folds when a message is delivered live AND
+   * returned by a subsequent history fetch (overlap can happen at the
+   * attachSerial boundary or in test mocks that don't partition live vs
+   * history).
    *
    * Bounded by the Tree's lifetime — cleared on continuity-loss Tree swap.
    */
@@ -319,7 +321,7 @@ class DefaultAgentSession<
       this._codec,
       this._logger ?? makeLogger({ logLevel: LogLevel.Silent }),
     );
-    this._decoder = this._codec.createDecoder();
+    this._applier = createWireApplier(this._tree, this._codec.createDecoder());
 
     this._channelListener = (msg: Ably.InboundMessage) => {
       this._handleChannelMessage(msg);
@@ -613,7 +615,7 @@ class DefaultAgentSession<
       this._codec,
       this._logger ?? makeLogger({ logLevel: LogLevel.Silent }),
     );
-    this._decoder = this._codec.createDecoder();
+    this._applier = createWireApplier(this._tree, this._codec.createDecoder());
     this._foldedSerials = new Set<string>();
     this._historyExhausted = false;
 
@@ -629,9 +631,9 @@ class DefaultAgentSession<
 
   /**
    * Fold a single wire message into the session-owned Tree. Mirrors the
-   * ClientSession's live decode loop — same engine, same fold path.
-   * `applyWireMessage` decodes the message and applies the result to the
-   * Tree (or routes lifecycle messages through `applyRunLifecycle`);
+   * ClientSession's live decode loop — same engine, same fold path. The
+   * applier decodes the message and applies the result to the Tree (or
+   * routes lifecycle messages through `applyRunLifecycle`);
    * `emitAblyMessage` notifies Tree subscribers AND populates the event-id
    * index used by `findInputEvent`.
    *
@@ -646,7 +648,7 @@ class DefaultAgentSession<
       if (this._foldedSerials.has(wire.serial)) return;
       this._foldedSerials.add(wire.serial);
     }
-    applyWireMessage(this._tree, this._decoder, wire);
+    this._applier.apply(wire);
     this._tree.emitAblyMessage(wire);
   }
 
@@ -838,10 +840,10 @@ class DefaultAgentSession<
       }
 
       // 2. Subscribe to the Tree's `ably-message` event for live arrivals.
-      //    `applyWireMessage` folds first; `emitAblyMessage` notifies
-      //    subscribers AND populates the event-id index. Wires fed in by
-      //    the parallel history fetch flow through the same event so the
-      //    listener picks them up uniformly.
+      //    The applier folds first; `emitAblyMessage` notifies subscribers
+      //    AND populates the event-id index. Wires fed in by the parallel
+      //    history fetch flow through the same event so the listener picks
+      //    them up uniformly.
       unregisterLive = this._tree.on('ably-message', (msg) => {
         if (consider(msg) && !settled) finishOk();
       });

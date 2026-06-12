@@ -1,5 +1,5 @@
 /**
- * applyWireMessage unit tests.
+ * WireApplier unit tests.
  *
  * The shared decode-fold engine classifies a raw wire message and applies it to
  * the tree — run-lifecycle names via parseRunLifecycle + applyRunLifecycle,
@@ -19,7 +19,7 @@ import {
   HEADER_RUN_ID,
 } from '../../../src/constants.js';
 import type { CodecInputEvent, Decoder } from '../../../src/core/codec/types.js';
-import { applyWireMessage } from '../../../src/core/transport/decode-fold.js';
+import { createWireApplier } from '../../../src/core/transport/decode-fold.js';
 import type { TreeInternal } from '../../../src/core/transport/tree.js';
 
 // ---------------------------------------------------------------------------
@@ -49,7 +49,7 @@ const makeTree = (): MockTree => ({
 });
 
 const asTree = (t: MockTree): TreeInternal<TestInput, TestOutput, TestProjection> =>
-  // CAST: a minimal stub exposing only the methods applyWireMessage calls.
+  // CAST: a minimal stub exposing only the methods the applier calls.
   t as unknown as TreeInternal<TestInput, TestOutput, TestProjection>;
 
 const makeDecoder = (inputs: TestInput[], outputs: TestOutput[]): Decoder<TestInput, TestOutput> => ({
@@ -74,7 +74,7 @@ const msg = (opts: {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('applyWireMessage', () => {
+describe('WireApplier', () => {
   describe('run-lifecycle messages', () => {
     it('applies a run-start via applyRunLifecycle and returns the parsed event', () => {
       const tree = makeTree();
@@ -83,9 +83,7 @@ describe('applyWireMessage', () => {
       const decode = vi.fn(() => ({ inputs: [] as TestInput[], outputs: [] as TestOutput[] }));
       const decoder: Decoder<TestInput, TestOutput> = { decode };
 
-      const event = applyWireMessage(
-        asTree(tree),
-        decoder,
+      const event = createWireApplier(asTree(tree), decoder).apply(
         msg({ name: EVENT_RUN_START, headers: { [HEADER_RUN_ID]: 'R1', 'run-client-id': 'c1' }, serial: 's1' }),
       );
 
@@ -106,9 +104,7 @@ describe('applyWireMessage', () => {
       [EVENT_RUN_END, 'end'],
     ])('routes %s through applyRunLifecycle as a %s event', (name, type) => {
       const tree = makeTree();
-      const event = applyWireMessage(
-        asTree(tree),
-        makeDecoder([], []),
+      const event = createWireApplier(asTree(tree), makeDecoder([], [])).apply(
         msg({ name, headers: { [HEADER_RUN_ID]: 'R1' } }),
       );
       expect(event).toMatchObject({ type, runId: 'R1' });
@@ -117,7 +113,9 @@ describe('applyWireMessage', () => {
 
     it('returns undefined and skips applyRunLifecycle for a lifecycle name carrying no run-id', () => {
       const tree = makeTree();
-      const event = applyWireMessage(asTree(tree), makeDecoder([], []), msg({ name: EVENT_RUN_END, headers: {} }));
+      const event = createWireApplier(asTree(tree), makeDecoder([], [])).apply(
+        msg({ name: EVENT_RUN_END, headers: {} }),
+      );
       expect(event).toBeUndefined();
       expect(tree.applyRunLifecycle).not.toHaveBeenCalled();
       expect(tree.applyMessage).not.toHaveBeenCalled();
@@ -129,9 +127,7 @@ describe('applyWireMessage', () => {
       const tree = makeTree();
       const decoder = makeDecoder([], [{ type: 'out' }]);
 
-      const event = applyWireMessage(
-        asTree(tree),
-        decoder,
+      const event = createWireApplier(asTree(tree), decoder).apply(
         msg({ headers: { [HEADER_RUN_ID]: 'R1' }, serial: 's2', timestamp: 1234 }),
       );
 
@@ -148,23 +144,23 @@ describe('applyWireMessage', () => {
 
     it('applies a message with no decoded events when it carries a run-id', () => {
       const tree = makeTree();
-      applyWireMessage(asTree(tree), makeDecoder([], []), msg({ headers: { [HEADER_RUN_ID]: 'R1' } }));
+      createWireApplier(asTree(tree), makeDecoder([], [])).apply(msg({ headers: { [HEADER_RUN_ID]: 'R1' } }));
       expect(tree.applyMessage).toHaveBeenCalledTimes(1);
     });
 
     it('skips a wire-only carrier that decodes to nothing and carries no run-id', () => {
       const tree = makeTree();
-      applyWireMessage(asTree(tree), makeDecoder([], []), msg({ headers: {} }));
+      createWireApplier(asTree(tree), makeDecoder([], [])).apply(msg({ headers: {} }));
       expect(tree.applyMessage).not.toHaveBeenCalled();
     });
   });
 
   it('never emits ably-message — the caller owns that', () => {
     const tree = makeTree();
-    applyWireMessage(asTree(tree), makeDecoder([], [{ type: 'out' }]), msg({ headers: { [HEADER_RUN_ID]: 'R1' } }));
-    applyWireMessage(
-      asTree(tree),
-      makeDecoder([], []),
+    createWireApplier(asTree(tree), makeDecoder([], [{ type: 'out' }])).apply(
+      msg({ headers: { [HEADER_RUN_ID]: 'R1' } }),
+    );
+    createWireApplier(asTree(tree), makeDecoder([], [])).apply(
       msg({ name: EVENT_RUN_START, headers: { [HEADER_RUN_ID]: 'R1' } }),
     );
     expect(tree.emitAblyMessage).not.toHaveBeenCalled();

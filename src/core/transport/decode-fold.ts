@@ -65,8 +65,10 @@ const applyWireMessage = <TInput extends CodecInputEvent, TOutput extends CodecO
 ): RunLifecycleEvent | undefined => {
   const headers = getTransportHeaders(rawMsg);
   const serial = rawMsg.serial;
-  // Top-level timestamp (the current version's receive time), not
-  // `version.timestamp` — see the Tree's event-log retention clock.
+  // Top-level timestamp — the message's create time on every delivery (an
+  // append's own receive time lives in `version.timestamp`). The retention
+  // clock is sound on this timeline because run-end, a fresh create published
+  // after every wire of its run, bounds the node's last activity.
   const timestamp = rawMsg.timestamp;
 
   if (isRunLifecycleName(rawMsg.name)) {

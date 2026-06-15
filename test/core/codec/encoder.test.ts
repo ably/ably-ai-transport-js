@@ -298,58 +298,6 @@ describe('createEncoderCore', () => {
     });
   });
 
-  // -- cancelStream ---------------------------------------------------------
-
-  describe('cancelStream', () => {
-    it('sends cancelled status for the specified stream', async () => {
-      const core = createEncoderCore(writer);
-      await core.startStream('s1', streamPayload({ name: 'text' }));
-      await core.cancelStream('s1');
-
-      expect(writer.appendCalls).toHaveLength(1);
-      expect(headersOf(first(writer.appendCalls))[HEADER_STATUS]).toBe('cancelled');
-    });
-
-    it('is a no-op on a stream that already received a terminal', async () => {
-      const core = createEncoderCore(writer);
-      await core.startStream('s1', streamPayload({ name: 'text' }));
-      await core.closeStream('s1', streamPayload({ name: 'text' }));
-
-      await core.cancelStream('s1');
-      // Repeat cancels are equally inert.
-      await core.cancelStream('s1');
-
-      // Only the complete terminal from closeStream — no cancelled append.
-      const statuses = writer.appendCalls.map((msg) => headersOf(msg)[HEADER_STATUS]);
-      expect(statuses).toEqual(['complete']);
-    });
-
-    it('only cancels the specified stream, not others', async () => {
-      writer.nextPublishResult = { serials: ['serial-1'] };
-      const core = createEncoderCore(writer);
-      await core.startStream('s1', streamPayload({ name: 'text' }));
-
-      writer.nextPublishResult = { serials: ['serial-2'] };
-      await core.startStream('s2', streamPayload({ name: 'reasoning' }));
-
-      await core.cancelStream('s1');
-
-      expect(writer.appendCalls).toHaveLength(1);
-      expect(writer.appendCalls[0]?.serial).toBe('serial-1');
-    });
-
-    it('rejects for unknown streamId', async () => {
-      const core = createEncoderCore(writer);
-      await expect(core.cancelStream('nonexistent')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
-    });
-
-    it('rejects after close', async () => {
-      const core = createEncoderCore(writer);
-      await core.close();
-      await expect(core.cancelStream('s1')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
-    });
-  });
-
   // -- cancelAllStreams -----------------------------------------------------
 
   describe('cancelAllStreams', () => {

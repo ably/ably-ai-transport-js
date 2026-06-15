@@ -82,7 +82,7 @@ export interface EncoderCore {
 
   /**
    * Append data to an in-flight streamed message. Fire-and-forget: errors are
-   * collected internally and surfaced by {@link closeStream}, {@link cancelStream},
+   * collected internally and surfaced by {@link closeStream},
    * {@link cancelAllStreams} or {@link close}.
    * @throws {Ably.ErrorInfo} InvalidArgument if there is no active stream for `streamId` or the core is closed.
    */
@@ -94,12 +94,6 @@ export interface EncoderCore {
    * @throws {Ably.ErrorInfo} InvalidArgument if there is no active stream for `streamId`, or the encoder has been closed; EncoderRecoveryFailed if a failed append cannot be recovered during the flush.
    */
   closeStream(streamId: string, payload: StreamPayload): Promise<void>;
-
-  /**
-   * Cancel a single in-progress stream (status:cancelled) and flush all
-   * pending appends for recovery before returning.
-   */
-  cancelStream(streamId: string, opts?: WriteOptions): Promise<void>;
 
   /**
    * Cancel all in-progress streams (status:cancelled) and flush all
@@ -265,48 +259,7 @@ class DefaultEncoderCore implements EncoderCore {
     this._logger?.debug('DefaultEncoderCore.closeStream(); stream closed', { streamId });
   }
 
-  // Spec: AIT-CD5, AIT-CD5b
-  async cancelStream(streamId: string, opts?: WriteOptions): Promise<void> {
-    this._assertNotClosed();
-    this._logger?.trace('DefaultEncoderCore.cancelStream();', { streamId });
-
-    const tracker = this._trackers.get(streamId);
-    if (!tracker) {
-      throw new Ably.ErrorInfo(
-        `unable to cancel stream; no active stream for streamId '${streamId}'`,
-        ErrorCode.InvalidArgument,
-        400,
-      );
-    }
-
-    // Idempotent and complete-safe, matching cancelAllStreams: a stream that
-    // already received a terminal (cancelled or complete) is left untouched.
-    // Still flush so the "pending appends flushed before returning" contract holds.
-    if (tracker.cancelled || tracker.completed) {
-      await this._flushPending();
-      return;
-    }
-    tracker.cancelled = true;
-
-    const { transport, codec } = this._buildClosing(tracker, undefined, opts);
-    transport[HEADER_STATUS] = 'cancelled';
-
-    const msg: Ably.Message = {
-      serial: tracker.serial,
-      data: '',
-      extras: { ai: this._aiExtras(transport, codec) },
-    };
-
-    this._invokeOnMessage(msg);
-    const p = this._writer.appendMessage(msg);
-    this._pending.push({ promise: p, streamId });
-
-    await this._flushPending();
-
-    this._logger?.debug('DefaultEncoderCore.cancelStream(); stream cancelled', { streamId });
-  }
-
-  // Spec: AIT-CD5a
+  // Spec: AIT-CD5, AIT-CD5a
   async cancelAllStreams(opts?: WriteOptions): Promise<void> {
     this._assertNotClosed();
     this._logger?.trace('DefaultEncoderCore.cancelAllStreams();', { streamCount: this._trackers.size });

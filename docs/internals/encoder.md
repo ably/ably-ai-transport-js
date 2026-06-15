@@ -47,17 +47,15 @@ Sends a final append with `status: "complete"` and any closing headers (e.g. fin
 
 The closing append carries the closing `data` payload (which is also accumulated for recovery) and repeats all persistent headers.
 
-### cancelStream / cancelAllStreams
+### cancelAllStreams
 
-Sends an append with `status: "cancelled"` and empty data. Marks the tracker as cancelled so recovery uses the correct status. Then flushes all pending appends - both the prior content appends (already in-flight but unacknowledged) and the cancel appends just queued. There is no need to flush before the cancel: content appends are already on their way to Ably, and the serial-based ordering guarantees the cancel append follows them. The single flush at the end waits for acknowledgement of everything in one pass.
-
-`cancelAllStreams()` cancels every active stream - used when a run is [cancelled](transport-components.md#cancel-routing-agent-session).
+Cancels every active stream - used when a run is [cancelled](transport-components.md#cancel-routing-agent-session). For each stream it sends an append with `status: "cancelled"` and empty data, and marks the tracker as cancelled so recovery uses the correct status. Streams that already received a terminal (cancelled or complete) are skipped. Then it flushes all pending appends - both the prior content appends (already in-flight but unacknowledged) and the cancel appends just queued. There is no need to flush before the cancel: content appends are already on their way to Ably, and the serial-based ordering guarantees the cancel append follows them. The single flush at the end waits for acknowledgement of everything in one pass.
 
 ## Recovery mechanism
 
 Appends are fire-and-forget for performance - each token-level delta doesn't wait for the previous one to be acknowledged. But appends can fail (network issues, rate limits). The encoder handles this through batched flush and recovery.
 
-When `closeStream()` or `cancelStream()` is called, `_flushPending()` awaits all collected append promises via `Promise.allSettled`. For any failed stream:
+When `closeStream()` or `cancelAllStreams()` is called, `_flushPending()` awaits all collected append promises via `Promise.allSettled`. For any failed stream:
 
 1. Build a recovery message with the **full accumulated text** (not just the failed delta)
 2. Call `channel.updateMessage()` to replace the message content entirely

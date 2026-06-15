@@ -6,6 +6,7 @@
 
 import type * as AI from 'ai';
 
+import { parseJson } from '../../utils.js';
 import { ensureMessage, ensureTrackers, getToolPart, type VercelProjection } from './reducer-state.js';
 import { toolBase } from './tool-transitions.js';
 
@@ -39,13 +40,7 @@ export const foldToolInput = (
       if (!tracker) return state;
       tracker.inputText += chunk.inputTextDelta;
 
-      let parsedInput: unknown;
-      try {
-        // CAST: JSON.parse returns any; unknown is the safe trust-boundary type.
-        parsedInput = JSON.parse(tracker.inputText) as unknown;
-      } catch {
-        parsedInput = undefined;
-      }
+      const parsedInput = parseJson(tracker.inputText);
 
       const found = getToolPart(message, trackers, chunk.toolCallId);
       if (!found) return state;

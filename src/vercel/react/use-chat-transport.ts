@@ -13,46 +13,15 @@
  */
 
 import * as Ably from 'ably';
-// Also augments RealtimeChannel with `.object` (ably/liveobjects side-effect).
-import type * as AblyObjects from 'ably/liveobjects';
 import type * as AI from 'ai';
 import { useContext } from 'react';
 
-import type { ClientSession, Tree, View } from '../../core/transport/types.js';
+import type { ClientSession } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
+import { makeSkippedClientSession } from '../../react/internal/skipped-session.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
 import type { ChatTransport } from '../transport/index.js';
 import { ChatTransportContext } from './contexts/chat-transport-context.js';
-
-const SKIPPED_CLIENT_SESSION: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> = {
-  get tree(): Tree<VercelOutput, VercelProjection> {
-    throw new Ably.ErrorInfo('unable to access tree; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  get view(): View<VercelInput, AI.UIMessage> {
-    throw new Ably.ErrorInfo('unable to access view; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  get presence(): Ably.RealtimePresence {
-    throw new Ably.ErrorInfo('unable to access presence; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  get object(): AblyObjects.RealtimeObject {
-    throw new Ably.ErrorInfo('unable to access object; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  connect: () => {
-    throw new Ably.ErrorInfo('unable to connect; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  createView: (): View<VercelInput, AI.UIMessage> => {
-    throw new Ably.ErrorInfo('unable to create view; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  cancel: () => {
-    throw new Ably.ErrorInfo('unable to cancel; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  on: () => {
-    throw new Ably.ErrorInfo('unable to subscribe; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  close: () => {
-    throw new Ably.ErrorInfo('unable to close; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-};
 
 const SKIPPED_CHAT_TRANSPORT: ChatTransport = {
   sendMessages: (): never => {
@@ -139,7 +108,10 @@ export const useChatTransport = ({ channelName, skip }: UseChatTransportOptions 
   const { nearest, providers } = useContext(ChatTransportContext);
 
   if (skip) {
-    return { session: SKIPPED_CLIENT_SESSION, chatTransport: SKIPPED_CHAT_TRANSPORT };
+    return {
+      session: makeSkippedClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>(),
+      chatTransport: SKIPPED_CHAT_TRANSPORT,
+    };
   }
 
   if (channelName !== undefined) {
@@ -148,7 +120,7 @@ export const useChatTransport = ({ channelName, skip }: UseChatTransportOptions 
       return { session: slot.session, chatTransport: slot.chatTransport, sessionError: slot.sessionError };
     }
     return {
-      session: SKIPPED_CLIENT_SESSION,
+      session: makeSkippedClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>(),
       chatTransport: SKIPPED_CHAT_TRANSPORT,
       sessionError: new Ably.ErrorInfo(
         `unable to use client session; no ClientSessionProvider found for channelName "${channelName}"`,
@@ -172,7 +144,7 @@ export const useChatTransport = ({ channelName, skip }: UseChatTransportOptions 
   }
 
   return {
-    session: SKIPPED_CLIENT_SESSION,
+    session: makeSkippedClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>(),
     chatTransport: SKIPPED_CHAT_TRANSPORT,
     sessionError: new Ably.ErrorInfo(
       'unable to use session; no ClientSessionProvider found in the tree',

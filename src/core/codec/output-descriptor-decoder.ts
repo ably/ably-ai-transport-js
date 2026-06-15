@@ -12,7 +12,7 @@
  */
 
 import { stripUndefined } from '../../utils.js';
-import { KIND_HEADER, readFields } from './field-bag.js';
+import { KIND_HEADER, partitionOutputEvents, readFields } from './field-bag.js';
 import type {
   OutputDecodeContext,
   OutputDescriptor,
@@ -62,15 +62,11 @@ export interface OutputDescriptorDecoder<U> {
 export const createOutputDescriptorDecoder = <U extends { type: string }>(
   descriptors: readonly OutputDescriptor<U>[],
 ): OutputDescriptorDecoder<U> => {
-  const discreteByType = new Map<string, OutputEventDescriptor<U>>();
-  const wildcards: OutputEventDescriptor<U>[] = [];
+  const { discreteByType, wildcards } = partitionOutputEvents(descriptors);
   const streamByKind = new Map<string, OutputStreamDescriptor<U>>();
 
   for (const descriptor of descriptors) {
-    if (descriptor.construct === 'event') {
-      if (descriptor.match) wildcards.push(descriptor);
-      else discreteByType.set(descriptor.type, descriptor);
-    } else {
+    if (descriptor.construct === 'stream') {
       streamByKind.set(descriptor.kind, descriptor);
     }
   }

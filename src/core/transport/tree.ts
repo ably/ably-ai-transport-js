@@ -34,6 +34,7 @@ import {
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
+  HEADER_STREAM,
 } from '../../constants.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
@@ -190,12 +191,18 @@ export interface TreeInternal<
    *   delivery (an append's own receive time lives in `version.timestamp`) —
    *   or undefined for optimistic inserts. Advances the Tree's event-log
    *   retention clock and the owning node's last-activity time.
+   * @param version - The delivery's `Message.version.serial`, or undefined
+   *   when the delivery carried none (optimistic inserts, never-mutated
+   *   deliveries from sources that omit it). Guards the node's event log
+   *   against whole-wire replays: a delivery at or below the version already
+   *   decoded into its log entry is dropped.
    */
   applyMessage(
     events: { inputs: TInput[]; outputs: TOutput[] },
     headers: Record<string, string>,
     serial?: string,
     timestamp?: number,
+    version?: string,
   ): void;
 
   /**
@@ -502,16 +509,27 @@ export class DefaultTree<
    * optimistically therefore relies on that first wire (the echo of the
    * optimistic input) re-delivering the seeded content; the refold rebuilds
    * from the logged echoes, not the seed.
+   * Whole-wire replays are dropped at the log: each entry records the highest
+   * `Message.version.serial` decoded into it (`decodedThrough`), so a
+   * version-bearing delivery the entry has already incorporated — a second
+   * hydration over a populated Tree, a remounted View's re-fetch, an agent
+   * re-walk — records nothing and folds nothing. A newer version of a
+   * discrete wire (an edited discrete) is likewise dropped; propagating edits
+   * into projections is deliberately out of scope.
    * @param entry - The internal node whose log and projection are updated.
    * @param events - The decoded events to fold, in wire order.
    * @param serial - Ably channel serial; undefined for an optimistic insert.
    * @param messageId - The reducer routing key (codec-message-id), or undefined.
+   * @param version - The delivery's `Message.version.serial`, or undefined.
+   * @param streamed - Whether the delivery is part of a streamed wire.
    */
   private _recordAndFold(
     entry: InternalNode<TInput, TOutput, TProjection>,
     events: CodecEvent<TInput, TOutput>[],
     serial: string | undefined,
     messageId: string | undefined,
+    version: string | undefined,
+    streamed: boolean,
   ): void {
     if (entry.swept) {
       // The retention sweep already dropped this node's log: a refold is no
@@ -528,7 +546,19 @@ export class DefaultTree<
       return;
     }
     if (serial !== undefined && events.length > 0) {
-      const index = recordWire(entry.log, serial, messageId, events);
+      const index = recordWire(entry.log, serial, messageId, events, version, streamed);
+      if (index === undefined) {
+        // The version guard dropped a re-delivery the log already incorporated
+        // — a whole-wire replay (second hydration, remount, agent re-walk) or
+        // an edit to a discrete. Nothing to fold.
+        this._logger.debug('Tree._recordAndFold(); version guard dropped re-delivered wire', {
+          key: nodeKey(entry.node),
+          serial,
+          version,
+          streamed,
+        });
+        return;
+      }
       if (index !== entry.log.length - 1) {
         this._refold(entry);
         return;
@@ -904,6 +934,7 @@ export class DefaultTree<
     headers: Record<string, string>,
     serial?: string,
     timestamp?: number,
+    version?: string,
   ): void {
     const wireRunId = headers[HEADER_RUN_ID];
     const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
@@ -946,9 +977,9 @@ export class DefaultTree<
     const structuralBefore = this._structuralVersion;
 
     if (inputNodeCodecMessageId !== undefined) {
-      this._applyInputMessage(inputNodeCodecMessageId, headers, serial, timestamp, all);
+      this._applyInputMessage(inputNodeCodecMessageId, headers, serial, timestamp, version, all);
     } else if (wireRunId !== undefined) {
-      this._applyRunMessage(wireRunId, events, headers, serial, timestamp);
+      this._applyRunMessage(wireRunId, events, headers, serial, timestamp, version);
     }
 
     if (this._structuralVersion !== structuralBefore) this._emitter.emit('update');
@@ -963,6 +994,7 @@ export class DefaultTree<
    * @param headers - Transport headers from the inbound Ably message.
    * @param serial - Ably channel serial; undefined for an optimistic insert.
    * @param timestamp - Ably server timestamp (epoch ms); undefined for an optimistic insert.
+   * @param version - The delivery's `Message.version.serial`, or undefined.
    * @param all - The direction-tagged input events to fold, in wire order.
    */
   private _applyInputMessage(
@@ -970,6 +1002,7 @@ export class DefaultTree<
     headers: Record<string, string>,
     serial: string | undefined,
     timestamp: number | undefined,
+    version: string | undefined,
     all: CodecEvent<TInput, TOutput>[],
   ): void {
     let entry = this._nodeIndex.get(codecMessageId);
@@ -989,7 +1022,7 @@ export class DefaultTree<
 
     // Log the wire and fold it — incrementally onto the tail in the common
     // case, or by refolding the node if this wire arrived out of serial order.
-    this._recordAndFold(entry, all, serial, codecMessageId);
+    this._recordAndFold(entry, all, serial, codecMessageId, version, headers[HEADER_STREAM] === 'true');
 
     // An input node owns no agent outputs; the event still fires (empty
     // outputs) so consumers observe the projection change. It has no run-id —
@@ -1017,6 +1050,7 @@ export class DefaultTree<
    * @param headers - Transport headers from the inbound Ably message.
    * @param serial - Ably channel serial; undefined for an optimistic insert.
    * @param timestamp - Ably server timestamp (epoch ms); undefined for an optimistic insert.
+   * @param version - The delivery's `Message.version.serial`, or undefined.
    */
   private _applyRunMessage(
     wireRunId: string,
@@ -1024,6 +1058,7 @@ export class DefaultTree<
     headers: Record<string, string>,
     serial: string | undefined,
     timestamp: number | undefined,
+    version: string | undefined,
   ): void {
     const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
     // The triggering input's codec-message-id (the agent's echo), surfaced on
@@ -1066,7 +1101,7 @@ export class DefaultTree<
     // case, or by refolding the node if this wire arrived out of serial order.
     // `run` may be a reconciled optimistic node: record on whichever entry
     // owns the fold.
-    this._recordAndFold(run, all, serial, codecMessageId);
+    this._recordAndFold(run, all, serial, codecMessageId, version, headers[HEADER_STREAM] === 'true');
 
     this._emitter.emit('output', { runId: ownerKey, inputCodecMessageId, codecMessageId, serial, events: outputs });
   }

@@ -168,14 +168,19 @@ const ablyMsg = (
   data?: unknown,
   action = 'message.create',
   serial?: string,
-): Ably.InboundMessage =>
-  ({
+): Ably.InboundMessage => {
+  const wireSerial = serial ?? nextSerial();
+  return {
     name,
     data,
     action,
     extras: { ai: { transport: headers } },
-    serial: serial ?? nextSerial(),
-  }) as unknown as Ably.InboundMessage;
+    serial: wireSerial,
+    // Every Ably delivery carries a version; a never-mutated message's version
+    // serial equals its serial (each delivery here gets a distinct serial).
+    version: { serial: wireSerial },
+  } as unknown as Ably.InboundMessage;
+};
 
 // ---------------------------------------------------------------------------
 // Mock codec — direction-split encoder (publishInput / publishOutput)

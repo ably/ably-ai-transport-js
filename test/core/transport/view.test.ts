@@ -1694,6 +1694,7 @@ describe('DefaultView', () => {
       const rawMsg = {
         name: 'fake',
         serial: 's0',
+        version: { serial: 's0' },
         extras: { ai: { transport: { [HEADER_RUN_ID]: 'R0', [HEADER_CODEC_MESSAGE_ID]: 'mh1' } } },
       } as unknown as Ably.InboundMessage;
 
@@ -1712,6 +1713,7 @@ describe('DefaultView', () => {
       const rawMsg = {
         name: 'fake',
         serial: 's0',
+        version: { serial: 's0' },
         extras: { ai: { transport: { [HEADER_RUN_ID]: 'R0', [HEADER_CODEC_MESSAGE_ID]: 'mh1' } } },
       } as unknown as Ably.InboundMessage;
       const v = makeView(headerDecoder());
@@ -1750,6 +1752,7 @@ describe('DefaultView', () => {
           ({
             name: 'fake',
             serial: `s${String(i)}`,
+            version: { serial: `s${String(i)}` },
             extras: { ai: { transport: linearChainHeaders(i) } },
           }) as unknown as Ably.InboundMessage,
       );
@@ -1792,6 +1795,7 @@ describe('DefaultView', () => {
           ({
             name: 'fake',
             serial: it.serial,
+            version: { serial: it.serial },
             extras: { ai: { transport: it.headers } },
           }) as unknown as Ably.InboundMessage,
       );
@@ -1833,11 +1837,13 @@ describe('DefaultView', () => {
       const rawA = {
         name: 'fake',
         serial: 's01',
+        version: { serial: 's01' },
         extras: { ai: { transport: headersA } },
       } as unknown as Ably.InboundMessage;
       const rawB = {
         name: 'fake',
         serial: 's02',
+        version: { serial: 's02' },
         extras: { ai: { transport: headersB } },
       } as unknown as Ably.InboundMessage;
 

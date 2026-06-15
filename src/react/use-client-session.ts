@@ -20,44 +20,13 @@
  */
 
 import * as Ably from 'ably';
-// Also augments RealtimeChannel with `.object` (ably/liveobjects side-effect).
-import type * as AblyObjects from 'ably/liveobjects';
 import { useContext, useEffect, useRef } from 'react';
 
 import type { CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
-import type { ClientSession, Tree, View } from '../core/transport/types.js';
+import type { ClientSession } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
 import { ClientSessionContext } from './contexts/client-session-context.js';
-
-const SKIPPED_SESSION: ClientSession<CodecInputEvent, CodecOutputEvent, unknown, unknown> = {
-  get tree(): Tree<CodecOutputEvent, unknown> {
-    throw new Ably.ErrorInfo('unable to access tree; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  get view(): View<CodecInputEvent, unknown> {
-    throw new Ably.ErrorInfo('unable to access view; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  get presence(): Ably.RealtimePresence {
-    throw new Ably.ErrorInfo('unable to access presence; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  get object(): AblyObjects.RealtimeObject {
-    throw new Ably.ErrorInfo('unable to access object; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  connect: () => {
-    throw new Ably.ErrorInfo('unable to connect; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  createView: (): View<CodecInputEvent, unknown> => {
-    throw new Ably.ErrorInfo('unable to create view; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  cancel: () => {
-    throw new Ably.ErrorInfo('unable to cancel; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  on: () => {
-    throw new Ably.ErrorInfo('unable to subscribe; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  close: () => {
-    throw new Ably.ErrorInfo('unable to close; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-};
+import { makeSkippedClientSession } from './internal/skipped-session.js';
 
 /**
  * Return value of {@link useClientSession}.
@@ -154,7 +123,7 @@ export const useClientSession = <
 
   if (skip) {
     return {
-      session: SKIPPED_SESSION as unknown as ClientSession<TInput, TOutput, TProjection, TMessage>,
+      session: makeSkippedClientSession<TInput, TOutput, TProjection, TMessage>(),
     };
   }
 
@@ -170,12 +139,12 @@ export const useClientSession = <
       }
       // Provider exists but construction failed.
       return {
-        session: SKIPPED_SESSION as unknown as ClientSession<TInput, TOutput, TProjection, TMessage>,
+        session: makeSkippedClientSession<TInput, TOutput, TProjection, TMessage>(),
         sessionError: slot.sessionError,
       };
     }
     return {
-      session: SKIPPED_SESSION as unknown as ClientSession<TInput, TOutput, TProjection, TMessage>,
+      session: makeSkippedClientSession<TInput, TOutput, TProjection, TMessage>(),
       sessionError: new Ably.ErrorInfo(
         `unable to use session; no ClientSessionProvider found for channelName "${channelName}"`,
         ErrorCode.BadRequest,
@@ -193,13 +162,13 @@ export const useClientSession = <
     }
     // Nearest provider exists but construction failed.
     return {
-      session: SKIPPED_SESSION as unknown as ClientSession<TInput, TOutput, TProjection, TMessage>,
+      session: makeSkippedClientSession<TInput, TOutput, TProjection, TMessage>(),
       sessionError: nearestSlot.sessionError,
     };
   }
 
   return {
-    session: SKIPPED_SESSION as unknown as ClientSession<TInput, TOutput, TProjection, TMessage>,
+    session: makeSkippedClientSession<TInput, TOutput, TProjection, TMessage>(),
     sessionError: new Ably.ErrorInfo(
       'unable to use session; no ClientSessionProvider found in the tree',
       ErrorCode.BadRequest,

@@ -57,15 +57,6 @@ export interface VercelProjection {
    * for user messages) and is never used as an identity key.
    */
   messages: CodecMessage<AI.UIMessage>[];
-  /**
-   * Per-conflict-key high-water-marks. Maps a codec-derived conflict key
-   * (see `conflictKeyOf`) to the highest `meta.serial` already folded for
-   * that key. Events whose serial is `<=` the stored value are dropped as
-   * duplicates of an already-incorporated operation. Events that have no
-   * conflict key (additive content, lifecycle markers) are folded
-   * unconditionally.
-   */
-  conflictSerials: Map<string, string>;
   /** Per-codecMessageId tracker state for streamed parts. Internal — do not access. */
   trackers: Map<string, MessageTrackers>;
   /**
@@ -123,7 +114,6 @@ export interface OwnerLookup {
  */
 export const init = (): VercelProjection => ({
   messages: [],
-  conflictSerials: new Map(),
   trackers: new Map(),
   pendingToolResolutions: [],
   optimisticUserMessages: new Set(),

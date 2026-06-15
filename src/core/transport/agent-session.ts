@@ -280,17 +280,6 @@ class DefaultAgentSession<
    * (the fresh Tree starts empty and must re-hydrate).
    */
   private _historyExhausted = false;
-  /**
-   * Set of Ably message serials already folded into the Tree. Both the live
-   * channel listener and `_hydrateAncestors` consult this before applying a
-   * wire — guards against double-folds when a message is delivered live AND
-   * returned by a subsequent history fetch (overlap can happen at the
-   * attachSerial boundary or in test mocks that don't partition live vs
-   * history).
-   *
-   * Bounded by the Tree's lifetime — cleared on continuity-loss Tree swap.
-   */
-  private _foldedSerials = new Set<string>();
   private readonly _channelListener: (msg: Ably.InboundMessage) => void;
   private readonly _inputEventLookupTimeoutMs: number;
   /**
@@ -616,7 +605,6 @@ class DefaultAgentSession<
       this._logger ?? makeLogger({ logLevel: LogLevel.Silent }),
     );
     this._applier = createWireApplier(this._tree, this._codec.createDecoder());
-    this._foldedSerials = new Set<string>();
     this._historyExhausted = false;
 
     // Session-level notification: continuity loss is not scoped to any one
@@ -637,17 +625,16 @@ class DefaultAgentSession<
    * `emitAblyMessage` notifies Tree subscribers AND populates the event-id
    * index used by `findInputEvent`.
    *
-   * Dedup by serial so the live listener and the history walks
-   * (`_findInputEvent`, `_hydrateAncestors`) don't double-fold a message
-   * that surfaces via more than one path. Wires without a serial bypass the
-   * dedup (we cannot uniquely identify them).
+   * A message that surfaces via more than one path (the live listener and
+   * the history walks — `_findInputEvent`, `_hydrateAncestors`) does not
+   * double-fold: the shared decoder's version-guarded trackers drop
+   * re-delivered stream content, and the Tree's per-entry `decodedThrough`
+   * high-water-mark drops whole-wire replays (including stateless discrete
+   * re-decodes) at the correct per-delivery granularity — same-serial live
+   * appends each carry their own version and fold exactly once.
    * @param wire - The inbound Ably message to fold.
    */
   private _foldWire(wire: Ably.InboundMessage): void {
-    if (wire.serial !== undefined) {
-      if (this._foldedSerials.has(wire.serial)) return;
-      this._foldedSerials.add(wire.serial);
-    }
     this._applier.apply(wire);
     this._tree.emitAblyMessage(wire);
   }
@@ -658,8 +645,9 @@ class DefaultAgentSession<
 
   private _handleChannelMessage(msg: Ably.InboundMessage): void {
     try {
-      // Fold first (no-op for already-folded serials), then dispatch cancel
-      // control messages regardless of whether the fold was skipped.
+      // Fold first (re-delivered content is dropped by the shared decoder's
+      // version guard and the Tree's replay guard), then dispatch cancel
+      // control messages.
       this._foldWire(msg);
 
       if (msg.name === EVENT_CANCEL) {

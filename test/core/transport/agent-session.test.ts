@@ -155,6 +155,10 @@ const simulateCancel = (channel: MockChannel, headers: Record<string, string>): 
   const msg = {
     name: EVENT_CANCEL,
     extras: { ai: { transport: headers } },
+    // `version` is present on every delivery; this cancel mock sets no top-level
+    // serial (cancels route by run-id, never folded by serial), so version.serial
+    // is unused here — the empty object just satisfies the `.version.serial` read.
+    version: {},
   } as unknown as Ably.InboundMessage;
   channel.listener(msg);
 };
@@ -387,6 +391,10 @@ const deliverInputEvent = (ch: MockChannel, opts: DeliverInputEventOpts): void =
     serial: opts.serial,
     clientId: opts.publisherClientId,
     extras: { ai: { transport: headers } },
+    // A never-mutated message's version serial equals its serial; carrying it
+    // lets the Tree's replay guard dedup a wire delivered both live and via a
+    // history walk (the role `_foldedSerials` used to play).
+    version: { serial: opts.serial },
   } as unknown as Ably.InboundMessage;
   if (ch.listener) ch.listener(msg);
 };
@@ -2011,6 +2019,7 @@ describe('AgentSession input-event lookup', () => {
     const triggerWire = {
       name: 'text',
       serial: 's-hist-01',
+      version: { serial: 's-hist-01' },
       extras: {
         ai: {
           transport: {
@@ -2317,7 +2326,8 @@ describe('Run.messages', () => {
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
     const startPromise = run.start();
-    deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'u2', serial: 's-05', inputEventId, parent: 'a1' });
+    // Fresh-send ai-input carries no run-id on the wire (live-confirmed) — the agent mints the run separately.
+    deliverInputEvent(ch, { invocationId, codecMessageId: 'u2', serial: 's-05', inputEventId, parent: 'a1' });
     await startPromise;
 
     // Before loadConversation: only the current run's view messages (input u2).
@@ -2389,12 +2399,18 @@ const makeRunStartMsg = (
  * @param serial - Optional serial override; defaults to `s-<codecMsgId>`.
  * @returns A synthetic inbound message mimicking a codec content wire event.
  */
-const makeContentMsg = (runId: string, codecMsgId: string, serial?: string): Ably.InboundMessage =>
-  ({
+const makeContentMsg = (runId: string, codecMsgId: string, serial?: string): Ably.InboundMessage => {
+  const wireSerial = serial ?? `s-${codecMsgId}`;
+  return {
     name: 'text',
-    serial: serial ?? `s-${codecMsgId}`,
+    serial: wireSerial,
     extras: { ai: { transport: { [HEADER_RUN_ID]: runId, [HEADER_CODEC_MESSAGE_ID]: codecMsgId } } },
-  }) as unknown as Ably.InboundMessage;
+    // A never-mutated message's version serial equals its serial; carrying it
+    // lets the Tree's replay guard dedup a wire delivered both live and via a
+    // history walk (the role `_foldedSerials` used to play).
+    version: { serial: wireSerial },
+  } as unknown as Ably.InboundMessage;
+};
 
 /**
  * Build a synthetic run-less user INPUT-node wire message (the two-node model:
@@ -2422,6 +2438,10 @@ const makeInputMsg = (
     name: 'text',
     serial,
     extras: { ai: { transport: headers } },
+    // A never-mutated message's version serial equals its serial; carrying it
+    // lets the Tree's replay guard dedup a wire delivered both live and via a
+    // history walk (the role `_foldedSerials` used to play).
+    version: { serial },
   } as unknown as Ably.InboundMessage;
 };
 
@@ -2544,7 +2564,8 @@ describe('Run.loadConversation', () => {
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
     const startPromise = run.start();
-    deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'u2', serial: 's-05', inputEventId, parent: 'a1' });
+    // Fresh-send ai-input carries no run-id on the wire (live-confirmed) — the agent mints the run separately.
+    deliverInputEvent(ch, { invocationId, codecMessageId: 'u2', serial: 's-05', inputEventId, parent: 'a1' });
     await startPromise;
 
     const history = await run.loadConversation();
@@ -2591,7 +2612,8 @@ describe('Run.loadConversation', () => {
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
     const startPromise = run.start();
-    deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'u3', serial: 's-07', inputEventId, parent: 'a2' });
+    // Fresh-send ai-input carries no run-id on the wire (live-confirmed) — the agent mints the run separately.
+    deliverInputEvent(ch, { invocationId, codecMessageId: 'u3', serial: 's-07', inputEventId, parent: 'a2' });
     await startPromise;
 
     const history = await run.loadConversation();
@@ -2638,7 +2660,8 @@ describe('Run.loadConversation', () => {
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
     const startPromise = run.start();
-    deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'u3', serial: 's-07', inputEventId, parent: 'a2' });
+    // Fresh-send ai-input carries no run-id on the wire (live-confirmed) — the agent mints the run separately.
+    deliverInputEvent(ch, { invocationId, codecMessageId: 'u3', serial: 's-07', inputEventId, parent: 'a2' });
     await startPromise;
 
     // One reply run back: run-2's reply a2 AND its triggering input u2.
@@ -2749,9 +2772,9 @@ describe('Run.loadConversation', () => {
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
     const startPromise = run.start();
+    // Fresh-send ai-input carries no run-id on the wire (live-confirmed) — the agent mints the run separately.
     deliverInputEvent(ch, {
       invocationId,
-      runId,
       codecMessageId: 'u2b',
       serial: 's-07',
       inputEventId,
@@ -3045,7 +3068,8 @@ describe('agent loadConversation ≡ client View.getMessages (cross-engine equiv
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
     const startPromise = run.start();
-    deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'u2', serial: 's-05', inputEventId, parent: 'a1' });
+    // Fresh-send ai-input carries no run-id on the wire (live-confirmed) — the agent mints the run separately.
+    deliverInputEvent(ch, { invocationId, codecMessageId: 'u2', serial: 's-05', inputEventId, parent: 'a1' });
     await startPromise;
 
     const agentMessages = await run.loadConversation();
@@ -3088,7 +3112,8 @@ describe('agent loadConversation ≡ client View.getMessages (cross-engine equiv
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
     const startPromise = run.start();
-    deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'u3', serial: 's-07', inputEventId, parent: 'a2' });
+    // Fresh-send ai-input carries no run-id on the wire (live-confirmed) — the agent mints the run separately.
+    deliverInputEvent(ch, { invocationId, codecMessageId: 'u3', serial: 's-07', inputEventId, parent: 'a2' });
     await startPromise;
 
     const agentMessages = await run.loadConversation();

@@ -12,7 +12,10 @@
  * subscription, View history pagination, the agent's hydration walks — feeds
  * the same decoder. The decoder's version-guarded stream trackers then make
  * re-delivery across routes (an attach-boundary in-flight stream, a replayed
- * history page) decode to nothing instead of double-folding.
+ * history page) decode to nothing instead of double-folding. The delivery's
+ * `version.serial` is also threaded into the Tree, whose per-entry
+ * `decodedThrough` high-water-mark drops whole-wire replays that no decoder
+ * state can see (stateless discrete re-decodes).
  */
 
 import type * as Ably from 'ably';
@@ -79,7 +82,7 @@ const applyWireMessage = <TInput extends CodecInputEvent, TOutput extends CodecO
 
   const { inputs, outputs } = decoder.decode(rawMsg);
   if (inputs.length > 0 || outputs.length > 0 || headers[HEADER_RUN_ID]) {
-    tree.applyMessage({ inputs, outputs }, headers, serial, timestamp);
+    tree.applyMessage({ inputs, outputs }, headers, serial, timestamp, rawMsg.version.serial);
   }
   return undefined;
 };

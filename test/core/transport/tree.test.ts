@@ -9,6 +9,7 @@ import {
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
+  HEADER_STREAM,
 } from '../../../src/constants.js';
 import type { Codec, CodecEvent, CodecInputEvent, Regenerate, UserMessage } from '../../../src/core/codec/types.js';
 import type { TreeInternal } from '../../../src/core/transport/tree.js';
@@ -84,6 +85,10 @@ interface ApplyOpts {
   inputCodecMessageId?: string;
   serial?: string;
   timestamp?: number;
+  /** The delivery's `Message.version.serial` (drives the per-entry replay guard). */
+  version?: string;
+  /** Sets the `stream` transport header so the wire folds as a streamed wire. */
+  streamed?: boolean;
   message?: TestMessage;
   /** Override events entirely. When set, `message` is ignored. */
   events?: (TestInput | TestOutput)[];
@@ -101,11 +106,12 @@ const apply = (tree: TreeInternal<TestInput, TestOutput, TestProjection>, opts: 
   if (opts.invocationId) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.clientId) h[HEADER_RUN_CLIENT_ID] = opts.clientId;
   if (opts.inputCodecMessageId) h[HEADER_INPUT_CODEC_MESSAGE_ID] = opts.inputCodecMessageId;
+  if (opts.streamed) h[HEADER_STREAM] = 'true';
 
   const events: TreeEvent[] = opts.events ?? (opts.message ? [{ type: 'append-message', message: opts.message }] : []);
   const inputs = events.filter((e): e is TestInput => 'kind' in e);
   const outputs = events.filter((e): e is TestOutput => 'type' in e);
-  tree.applyMessage({ inputs, outputs }, h, opts.serial, opts.timestamp);
+  tree.applyMessage({ inputs, outputs }, h, opts.serial, opts.timestamp, opts.version);
 };
 
 const messagesOf = (tree: TreeInternal<TestInput, TestOutput, TestProjection>, runId: string): TestMessage[] => {
@@ -487,6 +493,146 @@ describe('Tree', () => {
         { id: 'a', content: 's1-first' },
         { id: 'c', content: 's1-append' },
         { id: 'b', content: 's2' },
+      ]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Version replay guard (decodedThrough)
+  //
+  // The per-entry `decodedThrough` high-water-mark is what dedups whole-wire
+  // re-deliveries (a second hydration, a remounted View's re-fetch, an agent
+  // re-walk) now that the agent's serial-keyed `_foldedSerials` is gone. It is
+  // the *only* protection for a re-decoded discrete: the decoder keeps no
+  // tracker for a single-wire discrete, so a replayed discrete reaches the
+  // Tree fully decoded and must be dropped here.
+  // -------------------------------------------------------------------------
+
+  describe('version replay guard', () => {
+    it('dedups a re-decoded discrete wire delivered twice (the stateless-decode path)', () => {
+      // A discrete (non-streamed) wire: version.serial == serial (never-mutated).
+      // The same wire arrives a second time via a history re-walk — same serial,
+      // same version — and must fold exactly once.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm1',
+        message: { id: 'a', content: 'first' },
+        serial: 's1',
+        version: 's1',
+      });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm1',
+        message: { id: 'a', content: 'first' },
+        serial: 's1',
+        version: 's1',
+      });
+
+      expect(messagesOf(tree, 'R1')).toEqual([{ id: 'a', content: 'first' }]);
+    });
+
+    it('drops a replayed streamed delivery at or below the high-water-mark', () => {
+      // Streamed create then append (advancing version) accumulate; replaying
+      // either version folds nothing more.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm1',
+        streamed: true,
+        message: { id: 'a', content: 'create' },
+        serial: 's1',
+        version: 's1@1',
+      });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm1',
+        streamed: true,
+        message: { id: 'b', content: 'append' },
+        serial: 's1',
+        version: 's1@2',
+      });
+      // Replay of the create's version (≤ decodedThrough) — dropped.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm1',
+        streamed: true,
+        message: { id: 'a', content: 'create' },
+        serial: 's1',
+        version: 's1@1',
+      });
+
+      expect(messagesOf(tree, 'R1')).toEqual([
+        { id: 'a', content: 'create' },
+        { id: 'b', content: 'append' },
+      ]);
+    });
+
+    it('folds genuine streamed appends with advancing version', () => {
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm1',
+        streamed: true,
+        message: { id: 'a', content: 'create' },
+        serial: 's1',
+        version: 's1@1',
+      });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm1',
+        streamed: true,
+        message: { id: 'b', content: 'append' },
+        serial: 's1',
+        version: 's1@2',
+      });
+
+      expect(messagesOf(tree, 'R1')).toEqual([
+        { id: 'a', content: 'create' },
+        { id: 'b', content: 'append' },
+      ]);
+    });
+
+    it('drops a higher-version delivery for a discrete wire as an edited discrete, logging at debug', () => {
+      const logged: { message: string; context?: Record<string, unknown> }[] = [];
+      const logTree = createTree<TestInput, TestOutput, TestProjection>(
+        testCodec,
+        makeLogger({
+          logLevel: LogLevel.Debug,
+          logHandler: (message, _level, context) => logged.push({ message, context }),
+        }),
+      );
+
+      logTree.applyMessage(
+        { inputs: [], outputs: [{ type: 'append-message', message: { id: 'a', content: 'original' } }] },
+        { [HEADER_RUN_ID]: 'R1', [HEADER_CODEC_MESSAGE_ID]: 'm1' },
+        's1',
+        undefined,
+        's1',
+      );
+      // A newer version of the same discrete (an edit) — propagation is out of
+      // scope, so it is dropped and the projection is unchanged.
+      logTree.applyMessage(
+        { inputs: [], outputs: [{ type: 'append-message', message: { id: 'a', content: 'edited' } }] },
+        { [HEADER_RUN_ID]: 'R1', [HEADER_CODEC_MESSAGE_ID]: 'm1' },
+        's1',
+        undefined,
+        's1@2',
+      );
+
+      const run = logTree.getRunNode('R1');
+      expect(run ? testCodec.getMessages(run.projection).map((m) => m.message) : []).toEqual([
+        { id: 'a', content: 'original' },
+      ]);
+      expect(logged.some((l) => l.message.includes('version guard dropped re-delivered wire'))).toBe(true);
+    });
+
+    it('folds a version-less delivery unguarded (defensive path)', () => {
+      // No version on either delivery (the type-optional absent case): the guard
+      // is disabled, so both fold — matching the decoder's convention.
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'first' }, serial: 's1' });
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'again' }, serial: 's1' });
+
+      expect(messagesOf(tree, 'R1')).toEqual([
+        { id: 'a', content: 'first' },
+        { id: 'a', content: 'again' },
       ]);
     });
   });

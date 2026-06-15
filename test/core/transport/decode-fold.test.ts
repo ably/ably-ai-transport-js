@@ -61,6 +61,7 @@ const msg = (opts: {
   headers?: Record<string, string>;
   serial?: string;
   timestamp?: number;
+  version?: string;
 }): Ably.InboundMessage =>
   ({
     name: opts.name ?? 'msg',
@@ -68,6 +69,10 @@ const msg = (opts: {
     extras: { ai: { transport: opts.headers ?? {} } },
     serial: opts.serial ?? 's1',
     timestamp: opts.timestamp ?? 1000,
+    // `version` is present on every Ably delivery; `version.serial` is typed
+    // optional. These applier-mechanics tests default it to undefined to assert
+    // pass-through; tests that exercise the guard pass an explicit `version`.
+    version: { serial: opts.version },
   }) as unknown as Ably.InboundMessage;
 
 // ---------------------------------------------------------------------------
@@ -139,6 +144,26 @@ describe('WireApplier', () => {
         expect.objectContaining({ [HEADER_RUN_ID]: 'R1' }),
         's2',
         1234,
+        undefined,
+      );
+    });
+
+    it('threads the delivery version.serial through to applyMessage', () => {
+      const tree = makeTree();
+      const decoder = makeDecoder([], [{ type: 'out' }]);
+
+      createWireApplier(asTree(tree), decoder).apply(
+        msg({ headers: { [HEADER_RUN_ID]: 'R1' }, serial: 's2', timestamp: 1234, version: 's2@3' }),
+      );
+
+      // The applier passes rawMsg.version.serial as the 5th applyMessage arg —
+      // the transport's per-message replay high-water-mark keys on it.
+      expect(tree.applyMessage).toHaveBeenCalledWith(
+        { inputs: [], outputs: [{ type: 'out' }] },
+        expect.objectContaining({ [HEADER_RUN_ID]: 'R1' }),
+        's2',
+        1234,
+        's2@3',
       );
     });
 

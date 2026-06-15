@@ -31,6 +31,13 @@ export interface ClientToolResultErrorWireData {
 // or null — callers fall back to field defaults when these guards reject.
 const isRecord = (data: unknown): data is Record<string, unknown> => typeof data === 'object' && data !== null;
 
+// Validate that `data` is a record whose named field is absent or a string. The
+// optional-string check for the typed error fields below lives here once so the
+// guards can't drift. No `as` needed: `isRecord` narrows `data` to a record, so
+// string-key indexing is well-typed.
+const isRecordWithOptionalString = (data: unknown, key: string): boolean =>
+  isRecord(data) && (data[key] === undefined || typeof data[key] === 'string');
+
 // Validates the typed `errorText` field; `input` is tool-defined and
 // intentionally left unconstrained.
 /**
@@ -42,7 +49,7 @@ const isRecord = (data: unknown): data is Record<string, unknown> => typeof data
 export const asString = (data: unknown): string => (typeof data === 'string' ? data : '');
 
 export const isToolInputErrorWireData = (data: unknown): data is ToolInputErrorWireData =>
-  isRecord(data) && (data.errorText === undefined || typeof data.errorText === 'string');
+  isRecordWithOptionalString(data, 'errorText');
 
 // The sole field `output` is tool-defined and intentionally unconstrained, so
 // this asserts only that the payload is an object envelope.
@@ -50,8 +57,8 @@ export const isToolOutputAvailableWireData = (data: unknown): data is ToolOutput
 
 // Validates the typed `errorText` field.
 export const isAgentToolOutputErrorWireData = (data: unknown): data is AgentToolOutputErrorWireData =>
-  isRecord(data) && (data.errorText === undefined || typeof data.errorText === 'string');
+  isRecordWithOptionalString(data, 'errorText');
 
 // Validates the typed `message` field.
 export const isClientToolResultErrorWireData = (data: unknown): data is ClientToolResultErrorWireData =>
-  isRecord(data) && (data.message === undefined || typeof data.message === 'string');
+  isRecordWithOptionalString(data, 'message');

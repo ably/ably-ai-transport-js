@@ -8,6 +8,21 @@ import type * as AI from 'ai';
 import { ensureMessage, type VercelProjection } from './reducer-state.js';
 
 /**
+ * Set a message's metadata from a chunk when both the message exists and the
+ * chunk carries metadata. Shared by the `finish` and `message-metadata` cases,
+ * which apply it identically. The `start` case is not routed through here — it
+ * creates the message via `ensureMessage` first.
+ * @param state - Projection holding the message.
+ * @param messageId - The target codec-message-id.
+ * @param metadata - The chunk's `messageMetadata`, or undefined to leave it unchanged.
+ */
+const applyMessageMetadata = (state: VercelProjection, messageId: string, metadata: AI.UIMessage['metadata']): void => {
+  if (metadata === undefined) return;
+  const message = state.messages.find((e) => e.codecMessageId === messageId)?.message;
+  if (message) message.metadata = metadata;
+};
+
+/**
  * Fold a message-lifecycle chunk into the projection.
  * @param state - Projection to fold into.
  * @param chunk - The lifecycle chunk.
@@ -52,10 +67,7 @@ export const foldLifecycle = (
       return state;
     }
     case 'finish': {
-      const message = state.messages.find((e) => e.codecMessageId === messageId)?.message;
-      if (message && chunk.messageMetadata !== undefined) {
-        message.metadata = chunk.messageMetadata;
-      }
+      applyMessageMetadata(state, messageId, chunk.messageMetadata);
       // Tracker state retained — late events still resolvable; cleanup happens at Run end.
       return state;
     }
@@ -66,10 +78,7 @@ export const foldLifecycle = (
       return state;
     }
     case 'message-metadata': {
-      const message = state.messages.find((e) => e.codecMessageId === messageId)?.message;
-      if (message && chunk.messageMetadata !== undefined) {
-        message.metadata = chunk.messageMetadata;
-      }
+      applyMessageMetadata(state, messageId, chunk.messageMetadata);
       return state;
     }
   }

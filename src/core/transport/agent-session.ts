@@ -39,6 +39,7 @@ import { loadHistoryPages } from './load-history-pages.js';
 import { pipeStream } from './pipe-stream.js';
 import type { RunManager } from './run-manager.js';
 import { createRunManager } from './run-manager.js';
+import { bestEffortDetach, continuityLostError, isContinuityLost, requireConnected } from './session-support.js';
 import { createTree, type DefaultTree } from './tree.js';
 import type {
   AgentSession,
@@ -448,19 +449,7 @@ class DefaultAgentSession<
     this._deferredCancels.clear();
     this._runManager.close();
 
-    // Detach the channel this session attached. connect() subscribes (which
-    // implicitly attaches), so we only detach when connect() ran. Best-effort:
-    // a detach failure (e.g. the channel is already FAILED) must not throw out
-    // of close().
-    if (this._connectPromise) {
-      try {
-        await this._channel.detach();
-      } catch (error) {
-        // Swallowed (see above): a detach failure must not throw out of
-        // close(). Logged at debug for observability.
-        this._logger?.debug('DefaultAgentSession.close(); channel detach failed', { error });
-      }
-    }
+    await bestEffortDetach(this._channel, this._connectPromise, this._logger, 'DefaultAgentSession');
 
     this._logger?.debug('DefaultAgentSession.close(); session closed');
   }
@@ -606,13 +595,7 @@ class DefaultAgentSession<
       return;
     }
 
-    // Continuity-breaking states:
-    // - FAILED, SUSPENDED, DETACHED: no more messages expected (or gap)
-    // - ATTACHED with resumed: false (UPDATE): messages were lost
-    const continuityLost =
-      current === 'failed' || current === 'suspended' || current === 'detached' || (current === 'attached' && !resumed);
-
-    if (!continuityLost) return;
+    if (!isContinuityLost(stateChange)) return;
 
     this._logger?.error('DefaultAgentSession._handleChannelStateChange(); channel continuity lost', {
       current,
@@ -620,12 +603,7 @@ class DefaultAgentSession<
       previous: stateChange.previous,
     });
 
-    const continuityErr = new Ably.ErrorInfo(
-      `unable to continue; channel continuity lost (${current}${current === 'attached' ? ', resumed: false' : ''})`,
-      ErrorCode.ChannelContinuityLost,
-      500,
-      stateChange.reason,
-    );
+    const continuityErr = continuityLostError(stateChange, 'continue');
 
     // Abort every active run's controller FIRST so in-flight
     // `loadConversation` / `findInputEvent` calls observe the abort before
@@ -720,14 +698,7 @@ class DefaultAgentSession<
   // -------------------------------------------------------------------------
 
   private async _requireConnected(method: string): Promise<void> {
-    if (!this._connectPromise) {
-      throw new Ably.ErrorInfo(
-        `unable to ${method}; connect() must be called before ${method}()`,
-        ErrorCode.InvalidArgument,
-        400,
-      );
-    }
-    return this._connectPromise;
+    return requireConnected(this._connectPromise, method);
   }
 
   // -------------------------------------------------------------------------

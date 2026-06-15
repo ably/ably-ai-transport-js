@@ -36,6 +36,7 @@ import type { ActiveRun, ClientSession, SendOptions } from '../../core/transport
 import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import { LogLevel, makeLogger } from '../../logger.js';
+import { errorCause, errorMessage } from '../../utils.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
 import { UIMessageCodec } from '../codec/index.js';
 import { isToolPart, type ToolPart } from '../tool-part.js';
@@ -666,13 +667,12 @@ export const createChatTransport = (
         }
       })
       .catch((error: unknown) => {
-        const cause = error instanceof Ably.ErrorInfo ? error : undefined;
         fail(
           new Ably.ErrorInfo(
-            `unable to send; HTTP POST to ${api} failed: ${error instanceof Error ? error.message : String(error)}`,
+            `unable to send; HTTP POST to ${api} failed: ${errorMessage(error)}`,
             ErrorCode.SessionSendFailed,
             500,
-            cause,
+            errorCause(error),
           ),
         );
       });

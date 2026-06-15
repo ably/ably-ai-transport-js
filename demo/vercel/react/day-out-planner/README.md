@@ -1,34 +1,39 @@
 # Day out planner
 
-A collaborative chat-and-map demo where a small group of users plans a day out
-together with help from an AI agent called **Bernard**.
+A collaborative chat-and-map demo where a small group of people plan a day out
+together with help from an AI agent called **Bernard**. Everyone shares one
+durable session: people chat freely, and when someone mentions `@bernard` he
+joins in, suggests places, and builds a shared itinerary that everyone sees
+update live on a map.
 
-This demo exercises three pieces of `@ably/ai-transport` together:
+It exercises three pieces of `@ably/ai-transport` together:
 
-- The "richer" `useClientSession` React hooks — chat messages and runs.
+- The richer `useClientSession` React hooks — shared chat messages and runs.
 - A server-side `createAgentSession` route that calls Anthropic's Claude with
   three itinerary-mutation tools.
-- **Ably LiveObjects** — Bernard's tool calls write to a shared `LiveMap` on
-  the same Ably channel; every client subscribes and re-renders the map and
+- **Ably LiveObjects** — Bernard's tools write to a `LiveMap` on the **same**
+  channel the chat uses; every client subscribes and re-renders the map and
   list whenever it changes.
+
+> Design notes and known rough edges live in [`DESIGN-NOTES.md`](./DESIGN-NOTES.md).
 
 ## Running it
 
-From this directory:
+This is a standalone pnpm project. From this directory:
 
 ```sh
-npm install
+pnpm install
 cp .env.local.example .env.local
 # Edit .env.local — fill in ABLY_API_KEY and ANTHROPIC_API_KEY.
-npm run dev
+pnpm dev
 ```
 
 Then open <http://localhost:3000?channel=ai:test-1> in two or three browser
 windows. The first visit asks you to pick a name; that name is used as your
-Ably `clientId` and as the sender label everyone (including Bernard) sees.
-The name is kept in memory only for the current tab — open a new tab and
-you get prompted again, which makes it easy to demo multiple identities at
-once. The header has a "change name" link to drop back to the modal.
+Ably `clientId` and as the sender label everyone (including Bernard) sees. The
+name is kept in memory for the current tab — open a new tab and you get
+prompted again, which makes it easy to demo multiple identities at once. The
+header has a "change name" link to drop back to the modal.
 
 ### URL parameters
 
@@ -37,153 +42,97 @@ once. The header has a "change name" link to drop back to the modal.
 | `channel` | Channel name to join (default `ai:day-out-planner:demo`). Must be in the `ai:` namespace — see below. |
 | `user`    | Skips the name modal by pre-filling the name. Useful for tab-per-identity demos.                      |
 
-So a quick three-tab demo:
+A quick three-tab demo:
 
 - `http://localhost:3000?channel=ai:test-1&user=alice`
 - `http://localhost:3000?channel=ai:test-1&user=bob`
 - `http://localhost:3000?channel=ai:test-1&user=charlie`
 
-**Channel names must live in the `ai:` namespace** (e.g. `ai:test-1`,
-`ai:weekend-plan`). The AI Transport SDK uses Ably's mutable-message
-operations, which Ably only enables on channels in that namespace. The
-default channel (`ai:day-out-planner:demo`) and the auto-derived sibling
-itinerary channel (`<channel>:itinerary`) are both inside `ai:` already.
+**Channel names must live in the `ai:` namespace** (e.g. `ai:test-1`). The AI
+Transport SDK uses Ably's mutable-message operations, which Ably only enables on
+channels in that namespace.
 
 ### Environment variables
 
-| Variable                   | Required | Purpose                                                                          |
-| -------------------------- | -------- | -------------------------------------------------------------------------------- |
-| `ABLY_API_KEY`             | yes      | Server-side Ably key (used by both the agent session and JWT issuer).            |
-| `ANTHROPIC_API_KEY`        | yes      | Used by `@ai-sdk/anthropic` to call Claude.                                      |
-| `NEXT_PUBLIC_ABLY_CHANNEL` | no       | Default channel when `?channel=` is omitted (default `ai:day-out-planner:demo`). |
+| Variable                   | Required | Purpose                                                               |
+| -------------------------- | -------- | --------------------------------------------------------------------- |
+| `ABLY_API_KEY`             | yes      | Server-side Ably key (used by both the agent session and JWT issuer). |
+| `ANTHROPIC_API_KEY`        | yes      | Used by `@ai-sdk/anthropic` to call Claude.                           |
+| `NEXT_PUBLIC_ABLY_CHANNEL` | no       | Default channel when `?channel=` is omitted.                          |
 
 ## Using it
 
 The chat is the only input surface. Two cases:
 
-- **Plain chat between users**: any message that doesn't mention
-  `@bernard`. It shows up in every connected client's chat pane, but no LLM
-  is invoked.
+- **Plain chat between people**: any message that doesn't mention `@bernard`.
+  It shows up in every connected client's chat pane, but Bernard does nothing.
 - **Asking Bernard for help**: include `@bernard` anywhere in a message
-  (case-insensitive). Bernard reads the recent conversation, suggests
-  concrete real-world places (cinemas, restaurants, museums, etc.) and adds
-  them to the shared itinerary via tool calls. The map and the list under
-  it update on every connected client.
+  (case-insensitive). Bernard reads the recent conversation, suggests concrete
+  real-world places and adds them to the shared itinerary via tool calls. The
+  map and the list under it update on every connected client.
 
-A worked example (from the original requirements):
+A worked example:
 
-1. Alice: `hey bob let's do something on saturday, i was thinking maybe pizza near avenida paulista`
-2. Bob: `yeah sure but i wanted to go see devil wears prada 2 as well, maybe let's do that then eat?`
-3. Alice: `sure sounds good, we could go to cine belas artes?`
-4. Bob: `yeah, i like it there`
-5. Alice: `cool, @bernard make a plan for us`
+1. Alice: `hey bob let's do something on saturday, maybe pizza near avenida paulista`
+2. Bob: `yeah, and let's see a film first — cine belas artes?`
+3. Alice: `cool, @bernard make us a plan`
 
-Bernard then replies with a short summary and writes one or two itinerary
-items (cinema + pizza place). When Charlie joins later and says
-`@bernard help us add a museum`, the map gains another marker on every
-client.
+Bernard replies with a short summary and writes one or two itinerary items
+(cinema + pizza place). When Charlie joins later and says `@bernard add a
+museum`, the map gains another marker on every client — Charlie sees the full
+history and itinerary on opening the page, because the durable session keeps it
+all on the channel.
 
 ## How it works
 
-Two sibling Ably channels, one Ably connection per client:
+One Ably channel per group, one Ably connection per client. The channel carries
+both the chat (via the AI Transport SDK) and the itinerary (via LiveObjects):
 
 ```
-              ┌─────────────────────────────────────────────────┐
-              │    `<channel>` — chat (AI Transport SDK)        │
-              │                                                  │
-              │  ◄── chat messages (user + assistant)           │
-              │  ◄── run-start / run-end                        │
-              └─────────────────────────────────────────────────┘
-                   ▲                              ▲
-                   │ ClientSession                │ AgentSession
-                   │ (every client)               │ (server route,
-                   │                              │  only on @bernard)
-
-              ┌─────────────────────────────────────────────────┐
-              │ `<channel>:itinerary` — LiveObjects root LiveMap│
-              │                                                  │
-              │    "cine-belas-artes" → JSON({ name, lat, ...}) │
-              │    "pizza-bráz"       → JSON({ name, lat, ...}) │
-              └─────────────────────────────────────────────────┘
-                   ▲                              ▲
-                   │ root.subscribe(...)          │ root.set / .remove
-                   │                              │
-                 useItinerary                 Bernard's tools
-                 (every client)               (server-side)
+              ┌──────────────────────────────────────────────────┐
+              │  `<channel>` (ai: namespace)                       │
+              │                                                    │
+              │  AI Transport: chat messages + run lifecycle       │
+              │  LiveObjects:  root LiveMap of itinerary items     │
+              └──────────────────────────────────────────────────┘
+                ▲              ▲                 ▲            ▲
+   ClientSession│              │AgentSession     │ root.set   │ root.subscribe
+   (every client)              │(server, on      │ (Bernard's │ (useItinerary,
+                               │ @bernard)       │  tools)    │  every client)
 ```
 
 Key points:
 
-- Every client subscribes to the channel via its own `ClientSession`, so
-  user messages from other clients arrive naturally and the SDK's tree puts
-  them in `view.nodes`.
-- The server route inspects the most recent user message and short-circuits
-  the run (no LLM call) when `@bernard` isn't present. So non-Bernard chat
-  still pays for a no-op POST + a brief `run-start`/`run-end` lifecycle on
-  the channel — fine for a demo, would be worth a "publish chat only" SDK
-  affordance for production.
-- Each user message is rewritten on the server before being passed to
-  `streamText` so its text starts with the sender's `clientId`
-  (e.g. `alice: hey bob...`). That's how Bernard attributes prose.
-- Itinerary items are stored as JSON strings keyed by id inside the root
-  LiveMap. Whole-item updates only; granular field updates would mean
-  nested LiveMaps.
-
-### Itinerary lives on a sibling channel
-
-LiveObjects requires the channel to be attached with the `OBJECT_SUBSCRIBE`
-and `OBJECT_PUBLISH` modes; default modes don't include them. The AI
-Transport SDK fetches its channel internally via
-`client.channels.get(name, opts)` and there's no public way to pass
-`modes` through `ClientSessionOptions` / `AgentSessionOptions`.
-
-Worse, you can't set the modes "first" and then let the SDK piggy-back:
-`ably-js`'s `channels.get(name, options)` calls `setOptions`, which
-_replaces_ the channel's options wholesale
-(`realtimechannel.ts:setOptions`). So when the SDK later calls
-`channels.get(name, { params: ... })` it wipes any `modes` a caller had
-set first.
-
-To keep things simple without changing the SDK, the demo splits the work
-across two sibling channels on the same connection:
-
-- `<channelName>` — chat, owned by the AI Transport SDK. No OBJECT modes
-  needed.
-- `<channelName>:itinerary` — LiveObjects root LiveMap. The SDK never
-  touches this channel, so its OBJECT modes are stable.
-
-The mapping is centralised in `src/app/itinerary.ts` as
-`itineraryChannelName(chatChannelName)`.
-
-The right long-term fix is for `@ably/ai-transport` to expose a
-`channelOptions` / `modes` field on `ClientSessionOptions` and
-`AgentSessionOptions` and merge user modes with what the SDK needs
-(agent-registration params, rewind window). With that, the chat and the
-LiveObjects state could share a single channel.
+- **Everyone shares the session.** Each client has its own `ClientSession` on
+  the channel, so messages from other people arrive naturally and the SDK's
+  tree places them in the view. New joiners hydrate the whole conversation —
+  and the itinerary — from the channel's history.
+- **The app chooses when Bernard works.** Sending a message publishes it into
+  the session; it does **not** call the agent. The client only wakes Bernard —
+  by POSTing the run's invocation to `/api/chat` — when the message mentions
+  `@bernard`. Everything else stays a plain human conversation. This separation
+  of "publish a message" from "invoke the agent" is what a durable session
+  gives you; without one, every message would unconditionally hit the agent.
+- **One shared channel.** The session is created with `channelModes:
+OBJECT_MODES`, so the same channel carries LiveObjects. The agent and every
+  client read/write the itinerary via `session.object`.
+- **Itinerary as LiveObjects.** Items are stored as JSON strings keyed by id in
+  the root `LiveMap`. Bernard's tools `set`/`remove` entries; clients subscribe
+  and render the map and list.
 
 ## File map
 
-| File                                                                       | What it does                                                                |
-| -------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `src/app/api/chat/route.ts`                                                | Agent session, `@bernard` gate, sender annotation, `streamText` invocation. |
-| `src/app/api/chat/tools.ts`                                                | `addItineraryItem` / `updateItineraryItem` / `removeItineraryItem` tools.   |
-| `src/app/api/auth/ably-token/route.ts`                                     | JWT issuer with `object-publish`/`object-subscribe` capabilities.           |
-| `src/app/providers.tsx`                                                    | Ably realtime client with the `LiveObjects` plugin registered.              |
-| `src/app/page.tsx`                                                         | Name gate, channel resolution, provider wiring.                             |
-| `src/app/components/planner.tsx`                                           | Top-level layout (chat ⏐ map + list).                                       |
-| `src/app/components/{chat-pane,message-list,message-bubble,input-bar}.tsx` | Chat UI.                                                                    |
-| `src/app/components/{map-pane,map-impl,itinerary-list}.tsx`                | Leaflet map (SSR-disabled) + list.                                          |
-| `src/app/hooks/use-itinerary.ts`                                           | Subscribes to the LiveObjects root and exposes `ItineraryItem[]`.           |
-| `src/app/hooks/use-name.ts`                                                | Local-storage backed name with a modal gate.                                |
-| `src/app/itinerary.ts`                                                     | Shared `ItineraryItem` / `ItineraryRoot` types.                             |
-
-## Known rough edges
-
-- The Leaflet default marker icon is loaded from
-  `unpkg.com/leaflet@1.9.4/dist/images/...` rather than bundled — keeps the
-  code free of bundler-specific casts at the cost of a CDN dependency.
-- Two users picking the same name collide on `clientId`. Not handled — fine
-  for a demo, would need a uniqueness suffix in real use.
-- Bernard's lat/lng accuracy is whatever the model recalls. For São Paulo
-  examples it tends to be close enough to land the marker on the right
-  block; YMMV elsewhere.
+| File                                                             | What it does                                                               |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `src/app/api/chat/route.ts`                                      | Bernard's agent endpoint: reconstructs the conversation, runs the LLM.     |
+| `src/app/api/chat/tools.ts`                                      | `addItineraryItem` / `updateItineraryItem` / `removeItineraryItem` tools.  |
+| `src/app/api/auth/ably-token/route.ts`                           | JWT issuer with `object-publish`/`object-subscribe` capabilities.          |
+| `src/app/providers.tsx`                                          | Ably realtime client with the `LiveObjects` plugin; session hooks factory. |
+| `src/app/page.tsx`                                               | Name gate, channel resolution, `ClientSessionProvider` wiring.             |
+| `src/app/components/planner.tsx`                                 | Top-level layout (chat ⏐ map + list).                                      |
+| `src/app/components/chat-pane.tsx`                               | Send path: publish always; wake Bernard only on `@bernard`.                |
+| `src/app/components/{message-list,message-bubble,input-bar}.tsx` | Chat UI; sender label comes from each message's owning run.                |
+| `src/app/components/{map-pane,map-impl,itinerary-list}.tsx`      | Leaflet map (SSR-disabled) + list.                                         |
+| `src/app/hooks/use-itinerary.ts`                                 | Subscribes to the session channel's LiveObjects root; exposes the items.   |
+| `src/app/hooks/use-name.ts`                                      | Per-tab name with a modal gate.                                            |
+| `src/app/itinerary.ts`                                           | Shared `ItineraryItem` / `ItineraryRoot` types.                            |

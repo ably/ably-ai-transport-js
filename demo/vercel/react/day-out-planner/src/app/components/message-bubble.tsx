@@ -6,7 +6,10 @@ import remarkGfm from 'remark-gfm';
 
 interface MessageBubbleProps {
   message: UIMessage;
-  headers: Record<string, string> | undefined;
+  /** clientId of the message's sender (from its owning run), or undefined if unknown. */
+  clientId: string | undefined;
+  /** Whether this message is a Bernard reply that is still streaming. */
+  streaming: boolean;
   ownName: string;
 }
 
@@ -83,14 +86,10 @@ function ToolLine({ part }: { part: DynamicToolUIPart }) {
   return <div className="mt-1 text-[11px] text-zinc-500 italic">↳ {summary}</div>;
 }
 
-export function MessageBubble({ message, headers, ownName }: MessageBubbleProps) {
-  const role = message.role;
-  const senderClientId = headers?.['x-ably-run-client-id'];
-  const status = headers?.['x-ably-status'];
-
-  const isAssistant = role === 'assistant';
-  const isOwn = !isAssistant && senderClientId === ownName;
-  const senderLabel = isAssistant ? 'bernard' : (senderClientId ?? 'someone');
+export function MessageBubble({ message, clientId, streaming, ownName }: MessageBubbleProps) {
+  const isAssistant = message.role === 'assistant';
+  const isOwn = !isAssistant && clientId === ownName;
+  const senderLabel = isAssistant ? 'bernard' : (clientId ?? 'someone');
 
   // Assistants get markdown; whitespace-pre-wrap would interfere with that
   // because markdown collapses whitespace itself.
@@ -127,7 +126,7 @@ export function MessageBubble({ message, headers, ownName }: MessageBubbleProps)
               );
             return null;
           })}
-          {isAssistant && status === 'streaming' && (
+          {isAssistant && streaming && (
             <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-amber-500/60 animate-pulse rounded-sm align-text-bottom" />
           )}
         </div>

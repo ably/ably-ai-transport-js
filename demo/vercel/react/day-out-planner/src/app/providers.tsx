@@ -5,9 +5,10 @@ import * as Ably from 'ably';
 import { LiveObjects } from 'ably/liveobjects';
 import { AblyProvider } from 'ably/react';
 import { createSessionHooks } from '@ably/ai-transport/react';
+import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
 import type * as AI from 'ai';
 
-export const SessionHooks = createSessionHooks<AI.UIMessageChunk, AI.UIMessage>();
+export const SessionHooks = createSessionHooks<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>();
 
 const AblyReadyContext = createContext(false);
 

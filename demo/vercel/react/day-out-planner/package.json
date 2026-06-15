@@ -10,10 +10,10 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@ably/ai-transport": "file:../../../..",
+    "@ably/ai-transport": "link:../../../..",
     "@ai-sdk/anthropic": "^3",
     "@ai-sdk/react": "^3.0.161",
-    "ably": "^2",
+    "ably": "^2.22.1",
     "ai": "^6",
     "jsonwebtoken": "^9",
     "leaflet": "^1.9.4",
@@ -22,7 +22,8 @@
     "react-dom": "^19",
     "react-leaflet": "^5",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "zod": "^4"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -35,5 +36,13 @@
     "eslint-config-next": "^16",
     "tailwindcss": "^4",
     "typescript": "^5"
+  },
+  "packageManager": "pnpm@11.3.0",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "11.3.0",
+      "onFail": "download"
+    }
   }
 }

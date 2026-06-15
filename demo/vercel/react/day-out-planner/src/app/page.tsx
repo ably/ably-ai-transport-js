@@ -2,6 +2,7 @@
 
 import { Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { OBJECT_MODES } from '@ably/ai-transport';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import { Providers, useAblyReady, SessionHooks } from './providers';
 import { useName } from './hooks/use-name';
@@ -9,6 +10,9 @@ import { NameModal } from './components/name-modal';
 import { Planner } from './components/planner';
 
 const { ClientSessionProvider } = SessionHooks;
+
+/** Endpoint the client POSTs an invocation to when it wants to wake Bernard. */
+const AGENT_API = '/api/chat';
 
 // The chat channel must live under the `ai:` namespace so Ably's mutable-message
 // support (which the AI Transport SDK relies on) is enabled — without this you
@@ -35,13 +39,12 @@ function PlannerWhenReady({
     <ClientSessionProvider
       channelName={channelName}
       codec={UIMessageCodec}
-      clientId={name}
-      api="api/chat"
-      body={() => ({ sessionName: channelName })}
+      channelModes={OBJECT_MODES}
     >
       <Planner
         channelName={channelName}
         name={name}
+        api={AGENT_API}
         onChangeName={onChangeName}
       />
     </ClientSessionProvider>

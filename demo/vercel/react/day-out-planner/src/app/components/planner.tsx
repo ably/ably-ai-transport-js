@@ -7,17 +7,21 @@ import { ItineraryList } from './itinerary-list';
 import { SessionHooks } from '../providers';
 import { useItinerary } from '../hooks/use-itinerary';
 
-const { useView } = SessionHooks;
+const { useView, useClientSession } = SessionHooks;
 
 interface PlannerProps {
   channelName: string;
   name: string;
+  /** Agent endpoint the chat input POSTs an invocation to when @bernard is mentioned. */
+  api: string;
   onChangeName: () => void;
 }
 
-export function Planner({ channelName, name, onChangeName }: PlannerProps) {
+export function Planner({ channelName, name, api, onChangeName }: PlannerProps) {
   const view = useView({ limit: 50 });
-  const items = useItinerary(channelName);
+  const { session } = useClientSession();
+  // The itinerary is a LiveObjects map on the session's own channel.
+  const items = useItinerary(session.object);
 
   return (
     <div className="flex h-dvh flex-col">
@@ -31,6 +35,7 @@ export function Planner({ channelName, name, onChangeName }: PlannerProps) {
           <ChatPane
             view={view}
             ownName={name}
+            api={api}
           />
         </div>
         <div className="flex w-1/2 flex-col">

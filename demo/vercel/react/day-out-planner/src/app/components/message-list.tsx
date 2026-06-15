@@ -1,12 +1,13 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import type { UIMessage, UIMessageChunk } from 'ai';
+import type { UIMessage } from 'ai';
 import type { ViewHandle } from '@ably/ai-transport/react';
+import type { VercelInput } from '@ably/ai-transport/vercel';
 import { MessageBubble } from './message-bubble';
 
 interface MessageListProps {
-  view: ViewHandle<UIMessageChunk, UIMessage>;
+  view: ViewHandle<VercelInput, UIMessage>;
   ownName: string;
 }
 
@@ -14,7 +15,7 @@ interface MessageListProps {
 const AT_BOTTOM_THRESHOLD_PX = 80;
 
 export function MessageList({ view, ownName }: MessageListProps) {
-  const { nodes, hasOlder, loading, loadOlder } = view;
+  const { messages, hasOlder, loading, loadOlder, runOf } = view;
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevLastIdRef = useRef<string | undefined>(undefined);
@@ -25,7 +26,7 @@ export function MessageList({ view, ownName }: MessageListProps) {
 
   useEffect(() => {
     if (!wasAtBottomRef.current) return;
-    const lastId = nodes.length > 0 ? nodes[nodes.length - 1].message.id : undefined;
+    const lastId = messages.length > 0 ? messages[messages.length - 1].codecMessageId : undefined;
     const isNewMessage = lastId !== prevLastIdRef.current;
     prevLastIdRef.current = lastId;
     if (isNewMessage) {
@@ -37,7 +38,7 @@ export function MessageList({ view, ownName }: MessageListProps) {
       // here would visibly lag behind the token stream.
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [nodes]);
+  }, [messages]);
 
   const handleScroll = () => {
     const el = scrollRef.current;
@@ -66,20 +67,27 @@ export function MessageList({ view, ownName }: MessageListProps) {
           </button>
         </div>
       )}
-      {nodes.length === 0 && !loading && (
+      {messages.length === 0 && !loading && (
         <p className="text-sm text-zinc-600 text-center mt-20">
           Say hi to the group — mention <span className="font-mono text-zinc-400">@bernard</span> when you want help
           planning.
         </p>
       )}
-      {nodes.map((node) => (
-        <MessageBubble
-          key={node.message.id}
-          message={node.message}
-          headers={node.headers}
-          ownName={ownName}
-        />
-      ))}
+      {messages.map(({ codecMessageId, message }) => {
+        // The owning run carries who sent the message (clientId) and its
+        // lifecycle status; assistant output belongs to the run the inviting
+        // user started, so the bubble decides "is this Bernard?" from the role.
+        const run = runOf(codecMessageId);
+        return (
+          <MessageBubble
+            key={codecMessageId}
+            message={message}
+            clientId={run?.clientId || undefined}
+            streaming={message.role === 'assistant' && run?.status === 'active'}
+            ownName={ownName}
+          />
+        );
+      })}
       <div ref={endRef} />
     </div>
   );

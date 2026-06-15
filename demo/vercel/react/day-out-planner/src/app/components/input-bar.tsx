@@ -1,11 +1,6 @@
 'use client';
 
 import { useCallback, useRef, useState } from 'react';
-import type { ActiveRun, SendOptions } from '@ably/ai-transport';
-import type { UIMessage, UIMessageChunk } from 'ai';
-import { userMessage } from '../helpers';
-
-type SendFn = (messages: UIMessage[], options?: SendOptions) => Promise<ActiveRun<UIMessageChunk>>;
 
 const MENTION_TARGET = 'bernard';
 
@@ -24,7 +19,7 @@ function detectMentionPartial(input: string, cursor: number): { start: number; e
   return { start: cursor - partial.length - 1, end: cursor };
 }
 
-export function InputBar({ send }: { send: SendFn }) {
+export function InputBar({ onSend }: { onSend: (text: string) => void }) {
   const [input, setInput] = useState('');
   const [cursor, setCursor] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -36,8 +31,8 @@ export function InputBar({ send }: { send: SendFn }) {
     if (!text) return;
     setInput('');
     setCursor(0);
-    void send([userMessage(text)]);
-  }, [input, send]);
+    onSend(text);
+  }, [input, onSend]);
 
   const completeMention = useCallback(() => {
     if (!mention) return;

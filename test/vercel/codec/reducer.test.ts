@@ -210,36 +210,10 @@ describe('Vercel reducer', () => {
       ]);
     });
 
-    it('replaces an optimistic seed with its own wire relay instead of duplicating parts', () => {
-      let state = init();
-      // The client seeds the full message optimistically with no serial; the
-      // relay then re-delivers the same message part by part with serials.
-      const seeded: AI.UIMessage = {
-        id: 'u-1',
-        role: 'user',
-        parts: [
-          { type: 'text', text: 'hello' },
-          { type: 'file', mediaType: 'image/png', url: 'https://x/y.png' },
-        ],
-      };
-      const wireText: AI.UIMessage = { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'hello' }] };
-      const wireFile: AI.UIMessage = {
-        id: 'u-1',
-        role: 'user',
-        parts: [{ type: 'file', mediaType: 'image/png', url: 'https://x/y.png' }],
-      };
-
-      state = fold(state, { kind: 'user-message', message: seeded }, meta('', 'cm-1'));
-      state = fold(state, { kind: 'user-message', message: wireText }, meta('s1', 'cm-1'));
-      state = fold(state, { kind: 'user-message', message: wireFile }, meta('s2', 'cm-1'));
-
-      expect(state.messages).toHaveLength(1);
-      // The first wire part replaces the seed; the second merges — no duplicates.
-      expect(state.messages[0]?.message.parts).toEqual([
-        { type: 'text', text: 'hello' },
-        { type: 'file', mediaType: 'image/png', url: 'https://x/y.png' },
-      ]);
-    });
+    // Optimistic-seed reconciliation (seed folded with no serial, then its
+    // echo re-delivers it with serials) is no longer the reducer's concern —
+    // the transport refolds the node from its log on serial promotion, so the
+    // seed never coexists with its echo. Proven in tree-vercel-sequencing.test.ts.
   });
 
   // -- tool-approval-response -----------------------------------------------

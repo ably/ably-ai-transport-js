@@ -66,14 +66,6 @@ export interface VercelProjection {
    * soon as the corresponding assistant lands.
    */
   pendingToolResolutions: PendingToolResolution[];
-  /**
-   * Codec-message-ids of user messages seeded by a serial-less (optimistic)
-   * fold. The first wire-serialed fold for such an id replaces the seeded
-   * parts wholesale (the wire re-delivers the entire message, part by part);
-   * subsequent wire parts merge. Without this, an optimistic seed plus its
-   * own relay would duplicate every part.
-   */
-  optimisticUserMessages: Set<string>;
 }
 
 /**
@@ -116,7 +108,6 @@ export const init = (): VercelProjection => ({
   messages: [],
   trackers: new Map(),
   pendingToolResolutions: [],
-  optimisticUserMessages: new Set(),
 });
 
 // ---------------------------------------------------------------------------

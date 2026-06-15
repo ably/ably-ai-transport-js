@@ -21,7 +21,7 @@
 import type * as AI from 'ai';
 import { describe, expect, it } from 'vitest';
 
-import { HEADER_CODEC_MESSAGE_ID, HEADER_RUN_ID, HEADER_STREAM } from '../../../src/constants.js';
+import { HEADER_CODEC_MESSAGE_ID, HEADER_ROLE, HEADER_RUN_ID, HEADER_STREAM } from '../../../src/constants.js';
 import { createTree } from '../../../src/core/transport/tree.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 import type { VercelInput, VercelOutput } from '../../../src/vercel/codec/events.js';
@@ -57,6 +57,28 @@ const applyInput = (
 ): void => {
   const headers: Record<string, string> = { [HEADER_RUN_ID]: RUN_ID, [HEADER_CODEC_MESSAGE_ID]: ASSISTANT };
   tree.applyMessage({ inputs, outputs: [] }, headers, serial, undefined, version);
+};
+
+const USER = 'u1';
+
+// Apply one run-less user-input wire (an input node keyed by codec-message-id).
+// Serial-less is an optimistic seed; a serial promotes it.
+const applyUserInput = (
+  tree: ReturnType<typeof createTree<VercelInput, VercelOutput, VercelProjection>>,
+  inputs: VercelInput[],
+  serial?: string,
+  version?: string,
+): void => {
+  const headers: Record<string, string> = { [HEADER_ROLE]: 'user', [HEADER_CODEC_MESSAGE_ID]: USER };
+  tree.applyMessage({ inputs, outputs: [] }, headers, serial, undefined, version);
+};
+
+// The reconstructed user message on the input node, if any.
+const userMessage = (
+  tree: ReturnType<typeof createTree<VercelInput, VercelOutput, VercelProjection>>,
+): AI.UIMessage | undefined => {
+  const node = tree.getNodeByCodecMessageId(USER);
+  return node ? UIMessageCodec.getMessages(node.projection)[0]?.message : undefined;
 };
 
 // The dynamic-tool part for `toolCallId` on the run's assistant, if any.
@@ -152,5 +174,45 @@ describe('Vercel codec over the Tree', () => {
     const message = run ? UIMessageCodec.getMessages(run.projection)[0]?.message : undefined;
     const text = message?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
     expect(text?.text).toBe('hello');
+  });
+
+  it('reconciles an optimistic user-message seed with its per-part echo — no duplicated parts', () => {
+    // The client seeds the full message optimistically with no serial; the echo
+    // re-delivers it part by part, each part its own serial-bearing wire (the
+    // batch encoder gives every part a distinct serial). The first echo wire
+    // promotes the node and refolds from the log alone, discarding the seed;
+    // later parts merge incrementally — no duplication, no reducer-side seed logic.
+    const tree = createTree<VercelInput, VercelOutput, VercelProjection>(UIMessageCodec, silentLogger);
+
+    const seeded: AI.UIMessage = {
+      id: 'u-1',
+      role: 'user',
+      parts: [
+        { type: 'text', text: 'hello' },
+        { type: 'file', mediaType: 'image/png', url: 'https://x/y.png' },
+      ],
+    };
+    applyUserInput(tree, [{ kind: 'user-message', message: seeded }]);
+    expect(userMessage(tree)?.parts).toHaveLength(2); // seed visible pre-echo
+
+    const echoText: VercelInput = {
+      kind: 'user-message',
+      message: { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'hello' }] },
+    };
+    const echoFile: VercelInput = {
+      kind: 'user-message',
+      message: { id: 'u-1', role: 'user', parts: [{ type: 'file', mediaType: 'image/png', url: 'https://x/y.png' }] },
+    };
+    // First echo part (its own serial) promotes the node and refolds from the
+    // log, discarding the seed — only the text part remains.
+    applyUserInput(tree, [echoText], 's1', 's1');
+    expect(userMessage(tree)?.parts).toEqual([{ type: 'text', text: 'hello' }]);
+
+    // Second echo part (higher serial) is a tail append, merged incrementally.
+    applyUserInput(tree, [echoFile], 's2', 's2');
+    expect(userMessage(tree)?.parts).toEqual([
+      { type: 'text', text: 'hello' },
+      { type: 'file', mediaType: 'image/png', url: 'https://x/y.png' },
+    ]);
   });
 });

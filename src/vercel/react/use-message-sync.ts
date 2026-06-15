@@ -16,6 +16,7 @@
 import type * as AI from 'ai';
 import { useEffect, useState } from 'react';
 
+import { isToolPart, type ToolPart } from '../tool-part.js';
 import { useChatTransport } from './use-chat-transport.js';
 
 /** Options for {@link useMessageSync}. */
@@ -38,18 +39,12 @@ export interface UseMessageSyncOptions {
 // Tool-resolution merge
 // ---------------------------------------------------------------------------
 //
-// The Vercel codec normalises every tool part to `dynamic-tool`, but the
-// AI SDK emits `tool-${name}` for statically-declared tools. Both shapes
-// share `toolCallId` + `state`; the merge matches by toolCallId and keeps
-// the tree's `type` on the result so downstream consumers narrowing on
-// `dynamic-tool` keep working.
-
-type ToolPart = AI.DynamicToolUIPart | AI.ToolUIPart;
+// The merge matches tool parts by toolCallId (via the shared {@link isToolPart}
+// guard, which accepts both the codec's `dynamic-tool` shape and the AI SDK's
+// `tool-${name}` shape) and keeps the tree's `type` on the result so downstream
+// consumers narrowing on `dynamic-tool` keep working.
 
 const RESOLVED_TOOL_STATES = new Set(['output-available', 'output-error', 'approval-responded', 'output-denied']);
-
-const isToolPart = (part: AI.UIMessage['parts'][number]): part is ToolPart =>
-  (part.type === 'dynamic-tool' || part.type.startsWith('tool-')) && 'toolCallId' in part && 'state' in part;
 
 const mergeAssistant = (tree: AI.UIMessage, overlay: AI.UIMessage): AI.UIMessage => {
   const overlayByCallId = new Map<string, ToolPart>();

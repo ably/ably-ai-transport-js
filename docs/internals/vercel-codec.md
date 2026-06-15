@@ -12,7 +12,7 @@ export const UIMessageCodec = defineCodec<VercelInput, VercelOutput>()({
 });
 ```
 
-The codec is split into single-concern modules: `reducer.ts` + `reducer-state.ts` and the per-concern `fold-*` modules (fold), `inputs.ts` / `outputs.ts` (descriptor tables), `fields.ts` (header-field bindings), `conflict-key.ts` (dedup keys), `decode-lifecycle.ts` (mid-stream-join repair), `wire-data.ts` (runtime guards), and `tool-transitions.ts` (shared tool-part state machine).
+The codec is split into single-concern modules: `reducer.ts` + `reducer-state.ts` and the per-concern `fold-*` modules (fold), `inputs.ts` / `outputs.ts` (descriptor tables), `fields.ts` (header-field bindings), `decode-lifecycle.ts` (mid-stream-join repair), `wire-data.ts` (runtime guards), and `tool-transitions.ts` (shared tool-part state machine).
 
 `VercelInput` and `VercelOutput` (`events.ts`) split along the protocol's `ai-input` / `ai-output` wire seam:
 
@@ -95,28 +95,18 @@ Run cancellation is a **transport-tier** concern, not a codec one — the codec 
 The reducer holds no instance state — every `fold(state, event, meta)` returns the (possibly mutated) projection. The projection carries all per-node state:
 
 - **`messages`** - `CodecMessage<UIMessage>[]` in publication order; correlated strictly on `codecMessageId` (never on `message.id`).
-- **`conflictSerials`** - per-conflict-key high-water-marks for idempotency.
 - **`trackers`** - per-`codecMessageId` stream tracker state (`text` / `reasoning` stream-id → part index, plus per-tool-call `tools` trackers with an accumulated `inputText` buffer).
 - **`pendingToolResolutions`** - client tool resolutions buffered until their target assistant arrives.
 
-### Idempotency by conflict key
+### No reducer-level dedup
 
-Idempotency is **per conflict key**, not stream-wide. `conflictKeyOf` (`conflict-key.ts`) derives a key for events that compete for the same logical state; for those, the higher-serial event wins and earlier or equal serials are dropped. Events with no conflict key (additive deltas, lifecycle markers, independent attachments) fold unconditionally.
-
-| Event(s)                                                                                                                        | Conflict key                                     |
-| ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| `user-message`                                                                                                                  | `user-msg:<codecMessageId>` (none without an id) |
-| `tool-result`, `tool-result-error`, `tool-output-available`, `tool-output-error`, `tool-output-denied`, `tool-approval-request` | `tool-output:<toolCallId>` (shared namespace)    |
-| `tool-approval-response`                                                                                                        | `tool-approval:<toolCallId>`                     |
-| `tool-input-start` / `tool-input-available` / `tool-input-error`                                                                | `<type>:<toolCallId>`                            |
-| `text-start` / `text-end` / `reasoning-start` / `reasoning-end`                                                                 | `<type>:<codecMessageId>:<id>`                   |
-| `finish` / `message-metadata`                                                                                                   | `<type>:<codecMessageId>`                        |
+The reducer folds every event unconditionally. Ordering, deduplication, and replay are the [transport's](conversation-tree.md) job: it delivers each event exactly once, in canonical serial order, refolding a node from a fresh `init()` when a late wire would land out of order. So competing events (e.g. a client `tool-result` and an agent `tool-output-available` for the same `toolCallId`) resolve by fold order — the highest-serial write folds last and wins — with no conflict-key high-water-mark in the codec. Optimistic (serial-less) seeds need no replacement logic either: the transport refolds the node on the echo's serial, rebuilding the projection without the seed.
 
 ### Event processing
 
 | Event                                                                 | Reducer action                                                                                                                    |
 | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `user-message` input                                                  | Append or replace the entry for its `codecMessageId`                                                                              |
+| `user-message` input                                                  | Append a new entry for its `codecMessageId`, or merge its parts into the existing entry                                           |
 | `regenerate` input                                                    | No-op (wire-only signal)                                                                                                          |
 | `tool-result` / `tool-result-error` / `tool-approval-response` inputs | Transition the target assistant's `dynamic-tool` part, or buffer in `pendingToolResolutions` if the assistant has not yet arrived |
 | `start`                                                               | Ensure the message; set `message.id` from the stream `messageId` and metadata                                                     |

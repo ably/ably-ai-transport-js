@@ -119,6 +119,14 @@ const messagesOf = (tree: TreeInternal<TestInput, TestOutput, TestProjection>, r
   return run ? testCodec.getMessages(run.projection).map((cm) => cm.message) : [];
 };
 
+const inputMessagesOf = (
+  tree: TreeInternal<TestInput, TestOutput, TestProjection>,
+  codecMessageId: string,
+): TestMessage[] => {
+  const node = tree.getNodeByCodecMessageId(codecMessageId);
+  return node ? testCodec.getMessages(node.projection).map((cm) => cm.message) : [];
+};
+
 // Apply a run-LESS user input wire (an input node keyed by its codec-message-id).
 const applyInput = (
   tree: TreeInternal<TestInput, TestOutput, TestProjection>,
@@ -633,6 +641,45 @@ describe('Tree', () => {
       expect(messagesOf(tree, 'R1')).toEqual([
         { id: 'a', content: 'first' },
         { id: 'a', content: 'again' },
+      ]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Optimistic promotion
+  //
+  // An optimistic (serial-less) seed folds into the projection but not the
+  // log. The first serial-bearing wire (the echo) refolds the node from the
+  // log alone, so the seed is discarded rather than folded on top of — a
+  // codec needs no seed-replacement logic of its own.
+  // -------------------------------------------------------------------------
+
+  describe('optimistic promotion', () => {
+    it('keeps the optimistic seed visible until its echo arrives', () => {
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u', content: 'seed' } });
+      expect(inputMessagesOf(tree, 'u1')).toEqual([{ id: 'u', content: 'seed' }]);
+    });
+
+    it('refolds from the log on serial promotion, discarding the seed (no duplication)', () => {
+      // Seed folds into the projection unlogged; the echo re-delivers the same
+      // content with a serial. Without the refold the projection would hold
+      // both; with it, only the echo survives.
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u', content: 'seed' } });
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u', content: 'echo' }, serial: 's1' });
+
+      expect(inputMessagesOf(tree, 'u1')).toEqual([{ id: 'u', content: 'echo' }]);
+    });
+
+    it('folds later wires incrementally once the seed has been promoted away', () => {
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u', content: 'seed' } });
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'a', content: 'echo' }, serial: 's1' });
+      // A second serial-bearing wire is a normal tail append — no seed left to
+      // discard, so it accumulates.
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'b', content: 'more' }, serial: 's2' });
+
+      expect(inputMessagesOf(tree, 'u1')).toEqual([
+        { id: 'a', content: 'echo' },
+        { id: 'b', content: 'more' },
       ]);
     });
   });

@@ -33,6 +33,10 @@ import { toolBase, transitionToolPart } from './tool-transitions.js';
  * entry, reassembling the message part by part. The transport delivers each
  * wire exactly once (its per-message version high-water-mark drops replays),
  * so the merge sees every part once and stays consistent.
+ *
+ * Optimistic (serial-less) seeds need no special handling here: the transport
+ * refolds the node from its log when the echo's serial arrives, rebuilding the
+ * projection from a fresh `init` so the seed never coexists with its echo.
  * @param state - Projection to fold into.
  * @param message - The user message (or one decoded part of it) to add or merge.
  * @param meta - Transport-derived metadata carrying the codec-message-id.
@@ -52,17 +56,9 @@ export const foldUserMessage = (
     state.messages.push({ codecMessageId: message.id, message });
     return state;
   }
-  const fromWire = meta.serial !== '';
   const existing = state.messages.find((e) => e.codecMessageId === codecMessageId);
   if (existing === undefined) {
     state.messages.push({ codecMessageId, message });
-    if (!fromWire) state.optimisticUserMessages.add(codecMessageId);
-  } else if (fromWire && state.optimisticUserMessages.has(codecMessageId)) {
-    // The first wire-serialed fold replaces an optimistic (serial-less) seed
-    // wholesale: the wire re-delivers the entire message, so keeping the
-    // seeded parts would duplicate every one of them.
-    existing.message = message;
-    state.optimisticUserMessages.delete(codecMessageId);
   } else {
     // Merge by codec-message-id: keep the existing envelope (id and role are
     // stamped identically on every part of one message) and append the

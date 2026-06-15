@@ -88,6 +88,13 @@ interface InternalNode<TInput extends CodecInputEvent, TOutput extends CodecOutp
   swept: boolean;
   /** Whether this node is already queued for sweeping (guards double-enqueue). */
   sweepQueued: boolean;
+  /**
+   * Whether an optimistic (serial-less) seed has been folded into the
+   * projection but not into the log. The first serial-bearing wire (the echo)
+   * refolds the node from the log alone, discarding the seed, then clears
+   * this — so a codec needs no seed-replacement logic of its own.
+   */
+  optimistic: boolean;
 }
 
 /**
@@ -501,14 +508,15 @@ export class DefaultTree<
    * {@link _refold}.
    *
    * Optimistic (serial-less) applies and empty event batches are not logged;
-   * they fold incrementally and never trigger a refold, so an optimistic seed
-   * is never replayed by a refold. This is sound: a refold needs at least two
-   * logged wires (one inserted before another), so a node's first
-   * serial-bearing wire — which also promotes its serial — is always logged
-   * and folded before any refold is possible. A codec that seeds state
-   * optimistically therefore relies on that first wire (the echo of the
-   * optimistic input) re-delivering the seeded content; the refold rebuilds
-   * from the logged echoes, not the seed.
+   * an optimistic seed folds into the projection but never into the log, and
+   * marks the node `optimistic`. The first serial-bearing wire (the echo of
+   * the optimistic input, which re-delivers the seeded content) refolds the
+   * node from the log alone — rebuilding the projection without the seed
+   * rather than folding the echo on top of it. The codec therefore never sees
+   * the seed and its echo in one projection, and needs no seed-replacement
+   * logic. The seed must be a faithful preview of the echo, since the echo's
+   * content is what survives.
+   *
    * Whole-wire replays are dropped at the log: each entry records the highest
    * `Message.version.serial` decoded into it (`decodedThrough`), so a
    * version-bearing delivery the entry has already incorporated — a second
@@ -535,7 +543,11 @@ export class DefaultTree<
       // The retention sweep already dropped this node's log: a refold is no
       // longer possible (a partial log would rebuild partial state), so fold
       // incrementally and accept arrival order. A serial-bearing wire here is
-      // outside the reorder window — it should not occur.
+      // outside the reorder window — it should not occur. (Only run nodes are
+      // ever swept, and only input nodes are seeded optimistically, so this
+      // never collides with a pending seed — clear the flag regardless, since
+      // a refold can no longer honour it.)
+      entry.optimistic = false;
       if (serial !== undefined && events.length > 0) {
         this._logger.warn('Tree._recordAndFold(); late wire after log retention window; folding in arrival order', {
           key: nodeKey(entry.node),
@@ -559,11 +571,26 @@ export class DefaultTree<
         });
         return;
       }
+      if (entry.optimistic) {
+        // First serial-bearing wire (the echo) on a node that carries an
+        // optimistic seed. The seed is in the projection but not the log, so
+        // refold from the log alone — the echo re-delivers the seeded content —
+        // rebuilding the projection without the seed instead of folding the
+        // echo on top of it.
+        entry.optimistic = false;
+        this._refold(entry);
+        return;
+      }
       if (index !== entry.log.length - 1) {
         this._refold(entry);
         return;
       }
+      this._foldInto(entry, events, serial, messageId);
+      return;
     }
+    // A serial-less optimistic seed (or an empty batch). Fold it in; a non-empty
+    // seed marks the node so its echo refolds the seed away (above).
+    if (serial === undefined && events.length > 0) entry.optimistic = true;
     this._foldInto(entry, events, serial, messageId);
   }
 
@@ -1339,6 +1366,32 @@ export class DefaultTree<
   }
 
   /**
+   * Wrap a freshly-built conversation node in its internal envelope — sort
+   * sequence, event log, and retention/promotion state. The single home for
+   * those per-node fields, so a new field is added in one place rather than at
+   * every node-construction site.
+   * @param node - The conversation node to wrap.
+   * @param runStartSeen - Whether the run's ai-run-start has been observed
+   *   (run nodes only; always false for input nodes).
+   * @returns A newly-allocated internal node ready for insertion.
+   */
+  private _wrapNode(
+    node: ConversationNode<TProjection>,
+    runStartSeen = false,
+  ): InternalNode<TInput, TOutput, TProjection> {
+    return {
+      node,
+      insertSeq: this._seqCounter++,
+      log: [],
+      lastActivityTs: 0,
+      runStartSeen,
+      swept: false,
+      sweepQueued: false,
+      optimistic: false,
+    };
+  }
+
+  /**
    * Allocate a RunNode from already-resolved fields. Shared by the
    * header-driven and lifecycle-driven run creators: both build the identical
    * RunNode literal and stamp an insert sequence.
@@ -1377,15 +1430,7 @@ export class DefaultTree<
       endSerial: undefined,
     };
 
-    return {
-      node,
-      insertSeq: this._seqCounter++,
-      log: [],
-      lastActivityTs: 0,
-      runStartSeen: params.runStartSeen,
-      swept: false,
-      sweepQueued: false,
-    };
+    return this._wrapNode(node, params.runStartSeen);
   }
 
   /**
@@ -1411,15 +1456,7 @@ export class DefaultTree<
       projection: this._codec.init(),
       serial,
     };
-    return {
-      node,
-      insertSeq: this._seqCounter++,
-      log: [],
-      lastActivityTs: 0,
-      runStartSeen: false,
-      swept: false,
-      sweepQueued: false,
-    };
+    return this._wrapNode(node);
   }
 
   /**

@@ -158,6 +158,8 @@ interface Reducer<TEvent, TProjection> {
 
 `fold` is a pure function: the same `(state, event, meta)` triple always produces the same result, and the reducer holds no instance state - all state lives in the projection. `fold` may mutate the projection passed in and return it; the caller treats the projection as single-owner.
 
+Ordering, deduplication, and replay are the transport's responsibility, not the reducer's. The [conversation tree](conversation-tree.md) invokes `fold` exactly once per event, in canonical order — wire messages ascending by serial, events within a wire in decode order — refolding a node from a fresh `init()` when a late wire would otherwise land out of order. The reducer therefore folds **unconditionally**: it keeps no serial high-water-mark and never skips "already-seen" events. Last-writer-wins for events competing over the same state falls out of fold order, since the highest-serial event folds last. `init()` runs once per node and again on every refold.
+
 ### ReducerMeta — transport-derived metadata
 
 Each fold call carries a `ReducerMeta` the SDK reads from the inbound Ably message:
@@ -169,7 +171,7 @@ interface ReducerMeta {
 }
 ```
 
-- `serial` is the Ably channel serial of the message that produced the event. The reducer uses it for idempotency: re-folding an event whose serial has already been incorporated must be a no-op (the reducer is free to store a high-water-mark inside the projection).
+- `serial` is the Ably channel serial of the wire message that produced the event (or `''` for a not-yet-sequenced optimistic fold). It is ordering context only: the transport invokes `fold` exactly once per event, in canonical serial order, so the reducer must **not** use it to dedup or skip "already-seen" events — ordering, deduplication, and replay are the transport's responsibility (see [Reducer contract](#reducer-and-projection) below).
 - `messageId` is the optional [`codec-message-id`](wire-protocol.md#message-identity-codec-message-id) of the inbound message, used to route an event onto a target message within the projection (e.g. to amend an existing assistant message with a tool result).
 
 ### Why a list, not a single message
@@ -238,7 +240,7 @@ Error text and `data-*` payloads ride in the message `data`, not in a header. Th
 To support a new AI framework, assemble a codec with [`defineCodec`](#defining-a-codec):
 
 1. **Define the type parameters** - the input/output event unions (`TInput` extending `CodecInputEvent`, `TOutput` extending `CodecOutputEvent`), the per-node projection, and the domain message type
-2. **Implement the reducer** - `init()`, `fold()` (dispatching on `event.direction`), and `getMessages()`, folding events into the projection idempotently by serial
+2. **Implement the reducer** - `init()`, `fold()` (dispatching on `event.direction`), and `getMessages()`, folding events unconditionally (the transport delivers them once, in canonical order)
 3. **Declare the output table** - the `output` builder function returning `event` / `stream` descriptors built on [header-field bindings](#header-field-bindings)
 4. **Declare the input table** - the `input` builder function returning `event` / `batch` descriptors
 5. **Optionally supply `decodeLifecycle`** - a policy factory for mid-stream-join repair

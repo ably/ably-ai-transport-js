@@ -83,6 +83,17 @@ A wire-only metadata carrier that decodes to **zero events** for a not-yet-known
 
 The optimistic send path (client publishing a fresh user-message) calls `applyMessage` with an `undefined` serial. When the server relay arrives, the node's serial is promoted from null to a real serial (`_promoteSerial`) and it re-sorts. In `_applyRunMessage`, an optimistic reply run is reconciled with its serial-bearing echo by `codec-message-id` (not the wire run-id) when the run-id isn't yet indexed.
 
+### Canonical fold order
+
+A node's projection is folded in **canonical order** — wire messages ascending by serial, events within a wire in decode order — regardless of the order wires arrive in. The tree guarantees this so codecs never have to (see [the reducer contract](codec-interface.md#reducer-and-projection)). Each node keeps a per-wire **event log**: one entry per serial, holding that wire's decoded events. A wire that extends the log tail (the common in-order case) folds incrementally onto the existing projection; a wire that lands earlier in the log — a late cross-publisher delivery, or a history page applying an older message after a newer one — triggers a **refold**: a fresh `init()` replayed through the whole log in serial order. Because the reducer is pure, the rebuilt projection matches one that had received the wires in order, and last-writer-wins falls out for free.
+
+Two guards keep the log honest:
+
+- **Whole-wire replays** (a second hydration, a remounted View, an agent history re-walk) are dropped by a per-entry high-water-mark over `Message.version.serial`, so a re-delivered wire records and folds nothing.
+- **Optimistic seeds** fold into the projection but not the log; the first serial-bearing wire (the echo) refolds the node from the log alone, discarding the seed — so an optimistic insert and its server relay never duplicate.
+
+The log is bounded: a run node's log is dropped once the run is terminal, its `ai-run-start` has been observed (the run's serial floor, so no older history page can still add to the node), and a reorder window has lapsed on the tree's logical clock (the max Ably message timestamp seen). Input-node logs are never swept.
+
 ### `applyRunLifecycle(event)`
 
 Handles `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, and `ai-run-end` wire events (decoded into a `RunLifecycleEvent` whose `type` is `start` / `suspend` / `resume` / `end`). The event carries its own channel `serial`. Run-start creates the reply run if missing (else sets `status` to `'active'`), promotes `startSerial` from the event's serial, and backfills structural metadata (`parentCodecMessageId`, `forkOf`, `regeneratesCodecMessageId`) and the agent-minted `invocationId` onto an optimistic / wire-created node — the run-start is the canonical source. Run-suspend sets `status` to `'suspended'` and records `endSerial`, but keeps the run live so a resume under the same `runId` re-activates it. Run-resume re-activates a suspended run (`status` back to `'active'`) without touching its structure or serials — a pure re-entry; it is a no-op for an unknown, already-active, or terminal run. Run-end sets `status` to the end reason and `endSerial` from the event's serial. Always emits a `'run'` event to subscribers, then `'update'` only when the event changed the tree shape (only run-start can).

@@ -41,20 +41,32 @@ export function MessageList({
 }: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const prevLastIdRef = useRef<string | undefined>(undefined);
+  // Whether the view is "stuck" to the bottom. While true, new content
+  // (including tokens streaming into the last message) keeps the latest output
+  // in view so it stays in sync across tabs. Set false when the user scrolls
+  // up, so we obey the scrollbar instead of yanking it back down.
+  const pinnedToBottomRef = useRef(true);
 
+  // Follow streaming output, not just new messages: this runs on every render
+  // caused by a `messages` change, which includes tokens appended to the last
+  // message. Only auto-scroll while pinned to the bottom.
   useEffect(() => {
-    const lastId = messages.length > 0 ? messages[messages.length - 1].codecMessageId : undefined;
-    if (lastId && lastId !== prevLastIdRef.current) {
-      prevLastIdRef.current = lastId;
-      endRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (pinnedToBottomRef.current) {
+      endRef.current?.scrollIntoView({ behavior: 'auto' });
     }
   }, [messages]);
 
   const handleScroll = () => {
     const el = scrollRef.current;
-    if (!el || !hasOlder || loading) return;
-    if (el.scrollTop < 60) {
+    if (!el) return;
+
+    // Re-pin once the user is within a small threshold of the bottom; unpin as
+    // soon as they scroll away. The threshold absorbs sub-pixel rounding and
+    // the scroll event fired by our own auto-scroll.
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    pinnedToBottomRef.current = distanceFromBottom < 80;
+
+    if (hasOlder && !loading && el.scrollTop < 60) {
       onLoadOlder();
     }
   };

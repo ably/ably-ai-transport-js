@@ -1,8 +1,10 @@
-import type * as Ably from 'ably';
+import * as Ably from 'ably';
 import { describe, expect, it } from 'vitest';
 
 import {
   compareBySerial,
+  errorCause,
+  errorMessage,
   getCodecHeaders,
   getTransportHeaders,
   mergeHeaders,
@@ -10,6 +12,40 @@ import {
   parseJson,
   stripUndefined,
 } from '../src/utils.js';
+
+describe('errorMessage', () => {
+  it('returns the message of an Error', () => {
+    expect(errorMessage(new Error('boom'))).toBe('boom');
+  });
+
+  it('returns the message of an Ably.ErrorInfo', () => {
+    expect(errorMessage(new Ably.ErrorInfo('nope', 40000, 400))).toBe('nope');
+  });
+
+  it('stringifies a non-Error value', () => {
+    const nothing: unknown = undefined;
+    expect(errorMessage('plain string')).toBe('plain string');
+    expect(errorMessage(42)).toBe('42');
+    expect(errorMessage(nothing)).toBe('undefined');
+  });
+});
+
+describe('errorCause', () => {
+  it('returns the value when it is an Ably.ErrorInfo', () => {
+    const info = new Ably.ErrorInfo('nope', 40000, 400);
+    expect(errorCause(info)).toBe(info);
+  });
+
+  it('returns undefined for a plain Error', () => {
+    expect(errorCause(new Error('boom'))).toBeUndefined();
+  });
+
+  it('returns undefined for a non-error value', () => {
+    const nothing: unknown = undefined;
+    expect(errorCause('oops')).toBeUndefined();
+    expect(errorCause(nothing)).toBeUndefined();
+  });
+});
 
 describe('getTransportHeaders', () => {
   it('extracts the transport tier from a well-formed message', () => {

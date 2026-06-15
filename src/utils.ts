@@ -6,7 +6,25 @@
  * the other.
  */
 
-import type * as Ably from 'ably';
+import * as Ably from 'ably';
+
+/**
+ * Extract a human-readable message from an unknown thrown value.
+ * @param error - The thrown value.
+ * @returns The error's `message` when it is an `Error`, otherwise its string form.
+ */
+export const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/**
+ * Narrow an unknown thrown value to an `Ably.ErrorInfo` for use as a wrapping
+ * `cause`, returning `undefined` when it is not one. Pass the result as the
+ * fourth argument to the `Ably.ErrorInfo` constructor to preserve the error
+ * chain without asserting a type the value may not have.
+ * @param error - The thrown value.
+ * @returns The value when it is an `Ably.ErrorInfo`, otherwise `undefined`.
+ */
+export const errorCause = (error: unknown): Ably.ErrorInfo | undefined =>
+  error instanceof Ably.ErrorInfo ? error : undefined;
 
 /**
  * Read one tier of the SDK's `extras.ai` namespace from an Ably message.

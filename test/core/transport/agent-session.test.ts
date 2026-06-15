@@ -2348,7 +2348,7 @@ describe('Run.messages', () => {
     // (assistant a1). Turn 2: input node u2 (run-less user, parent=a1) → the
     // current reply run-2 (assistant a2). The agent serves run-2; u2 is its
     // triggering input event, delivered via deliverInputEvent so start() sets
-    // assistantParentFallback=u2 and buildBranchChain walks u2→a1→u1.
+    // assistantParentFallback=u2 and walkAncestorChain walks u2→a1→u1.
     //
     // Before loadConversation: run.messages returns only the current run's
     // view messages (the input node u2). After loadConversation: the full
@@ -2591,7 +2591,7 @@ describe('Run.loadConversation', () => {
     // Two-node, two turns. Turn 1: input u1 → reply run-1 (assistant a1).
     // Turn 2 (current): input u2 (parent=a1, delivered) → reply run-2. run-2
     // has streamed no content yet, so the conversation is the spine u1→a1→u2.
-    // buildBranchChain walks the structural parent chain from u2 (the agent's
+    // walkAncestorChain walks the structural parent chain from u2 (the agent's
     // assistantParentFallback) up to the root.
     // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
     ch.history.mockImplementation(() => {
@@ -2638,7 +2638,7 @@ describe('Run.loadConversation', () => {
     const ch = createMockChannel();
     const codec = codecWithFunctionalDecoder();
     // Two-node, three turns. u1→run-1(a1), u2→run-2(a2), u3(current)→run-3.
-    // buildBranchChain walks u3→a2→u2→a1→u1 and reverses to root-first.
+    // walkAncestorChain walks u3→a2→u2→a1→u1 and reverses to root-first.
     // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
     ch.history.mockImplementation(() => {
       const items = [
@@ -2734,7 +2734,7 @@ describe('Run.loadConversation', () => {
     // MessageNodes, so assistantParentFallback falls back to the carrier's own
     // parent header (u1).
     //
-    // No per-ancestor truncation in the two-node model: buildBranchChain walks
+    // No per-ancestor truncation in the two-node model: walkAncestorChain walks
     // structural parents up from u1, and u1's only ancestor is the root. The
     // superseded original reply a1 is an un-taken sibling reply run — it shares
     // u1 as parent but is not on the upward chain, so it is naturally excluded.
@@ -2793,7 +2793,7 @@ describe('Run.loadConversation', () => {
     // (forkOf=u2) and chains to the same structural parent a1 (parent=a1). The
     // agent serves the reply to the edited prompt (run-3, parented at u2b).
     //
-    // buildBranchChain walks u2b→a1→u1 (root-first u1, a1, u2b). The un-taken
+    // walkAncestorChain walks u2b→a1→u1 (root-first u1, a1, u2b). The un-taken
     // fork — the original prompt u2 and its reply a2 — shares the parent a1 but
     // is not on the upward chain from u2b, so it is naturally excluded. No
     // per-ancestor truncation needed.
@@ -2858,7 +2858,7 @@ describe('Run.loadConversation', () => {
     // channel.history yet (rare Ably lag). The agent still seeds the chain from
     // u2 because assistantParentFallback is computed at run-start from the live
     // input-event lookup, and u2 is folded from liveLookupMessages (merged into
-    // the history fetch by withLiveMessages). buildBranchChain walks u2→a1→u1.
+    // the history fetch by withLiveMessages). walkAncestorChain walks u2→a1→u1.
     const ch = createMockChannel();
     const codec = codecWithFunctionalDecoder();
     // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
@@ -3000,7 +3000,7 @@ describe('Run.loadConversation', () => {
 // Cross-engine equivalence: agent loadConversation() ≡ client View.getMessages()
 //
 // The agent reconstructs a served branch by fold-walking the codec-message-id
-// parent chain (buildBranchChain); the client View reconstructs the same
+// parent chain (walkAncestorChain); the client View reconstructs the same
 // visible branch from the Tree's visibleNodes(). These are two independent
 // reconstruction engines over the same wire history. This block is drift
 // insurance: for the same two-node history, both must produce the identical

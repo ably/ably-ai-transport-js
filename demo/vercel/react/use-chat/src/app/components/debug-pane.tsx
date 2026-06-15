@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import type { UIMessage } from 'ai';
+import type { CodecMessage } from '@ably/ai-transport';
 import type * as Ably from 'ably';
 
 export interface CallbackLogEntry {
@@ -10,21 +11,63 @@ export interface CallbackLogEntry {
   summary: string;
 }
 
+/** Fields common to every {@link ClientToolLogEntry} variant. */
+interface ClientToolLogEntryBase {
+  /** When execution started (ms since epoch). */
+  time: number;
+  /** Tool name, e.g. `getLocation`. */
+  toolName: string;
+  /** AI SDK tool-call id; the upsert key, also shown for cross-referencing the Ably Messages tab. */
+  toolCallId: string;
+  /** The tool input the model produced. */
+  input: unknown;
+}
+
+/**
+ * One client-side tool execution observed on THIS client since page load.
+ * Recorded locally by `useClientTools` at the moment the tool runs here, so it
+ * attributes execution to this running instance — which the replicated
+ * conversation state can't, since that looks identical in every participant.
+ *
+ * Discriminated on `status`: `output` exists only when `done`.
+ */
+export type ClientToolLogEntry =
+  | (ClientToolLogEntryBase & {
+      /** Execution has started; the executor has not yet resolved. */
+      status: 'executing';
+    })
+  | (ClientToolLogEntryBase & {
+      /** Execution resolved. */
+      status: 'done';
+      /** The executor's output. */
+      output: unknown;
+    });
+
 interface DebugPaneProps {
-  messages: UIMessage[];
+  // The visible messages paired with their codec-message-ids; the pane renders
+  // the raw `message` halves as JSON.
+  messages: CodecMessage<UIMessage>[];
   ablyMessages: Ably.InboundMessage[];
-  activeRuns: Map<string, Set<string>>;
   status: string;
   callbackLog: CallbackLogEntry[];
   statusLog: { time: number; status: string }[];
+  clientToolLog: ClientToolLogEntry[];
   onClearLogs: () => void;
 }
 
 type Tab = 'ably' | 'uimessages' | 'lifecycle';
 
-function extractHeaders(msg: Ably.InboundMessage): Record<string, string> {
-  const extras = msg.extras as { headers?: Record<string, string> } | undefined;
-  return extras?.headers ?? {};
+const AI_TIERS = ['transport', 'codec'] as const;
+
+/**
+ * Read the SDK's `extras.ai` namespace, preserving its two-tier structure:
+ * `extras.ai.transport` (transport headers) and `extras.ai.codec` (codec
+ * headers). Returns an empty record per tier when absent.
+ */
+function extractTiers(msg: Ably.InboundMessage): Record<(typeof AI_TIERS)[number], Record<string, string>> {
+  const ai = (msg.extras as { ai?: { transport?: Record<string, string>; codec?: Record<string, string> } } | undefined)
+    ?.ai;
+  return { transport: ai?.transport ?? {}, codec: ai?.codec ?? {} };
 }
 
 function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
@@ -45,7 +88,7 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
         <p className="text-xs text-zinc-700 text-center mt-8">Raw Ably messages will appear here.</p>
       )}
       {entries.map((entry, idx) => {
-        const headers = extractHeaders(entry);
+        const tiers = extractTiers(entry);
         return (
           <div
             key={idx}
@@ -57,20 +100,28 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
               <span className="text-emerald-500">{entry.name ?? '(unnamed)'}</span>
               <span className="text-amber-500">{String(entry.action ?? 'message.create')}</span>
             </div>
-            {Object.keys(headers).length > 0 && (
-              <div className="ml-2 mb-1 space-y-0.5">
-                {Object.entries(headers).map(([k, v]) => (
-                  <div
-                    key={k}
-                    className="text-zinc-600"
-                  >
-                    <span className="text-zinc-500">{k}</span>
-                    <span className="text-zinc-700">: </span>
-                    <span className="text-zinc-400">{v}</span>
-                  </div>
-                ))}
-              </div>
-            )}
+            {AI_TIERS.map((tier) => {
+              const tierHeaders = tiers[tier];
+              if (Object.keys(tierHeaders).length === 0) return null;
+              return (
+                <div
+                  key={tier}
+                  className="ml-2 mb-1 space-y-0.5"
+                >
+                  <div className="text-zinc-700">extras.ai.{tier}</div>
+                  {Object.entries(tierHeaders).map(([k, v]) => (
+                    <div
+                      key={k}
+                      className="text-zinc-600 ml-2"
+                    >
+                      <span className="text-zinc-500">{k}</span>
+                      <span className="text-zinc-700">: </span>
+                      <span className="text-zinc-400">{v}</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
             {entry.data !== undefined && entry.data !== null && (
               <div className="mt-1 text-zinc-600 break-all whitespace-pre-wrap">
                 {typeof entry.data === 'string' ? entry.data : JSON.stringify(entry.data, null, 2)}
@@ -83,15 +134,7 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
   );
 }
 
-function UIMessagesTab({
-  messages,
-  activeRuns,
-  status,
-}: {
-  messages: UIMessage[];
-  activeRuns: Map<string, Set<string>>;
-  status: string;
-}) {
+function UIMessagesTab({ messages, status }: { messages: UIMessage[]; status: string }) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -99,18 +142,6 @@ function UIMessagesTab({
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
-
-  const runsDisplay =
-    activeRuns.size > 0
-      ? Array.from(activeRuns.entries())
-          .map(
-            ([cid, tids]) =>
-              `${cid}: [${Array.from(tids)
-                .map((t) => t.slice(0, 8))
-                .join(', ')}]`,
-          )
-          .join('; ')
-      : 'none';
 
   return (
     <div
@@ -127,10 +158,6 @@ function UIMessagesTab({
           >
             {status}
           </span>
-        </div>
-        <div className="rounded border border-zinc-800 bg-zinc-900/50 px-2 py-1.5 text-[10px]">
-          <span className="text-zinc-600">Active runs: </span>
-          <span className={`font-mono ${activeRuns.size > 0 ? 'text-blue-400' : 'text-zinc-600'}`}>{runsDisplay}</span>
         </div>
       </div>
       {messages.length === 0 ? (
@@ -160,10 +187,12 @@ const statusColors: Record<string, string> = {
 function LifecycleTab({
   callbackLog,
   statusLog,
+  clientToolLog,
   onClear,
 }: {
   callbackLog: CallbackLogEntry[];
   statusLog: { time: number; status: string }[];
+  clientToolLog: ClientToolLogEntry[];
   onClear: () => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -172,7 +201,7 @@ function LifecycleTab({
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [callbackLog, statusLog]);
+  }, [callbackLog, statusLog, clientToolLog]);
 
   return (
     <div
@@ -225,6 +254,34 @@ function LifecycleTab({
           </div>
         ))
       )}
+
+      <div className="mt-4 mb-2">
+        <span className="text-[10px] text-zinc-400 uppercase tracking-wider">Client-side tool calls</span>
+      </div>
+
+      {clientToolLog.length === 0 ? (
+        <p className="text-xs text-zinc-500 text-center">
+          Tools this client executes (e.g. getLocation) will appear here.
+        </p>
+      ) : (
+        clientToolLog.map((entry) => (
+          <div
+            key={entry.toolCallId}
+            className="rounded border border-zinc-800 bg-zinc-900/50 p-2 text-[11px] font-mono"
+          >
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-zinc-400">{new Date(entry.time).toLocaleTimeString()}</span>
+              <span className="text-blue-400">{entry.toolName}</span>
+              <span className={entry.status === 'done' ? 'text-emerald-400' : 'text-amber-400'}>{entry.status}</span>
+            </div>
+            <div className="text-zinc-600 break-all">id: {entry.toolCallId}</div>
+            <div className="text-zinc-500 break-all whitespace-pre-wrap">in: {JSON.stringify(entry.input)}</div>
+            {entry.status === 'done' && (
+              <div className="text-indigo-300 break-all whitespace-pre-wrap">out: {JSON.stringify(entry.output)}</div>
+            )}
+          </div>
+        ))
+      )}
     </div>
   );
 }
@@ -232,13 +289,16 @@ function LifecycleTab({
 export function DebugPane({
   messages,
   ablyMessages,
-  activeRuns,
   status,
   callbackLog,
   statusLog,
+  clientToolLog,
   onClearLogs,
 }: DebugPaneProps) {
   const [isOpen, setIsOpen] = useState(true);
+
+  // Project away the codec-message-id pairing — the pane renders raw messages.
+  const uiMessages = useMemo(() => messages.map((m) => m.message), [messages]);
   const [tab, setTab] = useState<Tab>('ably');
 
   return (
@@ -282,7 +342,7 @@ export function DebugPane({
                 }`}
               >
                 Lifecycle
-                <span className="ml-1 text-zinc-600">{callbackLog.length}</span>
+                <span className="ml-1 text-zinc-600">{callbackLog.length + clientToolLog.length}</span>
               </button>
             </div>
             <button
@@ -296,14 +356,14 @@ export function DebugPane({
             <AblyMessagesTab entries={ablyMessages} />
           ) : tab === 'uimessages' ? (
             <UIMessagesTab
-              messages={messages}
-              activeRuns={activeRuns}
+              messages={uiMessages}
               status={status}
             />
           ) : (
             <LifecycleTab
               callbackLog={callbackLog}
               statusLog={statusLog}
+              clientToolLog={clientToolLog}
               onClear={onClearLogs}
             />
           )}

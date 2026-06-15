@@ -1,26 +1,26 @@
 # Conversation branching
 
-AI Transport stores conversation history as a tree, not a linear array. When a user regenerates an assistant response or edits a user message, the session creates a fork - the original message and its replacement are siblings in the tree, and the user can navigate between them.
+AI Transport stores conversation history as a tree, not a linear array. When a user regenerates an assistant response or edits a user message, the View creates a sibling branch - the original and its alternative coexist in the tree, and the user can navigate between them.
 
 Without tree-based history, regeneration and editing destroy the original response. With branching, every version is preserved and navigable.
 
 ## How it works
 
-Every message in the tree has:
+Each conversation turn is two nodes: a user `InputNode` keyed by the client-owned codec-message-id, and an agent `RunNode` keyed by the agent-minted run-id and parented to the input node. Both kinds carry the same structural fields:
 
-- **`msgId`** - unique identifier (stamped as `x-ably-msg-id`)
-- **`parentId`** - the preceding message in the thread (`x-ably-parent`)
-- **`forkOf`** - the message this one replaces (`x-ably-fork-of`), if it's a fork
+- **`codecMessageId`** / **`runId`** - the node's primary key (`codec-message-id` for inputs, the agent's run-id for runs)
+- **`parentCodecMessageId`** - the codec-message-id of the preceding node on the chain (`parent`)
+- **`forkOf`** - the codec-message-id this node replaces (`fork-of`), if it's a fork
 
-When you regenerate or edit, the session sets `forkOf` to the original message's ID. Messages that share the same `parentId` and fork the same original are **siblings** - alternatives at the same point in the conversation.
+Editing a prompt forks the **input node**: the replacement input node shares its `forkOf` anchor with the original, and same-anchor input nodes form the edit sibling group. Regenerating a reply does not use `forkOf` at all - the new reply run parents at the **same input node** as the original reply, so same-parent reply runs form the regenerate group. The session stamps the regenerate target on the `msg-regenerate` header of the published input event (the agent only reads it); the View realises the replacement when it materialises messages.
 
 ```
-User: "What is Rust?"                     (msg-1, parent: null)
-  ├── Assistant: "Rust is a language..."   (msg-2, parent: msg-1)
-  └── Assistant: "Rust is a systems..."    (msg-3, parent: msg-1, forkOf: msg-2)  ← regenerated
+User: "What is Rust?"                       (input-1, parent: null)
+  ├── Run: "Rust is a language..."           (run-1, parent: input-1)
+  └── Run: "Rust is a systems..."            (run-2, parent: input-1)  ← regenerated (same input parent)
 ```
 
-`flattenNodes()` returns the linear message list along the currently selected branch. The user navigates between siblings to switch branches.
+The live View's `getMessages()` returns the messages of the Tree's `visibleNodes()`, which walks the nodes applying parent reachability and **explicit sibling-group selection**: where a node has siblings, a selection map picks the active member (the user's selection, or the latest by default) and the others are skipped. The View then layers its pagination window on top and concatenates each visible node's projected messages into the flat list. (The agent's `loadConversation` and history decode use a different path — `buildBranchChain` — where branch selection is implicit-by-unreachability rather than an explicit selection map.) The user navigates between siblings to switch branches.
 
 ## Regenerate
 
@@ -31,12 +31,12 @@ import { useView } from '@ably/ai-transport/react';
 
 const { regenerate } = useView();
 
-// Fork the assistant message - starts a new run with no new user messages.
-// nodeId is the x-ably-msg-id (see treeMsgId helper in the quickstart).
-await regenerate(nodeId);
+// Regenerate the assistant message - starts a new reply run with no new
+// user messages. messageId is the assistant message's codec-message-id.
+await regenerate(messageId);
 ```
 
-The session automatically computes `forkOf` (the assistant message being replaced) and `parent` (the message before it). The server receives these in the POST body and passes them to `createRun()`.
+The View resolves `target` (the assistant message being regenerated) and `parent` (the user prompt before it) from its branch, then mints a `Regenerate` input via the codec (`createRegenerate(target, parent)`). The session reads those fields off the input and writes `target` onto the `msg-regenerate` wire header and `parent` onto the `parent` header of the published input; the agent reads them off the triggering input event during its conversation lookup. A regenerate is a continuation, not a fork — the new reply run shares the original reply's input-node parent rather than carrying a `fork-of`.
 
 ## Edit
 
@@ -44,6 +44,7 @@ Editing forks a user message - the user provides replacement content, and the se
 
 ```typescript
 import { useView } from '@ably/ai-transport/react';
+import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
 const { edit } = useView();
 
@@ -54,47 +55,52 @@ const newMessage = {
   createdAt: new Date(),
 };
 
-// Fork the user message with new content.
-// nodeId is the x-ably-msg-id (see treeMsgId helper in the quickstart).
-await edit(nodeId, [newMessage]);
+// Fork the user message with new content. edit() takes codec inputs, so
+// compose the replacement user message into one.
+// messageId is the user message's codec-message-id.
+await edit(messageId, UIMessageCodec.createUserMessage(newMessage));
 ```
 
 ## Branch navigation
 
-`useView()` provides branch navigation alongside message state:
+`useView()` provides branch navigation alongside message state. Most UIs render a flat list of messages and want to attach navigation arrows to a specific message bubble (the edited user prompt, or the regenerated assistant reply), so the View exposes message-anchored branch navigation keyed by codec-message-id:
 
 ```typescript
 import { useView } from '@ably/ai-transport/react';
 
 const view = useView();
 
-// view.hasSiblings(nodeId) - does this message have alternatives?
-// view.getSiblings(nodeId) - all alternatives at this fork point
-// view.getSelectedIndex(nodeId) - which sibling is currently selected
-// view.select(nodeId, index) - switch to a different sibling
-// view.getNode(nodeId) - look up a node by msgId
+// view.branchSelection(codecMessageId) returns a total BranchSelection bundle:
+//   { hasSiblings, siblings, index, selected }
+// - hasSiblings - is this codec-message-id a branch anchor with > 1 sibling?
+// - siblings    - the alternatives (TMessage[]); use .length for the count
+// - index       - the currently selected sibling's index
+// - selected    - siblings[index] (the rendered message itself for plain bubbles)
 //
-// nodeId is the msgId on each MessageNode — iterate view.nodes:
-//   view.nodes.map((node) => {
-//     const nodeId = node.msgId;
-//   });
+// view.selectSibling(codecMessageId, index) switches to a different sibling
+// (index is clamped; silent no-op when the id is not a branch anchor).
+//
+// view.runOf(codecMessageId) returns the owning Run's RunInfo
+//   ({ runId, clientId, status, invocationId }) for rendering.
 ```
 
-Build a sibling navigator (where `nodeId` is the resolved `x-ably-msg-id` for the message):
+The bundle is total — `branchSelection` is safe to call for any rendered message. A non-anchor bubble returns `siblings = [message]` (length 1), so the render condition keys on `hasSiblings`. Build a sibling navigator anchored to a message:
 
 ```typescript
-{view.hasSiblings(nodeId) && (
+const branch = view.branchSelection(codecMessageId);
+
+{branch.hasSiblings && (
   <div>
     <button
-      onClick={() => view.select(nodeId, view.getSelectedIndex(nodeId) - 1)}
-      disabled={view.getSelectedIndex(nodeId) === 0}
+      onClick={() => view.selectSibling(codecMessageId, branch.index - 1)}
+      disabled={branch.index === 0}
     >
       ←
     </button>
-    <span>{view.getSelectedIndex(nodeId) + 1} / {view.getSiblings(nodeId).length}</span>
+    <span>{branch.index + 1} / {branch.siblings.length}</span>
     <button
-      onClick={() => view.select(nodeId, view.getSelectedIndex(nodeId) + 1)}
-      disabled={view.getSelectedIndex(nodeId) === view.getSiblings(nodeId).length - 1}
+      onClick={() => view.selectSibling(codecMessageId, branch.index + 1)}
+      disabled={branch.index === branch.siblings.length - 1}
     >
       →
     </button>
@@ -102,31 +108,35 @@ Build a sibling navigator (where `nodeId` is the resolved `x-ably-msg-id` for th
 )}
 ```
 
-Calling `select` updates the view's active branch and re-renders with the selected path.
+In the Vercel codec the domain `message.id` is the codec-message-id, so you pass `message.id` straight through.
+
+For direct structural access (for example navigating an explicit node tree), `session.tree.getNodeByCodecMessageId(id)` resolves the owning node (an `InputNode` or a `RunNode` — narrow on `kind`), `session.tree.getSiblingNodes(key)` returns its sibling group (edit versions for an input node, regenerate runs for a reply run), and `session.tree.getRunNode(runId)` looks up a reply run by its agent-minted run id.
+
+Calling `selectSibling` updates the view's active branch and re-renders with the selected path.
 
 ## Server handling
 
-The server receives `forkOf` and `parent` in the POST body. Pass them through to `createRun()`:
+The agent receives only an invocation pointer — `{ inputEventId, sessionName }` — in the POST body, not the messages or branching metadata. It replays the triggering input event off the channel via rewind, then `loadConversation()` walks the branch chain from that input event (following `parent` links and resolving `fork-of` / `msg-regenerate`) to assemble the LLM-ready history. The agent never needs to read `forkOf` or `parent` itself:
 
 ```typescript
 import { Invocation } from '@ably/ai-transport';
+import type { InvocationData } from '@ably/ai-transport';
 
-const { runId, clientId, forkOf, parent, messages, history } = await req.json();
+const data = (await req.json()) as InvocationData; // { inputEventId, sessionName }
+const invocation = Invocation.fromJSON(data);
 
-const run = session.createRun(Invocation.fromJSON({ runId, clientId, parent, forkOf }));
+const run = session.createRun(invocation, { signal: req.signal });
 await run.start();
 
-// Publish user messages to the channel so all clients see them and they persist in history
-if (messages.length > 0) {
-  await run.addMessages(messages, { clientId });
-}
+// Walk the branch chain off the channel into LLM-ready history.
+await run.loadConversation();
 
-const result = streamText({ model, messages: conversationHistory, abortSignal: run.abortSignal });
+const result = streamText({ model, messages: run.messages, abortSignal: run.abortSignal });
 const { reason } = await run.pipe(result.toUIMessageStream());
 await run.end(reason);
 ```
 
-The session stamps `x-ably-parent` and `x-ably-fork-of` headers on the published messages. All clients on the channel see these headers and update their local tree.
+The client stamps `parent`, `fork-of`, and `msg-regenerate` headers on the published input event. All clients on the channel see these headers and update their local tree; the agent resolves them through `loadConversation`.
 
 ## Multiple views
 
@@ -144,7 +154,7 @@ const left = useView({ limit: 50 });
 const right = useCreateView({ skip: !split, limit: 50 });
 
 // Selecting a sibling in the left pane does not affect the right pane
-left.select(nodeId, 1);
+left.selectSibling(codecMessageId, 1);
 ```
 
 Both views share the same underlying tree - new messages from the server appear in both. But branch selections, pagination windows, and write operations are scoped to each view.

@@ -1,22 +1,29 @@
 /**
- * useClientTools — automatically executes client-side tools when they appear
+ * useClientTools - automatically executes client-side tools when they appear
  * in the conversation, using useChat's addToolResult.
  *
- * Skips tool calls that already have a follow-up assistant message — those
+ * Skips tool calls that already have a follow-up assistant message - those
  * were resolved in a previous session and don't need re-execution.
- * Only executes for runs initiated by this client (matches x-ably-run-client-id).
+ * Only executes for runs initiated by this client (matches owningRun.clientId).
  *
- * On resolution, stages the tool-output event on the session before
- * calling addToolResult. Staging applies the event to the conversation tree
- * immediately so any subsequent useMessageSync overwrite (e.g. from an
- * observer run arriving on the channel) is idempotent — the tool result
- * won't be wiped from useChat state during the window before
- * sendAutomaticallyWhen fires.
+ * `addToolResult` is the sole continuation trigger; the tool output reaches
+ * the tree asynchronously via the channel echo and the codec's reducer.
+ * A synchronous optimistic fold path on the ChatTransport adapter is
+ * tracked separately under AIT-776.
+ *
+ * Each execution is reported via the optional `onExecute` callback — once with
+ * status `executing` when the tool fires here (after the targeting gate), then
+ * again with status `done` and the output once the executor resolves. This is
+ * driven by the actual execution path, so it reflects which client truly ran
+ * the tool (unlike useChat's `onToolCall`, which fires only on the sender that
+ * consumes the response stream).
  */
 
 import { useEffect, useRef } from 'react';
-import type { ChatAddToolOutputFunction, DynamicToolUIPart, UIMessage, UIMessageChunk } from 'ai';
-import type { ClientSession, MessageNode } from '@ably/ai-transport';
+import type { ChatAddToolOutputFunction, DynamicToolUIPart, UIMessage } from 'ai';
+import type { ClientSession, CodecMessage, RunInfo } from '@ably/ai-transport';
+import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
+import type { ClientToolLogEntry } from '../components/debug-pane';
 
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
 
@@ -45,28 +52,31 @@ const clientTools: Record<string, ClientToolExecutor> = {
 };
 
 export function useClientTools(
-  session: ClientSession<UIMessageChunk, UIMessage>,
-  messages: UIMessage[],
+  session: ClientSession<VercelInput, VercelOutput, VercelProjection, UIMessage>,
+  messages: CodecMessage<UIMessage>[],
   addToolResult: ChatAddToolOutputFunction<UIMessage>,
-  nodes: MessageNode<UIMessage>[],
+  runOf: (codecMessageId: string) => RunInfo | undefined,
   clientId: string | undefined,
+  onExecute?: (entry: ClientToolLogEntry) => void,
 ) {
   const handledRef = useRef(new Set<string>());
 
   useEffect(() => {
     for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
+      const { codecMessageId, message: msg } = messages[i];
       if (msg.role !== 'assistant') continue;
 
       // Only execute client tools for runs initiated by this client.
-      // Look up the session node by message ID to check the run owner.
-      const node = nodes.find((n) => n.message.id === msg.id);
-      const runClientId = node?.headers['x-ably-run-client-id'];
-      if (runClientId && runClientId !== clientId) continue;
+      // Other clients on the same channel see the tool call but should
+      // not execute it - only the requesting client has the context
+      // (e.g. browser geolocation) to provide the result. Correlate on the
+      // codec-message-id, never the domain `message.id`.
+      const run = runOf(codecMessageId);
+      if (run?.clientId && run.clientId !== clientId) continue;
 
       // If there's a later assistant message, this tool call was already
-      // resolved in a previous session — skip.
-      const hasFollowUpAssistant = messages.slice(i + 1).some((m) => m.role === 'assistant');
+      // resolved in a previous session - skip.
+      const hasFollowUpAssistant = messages.slice(i + 1).some((m) => m.message.role === 'assistant');
       if (hasFollowUpAssistant) continue;
 
       for (const part of msg.parts) {
@@ -76,21 +86,31 @@ export function useClientTools(
         if (toolPart.state !== 'input-available') continue;
         if (!clientTools[toolPart.toolName]) continue;
         if (handledRef.current.has(toolPart.toolCallId)) continue;
-        if (!node) continue;
 
         handledRef.current.add(toolPart.toolCallId);
 
-        const treeMsgId = node.msgId;
+        const startedAt = Date.now();
+        onExecute?.({
+          time: startedAt,
+          toolName: toolPart.toolName,
+          toolCallId: toolPart.toolCallId,
+          input: toolPart.input,
+          status: 'executing',
+        });
+
+        // The tool output reaches the tree via the channel echo (the
+        // continuation wire that addToolResult publishes is folded by
+        // the codec's reducer). See AIT-776 for a synchronous adapter
+        // path that would skip the echo round-trip.
         void clientTools[toolPart.toolName](toolPart.input).then((output) => {
-          const chunk: UIMessageChunk = {
-            type: 'tool-output-available',
+          onExecute?.({
+            time: startedAt,
+            toolName: toolPart.toolName,
             toolCallId: toolPart.toolCallId,
+            input: toolPart.input,
+            status: 'done',
             output,
-            dynamic: true,
-            providerExecuted: false,
-            preliminary: false,
-          };
-          session.stageEvents(treeMsgId, [chunk]);
+          });
           addToolResult({
             tool: toolPart.toolName,
             toolCallId: toolPart.toolCallId,
@@ -99,5 +119,5 @@ export function useClientTools(
         });
       }
     }
-  }, [session, messages, addToolResult, nodes, clientId]);
+  }, [session, messages, addToolResult, runOf, clientId, onExecute]);
 }

@@ -16,30 +16,29 @@ Create a `ClientSession` and make it available to descendant components. The Rea
 <ClientSessionProvider
   channelName="ai:demo"
   codec={UIMessageCodec}
-  clientId={clientId}
-  api="/api/chat"
 >
   <Chat />
 </ClientSessionProvider>
 ```
 
-| Prop          | Type                                                          | Description                                                                  |
-| ------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `channelName` | `string`                                                      | The Ably channel name to subscribe to. Also used as the context registry key |
-| `codec`       | `Codec<TEvent, TMessage>`                                     | The codec for encoding/decoding                                              |
-| `clientId`    | `string?`                                                     | Client identity, sent to the server in POST body                             |
-| `api`         | `string?`                                                     | Server endpoint URL. Default: `"/api/chat"`                                  |
-| `headers`     | `Record<string, string> \| (() => Record<string, string>)?`   | HTTP POST headers. Function form for dynamic values                          |
-| `body`        | `Record<string, unknown> \| (() => Record<string, unknown>)?` | Additional POST body fields. Function form for dynamic values                |
-| `credentials` | `RequestCredentials?`                                         | Fetch credentials mode                                                       |
-| `fetch`       | `typeof fetch?`                                               | Custom fetch implementation                                                  |
-| `messages`    | `TMessage[]?`                                                 | Initial messages to seed the conversation tree                               |
-| `logger`      | `Logger?`                                                     | Logger instance                                                              |
-| `children`    | `ReactNode?`                                                  | Child components that will have access to this session                       |
+| Prop           | Type                                            | Description                                                                                                                                                                                          |
+| -------------- | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `channelName`  | `string`                                        | The Ably channel name to subscribe to. Also used as the context registry key                                                                                                                         |
+| `codec`        | `Codec<TInput, TOutput, TProjection, TMessage>` | The codec for encoding/decoding                                                                                                                                                                      |
+| `messages`     | `TMessage[]?`                                   | Initial messages to seed the conversation tree                                                                                                                                                       |
+| `channelModes` | `readonly Ably.ChannelMode[]?`                  | Extra channel modes to request, unioned with the modes the SDK always needs. Pass `OBJECT_MODES` to enable [LiveObjects](../features/liveobjects.md). Must stay constant for the provider's lifetime |
+| `logger`       | `Logger?`                                       | Logger instance                                                                                                                                                                                      |
+| `children`     | `ReactNode?`                                    | Child components that will have access to this session                                                                                                                                               |
+
+The session's identity is taken from the Realtime client read from the surrounding `<AblyProvider>` — its `auth.clientId` (set via the Ably token or `ClientOptions.clientId`) is stamped on everything it publishes.
+
+The session is a pure Ably-channel transport — it never sends HTTP. To wake a serverless agent, POST `run.toInvocation().toJSON()` to your endpoint from the `ActiveRun` that `view.send`/`regenerate`/`edit` returns. (For the `useChat` integration, use `ChatTransportProvider`, which issues this POST for you.)
 
 The session subscribes to the Ably channel immediately on creation and `connect()` is called once on mount. The session is closed when the provider truly unmounts; the close is scheduled as a microtask so that React Strict Mode's synchronous remount cycle can cancel it.
 
 If `createClientSession` throws during construction, the error is surfaced through `useClientSession` as `sessionError` — the component tree does not crash and children are still rendered.
+
+The provider also renders an ably-js `<ChannelProvider>` for the session's channel, so ably-js's channel hooks — `usePresence`, `usePresenceListener`, `useChannel` — work for any descendant without wrapping the subtree in your own `<ChannelProvider>`. Pass the same `channelName` you gave the provider. See [Presence](../features/presence.md). The internal `<ChannelProvider>` is seeded with the same resolved `channelModes` as the session, so the hooks and the session never conflict over channel options.
 
 For multiple sessions, nest providers with distinct `channelName` values:
 
@@ -47,12 +46,10 @@ For multiple sessions, nest providers with distinct `channelName` values:
 <ClientSessionProvider
   channelName="ai:main"
   codec={UIMessageCodec}
-  api="/api/chat"
 >
   <ClientSessionProvider
     channelName="ai:aux"
     codec={UIMessageCodec}
-    api="/api/chat"
   >
     <App />
   </ClientSessionProvider>
@@ -66,7 +63,7 @@ For multiple sessions, nest providers with distinct `channelName` values:
 Access the `ClientSession` from the nearest `ClientSessionProvider`.
 
 ```typescript
-const { session, sessionError } = useClientSession<TEvent, TMessage>({ channelName?, skip?, onError? } = {});
+const { session, sessionError } = useClientSession<TInput, TOutput, TProjection, TMessage>({ channelName?, skip?, onError? } = {});
 ```
 
 | Prop          | Type                               | Description                                                                                             |
@@ -75,27 +72,29 @@ const { session, sessionError } = useClientSession<TEvent, TMessage>({ channelNa
 | `skip`        | `boolean?`                         | When `true`, return a stub session that throws on any access — safe to hold before conditions are ready |
 | `onError`     | `(error: Ably.ErrorInfo) => void?` | Called whenever the resolved session emits an error event. Subscription is cleaned up on unmount        |
 
-**Returns:** `ClientSessionHandle<TEvent, TMessage>`
+**Returns:** `ClientSessionHandle<TInput, TOutput, TProjection, TMessage>`
 
-| Field          | Type                              | Description                                                                                                                                                                                      |
-| -------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `session`      | `ClientSession<TEvent, TMessage>` | The resolved session. A throwing stub when `skip` is `true`, when no matching `ClientSessionProvider` was found in the tree, or when session construction failed                                 |
-| `sessionError` | `Ably.ErrorInfo?`                 | Set when no matching `ClientSessionProvider` was found, or when session construction failed (and `skip` is `false`). `undefined` when the session resolved successfully or when `skip` is `true` |
+| Field          | Type                                                    | Description                                                                                                                                                                                      |
+| -------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `session`      | `ClientSession<TInput, TOutput, TProjection, TMessage>` | The resolved session. A throwing stub when `skip` is `true`, when no matching `ClientSessionProvider` was found in the tree, or when session construction failed                                 |
+| `sessionError` | `Ably.ErrorInfo?`                                       | Set when no matching `ClientSessionProvider` was found, or when session construction failed (and `skip` is `false`). `undefined` when the session resolved successfully or when `skip` is `true` |
 
 The hook never throws during render. Check `sessionError` before using `session` to avoid the stub's throws on access.
 
 ```typescript
 // Nearest provider (most common)
-const { session, sessionError } = useClientSession<UIMessageChunk, UIMessage>();
+const { session, sessionError } = useClientSession<VercelInput, VercelOutput, VercelProjection, UIMessage>();
 
 // Specific channel
-const { session } = useClientSession<UIMessageChunk, UIMessage>({ channelName: 'ai:main' });
+const { session } = useClientSession<VercelInput, VercelOutput, VercelProjection, UIMessage>({
+  channelName: 'ai:main',
+});
 
 // Deferred until auth resolves — stub throws on any access
-const { session } = useClientSession<UIMessageChunk, UIMessage>({ skip: !userId });
+const { session } = useClientSession<VercelInput, VercelOutput, VercelProjection, UIMessage>({ skip: !userId });
 
 // Observe post-construction session errors (e.g. send failures, channel continuity loss)
-const { session } = useClientSession<UIMessageChunk, UIMessage>({
+const { session } = useClientSession<VercelInput, VercelOutput, VercelProjection, UIMessage>({
   onError: (err) => console.error('session error', err),
 });
 ```
@@ -104,44 +103,42 @@ const { session } = useClientSession<UIMessageChunk, UIMessage>({
 
 ### useView
 
-Subscribe to a view and return nodes with pagination, branch navigation, and write operations. Pass `session` to use its default view, `view` to subscribe to a specific `View` directly, or omit both to use the nearest `ClientSessionProvider`.
+Subscribe to a view and return its visible messages with pagination, branch navigation, and write operations. Pass `session` to use its default view, `view` to subscribe to a specific `View` directly, or omit both to use the nearest `ClientSessionProvider`.
 
 ```typescript
-const view = useView<TEvent, TMessage>({ session?, view?, limit?, skip? } = {});
+const view = useView<TInput, TOutput, TProjection, TMessage>({ session?, view?, limit?, skip? } = {});
 ```
 
-| Prop      | Type                     | Description                                                                    |
-| --------- | ------------------------ | ------------------------------------------------------------------------------ |
-| `session` | `ClientSession \| null?` | Session whose default view to subscribe to; defaults to the nearest provider   |
-| `view`    | `View \| null?`          | A specific `View` to subscribe to directly; takes priority over `session`      |
-| `limit`   | `number?`                | Max older messages per page. When provided, auto-loads the first page on mount |
-| `skip`    | `boolean?`               | When `true`, skip all subscriptions and return an empty handle                 |
+| Prop      | Type                     | Description                                                                  |
+| --------- | ------------------------ | ---------------------------------------------------------------------------- |
+| `session` | `ClientSession \| null?` | Session whose default view to subscribe to; defaults to the nearest provider |
+| `view`    | `View \| null?`          | A specific `View` to subscribe to directly; takes priority over `session`    |
+| `limit`   | `number?`                | Max older Runs per page. When provided, auto-loads the first page on mount   |
+| `skip`    | `boolean?`               | When `true`, skip all subscriptions and return an empty handle               |
 
-**Returns:** `ViewHandle<TEvent, TMessage>`
+**Returns:** `ViewHandle<TInput, TMessage>`
 
-| Property/Method                          | Type                                                                                                            | Description                                                                                                                      |
-| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `nodes`                                  | `MessageNode<TMessage>[]`                                                                                       | Flattened nodes for the current branch. Updates on every message change (including streaming deltas)                             |
-| `messages`                               | `TMessage[]`                                                                                                    | The visible domain messages (shorthand for `nodes.map(n => n.message)`)                                                          |
-| `hasOlder`                               | `boolean`                                                                                                       | Are there older pages? False until history has been loaded                                                                       |
-| `loading`                                | `boolean`                                                                                                       | Is a page being fetched?                                                                                                         |
-| `loadError`                              | `Ably.ErrorInfo \| undefined`                                                                                   | Set when the most recent `loadOlder` call failed. Cleared automatically on the next successful load                              |
-| `loadOlder()`                            | `() => Promise<void>`                                                                                           | Load more older messages. No-op if already loading                                                                               |
-| `select(msgId, index)`                   | `(msgId: string, index: number) => void`                                                                        | Switch to a sibling branch. Triggers re-render                                                                                   |
-| `getSelectedIndex(msgId)`                | `(msgId: string) => number`                                                                                     | Index of the currently selected sibling                                                                                          |
-| `getSiblings(msgId)`                     | `(msgId: string) => TMessage[]`                                                                                 | All alternatives at a fork point                                                                                                 |
-| `hasSiblings(msgId)`                     | `(msgId: string) => boolean`                                                                                    | Whether to show navigation arrows                                                                                                |
-| `getNode(msgId)`                         | `(msgId: string) => MessageNode<TMessage> \| undefined`                                                         | Look up a node by msgId                                                                                                          |
-| `send(messages, options?)`               | `(messages: TMessage \| TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>`                       | Send messages in this view's branch context                                                                                      |
-| `regenerate(messageId, options?)`        | `(messageId: string, options?: SendOptions) => Promise<ActiveRun<TEvent>>`                                      | Fork an assistant message with no new user input                                                                                 |
-| `edit(messageId, newMessages, options?)` | `(messageId: string, newMessages: TMessage \| TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>` | Fork a user message with replacement content                                                                                     |
-| `update(msgId, events, options?)`        | `(msgId: string, events: TEvent[], options?: SendOptions) => Promise<ActiveRun<TEvent>>`                        | Update an existing message and start a continuation run (e.g. [tool results](../features/tool-calling.md#client-executed-tools)) |
+| Property/Method                        | Type                                                                                           | Description                                                                                                                                                                                                                                                                                                 |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `messages`                             | `CodecMessage<TMessage>[]`                                                                     | The visible messages, concatenated across all visible Runs via the codec, each paired with its codec-message-id (`{ codecMessageId, message }`). Read the domain object from `message`; correlate back to the View (`runOf`, `branchSelection`, `selectSibling`, `regenerate`, `edit`) via `codecMessageId` |
+| `hasOlder`                             | `boolean`                                                                                      | Are there older Runs that can be revealed via `loadOlder`? False until history has been loaded                                                                                                                                                                                                              |
+| `loading`                              | `boolean`                                                                                      | Is a page being fetched?                                                                                                                                                                                                                                                                                    |
+| `loadError`                            | `Ably.ErrorInfo \| undefined`                                                                  | Set when the most recent `loadOlder` call failed. Cleared automatically on the next successful load                                                                                                                                                                                                         |
+| `loadOlder()`                          | `() => Promise<void>`                                                                          | Reveal older Runs. No-op if already loading                                                                                                                                                                                                                                                                 |
+| `runOf(codecMessageId)`                | `(codecMessageId: string) => RunInfo \| undefined`                                             | Look up the `RunInfo` for the Run that owns `codecMessageId`. `undefined` when the codec-message-id hasn't been observed                                                                                                                                                                                    |
+| `run(runId)`                           | `(runId: string) => RunInfo \| undefined`                                                      | Direct lookup of a Run's `RunInfo` by runId. `undefined` when the Run hasn't been observed                                                                                                                                                                                                                  |
+| `runs()`                               | `() => RunInfo[]`                                                                              | Snapshot of the visible Runs along the selected branch, in chronological order. Returns `[]` when the view isn't resolved                                                                                                                                                                                   |
+| `branchSelection(codecMessageId)`      | `(codecMessageId: string) => BranchSelection<TMessage>`                                        | The branch-selection bundle anchored at `codecMessageId` (`{ hasSiblings, siblings, index, selected }`). Always returns a safe object — drives navigation arrows and resolves the selected sibling                                                                                                          |
+| `selectSibling(codecMessageId, index)` | `(codecMessageId: string, index: number) => void`                                              | Select a sibling at the branch point anchored at `codecMessageId`. `index` is clamped; silent no-op when `codecMessageId` isn't a branch anchor                                                                                                                                                             |
+| `send(events, options?)`               | `(events: TInput \| TInput[], options?: SendOptions) => Promise<ActiveRun>`                    | Send input events in this view's branch context — user messages, tool results, approval responses, regenerate signals. Compose with codec factories (e.g. `codec.createUserMessage(message)`, `codec.createToolResult(...)`); routing fields (`parent`, `target`, `codecMessageId`) live on each input      |
+| `regenerate(messageId, options?)`      | `(messageId: string, options?: SendOptions) => Promise<ActiveRun>`                             | Fork an assistant message with no new user input                                                                                                                                                                                                                                                            |
+| `edit(messageId, inputs, options?)`    | `(messageId: string, inputs: TInput \| TInput[], options?: SendOptions) => Promise<ActiveRun>` | Fork a user message with replacement content                                                                                                                                                                                                                                                                |
 
 Each view has independent branch selections and pagination state. When you pass a session, the hook uses its default view. For [split-pane UIs](../features/branching.md#multiple-views) where each pane needs its own branch and message history, use [`useCreateView()`](#usecreateview) to create independent views with the same API.
 
-Write operations (`send`, `regenerate`, `edit`) automatically derive the parent message and conversation history from this view's selected branch.
+Write operations (`send`, `regenerate`, `edit`) automatically derive the parent message — and, for `regenerate`/`edit`, the fork target — from this view's selected branch. No conversation history is sent; the agent assembles it from the channel. Each returns an `ActiveRun`.
 
-`update` amends an existing message and starts a continuation run. The tree updates optimistically before sending. Used for [client-executed tool results](../features/tool-calling.md#client-executed-tools) - the tool output is sent to the server in the POST body, published to the channel, and the model streams a follow-up response in the same run.
+`edit` forks a user message with replacement content; `regenerate` forks an assistant message with no new user input. For [client-executed tool results](../features/tool-calling.md#client-executed-tools), `send` a tool-result input composed via the codec — it is published to the channel and the model streams a follow-up response in the same run.
 
 ---
 
@@ -150,7 +147,7 @@ Write operations (`send`, `regenerate`, `edit`) automatically derive the parent 
 Create an independent view with the same API as [`useView()`](#useview). The view is created via `session.createView()` and closed automatically on unmount or when the session changes.
 
 ```typescript
-const handle = useCreateView<TEvent, TMessage>({ session?, limit?, skip? } = {});
+const handle = useCreateView<TInput, TOutput, TProjection, TMessage>({ session?, limit?, skip? } = {});
 ```
 
 | Prop      | Type                     | Description                                                                                        |
@@ -159,12 +156,12 @@ const handle = useCreateView<TEvent, TMessage>({ session?, limit?, skip? } = {})
 | `limit`   | `number?`                | When provided, auto-loads the first page on mount. Omit for manual loading                         |
 | `skip`    | `boolean?`               | When `true`, skip view creation and return an empty handle                                         |
 
-**Returns:** `ViewHandle<TEvent, TMessage>` - the same handle type as `useView()`, with nodes, pagination, navigation, and write operations. Returns an empty handle (no nodes, no messages) when no session is provided or `skip` is `true`.
+**Returns:** `ViewHandle<TInput, TMessage>` - the same handle type as `useView()`, with messages, pagination, navigation, and write operations. Returns an empty handle (no messages) when no session is provided or `skip` is `true`.
 
 ```typescript
 import { useView, useCreateView, useClientSession } from '@ably/ai-transport/react';
 
-const { session } = useClientSession<UIMessageChunk, UIMessage>();
+const { session } = useClientSession<VercelInput, VercelOutput, VercelProjection, UIMessage>();
 const view = useView({ limit: 50 }); // default view, nearest provider
 const splitView = useCreateView({ session: split ? session : null, limit: 50 }); // independent view
 ```
@@ -175,45 +172,29 @@ See [Multiple views](../features/branching.md#multiple-views) for the full split
 
 ---
 
-### useActiveRuns
-
-Return a reactive map of all active runs on the channel, keyed by clientId.
-
-```typescript
-const activeRuns = useActiveRuns<TEvent, TMessage>({ session? } = {});
-```
-
-| Prop      | Type                     | Description                                                                                            |
-| --------- | ------------------------ | ------------------------------------------------------------------------------------------------------ |
-| `session` | `ClientSession \| null?` | The session to observe; defaults to the nearest provider. Pass `null`/`undefined` if not yet available |
-
-**Returns:** `Map<string, Set<string>>` - keys are clientIds, values are sets of active runIds. Empty map if no session is resolved.
-
-Updates on every run start/end event. Includes runs from all clients on the channel.
-
----
-
 ### useTree
 
 Provide stable structural query callbacks for the conversation tree.
 
 ```typescript
-const tree = useTree<TEvent, TMessage>({ session? } = {});
+const tree = useTree<TInput, TOutput, TProjection, TMessage>({ session? } = {});
 ```
 
 | Prop      | Type             | Description                                                       |
 | --------- | ---------------- | ----------------------------------------------------------------- |
 | `session` | `ClientSession?` | The session whose tree to query; defaults to the nearest provider |
 
-**Returns:** `TreeHandle<TMessage>`
+**Returns:** `TreeHandle<TProjection>`
 
-| Property/Method      | Type                                                    | Description                       |
-| -------------------- | ------------------------------------------------------- | --------------------------------- |
-| `getSiblings(msgId)` | `(msgId: string) => TMessage[]`                         | All alternatives at a fork point  |
-| `hasSiblings(msgId)` | `(msgId: string) => boolean`                            | Whether to show navigation arrows |
-| `getNode(msgId)`     | `(msgId: string) => MessageNode<TMessage> \| undefined` | Look up a node by msgId           |
+| Property/Method               | Type                                                         | Description                                                                           |
+| ----------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| `getRunNode(runId)`           | `(runId: string) => RunNode<TProjection> \| undefined`       | Look up a reply run by its agent-minted runId                                         |
+| `getNodeByCodecMessageId(id)` | `(id: string) => ConversationNode<TProjection> \| undefined` | Resolve the node (`InputNode \| RunNode`) that owns a codec-message-id; narrow `kind` |
+| `getSiblingNodes(key)`        | `(key: string) => ConversationNode<TProjection>[]`           | The sibling group: edit versions for an input node, regenerate runs for a reply run   |
 
-Branch navigation (`select()`, `getSelectedIndex()`) and write operations (`send()`, `regenerate()`, `edit()`) are on `ViewHandle` from `useView()`, not `TreeHandle`. The tree provides structural queries that are the same regardless of which branch is selected.
+`key` is a node key — a `RunNode.runId` or an `InputNode.codecMessageId`. `getSiblingNodes` returns a single-element array when the node has no siblings, and an empty array when `key` is unknown.
+
+Branch navigation (`branchSelection()`, `selectSibling()`) and write operations (`send()`, `regenerate()`, `edit()`) are on `ViewHandle` from `useView()`, not `TreeHandle`. The tree provides structural queries that are the same regardless of which branch is selected.
 
 ---
 
@@ -222,7 +203,7 @@ Branch navigation (`select()`, `getSelectedIndex()`) and write operations (`send
 Subscribe to raw Ably message updates. Useful for debugging.
 
 ```typescript
-const messages = useAblyMessages<TEvent, TMessage>({ session?, skip? } = {});
+const messages = useAblyMessages<TInput, TOutput, TProjection, TMessage>({ session?, skip? } = {});
 ```
 
 | Prop      | Type             | Description                                                   |
@@ -245,29 +226,26 @@ Import from `@ably/ai-transport/vercel/react`.
 Create a `ClientSession` and `ChatTransport` and make both available to descendant components. A convenience wrapper around `ClientSessionProvider` with `UIMessageCodec` pre-bound — no `codec` prop needed.
 
 ```tsx
-<ChatTransportProvider
-  channelName="ai:demo"
-  clientId={clientId}
->
+<ChatTransportProvider channelName="ai:demo">
   <Chat />
 </ChatTransportProvider>
 ```
 
-| Prop          | Type                                                          | Description                                                                  |
-| ------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `channelName` | `string`                                                      | The Ably channel name. Also used as the context registry key                 |
-| `clientId`    | `string?`                                                     | Client identity, sent to the server in POST body                             |
-| `api`         | `string?`                                                     | Server endpoint URL. Default: `"/api/chat"`                                  |
-| `headers`     | `Record<string, string> \| (() => Record<string, string>)?`   | HTTP POST headers. Function form for dynamic values                          |
-| `body`        | `Record<string, unknown> \| (() => Record<string, unknown>)?` | Additional POST body fields. Function form for dynamic values                |
-| `credentials` | `RequestCredentials?`                                         | Fetch credentials mode                                                       |
-| `fetch`       | `typeof fetch?`                                               | Custom fetch implementation                                                  |
-| `messages`    | `UIMessage[]?`                                                | Initial messages to seed the conversation tree                               |
-| `logger`      | `Logger?`                                                     | Logger instance                                                              |
-| `chatOptions` | `ChatTransportOptions?`                                       | Optional hooks for customizing chat request construction                     |
-| `children`    | `ReactNode?`                                                  | Child components that will have access to the chat transport and the session |
+| Prop           | Type                           | Description                                                                                                                                                                                          |
+| -------------- | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `channelName`  | `string`                       | The Ably channel name. Also used as the context registry key                                                                                                                                         |
+| `api`          | `string?`                      | Endpoint the chat transport POSTs the invocation to, to wake the agent. Default `/api/chat`                                                                                                          |
+| `credentials`  | `RequestCredentials?`          | Fetch credentials mode for the invocation POST                                                                                                                                                       |
+| `fetch`        | `typeof fetch?`                | Custom fetch implementation for the invocation POST                                                                                                                                                  |
+| `messages`     | `UIMessage[]?`                 | Initial messages to seed the conversation tree                                                                                                                                                       |
+| `channelModes` | `readonly Ably.ChannelMode[]?` | Extra channel modes to request, unioned with the modes the SDK always needs. Pass `OBJECT_MODES` to enable [LiveObjects](../features/liveobjects.md). Must stay constant for the provider's lifetime |
+| `logger`       | `Logger?`                      | Logger instance                                                                                                                                                                                      |
+| `chatOptions`  | `ChatTransportOptions?`        | Optional hooks for customizing the invocation POST (e.g. `prepareSendMessagesRequest`). Must be stable across renders — a new reference recreates the chat transport                                 |
+| `children`     | `ReactNode?`                   | Child components that will have access to the chat transport and the session                                                                                                                         |
 
-Inside the subtree, `useChatTransport()` reads the chat transport and the session, and `useClientSession()` reads the underlying `ClientSession`. All generic hooks (`useView`, `useActiveRuns`, `useAblyMessages`) work without explicit session arguments.
+Like `ClientSessionProvider`, this provider takes its identity from the Realtime client in the surrounding `<AblyProvider>` (`auth.clientId`, set via the Ably token or `ClientOptions.clientId`).
+
+Unlike the generic `ClientSessionProvider`, this provider issues the agent-invocation POST for you (that's what `api`/`credentials`/`fetch` configure) — `useChat`'s transport contract is request-driven. Inside the subtree, `useChatTransport()` reads the chat transport and the session, and `useClientSession()` reads the underlying `ClientSession`. All generic hooks (`useView`, `useTree`, `useAblyMessages`, `useCreateView`) work without explicit session arguments. Because it wraps `ClientSessionProvider`, it also renders an ably-js `<ChannelProvider>` for the channel, so `usePresence`, `usePresenceListener`, and `useChannel` work in the subtree (see [Presence](../features/presence.md)).
 
 For multiple providers, nest them with distinct `channelName` values:
 
@@ -296,12 +274,12 @@ const { chatTransport, session, sessionError, chatTransportError } = useChatTran
 
 **Returns:** `ChatTransportHandle`
 
-| Field                | Type                                       | Description                                                                                                                                                                                      |
-| -------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `chatTransport`      | `ChatTransport`                            | The adapter for `useChat()`'s `transport` option. A throwing stub when `skip` is `true`, when no matching `ChatTransportProvider` was found, or when session construction failed                 |
-| `session`            | `ClientSession<UIMessageChunk, UIMessage>` | The underlying client session, also exposed by `useClientSession()`. Used directly with `useMessageSync`, `useView`, `useActiveRuns`, etc.                                                       |
-| `sessionError`       | `Ably.ErrorInfo?`                          | Set when no matching `ClientSessionProvider` was found, or when session construction failed (and `skip` is `false`). `undefined` when the session resolved successfully or when `skip` is `true` |
-| `chatTransportError` | `Ably.ErrorInfo?`                          | Set when no matching `ChatTransportProvider` was found, or when session construction failed (and `skip` is `false`). `undefined` when the chat transport resolved successfully                   |
+| Field                | Type                                                                    | Description                                                                                                                                                                                      |
+| -------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `chatTransport`      | `ChatTransport`                                                         | The adapter for `useChat()`'s `transport` option. A throwing stub when `skip` is `true`, when no matching `ChatTransportProvider` was found, or when session construction failed                 |
+| `session`            | `ClientSession<VercelInput, VercelOutput, VercelProjection, UIMessage>` | The underlying client session, also exposed by `useClientSession()`. Used directly with `useMessageSync`, `useView`, `useTree`, etc.                                                             |
+| `sessionError`       | `Ably.ErrorInfo?`                                                       | Set when no matching `ClientSessionProvider` was found, or when session construction failed (and `skip` is `false`). `undefined` when the session resolved successfully or when `skip` is `true` |
+| `chatTransportError` | `Ably.ErrorInfo?`                                                       | Set when no matching `ChatTransportProvider` was found, or when session construction failed (and `skip` is `false`). `undefined` when the chat transport resolved successfully                   |
 
 ```typescript
 // Nearest provider (most common)
@@ -314,7 +292,7 @@ const { chatTransport, session } = useChatTransport({ channelName: 'ai:secondary
 const { chatTransport, session } = useChatTransport({ skip: !userId });
 ```
 
-`ChatTransportOptions.prepareSendMessagesRequest` lets you customize the HTTP POST body and headers. Pass it to `ChatTransportProvider`:
+`ChatTransportOptions.prepareSendMessagesRequest` lets you add body fields and headers to the invocation POST (the run's invocation identifiers always take precedence in the body). Pass it to `ChatTransportProvider`:
 
 ```typescript
 <ChatTransportProvider
@@ -356,7 +334,7 @@ interface UseMessageSyncOptions {
 
 **Returns:** `void`
 
-Subscribes to the session view's `'update'` event and replaces `useChat()`'s message state with the view's authoritative message list on every update. Also gates `setMessages` during active own-run streams (using the `ChatTransport`'s `streaming` state) to prevent ID mismatches in `useChat`'s `write()`. When the stream finishes, the gate opens and an immediate sync fires to pick up any observer messages that arrived during the stream. This is how messages from other clients (observer messages) appear in `useChat()`.
+Subscribes to the session view's `'update'` event and merges the view's authoritative message list into `useChat()`'s message state on every update. The merge is per-message: where `useChat`'s overlay has locally resolved a client-executed tool (via `addToolResult`) but the tree's echo hasn't landed yet, the overlay's resolution wins. `setMessages` is gated during active own-run streams (using the `ChatTransport`'s `streaming` state) to prevent ID mismatches in `useChat`'s `write()`. When the stream finishes, the gate opens and an immediate sync fires to pick up any observer messages that arrived during the stream. This is how messages from other clients (observer messages) appear in `useChat()`.
 
 ```typescript
 // Nearest provider (most common)

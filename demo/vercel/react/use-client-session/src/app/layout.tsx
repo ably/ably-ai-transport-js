@@ -3,7 +3,7 @@ import './globals.css';
 
 export const metadata: Metadata = {
   title: 'Ably AI — Client Session Demo',
-  description: 'Generic client session demo with slash commands and debug pane',
+  description: 'Streaming chat over Ably with the AI Transport ClientSession API',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

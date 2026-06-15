@@ -33,17 +33,19 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
       // run-start response so `await session.view.send(...)` resolves.
       const messages = Array.isArray(msg) ? msg : [msg];
       for (const m of messages) {
-        const headers = (m.extras as { headers?: Record<string, string> } | undefined)?.headers ?? {};
-        if (headers['x-ably-role'] === 'user' && headers['x-ably-run-id'] && mock.listener) {
+        const headers = (m.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport ?? {};
+        if (headers.role === 'user' && headers['run-id'] && mock.listener) {
           const captured = mock.listener;
           queueMicrotask(() => {
             captured({
-              name: 'x-ably-run-start',
+              name: 'ai-run-start',
               extras: {
-                headers: {
-                  'x-ably-run-id': headers['x-ably-run-id'] ?? '',
-                  'x-ably-run-client-id': headers['x-ably-run-client-id'] ?? '',
-                  'x-ably-invocation-id': headers['x-ably-invocation-id'] ?? '',
+                ai: {
+                  transport: {
+                    'run-id': headers['run-id'] ?? '',
+                    'run-client-id': headers['run-client-id'] ?? '',
+                    'invocation-id': headers['invocation-id'] ?? '',
+                  },
                 },
               },
               serial: '01H_run_start_sim',
@@ -81,70 +83,28 @@ describe('Vercel createClientSession', () => {
     const channel = createMockChannel();
     const session = createClientSession({ client: createMockClient(channel), channelName: 'test-channel' });
 
-    // view.flattenNodes works without error — proves the codec is wired up
-    expect(session.view.flattenNodes()).toEqual([]);
+    // view.getMessages works without error — proves the codec is wired up
+    expect(session.view.getMessages()).toEqual([]);
 
     await session.close();
   });
 
-  it('defaults api to /api/chat when not specified', async () => {
+  it('passes channelName through to the core factory; the session is HTTP-free', async () => {
     const channel = createMockChannel();
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-    const mockFetch = vi.fn(() => Promise.resolve(new Response(undefined, { status: 200 })));
     const session = createClientSession({
       client: createMockClient(channel),
       channelName: 'test-channel',
-      fetch: mockFetch as unknown as typeof globalThis.fetch,
     });
     await session.connect();
 
-    await session.view.send({ id: '1', role: 'user', parts: [] });
-
-    await vi.waitFor(() => {
-      expect(mockFetch).toHaveBeenCalledTimes(1);
+    // The core session never sends HTTP — sending only publishes on the
+    // channel. The run's invocation pointer reflects the channel name the
+    // factory wired through, confirming the option plumbing.
+    const run = await session.view.send({
+      kind: 'user-message',
+      message: { id: '1', role: 'user', parts: [] },
     });
-
-    const [url] = mockFetch.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe('/api/chat');
-
-    await session.close();
-  });
-
-  it('passes through all options to the core factory', async () => {
-    const channel = createMockChannel();
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-    const mockFetch = vi.fn(() => Promise.resolve(new Response(undefined, { status: 200 })));
-    const session = createClientSession({
-      client: createMockClient(channel),
-      channelName: 'test-channel',
-      clientId: 'user-1',
-      api: '/api/custom',
-      headers: { Authorization: 'Bearer token' },
-      credentials: 'include',
-      fetch: mockFetch,
-    });
-    await session.connect();
-
-    // send() triggers a POST to the configured api endpoint with the configured fetch
-    const sendPromise = session.view.send({ id: '1', role: 'user', parts: [] });
-    const run = await sendPromise;
-
-    // Wait for the fire-and-forget fetch to resolve
-    await vi.waitFor(() => {
-      expect(mockFetch).toHaveBeenCalledTimes(1);
-    });
-
-    // Verify the custom api URL and headers were used
-    // CAST: vi.fn().mock.calls is typed as unknown[][]; we know the shape from the fetch signature.
-    const [url, init] = mockFetch.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe('/api/custom');
-    expect(init.credentials).toBe('include');
-    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer token');
-
-    // Verify the body contains the clientId
-    const body = JSON.parse(init.body as string) as Record<string, unknown>;
-    expect(body.clientId).toBe('user-1');
-    expect(body.runId).toBe(run.runId);
+    expect(run.toInvocation().sessionName).toBe('test-channel');
 
     await session.close();
   });
@@ -159,7 +119,7 @@ describe('Vercel createAgentSession', () => {
     const run = createRunFromOpts(session, { runId: 'test-run' });
     expect(run.runId).toBe('test-run');
 
-    session.close();
+    await session.close();
   });
 
   it('passes through options to the core factory', async () => {
@@ -169,9 +129,9 @@ describe('Vercel createAgentSession', () => {
     await session.connect();
 
     // Session was created without error — proves options were forwarded
-    const run = createRunFromOpts(session, { runId: 'run-2', clientId: 'user-1' });
+    const run = createRunFromOpts(session, { runId: 'run-2' });
     expect(run.runId).toBe('run-2');
 
-    session.close();
+    await session.close();
   });
 });

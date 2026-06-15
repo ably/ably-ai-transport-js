@@ -8,20 +8,25 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "lint": "next lint",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "node ../../../e2e/run-e2e.mjs",
+    "test:e2e:live": "playwright test"
   },
   "dependencies": {
-    "@ably/ai-transport": "file:../../../..",
+    "@ably/ai-transport": "link:../../../..",
     "@ai-sdk/anthropic": "^3",
+    "@ai-sdk/openai": "^3",
     "@ai-sdk/react": "^3.0.161",
-    "ably": "^2",
+    "ably": "^2.22.1",
     "ai": "^6",
     "jsonwebtoken": "^9",
     "next": "^16",
     "react": "^19",
-    "react-dom": "^19"
+    "react-dom": "^19",
+    "zod": "^4"
   },
   "devDependencies": {
+    "@playwright/test": "1.60.0",
     "@tailwindcss/postcss": "^4",
     "@testing-library/react": "^16",
     "@types/jsonwebtoken": "^9",
@@ -34,5 +39,13 @@
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^4"
+  },
+  "packageManager": "pnpm@11.3.0",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "11.3.0",
+      "onFail": "download"
+    }
   }
 }

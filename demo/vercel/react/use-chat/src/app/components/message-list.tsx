@@ -2,22 +2,25 @@
 
 import { useRef, useEffect } from 'react';
 import type { UIMessage } from 'ai';
-import type { MessageNode } from '@ably/ai-transport';
+import type { BranchSelection, CodecMessage, RunInfo } from '@ably/ai-transport';
 import { MessageBubble } from './message-bubble';
 import { IntroCard } from './intro-card';
 
-interface SiblingApi {
-  hasSiblings: (msgId: string) => boolean;
-  getSiblings: (msgId: string) => UIMessage[];
-  getSelectedIndex: (msgId: string) => number;
-  select: (msgId: string, index: number) => void;
+interface ViewLookupApi {
+  branchSelection: (codecMessageId: string) => BranchSelection<UIMessage>;
+  selectSibling: (codecMessageId: string, index: number) => void;
+  runOf: (codecMessageId: string) => RunInfo | undefined;
 }
 
 interface MessageListProps {
-  nodes: MessageNode<UIMessage>[];
+  // Visible messages paired with their codec-message-ids. View correlation
+  // (runOf / branchSelection / selectSibling) keys on the codec-message-id;
+  // useChat operations (regenerate / edit) key on the domain `message.id`,
+  // which the ChatTransport maps back to the codec-message-id internally.
+  messages: CodecMessage<UIMessage>[];
   hasOlder: boolean;
   loading: boolean;
-  siblings: SiblingApi;
+  view: ViewLookupApi;
   onLoadOlder: () => void;
   onRegenerate: (messageId: string) => void;
   onEdit: (messageId: string, newText: string) => void;
@@ -26,10 +29,10 @@ interface MessageListProps {
 }
 
 export function MessageList({
-  nodes,
+  messages,
   hasOlder,
   loading,
-  siblings,
+  view,
   onLoadOlder,
   onRegenerate,
   onEdit,
@@ -41,12 +44,12 @@ export function MessageList({
   const prevLastIdRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
-    const lastId = nodes.length > 0 ? nodes[nodes.length - 1].message.id : undefined;
+    const lastId = messages.length > 0 ? messages[messages.length - 1].codecMessageId : undefined;
     if (lastId && lastId !== prevLastIdRef.current) {
       prevLastIdRef.current = lastId;
       endRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [nodes]);
+  }, [messages]);
 
   const handleScroll = () => {
     const el = scrollRef.current;
@@ -75,18 +78,23 @@ export function MessageList({
         </div>
       )}
       {loading && <div className="text-center text-xs text-zinc-600 animate-pulse">Loading history...</div>}
-      {nodes.map((node) => {
-        const { message, headers, msgId } = node;
-        const hasSiblings = siblings.hasSiblings(msgId);
+      {messages.map(({ codecMessageId, message }) => {
+        // View lookups key on the codec-message-id; useChat regenerate/edit
+        // key on the domain `message.id` (the id useChat references).
+        const run = view.runOf(codecMessageId);
+        const branch = view.branchSelection(codecMessageId);
+        const bubbleStatus = run?.status === 'active' ? 'streaming' : run?.status;
         return (
           <MessageBubble
-            key={message.id}
+            key={codecMessageId}
             message={message}
-            headers={headers}
-            hasSiblings={hasSiblings}
-            siblingCount={hasSiblings ? siblings.getSiblings(msgId).length : undefined}
-            selectedIndex={hasSiblings ? siblings.getSelectedIndex(msgId) : undefined}
-            onSelectSibling={hasSiblings ? (index) => siblings.select(msgId, index) : undefined}
+            clientId={run?.clientId || undefined}
+            runId={run?.runId}
+            status={bubbleStatus}
+            hasSiblings={branch.hasSiblings}
+            siblingCount={branch.hasSiblings ? branch.siblings.length : undefined}
+            selectedIndex={branch.hasSiblings ? branch.index : undefined}
+            onSelectSibling={branch.hasSiblings ? (index) => view.selectSibling(codecMessageId, index) : undefined}
             onRegenerate={message.role === 'assistant' ? () => onRegenerate(message.id) : undefined}
             onEdit={message.role === 'user' ? (text) => onEdit(message.id, text) : undefined}
             onToolApprove={onToolApprove}

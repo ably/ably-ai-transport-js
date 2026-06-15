@@ -15,6 +15,7 @@
 
 import { useEffect, useState } from 'react';
 
+import type { CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
 import type { View } from '../core/transport/types.js';
 import type { BaseSessionOption } from './internal/use-resolved-session.js';
 import { useResolvedSession } from './internal/use-resolved-session.js';
@@ -22,7 +23,12 @@ import type { ViewHandle } from './use-view.js';
 import { useView } from './use-view.js';
 
 /** Options for {@link useCreateView}. */
-export interface UseCreateViewOptions<TEvent, TMessage> extends BaseSessionOption<TEvent, TMessage> {
+export interface UseCreateViewOptions<
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+> extends BaseSessionOption<TInput, TOutput, TProjection, TMessage> {
   /** When provided, auto-loads the first page on mount. Omit for manual load. */
   limit?: number;
   /** When `true`, skip view creation and return an empty handle immediately. */
@@ -41,14 +47,14 @@ export interface UseCreateViewOptions<TEvent, TMessage> extends BaseSessionOptio
  * @param props.skip - When `true`, skip view creation and return an empty handle.
  * @returns A {@link ViewHandle} with nodes, pagination, navigation, and write operations.
  */
-export const useCreateView = <TEvent, TMessage>({
+export const useCreateView = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>({
   session,
   limit,
   skip,
-}: UseCreateViewOptions<TEvent, TMessage> = {}): ViewHandle<TEvent, TMessage> => {
+}: UseCreateViewOptions<TInput, TOutput, TProjection, TMessage> = {}): ViewHandle<TInput, TMessage> => {
   const resolved = useResolvedSession({ session, skip });
 
-  const [view, setView] = useState<View<TEvent, TMessage> | undefined>();
+  const [view, setView] = useState<View<TInput, TMessage> | undefined>();
 
   useEffect(() => {
     if (!resolved) {

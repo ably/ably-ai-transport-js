@@ -1,136 +1,235 @@
 # Conversation tree
 
-The conversation tree (`src/core/transport/conversation-tree.ts`) materializes a branching conversation from a flat stream of Ably messages. It handles message ordering and sibling grouping for edit/regenerate forks. The tree is a pure data structure - it stores all nodes and their relationships, but selection state and navigation (`select()`, `getSelectedIndex()`) live on the View.
+The conversation tree (`src/core/transport/tree.ts`) materializes a branching conversation as a forest of **nodes**. Each turn is two nodes: a client-owned **input node** (the user prompt, keyed by its `codec-message-id`, with no run id) and an agent-owned **reply run** (the streamed response, keyed by the agent-minted `run-id`, parented to the input node via `parentCodecMessageId`). The tree handles node ordering and sibling grouping for edit/regenerate forks. It is a data structure with codec wiring - it owns the per-node [TProjection](glossary.md#tprojection) and folds inbound events into it, but selection state and navigation (`branchSelection()`, `selectSibling()`) live on the View.
 
-The tree is the single source of truth for conversation state. The view's `flattenNodes()` delegates to the tree's internal `flattenNodes()` with pagination filtering and branch selection.
+Reachability is kind-blind: it walks `parentCodecMessageId` edges (input node → prior reply run, reply run → its input node, seed input → prior input), so the client no longer needs the `run-id` to thread a turn. A reply run's `run-id` is minted by the agent and observed off `ai-run-start`; the input node's id is owned by the client at send time.
+
+The tree is the single source of truth for conversation state. The View's visible-node computation delegates to the tree's internal `visibleNodes(selections)` with pagination filtering layered on top of the tree's branch selection.
+
+Each node holds its own per-node projection: an input node folds the user prompt's input events; a reply run folds the assistant text, tool calls, tool outputs, and continuation text published under its `run-id`. The View walks the visible node chain (input nodes + reply runs) and concatenates each node's `codec.getMessages(node.projection)` to produce the flat message list the UI renders.
 
 ## Ordering: serial-first
 
-Ably assigns a [serial](glossary.md#serial-ably) - a lexicographically sortable string identifier - to every message on acceptance. The tree uses serial as the primary ordering mechanism:
+Ably assigns a [serial](glossary.md#serial-ably) - a lexicographically sortable string identifier - to every message on acceptance. The tree keeps every node (input nodes and reply runs alike) in a single `_sortedNodes` list, sorted by each node's **sort serial** — a reply run's `startSerial` (the serial of the first observed message tagged with that run-id) or an input node's `serial`:
 
-- **Serial-bearing messages** sort lexicographically by serial
-- **Null-serial messages** (optimistic inserts before [server relay](wire-protocol.md#optimistic-reconciliation)) sort after all serial-bearing messages, ordered among themselves by insertion sequence
+- **Serial-bearing nodes** sort lexicographically by sort serial
+- **Null-serial nodes** (optimistic inserts before [server relay](wire-protocol.md#optimistic-reconciliation)) sort after all serial-bearing nodes, ordered among themselves by insertion sequence (`insertSeq`)
 
-Note that serial order is not necessarily delivery order - messages published concurrently from different connections may interleave in any order relative to each other. Serial order provides a stable, deterministic total order for the tree, but it reflects Ably's acceptance order rather than any single client's observation order. Parent headers ([`x-ably-parent`](wire-protocol.md#branching-headers)) are only structurally meaningful at branch points - for linear sequences, serial order is sufficient.
+Note that serial order is not necessarily delivery order - messages published concurrently from different connections may interleave in any order. Serial order provides a stable, deterministic total order, reflecting Ably's acceptance order rather than any single client's observation order. Parent headers ([`parent`](wire-protocol.md#branching-headers)) are only structurally meaningful at branch points - for linear sequences, sort-serial order is sufficient.
 
 ## Data structures
 
+A node's **primary key** (`nodeKey`) is a reply run's `runId` or an input node's `codecMessageId` (the client owns the input id before the agent mints a runId).
+
 ```
-_nodeIndex:          Map<msgId, InternalNode>        Primary index
-_sortedList:         InternalNode[]                  All nodes, sorted by serial
-_parentIndex:        Map<parentId, Set<msgId>>       Children of each parent
-_selections:         Map<groupRootId, index>         Selected sibling at each fork
-_structuralVersion:  number                          Monotonic counter (see below)
+_nodeIndex:               Map<nodeKey, InternalNode>          Primary index (both kinds)
+_codecMessageIdToNodeKey: Map<codecMessageId, nodeKey>        Secondary: any owned codec-message-id -> owning node key
+_sortedNodes:             InternalNode[]                      All nodes, sorted by sort serial
+_parentIndex:             Map<parentCodecMessageId|undefined, Set<nodeKey>>
+                                                              Children keyed by raw structural parentCodecMessageId (roots under `undefined`)
+_replyRunsByInput:        Map<inputCodecMessageId, Set<runId>> Reverse edge: input node -> its reply runs
+_siblingCache:            Map<nodeKey, InternalNode[]>        Sibling-group cache, keyed against _structuralVersion
+_seqCounter:              number                              Insertion-sequence source (insertSeq tiebreaker)
+_structuralVersion:       number                              Monotonic counter (see below)
 ```
 
-Each `MessageNode` stores:
+A `RunNode<TProjection>` stores:
 
 ```typescript
 {
-  message: TMessage; // The domain message
-  msgId: string; // From x-ably-msg-id
-  parentId: string | undefined; // From x-ably-parent
-  forkOf: string | undefined; // From x-ably-fork-of
-  headers: Record<string, string>;
-  serial: string | undefined; // Ably-assigned serial
+  kind: 'run';
+  runId: string; // From run-id - primary key
+  parentCodecMessageId: string | undefined; // The input node's codec-message-id (from `parent`)
+  forkOf: string | undefined; // Resolved fork target's node key (from fork-of)
+  regeneratesCodecMessageId: string | undefined; // From msg-regenerate; kept as a message-id, not resolved
+  clientId: string; // From run-client-id - the client that started this Run
+  invocationId: string; // Agent-minted invocation-id; '' until run-start arrives
+  status: 'active' | 'suspended' | RunEndReason; // RunEndReason = 'complete' | 'cancelled' | 'error'
+  projection: TProjection; // Codec-folded per-Run state
+  startSerial: string | undefined; // First observed message's serial
+  endSerial: string | undefined; // run-suspend / run-end serial
 }
 ```
 
-## Upsert: the sole mutation
+An `InputNode<TProjection>` stores:
 
-`upsert(msgId, message, headers, serial?)` is the only way to add or update messages:
+```typescript
+{
+  kind: 'input';
+  codecMessageId: string; // From codec-message-id - primary key
+  parentCodecMessageId: string | undefined; // The preceding reply run's codec-message-id (from `parent`)
+  forkOf: string | undefined; // The edited prompt's codec-message-id (from fork-of)
+  projection: TProjection; // Codec-folded per-input state
+  serial: string | undefined; // First observed message's serial
+}
+```
 
-**Insert (new msgId):**
+Parenting is **kind-blind**: `parentCodecMessageId` names the structural parent by codec-message-id (an input node hangs off the preceding reply run; a reply run hangs off its input node), and `_parentKeyOf` resolves it through `_codecMessageIdToNodeKey` to the owning node's key.
 
-1. Create a `MessageNode` from the message, headers, and serial
-2. Add to the node index and parent index
-3. Insert into the sorted list at the correct position (binary search for serial-bearing, append for null-serial)
+## Apply: the two mutation entry points
 
-**Update (existing msgId):**
+The tree exposes two mutation methods on its internal interface (used by the session, not the UI):
 
-1. Update the message content and headers in place
-2. If a serial is provided and the existing node has no serial (optimistic → relay), promote the serial: remove from sorted list, re-insert at correct position
+### `applyMessage({ inputs, outputs }, headers, serial?)`
 
-Serial promotion handles the common case where a client inserts an optimistic message (null serial), then the server publishes it to the channel (with serial). The node moves from the end of the sorted list to its correct serial-order position.
+The entry point for every inbound channel message. The decoded events arrive split by wire direction — `inputs` (client-published, `ai-input`) and `outputs` (agent-published, `ai-output`). `applyMessage` first **classifies** the message:
+
+- **Run-less user input** — no `run-id`, a `user`-role message carrying a `codec-message-id` and at least one input event — becomes an **input node** keyed by that codec-message-id (routed to `_applyInputMessage`).
+- **Everything else** needs a `run-id` to route to a **reply run** keyed by that run-id (routed to `_applyRunMessage`). A wire with neither a run-id nor a qualifying user input is logged and skipped.
+
+Both paths fold `inputs` first then `outputs` into the owning node's projection, maintain `_codecMessageIdToNodeKey`, and emit an `'output'` event carrying the message's outputs (empty for an input fold) plus routing metadata (`runId`, `inputCodecMessageId`, `codecMessageId`, `serial`). `applyMessage` emits `'update'` only when the apply changed the tree shape (a new node or a serial promotion bumps `_structuralVersion`); content-only folds leave it untouched.
+
+A wire-only metadata carrier that decodes to **zero events** for a not-yet-known node (e.g. an `ait-regenerate` carrier) is skipped — its reply run is created later by run-start, which carries the parent/fork/regenerate metadata, so creating a phantom node here would inflate sibling counts.
+
+The optimistic send path (client publishing a fresh user-message) calls `applyMessage` with an `undefined` serial. When the server relay arrives, the node's serial is promoted from null to a real serial (`_promoteSerial`) and it re-sorts. In `_applyRunMessage`, an optimistic reply run is reconciled with its serial-bearing echo by `codec-message-id` (not the wire run-id) when the run-id isn't yet indexed.
+
+### `applyRunLifecycle(event)`
+
+Handles `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, and `ai-run-end` wire events (decoded into a `RunLifecycleEvent` whose `type` is `start` / `suspend` / `resume` / `end`). The event carries its own channel `serial`. Run-start creates the reply run if missing (else sets `status` to `'active'`), promotes `startSerial` from the event's serial, and backfills structural metadata (`parentCodecMessageId`, `forkOf`, `regeneratesCodecMessageId`) and the agent-minted `invocationId` onto an optimistic / wire-created node — the run-start is the canonical source. Run-suspend sets `status` to `'suspended'` and records `endSerial`, but keeps the run live so a resume under the same `runId` re-activates it. Run-resume re-activates a suspended run (`status` back to `'active'`) without touching its structure or serials — a pure re-entry; it is a no-op for an unknown, already-active, or terminal run. Run-end sets `status` to the end reason and `endSerial` from the event's serial. Always emits a `'run'` event to subscribers, then `'update'` only when the event changed the tree shape (only run-start can).
 
 ### Structural version
 
-The tree maintains a `structuralVersion` counter (exposed via `TreeInternal`) that increments on changes affecting the `flattenNodes()` output structure - node inserts, deletions, and serial promotions (which reorder the sorted list). Content-only updates (replacing an existing node's message) do not increment the counter. The [View](message-lifecycle.md#cached-message-list) uses this to skip full tree walks during streaming - when only message content changed, the cached node list is still structurally valid.
+The tree maintains a `_structuralVersion` counter (exposed via `TreeInternal`) that increments on changes affecting `visibleNodes()`'s output structure - node insertions, deletions, serial promotions (which reorder `_sortedNodes`), and run-start metadata backfill. **Projection-only updates do not bump the counter**: streaming deltas update an existing node's projection in place, observable via the `'output'` event instead. The tree uses this distinction to emit `'update'` only on structural change, so streaming deltas never trigger a View tree walk. The sibling-group cache (`_siblingCache`) is keyed against this counter — any topology mutation invalidates it on the next lookup.
 
 ## Sibling groups and fork chains
 
-When a user calls `regenerate(msgId)` or `edit(msgId)`, the new message carries an [`x-ably-fork-of`](wire-protocol.md#branching-headers) header pointing to `msgId`. Messages that fork the same target (or transitively fork each other) form a **sibling group** - alternative messages at the same point in the conversation.
+Sibling grouping is **kind-split** - an edit produces a sibling input node, a regenerate produces a sibling reply run:
+
+- **Edit (`edit(msgId)`)**: a new **input node** whose `forkOf` points at the input node being replaced. Input nodes that fork the same target (or transitively fork each other) form a sibling group of edit versions.
+- **Regenerate (`regenerate(msgId)`)**: a new **reply run** parented to the same input node as the original. Reply runs sharing a `parentCodecMessageId` are the regenerate group - no `forkOf` is stamped on a regenerate run, since sharing the input-node parent already groups them.
+
+A sibling group never mixes kinds.
 
 ### Finding the group
 
-To find the sibling group for a message:
+To find the sibling group for a node:
 
-1. Follow the `forkOf` chain to the **[group root](glossary.md#group-root)** - the original message that has no `forkOf` (or whose `forkOf` target has a different parent)
-2. Collect all messages with the same `parentId` whose `forkOf` chain leads back to the group root
-3. Sort siblings by serial (newest last)
+1. Narrow on `kind`. For a reply run, the group is the reply runs sharing its `parentCodecMessageId`; for an input node, follow the `forkOf` chain to the **[group root](glossary.md#group-root)** - the original input node with no `forkOf` (or whose `forkOf` target has a different parent).
+2. Collect the members for that kind (same input-node parent for runs; same `forkOf` chain for inputs).
+3. Sort siblings by sort serial (oldest first; original at index 0).
 
-Cycle detection guards against malformed `forkOf` chains.
+Cycle detection guards against malformed `forkOf` chains. The result is cached in `_siblingCache` against the queried key and every member of the group.
 
 ### Selection
 
-Each sibling group has a selected index (default: last, i.e. the most recent fork). Selection state is managed by the View - `view.select(msgId, index)` changes which sibling is active. The selection is stored by the group root's msgId.
+Each sibling group has a selected node (default: the latest sibling). Selection state is managed by the View - `view.selectSibling(codecMessageId, index)` changes which sibling is active. The selection is stored by the group root's key (`getGroupRoot(key)`): for an input node the earliest fork-of ancestor, for a reply run the oldest same-parent run (the original reply).
 
-## Flatten: producing the linear path
+## Visible nodes: producing the visible chain
 
-`flattenNodes()` walks the sorted list and produces the linear message sequence for the currently selected branches:
+`visibleNodes(selections)` walks `_sortedNodes` and produces the linear node chain (input nodes + reply runs) for the currently selected branches:
 
 ```
-for each node in sorted order:
-  1. Check parent reachability - is the node's parent on the current path?
-     (Root messages with no parent are always reachable)
+for each node in sort-serial order:
+  1. Check parent reachability (kind-blind) - resolve parentCodecMessageId
+     to its owning node's key; is that key in the current path?
+     (Root nodes with undefined parentCodecMessageId are always reachable)
   2. Check sibling selection - if this node is in a sibling group,
-     is it the selected sibling?
-  3. If both pass: add to the path and mark this msgId as reachable
+     is it the selected member? (selections is keyed by group root;
+     missing entry defaults to the latest sibling)
+  3. If both pass: add the node's key to the path and emit the node
 ```
 
-Messages that fail either check are skipped - they're on unselected branches. This produces a linear sequence that follows the currently selected forks through the conversation tree.
+Nodes that fail either check are skipped - they're on unselected branches. The View then concatenates `codec.getMessages(node.projection)` per node in chain order to produce the flat `CodecMessage<TMessage>[]` the UI renders.
 
 ### Resolved group cache
 
-Sibling group resolution is cached per `flattenNodes()` call using a `resolvedGroups` map. Once a sibling group is resolved to a selected msgId, all other members of that group are skipped without re-resolving.
+Sibling group resolution is cached per `visibleNodes()` call using a `resolvedGroups` map (group-root key → selected member key). Once a group is resolved to a selected member, all other members are skipped without re-resolving.
 
 ## Querying
 
 The public `Tree` interface exposes:
 
-| Method               | Returns                                              |
-| -------------------- | ---------------------------------------------------- |
-| `getSiblings(msgId)` | All messages in the sibling group containing `msgId` |
-| `hasSiblings(msgId)` | Whether the message has alternative versions         |
-| `getNode(msgId)`     | The `MessageNode` by message ID                      |
-| `getHeaders(msgId)`  | Headers for a specific message                       |
+| Method                        | Returns                                                                                        |
+| ----------------------------- | ---------------------------------------------------------------------------------------------- |
+| `getRunNode(runId)`           | The `RunNode` by runId, or `undefined`                                                         |
+| `getNodeByCodecMessageId(id)` | The `ConversationNode` (`InputNode \| RunNode`) that owns a codec-message-id; narrow on `kind` |
+| `getSiblingNodes(key)`        | The sibling group (edit versions for an input node, regenerate runs for a reply run)           |
 
-The following are on the `View`, not the public `Tree` interface:
+`TreeInternal` (consumed by the View / session, not public) additionally exposes `visibleNodes(selections)`, `getGroupRoot(key)`, `getReplyRuns(inputCodecMessageId)`, `getNode(key)`, `applyMessage`, `applyRunLifecycle`, `delete(key)`, and `emitAblyMessage`.
 
-| Method                    | Returns                                         |
-| ------------------------- | ----------------------------------------------- |
-| `flattenNodes()`          | Linear message list following selected branches |
-| `select(msgId, index)`    | Switch to a different sibling at a fork point   |
-| `getSelectedIndex(msgId)` | Currently selected index in the sibling group   |
+The following are on the `View`, not the `Tree`:
+
+| Method                             | Returns                                                           |
+| ---------------------------------- | ----------------------------------------------------------------- |
+| `getMessages()`                    | Flat `CodecMessage<TMessage>[]` concatenated across visible nodes |
+| `branchSelection(codecMessageId)`  | The branch bundle (siblings, index, selected) for a message       |
+| `selectSibling(codecMessageId, i)` | Switch to a different sibling at a fork point                     |
 
 ## Delete
 
-`delete(msgId)` removes a node from all indexes. Children are **not** cascade-deleted - they become unreachable in `flattenNodes()` because their parent is no longer on the active path. This preserves the ability to restore deleted messages if needed (e.g. undo).
+`delete(key)` (where `key` is a node key — a runId or an input node's codec-message-id) removes a node from `_nodeIndex`, `_parentIndex`, `_sortedNodes`, and the reply→input reverse edge. Children are **not** cascade-deleted - they become unreachable in `visibleNodes()` because their parent is no longer on the active path. The `_codecMessageIdToNodeKey` entries pointing at the deleted node are left dangling (overwritten on re-creation; harmless otherwise). `delete` bumps `_structuralVersion` and emits `'update'`.
 
-## Example: regeneration fork
+## What renders
+
+The visible conversation is whatever `visibleNodes()` returns, concatenated through `codec.getMessages(node.projection)` per node. Each turn is **two nodes** — an input node `M` (the user prompt) and its reply run `R` — threaded by `parentCodecMessageId`: `M` hangs off the prior turn's reply run, and `R` hangs off `M`. Three rules combine to produce the chain:
+
+1. **Parent reachability** (kind-blind) — a node is included only if its `parentCodecMessageId` resolves to a node key already on the current path. Root nodes (`parentCodecMessageId: undefined`) are always reachable.
+2. **Sibling selection** — edit versions (sibling input nodes via `forkOf`) and regenerate variants (sibling reply runs sharing an input parent) collapse to exactly one member. The View's selection (default: latest by sort serial) picks which.
+3. **Sort-serial order** — nodes that pass both checks are emitted in sort-serial-ascending order. Optimistic null-serial nodes sort after all serial-bearing nodes.
+
+Two practical patterns follow from these rules.
+
+### Linear conversation
+
+When each turn's input node hangs off the prior reply run, the rendered chain is clean:
 
 ```
-User: "What is 2+2?"        msgId: m1, parent: undefined
-Assistant: "4"               msgId: m2, parent: m1
-  → user regenerates m2
-Assistant: "Four"            msgId: m3, parent: m1, forkOf: m2
+M1 (user "hi")   ←─ R1 (assistant "hello", parent=M1)
+M2 (user "what's weather", parent=R1) ←─ R2 (assistant "sunny", parent=M2)
+M3 (user "tomorrow?",      parent=R2) ←─ R3 (assistant "rainy", parent=M3)
 
-Sibling group for m2: [m2, m3]
-Selection default: index 1 (m3, the latest)
-
-view.flattenNodes() → ["What is 2+2?", "Four"]
-view.select(m2, 0)
-view.flattenNodes() → ["What is 2+2?", "4"]
+view.getMessages()   → 6 { codecMessageId, message } pairs, message content:
+                       ["hi", "hello", "what's weather", "sunny", "tomorrow?", "rainy"]
 ```
 
-See [Wire protocol](wire-protocol.md) for the branching headers (`x-ably-parent`, `x-ably-fork-of`). See [History hydration](history.md) for how the tree is populated from channel history.
+This is the shape every fresh `view.send()` produces: the new input node's `parent` is the codec-message-id of the visible branch's tail message, and the agent mints a reply run parented to that input node.
+
+### Edit-then-regenerate
+
+When the user edits an earlier prompt, `edit()` publishes a **new sibling input node** with the same `parent` as the original and `forkOf` pointing at the input node's codec-message-id being edited. The agent mints a fresh reply run parented to the new input node. Both input nodes (and their reply runs) stay in the tree; selection picks which branch is visible.
+
+```
+M1 (user "hi") ←─ R1 (assistant "hello", parent=M1)
+ │
+ ├─ M2  (user "weather",  parent=R1) ←─ R2 (assistant "sunny", parent=M2)
+ │   └─ M4 (user "tomorrow?", parent=R2) ←─ R4 (assistant "rainy", parent=M4)
+ │
+ └─ M2' (user "forecast", parent=R1, forkOf=M2) ←─ R2' (assistant "5-day…", parent=M2')
+     └─ M4' (user "follow-up", parent=R2') ←─ R4' (assistant "...", parent=M4')
+
+Sibling group at R1's input children: [M2, M2']   selection default: M2' (latest)
+M4 and M4' are NOT siblings — different parents, no forkOf link.
+
+view.getMessages()   (default selection)           → M1, R1, M2', R2', M4', R4'
+view.selectSibling(M2's id, 0) (pick the original)
+view.getMessages()                                 → M1, R1, M2,  R2,  M4,  R4
+```
+
+M4 and M4' sit on separate branches gated by parent reachability:
+
+- Select M2 → M4's parent chain (R2 → M2) is on the path → M4/R4 render; M4''s parent R2' is not → M4'/R4' are hidden.
+- Select M2' → M4''s parent chain (R2' → M2') is on the path → M4'/R4' render; M4/R4 are hidden.
+
+(Regenerate is the mirror image: `regenerate()` produces a new reply run sharing the original's input-node parent, so the regenerate group is the same-parent reply runs and selection swaps which run renders in that assistant slot.)
+
+Threading every descendant turn's `parent` directly at the prior turn (not at some shared ancestor) is what gives `visibleNodes()` the reachability edges it needs to swap branches cleanly when selection changes.
+
+### What goes wrong if parents are flat
+
+If every descendant input node were parented to R1 (a shared ancestor) instead of its actual prior reply run, the rendered chain for either selection would include both M4 and M4':
+
+```
+M1 ←─ R1
+ ├─ M2  (parent=R1) ←─ R2
+ ├─ M2' (parent=R1, forkOf=M2) ←─ R2'
+ ├─ M4  (parent=R1)    ← flat parent ←─ R4
+ └─ M4' (parent=R1)    ← flat parent ←─ R4'
+
+view.getMessages()  (M2' selected) → M1, R1, M2', R2', M4, R4, M4', R4'
+                                                          ↑           ↑
+                                                          old         new (both rendered)
+```
+
+M4 and M4' aren't a sibling group (no `forkOf` between them), so selection doesn't suppress either. Both pass parent reachability because R1 is on the path regardless of which prompt sibling is selected. The visible conversation would show stale follow-up turns from an abandoned branch.
+
+The send path's auto-parent rule (each new input node's `parent` resolved from the visible branch's tail message) is what keeps the first shape happening automatically. See [Wire protocol: branching headers](wire-protocol.md#branching-headers) for header semantics. See [History hydration](history.md) for how the tree is populated from channel history.

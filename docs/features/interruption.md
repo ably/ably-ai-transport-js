@@ -2,11 +2,11 @@
 
 Interruption is when a user sends a new message while the AI is still streaming a response. The new message starts a new concurrent run - the previous response can continue streaming or be cancelled first.
 
-Without interruption support, users must wait for the AI to finish before sending another message. With AI Transport, calling `send()` during an active run creates a new independent run immediately.
+Without interruption support, users must wait for the AI to finish before sending another message. With AI Transport, calling `view.send()` during an active run creates a new independent run immediately.
 
 ## How it works
 
-Each `send()` call creates a new run with its own stream and lifecycle. There's no queue or lock - if the AI is mid-response, the new run runs alongside it.
+Each `view.send()` call creates a new run with its own stream and lifecycle. There's no queue or lock - if the AI is mid-response, the new run runs alongside it.
 
 Two patterns:
 
@@ -15,26 +15,29 @@ Two patterns:
 
 ## Cancel first, then send
 
-The most common pattern: cancel active runs before sending the new message.
+The most common pattern: cancel the run that's currently streaming before sending the new message. The latest visible run carries the runId you need — read it from `session.view.runs()`, which returns a `RunInfo` per visible run with its `runId` and lifecycle `status`.
 
 ```typescript
-import { useActiveRuns, useView } from '@ably/ai-transport/react';
+import { useView } from '@ably/ai-transport/react';
 
-const activeRuns = useActiveRuns({ session });
 const { send } = useView({ session });
-const isStreaming = activeRuns.size > 0;
 
 async function handleSend(text: string) {
-  // Cancel the active response before sending a new message
-  if (isStreaming) {
-    await session.cancel({ own: true });
+  // If the latest run is still live, cancel it before sending a new message.
+  // RunInfo.status is 'active' while streaming and 'suspended' while paused
+  // awaiting input; both are live. Terminal statuses are 'complete',
+  // 'cancelled', and 'error'.
+  const latest = session.view.runs().at(-1);
+  if (latest && (latest.status === 'active' || latest.status === 'suspended')) {
+    await session.cancel(latest.runId);
   }
-  const msg = { id: crypto.randomUUID(), role: 'user', parts: [{ type: 'text', text }], createdAt: new Date() };
-  await send([msg]);
+  await send(codec.createUserMessage(message));
 }
 ```
 
-The cancel publishes a signal to the channel (see [Cancel](cancel.md)), the server aborts the current run, and the new run starts cleanly.
+The cancel publishes a signal to the channel (see [Cancel](cancel.md)), the server cancels the current run, and the new run starts cleanly.
+
+`send` takes one or more codec input events — build a user-message input with the codec's `createUserMessage(message)` rather than passing a raw domain message.
 
 ## Send alongside (concurrent runs)
 
@@ -42,40 +45,31 @@ If you want both responses to continue, just call `send()` without cancelling:
 
 ```typescript
 // New run starts immediately - old run keeps streaming
-const run = await send([newMessage]);
+const run = await send(codec.createUserMessage(newMessage));
 ```
 
 Both runs produce independent event streams. The message list grows with responses from both. See [Concurrent runs](concurrent-runs.md) for details.
 
-## Detecting active runs
+## Detecting whether a run is streaming
 
-Use `useActiveRuns()` to know whether any run is streaming:
+Read the lifecycle status from the latest visible run. `RunInfo.status` is `'active'` while the run is producing chunks, `'suspended'` while it is paused awaiting input (still live), and one of the terminal `RunEndReason` values — `'complete'`, `'cancelled'`, or `'error'` — once it ends. Treat `'active'` and `'suspended'` as "in progress":
 
 ```typescript
-import { useActiveRuns } from '@ably/ai-transport/react';
-
-const activeRuns = useActiveRuns({ session });
-
-// Any run active on the channel (any client)
-const isAnyoneStreaming = activeRuns.size > 0;
-
-// Only this client's runs
-const myRuns = clientId ? activeRuns.get(clientId) : undefined;
-const amIStreaming = myRuns !== undefined && myRuns.size > 0;
+const latest = session.view.runs().at(-1);
+const isStreaming = latest?.status === 'active' || latest?.status === 'suspended';
 ```
 
 Use this to toggle between "Send" and "Stop" buttons, or to queue messages for later delivery.
 
 ## UI pattern: queue while streaming
 
-The use-client-session demo shows a queue pattern - messages typed during streaming are queued and sent after the current run ends:
+A simple queue pattern — messages typed during streaming are queued and sent after the current run ends:
 
 ```typescript
-// Simplified queue pattern
 if (isStreaming) {
   queue.add(text); // queued locally
 } else {
-  send([userMessage(text)]); // sent immediately
+  send(codec.createUserMessage(message)); // sent immediately
 }
 ```
 

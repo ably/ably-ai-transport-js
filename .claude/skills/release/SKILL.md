@@ -1,7 +1,7 @@
 ---
 name: release
 description: Cut a new release - create release branch, bump version in package.json and src/version.ts, refresh root and demo lockfiles, regenerate CHANGELOG, and stage for review. Usage: /release patch|minor|major or /release <exact-version>.
-allowed-tools: Bash(git checkout *), Bash(git branch *), Bash(git status *), Bash(git diff *), Bash(git add *), Bash(git log *), Bash(npm install *), Bash(npm run *), Bash(rm *), Bash(ls *), Read, Edit, Glob, Grep, Skill, AskUserQuestion
+allowed-tools: Bash(git checkout *), Bash(git branch *), Bash(git status *), Bash(git diff *), Bash(git add *), Bash(git log *), Bash(pnpm install *), Bash(pnpm run *), Bash(rm *), Bash(ls *), Read, Edit, Glob, Grep, Skill, AskUserQuestion
 ---
 
 # Release: Cut a New Release Branch
@@ -71,8 +71,8 @@ different version — never `--force` over an existing branch.
 ## Step 5: Bump the version in package.json and src/version.ts
 
 Use **Edit** to change the `version` field in `package.json` only. Do NOT
-use `npm version` — it creates a tag and commit, and we want the human to
-control both.
+use `pnpm version` — it creates a tag and commit, and we want the human
+to control both.
 
 Then use **Edit** to update the `VERSION` constant in `src/version.ts` to
 the same `NEW_VERSION` string. This file is the source of the
@@ -81,11 +81,11 @@ tracking — it must stay in lockstep with `package.json`.
 
 ## Step 6: Refresh the root lockfile
 
-Run `npm install` at the repo root. This regenerates `package-lock.json`
+Run `pnpm install` at the repo root. This regenerates `pnpm-lock.yaml`
 with the new version.
 
 Watch for unrelated lockfile churn (transitive updates, metadata drift).
-If the `git diff package-lock.json` looks unusually large, surface it to
+If the `git diff pnpm-lock.yaml` looks unusually large, surface it to
 the user before continuing — don't hide it under the version bump.
 
 ## Step 7: Refresh demo app lockfiles
@@ -99,8 +99,8 @@ version:
 2. For each demo app root, in its own **Bash** invocation (one per app,
    because `cd` does not persist between tool calls):
    - `rm -rf <abs-app-dir>/node_modules`
-   - `npm install --prefix <abs-app-dir>` — prefer this over
-     `cd <abs-app-dir> && npm install` for reliability across shells.
+   - `pnpm install --dir <abs-app-dir>` — prefer this over
+     `cd <abs-app-dir> && pnpm install` for reliability across shells.
 3. Read each demo's `package.json`. If it references `@ably/ai-transport`
    via a `file:` path (e.g. `"file:../.."`), note it in the summary — its
    lockfile will pick up local unpublished code rather than the new
@@ -126,6 +126,12 @@ The changelog skill will:
 If the changelog skill reports no PRs found (placeholder `-` bullet),
 note this in the final summary and remind the user to fill it in.
 
+The changelog is end-user-facing and must never contain internal-only
+references — Jira `AIT-*` ticket/epic ids, `AIT-*` / `RSA*`-style spec
+points, `AITDR-*` / `AITRFC-*` RFC/DR documents, internal Slack threads,
+or standup notes. The changelog skill enforces this; if any slip through
+into the generated entry, strip them before staging in Step 10.
+
 **Contract after this step:** `CHANGELOG.md` is modified but not staged.
 The working tree also contains the `package.json` and `src/version.ts`
 edits from Step 5 and the lockfile changes from Steps 6-7, all unstaged.
@@ -133,7 +139,7 @@ Step 10 stages them.
 
 ## Step 9: Validate
 
-Run `npm run precommit` (format:check + lint + typecheck).
+Run `pnpm run precommit` (format:check + lint + typecheck).
 
 - If it fails on files this skill touched (lockfile formatting, CHANGELOG
   formatting), fix them and re-run.
@@ -144,11 +150,11 @@ Run `npm run precommit` (format:check + lint + typecheck).
 
 Stage the files this skill modified:
 
-1. Always stage: `git add package.json package-lock.json src/version.ts CHANGELOG.md`
+1. Always stage: `git add package.json pnpm-lock.yaml src/version.ts CHANGELOG.md`
 2. For each demo app directory recorded in Step 7, stage its lockfile
    explicitly using its path — for example
-   `git add demo/vercel/react/use-chat/package-lock.json`. Do **not**
-   rely on shell globs like `demo/**/package-lock.json` — `**` is not
+   `git add demo/vercel/react/use-chat/pnpm-lock.yaml`. Do **not**
+   rely on shell globs like `demo/**/pnpm-lock.yaml` — `**` is not
    reliably expanded without `globstar` and misses nested paths.
 
 Then run `git status` and `git diff --cached --stat`, and show the user:
@@ -185,8 +191,8 @@ steps from `CONTRIBUTING.md` that are out of scope for this skill:
 
 ## Things to watch for
 
-- **`npm install` side effects.** Transitive dependency updates can
-  produce large `package-lock.json` diffs unrelated to the version bump.
+- **`pnpm install` side effects.** Transitive dependency updates can
+  produce large `pnpm-lock.yaml` diffs unrelated to the version bump.
   Surface these — do not hide them.
 - **Demo apps with `file:` references.** `demo/*/package.json` that
   imports `@ably/ai-transport` via a local path picks up unpublished

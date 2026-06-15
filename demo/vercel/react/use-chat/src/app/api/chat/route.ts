@@ -3,93 +3,79 @@
  * streams the AI response back over Ably.
  *
  * Supports three tool execution patterns:
- * - Server-executed tools (getWeather): streamText runs them automatically.
- * - Client-executed tools (getLocation): the client runs them, stages the
- *   output via session.stageEvents, and ships it in the POST body's
- *   `events` field. We publish it via run.addEvents here and merge it
- *   into the history that feeds convertToModelMessages.
- * - Approval-required tools (getWeatherForecast): useChat's
- *   addToolApprovalResponse patches the assistant message to
- *   approval-responded. The client ships the patched state via the history
- *   overlay (chat-transport's mergeUseChatMessagesOntoTreeNodes).
- *   extractApprovalDecisionsFromHistory detects the patched parts and
- *   streamResponseWithApprovalRedirect stamps tool-output chunks with
- *   x-ably-amend so the original assistant message receives the output.
+ * - Server-executed tools (getWeather): streamText runs them inline.
+ * - Client-executed tools (getLocation): the client suspends the run after
+ *   the tool call, executes the tool, then sends a continuation invocation
+ *   under the same runId. The SDK overlays the client-published tool output
+ *   onto the suspended assistant before `run.messages` is read.
+ * - Server-executed gated on approval (getWeatherForecast): suspends at
+ *   `approval-requested`. The user approves → the client publishes a
+ *   `tool-approval-response` TEvent on the channel → continuation POST →
+ *   `run.messages` reflects the approval. The tool's `needsApproval`
+ *   returns `false` once the matching `toolCallId` has an
+ *   `approval-responded` part in the messages, so `streamText` executes
+ *   it without re-pausing. The codec reducer folds the resulting tool
+ *   output onto the original assistant message by matching its
+ *   `toolCallId`.
  */
 
 import { after } from 'next/server';
-import { streamText, convertToModelMessages } from 'ai';
-import type { UIMessage, UIMessageChunk } from 'ai';
-import { anthropic } from '@ai-sdk/anthropic';
+import { streamText, convertToModelMessages, stepCountIs } from 'ai';
 import Ably from 'ably';
-import {
-  applyToolEventsToHistory,
-  createAgentSession,
-  extractApprovalDecisionsFromHistory,
-  streamResponseWithApprovalRedirect,
-} from '@ably/ai-transport/vercel';
+import { createAgentSession, vercelRunOutcome } from '@ably/ai-transport/vercel';
 import type { InvocationData } from '@ably/ai-transport';
 import { Invocation } from '@ably/ai-transport';
+import { createModel } from './model';
 import { tools } from './tools';
 
-// Server-side Ably client — uses API key directly (trusted environment).
-const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY! });
-
 export async function POST(req: Request) {
-  const data = (await req.json()) as InvocationData<UIMessageChunk, UIMessage>;
+  const data = (await req.json()) as InvocationData;
   const invocation = Invocation.fromJSON(data);
+
+  // A fresh Ably client per request (trusted environment, API key direct).
+  // The agent is ephemeral: it attaches the channel, looks up the triggering
+  // input event via `untilAttach: true` history (scoped by
+  // `inputEventLookbackMs`), streams the response, and closes. A per-request
+  // client keeps concurrent runs on the same channel from detaching each
+  // other.
+  // `ABLY_ENDPOINT` lets the e2e tests point the agent at the Ably sandbox
+  // (`nonprod:sandbox`); unset in normal use, so it defaults to production.
+  const ably = new Ably.Realtime({
+    key: process.env.ABLY_API_KEY!,
+    ...(process.env.ABLY_ENDPOINT ? { endpoint: process.env.ABLY_ENDPOINT } : {}),
+  });
 
   const session = createAgentSession({ client: ably, channelName: invocation.sessionName });
   await session.connect();
   const run = session.createRun(invocation, { signal: req.signal });
 
-  // The client publishes user messages directly on the channel. start()
-  // locates them by invocation-id (channel rewind + live wait) and
-  // populates run.view.messages before run-start is published. The agent
-  // therefore must NOT call addMessages() — that would double-publish.
   await run.start();
-
-  // Apply client-shipped events (tool outputs from addToolResult +
-  // stageEvents). Publishes them as message.update amendments on the
-  // channel so observers and the session tree see the tool result.
-  if (invocation.events.length > 0) {
-    await run.addEvents(invocation.events);
-  }
-
-  // The user-prompt MessageNodes for this run are exposed via run.view.messages
-  // after run.start() resolves. Use the last msg-id as the assistant message's
-  // parent so streamed chunks chain off the prompt.
-  const newNodes = run.view.messages;
-  const lastUserMsgId = newNodes.at(-1)?.msgId;
-
-  // Reconstruct full conversation for the LLM. Merge tool-result events
-  // into history so convertToModelMessages sees the tool results this
-  // run (the client ships them separately to keep history nodes intact).
-  const mergedHistory = applyToolEventsToHistory(invocation.events, invocation.history);
-  const historyMsgs = mergedHistory.map((h) => h.message);
-  const newMsgs = newNodes.map((m) => m.message);
-  const allMessages = [...historyMsgs, ...newMsgs];
-
-  // Derive approval decisions from history — useChat's addToolApprovalResponse
-  // flipped matching tool parts to `approval-responded` / `output-denied`.
-  const decisions = extractApprovalDecisionsFromHistory(invocation.history);
+  await run.loadConversation();
 
   const result = streamText({
-    model: anthropic('claude-sonnet-4-6'),
+    model: createModel(),
     system: `You are a helpful assistant. When the user asks about weather, use the getWeather tool. If they don't specify a location, call getLocation first to get their coordinates, then call getWeather with a description of that location. When the user asks about a weather forecast or upcoming weather, use getWeatherForecast.`,
-    messages: await convertToModelMessages(allMessages),
+    messages: await convertToModelMessages(run.messages),
     tools,
     abortSignal: run.abortSignal,
+    stopWhen: stepCountIs(10),
   });
 
   after(async () => {
-    const { reason } = await streamResponseWithApprovalRedirect(run, result.toUIMessageStream(), {
-      parent: lastUserMsgId,
-      decisions,
-    });
-    await run.end(reason);
-    session.close();
+    const pipeResult = await run.pipe(result.toUIMessageStream());
+    const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
+    if (outcome === 'suspend') {
+      await run.suspend();
+    } else {
+      await run.end(outcome);
+    }
+    await session.close();
+    ably.close();
   });
 
-  return new Response(null, { status: 200 });
+  // Return the agent-minted ids on the HTTP response. The agent now mints both
+  // the run-id (when the invocation omits it for a fresh run) and the
+  // invocation-id; the useChat ChatTransport's POST ignores the body (it routes
+  // by run-id over the channel), but the contract is honoured here.
+  return Response.json({ runId: run.runId, invocationId: run.invocationId });
 }

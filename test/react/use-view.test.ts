@@ -5,49 +5,51 @@ import * as Ably from 'ably';
 import { createElement, type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ClientSession } from '../../src/core/transport/types.js';
+import type { BranchSelection, RunInfo } from '../../src/core/transport/types.js';
 import { ErrorCode } from '../../src/errors.js';
 import { ClientSessionContext } from '../../src/react/contexts/client-session-context.js';
 import { useView } from '../../src/react/use-view.js';
 import { createMockSession } from './helper/mock-session.js';
 
 describe('useView', () => {
-  it('returns empty nodes, hasOlder=false, loading=false when no source and no nearest session', () => {
+  it('returns empty messages, hasOlder=false, loading=false when no source and no nearest session', () => {
     const { result } = renderHook(() => useView());
-    expect(result.current.nodes).toEqual([]);
+    expect(result.current.messages).toEqual([]);
     expect(result.current.hasOlder).toBe(false);
     expect(result.current.loading).toBe(false);
   });
 
-  it('returns initial nodes and messages from view on mount', () => {
+  it('returns initial messages from view on mount, each paired with its codec-message-id', () => {
     const mock = createMockSession(['hello', 'world']);
     const { result } = renderHook(() => useView({ session: mock.session }));
-    expect(result.current.nodes).toHaveLength(2);
-    expect(result.current.nodes[0]?.message).toBe('hello');
-    expect(result.current.nodes[1]?.message).toBe('world');
-    expect(result.current.messages).toEqual(['hello', 'world']);
+    // The mock pairs each message with itself as the codec-message-id.
+    expect(result.current.messages).toEqual([
+      { codecMessageId: 'hello', message: 'hello' },
+      { codecMessageId: 'world', message: 'world' },
+    ]);
   });
 
-  it('updates nodes and messages when view emits update', () => {
+  it('updates messages when view emits update', () => {
     const mock = createMockSession(['hello']);
     const { result } = renderHook(() => useView({ session: mock.session }));
-    expect(result.current.nodes).toHaveLength(1);
-    expect(result.current.messages).toEqual(['hello']);
+    expect(result.current.messages).toEqual([{ codecMessageId: 'hello', message: 'hello' }]);
 
-    // Mutate mock to return a new node list
-    const updatedNodes = [
-      { message: 'hello', msgId: 'msg-0', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
-      { message: 'world', msgId: 'msg-1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
-    ];
-    (mock.view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue(updatedNodes);
+    // Mutate mock to return a new pair list with codec-message-ids distinct
+    // from the domain messages — the SDK correlates on the former.
+    (mock.view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([
+      { codecMessageId: 'cmid-1', message: 'hello' },
+      { codecMessageId: 'cmid-2', message: 'world' },
+    ]);
     (mock.view.hasOlder as ReturnType<typeof vi.fn>).mockReturnValue(true);
 
     act(() => {
       mock.emitTree('update');
     });
 
-    expect(result.current.nodes).toHaveLength(2);
-    expect(result.current.messages).toEqual(['hello', 'world']);
+    expect(result.current.messages).toEqual([
+      { codecMessageId: 'cmid-1', message: 'hello' },
+      { codecMessageId: 'cmid-2', message: 'world' },
+    ]);
     expect(result.current.hasOlder).toBe(true);
   });
 
@@ -61,49 +63,17 @@ describe('useView', () => {
 
     const { result } = renderHook(() => useView({ session: mock.session }));
 
-    // Start loading
     let loadPromise: Promise<void>;
     act(() => {
       loadPromise = result.current.loadOlder();
     });
     expect(result.current.loading).toBe(true);
 
-    // Resolve
     await act(async () => {
       resolveFn();
       await loadPromise;
     });
     expect(result.current.loading).toBe(false);
-    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
-    expect(mock.view.loadOlder).toHaveBeenCalledOnce();
-  });
-
-  it('prevents concurrent loadOlder calls', async () => {
-    const mock = createMockSession();
-    let resolveFn: () => void;
-    const deferred = new Promise<void>((resolve) => {
-      resolveFn = resolve;
-    });
-    (mock.view.loadOlder as ReturnType<typeof vi.fn>).mockReturnValue(deferred);
-
-    const { result } = renderHook(() => useView({ session: mock.session }));
-
-    // First call
-    let loadPromise: Promise<void>;
-    act(() => {
-      loadPromise = result.current.loadOlder();
-    });
-
-    // Second call while first is pending — should be a no-op
-    act(() => {
-      void result.current.loadOlder();
-    });
-
-    await act(async () => {
-      resolveFn();
-      await loadPromise;
-    });
-
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
     expect(mock.view.loadOlder).toHaveBeenCalledOnce();
   });
@@ -126,37 +96,19 @@ describe('useView', () => {
     expect(mock.view.loadOlder).not.toHaveBeenCalled();
   });
 
-  it('update calls the view update method', async () => {
-    const mock = createMockSession();
-    const { result } = renderHook(() => useView({ session: mock.session }));
-
-    const events = ['tool-output'];
-
-    await act(async () => {
-      await result.current.update('target-1', events);
-    });
-
-    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
-    expect(mock.view.update).toHaveBeenCalledOnce();
-    // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
-    expect(mock.view.update).toHaveBeenCalledWith('target-1', events, undefined);
-  });
-
   it('unsubscribes on unmount', () => {
     const mock = createMockSession(['hello']);
     const { unmount } = renderHook(() => useView({ session: mock.session }));
 
-    unmount();
+    const callCountBefore = (mock.view.getMessages as ReturnType<typeof vi.fn>).mock.calls.length;
 
-    // After unmount, update the mock and emit — state should not change
-    const callCountBefore = (mock.view.flattenNodes as ReturnType<typeof vi.fn>).mock.calls.length;
+    unmount();
 
     act(() => {
       mock.emitTree('update');
     });
 
-    // flattenNodes should not be called again after unmount
-    expect((mock.view.flattenNodes as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callCountBefore);
+    expect((mock.view.getMessages as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callCountBefore);
   });
 
   it('subscribes to a view directly when view prop is provided', () => {
@@ -164,8 +116,7 @@ describe('useView', () => {
 
     const { result } = renderHook(() => useView({ view: mock.view }));
 
-    expect(result.current.nodes).toHaveLength(1);
-    expect(result.current.messages).toEqual(['hello']);
+    expect(result.current.messages).toEqual([{ codecMessageId: 'hello', message: 'hello' }]);
   });
 
   it('uses nearest session from context when session and view are omitted', () => {
@@ -175,7 +126,7 @@ describe('useView', () => {
         ClientSessionContext.Provider,
         {
           value: {
-            nearest: { session: mock.session as ClientSession<unknown, unknown> },
+            nearest: { session: mock.session },
             providers: {},
           },
         },
@@ -184,40 +135,89 @@ describe('useView', () => {
 
     const { result } = renderHook(() => useView(), { wrapper });
 
-    expect(result.current.nodes).toHaveLength(1);
-    expect(result.current.messages).toEqual(['hello']);
+    expect(result.current.messages).toEqual([{ codecMessageId: 'hello', message: 'hello' }]);
   });
 
   // ---------------------------------------------------------------------------
-  // Reference stability during streaming
+  // Run lookup callbacks
   // ---------------------------------------------------------------------------
 
-  it('preserves message references for unchanged messages during streaming update', () => {
-    const msg1 = 'stable-message';
-    const msg2 = 'streaming-message';
-    const mock = createMockSession([msg1, msg2]);
-    const { result } = renderHook(() => useView(mock.session));
-
-    // Verify initial messages
-    expect(result.current.messages[0]).toBe(msg1);
-    expect(result.current.messages[1]).toBe(msg2);
-
-    // Simulate streaming update: msg2 changes, msg1 stays (same reference)
-    const msg2Updated = 'streaming-message-updated';
-    const updatedNodes = [
-      { message: msg1, msgId: 'msg-0', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
-      { message: msg2Updated, msgId: 'msg-1', parentId: undefined, forkOf: undefined, headers: {}, serial: undefined },
-    ];
-    (mock.view.flattenNodes as ReturnType<typeof vi.fn>).mockReturnValue(updatedNodes);
-
-    act(() => {
-      mock.emitTree('update');
+  describe('Run lookup callbacks', () => {
+    it('runOf forwards to view.runOf', () => {
+      const mock = createMockSession();
+      const info: RunInfo = { runId: 'run-1', clientId: 'c1', status: 'active', invocationId: 'inv-1' };
+      (mock.view.runOf as ReturnType<typeof vi.fn>).mockReturnValue(info);
+      const { result } = renderHook(() => useView({ session: mock.session }));
+      expect(result.current.runOf('msg-1')).toEqual(info);
     });
 
-    // msg1's reference should be preserved - same string object
-    expect(result.current.messages[0]).toBe(msg1);
-    // msg2's reference should be the new value
-    expect(result.current.messages[1]).toBe(msg2Updated);
+    it('run forwards to view.run', () => {
+      const mock = createMockSession();
+      const info: RunInfo = { runId: 'run-1', clientId: 'c1', status: 'complete', invocationId: 'inv-1' };
+      (mock.view.run as ReturnType<typeof vi.fn>).mockReturnValue(info);
+      const { result } = renderHook(() => useView({ session: mock.session }));
+      expect(result.current.run('run-1')).toEqual(info);
+    });
+
+    it('runs forwards to view.runs', () => {
+      const mock = createMockSession();
+      const list: RunInfo[] = [
+        { runId: 'run-1', clientId: 'c1', status: 'complete', invocationId: 'inv-1' },
+        { runId: 'run-2', clientId: 'c1', status: 'active', invocationId: 'inv-2' },
+      ];
+      (mock.view.runs as ReturnType<typeof vi.fn>).mockReturnValue(list);
+      const { result } = renderHook(() => useView({ session: mock.session }));
+      expect(result.current.runs()).toEqual(list);
+    });
+
+    it('safe defaults when no session is available', () => {
+      const { result } = renderHook(() => useView());
+      expect(result.current.runOf('msg-1')).toBeUndefined();
+      expect(result.current.run('run-1')).toBeUndefined();
+      expect(result.current.runs()).toEqual([]);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Branch selection
+  // ---------------------------------------------------------------------------
+
+  describe('Branch selection callbacks', () => {
+    it('branchSelection forwards to view.branchSelection', () => {
+      const mock = createMockSession();
+      const bundle: BranchSelection<string> = {
+        hasSiblings: true,
+        siblings: ['a', 'b', 'c'],
+        index: 1,
+        selected: 'b',
+      };
+      (mock.view.branchSelection as ReturnType<typeof vi.fn>).mockReturnValue(bundle);
+      const { result } = renderHook(() => useView({ session: mock.session }));
+      expect(result.current.branchSelection('msg-1')).toEqual(bundle);
+    });
+
+    it('selectSibling forwards to view.selectSibling', () => {
+      const mock = createMockSession();
+      const { result } = renderHook(() => useView({ session: mock.session }));
+      act(() => {
+        result.current.selectSibling('msg-1', 1);
+      });
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock
+      expect(mock.view.selectSibling).toHaveBeenCalledWith('msg-1', 1);
+    });
+
+    it('safe defaults when no session is available', () => {
+      const { result } = renderHook(() => useView());
+      const branch = result.current.branchSelection('msg-1');
+      expect(branch.hasSiblings).toBe(false);
+      expect(branch.siblings).toEqual([]);
+      expect(branch.index).toBe(0);
+      expect(branch.selected).toBeUndefined();
+      // selectSibling is a no-op without a session; just confirm it doesn't throw.
+      expect(() => {
+        result.current.selectSibling('msg-1', 0);
+      }).not.toThrow();
+    });
   });
 
   describe('error', () => {
@@ -246,9 +246,7 @@ describe('useView', () => {
       const mock = createMockSession();
       const loadError = new Ably.ErrorInfo('unable to load older messages; network error', ErrorCode.BadRequest, 400);
 
-      // First call fails
       (mock.view.loadOlder as ReturnType<typeof vi.fn>).mockReturnValueOnce(Promise.reject(loadError));
-      // Second call succeeds
       (mock.view.loadOlder as ReturnType<typeof vi.fn>).mockReturnValueOnce(Promise.resolve());
 
       const { result } = renderHook(() => useView({ session: mock.session }));
@@ -277,7 +275,6 @@ describe('useView', () => {
       });
       expect(result.current.loadError).toBe(loadError);
 
-      // Switch to a different view — loadError must be cleared.
       const mockB = createMockSession();
       act(() => {
         currentView = mockB.view;
@@ -299,11 +296,12 @@ describe('useView', () => {
       const mock = createMockSession();
       const { result } = renderHook(() => useView({ session: mock.session }));
 
+      const input = { kind: 'user-message' as const };
       await act(async () => {
-        await result.current.send(['hello'], { body: { extra: true } });
+        await result.current.send([input], { parent: 'p1' });
       });
 
-      expect(mock.send).toHaveBeenCalledWith(['hello'], { body: { extra: true } });
+      expect(mock.send).toHaveBeenCalledWith([input], { parent: 'p1' });
     });
 
     it('returns a stable reference across rerenders', () => {
@@ -318,7 +316,7 @@ describe('useView', () => {
       const { result } = renderHook(() => useView());
 
       await act(async () => {
-        await expect(result.current.send(['hello'])).rejects.toMatchObject({
+        await expect(result.current.send([{ kind: 'user-message' }])).rejects.toMatchObject({
           code: ErrorCode.InvalidArgument,
           statusCode: 400,
         });
@@ -332,10 +330,10 @@ describe('useView', () => {
       const { result } = renderHook(() => useView({ session: mock.session }));
 
       await act(async () => {
-        await result.current.regenerate('msg-1', { body: { extra: true } });
+        await result.current.regenerate('msg-1', { parent: 'p1' });
       });
 
-      expect(mock.regenerate).toHaveBeenCalledWith('msg-1', { body: { extra: true } });
+      expect(mock.regenerate).toHaveBeenCalledWith('msg-1', { parent: 'p1' });
     });
 
     it('returns a stable reference across rerenders', () => {
@@ -363,22 +361,24 @@ describe('useView', () => {
       const mock = createMockSession();
       const { result } = renderHook(() => useView({ session: mock.session }));
 
+      const replacement = { kind: 'user-message' as const };
       await act(async () => {
-        await result.current.edit('msg-1', ['replacement'], { body: { extra: true } });
+        await result.current.edit('msg-1', [replacement], { parent: 'p1' });
       });
 
-      expect(mock.edit).toHaveBeenCalledWith('msg-1', ['replacement'], { body: { extra: true } });
+      expect(mock.edit).toHaveBeenCalledWith('msg-1', [replacement], { parent: 'p1' });
     });
 
     it('delegates to view.edit with a single message', async () => {
       const mock = createMockSession();
       const { result } = renderHook(() => useView({ session: mock.session }));
 
+      const single = { kind: 'user-message' as const };
       await act(async () => {
-        await result.current.edit('msg-1', 'single-replacement');
+        await result.current.edit('msg-1', single);
       });
 
-      expect(mock.edit).toHaveBeenCalledWith('msg-1', 'single-replacement', undefined);
+      expect(mock.edit).toHaveBeenCalledWith('msg-1', single, undefined);
     });
 
     it('returns a stable reference across rerenders', () => {
@@ -393,7 +393,7 @@ describe('useView', () => {
       const { result } = renderHook(() => useView());
 
       await act(async () => {
-        await expect(result.current.edit('msg-1', 'replacement')).rejects.toMatchObject({
+        await expect(result.current.edit('msg-1', { kind: 'user-message' })).rejects.toMatchObject({
           code: ErrorCode.InvalidArgument,
           statusCode: 400,
         });

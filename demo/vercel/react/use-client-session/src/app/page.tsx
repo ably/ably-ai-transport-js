@@ -3,12 +3,13 @@
 import { Providers, useAblyReady, SessionHooks } from './providers';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import { Chat } from './components/chat';
-import { useSearchParams } from 'next/navigation';
-import { Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { Suspense, useEffect, useState } from 'react';
+import { generateChannelSlug } from './lib/channel-name';
 
 const { ClientSessionProvider } = SessionHooks;
 
-const DEFAULT_CHANNEL = process.env.NEXT_PUBLIC_ABLY_CHANNEL ?? 'ai:demo';
+const CHANNEL_NAMESPACE = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ai:';
 
 function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; clientId?: string; limit?: number }) {
   const ready = useAblyReady();
@@ -21,24 +22,36 @@ function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; 
     <ClientSessionProvider
       channelName={channelName}
       codec={UIMessageCodec}
-      clientId={clientId}
-      api="api/chat"
-      body={() => ({ sessionName: channelName })}
     >
       <Chat
         chatId={channelName}
         clientId={clientId}
         historyLimit={limit}
+        api="api/chat"
       />
     </ClientSessionProvider>
   );
 }
 
 function ChatPage() {
+  const router = useRouter();
   const searchParams = useSearchParams();
-  const channelName = searchParams.get('channel') ?? DEFAULT_CHANNEL;
-  const clientId = searchParams.get('clientId') ?? undefined;
+  const paramChannel = searchParams.get('channel');
+  const paramClientId = searchParams.get('clientId') ?? undefined;
   const limit = Number(searchParams.get('limit')) || undefined;
+
+  const [channelName] = useState(() => paramChannel ?? `${CHANNEL_NAMESPACE}${generateChannelSlug()}`);
+  const [clientId] = useState(() => paramClientId ?? `user-${crypto.randomUUID().slice(0, 8)}`);
+
+  useEffect(() => {
+    if (paramChannel && paramClientId) return;
+    const params = new URLSearchParams(searchParams.toString());
+    if (!paramChannel) params.set('channel', channelName);
+    if (!paramClientId) params.set('clientId', clientId);
+    // `:` is valid unencoded in a query string (RFC 3986); un-escape it so the
+    // address bar shows "ai:foo" instead of "ai%3Afoo".
+    router.replace(`?${params.toString().replaceAll('%3A', ':')}`);
+  }, [paramChannel, paramClientId, channelName, clientId, router, searchParams]);
 
   return (
     <Providers clientId={clientId}>

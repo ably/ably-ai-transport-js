@@ -8,7 +8,7 @@ Quick definitions for terms used across the internals docs. Ably-specific concep
 
 A lexicographically sortable string identifier that Ably assigns to every message on acceptance. Serials can be compared lexicographically to produce a total order over messages. However, this is not necessarily the order in which messages are delivered to subscribers - the only delivery-order guarantee is that messages published sequentially on the same realtime connection are always delivered in that same relative order, but they may interleave with messages published concurrently from other connections. The [conversation tree](conversation-tree.md) uses serials as the primary ordering mechanism, and the [decoder](decoder.md) uses them to correlate appends back to the originating message.
 
-### Message actions **(Ably)**
+### Message appends **(Ably)**
 
 Ably supports updates, deletes, and appends on messages after publication. The AI Transport SDK uses **message appends** to stream LLM tokens - a message is created with a `publish` (which returns a serial), then receives `appendMessage` calls that add data incrementally, and ends with a closing append that sets the final state. Each token is appended to a single persistent message rather than published as a separate message.
 
@@ -29,15 +29,15 @@ Subscribers receive these as the `action` field on inbound messages. The [decode
 
 ### Channel attach **(Ably)**
 
-The act of connecting to an Ably channel. A channel transitions from `initialized` → `attaching` → `attached`. Once attached, the client receives live messages published to the channel. The client session subscribes to the channel before calling `attach()` to ensure no messages are lost during the attach process.
+The act of connecting to an Ably channel. A channel transitions from INITIALIZED → ATTACHING → ATTACHED. Once attached, the client receives live messages published to the channel. The client session subscribes to the channel before calling `attach()` to ensure no messages are lost during the attach process.
 
 ### untilAttach **(Ably)**
 
 A parameter on Ably's `channel.history()` API that fetches messages up to the exact point where the channel was attached. This guarantees **gapless continuity** - history ends precisely where the live subscription begins, with no duplicates and no gaps. See [History hydration](history.md#channel-attach-and-untilattach).
 
-### extras.headers **(Ably)**
+### extras.ai **(Ably)**
 
-Every Ably message has an `extras` field that can carry metadata. The AI Transport protocol stores all its headers in `extras.headers` - a `Record<string, string>` of key-value pairs. Both [transport headers](wire-protocol.md#transport-headers-x-ably) (`x-ably-*`) and [domain headers](wire-protocol.md#domain-headers-x-domain) (`x-domain-*`) live here.
+Every Ably message has an `extras` field that can carry metadata. The AI Transport protocol stores all its headers under `extras.ai`, reserved for the SDK and split into two tiers: [transport headers](wire-protocol.md#transport-headers) under `extras.ai.transport` and [codec headers](wire-protocol.md#codec-headers) under `extras.ai.codec`. Each tier is a `Record<string, string>` of unprefixed key-value pairs — the tiers isolate the two namespaces, so neither needs a prefix. The separate `extras.headers` field is deliberately left untouched, reserved for the application's own use.
 
 ## Transport architecture
 
@@ -45,38 +45,48 @@ Every Ably message has an `extras` field that can carry metadata. The AI Transpo
 
 The SDK has two layers with a strict boundary:
 
-- **Transport layer** - generic machinery shared by all codecs. Handles run lifecycle, stream routing, optimistic reconciliation, cancel signals, and conversation tree management. Uses `x-ably-*` headers. Lives in `src/core/transport/`.
-- **Domain layer** - framework-specific encoding/decoding. Maps between domain events (e.g. Vercel's `UIMessageChunk`) and Ably messages. Uses `x-domain-*` headers. Lives in codec implementations (e.g. `src/vercel/codec/`).
+- **Transport layer** - generic machinery shared by all codecs. Handles run lifecycle, stream routing, optimistic reconciliation, cancel signals, and conversation tree management. Uses unprefixed transport headers. Lives in `src/core/transport/`.
+- **Domain layer** - framework-specific encoding/decoding. Maps between domain events (e.g. Vercel's `UIMessageChunk`) and Ably messages. Uses codec headers (`extras.ai.codec`). Lives in codec implementations (e.g. `src/vercel/codec/`).
 
 The [codec interface](codec-interface.md) is the boundary between these layers.
 
 ### Own run vs observer run
 
-When the client session receives messages from the channel, it routes them differently depending on who started the run:
+A distinction by who started the run:
 
-- **Own run** - a run this client initiated (via `view.send()`, `view.regenerate()`, `view.edit()`). Decoded events are routed to **both** the [stream router](transport-components.md#streamrouter) (which enqueues them on a `ReadableStream`) and a per-run [accumulator](codec-interface.md#accumulator) (which builds complete messages for the [conversation tree](conversation-tree.md)). The stream exists primarily as an integration seam for framework adapters (e.g. Vercel's `useChat()`); most application code consumes accumulated messages via the view.
-- **Observer run** - a run started by another client. Decoded events go to the accumulator only - there is no stream because no caller on this client initiated the run.
+- **Own run** - a run this client initiated (via `view.send()`, `view.regenerate()`, `view.edit()`).
+- **Observer run** - a run started by another client.
 
-Both paths use the same accumulation logic. The only difference is that own runs additionally expose a `ReadableStream` for framework integration. See [Message lifecycle](message-lifecycle.md#own-runs-vs-observer-runs) for the full routing picture.
+The client session does **not** route the two differently: every decoded run output, own or observer, folds into the run's projection in the [conversation tree](conversation-tree.md) and surfaces on the tree's `output` event keyed by `runId`. The distinction matters for affordances layered on top — cancel is scoped to a run the caller holds, and a UI may mark its own runs — not for how outputs are delivered. See [Message lifecycle](message-lifecycle.md#how-run-outputs-surface) for the delivery path.
 
-### Run ID vs message ID
+### Client identity tiers
 
-Two different identity headers serve different purposes:
+The protocol attributes each event to a client at two concentric scopes:
 
-- **Run ID** (`x-ably-run-id`) - groups all messages in one request-response cycle. A single run may produce multiple messages (user message, assistant text, lifecycle events). Used for cancellation scope, active run tracking, and stream routing.
-- **Message ID** (`x-ably-msg-id`) - uniquely identifies a single domain message (a `crypto.randomUUID()` generated by the client or agent session). Used for [optimistic reconciliation](wire-protocol.md#optimistic-reconciliation), [accumulator routing](codec-interface.md#accumulator), and [conversation tree](conversation-tree.md) node identity. For streamed messages, every append carries the same message ID so the entire message append lifecycle shares one identity.
+- **`runClientId`** (`run-client-id`) — the client that **owns** the run, the one whose initiating `ai-input` started it. Constant for the lifetime of the run, even when later inputs come from other clients.
+- **`inputClientId`** (`input-client-id`) — the clientId of the input event (the `ai-input`) that drove the current invocation. The agent reads it from the publisher's Ably-level `clientId` on the triggering wire message and re-stamps it on its own published events for that invocation. Updates on a continuation `ai-run-resume` if the triggering input came from a different client (e.g. a tool-result publish from a non-owner).
 
-A run contains one or more messages. A message belongs to exactly one run. See [Wire protocol: message identity](wire-protocol.md#message-identity-x-ably-msg-id) for the full lifecycle.
+For a fresh run the two are equal. They diverge on continuation invocations triggered by an input event from someone other than the run owner. The Ably channel-level `clientId` on each message is a third, orthogonal identity field — the publisher of that particular event. See [Wire protocol: client identity](wire-protocol.md#client-identity).
+
+### Run ID vs invocation ID vs message ID
+
+Three different identity headers serve different purposes:
+
+- **Run ID** (`run-id`) - groups all messages of one agent response, agent-minted at run-start. A single run may produce multiple messages (assistant text, lifecycle events) and may span multiple invocations (it can suspend and resume under the same `run-id`). Used for cancellation scope, active run tracking, and stream routing.
+- **Invocation ID** (`invocation-id`) - identifies a single HTTP invocation of the agent under a run, agent-minted one per request. A suspend/resume cycle re-invokes the agent, so one run can carry several invocation-ids. The agent stamps it on every lifecycle event and output it publishes for that invocation.
+- **Codec message ID** (`codec-message-id`) - uniquely identifies a single domain message. Used for [optimistic reconciliation](wire-protocol.md#optimistic-reconciliation), [reducer routing](codec-interface.md#reducer-and-projection) (folding an event onto its target message), and [conversation tree](conversation-tree.md) node identity. For streamed messages, every append carries the same codec-message-id so the entire message append lifecycle shares one identity. See [Who generates it](wire-protocol.md#who-generates-it) for the minting rules.
+
+A run carries the agent's response messages and lifecycle events. The triggering user input is **run-less** — the agent mints the `run-id` at run-start, so a client-published input event carries no `run-id` and lives as its own input node. See [Wire protocol: message identity](wire-protocol.md#message-identity-codec-message-id) for the full lifecycle.
 
 ## Encoding/decoding concepts
 
 ### Terminal event
 
-An event that signals the end of a stream. For the Vercel codec, terminal events are `finish`, `error`, and abort signals. The [stream router](transport-components.md#terminal-detection) uses the codec's `isTerminal()` predicate to automatically close the `ReadableStream` when a terminal event arrives. The [decoder](decoder.md#append-handling) checks `x-ably-status` for `"finished"` or `"aborted"` to detect terminal state on the wire.
+An event that signals the end of a stream. For the Vercel codec, terminal events are `finish`, `error`, and `abort` chunks (the AI SDK chunk type, kept verbatim on the wire). The Vercel [chat transport](chat-transport.md)'s per-run output stream closes the `ReadableStream` when a terminal chunk arrives, so `useChat`'s reader ends. The [decoder](decoder.md#append-handling) checks `status` for `"complete"` or `"cancelled"` to detect terminal state on the wire.
 
 ### Fire-and-forget
 
-An async operation where the caller does not `await` the result. The promise is collected but errors are handled later in batch (or logged and discarded). The [encoder](encoder.md#appendstream) uses fire-and-forget for append operations - each token delta is sent without waiting for acknowledgement, and failures are caught during [flush](encoder.md#recovery-mechanism). The client session's HTTP POST is also fire-and-forget - the stream is available immediately from the channel subscription, not the HTTP response.
+An async operation where the caller does not `await` the result. The promise is collected but errors are handled later in batch (or logged and discarded). The [encoder](encoder.md#appendstream) uses fire-and-forget for append operations - each token delta is sent without waiting for acknowledgement, and failures are caught during [flush](encoder.md#recovery-mechanism). The Vercel [chat transport](chat-transport.md)'s agent-invocation POST is also fire-and-forget - the response stream arrives over the channel subscription, not the HTTP response.
 
 ### Prefix-match
 
@@ -84,42 +94,46 @@ The [decoder's](decoder.md#known-serial-prefix-match) strategy for handling `mes
 
 ### First-contact
 
-When the [decoder](decoder.md#first-contact) receives an update for a serial it has never seen - the stream started before this client subscribed (e.g. history, reconnect, late join). The decoder synthesizes the full event sequence from the update: start events, delta events (if data is present), and end events (if status is `"finished"`). This allows late-joining clients to reconstruct the stream state.
+When the [decoder](decoder.md#first-contact) receives an update for a serial it has never seen - the stream started before this client subscribed (e.g. history, reconnect, late join). The decoder synthesizes the full event sequence from the update: start events, delta events (if data is present), and end events (if status is `"complete"`). This allows late-joining clients to reconstruct the stream state.
 
 ### Optimistic reconciliation
 
-When a client calls `send()`, it inserts an optimistic message into the conversation tree (with no serial). The server then relays that message onto the channel, and all clients - including the sender - receive it. The sending client matches the relayed message by `x-ably-msg-id` and reconciles the optimistic entry with the server-assigned serial ([serial promotion](conversation-tree.md#upsert-the-sole-mutation)) rather than creating a duplicate.
+When a client calls `view.send()`, it inserts an optimistic node into the conversation tree (with no serial) and publishes the input on the channel. The same message comes back on the client's own subscription - and on every other subscriber's - carrying the server-assigned serial. The sending client matches the echo by `codec-message-id` and reconciles the optimistic entry with the server-assigned serial ([serial promotion](#serial-promotion)) rather than creating a duplicate.
 
 ## Conversation tree concepts
 
 ### Group root
 
-The original message in a [sibling group](conversation-tree.md#sibling-groups-and-fork-chains) - the message at the root of the `forkOf` chain. When messages fork the same target transitively (A → B forks A, C forks B), the group root is A. Sibling selections are stored by the group root's `msgId`.
+The original message in a [sibling group](conversation-tree.md#sibling-groups-and-fork-chains) - the message at the root of the `forkOf` chain. When messages fork the same target transitively (A → B forks A, C forks B), the group root is A. Sibling selections are stored by the group root's `codecMessageId`.
 
 ### Serial promotion
 
-When an optimistic message (null serial) receives a server-assigned serial via [optimistic reconciliation](#optimistic-reconciliation), the conversation tree removes it from its current position (end of the sorted list) and re-inserts it at the correct serial-order position. See [conversation tree upsert](conversation-tree.md#upsert-the-sole-mutation).
+When an optimistic node (null serial) receives a server-assigned serial via [optimistic reconciliation](#optimistic-reconciliation), the conversation tree promotes the node's serial (`_promoteSerial`) and re-sorts `_sortedNodes` so it lands at the correct serial-order position. See [conversation tree: apply](conversation-tree.md#apply-the-two-mutation-entry-points).
 
 ## Type parameters
 
-### TEvent
+### TInput and TOutput
 
-The streaming fragment type that the generic layer is parameterized by. For the Vercel codec, this is `UIMessageChunk`. Events are the unit of real-time streaming - individually meaningless fragments (a text delta, a finish event) that must be accumulated into a complete message. The [decoder](decoder.md) produces events; the [stream router](transport-components.md) delivers them to own-run consumers; the [accumulator](codec-interface.md#accumulator) assembles them into `TMessage` instances.
+The streaming fragment types that the generic layer is parameterized by, split by wire direction. `TInput` events are client-published (`ai-input`: a user-message part, a tool-result, a regenerate signal); `TOutput` events are agent-published (`ai-output`: a text delta, a finish event). For the Vercel codec, `TOutput` is `UIMessageChunk`. Events are the unit of real-time streaming - individually meaningless fragments that must be folded into a complete message. The [decoder](decoder.md) produces events; the [conversation tree](conversation-tree.md) surfaces decoded outputs on its `output` event; the codec's [reducer](codec-interface.md#reducer-and-projection) folds them into a [TProjection](#tprojection) from which `getMessages()` assembles `TMessage` instances.
 
 ### TMessage
 
-The complete domain message type that the generic layer is parameterized by. For the Vercel codec, this is `UIMessage`. Messages are the unit of state - what the [conversation tree](conversation-tree.md) stores, what the view's `flattenNodes()` returns, what React hooks render. The [accumulator](codec-interface.md#accumulator) bridges `TEvent → TMessage`; the encoder bridges `TMessage → wire` (for discrete publishes like user messages). See [Message lifecycle](message-lifecycle.md#tevent-and-tmessage) for the full relationship.
+The complete domain message type that the generic layer is parameterized by. For the Vercel codec, this is `UIMessage`. Messages are the unit of state - what each node's projection yields via `getMessages()`, what the view's `getMessages()` returns, what React hooks render. The codec's [reducer](codec-interface.md#reducer-and-projection) bridges events → projection → `TMessage`; the encoder bridges `TMessage → wire` (for discrete publishes like user messages). See [Message lifecycle](message-lifecycle.md#tinput-toutput-tprojection-and-tmessage) for the full relationship.
 
 ## Message state
 
-### Message accumulator
+### Reducer
 
-A codec-provided component that assembles [decoder outputs](decoder.md#decoder-output-types) into complete domain messages. Needed because one domain message is built from many wire messages - a streamed assistant response may produce dozens of Ably messages (create + N appends + close) that must be assembled into a single `TMessage`. Used in two contexts: live [observer runs](glossary.md#own-run-vs-observer-run) (working buffer, snapshots upserted into tree on every event) and [history decoding](history.md) (collect only completed messages). See [Accumulator](codec-interface.md#accumulator) for the full explanation.
+The codec's `init()` / `fold()` contract that assembles [decoder outputs](decoder.md#decoder-output) into complete domain messages. Needed because one domain message is built from many wire messages - a streamed assistant response may produce dozens of Ably messages (create + N appends + close) that must be folded into a single `TMessage`. Rather than a separate accumulator object, the codec folds each decoded event into an opaque per-node [TProjection](#tprojection) and exposes the assembled messages via `getMessages()`. `fold` is a pure function holding no instance state - all state lives in the projection. See [Reducer and projection](codec-interface.md#reducer-and-projection) for the full explanation.
 
 ### Message materialization
 
-The act of producing a flat message list from the [conversation tree](conversation-tree.md) via [`flattenNodes()`](#flatten). `flattenNodes()` returns `MessageNode<TMessage>[]`. The View caches the result and returns it in O(1) on subsequent calls. The cache is refreshed when the tree structure changes (new nodes, deletions, selection changes, history reveal). All consumers go through the view's `flattenNodes()`: React hooks, `send()` (for the HTTP POST body), `view.loadOlder()` (for pagination snapshots). See [Message lifecycle](message-lifecycle.md#cached-message-list).
+The act of producing a flat message list from the [conversation tree](conversation-tree.md). `view.getMessages()` returns the cached flat `CodecMessage<TMessage>[]` the UI renders — each message paired with its `codec-message-id`. The list is built by walking each visible node's `codec.getMessages(node.projection)` and concatenating the results. It is cached in the View and refreshes when the tree's structure changes (new nodes, deletions, selection changes, history reveal) or when a visible node's projection folds a new event. See [Message lifecycle](message-lifecycle.md#cached-message-list).
 
-### Flatten
+### Visible node chain
 
-`view.flattenNodes()` - the sole path from tree state to a message array. Returns the View's cached node list in O(1). The cache is rebuilt by an internal `_computeFlatNodes()` method that walks the sorted node list, checks parent reachability and sibling selection, and produces the linear message sequence for the currently selected conversation path. (`flattenNodes()` on `TreeInternal` does the actual tree walk; the View's public method returns cached results.) See [Conversation tree: flatten](conversation-tree.md#flatten-producing-the-linear-path).
+The View's cached chain of visible nodes (input nodes + reply runs), held as `ConversationNode<TProjection>[]`. The cache is rebuilt by the View's internal `_computeFlatNodes()`, which takes the Tree's `visibleNodes()` walk (kind-blind reachability and sibling selection already applied over `_sortedNodes`) and layers the View's pagination window on top by dropping currently withheld node keys. `getMessages()` consumes the cached chain and concatenates each node's `codec.getMessages(node.projection)` to produce the flat `CodecMessage<TMessage>[]`. See [Conversation tree: visible nodes](conversation-tree.md#visible-nodes-producing-the-visible-chain).
+
+### TProjection
+
+The opaque per-node codec state that the Tree folds events into. Each conversation node — a `RunNode` or a run-less `InputNode` — owns one `TProjection`, initialised via `codec.init()` and updated via `codec.fold(state, event, meta)`. The View extracts the per-message list from a projection via `codec.getMessages(projection)`. The SDK never inspects projection internals — it's the codec's contract surface.

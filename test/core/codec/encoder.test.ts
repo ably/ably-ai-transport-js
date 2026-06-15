@@ -2,8 +2,8 @@ import type * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  HEADER_CODEC_MESSAGE_ID,
   HEADER_DISCRETE,
-  HEADER_MSG_ID,
   HEADER_STATUS,
   HEADER_STREAM,
   HEADER_STREAM_ID,
@@ -30,7 +30,7 @@ const createMockWriter = (): MockWriter => {
     publishCalls: [],
     appendCalls: [],
     updateCalls: [],
-    nextPublishResult: { serials: ['serial-1'] } as Ably.PublishResult,
+    nextPublishResult: { serials: ['serial-1'] },
     nextAppendResult: {} as Ably.UpdateDeleteResult,
     nextUpdateResult: {} as Ably.UpdateDeleteResult,
     publish: vi.fn(async (message: Ably.Message | Ably.Message[]) => {
@@ -57,12 +57,16 @@ const createMockWriter = (): MockWriter => {
 };
 
 /**
- * Extract headers from an Ably.Message extras.
+ * Extract a merged view of the transport and codec header tiers from an
+ * Ably.Message extras. The two tiers carry disjoint keys, so merging them is
+ * unambiguous and lets assertions read either tier by bare key.
  * @param msg - The Ably message.
- * @returns The headers record.
+ * @returns The merged headers record.
  */
-const headersOf = (msg: Ably.Message): Record<string, string> =>
-  (msg.extras as { headers: Record<string, string> }).headers;
+const headersOf = (msg: Ably.Message): Record<string, string> => {
+  const e = msg.extras as { ai?: { transport?: Record<string, string>; codec?: Record<string, string> } };
+  return { ...e.ai?.transport, ...e.ai?.codec };
+};
 
 /**
  * Get first element of an array, throwing if absent.
@@ -101,10 +105,10 @@ describe('createEncoderCore', () => {
   // -- publishDiscrete -----------------------------------------------------
 
   describe('publishDiscrete', () => {
-    it('publishes with x-ably-stream:false and codec headers', async () => {
+    it('publishes with stream:false and codec headers', async () => {
       const core = createEncoderCore(writer);
       const result = await core.publishDiscrete(
-        payload({ name: 'event', data: 'payload', headers: { 'x-custom': 'val' } }),
+        payload({ name: 'event', data: 'payload', codecHeaders: { 'x-custom': 'val' } }),
       );
       expect(result).toEqual({ serials: ['serial-1'] });
 
@@ -113,18 +117,6 @@ describe('createEncoderCore', () => {
       expect(msg.data).toBe('payload');
       expect(headersOf(msg)[HEADER_STREAM]).toBe('false');
       expect(headersOf(msg)['x-custom']).toBe('val');
-    });
-
-    it('includes clientId from options', async () => {
-      const core = createEncoderCore(writer, { clientId: 'user-1' });
-      await core.publishDiscrete(payload());
-      expect((first(writer.publishCalls) as Ably.Message).clientId).toBe('user-1');
-    });
-
-    it('per-write clientId overrides default', async () => {
-      const core = createEncoderCore(writer, { clientId: 'default' });
-      await core.publishDiscrete(payload(), { clientId: 'override' });
-      expect((first(writer.publishCalls) as Ably.Message).clientId).toBe('override');
     });
 
     it('calls onMessage hook', async () => {
@@ -145,7 +137,7 @@ describe('createEncoderCore', () => {
 
     it('merges default and codec headers', async () => {
       const core = createEncoderCore(writer, { extras: { headers: { default: 'val' } } });
-      await core.publishDiscrete(payload({ headers: { codec: 'val2' } }));
+      await core.publishDiscrete(payload({ codecHeaders: { codec: 'val2' } }));
       const headers = headersOf(first(writer.publishCalls) as Ably.Message);
       expect(headers.default).toBe('val');
       expect(headers.codec).toBe('val2');
@@ -157,7 +149,7 @@ describe('createEncoderCore', () => {
       expect(headersOf(first(writer.publishCalls) as Ably.Message)[HEADER_STREAM]).toBe('false');
     });
 
-    it('does not set x-ably-discrete on single-published messages', async () => {
+    it('does not set discrete on single-published messages', async () => {
       const core = createEncoderCore(writer);
       await core.publishDiscrete(payload({ name: 'data-progress', data: {} }));
       const msg = first(writer.publishCalls) as Ably.Message;
@@ -188,7 +180,7 @@ describe('createEncoderCore', () => {
       }
     });
 
-    it('sets x-ably-discrete on batch-published messages', async () => {
+    it('sets discrete on batch-published messages', async () => {
       const core = createEncoderCore(writer);
       await core.publishDiscreteBatch([payload({ name: 'text', data: 'hi' })]);
 
@@ -210,7 +202,7 @@ describe('createEncoderCore', () => {
   describe('startStream', () => {
     it('publishes a message with streaming status', async () => {
       const core = createEncoderCore(writer);
-      await core.startStream('s1', streamPayload({ name: 'text', headers: { 'x-id': '123' } }));
+      await core.startStream('s1', streamPayload({ name: 'text', codecHeaders: { 'x-id': '123' } }));
 
       const msg = first(writer.publishCalls) as Ably.Message;
       expect(headersOf(msg)[HEADER_STREAM]).toBe('true');
@@ -220,7 +212,7 @@ describe('createEncoderCore', () => {
     });
 
     it('throws when no serial returned', async () => {
-      writer.nextPublishResult = { serials: [] } as unknown as Ably.PublishResult;
+      writer.nextPublishResult = { serials: [] };
       const core = createEncoderCore(writer);
       await expect(core.startStream('s1', streamPayload({ name: 'text' }))).rejects.toBeErrorInfoWithCode(
         ErrorCode.BadRequest,
@@ -267,17 +259,17 @@ describe('createEncoderCore', () => {
   // -- closeStream ---------------------------------------------------------
 
   describe('closeStream', () => {
-    it('appends with finished status', async () => {
+    it('appends with complete status', async () => {
       const core = createEncoderCore(writer);
       await core.startStream('s1', streamPayload({ name: 'text' }));
       await core.closeStream('s1', streamPayload({ name: 'text' }));
 
-      expect(headersOf(first(writer.appendCalls))[HEADER_STATUS]).toBe('finished');
+      expect(headersOf(first(writer.appendCalls))[HEADER_STATUS]).toBe('complete');
     });
 
     it('repeats persistent headers on close', async () => {
       const core = createEncoderCore(writer);
-      await core.startStream('s1', streamPayload({ name: 'text', headers: { 'x-custom': 'keep' } }));
+      await core.startStream('s1', streamPayload({ name: 'text', codecHeaders: { 'x-custom': 'keep' } }));
       await core.closeStream('s1', streamPayload({ name: 'text' }));
 
       expect(headersOf(first(writer.appendCalls))['x-custom']).toBe('keep');
@@ -286,7 +278,7 @@ describe('createEncoderCore', () => {
     it('merges payload headers on close', async () => {
       const core = createEncoderCore(writer);
       await core.startStream('s1', streamPayload({ name: 'text' }));
-      await core.closeStream('s1', streamPayload({ name: 'text', headers: { 'x-finish': 'yes' } }));
+      await core.closeStream('s1', streamPayload({ name: 'text', codecHeaders: { 'x-finish': 'yes' } }));
 
       expect(headersOf(first(writer.appendCalls))['x-finish']).toBe('yes');
     });
@@ -306,27 +298,27 @@ describe('createEncoderCore', () => {
     });
   });
 
-  // -- abortStream ---------------------------------------------------------
+  // -- cancelStream ---------------------------------------------------------
 
-  describe('abortStream', () => {
-    it('sends aborted status for the specified stream', async () => {
+  describe('cancelStream', () => {
+    it('sends cancelled status for the specified stream', async () => {
       const core = createEncoderCore(writer);
       await core.startStream('s1', streamPayload({ name: 'text' }));
-      await core.abortStream('s1');
+      await core.cancelStream('s1');
 
       expect(writer.appendCalls).toHaveLength(1);
-      expect(headersOf(first(writer.appendCalls))[HEADER_STATUS]).toBe('aborted');
+      expect(headersOf(first(writer.appendCalls))[HEADER_STATUS]).toBe('cancelled');
     });
 
-    it('only aborts the specified stream, not others', async () => {
-      writer.nextPublishResult = { serials: ['serial-1'] } as Ably.PublishResult;
+    it('only cancels the specified stream, not others', async () => {
+      writer.nextPublishResult = { serials: ['serial-1'] };
       const core = createEncoderCore(writer);
       await core.startStream('s1', streamPayload({ name: 'text' }));
 
-      writer.nextPublishResult = { serials: ['serial-2'] } as Ably.PublishResult;
+      writer.nextPublishResult = { serials: ['serial-2'] };
       await core.startStream('s2', streamPayload({ name: 'reasoning' }));
 
-      await core.abortStream('s1');
+      await core.cancelStream('s1');
 
       expect(writer.appendCalls).toHaveLength(1);
       expect(writer.appendCalls[0]?.serial).toBe('serial-1');
@@ -334,49 +326,49 @@ describe('createEncoderCore', () => {
 
     it('rejects for unknown streamId', async () => {
       const core = createEncoderCore(writer);
-      await expect(core.abortStream('nonexistent')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(core.cancelStream('nonexistent')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
 
     it('rejects after close', async () => {
       const core = createEncoderCore(writer);
       await core.close();
-      await expect(core.abortStream('s1')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(core.cancelStream('s1')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
   });
 
-  // -- abortAllStreams -----------------------------------------------------
+  // -- cancelAllStreams -----------------------------------------------------
 
-  describe('abortAllStreams', () => {
-    it('sends aborted status for all active streams', async () => {
-      writer.nextPublishResult = { serials: ['serial-1'] } as Ably.PublishResult;
+  describe('cancelAllStreams', () => {
+    it('sends cancelled status for all active streams', async () => {
+      writer.nextPublishResult = { serials: ['serial-1'] };
       const core = createEncoderCore(writer);
       await core.startStream('s1', streamPayload({ name: 'text' }));
 
-      writer.nextPublishResult = { serials: ['serial-2'] } as Ably.PublishResult;
+      writer.nextPublishResult = { serials: ['serial-2'] };
       await core.startStream('s2', streamPayload({ name: 'reasoning' }));
 
-      await core.abortAllStreams();
+      await core.cancelAllStreams();
 
       expect(writer.appendCalls).toHaveLength(2);
       for (const msg of writer.appendCalls) {
-        expect(headersOf(msg)[HEADER_STATUS]).toBe('aborted');
+        expect(headersOf(msg)[HEADER_STATUS]).toBe('cancelled');
       }
     });
 
     it('is a no-op with no active streams', async () => {
       const core = createEncoderCore(writer);
-      await core.abortAllStreams();
+      await core.cancelAllStreams();
       expect(writer.appendCalls).toHaveLength(0);
     });
 
     it('rejects after close', async () => {
       const core = createEncoderCore(writer);
       await core.close();
-      await expect(core.abortAllStreams()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(core.cancelAllStreams()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
   });
 
-  // -- recovery (via closeStream / abortAllStreams) ------------------------
+  // -- recovery (via closeStream / cancelAllStreams) ------------------------
 
   describe('recovery', () => {
     it('closeStream flushes pending appends', async () => {
@@ -410,7 +402,7 @@ describe('createEncoderCore', () => {
 
       const recovery = first(writer.updateCalls);
       expect(recovery.data).toBe('hello world');
-      expect(headersOf(recovery)[HEADER_STATUS]).toBe('finished');
+      expect(headersOf(recovery)[HEADER_STATUS]).toBe('complete');
     });
 
     it('recovery message includes initial startStream data in accumulation', async () => {
@@ -429,7 +421,7 @@ describe('createEncoderCore', () => {
       writer.nextAppendResult = async () => await Promise.reject(new Error('fail'));
 
       const core = createEncoderCore(writer);
-      await core.startStream('s1', streamPayload({ name: 'text', headers: { 'x-codec': 'val' } }));
+      await core.startStream('s1', streamPayload({ name: 'text', codecHeaders: { 'x-codec': 'val' } }));
       core.appendStream('s1', 'data');
 
       await core.closeStream('s1', streamPayload({ name: 'text' }));
@@ -440,16 +432,16 @@ describe('createEncoderCore', () => {
       expect(headersOf(recovery)[HEADER_STREAM]).toBe('true');
     });
 
-    it('abortAllStreams uses aborted status in recovery', async () => {
+    it('cancelAllStreams uses cancelled status in recovery', async () => {
       writer.nextAppendResult = async () => await Promise.reject(new Error('fail'));
 
       const core = createEncoderCore(writer);
       await core.startStream('s1', streamPayload({ name: 'text' }));
       core.appendStream('s1', 'data');
 
-      await core.abortAllStreams();
+      await core.cancelAllStreams();
 
-      expect(headersOf(first(writer.updateCalls))[HEADER_STATUS]).toBe('aborted');
+      expect(headersOf(first(writer.updateCalls))[HEADER_STATUS]).toBe('cancelled');
     });
 
     it('closeStream throws when recovery also fails', async () => {
@@ -465,19 +457,19 @@ describe('createEncoderCore', () => {
       );
     });
 
-    it('abortAllStreams recovers multiple failed streams independently', async () => {
+    it('cancelAllStreams recovers multiple failed streams independently', async () => {
       writer.nextAppendResult = async () => await Promise.reject(new Error('fail'));
 
       const core = createEncoderCore(writer);
-      writer.nextPublishResult = { serials: ['s1'] } as Ably.PublishResult;
+      writer.nextPublishResult = { serials: ['s1'] };
       await core.startStream('stream-1', streamPayload({ name: 'text' }));
-      writer.nextPublishResult = { serials: ['s2'] } as Ably.PublishResult;
+      writer.nextPublishResult = { serials: ['s2'] };
       await core.startStream('stream-2', streamPayload({ name: 'reasoning' }));
 
       core.appendStream('stream-1', 'text-data');
       core.appendStream('stream-2', 'reason-data');
 
-      await core.abortAllStreams();
+      await core.cancelAllStreams();
 
       expect(writer.updateCalls).toHaveLength(2);
     });
@@ -493,7 +485,7 @@ describe('createEncoderCore', () => {
 
       const recovery = first(writer.updateCalls);
       expect(recovery.data).toBe('hello world');
-      expect(headersOf(recovery)[HEADER_STATUS]).toBe('finished');
+      expect(headersOf(recovery)[HEADER_STATUS]).toBe('complete');
     });
   });
 
@@ -539,33 +531,33 @@ describe('createEncoderCore', () => {
   // -- WriteOptions.messageId -------------------------------------------------
 
   describe('WriteOptions.messageId', () => {
-    it('stamps x-ably-msg-id on discrete publishes', async () => {
+    it('stamps codec-message-id on discrete publishes', async () => {
       const core = createEncoderCore(writer);
       await core.publishDiscrete(payload(), { messageId: 'msg-1' });
 
       const msg = first(writer.publishCalls) as Ably.Message;
-      expect(headersOf(msg)[HEADER_MSG_ID]).toBe('msg-1');
+      expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBe('msg-1');
     });
 
-    it('stamps x-ably-msg-id on streamed messages via persistent headers', async () => {
+    it('stamps codec-message-id on streamed messages via persistent headers', async () => {
       const core = createEncoderCore(writer);
       await core.startStream('s-1', streamPayload(), { messageId: 'msg-2' });
 
       const startMsg = first(writer.publishCalls) as Ably.Message;
-      expect(headersOf(startMsg)[HEADER_MSG_ID]).toBe('msg-2');
+      expect(headersOf(startMsg)[HEADER_CODEC_MESSAGE_ID]).toBe('msg-2');
 
-      // Appends carry persistent headers, so should include msg-id
+      // Appends carry persistent headers, so should include codec-message-id
       core.appendStream('s-1', 'delta');
       const appendMsg = first(writer.appendCalls);
-      expect(headersOf(appendMsg)[HEADER_MSG_ID]).toBe('msg-2');
+      expect(headersOf(appendMsg)[HEADER_CODEC_MESSAGE_ID]).toBe('msg-2');
     });
 
-    it('does not stamp x-ably-msg-id when messageId is not provided', async () => {
+    it('does not stamp codec-message-id when messageId is not provided', async () => {
       const core = createEncoderCore(writer);
       await core.publishDiscrete(payload());
 
       const msg = first(writer.publishCalls) as Ably.Message;
-      expect(headersOf(msg)[HEADER_MSG_ID]).toBeUndefined();
+      expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBeUndefined();
     });
   });
 });

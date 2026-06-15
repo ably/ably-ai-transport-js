@@ -253,7 +253,7 @@ sequenceDiagram
     participant Ch as Channel
     participant S as Server
 
-    C->>Ch: publish(x-ably-cancel)
+    C->>Ch: publish(ai-cancel)
     Note left of C: close local stream(s)
     Ch->>S: deliver to cancel listener
 ```                                        (close the code fence)

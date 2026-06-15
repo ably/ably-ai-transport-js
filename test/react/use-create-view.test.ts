@@ -4,6 +4,7 @@ import { act, renderHook } from '@testing-library/react';
 import { createElement, type ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 
+import type { CodecInputEvent, CodecOutputEvent } from '../../src/core/codec/types.js';
 import type { ClientSession } from '../../src/core/transport/types.js';
 import { ClientSessionContext } from '../../src/react/contexts/client-session-context.js';
 import { useCreateView } from '../../src/react/use-create-view.js';
@@ -13,7 +14,6 @@ describe('useCreateView', () => {
   it('returns empty handle when session is undefined', () => {
     const { result } = renderHook(() => useCreateView({ session: undefined }));
 
-    expect(result.current.nodes).toEqual([]);
     expect(result.current.messages).toEqual([]);
     expect(result.current.hasOlder).toBe(false);
   });
@@ -21,7 +21,7 @@ describe('useCreateView', () => {
   it('returns empty handle when session is null', () => {
     const { result } = renderHook(() => useCreateView({ session: null })); // eslint-disable-line unicorn/no-null -- testing the null input path
 
-    expect(result.current.nodes).toEqual([]);
+    expect(result.current.messages).toEqual([]);
   });
 
   it('creates a view and returns a populated handle', () => {
@@ -31,8 +31,7 @@ describe('useCreateView', () => {
 
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
     expect(mock.session.createView).toHaveBeenCalledOnce();
-    expect(result.current.nodes).toHaveLength(1);
-    expect(result.current.messages).toEqual(['hello']);
+    expect(result.current.messages).toEqual([{ codecMessageId: 'hello', message: 'hello' }]);
   });
 
   it('closes the view on unmount', () => {
@@ -54,10 +53,10 @@ describe('useCreateView', () => {
     const mock2 = createMockSession(['second']);
 
     const { result, rerender } = renderHook(({ session }) => useCreateView({ session }), {
-      initialProps: { session: mock1.session as ClientSession<unknown, string> | undefined },
+      initialProps: { session: mock1.session },
     });
 
-    expect(result.current.messages).toEqual(['first']);
+    expect(result.current.messages).toEqual([{ codecMessageId: 'first', message: 'first' }]);
 
     act(() => {
       rerender({ session: mock2.session });
@@ -65,17 +64,20 @@ describe('useCreateView', () => {
 
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
     expect(mock1.view.close).toHaveBeenCalledOnce();
-    expect(result.current.messages).toEqual(['second']);
+    expect(result.current.messages).toEqual([{ codecMessageId: 'second', message: 'second' }]);
   });
 
   it('closes the view and returns empty handle when session changes to undefined', () => {
     const mock = createMockSession(['hello']);
 
+    const initialProps: { session: ClientSession<CodecInputEvent, CodecOutputEvent, unknown, string> | undefined } = {
+      session: mock.session,
+    };
     const { result, rerender } = renderHook(({ session }) => useCreateView({ session }), {
-      initialProps: { session: mock.session as ClientSession<unknown, string> | undefined },
+      initialProps,
     });
 
-    expect(result.current.messages).toEqual(['hello']);
+    expect(result.current.messages).toEqual([{ codecMessageId: 'hello', message: 'hello' }]);
 
     act(() => {
       rerender({ session: undefined });
@@ -83,7 +85,7 @@ describe('useCreateView', () => {
 
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
     expect(mock.view.close).toHaveBeenCalledOnce();
-    expect(result.current.nodes).toEqual([]);
+    expect(result.current.messages).toEqual([]);
   });
 
   it('delegates write operations to the created view', async () => {
@@ -91,17 +93,17 @@ describe('useCreateView', () => {
 
     const { result } = renderHook(() => useCreateView({ session: mock.session }));
 
+    const input = { kind: 'user-message' as const };
     await act(async () => {
-      await result.current.send(['new message']);
+      await result.current.send([input]);
     });
 
-    expect(mock.send).toHaveBeenCalledWith(['new message'], undefined);
+    expect(mock.send).toHaveBeenCalledWith([input], undefined);
   });
 
   it('returns empty handle when no session and no nearest context', () => {
     const { result } = renderHook(() => useCreateView());
 
-    expect(result.current.nodes).toEqual([]);
     expect(result.current.messages).toEqual([]);
     expect(result.current.hasOlder).toBe(false);
   });
@@ -113,7 +115,7 @@ describe('useCreateView', () => {
         ClientSessionContext.Provider,
         {
           value: {
-            nearest: { session: mock.session as ClientSession<unknown, unknown> },
+            nearest: { session: mock.session },
             providers: {},
           },
         },
@@ -124,7 +126,6 @@ describe('useCreateView', () => {
 
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
     expect(mock.session.createView).toHaveBeenCalledOnce();
-    expect(result.current.nodes).toHaveLength(1);
-    expect(result.current.messages).toEqual(['hello']);
+    expect(result.current.messages).toEqual([{ codecMessageId: 'hello', message: 'hello' }]);
   });
 });

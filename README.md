@@ -39,6 +39,8 @@ Ably AI Transport SDK is not an agent framework or orchestration layer - it work
 - **Concurrent runs** - Multiple request-response cycles run in parallel on the same channel. Each run has its own stream and abort signal.
 - **History** - The Ably channel is the conversation record. Clients hydrate from channel history on load - no separate database query needed.
 - **Branching** - Regenerate or edit messages to fork the conversation. The SDK tracks parent/child relationships and exposes a navigable tree.
+- **Presence** - The session channel carries Ably Presence. `session.presence` exposes it directly, and ably-js's presence hooks work inside the React providers - see which clients are connected to a session.
+- **LiveObjects** - The session channel can carry Ably LiveObjects: synchronized shared state (maps, counters) alongside the conversation. `session.object` exposes it directly - opt in with the LiveObjects plugin and `channelModes`.
 - **Framework-agnostic** - A codec interface decouples transport from the AI framework. Ships with a Vercel AI SDK codec; bring your own for any other stack.
 
 ### When you need this
@@ -68,7 +70,7 @@ npm install @ably/ai-transport ably ai
 
 | Platform      | Support                                            |
 | ------------- | -------------------------------------------------- |
-| Node.js       | 20+                                                |
+| Node.js       | 22+                                                |
 | Browsers      | All major browsers (Chrome, Firefox, Edge, Safari) |
 | TypeScript    | Written in TypeScript, ships with types            |
 | React         | 18+ and 19+ via dedicated hooks                    |
@@ -103,18 +105,12 @@ export async function POST(req: Request) {
   const run = session.createRun(invocation, { signal: req.signal });
 
   await run.start();
-
-  if (invocation.messages.length > 0) {
-    await run.addMessages(invocation.messages, { clientId: invocation.clientId });
-  }
-
-  const historyMsgs = invocation.history.map((h) => h.message);
-  const newMsgs = invocation.messages.map((m) => m.message);
+  await run.loadConversation();
 
   const result = streamText({
     model: anthropic('claude-sonnet-4-6'),
     system: 'You are a helpful assistant.',
-    messages: await convertToModelMessages([...historyMsgs, ...newMsgs]),
+    messages: await convertToModelMessages(run.messages),
     abortSignal: run.abortSignal,
   });
 
@@ -135,25 +131,19 @@ export async function POST(req: Request) {
 'use client';
 
 import { useChat } from '@ai-sdk/react';
-import {
-  ChatTransportProvider,
-  useChatTransport,
-  useMessageSync,
-  useActiveRuns,
-  useView,
-} from '@ably/ai-transport/vercel/react';
+import { ChatTransportProvider, useChatTransport, useMessageSync, useView } from '@ably/ai-transport/vercel/react';
 
 function ChatInner({ chatId }: { chatId: string }) {
   const { chatTransport } = useChatTransport();
 
-  const { messages, setMessages, sendMessage, stop } = useChat({
+  const { messages, setMessages, sendMessage, stop, status } = useChat({
     id: chatId,
     transport: chatTransport,
   });
 
   useMessageSync({ setMessages });
 
-  const activeRuns = useActiveRuns();
+  const isStreaming = status === 'submitted' || status === 'streaming';
   useView({ limit: 30 });
 
   return (
@@ -167,7 +157,7 @@ function ChatInner({ chatId }: { chatId: string }) {
           sendMessage({ text: 'Hello' });
         }}
       >
-        {activeRuns.size > 0 ? (
+        {isStreaming ? (
           <button
             type="button"
             onClick={stop}
@@ -182,12 +172,9 @@ function ChatInner({ chatId }: { chatId: string }) {
   );
 }
 
-function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
+function Chat({ chatId }: { chatId: string }) {
   return (
-    <ChatTransportProvider
-      channelName={chatId}
-      clientId={clientId}
-    >
+    <ChatTransportProvider channelName={chatId}>
       <ChatInner chatId={chatId} />
     </ChatTransportProvider>
   );
@@ -239,8 +226,6 @@ const session = createClientSession({
   client: ably, // Ably.Realtime
   channelName: 'ai:demo',
   codec: myCodec,
-  clientId: 'user-123',
-  api: '/api/chat',
 });
 await session.connect();
 
@@ -266,7 +251,7 @@ await session.connect();
 const run = session.createRun(invocation);
 
 await run.start();
-await run.addMessages(invocation.messages, { clientId: invocation.clientId });
+await run.loadConversation();
 
 const { reason } = await run.pipe(aiStream);
 await run.end(reason);
@@ -290,7 +275,6 @@ session.close();
 | ------------------ | --------------- | ------------------------------------------------- |
 | `useClientSession` | `/react`        | Read a client session from the nearest provider   |
 | `useView`          | `/react`        | Subscribe to messages with history loading        |
-| `useActiveRuns`    | `/react`        | Track active runs by client ID                    |
 | `useTree`          | `/react`        | Navigate branches in a forked conversation        |
 | `useAblyMessages`  | `/react`        | Access raw Ably messages                          |
 | `useChatTransport` | `/vercel/react` | Wrap session for Vercel's `useChat`               |
@@ -310,11 +294,12 @@ Two mechanisms cover different failure modes:
 ### Cancellation
 
 ```typescript
-// Client: cancel your own active runs
-await session.cancel();
+// Client: cancel a specific run by id
+await session.cancel('run-abc');
 
-// Cancel a specific run
-await session.cancel({ runId: 'run-abc' });
+// Or via the ActiveRun returned by send / regenerate / edit
+const run = await view.send(codec.createUserMessage(userMsg));
+await run.cancel();
 
 // Agent: the run's abortSignal fires automatically
 const result = streamText({
@@ -348,7 +333,7 @@ Load previous conversation state when a client joins or returns to a session.
 ```typescript
 const view = session.view;
 await view.loadOlder(50);
-// view.flattenNodes() returns the messages loaded so far
+// view.getMessages() returns the flat message list loaded so far
 
 // Load more older messages
 await view.loadOlder(50);
@@ -358,11 +343,11 @@ await view.loadOlder(50);
 
 ```typescript
 session.view.on('update', () => {
-  console.log(session.view.flattenNodes().map((n) => n.message));
+  console.log(session.view.getMessages());
 });
 
 session.tree.on('run', (event) => {
-  console.log(event.runId, event.type); // 'x-ably-run-start' | 'x-ably-run-end'
+  console.log(event.runId, event.type); // 'ai-run-start' | 'ai-run-end'
 });
 
 session.on('error', (error) => {
@@ -379,7 +364,7 @@ Detailed documentation lives in the [`docs/`](./docs/) directory:
 - **[Concepts](./docs/concepts/)** - [Sessions](./docs/concepts/sessions.md), [Runs](./docs/concepts/runs.md)
 - **[Get started](./docs/get-started/)** - [Vercel AI SDK with useChat](./docs/get-started/vercel-use-chat.md), [Vercel AI SDK with useClientSession](./docs/get-started/vercel-use-client-session.md)
 - **[Frameworks](./docs/frameworks/)** - [Vercel AI SDK](./docs/frameworks/vercel-ai-sdk.md)
-- **[Features](./docs/features/)** - [Streaming](./docs/features/streaming.md), [Cancellation](./docs/features/cancel.md), [Interruption](./docs/features/interruption.md), [Optimistic updates](./docs/features/optimistic-updates.md), [History](./docs/features/history.md), [Branching](./docs/features/branching.md), [Multi-client sync](./docs/features/multi-client.md), [Concurrent runs](./docs/features/concurrent-runs.md)
+- **[Features](./docs/features/)** - [Streaming](./docs/features/streaming.md), [Cancellation](./docs/features/cancel.md), [Interruption](./docs/features/interruption.md), [Optimistic updates](./docs/features/optimistic-updates.md), [History](./docs/features/history.md), [Branching](./docs/features/branching.md), [Multi-client sync](./docs/features/multi-client.md), [Concurrent runs](./docs/features/concurrent-runs.md), [Presence](./docs/features/presence.md), [LiveObjects](./docs/features/liveobjects.md)
 - **[Reference](./docs/reference/)** - [React hooks](./docs/reference/react-hooks.md), [Error codes](./docs/reference/error-codes.md)
 - **[Internals](./docs/internals/)** - Architecture details for contributors
 
@@ -396,14 +381,16 @@ Working demo applications live in the [`demo/`](./demo/) directory:
 
 ## Development
 
+This repository uses [pnpm](https://pnpm.io/). Enable Corepack once (`corepack enable`) to pick up the pinned version automatically.
+
 ```bash
-npm install
-npm run build             # Build all entry points (ESM + UMD/CJS + .d.ts)
-npm run typecheck         # Type check
-npm run lint              # Lint
-npm test                  # Unit tests (mocks only)
-npm run test:integration  # Integration tests (needs ABLY_API_KEY)
-npm run precommit         # format:check + lint + typecheck
+pnpm install
+pnpm run build             # Build all entry points (ESM + UMD/CJS + .d.ts)
+pnpm run typecheck         # Type check
+pnpm run lint              # Lint
+pnpm test                  # Unit tests (mocks only)
+pnpm run test:integration  # Integration tests (needs ABLY_API_KEY)
+pnpm run precommit         # format:check + lint + typecheck
 ```
 
 ### Project structure

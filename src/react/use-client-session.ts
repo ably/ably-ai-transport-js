@@ -20,36 +20,36 @@
  */
 
 import * as Ably from 'ably';
+// Also augments RealtimeChannel with `.object` (ably/liveobjects side-effect).
+import type * as AblyObjects from 'ably/liveobjects';
 import { useContext, useEffect, useRef } from 'react';
 
+import type { CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
 import type { ClientSession, Tree, View } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
 import { ClientSessionContext } from './contexts/client-session-context.js';
 
-const SKIPPED_SESSION: ClientSession<unknown, unknown> = {
-  get tree(): Tree<unknown> {
+const SKIPPED_SESSION: ClientSession<CodecInputEvent, CodecOutputEvent, unknown, unknown> = {
+  get tree(): Tree<CodecOutputEvent, unknown> {
     throw new Ably.ErrorInfo('unable to access tree; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
-  get view(): View<unknown, unknown> {
+  get view(): View<CodecInputEvent, unknown> {
     throw new Ably.ErrorInfo('unable to access view; hook is skipped', ErrorCode.InvalidArgument, 400);
+  },
+  get presence(): Ably.RealtimePresence {
+    throw new Ably.ErrorInfo('unable to access presence; hook is skipped', ErrorCode.InvalidArgument, 400);
+  },
+  get object(): AblyObjects.RealtimeObject {
+    throw new Ably.ErrorInfo('unable to access object; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   connect: () => {
     throw new Ably.ErrorInfo('unable to connect; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
-  createView: (): View<unknown, unknown> => {
+  createView: (): View<CodecInputEvent, unknown> => {
     throw new Ably.ErrorInfo('unable to create view; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   cancel: () => {
     throw new Ably.ErrorInfo('unable to cancel; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  stageEvents: () => {
-    throw new Ably.ErrorInfo('unable to stage events; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  stageMessage: () => {
-    throw new Ably.ErrorInfo('unable to stage message; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  waitForRun: () => {
-    throw new Ably.ErrorInfo('unable to wait for run; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   on: () => {
     throw new Ably.ErrorInfo('unable to subscribe; hook is skipped', ErrorCode.InvalidArgument, 400);
@@ -67,14 +67,19 @@ const SKIPPED_SESSION: ClientSession<unknown, unknown> = {
  * that throws {@link Ably.ErrorInfo} on every access.
  * Check `sessionError` before using `session` to avoid those throws.
  */
-export interface ClientSessionHandle<TEvent, TMessage> {
+export interface ClientSessionHandle<
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+> {
   /**
    * The resolved session.
    *
    * A throwing stub when `skip` is `true`, when no matching {@link ClientSessionProvider}
    * was found in the tree, or when session construction failed.
    */
-  session: ClientSession<TEvent, TMessage>;
+  session: ClientSession<TInput, TOutput, TProjection, TMessage>;
   /**
    * Set when no matching {@link ClientSessionProvider} was found, when session
    * construction failed, and `skip` is `false`.
@@ -96,11 +101,16 @@ export interface ClientSessionHandle<TEvent, TMessage> {
  * created when the session resolves and removed on unmount.
  * @param props - Hook options.
  * @param props.channelName - Look up a specific provider by channel name; omit for the nearest.
- * @param props.skip - When `true`, return the stub session immediately without reading context.
+ * @param props.skip - When `true`, return the stub session immediately without resolving a provider slot.
  * @param props.onError - Called whenever the resolved session emits an error event.
  * @returns `{ session, sessionError }`.
  */
-export const useClientSession = <TEvent, TMessage>({
+export const useClientSession = <
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+>({
   channelName,
   skip,
   onError,
@@ -121,15 +131,15 @@ export const useClientSession = <TEvent, TMessage>({
    * automatically removed on unmount or when the session changes.
    */
   onError?: (error: Ably.ErrorInfo) => void;
-} = {}): ClientSessionHandle<TEvent, TMessage> => {
+} = {}): ClientSessionHandle<TInput, TOutput, TProjection, TMessage> => {
   const { nearest: nearestSlot, providers } = useContext(ClientSessionContext);
   const errorCallbackRef = useRef(onError);
   errorCallbackRef.current = onError;
 
   // Compute the session for the onError subscription *before* any conditional
   // returns to satisfy React's rules of hooks (no hooks in branches).
-  // Erased generics — this ref is only used in the useEffect below.
-  const resolvedForEffect: ClientSession<unknown, unknown> | undefined = skip
+  // Erased generics — this local is only used in the useEffect below.
+  const resolvedForEffect: ClientSession<CodecInputEvent, CodecOutputEvent, unknown, unknown> | undefined = skip
     ? undefined
     : channelName === undefined
       ? nearestSlot?.session
@@ -144,7 +154,7 @@ export const useClientSession = <TEvent, TMessage>({
 
   if (skip) {
     return {
-      session: SKIPPED_SESSION as unknown as ClientSession<TEvent, TMessage>,
+      session: SKIPPED_SESSION as unknown as ClientSession<TInput, TOutput, TProjection, TMessage>,
     };
   }
 
@@ -155,17 +165,17 @@ export const useClientSession = <TEvent, TMessage>({
         // CAST: ClientSessionContext stores sessions with erased generics.
         // The caller is responsible for using type parameters matching those of the ClientSessionProvider.
         return {
-          session: slot.session as unknown as ClientSession<TEvent, TMessage>,
+          session: slot.session as unknown as ClientSession<TInput, TOutput, TProjection, TMessage>,
         };
       }
       // Provider exists but construction failed.
       return {
-        session: SKIPPED_SESSION as unknown as ClientSession<TEvent, TMessage>,
+        session: SKIPPED_SESSION as unknown as ClientSession<TInput, TOutput, TProjection, TMessage>,
         sessionError: slot.sessionError,
       };
     }
     return {
-      session: SKIPPED_SESSION as unknown as ClientSession<TEvent, TMessage>,
+      session: SKIPPED_SESSION as unknown as ClientSession<TInput, TOutput, TProjection, TMessage>,
       sessionError: new Ably.ErrorInfo(
         `unable to use session; no ClientSessionProvider found for channelName "${channelName}"`,
         ErrorCode.BadRequest,
@@ -178,18 +188,18 @@ export const useClientSession = <TEvent, TMessage>({
     if (nearestSlot.session) {
       // CAST: ClientSessionContext stores session with erased generics; types fixed at call site.
       return {
-        session: nearestSlot.session as unknown as ClientSession<TEvent, TMessage>,
+        session: nearestSlot.session as unknown as ClientSession<TInput, TOutput, TProjection, TMessage>,
       };
     }
     // Nearest provider exists but construction failed.
     return {
-      session: SKIPPED_SESSION as unknown as ClientSession<TEvent, TMessage>,
+      session: SKIPPED_SESSION as unknown as ClientSession<TInput, TOutput, TProjection, TMessage>,
       sessionError: nearestSlot.sessionError,
     };
   }
 
   return {
-    session: SKIPPED_SESSION as unknown as ClientSession<TEvent, TMessage>,
+    session: SKIPPED_SESSION as unknown as ClientSession<TInput, TOutput, TProjection, TMessage>,
     sessionError: new Ably.ErrorInfo(
       'unable to use session; no ClientSessionProvider found in the tree',
       ErrorCode.BadRequest,

@@ -19,7 +19,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
 import { createClientSession } from '../../../src/core/transport/client-session.js';
 import type { AgentSession, ClientSession } from '../../../src/core/transport/types.js';
-import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
+import {
+  UIMessageCodec,
+  type VercelInput,
+  type VercelOutput,
+  type VercelProjection,
+} from '../../../src/vercel/codec/index.js';
 import type { ChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
@@ -31,14 +36,14 @@ import { createRunFromOpts } from '../../helper/run-from-opts.js';
 // ---------------------------------------------------------------------------
 
 describe('useChat error propagation', () => {
-  let agentSession: AgentSession<AI.UIMessageChunk, AI.UIMessage> | undefined;
-  let clientSession: ClientSession<AI.UIMessageChunk, AI.UIMessage> | undefined;
+  let agentSession: AgentSession<VercelOutput, VercelProjection, AI.UIMessage> | undefined;
+  let clientSession: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> | undefined;
   let chatTransport: ChatTransport | undefined;
 
   afterEach(async () => {
     await clientSession?.close();
     clientSession = undefined;
-    agentSession?.close();
+    await agentSession?.close();
     agentSession = undefined;
     chatTransport = undefined;
     closeAllClients();
@@ -52,12 +57,12 @@ describe('useChat error propagation', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: clientClient.auth.clientId,
-      api: 'http://localhost:1/nonexistent',
     });
     await clientSession.connect();
 
-    chatTransport = createChatTransport(clientSession);
+    // The transport owns the agent-invocation POST — point it at a dead
+    // endpoint so the POST fails and the useChat-facing stream errors.
+    chatTransport = createChatTransport(clientSession, { api: 'http://localhost:1/nonexistent' });
 
     const onError = vi.fn();
 
@@ -103,12 +108,12 @@ describe('useChat error propagation', () => {
       codec: UIMessageCodec,
       // Tests use the runId-coordination pattern (invocationId from the
       // client doesn't reach the test-driven serverRun), so skip the
-      // channel lookup and rely on `invocation.messages` (empty here).
-      promptLookupTimeoutMs: 0,
+      // channel input-event lookup entirely.
+      inputEventLookupTimeoutMs: 0,
     });
     await agentSession.connect();
 
-    // Capture fetch calls so we can extract the runId from the POST body.
+    // Capture the transport's invocation POST so we can extract the runId.
     const fetchCalls: RequestInit[] = [];
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- inline mock returns Promise.resolve directly
     const capturingFetch = ((_url: string | URL | Request, init?: RequestInit) => {
@@ -120,18 +125,12 @@ describe('useChat error propagation', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      clientId: clientClient.auth.clientId,
-      api: '/api/chat',
-      fetch: capturingFetch,
-      // Client and server use independent invocation-ids in this test
-      // (createRunFromOpts mints its own), so the client's
-      // run-start-by-invocation matcher won't resolve. Disable the wait so
-      // send() resolves on publish ack and useChat gets the stream.
-      runStartDeadlineMs: 0,
     });
     await clientSession.connect();
 
-    chatTransport = createChatTransport(clientSession);
+    // The transport POSTs the invocation; capture it to read the runId, and
+    // succeed (status 200) so the run proceeds and we can detach mid-stream.
+    chatTransport = createChatTransport(clientSession, { api: '/api/chat', fetch: capturingFetch });
 
     const onError = vi.fn();
 
@@ -169,7 +168,6 @@ describe('useChat error propagation', () => {
     // The stream stays open so we can detach the channel mid-stream.
     const serverRun = createRunFromOpts(agentSession, {
       runId,
-      clientId: clientClient.auth.clientId,
     });
     await serverRun.start();
 
@@ -191,8 +189,8 @@ describe('useChat error propagation', () => {
     const ct = clientSession;
     await waitFor(
       () => {
-        const messages = ct.view.flattenNodes().map((n) => n.message);
-        expect(messages.find((m) => m.role === 'assistant')).toBeDefined();
+        const messages = ct.view.getMessages();
+        expect(messages.find((m) => m.message.role === 'assistant')).toBeDefined();
       },
       { timeout: 10_000 },
     );

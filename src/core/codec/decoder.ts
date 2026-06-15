@@ -6,24 +6,18 @@
  * event decoding.
  *
  * Domain decoders call `createDecoderCore(hooks, options)` and provide hooks
- * for stream classification, event building, and discrete decoding.
+ * for stream classification, event building, and discrete decoding. Hooks
+ * return a flat `TEvent[]` — no event-vs-message union. Per-message routing
+ * concerns (`codec-message-id`) are handled by the SDK via `ReducerMeta`, not
+ * here.
  */
 
 import type * as Ably from 'ably';
 
-import { HEADER_MSG_ID, HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../constants.js';
+import { HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../constants.js';
 import type { Logger } from '../../logger.js';
-import { getHeaders } from '../../utils.js';
-import type { DecoderOutput, MessagePayload, StreamTrackerState } from './types.js';
-
-/**
- * Wrap a domain event as a single-element decoder output array.
- * @param event - The domain event to wrap.
- * @returns A single-element array containing the event as a decoder output.
- */
-export const eventOutput = <TEvent, TMessage>(event: TEvent): DecoderOutput<TEvent, TMessage>[] => [
-  { kind: 'event', event },
-];
+import { getCodecHeaders, getTransportHeaders } from '../../utils.js';
+import type { MessagePayload, StreamTrackerState } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Options
@@ -44,32 +38,29 @@ export interface DecoderCoreOptions {
 // ---------------------------------------------------------------------------
 
 /** Hooks that a domain codec provides to the decoder core for stream classification and event building. */
-export interface DecoderCoreHooks<TEvent, TMessage> {
+export interface DecoderCoreHooks<TEvent> {
   /**
    * Build domain events emitted when a new stream starts. May return multiple
    * events (e.g. a start event and a start-step event).
    */
-  buildStartEvents(tracker: StreamTrackerState): DecoderOutput<TEvent, TMessage>[];
+  buildStartEvents(tracker: StreamTrackerState): TEvent[];
 
   /** Build domain events for a text delta received on a stream. */
-  buildDeltaEvents(tracker: StreamTrackerState, delta: string): DecoderOutput<TEvent, TMessage>[];
+  buildDeltaEvents(tracker: StreamTrackerState, delta: string): TEvent[];
 
   /**
-   * Build domain events emitted when a stream finishes (x-ably-status:finished).
-   * Not called for aborted streams. The closing headers may differ from
-   * tracker.headers if the closing append carried updated headers.
+   * Build domain events emitted when a stream completes (status:complete).
+   * Not called for cancelled streams. The closing codec headers may differ
+   * from tracker.codecHeaders if the closing append carried updated headers.
    */
-  buildEndEvents(
-    tracker: StreamTrackerState,
-    closingHeaders: Record<string, string>,
-  ): DecoderOutput<TEvent, TMessage>[];
+  buildEndEvents(tracker: StreamTrackerState, closingCodecHeaders: Record<string, string>): TEvent[];
 
   /**
-   * Decode a discrete message (message.create where x-ably-stream is "false",
-   * or a non-streamable first-contact update). Handles user messages, lifecycle
-   * events, tool lifecycle, data-*, etc.
+   * Decode a discrete message (a `message.create` whose stream header is not
+   * "true", or a non-streamable first-contact update). Handles user messages,
+   * tool lifecycle, data-*, etc.
    */
-  decodeDiscrete(input: MessagePayload): DecoderOutput<TEvent, TMessage>[];
+  decodeDiscrete(input: MessagePayload): TEvent[];
 }
 
 // ---------------------------------------------------------------------------
@@ -77,9 +68,9 @@ export interface DecoderCoreHooks<TEvent, TMessage> {
 // ---------------------------------------------------------------------------
 
 /** The decoder core returned by {@link createDecoderCore}. */
-export interface DecoderCore<TEvent, TMessage> {
-  /** Decode a single Ably message into zero or more domain outputs. */
-  decode(message: Ably.InboundMessage): DecoderOutput<TEvent, TMessage>[];
+export interface DecoderCore<TEvent> {
+  /** Decode a single Ably message into zero or more domain TEvents. */
+  decode(message: Ably.InboundMessage): TEvent[];
 }
 
 // ---------------------------------------------------------------------------
@@ -87,70 +78,50 @@ export interface DecoderCore<TEvent, TMessage> {
 // ---------------------------------------------------------------------------
 
 // Spec: AIT-CD7
-class DefaultDecoderCore<TEvent, TMessage> implements DecoderCore<TEvent, TMessage> {
-  private readonly _hooks: DecoderCoreHooks<TEvent, TMessage>;
+class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
+  private readonly _hooks: DecoderCoreHooks<TEvent>;
   private readonly _logger: Logger | undefined;
   private readonly _onStreamUpdate: ((tracker: StreamTrackerState) => void) | undefined;
   private readonly _onStreamDelete: ((serial: string, tracker: StreamTrackerState | undefined) => void) | undefined;
   private readonly _serialState = new Map<string, StreamTrackerState>();
 
-  constructor(hooks: DecoderCoreHooks<TEvent, TMessage>, options: DecoderCoreOptions = {}) {
+  constructor(hooks: DecoderCoreHooks<TEvent>, options: DecoderCoreOptions = {}) {
     this._hooks = hooks;
     this._onStreamUpdate = options.onStreamUpdate;
     this._onStreamDelete = options.onStreamDelete;
     this._logger = options.logger?.withContext({ component: 'DecoderCore' });
   }
 
-  decode(message: Ably.InboundMessage): DecoderOutput<TEvent, TMessage>[] {
+  decode(message: Ably.InboundMessage): TEvent[] {
     const action = message.action;
 
     this._logger?.trace('DefaultDecoderCore.decode();', { action, serial: message.serial, name: message.name });
-
-    let outputs: DecoderOutput<TEvent, TMessage>[];
 
     switch (action) {
       // Spec: AIT-CD7a
       case 'message.create': {
         const payload = this._toPayload(message);
-
-        outputs =
-          payload.headers?.[HEADER_STREAM] === 'true'
-            ? this._decodeStreamedCreate(payload, message.serial)
-            : this._hooks.decodeDiscrete(payload);
-        break;
+        return payload.transportHeaders?.[HEADER_STREAM] === 'true'
+          ? this._decodeStreamedCreate(payload, message.serial)
+          : this._hooks.decodeDiscrete(payload);
       }
 
       case 'message.append': {
-        outputs = this._decodeAppend(message);
-        break;
+        return this._decodeAppend(message);
       }
 
       case 'message.update': {
-        outputs = this._decodeUpdate(message);
-        break;
+        return this._decodeUpdate(message);
       }
 
       case 'message.delete': {
-        outputs = this._decodeDelete(message);
-        break;
+        return this._decodeDelete(message);
       }
 
       default: {
         return [];
       }
     }
-
-    // Tag all event outputs with the message ID from x-ably-msg-id for accumulator correlation.
-    const messageId = getHeaders(message)[HEADER_MSG_ID];
-    if (messageId) {
-      for (const output of outputs) {
-        if (output.kind === 'event') {
-          output.messageId = messageId;
-        }
-      }
-    }
-
-    return outputs;
   }
 
   // -------------------------------------------------------------------------
@@ -162,7 +133,8 @@ class DefaultDecoderCore<TEvent, TMessage> implements DecoderCore<TEvent, TMessa
       name: message.name ?? '',
       // CAST: Ably SDK types `data` as `any`; cast to unknown is the safe boundary type.
       data: message.data as unknown,
-      headers: getHeaders(message),
+      transportHeaders: getTransportHeaders(message),
+      codecHeaders: getCodecHeaders(message),
     };
   }
 
@@ -201,20 +173,17 @@ class DefaultDecoderCore<TEvent, TMessage> implements DecoderCore<TEvent, TMessa
   // Private: streamed message create
   // -------------------------------------------------------------------------
 
-  private _decodeStreamedCreate(
-    payload: MessagePayload,
-    serial: string | undefined,
-  ): DecoderOutput<TEvent, TMessage>[] {
+  private _decodeStreamedCreate(payload: MessagePayload, serial: string | undefined): TEvent[] {
     if (!serial) return [];
 
-    const streamId = payload.headers?.[HEADER_STREAM_ID] ?? '';
-    const h = payload.headers ?? {};
+    const streamId = payload.transportHeaders?.[HEADER_STREAM_ID] ?? '';
 
     const tracker: StreamTrackerState = {
       name: payload.name,
       streamId,
       accumulated: '',
-      headers: { ...h },
+      codecHeaders: { ...payload.codecHeaders },
+      transportHeaders: { ...payload.transportHeaders },
       closed: false,
     };
     this._serialState.set(serial, tracker);
@@ -233,7 +202,7 @@ class DefaultDecoderCore<TEvent, TMessage> implements DecoderCore<TEvent, TMessa
   // -------------------------------------------------------------------------
 
   // Spec: AIT-CD8
-  private _decodeAppend(message: Ably.InboundMessage): DecoderOutput<TEvent, TMessage>[] {
+  private _decodeAppend(message: Ably.InboundMessage): TEvent[] {
     const serial = message.serial;
     if (!serial) return [];
 
@@ -243,23 +212,24 @@ class DefaultDecoderCore<TEvent, TMessage> implements DecoderCore<TEvent, TMessa
       return this._decodeUpdate(message);
     }
 
-    const h = getHeaders(message);
+    const transport = getTransportHeaders(message);
+    const closingCodec = getCodecHeaders(message);
     const delta = typeof message.data === 'string' ? message.data : '';
-    const status = h[HEADER_STATUS];
-    const outputs: DecoderOutput<TEvent, TMessage>[] = [];
+    const status = transport[HEADER_STATUS];
+    const outputs: TEvent[] = [];
 
     if (delta.length > 0) {
       tracker.accumulated += delta;
       outputs.push(...this._hooks.buildDeltaEvents(tracker, delta));
     }
 
-    if (status === 'finished' && !tracker.closed) {
+    if (status === 'complete' && !tracker.closed) {
       tracker.closed = true;
-      outputs.push(...this._hooks.buildEndEvents(tracker, h));
-      this._logger?.debug('DefaultDecoderCore._decodeAppend(); stream finished', { streamId: tracker.streamId });
-    } else if (status === 'aborted' && !tracker.closed) {
+      outputs.push(...this._hooks.buildEndEvents(tracker, closingCodec));
+      this._logger?.debug('DefaultDecoderCore._decodeAppend(); stream complete', { streamId: tracker.streamId });
+    } else if (status === 'cancelled' && !tracker.closed) {
       tracker.closed = true;
-      this._logger?.debug('DefaultDecoderCore._decodeAppend(); stream aborted', { streamId: tracker.streamId });
+      this._logger?.debug('DefaultDecoderCore._decodeAppend(); stream cancelled', { streamId: tracker.streamId });
     }
 
     return outputs;
@@ -270,14 +240,15 @@ class DefaultDecoderCore<TEvent, TMessage> implements DecoderCore<TEvent, TMessa
   // -------------------------------------------------------------------------
 
   // Spec: AIT-CD9
-  private _decodeUpdate(message: Ably.InboundMessage): DecoderOutput<TEvent, TMessage>[] {
+  private _decodeUpdate(message: Ably.InboundMessage): TEvent[] {
     const serial = message.serial;
     if (!serial) return [];
 
     const payload = this._toPayload(message);
-    const h = payload.headers ?? {};
-    const isStreamed = h[HEADER_STREAM] === 'true';
-    const status = h[HEADER_STATUS];
+    const transport = payload.transportHeaders ?? {};
+    const codec = payload.codecHeaders ?? {};
+    const isStreamed = transport[HEADER_STREAM] === 'true';
+    const status = transport[HEADER_STATUS];
 
     const tracker = this._serialState.get(serial);
 
@@ -291,17 +262,17 @@ class DefaultDecoderCore<TEvent, TMessage> implements DecoderCore<TEvent, TMessa
     // --- Tracker exists: prefix-match or replacement ---
     if (data.startsWith(tracker.accumulated)) {
       const delta = data.slice(tracker.accumulated.length);
-      const outputs: DecoderOutput<TEvent, TMessage>[] = [];
+      const outputs: TEvent[] = [];
 
       if (delta.length > 0) {
         tracker.accumulated = data;
         outputs.push(...this._hooks.buildDeltaEvents(tracker, delta));
       }
 
-      if (status === 'finished' && !tracker.closed) {
+      if (status === 'complete' && !tracker.closed) {
         tracker.closed = true;
-        outputs.push(...this._hooks.buildEndEvents(tracker, h));
-      } else if (status === 'aborted' && !tracker.closed) {
+        outputs.push(...this._hooks.buildEndEvents(tracker, codec));
+      } else if (status === 'cancelled' && !tracker.closed) {
         tracker.closed = true;
       }
 
@@ -310,7 +281,8 @@ class DefaultDecoderCore<TEvent, TMessage> implements DecoderCore<TEvent, TMessa
 
     // --- Replacement (NOT a prefix match) ---
     tracker.accumulated = data;
-    tracker.headers = { ...h };
+    tracker.codecHeaders = { ...codec };
+    tracker.transportHeaders = { ...transport };
 
     this._invokeOnStreamUpdate(tracker);
 
@@ -322,14 +294,14 @@ class DefaultDecoderCore<TEvent, TMessage> implements DecoderCore<TEvent, TMessa
     isStreamed: boolean,
     status: string | undefined,
     serial: string,
-  ): DecoderOutput<TEvent, TMessage>[] {
+  ): TEvent[] {
     // Non-streamed messages are discrete
     if (!isStreamed) {
       return this._hooks.decodeDiscrete(payload);
     }
 
-    const streamId = payload.headers?.[HEADER_STREAM_ID] ?? '';
-    const h = payload.headers ?? {};
+    const streamId = payload.transportHeaders?.[HEADER_STREAM_ID] ?? '';
+    const codec = payload.codecHeaders ?? {};
     const data = typeof payload.data === 'string' ? payload.data : '';
 
     this._logger?.debug('DefaultDecoderCore._decodeFirstContact(); first-contact stream', {
@@ -343,20 +315,21 @@ class DefaultDecoderCore<TEvent, TMessage> implements DecoderCore<TEvent, TMessa
       name: payload.name,
       streamId,
       accumulated: data,
-      headers: { ...h },
-      closed: status === 'finished' || status === 'aborted',
+      codecHeaders: { ...codec },
+      transportHeaders: { ...payload.transportHeaders },
+      closed: status === 'complete' || status === 'cancelled',
     };
     this._serialState.set(serial, newTracker);
 
-    // Emit start + delta (if any) + end (if finished)
+    // Emit start + delta (if any) + end (if complete)
     const outputs = this._hooks.buildStartEvents(newTracker);
 
     if (data.length > 0) {
       outputs.push(...this._hooks.buildDeltaEvents(newTracker, data));
     }
 
-    if (status === 'finished') {
-      outputs.push(...this._hooks.buildEndEvents(newTracker, h));
+    if (status === 'complete') {
+      outputs.push(...this._hooks.buildEndEvents(newTracker, codec));
     }
 
     return outputs;
@@ -367,7 +340,7 @@ class DefaultDecoderCore<TEvent, TMessage> implements DecoderCore<TEvent, TMessa
   // -------------------------------------------------------------------------
 
   // Spec: AIT-CD10
-  private _decodeDelete(message: Ably.InboundMessage): DecoderOutput<TEvent, TMessage>[] {
+  private _decodeDelete(message: Ably.InboundMessage): TEvent[] {
     const serial = message.serial;
     if (!serial) return [];
 
@@ -396,7 +369,7 @@ class DefaultDecoderCore<TEvent, TMessage> implements DecoderCore<TEvent, TMessa
  * @param options - Decoder configuration (callbacks, logger).
  * @returns A new {@link DecoderCore} instance.
  */
-export const createDecoderCore = <TEvent, TMessage>(
-  hooks: DecoderCoreHooks<TEvent, TMessage>,
+export const createDecoderCore = <TEvent>(
+  hooks: DecoderCoreHooks<TEvent>,
   options: DecoderCoreOptions = {},
-): DecoderCore<TEvent, TMessage> => new DefaultDecoderCore(hooks, options);
+): DecoderCore<TEvent> => new DefaultDecoderCore(hooks, options);

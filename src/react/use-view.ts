@@ -1,38 +1,52 @@
 /**
  * useView — reactive paginated view of the conversation.
  *
- * Subscribes to view updates and exposes the visible nodes, branch navigation,
- * write operations, pagination state, and a `loadOlder` callback. Pass `session`
- * to use a session's default view, or `view` to subscribe to a specific
- * {@link View} directly. When both are omitted, defaults to the nearest
- * {@link ClientSessionProvider}'s session via context.
+ * Subscribes to view updates and exposes the visible messages, msg-anchored
+ * branch navigation, write operations, pagination state, and a `loadOlder`
+ * callback. Pass `session` to use a session's default view, or `view` to
+ * subscribe to a specific {@link View} directly. When both are omitted,
+ * defaults to the nearest {@link ClientSessionProvider}'s session via context.
  */
 
 import * as Ably from 'ably';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
-import type { ActiveRun, MessageNode, SendOptions, View } from '../core/transport/types.js';
+import type { CodecInputEvent, CodecMessage, CodecOutputEvent } from '../core/codec/types.js';
+import type { ActiveRun, BranchSelection, RunInfo, SendOptions, View } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
 import type { BaseSessionOption } from './internal/use-resolved-session.js';
 import { useResolvedSession } from './internal/use-resolved-session.js';
 
 /** Options for {@link useView}. */
-export interface UseViewOptions<TEvent, TMessage> extends BaseSessionOption<TEvent, TMessage> {
+export interface UseViewOptions<
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+> extends BaseSessionOption<TInput, TOutput, TProjection, TMessage> {
   /** A specific {@link View} to subscribe to directly. Takes priority over `session`. */
-  view?: View<TEvent, TMessage> | null;
-  /** Maximum number of older messages to load per page. When provided, auto-loads on mount. */
+  view?: View<TInput, TMessage> | null;
+  /** Maximum number of older Runs to reveal per page (the pagination unit is the Run, not the message). When provided, auto-loads the first page on mount. */
   limit?: number;
   /** When `true`, skip all subscriptions and return an empty handle immediately. */
   skip?: boolean;
 }
 
 /** Handle for the paginated, branch-aware conversation view. */
-export interface ViewHandle<TEvent, TMessage> {
-  /** The visible domain messages along the selected branch. */
-  messages: TMessage[];
-  /** Visible conversation nodes along the selected branch. */
-  nodes: MessageNode<TMessage>[];
-  /** Whether there are older messages that can be revealed via `loadOlder`. */
+export interface ViewHandle<TInput extends CodecInputEvent, TMessage> {
+  /**
+   * The visible messages along the selected branch, concatenated across all
+   * visible Runs, each paired with its codec-message-id (see
+   * {@link CodecMessage}). Read the domain object from each entry's
+   * `message` field.
+   *
+   * Correlate a rendered message back to the View — `runOf`,
+   * `branchSelection`, `selectSibling`, `regenerate`, or `edit` — via its
+   * `codecMessageId`, which the SDK assigns and tracks independently of any
+   * identity the domain `message` may carry. See {@link View.getMessages}.
+   */
+  messages: CodecMessage<TMessage>[];
+  /** Whether there are older Runs that can be revealed via `loadOlder`. */
   hasOlder: boolean;
   /** Whether a page load is currently in progress. */
   loading: boolean;
@@ -44,31 +58,69 @@ export interface ViewHandle<TEvent, TMessage> {
   loadError: Ably.ErrorInfo | undefined;
   /**
    * Load older messages into the view. No-op if already loading.
-   * On failure, `error` is set; on success, `error` is cleared.
+   * On failure, `loadError` is set; on success, `loadError` is cleared.
    */
   loadOlder: () => Promise<void>;
-  /** Select a sibling at a fork point by index. Triggers a view update with the new branch. */
-  select: (msgId: string, index: number) => void;
-  /** Index of the currently selected sibling at a fork point. */
-  getSelectedIndex: (msgId: string) => number;
-  /** Get all sibling messages at a fork point, ordered chronologically by serial. */
-  getSiblings: (msgId: string) => TMessage[];
-  /** Whether a message has sibling alternatives (i.e., show navigation arrows). */
-  hasSiblings: (msgId: string) => boolean;
-  /** Get a node by msgId, or undefined if not found. */
-  getNode: (msgId: string) => MessageNode<TMessage> | undefined;
-  /** Send one or more messages in the context of this view's selected branch. */
-  send: (messages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>;
-  /** Regenerate an assistant message, using this view's branch for history. */
-  regenerate: (messageId: string, options?: SendOptions) => Promise<ActiveRun<TEvent>>;
-  /** Edit a user message, forking from this view's branch. */
-  edit: (messageId: string, newMessages: TMessage | TMessage[], options?: SendOptions) => Promise<ActiveRun<TEvent>>;
-  /** Amend an existing message and start a continuation run (e.g. tool results). */
-  update: (msgId: string, events: TEvent[], options?: SendOptions) => Promise<ActiveRun<TEvent>>;
+  /**
+   * Look up the {@link RunInfo} for the Run that owns `codecMessageId`.
+   * Returns `undefined` when the codec-message-id hasn't been observed.
+   * See {@link View.runOf}.
+   */
+  runOf: (codecMessageId: string) => RunInfo | undefined;
+  /**
+   * Direct lookup by runId. Returns `undefined` when the Run hasn't been
+   * observed. See {@link View.run}.
+   */
+  run: (runId: string) => RunInfo | undefined;
+  /**
+   * Snapshot of the visible Runs along the selected branch, in
+   * chronological order. Returns `[]` when the view isn't resolved.
+   * See {@link View.runs}.
+   */
+  runs: () => RunInfo[];
+  /**
+   * Resolve the {@link BranchSelection} bundle anchored at
+   * `codecMessageId`. Always returns a safe object — see
+   * {@link BranchSelection}. See {@link View.branchSelection}.
+   */
+  branchSelection: (codecMessageId: string) => BranchSelection<TMessage>;
+  /**
+   * Select a sibling at the branch point anchored at `codecMessageId`.
+   * `index` is clamped to `[0, siblings.length - 1]`. Silent no-op when
+   * `codecMessageId` isn't a branch anchor. See {@link View.selectSibling}.
+   */
+  selectSibling: (codecMessageId: string, index: number) => void;
+  /**
+   * Send one or more TInputs on the channel and fire a POST. See {@link View.send}.
+   * @throws Ably.ErrorInfo with code {@link ErrorCode.InvalidArgument} when no view is resolved (before the session is available, or when `skip` is `true`).
+   */
+  send: (events: TInput | TInput[], options?: SendOptions) => Promise<ActiveRun>;
+  /**
+   * Regenerate an assistant message, using this view's branch for history.
+   * @throws Ably.ErrorInfo with code {@link ErrorCode.InvalidArgument} when no view is resolved (before the session is available, or when `skip` is `true`).
+   */
+  regenerate: (messageId: string, options?: SendOptions) => Promise<ActiveRun>;
+  /**
+   * Edit a user message, forking from this view's branch.
+   * Rejects with an `Ably.ErrorInfo` (code {@link ErrorCode.InvalidArgument}) if no view is resolved — e.g. before the session is available, or when `skip` is `true`.
+   */
+  edit: (messageId: string, inputs: TInput | TInput[], options?: SendOptions) => Promise<ActiveRun>;
 }
 
 /**
- * Subscribe to a view and return the visible node list with pagination, navigation, and write operations.
+ * Fallback returned by `branchSelection` when the view isn't resolved.
+ * Same shape the view returns for an unknown codec-message-id, so callers
+ * can destructure uniformly.
+ */
+const EMPTY_BRANCH_SELECTION: BranchSelection<never> = {
+  hasSiblings: false,
+  siblings: [],
+  index: 0,
+  selected: undefined,
+};
+
+/**
+ * Subscribe to a view and return the visible messages with pagination, navigation, and write operations.
  *
  * `view` takes priority over `session`. When neither is provided, the nearest
  * {@link ClientSessionProvider}'s session is used. When `limit` is provided, auto-loads
@@ -76,20 +128,20 @@ export interface ViewHandle<TEvent, TMessage> {
  * @param props - Options for selecting the view source and configuring auto-load.
  * @param props.session - Client session whose default view to subscribe to; defaults to the nearest provider.
  * @param props.view - A specific {@link View} to subscribe to directly. Takes priority over `session`.
- * @param props.limit - Max older messages per page; when provided, auto-loads on mount.
+ * @param props.limit - Max older Runs to reveal per page; when provided, auto-loads the first page on mount.
  * @param props.skip - When `true`, skip all subscriptions and return an empty handle.
- * @returns A {@link ViewHandle} with nodes, pagination state, navigation, write operations, and loadOlder.
+ * @returns A {@link ViewHandle} with messages, pagination state, navigation, write operations, and loadOlder.
  */
-export const useView = <TEvent, TMessage>({
+export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>({
   session,
   view,
   limit,
   skip,
-}: UseViewOptions<TEvent, TMessage> = {}): ViewHandle<TEvent, TMessage> => {
+}: UseViewOptions<TInput, TOutput, TProjection, TMessage> = {}): ViewHandle<TInput, TMessage> => {
   const resolvedSession = useResolvedSession({ session, skip });
   const resolvedView = skip ? undefined : (view ?? resolvedSession?.view);
 
-  const [nodes, setNodes] = useState<MessageNode<TMessage>[]>(() => resolvedView?.flattenNodes() ?? []);
+  const [messages, setMessages] = useState<CodecMessage<TMessage>[]>(() => resolvedView?.getMessages() ?? []);
   const [hasOlder, setHasOlder] = useState(() => resolvedView?.hasOlder() ?? false);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<Ably.ErrorInfo | undefined>();
@@ -104,7 +156,7 @@ export const useView = <TEvent, TMessage>({
   // Subscribe to view updates
   useEffect(() => {
     if (!resolvedView) {
-      setNodes([]);
+      setMessages([]);
       setHasOlder(false);
       setLoadError(undefined);
       return;
@@ -114,12 +166,12 @@ export const useView = <TEvent, TMessage>({
     autoLoadedRef.current = false;
 
     // Sync initial state
-    setNodes(resolvedView.flattenNodes());
+    setMessages(resolvedView.getMessages());
     setHasOlder(resolvedView.hasOlder());
     setLoadError(undefined);
 
     const unsub = resolvedView.on('update', () => {
-      setNodes(resolvedView.flattenNodes());
+      setMessages(resolvedView.getMessages());
       setHasOlder(resolvedView.hasOlder());
     });
     return unsub;
@@ -150,30 +202,39 @@ export const useView = <TEvent, TMessage>({
     void loadOlder();
   }, [autoLoad, resolvedView, loadOlder]);
 
-  const messages = useMemo(() => nodes.map((n) => n.message), [nodes]);
+  // Run lookups
+  const runOf = useCallback(
+    (codecMessageId: string): RunInfo | undefined => resolvedView?.runOf(codecMessageId),
+    [resolvedView],
+  );
 
-  // Branch navigation callbacks
-  const select = useCallback(
-    (msgId: string, index: number) => {
-      resolvedView?.select(msgId, index);
+  const run = useCallback((runId: string): RunInfo | undefined => resolvedView?.run(runId), [resolvedView]);
+
+  const runs = useCallback((): RunInfo[] => resolvedView?.runs() ?? [], [resolvedView]);
+
+  // Branch navigation
+  const branchSelection = useCallback(
+    (codecMessageId: string): BranchSelection<TMessage> =>
+      // CAST: `EMPTY_BRANCH_SELECTION` is typed `BranchSelection<never>`; `never` is
+      // assignable to any `TMessage`, so the empty bundle is a valid fallback for
+      // the not-yet-resolved view case.
+      resolvedView?.branchSelection(codecMessageId) ?? (EMPTY_BRANCH_SELECTION as BranchSelection<TMessage>),
+    [resolvedView],
+  );
+
+  const selectSibling = useCallback(
+    (codecMessageId: string, index: number) => {
+      resolvedView?.selectSibling(codecMessageId, index);
     },
     [resolvedView],
   );
 
-  const getSelectedIndex = useCallback((msgId: string) => resolvedView?.getSelectedIndex(msgId) ?? 0, [resolvedView]);
-
-  const getSiblings = useCallback((msgId: string) => resolvedView?.getSiblings(msgId) ?? [], [resolvedView]);
-
-  const hasSiblings = useCallback((msgId: string) => resolvedView?.hasSiblings(msgId) ?? false, [resolvedView]);
-
-  const getNode = useCallback((msgId: string) => resolvedView?.getNode(msgId), [resolvedView]);
-
   // Write operation callbacks
   const send = useCallback(
-    async (msgs: TMessage | TMessage[], opts?: SendOptions) => {
+    async (events: TInput | TInput[], opts?: SendOptions) => {
       if (!resolvedView)
         throw new Ably.ErrorInfo('unable to send; view is not available', ErrorCode.InvalidArgument, 400);
-      return resolvedView.send(msgs, opts);
+      return resolvedView.send(events, opts);
     },
     [resolvedView],
   );
@@ -188,38 +249,27 @@ export const useView = <TEvent, TMessage>({
   );
 
   const edit = useCallback(
-    async (messageId: string, newMessages: TMessage | TMessage[], opts?: SendOptions) => {
+    async (messageId: string, inputs: TInput | TInput[], opts?: SendOptions) => {
       if (!resolvedView)
         throw new Ably.ErrorInfo('unable to edit; view is not available', ErrorCode.InvalidArgument, 400);
-      return resolvedView.edit(messageId, newMessages, opts);
-    },
-    [resolvedView],
-  );
-
-  const update = useCallback(
-    async (msgId: string, events: TEvent[], opts?: SendOptions) => {
-      if (!resolvedView)
-        throw new Ably.ErrorInfo('unable to update; view is not available', ErrorCode.InvalidArgument, 400);
-      return resolvedView.update(msgId, events, opts);
+      return resolvedView.edit(messageId, inputs, opts);
     },
     [resolvedView],
   );
 
   return {
     messages,
-    nodes,
     hasOlder,
     loading,
     loadError,
     loadOlder,
-    select,
-    getSelectedIndex,
-    getSiblings,
-    hasSiblings,
-    getNode,
+    runOf,
+    run,
+    runs,
+    branchSelection,
+    selectSibling,
     send,
     regenerate,
     edit,
-    update,
   };
 };

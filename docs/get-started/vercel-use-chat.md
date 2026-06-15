@@ -4,15 +4,17 @@ Build a streaming chat app using Vercel AI SDK's `useChat()` hook and AI Transpo
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 22+
 - An [Ably account](https://ably.com) with an API key
 - An LLM API key (this guide uses Anthropic, but any Vercel AI SDK provider works)
 
 ## Install dependencies
 
 ```bash
-npm install @ably/ai-transport ably ai @ai-sdk/react @ai-sdk/anthropic react react-dom next
+npm install @ably/ai-transport ably ai @ai-sdk/react @ai-sdk/anthropic react react-dom next jsonwebtoken
 ```
+
+The token endpoint in step 1 signs JWTs with `jsonwebtoken`. If you're using TypeScript, also install its types: `npm install --save-dev @types/jsonwebtoken`.
 
 ## 1. Create the Ably token endpoint
 
@@ -84,63 +86,58 @@ export function Providers({ clientId, children }: { clientId?: string; children:
 
 ## 3. Create the API route
 
-The server endpoint receives the HTTP POST from the client session, calls the LLM, and streams the response over Ably:
+The server endpoint receives the invocation POST from the chat transport, calls the LLM, and streams the response over Ably:
 
 ```typescript
 // app/api/chat/route.ts
 import { after } from 'next/server';
 import { streamText, convertToModelMessages } from 'ai';
-import type { UIMessage } from 'ai';
-import { anthropic } from '@ai-sdk/anthropic';
 import Ably from 'ably';
+import type { InvocationData } from '@ably/ai-transport';
 import { Invocation } from '@ably/ai-transport';
-import type { MessageNode } from '@ably/ai-transport';
-import { createAgentSession } from '@ably/ai-transport/vercel';
-
-interface ChatRequestBody {
-  runId: string;
-  clientId: string;
-  messages: MessageNode<UIMessage>[];
-  history?: MessageNode<UIMessage>[];
-  chatId: string;
-  forkOf?: string;
-  parent?: string | null;
-}
-
-const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY! });
+import { createAgentSession, vercelRunOutcome } from '@ably/ai-transport/vercel';
+import { anthropic } from '@ai-sdk/anthropic';
 
 export async function POST(req: Request) {
-  const { messages, history, chatId, runId, clientId, forkOf, parent } = (await req.json()) as ChatRequestBody;
+  // The chat transport POSTs an invocation pointer: { inputEventId, sessionName }.
+  const data = (await req.json()) as InvocationData;
+  const invocation = Invocation.fromJSON(data);
 
-  const session = createAgentSession({ client: ably, channelName: chatId });
+  // A fresh Ably client per request (trusted environment, API key direct).
+  // The agent is ephemeral: it attaches the channel with rewind, replays the
+  // just-published input event, streams the response, and closes.
+  const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY! });
+
+  const session = createAgentSession({ client: ably, channelName: invocation.sessionName });
   await session.connect();
-  const run = session.createRun(Invocation.fromJSON({ runId, clientId, parent, forkOf }));
+  const run = session.createRun(invocation, { signal: req.signal });
 
   await run.start();
 
-  // Publish user messages to the channel so all clients see them and they persist in history
-  if (messages.length > 0) {
-    await run.addMessages(messages, { clientId });
-  }
-
-  const allMessages = [...(history ?? []).map((h) => h.message), ...messages.map((m) => m.message)];
+  // Hydrate the conversation from the channel (the just-published user input
+  // plus prior history). `run.messages` is the UIMessage[] for the LLM.
+  await run.loadConversation();
 
   const result = streamText({
     model: anthropic('claude-sonnet-4-6'),
     system: 'You are a helpful assistant.',
-    messages: await convertToModelMessages(allMessages),
+    messages: await convertToModelMessages(run.messages),
     abortSignal: run.abortSignal,
   });
 
   // Stream in the background - don't block the HTTP response.
   // The client receives tokens from the Ably channel subscription, not the HTTP response.
   after(async () => {
-    const { reason } = await run.pipe(result.toUIMessageStream());
-    await run.end(reason);
+    const pipeResult = await run.pipe(result.toUIMessageStream());
+    const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
+    await run.end(outcome === 'suspend' ? 'complete' : outcome);
     session.close();
+    ably.close();
   });
 
-  return new Response(null, { status: 200 });
+  // Return the agent-minted ids. The chat transport routes the response over
+  // the Ably channel, so it ignores the body — but the contract is honoured.
+  return Response.json({ runId: run.runId, invocationId: run.invocationId });
 }
 ```
 
@@ -155,7 +152,7 @@ Wire up `useChat()` with the AI Transport hooks. `ChatTransportProvider` creates
 'use client';
 
 import { useChat } from '@ai-sdk/react';
-import { useActiveRuns, useView } from '@ably/ai-transport/react';
+import { useView } from '@ably/ai-transport/react';
 import { ChatTransportProvider, useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
 import { useState } from 'react';
 
@@ -166,7 +163,7 @@ function ChatInner({ chatId }: { chatId: string }) {
   const { chatTransport, session } = useChatTransport();
 
   // 2. Use Vercel's useChat with the chat transport adapter
-  const { messages, setMessages, sendMessage, stop } = useChat({
+  const { messages, setMessages, sendMessage, stop, status } = useChat({
     id: chatId,
     transport: chatTransport,
   });
@@ -174,9 +171,9 @@ function ChatInner({ chatId }: { chatId: string }) {
   // 3. Sync session messages into useChat's state (for observer messages)
   useMessageSync({ setMessages });
 
-  // 4. Track active runs for loading state
-  const activeRuns = useActiveRuns();
-  const isStreaming = activeRuns.size > 0;
+  // 4. useChat's status drives the Stop / Send toggle. useChat.stop() targets
+  //    the run it owns, so a global active-runs view isn't needed here.
+  const isStreaming = status === 'submitted' || status === 'streaming';
 
   // 5. Load history on mount
   useView({ limit: 30 });
@@ -202,12 +199,14 @@ function ChatInner({ chatId }: { chatId: string }) {
   );
 }
 
-export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
+export function Chat({ chatId }: { chatId: string }) {
   return (
     // ChatTransportProvider creates both ClientSession and ChatTransport.
     // The Realtime client is read from the surrounding <AblyProvider>; the
-    // session resolves the channel from channelName itself. No codec argument needed.
-    <ChatTransportProvider channelName={chatId} clientId={clientId}>
+    // session resolves the channel from channelName itself, and takes its
+    // identity from the client's clientId (set via the token below). No codec
+    // argument needed.
+    <ChatTransportProvider channelName={chatId}>
       <ChatInner chatId={chatId} />
     </ChatTransportProvider>
   );
@@ -244,9 +243,9 @@ Open `http://localhost:3000`. Type a message - you'll see tokens stream in real 
 
 1. `ChatTransportProvider` creates a `ClientSession` (subscribed to the Ably channel before attach — no messages lost) and wraps it in a `ChatTransport`. Both are stored in `ChatTransportContext` for descendants.
 2. `useChatTransport()` reads both from `ChatTransportContext` — no arguments needed for the nearest provider.
-3. `chatTransport` satisfies Vercel's `ChatTransport` interface; `session` is the underlying `ClientSession` used for `useMessageSync`, `useActiveRuns`, and `useView`.
-4. When you send a message, `useChat()` calls the chat transport's `sendMessages`, which fires an HTTP POST to `/api/chat` and opens a stream on the Ably channel.
-5. The server creates a run, publishes user messages, streams the LLM response through the encoder to the channel, and publishes a run-end event.
+3. `chatTransport` satisfies Vercel's `ChatTransport` interface; `session` is the underlying `ClientSession` used for `useMessageSync` and `useView`.
+4. When you send a message, `useChat()` calls the chat transport's `sendMessages`, which publishes your message on the Ably channel and POSTs the run's invocation pointer (`{ inputEventId, sessionName }`) to `/api/chat` to wake the agent.
+5. The server creates a run, hydrates the conversation with `run.loadConversation()`, streams the LLM response through the encoder to the channel, and publishes a run-end event.
 6. The client session decodes incoming Ably messages through `UIMessageCodec` and routes them to the stream.
 7. `useMessageSync()` syncs messages from the session (including messages from other clients) into `useChat`'s state.
 

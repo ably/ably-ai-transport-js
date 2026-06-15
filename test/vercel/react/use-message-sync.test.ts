@@ -6,6 +6,7 @@ import { createElement, type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ClientSession } from '../../../src/core/transport/types.js';
+import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
 import type { ChatTransportSlot } from '../../../src/vercel/react/contexts/chat-transport-context.js';
 import { ChatTransportContext } from '../../../src/vercel/react/contexts/chat-transport-context.js';
 import { useMessageSync } from '../../../src/vercel/react/use-message-sync.js';
@@ -21,7 +22,7 @@ const makeMessage = (id: string, role: AI.UIMessage['role'] = 'user'): AI.UIMess
 
 const makeNode = (m: AI.UIMessage) => ({
   message: m,
-  msgId: m.id,
+  codecMessageId: m.id,
   parentId: undefined,
   forkOf: undefined,
   headers: {},
@@ -51,16 +52,23 @@ const createMockSlot = (): MockSlot => {
     };
   });
 
+  // `flattenNodes` and `getMessages` are mocked together: tests stage
+  // `{ message }` entries via `viewFlattenNodes.mockReturnValue(...)` and
+  // `getMessages` projects them to the codec-message-id pairs the production
+  // code reads (then maps to the flat `UIMessage[]`).
   const viewFlattenNodes = vi.fn(() => [] as { message: AI.UIMessage }[]);
+  const viewGetMessages = vi.fn(() =>
+    viewFlattenNodes().map((n) => ({ codecMessageId: n.message.id, message: n.message })),
+  );
 
   const view = {
     on: viewOn,
     flattenNodes: viewFlattenNodes,
+    getMessages: viewGetMessages,
     hasOlder: vi.fn(() => false),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     loadOlder: vi.fn(() => Promise.resolve()),
-    getActiveRunIds: vi.fn(() => new Map()),
-  } as unknown as ClientSession<AI.UIMessageChunk, AI.UIMessage>['view'];
+  } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>['view'];
 
   const session = {
     view,
@@ -71,10 +79,9 @@ const createMockSlot = (): MockSlot => {
     regenerate: vi.fn(),
     edit: vi.fn(),
     cancel: vi.fn(),
-    waitForRun: vi.fn(),
     close: vi.fn(),
     // CAST: mock object satisfies the subset of ClientSession methods used by useMessageSync
-  } as unknown as ClientSession<AI.UIMessageChunk, AI.UIMessage>;
+  } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
   // --- ChatTransport ---
   const streamingCallbacks = new Set<(s: boolean) => void>();
@@ -352,5 +359,133 @@ describe('useMessageSync', () => {
     expect(result[0]).toBe(msg1);
     // msg2 should be the new reference
     expect(result[1]).toBe(msg2Updated);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Overlay-led tool resolutions survive sync
+  // ---------------------------------------------------------------------------
+
+  it('preserves an overlay tool resolution when the tree still shows input-available', () => {
+    const { slot, emitView, viewFlattenNodes } = createMockSlot();
+    const userMsg = makeMessage('u1');
+    const treeAsst: AI.UIMessage = {
+      id: 'a1',
+      role: 'assistant',
+      parts: [
+        // CAST: hand-rolled dynamic-tool part matches the AI SDK shape.
+        {
+          type: 'dynamic-tool',
+          toolCallId: 'tc-1',
+          toolName: 'getLocation',
+          state: 'input-available',
+          input: { highAccuracy: false },
+        } as unknown as AI.UIMessage['parts'][number],
+      ],
+    };
+    viewFlattenNodes.mockReturnValue([makeNode(userMsg), makeNode(treeAsst)]);
+
+    const setMessages = vi.fn();
+    renderHook(
+      () => {
+        useMessageSync({ setMessages });
+      },
+      { wrapper: withContext(slot) },
+    );
+
+    act(() => {
+      emitView('update');
+    });
+
+    // CAST: setMessages receives an updater function from useMessageSync.
+    const updater = setMessages.mock.calls[1]?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
+    // Overlay carries the AI SDK's static-tool representation
+    // (`tool-${name}`) — the codec normalises everything to
+    // `dynamic-tool`, but `addToolResult` stamps the static prefix when
+    // the tool was declared statically on the server. The merge must
+    // bridge the two when the overlay is more advanced.
+    const overlayAsst: AI.UIMessage = {
+      id: 'a1',
+      role: 'assistant',
+      parts: [
+        {
+          type: 'tool-getLocation',
+          toolCallId: 'tc-1',
+          state: 'output-available',
+          input: { highAccuracy: false },
+          output: { latitude: 51, longitude: 0 },
+        } as unknown as AI.UIMessage['parts'][number],
+      ],
+    };
+    const result = updater([userMsg, overlayAsst]);
+
+    expect(result).toHaveLength(2);
+    expect(result[0]).toBe(userMsg);
+    const mergedAsst = result[1];
+    expect(mergedAsst).toBeDefined();
+    expect(mergedAsst?.id).toBe('a1');
+    const mergedToolPart = mergedAsst?.parts[0];
+    expect(mergedToolPart).toBeDefined();
+    // The merged result keeps the tree's part type so downstream
+    // consumers matching on `dynamic-tool` continue to render…
+    expect((mergedToolPart as { type?: string }).type).toBe('dynamic-tool');
+    // …but adopts the overlay's resolved state and output, so the AI
+    // SDK's `sendAutomaticallyWhen` and the chat-transport's
+    // continuation derivation can see the result.
+    expect((mergedToolPart as { state?: string }).state).toBe('output-available');
+    expect((mergedToolPart as { output?: { latitude?: number } }).output?.latitude).toBe(51);
+  });
+
+  it('keeps the tree intact when the overlay tool part is not more advanced', () => {
+    const { slot, emitView, viewFlattenNodes } = createMockSlot();
+    const userMsg = makeMessage('u1');
+    const treeAsst: AI.UIMessage = {
+      id: 'a1',
+      role: 'assistant',
+      parts: [
+        {
+          type: 'dynamic-tool',
+          toolCallId: 'tc-1',
+          toolName: 'getLocation',
+          state: 'output-available',
+          input: { highAccuracy: false },
+          output: { latitude: 42, longitude: 1 },
+        } as unknown as AI.UIMessage['parts'][number],
+      ],
+    };
+    viewFlattenNodes.mockReturnValue([makeNode(userMsg), makeNode(treeAsst)]);
+
+    const setMessages = vi.fn();
+    renderHook(
+      () => {
+        useMessageSync({ setMessages });
+      },
+      { wrapper: withContext(slot) },
+    );
+
+    act(() => {
+      emitView('update');
+    });
+
+    // CAST: setMessages updater shape from useMessageSync.
+    const updater = setMessages.mock.calls[1]?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
+    // Overlay still shows the pre-resolution state — the tree is the
+    // source of truth here.
+    const overlayAsst: AI.UIMessage = {
+      id: 'a1',
+      role: 'assistant',
+      parts: [
+        {
+          type: 'tool-getLocation',
+          toolCallId: 'tc-1',
+          state: 'input-available',
+          input: { highAccuracy: false },
+        } as unknown as AI.UIMessage['parts'][number],
+      ],
+    };
+    const result = updater([userMsg, overlayAsst]);
+
+    // No overlay-led transition, so the merge returns the tree messages
+    // by reference equality.
+    expect(result[1]).toBe(treeAsst);
   });
 });

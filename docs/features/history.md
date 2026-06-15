@@ -10,17 +10,18 @@ Without persistent history, page refresh means starting over. With AI Transport,
 const view = session.view;
 await view.loadOlder(30);
 
-// view.flattenNodes() - decoded messages including history, in chronological order
-// Call loadOlder again to fetch more older messages
+// view.getMessages() - flat messages concatenated across visible Runs, oldest-first.
+// view.getMessagesWithIds() - the same messages paired with their codec-message-ids.
+// Call loadOlder again to fetch more older Runs.
 ```
 
-History messages are inserted into the session's conversation tree and trigger an `'update'` notification on the view. After loading history, `view.flattenNodes().map(n => n.message)` returns the combined history + live messages - flattened along the currently selected branch. If the history contains forks (from regeneration or editing), only the active branch is included. Use the conversation tree to navigate between branches (see [Conversation branching](branching.md)).
+History messages are inserted into the session's conversation tree and trigger an `'update'` notification on the view. After loading history, `view.getMessages()` returns the combined history + live messages - flattened across every visible Run along the currently selected branch. If the history contains forks (from regeneration or editing), only the active branch is included. Use the conversation tree to navigate between branches (see [Conversation branching](branching.md)).
 
-The `limit` parameter controls how many **complete domain messages** to return, not how many Ably wire messages to fetch. A single assistant message may span dozens of Ably messages (one per append). The implementation pages through Ably history until `limit` complete messages have been assembled.
+The `limit` parameter controls how many **Runs** to reveal, not how many messages or how many Ably wire messages to fetch. Each Run typically contributes more than one message (e.g. a user prompt + an assistant reply), so revealing `limit` Runs may add several messages to the flat list. The implementation pages through Ably history transparently until enough Runs are buffered.
 
 ## Gapless continuity
 
-The client session subscribes to the Ably channel **before** attaching. When you call `loadOlder()`, it uses `untilAttach` mode - fetching messages up to the point of attachment. This means there's no gap between history and the live subscription: every message is accounted for exactly once.
+The client session subscribes to the Ably channel before any history call - the subscribe call itself implicitly attaches the channel (RTL7g), so the live listener is in place from the moment of attach. When you call `loadOlder()`, it uses `untilAttach` mode - fetching messages up to the point of attachment. This means there's no gap between history and the live subscription: every message is accounted for exactly once.
 
 ## React hook
 
@@ -29,22 +30,23 @@ The client session subscribes to the Ably channel **before** attaching. When you
 ```typescript
 import { useView } from '@ably/ai-transport/react';
 
-// Auto-loads first page on mount (passing options = enabled)
-const { nodes, hasOlder, loading, loadOlder } = useView({ session, limit: 30 });
+// Passing `limit` auto-loads the first page on mount.
+const { messages, hasOlder, loading, loadError, loadOlder } = useView({ session, limit: 30 });
 
-// nodes - MessageNode[] for the current branch
+// messages - flat CodecMessage<TMessage>[] (each { codecMessageId, message }) concatenated across all visible Runs along the selected branch
 // hasOlder - are there older pages?
 // loading - is a page being fetched?
-// loadOlder() - load more older messages
+// loadError - the Ably.ErrorInfo from the most recent failed loadOlder, or undefined
+// loadOlder() - load more older Runs (takes no argument; uses the hook's `limit`)
 ```
 
-Pass `null` or omit the options to disable auto-load:
+Omit `limit` to disable auto-load:
 
 ```typescript
 // Manual load only
-const { nodes, hasOlder, loading, loadOlder } = useView({ session });
+const { messages, hasOlder, loading, loadOlder } = useView({ session });
 // ...later:
-await loadOlder(30);
+await loadOlder();
 ```
 
 ## Scroll-back pattern
@@ -52,7 +54,7 @@ await loadOlder(30);
 Combine `useView()` with a scroll sentinel for infinite scroll:
 
 ```typescript
-const { nodes, hasOlder, loading, loadOlder } = useView({ session, limit: 30 });
+const { messages, hasOlder, loading, loadOlder } = useView({ session, limit: 30 });
 
 // In your message list
 {hasOlder && (
@@ -64,9 +66,9 @@ const { nodes, hasOlder, loading, loadOlder } = useView({ session, limit: 30 });
 
 ## How history interacts with branching
 
-History messages carry the same `x-ably-parent` and `x-ably-fork-of` headers as live messages. When loaded, they're inserted into the conversation tree with their full branch structure intact. A client loading history sees the same tree of branches and can navigate siblings just like a client that was present for the original conversation.
+History messages carry the same `parent` and `fork-of` headers as live messages. When loaded, they're inserted into the conversation tree with their full branch structure intact. A client loading history sees the same tree of branches and can navigate siblings just like a client that was present for the original conversation.
 
-Because the tree may contain multiple branches, the view's `flattenNodes()` returns only the messages along the currently selected path - not every message ever published. To see alternative branches, use `useView()` or the view's `getSiblings()` / `select()` methods.
+Because the tree may contain multiple branches, the view renders only the nodes along the currently selected path — not every node ever published. To see alternative branches, use `useView()` or the view's `branchSelection(codecMessageId)` / `selectSibling(codecMessageId, index)` methods.
 
 See [Conversation branching](branching.md) for the tree model.
 
@@ -74,6 +76,6 @@ See [Conversation branching](branching.md) for the tree model.
 
 History includes all messages published to the channel: user messages, assistant messages (with fully accumulated text), run lifecycle events, and cancel signals. The decoder filters and reconstructs domain messages from this raw log.
 
-Only **completed** messages appear in history results. A message is complete when its terminal event (finish, abort, or error) has been received. Partial messages from in-progress runs are not included in history pages, but will appear through the live subscription when they complete.
+Only **completed** messages appear in history results. A message is complete once both a start signal and a terminal signal — a `status` header of `complete` or `cancelled`, or a `discrete` message that starts and terminates in one wire — have been seen for its `codec-message-id`. Partial messages from in-progress runs are not included in history pages, but will appear through the live subscription when they complete.
 
-For the internal mechanics of history decoding - including the re-decode strategy, per-run accumulators, and pagination - see [History hydration](../internals/history.md).
+For the internal mechanics of history decoding - including the re-decode strategy, per-Run projections, and pagination - see [History hydration](../internals/history.md).

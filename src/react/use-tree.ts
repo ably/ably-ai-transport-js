@@ -12,22 +12,41 @@
 
 import { useCallback } from 'react';
 
-import type { MessageNode } from '../core/transport/types.js';
+import type { CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
+import type { ConversationNode, RunNode } from '../core/transport/types.js';
 import type { BaseSessionOption } from './internal/use-resolved-session.js';
 import { useResolvedSession } from './internal/use-resolved-session.js';
 
 /** Handle for querying the conversation tree structure. */
-export interface TreeHandle<TMessage> {
-  /** Get all sibling messages at a fork point, ordered chronologically by serial. */
-  getSiblings: (msgId: string) => TMessage[];
-  /** Whether a message has sibling alternatives (i.e., show navigation arrows). */
-  hasSiblings: (msgId: string) => boolean;
-  /** Get a node by msgId, or undefined if not found. */
-  getNode: (msgId: string) => MessageNode<TMessage> | undefined;
+export interface TreeHandle<TProjection> {
+  /**
+   * Get the RunNode for `runId`, or undefined if no node is keyed by `runId`
+   * (or the keyed node is an input node, not a reply run).
+   */
+  getRunNode: (runId: string) => RunNode<TProjection> | undefined;
+  /**
+   * Get the node that owns a given codec-message-id, or undefined if not
+   * observed. Returns a {@link ConversationNode} union — narrow on `kind`
+   * (`'input'` vs `'run'`) before reading kind-specific fields.
+   */
+  getNodeByCodecMessageId: (codecMessageId: string) => ConversationNode<TProjection> | undefined;
+  /**
+   * Get the sibling group (both kinds) the node keyed by `key` belongs to —
+   * edit versions for an input node, regenerate runs for a reply run — ordered
+   * oldest-first. A single-element array when the node has no siblings; empty
+   * when `key` is unknown. `key` is a {@link RunNode.runId} or an
+   * {@link InputNode.codecMessageId}.
+   */
+  getSiblingNodes: (key: string) => ConversationNode<TProjection>[];
 }
 
 /** Options for {@link useTree}. */
-export type UseTreeOptions<TEvent, TMessage> = BaseSessionOption<TEvent, TMessage>;
+export type UseTreeOptions<
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+> = BaseSessionOption<TInput, TOutput, TProjection, TMessage>;
 
 /**
  * Provide stable structural query callbacks backed by the session's tree.
@@ -36,18 +55,30 @@ export type UseTreeOptions<TEvent, TMessage> = BaseSessionOption<TEvent, TMessag
  * @param props.session - Session to read tree structure from; defaults to the nearest provider.
  * @returns A {@link TreeHandle} with structural query methods.
  */
-export const useTree = <TEvent, TMessage>({ session }: UseTreeOptions<TEvent, TMessage> = {}): TreeHandle<TMessage> => {
+export const useTree = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>({
+  session,
+}: UseTreeOptions<TInput, TOutput, TProjection, TMessage> = {}): TreeHandle<TProjection> => {
   const resolved = useResolvedSession({ session });
 
-  const getSiblings = useCallback((msgId: string) => resolved?.tree.getSiblings(msgId) ?? [], [resolved]);
+  const getRunNode = useCallback(
+    (runId: string): RunNode<TProjection> | undefined => resolved?.tree.getRunNode(runId),
+    [resolved],
+  );
 
-  const hasSiblings = useCallback((msgId: string) => resolved?.tree.hasSiblings(msgId) ?? false, [resolved]);
+  const getNodeByCodecMessageId = useCallback(
+    (codecMessageId: string): ConversationNode<TProjection> | undefined =>
+      resolved?.tree.getNodeByCodecMessageId(codecMessageId),
+    [resolved],
+  );
 
-  const getNode = useCallback((msgId: string) => resolved?.tree.getNode(msgId), [resolved]);
+  const getSiblingNodes = useCallback(
+    (key: string): ConversationNode<TProjection>[] => resolved?.tree.getSiblingNodes(key) ?? [],
+    [resolved],
+  );
 
   return {
-    getSiblings,
-    hasSiblings,
-    getNode,
+    getRunNode,
+    getNodeByCodecMessageId,
+    getSiblingNodes,
   };
 };

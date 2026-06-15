@@ -1,35 +1,82 @@
 /**
- * Vercel AI SDK codec — maps UIMessageChunk events and UIMessage objects
- * to/from native Ably message primitives (publish, append, update, delete).
+ * Vercel AI SDK codec — implements
+ * `Codec<VercelInput, VercelOutput, VercelProjection, UIMessage>`.
+ *
+ * The codec is the reducer (extends `Reducer<VercelInput | VercelOutput,
+ * VercelProjection>`) plus encoder/decoder factories and `getMessages`
+ * for Tree population.
  *
  * ```ts
  * import { UIMessageCodec } from '@ably/ai-transport/vercel';
  *
  * const encoder = UIMessageCodec.createEncoder(writer, options);
  * const decoder = UIMessageCodec.createDecoder();
- * const accumulator = UIMessageCodec.createAccumulator();
+ * const projection = UIMessageCodec.init();
  * ```
  */
 
 import type * as AI from 'ai';
 
 import type { Codec } from '../../core/codec/types.js';
-import { createAccumulator } from './accumulator.js';
 import { createDecoder } from './decoder.js';
 import { createEncoder } from './encoder.js';
+import type {
+  VercelInput,
+  VercelOutput,
+  VercelToolApprovalResponsePayload,
+  VercelToolResultErrorPayload,
+  VercelToolResultPayload,
+} from './events.js';
+import { fold, getMessages, init, type VercelProjection } from './reducer.js';
 
 /**
- * Vercel AI SDK codec implementing `Codec<UIMessageChunk, UIMessage>`.
+ * Vercel AI SDK codec implementing
+ * `Codec<VercelInput, VercelOutput, VercelProjection, UIMessage>`.
  *
- * Provides factory methods for creating encoders, decoders, and accumulators
- * that map between Vercel's UIMessageChunk/UIMessage types and Ably's native
- * message primitives.
+ * Folds `VercelInput`s and `VercelOutput`s into a `VercelProjection`
+ * carrying `UIMessage[]`. Encoder and decoder factories handle the wire
+ * mapping for both directions.
  */
-export const UIMessageCodec: Codec<AI.UIMessageChunk, AI.UIMessage> = {
+const uiMessageCodecImpl = {
+  // Internal field - picked up by registerAgent via AdapterTagHolder cast. Spec: AIT-CT1a3, AIT-ST1a3.
+  adapterTag: 'vercel-ai-sdk-ui-message' as const,
+  init,
+  fold,
   createEncoder,
   createDecoder,
-  createAccumulator,
-
-  isTerminal: (event: AI.UIMessageChunk): boolean =>
-    event.type === 'finish' || event.type === 'error' || event.type === 'abort',
+  getMessages,
+  createUserMessage: (message: AI.UIMessage): VercelInput => ({ kind: 'user-message', message }),
+  createRegenerate: (target: string, parent: string): VercelInput => ({
+    kind: 'regenerate',
+    target,
+    parent,
+  }),
+  createToolResult: (codecMessageId: string, payload: VercelToolResultPayload): VercelInput => ({
+    kind: 'tool-result',
+    codecMessageId,
+    payload,
+  }),
+  createToolResultError: (codecMessageId: string, payload: VercelToolResultErrorPayload): VercelInput => ({
+    kind: 'tool-result-error',
+    codecMessageId,
+    payload,
+  }),
+  createToolApprovalResponse: (codecMessageId: string, payload: VercelToolApprovalResponsePayload): VercelInput => ({
+    kind: 'tool-approval-response',
+    codecMessageId,
+    payload,
+  }),
 };
+
+// Validate Codec conformance via `satisfies` on the variable (no excess-property
+// check, so the internal `adapterTag` is permitted) while keeping the concrete
+// type so the codec-specific factories (createToolResult, etc.) stay callable.
+export const UIMessageCodec = uiMessageCodecImpl satisfies Codec<
+  VercelInput,
+  VercelOutput,
+  VercelProjection,
+  AI.UIMessage
+>;
+
+export type { VercelInput, VercelOutput } from './events.js';
+export { type VercelProjection } from './reducer.js';

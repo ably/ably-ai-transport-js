@@ -1,6 +1,7 @@
 import type * as Ably from 'ably';
 import { createContext } from 'react';
 
+import type { CodecInputEvent, CodecOutputEvent } from '../../core/codec/types.js';
 import type { ClientSession } from '../../core/transport/types.js';
 
 /**
@@ -12,7 +13,7 @@ import type { ClientSession } from '../../core/transport/types.js';
  */
 export interface ClientSessionSlot {
   /** The constructed session, or `undefined` if construction failed. */
-  session: ClientSession<unknown, unknown> | undefined;
+  session: ClientSession<CodecInputEvent, CodecOutputEvent, unknown, unknown> | undefined;
   /** Construction error from `createClientSession`, or `undefined` on success. */
   sessionError?: Ably.ErrorInfo | undefined;
 }
@@ -23,7 +24,7 @@ export interface ClientSessionSlot {
  * `nearest` is the slot from the innermost enclosing {@link ClientSessionProvider}.
  * `providers` is the full registry of all enclosing providers, keyed by channelName.
  */
-export interface ClientSessionContextValue {
+interface ClientSessionContextValue {
   /** The innermost {@link ClientSessionProvider}'s slot. `undefined` when no provider is present. */
   nearest: ClientSessionSlot | undefined;
   /** All registered session slots from enclosing providers, keyed by channelName. */

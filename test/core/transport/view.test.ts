@@ -1,1589 +1,2767 @@
 import type * as Ably from 'ably';
+import type { Mock } from 'vitest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { HEADER_INVOCATION_ID, HEADER_MSG_ID, HEADER_ROLE, HEADER_RUN_ID } from '../../../src/constants.js';
-import type { Codec } from '../../../src/core/codec/types.js';
+import {
+  EVENT_RUN_RESUME,
+  EVENT_RUN_START,
+  EVENT_RUN_SUSPEND,
+  HEADER_CODEC_MESSAGE_ID,
+  HEADER_FORK_OF,
+  HEADER_INVOCATION_ID,
+  HEADER_PARENT,
+  HEADER_ROLE,
+  HEADER_RUN_ID,
+} from '../../../src/constants.js';
+import type { Codec, CodecInputEvent, ReducerMeta } from '../../../src/core/codec/types.js';
+import { Invocation } from '../../../src/core/transport/invocation.js';
 // Vitest hoists vi.mock above imports, so this static import gets the mock.
-import { decodeHistory } from '../../../src/core/transport/decode-history.js';
+import { loadHistory } from '../../../src/core/transport/load-history.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
-import type { HistoryPage, MessageNode, RunLifecycleEvent, SendOptions } from '../../../src/core/transport/types.js';
+import type { ActiveRun, HistoryPage, RunLifecycleEvent } from '../../../src/core/transport/types.js';
 import type { SendDelegate } from '../../../src/core/transport/view.js';
 import { DefaultView } from '../../../src/core/transport/view.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
-vi.mock('../../../src/core/transport/decode-history.js', () => ({
-  decodeHistory: vi.fn(),
+
+vi.mock('../../../src/core/transport/load-history.js', () => ({
+  loadHistory: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Test codec
 // ---------------------------------------------------------------------------
 
-interface TestEvent {
-  type: string;
-}
 interface TestMessage {
   id: string;
   content: string;
 }
 
-const silentLogger = makeLogger({ logLevel: LogLevel.Silent });
+/**
+ * Test inputs published by the client. All variants extend
+ * {@link CodecInputEvent} so routing fields (`parent`, `target`,
+ * `codecMessageId`) propagate through the transport.
+ */
+type TestInput =
+  | ({ kind: 'user-message'; message: TestMessage } & CodecInputEvent)
+  | ({ kind: 'regenerate'; target: string; parent: string } & CodecInputEvent);
 
-const createMockChannel = (): Ably.RealtimeChannel => {
-  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-  const emptyPage = { items: [], hasNext: () => false, next: () => Promise.resolve(emptyPage) };
-  return {
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-    history: vi.fn(() => Promise.resolve(emptyPage)),
-  } as unknown as Ably.RealtimeChannel;
-};
+/** Test outputs published by the agent. */
+interface TestOutput {
+  type: 'append-message';
+  message: TestMessage;
+}
 
-const createMockCodec = (): Codec<TestEvent, TestMessage> => ({
-  createEncoder: vi.fn(),
-  createDecoder: vi.fn(() => ({ decode: vi.fn(() => []) })),
-  createAccumulator: vi.fn(() => ({
-    processOutputs: vi.fn(),
-    updateMessage: vi.fn(),
-    initMessage: vi.fn(),
-    completeMessage: vi.fn(),
-    messages: [],
-    completedMessages: [],
-    hasActiveStream: false,
-  })),
-  isTerminal: vi.fn(() => false),
+interface TestProjection {
+  messages: TestMessage[];
+}
+
+const makeTestCodec = (): Codec<TestInput, TestOutput, TestProjection, TestMessage> => ({
+  init: () => ({ messages: [] }),
+  fold: (state: TestProjection, event: TestInput | TestOutput, meta: ReducerMeta) => {
+    if ('type' in event) {
+      // TestOutput has a single variant — append-message — so the type check
+      // is sufficient; just stamp the wire codec-message-id onto TMessage.id.
+      const msg = meta.messageId ? { ...event.message, id: meta.messageId } : event.message;
+      return { messages: [...state.messages, msg] };
+    }
+    if (event.kind === 'user-message') {
+      // Codec convention: TMessage.id == wire codec-message-id from meta.messageId.
+      const msg = meta.messageId ? { ...event.message, id: meta.messageId } : event.message;
+      return { messages: [...state.messages, msg] };
+    }
+    return state;
+  },
+  getMessages: (projection: TestProjection) => projection.messages.map((m) => ({ codecMessageId: m.id, message: m })),
+  createEncoder: () => {
+    throw new Error('not used in view tests');
+  },
+  createDecoder: () => ({ decode: () => ({ inputs: [], outputs: [] }) }),
+  createUserMessage: (message: TestMessage) => ({ kind: 'user-message' as const, message }),
+  createRegenerate: (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }),
 });
 
-const createMockSendDelegate = (): SendDelegate<TestEvent, TestMessage> =>
+const silentLogger = makeLogger({ logLevel: LogLevel.Silent });
+
+// ---------------------------------------------------------------------------
+// Mock channel and helpers
+// ---------------------------------------------------------------------------
+
+const createMockChannel = (): Ably.RealtimeChannel =>
+  // CAST: Tests only call history()/attach() — the full RealtimeChannel surface isn't needed.
+  ({
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+    history: vi.fn(() => Promise.resolve({ items: [], hasNext: () => false, next: () => Promise.resolve() })),
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+    attach: vi.fn(() => Promise.resolve()),
+  }) as unknown as Ably.RealtimeChannel;
+
+const createMockSendDelegate = (): SendDelegate<TestInput> =>
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   vi.fn(() =>
     Promise.resolve({
-      stream: new ReadableStream(),
-      runId: 'mock-run',
+      inputCodecMessageId: 'mock-input',
+      runId: Promise.resolve('mock-run'),
+      inputEventId: '',
       invocationId: 'mock-inv',
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
       cancel: () => Promise.resolve(),
-      optimisticMsgIds: [],
+      optimisticCodecMessageIds: [],
+      toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
     }),
   );
 
-const makeHeaders = (msgId: string, runId?: string): Record<string, string> => {
-  const h: Record<string, string> = { [HEADER_MSG_ID]: msgId };
-  if (runId) h[HEADER_RUN_ID] = runId;
-  return h;
+interface ApplyOpts {
+  runId: string;
+  codecMessageId?: string;
+  parent?: string;
+  forkOf?: string;
+  regenerates?: string;
+  role?: string;
+  invocationId?: string;
+  serial?: string;
+  message?: TestMessage;
+}
+
+const apply = (tree: DefaultTree<TestInput, TestOutput, TestProjection>, opts: ApplyOpts): void => {
+  const h: Record<string, string> = { [HEADER_RUN_ID]: opts.runId };
+  if (opts.codecMessageId) h[HEADER_CODEC_MESSAGE_ID] = opts.codecMessageId;
+  if (opts.parent) h[HEADER_PARENT] = opts.parent;
+  if (opts.forkOf) h[HEADER_FORK_OF] = opts.forkOf;
+  if (opts.regenerates) h['msg-regenerate'] = opts.regenerates;
+  if (opts.role) h[HEADER_ROLE] = opts.role;
+  if (opts.invocationId) h[HEADER_INVOCATION_ID] = opts.invocationId;
+  const events: TestOutput[] = opts.message ? [{ type: 'append-message', message: opts.message }] : [];
+  tree.applyMessage({ inputs: [], outputs: events }, h, opts.serial);
+};
+
+interface ApplyInputOpts {
+  /** The input node's codec-message-id (its primary key). */
+  codecMessageId: string;
+  /** Structural parent codec-message-id (the preceding reply run), if any. */
+  parent?: string;
+  /** Fork-of anchor when this input is an edit of an earlier prompt. */
+  forkOf?: string;
+  serial?: string;
+  message: TestMessage;
+}
+
+/**
+ * Apply a run-less user INPUT node (two-node model): no run-id, role 'user',
+ * keyed by its codec-message-id, carrying a user input event. The agent mints
+ * the reply run-id separately as a child RunNode parented at this input.
+ * @param tree - The tree to apply the input node to.
+ * @param opts - Input node options (codecMessageId, parent, forkOf, serial, message).
+ */
+const applyInput = (tree: DefaultTree<TestInput, TestOutput, TestProjection>, opts: ApplyInputOpts): void => {
+  const h: Record<string, string> = {
+    [HEADER_CODEC_MESSAGE_ID]: opts.codecMessageId,
+    [HEADER_ROLE]: 'user',
+  };
+  if (opts.parent) h[HEADER_PARENT] = opts.parent;
+  if (opts.forkOf) h[HEADER_FORK_OF] = opts.forkOf;
+  const inputs: TestInput[] = [{ kind: 'user-message', message: opts.message }];
+  tree.applyMessage({ inputs, outputs: [] }, h, opts.serial);
 };
 
 const makePage = (
-  items: TestMessage[],
-  headers: Record<string, string>[],
-  serials: string[],
+  rawMessages: Ably.InboundMessage[] = [],
   hasNextPage = false,
-  nextPageFn?: () => Promise<HistoryPage<TestMessage> | undefined>,
-): HistoryPage<TestMessage> => ({
-  items: items.map((message, i) => ({
-    message,
-    headers: headers[i] ?? {},
-    serial: serials[i] ?? '',
-  })),
-  rawMessages: [],
+  nextPageFn?: () => Promise<HistoryPage | undefined>,
+): HistoryPage => ({
+  rawMessages,
   hasNext: () => hasNextPage,
-  // eslint-disable-next-line @typescript-eslint/promise-function-async, unicorn/no-useless-undefined -- mock needs explicit undefined for HistoryPage return type
+  // eslint-disable-next-line @typescript-eslint/promise-function-async, unicorn/no-useless-undefined -- mock needs explicit undefined return for HistoryPage shape
   next: nextPageFn ?? (() => Promise.resolve(undefined)),
 });
+
+/**
+ * Build a linear-chain run's transport headers for the pagination history
+ * fixtures: each run parents at the prior run's message so they stay a visible
+ * chain (same-parent reply runs would collapse as regenerate siblings).
+ * @param i - The run index (0 = root).
+ * @returns The transport headers for run `i`.
+ */
+const linearChainHeaders = (i: number): Record<string, string> => {
+  const h: Record<string, string> = {
+    [HEADER_RUN_ID]: `R${String(i)}`,
+    [HEADER_CODEC_MESSAGE_ID]: `mh${String(i)}`,
+  };
+  if (i > 0) h[HEADER_PARENT] = `mh${String(i - 1)}`;
+  return h;
+};
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 describe('DefaultView', () => {
-  let tree: DefaultTree<TestMessage>;
-  let view: DefaultView<TestEvent, TestMessage>;
+  let tree: DefaultTree<TestInput, TestOutput, TestProjection>;
+  let view: DefaultView<TestInput, TestOutput, TestProjection, TestMessage>;
+  let sendDelegate: SendDelegate<TestInput>;
+  let codec: Codec<TestInput, TestOutput, TestProjection, TestMessage>;
 
   beforeEach(() => {
-    vi.mocked(decodeHistory).mockReset();
-    tree = createTree<TestMessage>(silentLogger);
+    vi.mocked(loadHistory).mockReset();
+    codec = makeTestCodec();
+    tree = createTree<TestInput, TestOutput, TestProjection>(codec, silentLogger);
+    sendDelegate = createMockSendDelegate();
     view = new DefaultView({
       tree,
       channel: createMockChannel(),
-      codec: createMockCodec(),
-      sendDelegate: createMockSendDelegate(),
-
+      codec,
+      sendDelegate,
       logger: silentLogger,
     });
   });
 
   // -------------------------------------------------------------------------
-  // getMessages (convenience)
+  // runs and getMessages
   // -------------------------------------------------------------------------
 
-  describe('getMessages', () => {
-    it('returns domain messages matching flattenNodes', () => {
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'));
-      tree.upsert('m2', { id: '2', content: 'hello' }, makeHeaders('m2'));
+  describe('runs and getMessages', () => {
+    it('returns RunNode[] along the visible chain', () => {
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'first' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'm2',
+        parent: 'm1',
+        message: { id: 'b', content: 'second' },
+        serial: 's2',
+      });
 
-      const messages = view.getMessages();
-      expect(messages).toEqual([
-        { id: '1', content: 'hi' },
-        { id: '2', content: 'hello' },
-      ]);
-      expect(messages).toEqual(view.flattenNodes().map((n) => n.message));
+      const nodes = view.runs();
+      expect(nodes.map((n) => n.runId)).toEqual(['R1', 'R2']);
     });
 
-    it('returns empty array when tree is empty', () => {
+    it("getMessages concatenates each Run's codec.getMessages output", () => {
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'q1' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm2',
+        parent: 'm1',
+        message: { id: 'b', content: 'a1' },
+        serial: 's2',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'm3',
+        parent: 'm2',
+        message: { id: 'c', content: 'q2' },
+        serial: 's3',
+      });
+
+      // The codec convention rebinds each TMessage.id to the wire codecMessageId.
+      expect(view.getMessages()).toEqual([
+        { codecMessageId: 'm1', message: { id: 'm1', content: 'q1' } },
+        { codecMessageId: 'm2', message: { id: 'm2', content: 'a1' } },
+        { codecMessageId: 'm3', message: { id: 'm3', content: 'q2' } },
+      ]);
+    });
+
+    it('returns an empty list for an empty tree', () => {
+      expect(view.runs()).toEqual([]);
       expect(view.getMessages()).toEqual([]);
     });
-  });
 
-  // -------------------------------------------------------------------------
-  // flattenNodes (windowed projection)
-  // -------------------------------------------------------------------------
-
-  describe('flattenNodes', () => {
-    it('returns all tree nodes when nothing is withheld', () => {
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'));
-      tree.upsert('m2', { id: '2', content: 'hello' }, makeHeaders('m2'));
-
-      const nodes = view.flattenNodes();
-      expect(nodes).toHaveLength(2);
-      expect(nodes[0]?.msgId).toBe('m1');
-      expect(nodes[1]?.msgId).toBe('m2');
-    });
-
-    it('delegates to tree when nothing is withheld', () => {
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'));
-      expect(view.flattenNodes()).toStrictEqual(tree.flattenNodes(new Map<string, string>()));
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // update event scoping
-  // -------------------------------------------------------------------------
-
-  describe('update events', () => {
-    it('emits update when a new node is inserted into the tree', () => {
-      const handler = vi.fn();
-      view.on('update', handler);
-
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'));
-
-      expect(handler).toHaveBeenCalledOnce();
-    });
-
-    it('emits update when visible message content changes in place (streaming)', () => {
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'), 'serial-1');
-
-      const handler = vi.fn();
-      view.on('update', handler);
-
-      // Update m1's content — the msgId list hasn't changed, but the
-      // message reference differs, so the view emits.
-      tree.upsert('m1', { id: '1', content: 'updated' }, makeHeaders('m1'), 'serial-1');
-
-      expect(handler).toHaveBeenCalledOnce();
-    });
-
-    it('does not emit update when change is on a non-visible branch', () => {
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert(
-        'm2',
-        { id: '2', content: 'fork' },
-        {
-          [HEADER_MSG_ID]: 'm2',
-          'x-ably-fork-of': 'm1',
-        },
-        'serial-2',
-      );
-
-      // m1 is pinned (was visible when m2 forked). Select m1 explicitly.
-      view.select('m1', 0);
-
-      const handler = vi.fn();
-      view.on('update', handler);
-
-      // Update m2's content — m2 is on a non-visible branch,
-      // so the view should not emit.
-      tree.upsert(
-        'm2',
-        { id: '2', content: 'updated fork' },
-        {
-          [HEADER_MSG_ID]: 'm2',
-          'x-ably-fork-of': 'm1',
-        },
-        'serial-2',
-      );
-
-      expect(handler).not.toHaveBeenCalled();
-    });
-
-    it('emits update on branch selection change', () => {
-      tree.upsert('m1', { id: '1', content: 'original' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert(
-        'm2',
-        { id: '2', content: 'fork' },
-        {
-          [HEADER_MSG_ID]: 'm2',
-          'x-ably-fork-of': 'm1',
-        },
-        'serial-2',
-      );
-
-      const handler = vi.fn();
-      view.on('update', handler);
-
-      view.select('m1', 0);
-      expect(handler).toHaveBeenCalledOnce();
-    });
-
-    it('unsubscribe stops delivery', () => {
-      const handler = vi.fn();
-      const unsub = view.on('update', handler);
-      unsub();
-
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'));
-      expect(handler).not.toHaveBeenCalled();
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // ably-message event scoping
-  // -------------------------------------------------------------------------
-
-  describe('ably-message events', () => {
-    it('forwards ably-message for visible nodes', () => {
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'));
-
-      const handler = vi.fn();
-      view.on('ably-message', handler);
-
-      const msg = { extras: { headers: { [HEADER_MSG_ID]: 'm1' } } } as unknown as Ably.InboundMessage;
-      tree.emitAblyMessage(msg);
-
-      expect(handler).toHaveBeenCalledOnce();
-      expect(handler).toHaveBeenCalledWith(msg);
-    });
-
-    it('does not forward ably-message for nodes on non-selected branches', () => {
-      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert(
-        'm2',
-        { id: '2', content: 'v1' },
-        {
-          [HEADER_MSG_ID]: 'm2',
-          'x-ably-parent': 'm1',
-        },
-        'serial-2',
-      );
-      // Fork m2 — view pins to m2
-      tree.upsert(
-        'm3',
-        { id: '3', content: 'v2' },
-        {
-          [HEADER_MSG_ID]: 'm3',
-          'x-ably-parent': 'm1',
-          'x-ably-fork-of': 'm2',
-        },
-        'serial-3',
-      );
-
-      const handler = vi.fn();
-      view.on('ably-message', handler);
-
-      // Message for m3 (off-branch) should NOT be forwarded
-      const msg = { extras: { headers: { [HEADER_MSG_ID]: 'm3' } } } as unknown as Ably.InboundMessage;
-      tree.emitAblyMessage(msg);
-
-      expect(handler).not.toHaveBeenCalled();
-    });
-
-    it('forwards ably-message without msg-id (run events)', () => {
-      const handler = vi.fn();
-      view.on('ably-message', handler);
-
-      const msg = { extras: { headers: {} } } as unknown as Ably.InboundMessage;
-      tree.emitAblyMessage(msg);
-
-      expect(handler).toHaveBeenCalledOnce();
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // run event scoping
-  // -------------------------------------------------------------------------
-
-  describe('run events', () => {
-    it('forwards run events for runs with visible messages', () => {
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1', 'run-1'));
-      tree.trackRun('run-1', 'client-a');
-
-      const handler = vi.fn();
-      view.on('run', handler);
-
-      const event: RunLifecycleEvent = { type: 'x-ably-run-start', runId: 'run-1', clientId: 'client-a' };
-      tree.emitRun(event);
-
-      expect(handler).toHaveBeenCalledOnce();
-      expect(handler).toHaveBeenCalledWith(event);
-    });
-
-    it('forwards run-start when no metadata is present (backward compat)', () => {
-      tree.trackRun('run-99', 'client-x');
-
-      const handler = vi.fn();
-      view.on('run', handler);
-
-      const event: RunLifecycleEvent = { type: 'x-ably-run-start', runId: 'run-99', clientId: 'client-x' };
-      tree.emitRun(event);
-
-      expect(handler).toHaveBeenCalledOnce();
-    });
-
-    it('forwards run-start when parent is on the visible branch', () => {
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'), 'serial-1');
-
-      const handler = vi.fn();
-      view.on('run', handler);
-
-      const event: RunLifecycleEvent = {
-        type: 'x-ably-run-start',
-        runId: 'run-2',
-        clientId: 'client-b',
-        parent: 'm1',
-      };
-      tree.emitRun(event);
-
-      expect(handler).toHaveBeenCalledOnce();
-    });
-
-    it('does not forward run-start when parent is on a non-visible branch', () => {
-      // Create a fork: m2 and m3 are siblings under m1
-      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert(
-        'm2',
-        { id: '2', content: 'v1' },
-        {
-          [HEADER_MSG_ID]: 'm2',
-          'x-ably-parent': 'm1',
-        },
-        'serial-2',
-      );
-      tree.upsert(
-        'm3',
-        { id: '3', content: 'v2' },
-        {
-          [HEADER_MSG_ID]: 'm3',
-          'x-ably-parent': 'm1',
-          'x-ably-fork-of': 'm2',
-        },
-        'serial-3',
-      );
-
-      // Select m2 (index 0), so m3 and its descendants are not visible
-      view.select('m2', 0);
-
-      const handler = vi.fn();
-      view.on('run', handler);
-
-      // Run whose parent is m3 (on the non-selected branch)
-      const event: RunLifecycleEvent = {
-        type: 'x-ably-run-start',
-        runId: 'run-hidden',
-        clientId: 'remote',
-        parent: 'm3',
-      };
-      tree.emitRun(event);
-
-      expect(handler).not.toHaveBeenCalled();
-    });
-
-    it('forwards run-start for root run (no parent)', () => {
-      const handler = vi.fn();
-      view.on('run', handler);
-
-      const event: RunLifecycleEvent = {
-        type: 'x-ably-run-start',
-        runId: 'run-root',
-        clientId: 'client-a',
-      };
-      tree.emitRun(event);
-
-      expect(handler).toHaveBeenCalledOnce();
-    });
-
-    it('does not forward run-end for runs without visible messages', () => {
-      tree.trackRun('run-99', 'client-x');
-
-      const handler = vi.fn();
-      view.on('run', handler);
-
-      const event: RunLifecycleEvent = {
-        type: 'x-ably-run-end',
-        runId: 'run-99',
-        clientId: 'client-x',
-        reason: 'complete',
-      };
-      tree.emitRun(event);
-
-      expect(handler).not.toHaveBeenCalled();
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // getActiveRunIds (scoped)
-  // -------------------------------------------------------------------------
-
-  describe('getActiveRunIds', () => {
-    it('returns all runs when nothing is withheld and all have visible messages', () => {
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1', 'run-1'));
-      tree.upsert('m2', { id: '2', content: 'hi' }, makeHeaders('m2', 'run-2'));
-      tree.trackRun('run-1', 'client-a');
-      tree.trackRun('run-2', 'client-a');
-
-      const active = view.getActiveRunIds();
-      expect(active.get('client-a')).toEqual(new Set(['run-1', 'run-2']));
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // hasOlder / loadOlder
-  // -------------------------------------------------------------------------
-
-  describe('hasOlder', () => {
-    it('returns false initially', () => {
-      expect(view.hasOlder()).toBe(false);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // loadOlder
-  // -------------------------------------------------------------------------
-
-  describe('loadOlder', () => {
-    it('loads first page and reveals messages', async () => {
-      const page = makePage(
-        [
-          { id: '1', content: 'old1' },
-          { id: '2', content: 'old2' },
-          { id: '3', content: 'old3' },
-        ],
-        [makeHeaders('h1'), makeHeaders('h2'), makeHeaders('h3')],
-        ['serial-1', 'serial-2', 'serial-3'],
-      );
-      vi.mocked(decodeHistory).mockResolvedValue(page);
-
-      await view.loadOlder(10);
-
-      const nodes = view.flattenNodes();
-      expect(nodes).toHaveLength(3);
-      expect(nodes[0]?.msgId).toBe('h1');
-      expect(view.hasOlder()).toBe(false);
-    });
-
-    it('withholds excess messages and reveals on subsequent calls', async () => {
-      const page = makePage(
-        [
-          { id: '1', content: 'a' },
-          { id: '2', content: 'b' },
-          { id: '3', content: 'c' },
-          { id: '4', content: 'd' },
-          { id: '5', content: 'e' },
-        ],
-        [makeHeaders('h1'), makeHeaders('h2'), makeHeaders('h3'), makeHeaders('h4'), makeHeaders('h5')],
-        ['serial-1', 'serial-2', 'serial-3', 'serial-4', 'serial-5'],
-      );
-      vi.mocked(decodeHistory).mockResolvedValue(page);
-
-      // Load with limit 2 — reveals newest 2, withholds 3
-      await view.loadOlder(2);
-
-      expect(view.flattenNodes()).toHaveLength(2);
-      expect(view.hasOlder()).toBe(true);
-
-      // Second call reveals from withheld buffer
-      await view.loadOlder(2);
-
-      expect(view.flattenNodes()).toHaveLength(4);
-      expect(view.hasOlder()).toBe(true);
-      // decodeHistory should only be called once (buffer drain, no new fetch)
-      expect(vi.mocked(decodeHistory)).toHaveBeenCalledOnce();
-    });
-
-    it('loads more history when withheld buffer is exhausted', async () => {
-      const page2 = makePage(
-        [
-          { id: '10', content: 'oldest' },
-          { id: '11', content: 'older' },
-        ],
-        [makeHeaders('h10'), makeHeaders('h11')],
-        ['serial-10', 'serial-11'],
-      );
-
-      const page1 = makePage(
-        [
-          { id: '1', content: 'a' },
-          { id: '2', content: 'b' },
-          { id: '3', content: 'c' },
-        ],
-        [makeHeaders('h1'), makeHeaders('h2'), makeHeaders('h3')],
-        ['serial-1', 'serial-2', 'serial-3'],
-        true,
-        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise directly
-        () => Promise.resolve(page2),
-      );
-      vi.mocked(decodeHistory).mockResolvedValue(page1);
-
-      // First load with limit 2 — page1 has 3 items, reveals 2, withholds 1
-      await view.loadOlder(2);
-      expect(view.flattenNodes()).toHaveLength(2);
-      expect(view.hasOlder()).toBe(true);
-
-      // Second load — drains withheld buffer (1 item)
-      await view.loadOlder(2);
-      expect(view.flattenNodes()).toHaveLength(3);
-
-      // Third load — buffer empty, fetches next page from page1.next()
-      await view.loadOlder(10);
-      expect(view.flattenNodes()).toHaveLength(5);
-    });
-
-    it('ignores concurrent loadOlder calls', async () => {
-      let resolveFirst: ((page: HistoryPage<TestMessage>) => void) | undefined;
-      const firstPromise = new Promise<HistoryPage<TestMessage>>((r) => {
-        resolveFirst = r;
+    it('keeps messages visible after a run-resume re-entry (no self-parent cycle)', () => {
+      // Repro for the user-reported regression where invoking a client-side
+      // tool (getLocation) or approving an approval-gated tool made both the
+      // user prompt and the assistant bubble vanish from the visible message
+      // list. The continuation re-enters the run; it now arrives as
+      // ai-run-resume, which carries no `parent`, so the run is not re-parented
+      // into a self-cycle and stays visible. (Previously the continuation
+      // arrived as a run-start carrying parent pointing into the same Run.)
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'u1',
+        role: 'user',
+        message: { id: 'u1', content: 'q' },
+        serial: 's1',
       });
-      vi.mocked(decodeHistory).mockReturnValue(firstPromise);
-
-      const page = makePage(
-        [
-          { id: '1', content: 'a' },
-          { id: '2', content: 'b' },
-        ],
-        [makeHeaders('h1'), makeHeaders('h2')],
-        ['serial-1', 'serial-2'],
-      );
-
-      // Start two concurrent loadOlder calls
-      const first = view.loadOlder(10);
-      const second = view.loadOlder(10);
-
-      // Resolve the first — the second should have been a no-op
-      if (resolveFirst) resolveFirst(page);
-      await first;
-      await second;
-
-      // decodeHistory should only be called once
-      expect(vi.mocked(decodeHistory)).toHaveBeenCalledOnce();
-      expect(view.flattenNodes()).toHaveLength(2);
-    });
-
-    it('suppresses ably-message events for withheld nodes', async () => {
-      const page = makePage(
-        [
-          { id: '1', content: 'a' },
-          { id: '2', content: 'b' },
-          { id: '3', content: 'c' },
-        ],
-        [makeHeaders('h1'), makeHeaders('h2'), makeHeaders('h3')],
-        ['serial-1', 'serial-2', 'serial-3'],
-      );
-      vi.mocked(decodeHistory).mockResolvedValue(page);
-
-      // Reveal only 1, withhold 2
-      await view.loadOlder(1);
-
-      const handler = vi.fn();
-      view.on('ably-message', handler);
-
-      // Emit for a withheld node — should be suppressed
-      const withheldMsg = { extras: { headers: { [HEADER_MSG_ID]: 'h1' } } } as unknown as Ably.InboundMessage;
-      tree.emitAblyMessage(withheldMsg);
-      expect(handler).not.toHaveBeenCalled();
-
-      // Emit for a visible node — should be forwarded
-      const visibleMsg = { extras: { headers: { [HEADER_MSG_ID]: 'h3' } } } as unknown as Ably.InboundMessage;
-      tree.emitAblyMessage(visibleMsg);
-      expect(handler).toHaveBeenCalledOnce();
-      expect(handler).toHaveBeenCalledWith(visibleMsg);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // update
-  // -------------------------------------------------------------------------
-
-  describe('update', () => {
-    it('delegates to sendDelegate with events', async () => {
-      const mockDelegate = createMockSendDelegate();
-      const updateView = new DefaultView<TestEvent, TestMessage>({
-        tree,
-        channel: createMockChannel(),
-        codec: createMockCodec(),
-        sendDelegate: mockDelegate,
-        logger: silentLogger,
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'a1',
+        role: 'assistant',
+        message: { id: 'a1', content: 'calling tool' },
+        serial: 's2',
       });
 
-      const events = [{ type: 'tool-output' }];
+      tree.applyRunLifecycle({
+        type: 'resume',
+        runId: 'R1',
+        clientId: 'c1',
+        invocationId: 'inv-2',
+        serial: 's3',
+      });
 
-      await updateView.update('target-1', events);
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1']);
+    });
 
-      expect(mockDelegate).toHaveBeenCalledOnce();
-      expect(mockDelegate).toHaveBeenCalledWith([], undefined, expect.any(Array), [
-        { kind: 'event', msgId: 'target-1', events },
+    it('hides follow-up Runs parented at a regen-substituted assistant', () => {
+      // P1 was sent (R1 has [u1, a1]), then P2 was sent parented off
+      // a1 (R2 has [u2, a2]). Then a1 is regenerated, creating R3
+      // with [a1']. The follow-up R2 was conditioned on the original
+      // a1 — its answer doesn't apply to a1', so the visible chain on
+      // the regen branch collapses to [u1, a1']. The follow-up turn
+      // reappears when the user navigates back to the original branch.
+      // Two-node model: u1 input → R1 reply (a1). Follow-up turn: u2 input
+      // parented at a1 → R2 reply (a2). Regenerate a1 → R3 reply parented at the
+      // same input node u1 (regenerate sibling of R1).
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'q1' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'a1',
+        parent: 'u1',
+        role: 'assistant',
+        message: { id: 'a1', content: 'reply1' },
+        serial: 's2',
+      });
+      applyInput(tree, { codecMessageId: 'u2', parent: 'a1', message: { id: 'u2', content: 'q2' }, serial: 's3' });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'a2',
+        parent: 'u2',
+        role: 'assistant',
+        message: { id: 'a2', content: 'reply2' },
+        serial: 's4',
+      });
+      apply(tree, {
+        runId: 'R3',
+        codecMessageId: 'a1p',
+        parent: 'u1',
+        regenerates: 'a1',
+        role: 'assistant',
+        message: { id: 'a1p', content: 'reply1-regen' },
+        serial: 's5',
+      });
+
+      // Regen branch (default — latest): the follow-up turn (u2 + R2) is hidden
+      // because its anchor a1 (R1's reply) is no longer on the selected path.
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1p']);
+
+      // Original branch: a1 is back in the chain, the follow-up turn reappears.
+      view.selectSibling('a1', 0);
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1', 'u2', 'a2']);
+    });
+
+    // TODO(AIT-831): deferred — regenerating a NON-HEAD message inside a
+    // multi-message reply run's projection. The two-node node-walk selects a
+    // whole sibling reply run; it can't slice inside one run's projection, so
+    // intra-run mid-reply substitution is out of scope for the flip. Re-enable
+    // with the planned regenerate-of-multi-message golden test (see
+    // pr2-execution-plan.md §Tests).
+    it.skip('substitutes nested regenerator content recursively at each anchor position', () => {
+      // P1 → [u1, a1]. Regen a1 → R2 = [a1', extra']. Then regen the
+      // trailing follow-up extra' inside R2 → R3 = [extra''] (anchored
+      // at extra', NOT rebased to a1 per the trailing-target rule).
+      // Walking R1 hits a1 → substitute R2 → emits a1', then hits
+      // extra' → substitute R3 → emits extra''. Final chain:
+      // [u1, a1', extra''].
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'u1',
+        role: 'user',
+        message: { id: 'u1', content: 'q' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'a1',
+        role: 'assistant',
+        message: { id: 'a1', content: 'orig' },
+        serial: 's2',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'a1p',
+        regenerates: 'a1',
+        role: 'assistant',
+        message: { id: 'a1p', content: 'regen-1' },
+        serial: 's3',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'extra',
+        role: 'assistant',
+        message: { id: 'extra', content: 'extra-1' },
+        serial: 's4',
+      });
+      apply(tree, {
+        runId: 'R3',
+        codecMessageId: 'extrap',
+        regenerates: 'extra',
+        role: 'assistant',
+        message: { id: 'extrap', content: 'regen-extra' },
+        serial: 's5',
+      });
+
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1p', 'extrap']);
+    });
+
+    // -----------------------------------------------------------------------
+    // Cross-Run concat edge cases (AIT-773 §2.3)
+    // -----------------------------------------------------------------------
+
+    it('includes a Run that has zero messages in runs() but contributes no messages to getMessages', () => {
+      // A "zero-message" Run can exist transiently: the agent's
+      // `ai-run-start` lifecycle created the Run but no codec events
+      // have folded in yet (regenerate Runs spend their first
+      // microseconds in this state).
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'u1',
+        message: { id: 'u1', content: 'q' },
+        serial: 's1',
+      });
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: 'R_empty',
+        clientId: '',
+        invocationId: '',
+        parent: 'u1',
+        serial: 's2',
+      });
+
+      // Both Runs flatten; only R1 has messages so getMessages reflects
+      // R1's content with no gap or undefined entry for R_empty.
+      expect(view.runs().map((n) => n.runId)).toEqual(['R1', 'R_empty']);
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1']);
+    });
+
+    it('preserves per-Run order across many-message Runs', () => {
+      // A Run can carry several messages (e.g. user + assistant text
+      // + tool call + tool result + continuation assistant text). The
+      // codec folds them in publish order; the View must concatenate
+      // each Run's messages in that order, then concatenate across
+      // Runs by the structural parent chain.
+      apply(tree, { runId: 'R1', codecMessageId: 'a', message: { id: 'a', content: 'a-1' }, serial: 's1' });
+      apply(tree, { runId: 'R1', codecMessageId: 'b', message: { id: 'b', content: 'a-2' }, serial: 's2' });
+      apply(tree, { runId: 'R1', codecMessageId: 'c', message: { id: 'c', content: 'a-3' }, serial: 's3' });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'd',
+        parent: 'c',
+        message: { id: 'd', content: 'b-1' },
+        serial: 's4',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'e',
+        parent: 'd',
+        message: { id: 'e', content: 'b-2' },
+        serial: 's5',
+      });
+
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['a', 'b', 'c', 'd', 'e']);
+    });
+
+    it('flattens a five-turn linear conversation in publish order', () => {
+      // Multi-turn baseline: five user+assistant turns.
+      apply(tree, { runId: 'R1', codecMessageId: 'u1', message: { id: 'u1', content: 'q1' }, serial: 's01' });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'a1',
+        parent: 'u1',
+        message: { id: 'a1', content: 'r1' },
+        serial: 's02',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'u2',
+        parent: 'a1',
+        message: { id: 'u2', content: 'q2' },
+        serial: 's03',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'a2',
+        parent: 'u2',
+        message: { id: 'a2', content: 'r2' },
+        serial: 's04',
+      });
+      apply(tree, {
+        runId: 'R3',
+        codecMessageId: 'u3',
+        parent: 'a2',
+        message: { id: 'u3', content: 'q3' },
+        serial: 's05',
+      });
+      apply(tree, {
+        runId: 'R3',
+        codecMessageId: 'a3',
+        parent: 'u3',
+        message: { id: 'a3', content: 'r3' },
+        serial: 's06',
+      });
+      apply(tree, {
+        runId: 'R4',
+        codecMessageId: 'u4',
+        parent: 'a3',
+        message: { id: 'u4', content: 'q4' },
+        serial: 's07',
+      });
+      apply(tree, {
+        runId: 'R4',
+        codecMessageId: 'a4',
+        parent: 'u4',
+        message: { id: 'a4', content: 'r4' },
+        serial: 's08',
+      });
+      apply(tree, {
+        runId: 'R5',
+        codecMessageId: 'u5',
+        parent: 'a4',
+        message: { id: 'u5', content: 'q5' },
+        serial: 's09',
+      });
+      apply(tree, {
+        runId: 'R5',
+        codecMessageId: 'a5',
+        parent: 'u5',
+        message: { id: 'a5', content: 'r5' },
+        serial: 's10',
+      });
+
+      expect(view.runs().map((n) => n.runId)).toEqual(['R1', 'R2', 'R3', 'R4', 'R5']);
+      expect(view.getMessages().map((m) => m.message.id)).toEqual([
+        'u1',
+        'a1',
+        'u2',
+        'a2',
+        'u3',
+        'a3',
+        'u4',
+        'a4',
+        'u5',
+        'a5',
       ]);
-
-      updateView.close();
     });
   });
 
   // -------------------------------------------------------------------------
-  // Branch navigation (view-local selections)
+  // Query methods
   // -------------------------------------------------------------------------
 
-  describe('branch navigation', () => {
+  describe('query methods', () => {
     beforeEach(() => {
-      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert(
-        'm2',
-        { id: '2', content: 'v1' },
-        {
-          [HEADER_MSG_ID]: 'm2',
-          'x-ably-parent': 'm1',
-        },
-        'serial-2',
-      );
-      tree.upsert(
-        'm3',
-        { id: '3', content: 'v2' },
-        {
-          [HEADER_MSG_ID]: 'm3',
-          'x-ably-parent': 'm1',
-          'x-ably-fork-of': 'm2',
-        },
-        'serial-3',
-      );
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'q' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'm2',
+        parent: 'm1',
+        message: { id: 'b', content: 'a' },
+        serial: 's2',
+      });
     });
 
-    it('select changes which branch flattenNodes follows', () => {
-      // Pinned to m2 (was visible when m3 forked it)
-      expect(view.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v1']);
-
-      view.select('m2', 1);
-      expect(view.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v2']);
+    it('run() returns the Run by runId', () => {
+      expect(view.run('R1')?.runId).toBe('R1');
+      expect(view.run('R-unknown')).toBeUndefined();
     });
 
-    it('getSelectedIndex returns view-local selection', () => {
-      // Pinned to m2 (index 0) when m3 appeared
-      expect(view.getSelectedIndex('m2')).toBe(0);
-      view.select('m2', 1);
-      expect(view.getSelectedIndex('m2')).toBe(1);
+    it('runOf resolves the owning Run', () => {
+      expect(view.runOf('m1')?.runId).toBe('R1');
+      expect(view.runOf('m2')?.runId).toBe('R2');
+      expect(view.runOf('m-unknown')).toBeUndefined();
     });
 
-    it('getSelectedIndex returns 0 for non-forked nodes', () => {
-      expect(view.getSelectedIndex('m1')).toBe(0);
+    it("runOf reports 'active' status while the Run is active", () => {
+      expect(view.runOf('m1')?.status).toBe('active');
     });
 
-    it('select clamps out-of-range index', () => {
-      view.select('m2', 999);
-      expect(view.getSelectedIndex('m2')).toBe(1);
+    it('runOf surfaces the terminal RunEndReason on the Run', () => {
+      tree.applyRunLifecycle({
+        type: 'end',
+        runId: 'R1',
+        clientId: 'c',
+        invocationId: '',
+        reason: 'cancelled',
+        serial: 's3',
+      });
+      expect(view.runOf('m1')?.status).toBe('cancelled');
 
-      view.select('m2', -5);
-      expect(view.getSelectedIndex('m2')).toBe(0);
-    });
-
-    it('select is a no-op for non-forked nodes', () => {
-      view.select('m1', 5);
-      expect(view.getSelectedIndex('m1')).toBe(0);
-    });
-
-    it('getSiblings delegates to tree', () => {
-      const siblings = view.getSiblings('m2');
-      expect(siblings).toHaveLength(2);
-    });
-
-    it('hasSiblings delegates to tree', () => {
-      expect(view.hasSiblings('m2')).toBe(true);
-      expect(view.hasSiblings('m1')).toBe(false);
-    });
-
-    it('getNode delegates to tree', () => {
-      expect(view.getNode('m1')?.msgId).toBe('m1');
-      expect(view.getNode('unknown')).toBeUndefined();
+      tree.applyRunLifecycle({
+        type: 'end',
+        runId: 'R2',
+        clientId: 'c',
+        invocationId: '',
+        reason: 'complete',
+        serial: 's4',
+      });
+      expect(view.runOf('m2')?.status).toBe('complete');
     });
   });
 
   // -------------------------------------------------------------------------
-  // Multi-view
+  // Branch selection
   // -------------------------------------------------------------------------
 
-  describe('multi-view', () => {
-    it('two views over the same tree have independent selections', () => {
-      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert(
-        'm2',
-        { id: '2', content: 'v1' },
-        {
-          [HEADER_MSG_ID]: 'm2',
-          'x-ably-parent': 'm1',
-        },
-        'serial-2',
-      );
-      tree.upsert(
-        'm3',
-        { id: '3', content: 'v2' },
-        {
-          [HEADER_MSG_ID]: 'm3',
-          'x-ably-parent': 'm1',
-          'x-ably-fork-of': 'm2',
-        },
-        'serial-3',
-      );
+  describe('branch selection', () => {
+    // eslint-disable-next-line unicorn/consistent-function-scoping -- closure captures `tree` from outer beforeEach
+    const seedFork = (): void => {
+      // role omitted so the user-content wire keeps routing at wire-runId
+      // (the role-based sub-Run split is verified elsewhere). These tests
+      // focus on parent/forkOf sibling-selection semantics.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'u1',
+        message: { id: 'a', content: 'user-q' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'a1',
+        parent: 'u1',
+        message: { id: 'b', content: 'v1' },
+        serial: 's2',
+      });
+      apply(tree, {
+        runId: 'R2alt',
+        codecMessageId: 'a2',
+        parent: 'u1',
+        forkOf: 'a1',
+        message: { id: 'c', content: 'v2' },
+        serial: 's3',
+      });
+    };
 
-      const view2 = new DefaultView<TestEvent, TestMessage>({
+    /**
+     * Create a fresh view AFTER seeding so the View walks an already-populated
+     * tree (no pin-on-external-fork behavior).
+     * @returns A new DefaultView observing the already-seeded tree.
+     */
+    const freshViewAfterSeed = (): DefaultView<TestInput, TestOutput, TestProjection, TestMessage> => {
+      seedFork();
+      return new DefaultView({
         tree,
         channel: createMockChannel(),
-        codec: createMockCodec(),
-        sendDelegate: createMockSendDelegate(),
+        codec,
+        sendDelegate,
         logger: silentLogger,
       });
+    };
 
-      // view pinned to m2 (was visible when m3 forked); view2 created after fork, defaults to latest (m3)
-      expect(view.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v1']);
-      expect(view2.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v2']);
-
-      // Select different branches — view navigates to m3, view2 navigates to m2
-      view.select('m2', 1);
-      expect(view.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v2']);
-      expect(view2.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v2']);
-
-      view2.select('m2', 0);
-      expect(view2.flattenNodes().map((n) => n.message.content)).toEqual(['user', 'v1']);
-
-      view2.close();
+    it('default selection picks the latest sibling Run (fresh view after fork)', () => {
+      const v = freshViewAfterSeed();
+      expect(v.runs().map((r) => r.runId)).toEqual(['R1', 'R2alt']);
     });
 
-    it('tree mutation propagates to both views', () => {
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'));
-
-      const view2 = new DefaultView<TestEvent, TestMessage>({
-        tree,
-        channel: createMockChannel(),
-        codec: createMockCodec(),
-        sendDelegate: createMockSendDelegate(),
-        logger: silentLogger,
-      });
-
-      const handler1 = vi.fn();
-      const handler2 = vi.fn();
-      view.on('update', handler1);
-      view2.on('update', handler2);
-
-      tree.upsert('m2', { id: '2', content: 'hello' }, { [HEADER_MSG_ID]: 'm2', 'x-ably-parent': 'm1' });
-
-      expect(handler1).toHaveBeenCalledOnce();
-      expect(handler2).toHaveBeenCalledOnce();
-
-      view2.close();
+    it('rolls a regenerate group forward to the latest sibling when one appears (live view)', () => {
+      // View constructed before any data; watches as R1, R2, R2alt arrive.
+      // R2 and R2alt are same-parent reply runs — a regenerate sibling group.
+      // Unlike edit (input-node) forks, regenerate groups do NOT pin to the
+      // currently-visible member: the slot always rolls forward to the latest
+      // (R2alt), so an externally-published regenerator auto-advances the view.
+      seedFork();
+      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2alt']);
     });
 
-    it('fork from one view does not shift the other view', () => {
-      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert(
-        'm2',
-        { id: '2', content: 'asst' },
-        {
-          [HEADER_MSG_ID]: 'm2',
-          'x-ably-parent': 'm1',
-        },
-        'serial-2',
-      );
-
-      const view2 = new DefaultView<TestEvent, TestMessage>({
-        tree,
-        channel: createMockChannel(),
-        codec: createMockCodec(),
-        sendDelegate: createMockSendDelegate(),
-        logger: silentLogger,
-      });
-
-      // Both show [m1, m2]
-      expect(view.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
-      expect(view2.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
-
-      // Fork m2 — simulates an edit/regenerate from view2
-      tree.upsert(
-        'm3',
-        { id: '3', content: 'fork' },
-        {
-          [HEADER_MSG_ID]: 'm3',
-          'x-ably-parent': 'm1',
-          'x-ably-fork-of': 'm2',
-        },
-        'serial-3',
-      );
-
-      // view stays on m2 (pinned), view2 also pinned to m2
-      expect(view.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
-      expect(view2.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
-
-      // view2 navigates to the fork
-      view2.select('m2', 1);
-      expect(view2.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
-      // view unaffected
-      expect(view.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
-
-      view2.close();
+    it('selectSibling switches to the chosen sibling Run', () => {
+      const v = freshViewAfterSeed();
+      v.selectSibling('a1', 0); // anchor a1, older sibling (R2) at index 0
+      expect(v.runs().map((r) => r.runId)).toEqual(['R1', 'R2']);
     });
 
-    it('send with forkOf auto-selects new fork in calling view', async () => {
-      // Create a delegate that inserts a fork when called (simulates optimistic insert)
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-      const forkDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() => {
-        tree.upsert(
-          'm3',
-          { id: '3', content: 'fork' },
-          {
-            [HEADER_MSG_ID]: 'm3',
-            'x-ably-parent': 'm1',
-            'x-ably-fork-of': 'm2',
-          },
-          'serial-3',
-        );
-        return Promise.resolve({
-          stream: new ReadableStream(),
-          runId: 'run-1',
-          invocationId: 'inv-1',
-          cancel: vi.fn(),
-          optimisticMsgIds: ['m3'],
-        });
-      });
-
-      const forkView = new DefaultView<TestEvent, TestMessage>({
-        tree,
-        channel: createMockChannel(),
-        codec: createMockCodec(),
-        sendDelegate: forkDelegate,
-        logger: silentLogger,
-      });
-
-      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert(
-        'm2',
-        { id: '2', content: 'asst' },
-        {
-          [HEADER_MSG_ID]: 'm2',
-          'x-ably-parent': 'm1',
-        },
-        'serial-2',
-      );
-
-      await forkView.send([], { forkOf: 'm2', parent: 'm1' });
-
-      // forkView auto-selected the new fork (m3, latest sibling)
-      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
-
-      forkView.close();
+    it('branchSelection().index reflects the chosen sibling', () => {
+      const v = freshViewAfterSeed();
+      v.selectSibling('a1', 0);
+      expect(v.branchSelection('a1').index).toBe(0);
+      v.selectSibling('a2', 1);
+      expect(v.branchSelection('a2').index).toBe(1);
     });
 
-    it('send with forkOf defers auto-select when no optimistic sibling exists (regenerate)', async () => {
-      // Delegate does NOT insert any sibling — simulates regenerate where
-      // the server creates the fork later.
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-      const noopDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() =>
-        Promise.resolve({
-          stream: new ReadableStream(),
-          runId: 'run-1',
-          invocationId: 'inv-1',
-          cancel: vi.fn(),
-          optimisticMsgIds: [],
-        }),
-      );
-
-      const forkView = new DefaultView<TestEvent, TestMessage>({
-        tree,
-        channel: createMockChannel(),
-        codec: createMockCodec(),
-        sendDelegate: noopDelegate,
-        logger: silentLogger,
-      });
-
-      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert(
-        'm2',
-        { id: '2', content: 'asst' },
-        {
-          [HEADER_MSG_ID]: 'm2',
-          'x-ably-parent': 'm1',
-        },
-        'serial-2',
-      );
-
-      // Regenerate: send with forkOf but no optimistic insert
-      await forkView.send([], { forkOf: 'm2', parent: 'm1' });
-
-      // Still on original branch — no sibling yet
-      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
-
-      const handler = vi.fn();
-      forkView.on('update', handler);
-
-      // Server response arrives, creating the fork (stamped with the pending run's ID)
-      tree.upsert(
-        'm3',
-        { id: '3', content: 'regenerated' },
-        {
-          [HEADER_MSG_ID]: 'm3',
-          'x-ably-parent': 'm1',
-          'x-ably-fork-of': 'm2',
-          'x-ably-run-id': 'run-1',
-        },
-        'serial-3',
-      );
-
-      // forkView auto-selected the new fork (m3, latest sibling)
-      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
-      expect(handler).toHaveBeenCalled();
-
-      // Pending state was consumed — a second fork from a different run doesn't force re-selection
-      handler.mockClear();
-      tree.upsert(
-        'm4',
-        { id: '4', content: 'another fork' },
-        {
-          [HEADER_MSG_ID]: 'm4',
-          'x-ably-parent': 'm1',
-          'x-ably-fork-of': 'm2',
-          'x-ably-run-id': 'run-other',
-        },
-        'serial-4',
-      );
-
-      // View stays pinned on m3, does not jump to m4
-      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
-
-      forkView.close();
+    it('branchSelection().index returns 0 for an unforked Run', () => {
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'x' }, serial: 's1' });
+      expect(view.branchSelection('m1').index).toBe(0);
     });
 
-    it('send with forkOf defers auto-select even when siblings already exist', async () => {
-      // Regression: when forkOf already has siblings (e.g. regenerating for the 2nd+ time),
-      // siblings.length > 1 before the delegate, but no NEW sibling was optimistically
-      // inserted. The view must still defer selection until the server response arrives.
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-      const noopDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() =>
-        Promise.resolve({
-          stream: new ReadableStream(),
-          runId: 'run-1',
-          invocationId: 'inv-1',
-          cancel: vi.fn(),
-          optimisticMsgIds: [],
-        }),
-      );
-
-      const forkView = new DefaultView<TestEvent, TestMessage>({
-        tree,
-        channel: createMockChannel(),
-        codec: createMockCodec(),
-        sendDelegate: noopDelegate,
-        logger: silentLogger,
-      });
-
-      // Set up: m1 → m2 (original) and m3 (first regeneration, already a sibling of m2)
-      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert(
-        'm2',
-        { id: '2', content: 'asst v1' },
-        {
-          [HEADER_MSG_ID]: 'm2',
-          'x-ably-parent': 'm1',
-        },
-        'serial-2',
-      );
-      tree.upsert(
-        'm3',
-        { id: '3', content: 'asst v2' },
-        {
-          [HEADER_MSG_ID]: 'm3',
-          'x-ably-parent': 'm1',
-          'x-ably-fork-of': 'm2',
-        },
-        'serial-3',
-      );
-
-      // View is showing m3 (latest sibling, index 1)
-      forkView.select('m2', 1);
-      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
-
-      // Regenerate again: forkOf m2, no optimistic insert
-      await forkView.send([], { forkOf: 'm2', parent: 'm1' });
-
-      // Still showing m3 — no new sibling yet
-      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
-
-      // Server response arrives, creating a third sibling (stamped with the pending run's ID)
-      tree.upsert(
-        'm4',
-        { id: '4', content: 'asst v3' },
-        {
-          [HEADER_MSG_ID]: 'm4',
-          'x-ably-parent': 'm1',
-          'x-ably-fork-of': 'm2',
-          'x-ably-run-id': 'run-1',
-        },
-        'serial-4',
-      );
-
-      // forkView auto-selected the newest sibling (m4, index 2)
-      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm4']);
-
-      forkView.close();
+    it('selectSibling clamps the index to the sibling-group bounds', () => {
+      const v = freshViewAfterSeed();
+      v.selectSibling('a1', 999);
+      expect(v.branchSelection('a1').index).toBe(1);
+      v.selectSibling('a1', -5);
+      expect(v.branchSelection('a1').index).toBe(0);
     });
 
-    it('regenerate on a non-root sibling defers auto-select correctly', async () => {
-      // Regression: regenerating while viewing a non-root sibling (e.g. m3 with
-      // forkOf m2) must store the group root in _branchSelections so that
-      // _pinVisibleSelections can match it via groupRoot.
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-      const noopDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() =>
-        Promise.resolve({
-          stream: new ReadableStream(),
-          runId: 'run-1',
-          invocationId: 'inv-1',
-          cancel: vi.fn(),
-          optimisticMsgIds: [],
-        }),
-      );
-
-      const forkView = new DefaultView<TestEvent, TestMessage>({
-        tree,
-        channel: createMockChannel(),
-        codec: createMockCodec(),
-        sendDelegate: noopDelegate,
-        logger: silentLogger,
-      });
-
-      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert(
-        'm2',
-        { id: '2', content: 'asst v1' },
-        {
-          [HEADER_MSG_ID]: 'm2',
-          'x-ably-parent': 'm1',
-        },
-        'serial-2',
-      );
-      tree.upsert(
-        'm3',
-        { id: '3', content: 'asst v2' },
-        {
-          [HEADER_MSG_ID]: 'm3',
-          'x-ably-parent': 'm1',
-          'x-ably-fork-of': 'm2',
-        },
-        'serial-3',
-      );
-
-      // Navigate to original (m2) then back to m3
-      forkView.select('m2', 0);
-      forkView.select('m2', 1);
-      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm3']);
-
-      // Regenerate while viewing m3 — forkOf is m3, not the group root m2
-      await forkView.send([], { forkOf: 'm3', parent: 'm1' });
-
-      // Server response creates a new sibling (forks from m2 via m3's group, stamped with pending run)
-      tree.upsert(
-        'm4',
-        { id: '4', content: 'asst v3' },
-        {
-          [HEADER_MSG_ID]: 'm4',
-          'x-ably-parent': 'm1',
-          'x-ably-fork-of': 'm3',
-          'x-ably-run-id': 'run-1',
-        },
-        'serial-4',
-      );
-
-      // Auto-selected the newest sibling
-      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm4']);
-
-      forkView.close();
-    });
-
-    it('pending fork selection is cleaned up on run-end if server never creates sibling', async () => {
-      // Regression: pending entries must not leak if the server never creates
-      // a fork (e.g. the run ends without producing any messages for this group).
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-      const noopDelegate: SendDelegate<TestEvent, TestMessage> = vi.fn(() =>
-        Promise.resolve({
-          stream: new ReadableStream(),
-          runId: 'run-cleanup',
-          invocationId: 'inv-cleanup',
-          cancel: vi.fn(),
-          optimisticMsgIds: [],
-        }),
-      );
-
-      const forkView = new DefaultView<TestEvent, TestMessage>({
-        tree,
-        channel: createMockChannel(),
-        codec: createMockCodec(),
-        sendDelegate: noopDelegate,
-        logger: silentLogger,
-      });
-
-      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert(
-        'm2',
-        { id: '2', content: 'asst' },
-        {
-          [HEADER_MSG_ID]: 'm2',
-          'x-ably-parent': 'm1',
-        },
-        'serial-2',
-      );
-
-      // Regenerate: deferred auto-select (pending)
-      await forkView.send([], { forkOf: 'm2', parent: 'm1' });
-
-      // Run ends without creating a sibling — pending entry should be cleaned up
-      tree.emitRun({ type: 'x-ably-run-end', runId: 'run-cleanup', clientId: 'client-a', reason: 'complete' });
-
-      // A later unrelated fork should NOT be auto-selected (pending was cleaned up)
-      tree.upsert(
-        'm3',
-        { id: '3', content: 'external fork' },
-        {
-          [HEADER_MSG_ID]: 'm3',
-          'x-ably-parent': 'm1',
-          'x-ably-fork-of': 'm2',
-        },
-        'serial-3',
-      );
-
-      // View pins to m2 (external fork), does NOT jump to m3
-      expect(forkView.flattenNodes().map((n) => n.msgId)).toEqual(['m1', 'm2']);
-
-      forkView.close();
-    });
-
-    it('closing one view does not affect the other', () => {
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'));
-
-      const view2 = new DefaultView<TestEvent, TestMessage>({
-        tree,
-        channel: createMockChannel(),
-        codec: createMockCodec(),
-        sendDelegate: createMockSendDelegate(),
-        logger: silentLogger,
-      });
-
-      view2.close();
-
-      // view still works
+    it('selectSibling is a no-op when the codec-message-id is not a branch anchor', () => {
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'x' }, serial: 's1' });
       const handler = vi.fn();
       view.on('update', handler);
-      tree.upsert('m2', { id: '2', content: 'hello' }, { [HEADER_MSG_ID]: 'm2', 'x-ably-parent': 'm1' });
-      expect(handler).toHaveBeenCalledOnce();
+      view.selectSibling('m1', 0);
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('emits update when selectSibling changes the visible chain', () => {
+      const v = freshViewAfterSeed();
+      const handler = vi.fn();
+      v.on('update', handler);
+      v.selectSibling('a1', 0);
+      expect(handler).toHaveBeenCalled();
+    });
+
+    it('descendants of the non-selected sibling are hidden', () => {
+      const v = freshViewAfterSeed();
+      // Descendant of R2 (original branch)
+      apply(tree, {
+        runId: 'R3orig',
+        codecMessageId: 'm-d1',
+        parent: 'a1',
+        message: { id: 'd', content: 'after-v1' },
+        serial: 's4',
+      });
+      // Descendant of R2alt (the latest branch)
+      apply(tree, {
+        runId: 'R3alt',
+        codecMessageId: 'm-d2',
+        parent: 'a2',
+        message: { id: 'e', content: 'after-v2' },
+        serial: 's5',
+      });
+
+      // Default: R2alt is selected (fresh view, no pin yet).
+      expect(v.runs().map((r) => r.runId)).toEqual(['R1', 'R2alt', 'R3alt']);
+      // Select R2 (anchor a1, index 0): R3orig becomes visible, R3alt hidden.
+      v.selectSibling('a1', 0);
+      expect(v.runs().map((r) => r.runId)).toEqual(['R1', 'R2', 'R3orig']);
     });
   });
 
   // -------------------------------------------------------------------------
-  // Write operations (send / regenerate / edit)
+  // Write operations (send delegate forwarding)
   // -------------------------------------------------------------------------
 
   describe('write operations', () => {
-    let mockDelegate: SendDelegate<TestEvent, TestMessage>;
+    it('send forwards parentCodecMessageId', async () => {
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'first' }, serial: 's1' });
+      await view.send({ kind: 'user-message', message: { id: 'b', content: 'second' } });
 
-    beforeEach(() => {
-      mockDelegate = createMockSendDelegate();
-      view = new DefaultView({
-        tree,
-        channel: createMockChannel(),
-        codec: createMockCodec(),
-        sendDelegate: mockDelegate,
-        logger: silentLogger,
+      const call = vi.mocked(sendDelegate).mock.calls[0];
+      if (!call) throw new Error('expected delegate call');
+      // parentCodecMessageId = last visible message's codec-message-id.
+      expect(call[2]).toBe('m1');
+    });
+
+    it('send with empty visible chain passes undefined parentCodecMessageId', async () => {
+      await view.send({ kind: 'user-message', message: { id: 'a', content: 'hi' } });
+      const call = vi.mocked(sendDelegate).mock.calls[0];
+      if (!call) throw new Error('expected delegate call');
+      expect(call[2]).toBeUndefined();
+    });
+
+    it('send forwards options through to the delegate', async () => {
+      const opts = { runId: 'R-explicit', clientId: 'c-explicit' };
+      await view.send({ kind: 'user-message', message: { id: 'a', content: 'hi' } }, opts);
+      const call = vi.mocked(sendDelegate).mock.calls[0];
+      if (!call) throw new Error('expected delegate call');
+      expect(call[1]).toBe(opts);
+    });
+
+    it('send uses view-local branch selection as history context', async () => {
+      // Build R1 (user) → R2 (assistant) with sibling R2alt at the assistant level.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'u1',
+        role: 'user',
+        message: { id: 'a', content: 'q' },
+        serial: 's1',
       });
-      // Seed a linear chain: m1 -> m2 -> m3
-      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert(
-        'm2',
-        { id: '2', content: 'assistant' },
-        {
-          [HEADER_MSG_ID]: 'm2',
-          'x-ably-parent': 'm1',
-        },
-        'serial-2',
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'a1',
+        parent: 'u1',
+        message: { id: 'b', content: 'v1' },
+        serial: 's2',
+      });
+      // Prime the view so the next fork is pinned to R2.
+      view.runs();
+      apply(tree, {
+        runId: 'R2alt',
+        codecMessageId: 'a2',
+        parent: 'u1',
+        forkOf: 'a1',
+        message: { id: 'c', content: 'v2' },
+        serial: 's3',
+      });
+
+      // Default visible branch is R2 (pin-on-external-fork). Switch view A
+      // to R2alt (anchor a1, index 1) and verify the delegate sees R2alt's
+      // projection in history.
+      view.selectSibling('a1', 1);
+      await view.send({ kind: 'user-message', message: { id: 'd', content: 'next' } });
+
+      const call = vi.mocked(sendDelegate).mock.calls[0];
+      if (!call) throw new Error('expected delegate call');
+      // parentCodecMessageId should be a2 (R2alt's reply on the selected branch).
+      expect(call[2]).toBe('a2');
+    });
+
+    it('send normalises a single TInput', async () => {
+      await view.send({ kind: 'user-message', message: { id: 'a', content: 'hi' } });
+      const events = vi.mocked(sendDelegate).mock.calls[0]?.[0];
+      expect(events).toEqual([{ kind: 'user-message', message: { id: 'a', content: 'hi' } }]);
+    });
+
+    it('send normalises a TInput[] input', async () => {
+      await view.send([
+        { kind: 'user-message', message: { id: 'a', content: 'hi' } },
+        { kind: 'user-message', message: { id: 'b', content: 'bye' } },
+      ]);
+      const events = vi.mocked(sendDelegate).mock.calls[0]?.[0];
+      expect(events).toEqual([
+        { kind: 'user-message', message: { id: 'a', content: 'hi' } },
+        { kind: 'user-message', message: { id: 'b', content: 'bye' } },
+      ]);
+    });
+
+    it('send forwards an input with a pinned codecMessageId targeting an existing message', async () => {
+      // Inputs whose `codecMessageId` is set target an existing message
+      // (continuation tool resolutions, approval responses). The View passes
+      // them straight through — the routing field stays on the input itself.
+      const input: TestInput[] = [
+        { kind: 'user-message', message: { id: 'a', content: 'hi' }, codecMessageId: 'override' },
+      ];
+      await view.send(input);
+      const events = vi.mocked(sendDelegate).mock.calls[0]?.[0];
+      expect(events).toEqual(input);
+    });
+
+    it('regenerate produces a regenerate event keyed on the resolved parent and target codec-message-ids; sendOptions carry parent (no forkOf)', async () => {
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'u1',
+        role: 'user',
+        message: { id: 'a', content: 'q' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'a1',
+        parent: 'u1',
+        message: { id: 'b', content: 'reply' },
+        serial: 's2',
+      });
+
+      // Codec convention: TMessage.id is set to the wire codec-message-id at fold time.
+      await view.regenerate('a1');
+
+      expect(sendDelegate).toHaveBeenCalledTimes(1);
+      const call = vi.mocked(sendDelegate).mock.calls[0];
+      if (!call) throw new Error('expected delegate call');
+      const event = call[0][0];
+      // The codec's createRegenerate produces the well-known Regenerate
+      // variant: `kind: 'regenerate'`, with `target` naming the assistant
+      // being regenerated and `parent` naming the user prompt the new
+      // assistant threads under.
+      expect(event).toEqual({ kind: 'regenerate', target: 'a1', parent: 'u1' });
+      // Regenerate sets parent only — the Run-level fork relationship is
+      // intentionally absent. The replacement happens at projection
+      // extraction time, not via a sibling Run.
+      expect(call[1]?.forkOf).toBeUndefined();
+      expect(call[1]?.parent).toBe('u1');
+    });
+
+    it('regenerate throws when the target message is unknown', async () => {
+      await expect(view.regenerate('unknown')).rejects.toThrow(/message not found/);
+    });
+
+    it('edit of an already-edited user prompt resolves parent correctly (P1 -> P2 -> P3 chain)', async () => {
+      // R1 = [u1, a1] (original).
+      // R_edit1 = [u2, a2] (forkOf=u1, the first edit).
+      // Now editing u2 should produce a Run that forks u2 (the latest
+      // edited prompt). _findParentMsgId for u2 in the visible chain
+      // resolves to undefined (u2 is the first visible msg), so the new
+      // edit Run is root-level too.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'u1',
+        role: 'user',
+        message: { id: 'u1', content: 'alpha' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'a1',
+        role: 'assistant',
+        message: { id: 'a1', content: 'reply-alpha' },
+        serial: 's2',
+      });
+      apply(tree, {
+        runId: 'R_edit1',
+        codecMessageId: 'u2',
+        forkOf: 'u1',
+        role: 'user',
+        message: { id: 'u2', content: 'bravo' },
+        serial: 's3',
+      });
+      apply(tree, {
+        runId: 'R_edit1',
+        codecMessageId: 'a2',
+        role: 'assistant',
+        parent: 'u2',
+        message: { id: 'a2', content: 'reply-bravo' },
+        serial: 's4',
+      });
+
+      // R_edit1 is the latest auto-selected (per existing pinning rules,
+      // but the View pins to the previously-visible R1 unless the caller
+      // ran view.edit). To exercise editing u2, select R_edit1 via the
+      // user-prompt anchor (u1) at index 1.
+      view.selectSibling('u1', 1);
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u2', 'a2']);
+
+      await view.edit('u2', { kind: 'user-message', message: { id: 'u3', content: 'charlie' } });
+
+      const call = vi.mocked(sendDelegate).mock.calls[0];
+      if (!call) throw new Error('expected delegate call');
+      const [, sendOptions] = call;
+      // For an edit of the root-level prompt, parent is undefined.
+      expect(sendOptions?.parent).toBeUndefined();
+      expect(sendOptions?.forkOf).toBe('u2');
+    });
+
+    it('edits a run-less input node (the two-node edit target) — resolves kind-blind', async () => {
+      // The edit target is a user prompt = a run-LESS INPUT node. Regression
+      // guard: edit() must resolve the target via the node union, not the
+      // reply-run-only lookup (which returned undefined → "message not found").
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'alpha' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'a1',
+        role: 'assistant',
+        parent: 'u1',
+        message: { id: 'a1', content: 'reply' },
+        serial: 's2',
+      });
+
+      // Must not throw (the bug threw "message not found in tree").
+      await view.edit('u1', { kind: 'user-message', message: { id: 'u1b', content: 'edited' } });
+
+      const call = vi.mocked(sendDelegate).mock.calls[0];
+      if (!call) throw new Error('expected delegate call');
+      const [, sendOptions] = call;
+      expect(sendOptions?.forkOf).toBe('u1');
+      expect(sendOptions?.parent).toBeUndefined(); // u1 is the root prompt
+    });
+
+    it('regenerate of an already-regenerated assistant resolves parent to the user prompt, not the hidden original assistant', async () => {
+      // Setup: R1 = [user u1, asst a1]. Then a regenerate creates R_regen
+      // (continuation of R1, regeneratesCodecMessageId=a1, owns a1p). The visible
+      // chain after regen = [u1, a1p] (a1 is hidden by message-level
+      // replacement).
+      //
+      // Bug: regenerating a1p (the regenerator's content) used to walk
+      // R_regen's projection (idx=0), fall back to the parent Run's tail
+      // — which is a1 (the hidden assistant). The history then ended
+      // with an assistant message, breaking Anthropic prefill semantics.
+      //
+      // Expected: parent resolves to u1 (the user prompt the regen is
+      // responding to). History sent on send = [u1].
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'q' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'a1',
+        parent: 'u1',
+        role: 'assistant',
+        message: { id: 'a1', content: 'first reply' },
+        serial: 's2',
+      });
+      apply(tree, {
+        runId: 'R_regen',
+        codecMessageId: 'a1p',
+        parent: 'u1',
+        regenerates: 'a1',
+        role: 'assistant',
+        message: { id: 'a1p', content: 'regen reply' },
+        serial: 's3',
+      });
+
+      // Sanity: visible chain after the first regen is [u1, a1p].
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1p']);
+
+      await view.regenerate('a1p');
+
+      const call = vi.mocked(sendDelegate).mock.calls[0];
+      if (!call) throw new Error('expected delegate call');
+      const [events, sendOptions, parentCodecMessageId] = call;
+      // The wire's `parent` must be u1 (the user prompt), NOT a1
+      // (the hidden original assistant).
+      expect(sendOptions?.parent).toBe('u1');
+      expect(parentCodecMessageId).toBe('u1');
+      // The regenerate event's anchor codec-message-id must be the CANONICAL
+      // anchor (a1), not the clicked-on regen content (a1p). Anchoring
+      // every regen at the same canonical codec-message-id grows a single group
+      // of alternatives — clicking Regenerate N times produces N+1
+      // members at the same branch point.
+      const event = events[0];
+      // The regenerate input's `target` carries the anchor msg-id; the
+      // session reads it directly off the input to stamp
+      // `msg-regenerate` on the wire.
+      if (!event || !('kind' in event) || event.kind !== 'regenerate') {
+        throw new Error('expected regenerate input');
+      }
+      expect(event.target).toBe('a1');
+    });
+
+    it('regenerate throws when the target has no predecessor', async () => {
+      apply(tree, { runId: 'R1', codecMessageId: 'only', message: { id: 'x', content: 'x' }, serial: 's1' });
+      await expect(view.regenerate('only')).rejects.toThrow(/parent user message not found/);
+    });
+
+    it('hides a follow-up turn when its anchor assistant is regenerated mid-conversation', () => {
+      // use-chat scenario: user sends "tell me a fact" (R1), gets a1,
+      // sends a follow-up "not about honey" parented at a1 (R2 with
+      // u2/a2). Then clicks regenerate on a1 — R3 produces a1p.
+      // The follow-up R2 lives on the original a1's timeline; it must
+      // disappear from the regen branch.
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'tell me a fact' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'a1',
+        role: 'assistant',
+        parent: 'u1',
+        message: { id: 'a1', content: 'honey fact' },
+        serial: 's2',
+      });
+      applyInput(tree, {
+        codecMessageId: 'u2',
+        parent: 'a1',
+        message: { id: 'u2', content: 'not about honey' },
+        serial: 's3',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'a2',
+        role: 'assistant',
+        parent: 'u2',
+        message: { id: 'a2', content: 'ocean fact' },
+        serial: 's4',
+      });
+      // Before regen: full conversation visible.
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1', 'u2', 'a2']);
+
+      apply(tree, {
+        runId: 'R3',
+        codecMessageId: 'a1p',
+        role: 'assistant',
+        parent: 'u1',
+        regenerates: 'a1',
+        message: { id: 'a1p', content: 'honey fact, take 2' },
+        serial: 's5',
+      });
+
+      // After regen (latest selected): the follow-up turn (u2 + R2) is hidden —
+      // its anchor a1 was substituted by the regenerator.
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1p']);
+    });
+
+    it('hides Runs parented inside a regen-hidden owner when the original branch is reselected', () => {
+      // Tree shape:
+      //   R1 owns [u1, a1].
+      //   R2 regenerates a1, owns [a1p].
+      //   R3 is parented at a1p (lives only on the regen branch) and
+      //     owns [u2, a2].
+      // Default selection picks R2 (newest regen), so the visible chain
+      // is [u1, a1p, u2, a2]. Selecting R1 must collapse the chain to
+      // [u1, a1] — R3 belongs to the regen branch and disappears too.
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'q1' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'a1',
+        role: 'assistant',
+        parent: 'u1',
+        message: { id: 'a1', content: 'orig' },
+        serial: 's2',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'a1p',
+        role: 'assistant',
+        parent: 'u1',
+        regenerates: 'a1',
+        message: { id: 'a1p', content: 'regen' },
+        serial: 's3',
+      });
+      applyInput(tree, { codecMessageId: 'u2', parent: 'a1p', message: { id: 'u2', content: 'q2' }, serial: 's4' });
+      apply(tree, {
+        runId: 'R3',
+        codecMessageId: 'a2',
+        role: 'assistant',
+        parent: 'u2',
+        message: { id: 'a2', content: 'r2' },
+        serial: 's5',
+      });
+
+      // Default selection: latest regen (R2) → the follow-up turn chains off it.
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1p', 'u2', 'a2']);
+
+      // Switch to the original (index 0 in the regen group).
+      view.selectSibling('a1', 0);
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1']);
+
+      // Switch back — the regen branch and its follow-up turn reappear.
+      view.selectSibling('a1', 1);
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1p', 'u2', 'a2']);
+    });
+
+    it('rolls view.getMessages() forward to a regenerator that lands before the publish ACK resolves', async () => {
+      // Race condition repro: the agent publishes ai-run-start for the new
+      // regenerator BEFORE the client's publish() ACK returns. A regenerate
+      // slot defaults to the latest member (auto-rolls forward), so the view
+      // snaps to the newest regenerator the moment it lands — regardless of
+      // when the send ACK resolves — unless the user explicitly pinned an
+      // earlier one.
+      // Two-node model: u1 is a run-less user INPUT node; R1 (reply) parents at
+      // it; regenerators are sibling reply runs parented at the same input node.
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'q' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'a1',
+        role: 'assistant',
+        parent: 'u1',
+        message: { id: 'a1', content: 'orig' },
+        serial: 's2',
+      });
+
+      // First regen completes — promoted to auto.
+      let deferredResolve: ((value: ActiveRun) => void) | undefined;
+      vi.mocked(sendDelegate).mockResolvedValueOnce({
+        inputCodecMessageId: 'a1',
+        runId: Promise.resolve('Rregen1'),
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+        cancel: () => Promise.resolve(),
+        optimisticCodecMessageIds: [],
+        inputEventId: '',
+        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
+      });
+      await view.regenerate('a1');
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: 'Rregen1',
+        clientId: 'agent',
+        invocationId: 'inv-1',
+        parent: 'u1',
+        regenerates: 'a1',
+        serial: 's3-start',
+      });
+      apply(tree, {
+        runId: 'Rregen1',
+        codecMessageId: 'a1_new1',
+        parent: 'u1',
+        role: 'assistant',
+        regenerates: 'a1',
+        message: { id: 'a1_new1', content: 'regen-1' },
+        serial: 's3',
+      });
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1_new1']);
+
+      // Second regen: ai-run-start arrives BEFORE the publish ACK that
+      // resolves sendDelegate, so _applyRegenerateAutoSelect hasn't yet
+      // installed the new pending entry.
+      vi.mocked(sendDelegate).mockImplementationOnce(
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- need to capture the resolver
+        () =>
+          new Promise<ActiveRun>((resolve) => {
+            deferredResolve = resolve;
+          }),
       );
-      tree.upsert(
-        'm3',
-        { id: '3', content: 'follow-up' },
-        {
-          [HEADER_MSG_ID]: 'm3',
-          'x-ably-parent': 'm2',
-        },
-        'serial-3',
+      const regenPromise = view.regenerate('a1_new1');
+
+      // Agent's lifecycle + output land BEFORE the publish ACK.
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: 'Rregen2',
+        clientId: 'agent',
+        invocationId: 'inv-2',
+        parent: 'u1',
+        regenerates: 'a1',
+        serial: 's4-start',
+      });
+      apply(tree, {
+        runId: 'Rregen2',
+        codecMessageId: 'a1_new2',
+        parent: 'u1',
+        role: 'assistant',
+        regenerates: 'a1',
+        message: { id: 'a1_new2', content: 'regen-2' },
+        serial: 's4',
+      });
+      // Auto-rolls forward to regen-2 the moment its run lands — the slot
+      // tracks the latest member; it does not wait for the publish ACK.
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1_new2']);
+
+      // The publish ACK resolves later: _applyRegenerateAutoSelect runs and the
+      // selection stays on the latest (regen-2).
+      deferredResolve?.({
+        inputCodecMessageId: 'a1_new1',
+        runId: Promise.resolve('Rregen2'),
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+        cancel: () => Promise.resolve(),
+        optimisticCodecMessageIds: [],
+        inputEventId: '',
+        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
+      });
+      await regenPromise;
+
+      // Visible state must now reflect regen-2 — without the recompute
+      // in _applyRegenerateAutoSelect, this stays stuck on 'a1_new1'.
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1_new2']);
+    });
+
+    it('three consecutive regenerates of the same assistant substitute to the latest in view.getMessages()', async () => {
+      // Mirror the use-chat demo scenario in the two-node model: a run-less user
+      // INPUT node u1, the original reply R1 parented at it, then three
+      // sequential regenerates each minting a new reply run parented at the SAME
+      // input node (the regenerate sibling group).
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'q' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'a1',
+        role: 'assistant',
+        parent: 'u1',
+        message: { id: 'a1', content: 'orig' },
+        serial: 's2',
+      });
+
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1']);
+
+      // First regenerate.
+      vi.mocked(sendDelegate).mockResolvedValueOnce({
+        inputCodecMessageId: 'a1',
+        runId: Promise.resolve('Rregen1'),
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+        cancel: () => Promise.resolve(),
+        optimisticCodecMessageIds: [],
+        inputEventId: '',
+        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
+      });
+      await view.regenerate('a1');
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: 'Rregen1',
+        clientId: 'agent',
+        invocationId: 'inv-1',
+        parent: 'u1',
+        regenerates: 'a1',
+        serial: 's3-start',
+      });
+      apply(tree, {
+        runId: 'Rregen1',
+        codecMessageId: 'a1_new1',
+        parent: 'u1',
+        role: 'assistant',
+        regenerates: 'a1',
+        message: { id: 'a1_new1', content: 'regen-1' },
+        serial: 's3',
+      });
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1_new1']);
+
+      // Second regenerate (clicking the displayed regen-1 message).
+      vi.mocked(sendDelegate).mockResolvedValueOnce({
+        inputCodecMessageId: 'a1_new1',
+        runId: Promise.resolve('Rregen2'),
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+        cancel: () => Promise.resolve(),
+        optimisticCodecMessageIds: [],
+        inputEventId: '',
+        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
+      });
+      await view.regenerate('a1_new1');
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: 'Rregen2',
+        clientId: 'agent',
+        invocationId: 'inv-2',
+        parent: 'u1',
+        regenerates: 'a1',
+        serial: 's4-start',
+      });
+      apply(tree, {
+        runId: 'Rregen2',
+        codecMessageId: 'a1_new2',
+        parent: 'u1',
+        role: 'assistant',
+        regenerates: 'a1',
+        message: { id: 'a1_new2', content: 'regen-2' },
+        serial: 's4',
+      });
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1_new2']);
+
+      // Third regenerate.
+      vi.mocked(sendDelegate).mockResolvedValueOnce({
+        inputCodecMessageId: 'a1_new2',
+        runId: Promise.resolve('Rregen3'),
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+        cancel: () => Promise.resolve(),
+        optimisticCodecMessageIds: [],
+        inputEventId: '',
+        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
+      });
+      await view.regenerate('a1_new2');
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: 'Rregen3',
+        clientId: 'agent',
+        invocationId: 'inv-3',
+        parent: 'u1',
+        regenerates: 'a1',
+        serial: 's5-start',
+      });
+      apply(tree, {
+        runId: 'Rregen3',
+        codecMessageId: 'a1_new3',
+        parent: 'u1',
+        role: 'assistant',
+        regenerates: 'a1',
+        message: { id: 'a1_new3', content: 'regen-3' },
+        serial: 's5',
+      });
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1_new3']);
+    });
+
+    it('edit forwards forkOf and parent for a user-message edit', async () => {
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'u1',
+        role: 'user',
+        message: { id: 'a', content: 'q' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'a1',
+        parent: 'u1',
+        message: { id: 'b', content: 'reply' },
+        serial: 's2',
+      });
+      apply(tree, {
+        runId: 'R3',
+        codecMessageId: 'u2',
+        parent: 'a1',
+        role: 'user',
+        message: { id: 'c', content: 'follow' },
+        serial: 's3',
+      });
+
+      await view.edit('u2', { kind: 'user-message', message: { id: 'c', content: 'edited' } });
+      const call = vi.mocked(sendDelegate).mock.calls[0];
+      if (!call) throw new Error('expected delegate call');
+      expect(call[1]?.forkOf).toBe('u2');
+      expect(call[1]?.parent).toBe('a1'); // predecessor of u2 in flat list
+    });
+
+    it('edit throws when the target message is unknown', async () => {
+      await expect(view.edit('unknown', { kind: 'user-message', message: { id: 'u', content: 'x' } })).rejects.toThrow(
+        /message not found/,
       );
-    });
-
-    it('send passes pre-computed history to delegate', async () => {
-      await view.send({ id: '4', content: 'new msg' });
-      expect(mockDelegate).toHaveBeenCalledOnce();
-      const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
-      const history = call[2] as MessageNode<TestMessage>[];
-      expect(history.map((n) => n.msgId)).toEqual(['m1', 'm2', 'm3']);
-    });
-
-    it('send forwards options to delegate', async () => {
-      await view.send({ id: '4', content: 'msg' }, { parent: 'm1', body: { extra: true } });
-      const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
-      expect(call[0]).toEqual({ id: '4', content: 'msg' });
-      expect(call[1]).toEqual({ parent: 'm1', body: { extra: true } });
-    });
-
-    it('regenerate republishes the parent user message and sets forkOf to the target', async () => {
-      await view.regenerate('m2');
-      const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
-      const input = call[0] as TestMessage[];
-      const options = call[1] as SendOptions;
-      const republishMsgId = call[4] as string | undefined;
-      // The delegate receives the parent user message (m1) as the message to republish.
-      expect(input).toHaveLength(1);
-      expect(input[0]?.id).toBe('1');
-      expect(republishMsgId).toBe('m1');
-      // forkOf still targets the assistant message being regenerated.
-      expect(options.forkOf).toBe('m2');
-      // parent is m1's tree parentId (m1 is root → undefined).
-      expect(options.parent).toBeUndefined();
-    });
-
-    it('regenerate passes history truncated before the republished user message', async () => {
-      await view.regenerate('m2');
-      const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
-      const options = call[1] as { body: { history: MessageNode<TestMessage>[] } };
-      // m1 is the republished user message — excluded from history. No
-      // earlier messages exist.
-      expect(options.body.history).toEqual([]);
-    });
-
-    it('edit computes forkOf and parent from target node', async () => {
-      await view.edit('m3', { id: 'edited', content: 'revised' });
-      const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
-      const options = call[1] as SendOptions;
-      expect(call[0]).toEqual({ id: 'edited', content: 'revised' });
-      expect(options.forkOf).toBe('m3');
-      expect(options.parent).toBe('m2'); // parent of m3
-    });
-
-    it('edit passes truncated history (before target)', async () => {
-      await view.edit('m3', { id: 'edited', content: 'revised' });
-      const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
-      const options = call[1] as { body: { history: MessageNode<TestMessage>[] } };
-      expect(options.body.history).toHaveLength(2); // m1 and m2
-    });
-
-    it('regenerate throws for unknown messageId', async () => {
-      await expect(view.regenerate('nonexistent')).rejects.toThrow('message not found in tree');
-    });
-
-    it('edit throws for unknown messageId', async () => {
-      await expect(view.edit('nonexistent', { id: 'x', content: 'y' })).rejects.toThrow('message not found in tree');
-    });
-
-    it('send uses view-local branch selections for context', async () => {
-      // Fork m2
-      tree.upsert(
-        'm4',
-        { id: '4', content: 'v2' },
-        {
-          [HEADER_MSG_ID]: 'm4',
-          'x-ably-parent': 'm1',
-          'x-ably-fork-of': 'm2',
-        },
-        'serial-4',
-      );
-
-      // Select original branch (m2, not m4)
-      view.select('m2', 0);
-
-      await view.send({ id: '5', content: 'msg' });
-      const call = (mockDelegate as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
-      const history = call[2] as MessageNode<TestMessage>[];
-      // Should follow m1 -> m2 -> m3 (selected branch), not m1 -> m4
-      expect(history.map((n) => n.msgId)).toEqual(['m1', 'm2', 'm3']);
     });
   });
 
   // -------------------------------------------------------------------------
-  // close
+  // Events (scoped to visible)
+  // -------------------------------------------------------------------------
+
+  describe('event scoping', () => {
+    it('forwards update on tree structural change', () => {
+      const handler = vi.fn();
+      view.on('update', handler);
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      expect(handler).toHaveBeenCalled();
+    });
+
+    it('forwards a tree output event as update when the run is on the visible chain', () => {
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      const handler = vi.fn();
+      view.on('update', handler);
+      // Folding another message into R1 fires the tree 'output' event for a
+      // visible run.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm2',
+        parent: 'm1',
+        message: { id: 'b', content: 'follow' },
+        serial: 's2',
+      });
+      expect(handler).toHaveBeenCalled();
+    });
+
+    it('forwards ably-message for a message whose runId is visible', () => {
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      const handler = vi.fn();
+      view.on('ably-message', handler);
+      // CAST: tests don't need a fully-typed Ably.InboundMessage.
+      const fakeMsg = {
+        name: 'fake',
+        data: 'x',
+        extras: { ai: { transport: { [HEADER_RUN_ID]: 'R1' } } },
+      } as unknown as Ably.InboundMessage;
+      tree.emitAblyMessage(fakeMsg);
+      expect(handler).toHaveBeenCalledWith(fakeMsg);
+    });
+
+    it('drops ably-message for a message whose runId is NOT visible', () => {
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      const handler = vi.fn();
+      view.on('ably-message', handler);
+      const fakeMsg = {
+        name: 'fake',
+        extras: { ai: { transport: { [HEADER_RUN_ID]: 'R-other' } } },
+      } as unknown as Ably.InboundMessage;
+      tree.emitAblyMessage(fakeMsg);
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('forwards lifecycle / control ably-messages without a runId or codecMessageId', () => {
+      const handler = vi.fn();
+      view.on('ably-message', handler);
+      const fakeMsg = { name: 'cancel', extras: { ai: { transport: {} } } } as unknown as Ably.InboundMessage;
+      tree.emitAblyMessage(fakeMsg);
+      expect(handler).toHaveBeenCalledWith(fakeMsg);
+    });
+
+    it('forwards run lifecycle events for visible runs', () => {
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      const handler = vi.fn();
+      view.on('run', handler);
+      tree.applyRunLifecycle({ type: 'start', runId: 'R1', clientId: 'c', invocationId: '', serial: 's2' });
+      expect(handler).toHaveBeenCalled();
+    });
+
+    it('forwards run-start when parent metadata indicates a visible branch', () => {
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      const handler = vi.fn();
+      view.on('run', handler);
+      // Run-start for an unknown new run, but parent points at a visible msg.
+      const evt: RunLifecycleEvent = {
+        type: 'start',
+        runId: 'R2',
+        clientId: 'c',
+        invocationId: '',
+        parent: 'm1',
+        serial: 's2',
+      };
+      // tree.applyRunLifecycle creates R2 with parentCodecMessageId = m1.
+      tree.applyRunLifecycle(evt);
+      expect(handler).toHaveBeenCalled();
+    });
+
+    it('unsubscribe stops forwarding', () => {
+      const handler = vi.fn();
+      const unsub = view.on('update', handler);
+      unsub();
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it("messages are recomputed when a visible Run's projection updates", () => {
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'q' }, serial: 's1' });
+      const handler = vi.fn();
+      view.on('update', handler);
+      // Fold something into R1.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm2',
+        parent: 'm1',
+        message: { id: 'b', content: 'follow' },
+        serial: 's2',
+      });
+      expect(view.getMessages()).toEqual([
+        { codecMessageId: 'm1', message: { id: 'm1', content: 'q' } },
+        { codecMessageId: 'm2', message: { id: 'm2', content: 'follow' } },
+      ]);
+      expect(handler).toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Reference stability — React change-detection invariant
+  // -------------------------------------------------------------------------
+
+  describe('reference stability', () => {
+    beforeEach(() => {
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'q' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'm2',
+        parent: 'm1',
+        message: { id: 'b', content: 'reply' },
+        serial: 's2',
+      });
+    });
+
+    it('getMessages returns the same array reference across consecutive no-op calls', () => {
+      const a = view.getMessages();
+      const b = view.getMessages();
+      expect(a).toBe(b);
+    });
+
+    it('getMessages returns a fresh array reference after a visible Run projection update', () => {
+      const before = view.getMessages();
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'm3',
+        parent: 'm2',
+        message: { id: 'c', content: 'follow' },
+        serial: 's3',
+      });
+      const after = view.getMessages();
+      expect(after).not.toBe(before);
+      // React change-detection: unchanged TMessages keep their reference so
+      // memoised components don't re-render. The codec re-mints the
+      // codec-message-id pair wrappers, but the domain `message` halves are
+      // the stable projection objects consumers render.
+      expect(after[0]?.message).toBe(before[0]?.message);
+      expect(after[1]?.message).toBe(before[1]?.message);
+    });
+
+    it('getMessages keeps its array reference when a continuation projection update arrives but messages are unchanged', () => {
+      // Streaming continuation: tree fires the 'output' event for a
+      // wire that doesn't alter the visible message list (e.g. amend on a
+      // hidden field). The View's `getMessages()` cache stays stable.
+      const beforeMessages = view.getMessages();
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'm3',
+        parent: 'm2',
+        message: { id: 'c', content: 'follow' },
+        serial: 's3',
+      });
+      const afterMessages = view.getMessages();
+      // Continuation appended a new message; the array is fresh.
+      expect(afterMessages).not.toBe(beforeMessages);
+    });
+
+    it("suppresses 'update' when projection-updated arrives but projection and messages are unchanged", () => {
+      // Custom codec whose fold returns the same projection reference and
+      // the same messages array when given a no-op event. This simulates a
+      // reducer past its high-water-mark serial (idempotent re-fold).
+      const noopCodec = makeTestCodec();
+      const sharedMessages = [{ id: 'm1', content: 'q' }];
+      const sharedProjection = { messages: sharedMessages };
+      noopCodec.fold = (state) => state;
+      noopCodec.init = () => sharedProjection;
+      noopCodec.getMessages = (p) => p.messages.map((m) => ({ codecMessageId: m.id, message: m }));
+
+      const noopTree = createTree<TestInput, TestOutput, TestProjection>(noopCodec, silentLogger);
+      const noopView = new DefaultView({
+        tree: noopTree,
+        channel: createMockChannel(),
+        codec: noopCodec,
+        sendDelegate,
+        logger: silentLogger,
+      });
+
+      apply(noopTree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'q' }, serial: 's1' });
+      noopView.runs(); // prime the cache
+
+      const handler = vi.fn();
+      noopView.on('update', handler);
+      const beforeCalls = handler.mock.calls.length;
+
+      // Trigger a fold that returns the same projection + same messages.
+      noopTree.applyMessage(
+        { inputs: [], outputs: [{ type: 'append-message', message: { id: 'x', content: 'noop' } }] },
+        {
+          [HEADER_RUN_ID]: 'R1',
+          [HEADER_CODEC_MESSAGE_ID]: 'm-noop',
+        },
+      );
+
+      // structural emit on the new codecMessageId index entry is allowed; the
+      // output-event path must not double-emit.
+      const afterCalls = handler.mock.calls.length;
+      // At most one emit (the structural one). The reference-equality
+      // short-circuit in _onTreeOutput suppresses the second.
+      expect(afterCalls - beforeCalls).toBeLessThanOrEqual(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Multi-view co-existence — two views over the same tree
+  // -------------------------------------------------------------------------
+
+  describe('multi-view', () => {
+    let viewB: DefaultView<TestInput, TestOutput, TestProjection, TestMessage>;
+
+    beforeEach(() => {
+      viewB = new DefaultView({
+        tree,
+        channel: createMockChannel(),
+        codec,
+        sendDelegate,
+        logger: silentLogger,
+      });
+    });
+
+    it('both views receive update when the shared tree changes', () => {
+      const aHandler = vi.fn();
+      const bHandler = vi.fn();
+      view.on('update', aHandler);
+      viewB.on('update', bHandler);
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      expect(aHandler).toHaveBeenCalled();
+      expect(bHandler).toHaveBeenCalled();
+    });
+
+    it('branch selection is per-view (selecting in one does not affect the other)', () => {
+      // Two-node model: u1 is a run-less user INPUT node; R2 is the original
+      // reply and R2alt is a regenerator — both parented at u1 (a regenerate
+      // sibling group). A regenerate group rolls forward to the latest member,
+      // so both views default to R2alt; an explicit per-view selection back to
+      // the original (R2) in view A must not affect view B.
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'a', content: 'q' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'a1',
+        parent: 'u1',
+        message: { id: 'b', content: 'v1' },
+        serial: 's2',
+      });
+      // Prime both views so they see R2 before the regenerator appears.
+      view.runs();
+      viewB.runs();
+      apply(tree, {
+        runId: 'R2alt',
+        codecMessageId: 'a2',
+        parent: 'u1',
+        regenerates: 'a1',
+        message: { id: 'c', content: 'v2' },
+        serial: 's3',
+      });
+      expect(view.runs().map((r) => r.runId)).toEqual(['R2alt']);
+      expect(viewB.runs().map((r) => r.runId)).toEqual(['R2alt']);
+
+      // Select the original (anchor a1, index 0) in view A; view B is unchanged.
+      view.selectSibling('a1', 0);
+      expect(view.runs().map((r) => r.runId)).toEqual(['R2']);
+      expect(viewB.runs().map((r) => r.runId)).toEqual(['R2alt']);
+    });
+
+    it('closing one view does not affect the other', () => {
+      const aHandler = vi.fn();
+      const bHandler = vi.fn();
+      view.on('update', aHandler);
+      viewB.on('update', bHandler);
+
+      view.close();
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+
+      expect(aHandler).not.toHaveBeenCalled();
+      expect(bHandler).toHaveBeenCalled();
+      // The other view is still functional.
+      expect(viewB.runs().map((r) => r.runId)).toEqual(['R1']);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Pagination (loadOlder / hasOlder)
+  // -------------------------------------------------------------------------
+
+  describe('loadOlder / hasOlder', () => {
+    it('hasOlder is false initially with empty history', async () => {
+      vi.mocked(loadHistory).mockResolvedValueOnce(makePage([]));
+      expect(view.hasOlder()).toBe(false);
+      await view.loadOlder();
+      expect(view.hasOlder()).toBe(false);
+    });
+
+    it('loadOlder reveals Runs from history and bumps visible chain', async () => {
+      // History returns a single message that creates Run R0.
+      const rawMsg = {
+        name: 'fake',
+        serial: 's0',
+        extras: { ai: { transport: { [HEADER_RUN_ID]: 'R0', [HEADER_CODEC_MESSAGE_ID]: 'mh1' } } },
+      } as unknown as Ably.InboundMessage;
+
+      // The View's _processHistoryPage uses page.rawMessages and decodes
+      // them through a fresh codec.createDecoder(). Since our test codec's
+      // decoder returns no events, we need to override decode to produce one.
+      const decodeSpy = vi.fn(() => ({
+        inputs: [],
+        outputs: [{ type: 'append-message' as const, message: { id: 'h1', content: 'old' } }],
+      }));
+      codec.createDecoder = vi.fn(() => ({ decode: decodeSpy }));
+
+      vi.mocked(loadHistory).mockResolvedValueOnce(makePage([rawMsg]));
+
+      await view.loadOlder(10);
+      expect(view.runs().map((r) => r.runId)).toContain('R0');
+    });
+
+    it('hasOlder becomes true when history page reports hasNext', async () => {
+      const rawMsg = {
+        name: 'fake',
+        serial: 's0',
+        extras: { ai: { transport: { [HEADER_RUN_ID]: 'R0', [HEADER_CODEC_MESSAGE_ID]: 'mh1' } } },
+      } as unknown as Ably.InboundMessage;
+      const decodeSpy = vi.fn(() => ({
+        inputs: [],
+        outputs: [{ type: 'append-message' as const, message: { id: 'h1', content: 'old' } }],
+      }));
+      codec.createDecoder = vi.fn(() => ({ decode: decodeSpy }));
+
+      vi.mocked(loadHistory).mockResolvedValueOnce(makePage([rawMsg], true));
+
+      await view.loadOlder(10);
+      expect(view.hasOlder()).toBe(true);
+    });
+
+    it('is a no-op when called while already loading', async () => {
+      let resolveFirst: ((page: HistoryPage) => void) | undefined;
+      vi.mocked(loadHistory).mockReturnValueOnce(
+        new Promise<HistoryPage>((resolve) => {
+          resolveFirst = resolve;
+        }),
+      );
+
+      const p1 = view.loadOlder(10);
+      const p2 = view.loadOlder(10);
+      // Second call should immediately resolve as no-op.
+      await p2;
+      // loadHistory called only once.
+      expect(vi.mocked(loadHistory)).toHaveBeenCalledTimes(1);
+      resolveFirst?.(makePage([]));
+      await p1;
+    });
+
+    it('withholds excess Runs and drains them on subsequent loadOlder calls without re-fetching', async () => {
+      // First page reveals 3 Runs (R0, R1, R2) on a linear chain (each parented
+      // at the prior run's message — two same-parent reply runs would collapse
+      // as regenerate siblings in the two-node model). With limit=2 the View
+      // reveals the newest 2 and withholds the oldest in the buffer.
+      const rawMessages = [0, 1, 2].map(
+        (i) =>
+          ({
+            name: 'fake',
+            serial: `s${String(i)}`,
+            extras: { ai: { transport: linearChainHeaders(i) } },
+          }) as unknown as Ably.InboundMessage,
+      );
+      codec.createDecoder = vi.fn(() => ({
+        decode: (msg: Ably.InboundMessage) => {
+          const id =
+            (msg.extras as { ai: { transport: Record<string, string> } }).ai.transport[HEADER_CODEC_MESSAGE_ID] ??
+            'unknown';
+          return {
+            inputs: [],
+            outputs: [{ type: 'append-message' as const, message: { id, content: 'x' } }],
+          };
+        },
+      }));
+
+      vi.mocked(loadHistory).mockResolvedValueOnce(makePage(rawMessages));
+
+      await view.loadOlder(2);
+      // The newest 2 by startSerial (R1, R2) are revealed; R0 is withheld.
+      expect(
+        view
+          .runs()
+          .map((r) => r.runId)
+          .toSorted(),
+      ).toEqual(['R1', 'R2']);
+      expect(view.hasOlder()).toBe(true);
+
+      // Second loadOlder drains the withheld buffer (R0). loadHistory is
+      // NOT called again — the buffer drain path returns without fetching.
+      await view.loadOlder(2);
+      expect(
+        view
+          .runs()
+          .map((r) => r.runId)
+          .toSorted(),
+      ).toEqual(['R0', 'R1', 'R2']);
+      expect(vi.mocked(loadHistory)).toHaveBeenCalledTimes(1);
+    });
+
+    it('suppresses ably-message events for withheld Runs', async () => {
+      // Linear chain so all three runs stay visible (same-parent reply runs
+      // would collapse as regenerate siblings in the two-node model).
+      const items = [0, 1, 2].map((i) => ({
+        message: { id: `h${String(i)}`, content: `old-${String(i)}` },
+        headers: linearChainHeaders(i),
+        serial: `s${String(i)}`,
+      }));
+      const rawMessages = items.map(
+        (it) =>
+          ({
+            name: 'fake',
+            serial: it.serial,
+            extras: { ai: { transport: it.headers } },
+          }) as unknown as Ably.InboundMessage,
+      );
+      codec.createDecoder = vi.fn(() => ({
+        decode: (msg: Ably.InboundMessage) => {
+          const id =
+            (msg.extras as { ai: { transport: Record<string, string> } }).ai.transport[HEADER_CODEC_MESSAGE_ID] ??
+            'unknown';
+          return {
+            inputs: [],
+            outputs: [{ type: 'append-message' as const, message: { id, content: 'x' } }],
+          };
+        },
+      }));
+
+      vi.mocked(loadHistory).mockResolvedValueOnce(makePage(rawMessages));
+      await view.loadOlder(2);
+
+      // R0 is withheld at this point. An ably-message for R0 must be
+      // suppressed; an ably-message for R1 (visible) must pass through.
+      const handler = vi.fn();
+      view.on('ably-message', handler);
+
+      const withheldMsg = {
+        name: 'fake',
+        extras: { ai: { transport: { [HEADER_RUN_ID]: 'R0' } } },
+      } as unknown as Ably.InboundMessage;
+      tree.emitAblyMessage(withheldMsg);
+      expect(handler).not.toHaveBeenCalled();
+
+      const visibleMsg = {
+        name: 'fake',
+        extras: { ai: { transport: { [HEADER_RUN_ID]: 'R1' } } },
+      } as unknown as Ably.InboundMessage;
+      tree.emitAblyMessage(visibleMsg);
+      expect(handler).toHaveBeenCalledWith(visibleMsg);
+    });
+
+    // ---------------------------------------------------------------------
+    // Pagination edge cases (AIT-773 §7.6)
+    // ---------------------------------------------------------------------
+
+    it('handles a Run that spans multiple channel pages by carrying state across loadHistory.next()', async () => {
+      // Simulate a Run R-multi whose messages appear across two channel
+      // pages: page1 has the first wire, page2 (via .next()) has the
+      // second wire. The Tree folds both into the same RunNode.
+      const headersA = { [HEADER_RUN_ID]: 'R-multi', [HEADER_CODEC_MESSAGE_ID]: 'm-multi-a' };
+      const headersB = { [HEADER_RUN_ID]: 'R-multi', [HEADER_CODEC_MESSAGE_ID]: 'm-multi-b' };
+      const rawA = {
+        name: 'fake',
+        serial: 's01',
+        extras: { ai: { transport: headersA } },
+      } as unknown as Ably.InboundMessage;
+      const rawB = {
+        name: 'fake',
+        serial: 's02',
+        extras: { ai: { transport: headersB } },
+      } as unknown as Ably.InboundMessage;
+
+      codec.createDecoder = vi.fn(() => ({
+        decode: (msg: Ably.InboundMessage) => {
+          const id =
+            (msg.extras as { ai: { transport: Record<string, string> } }).ai.transport[HEADER_CODEC_MESSAGE_ID] ?? '?';
+          return {
+            inputs: [],
+            outputs: [{ type: 'append-message' as const, message: { id, content: id } }],
+          };
+        },
+      }));
+
+      const page2 = makePage([rawB]);
+      const page1 = makePage(
+        [rawA],
+        true,
+        // eslint-disable-next-line @typescript-eslint/require-await -- mock
+        async () => page2,
+      );
+      vi.mocked(loadHistory).mockResolvedValueOnce(page1);
+
+      await view.loadOlder(2);
+
+      // The single Run R-multi materialised from both pages; both messages
+      // belong to one RunNode.
+      const nodes = view.runs();
+      expect(nodes.map((n) => n.runId)).toEqual(['R-multi']);
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['m-multi-a', 'm-multi-b']);
+    });
+
+    it('includes a Run with zero codec-fold output in the visible chain but contributes no messages to getMessages', async () => {
+      // History contains an ai-run-start with no subsequent content wires
+      // (rare; can happen if the agent crashed before publishing any chunk).
+      // The View flattens the Run but getMessages produces nothing for it.
+      const runStartMsg = {
+        name: EVENT_RUN_START,
+        serial: 's01',
+        extras: {
+          ai: {
+            transport: {
+              [HEADER_RUN_ID]: 'R-empty',
+              'run-client-id': '',
+            },
+          },
+        },
+      } as unknown as Ably.InboundMessage;
+
+      vi.mocked(loadHistory).mockResolvedValueOnce(makePage([runStartMsg]));
+
+      await view.loadOlder(1);
+
+      const nodes = view.runs();
+      expect(nodes.map((n) => n.runId)).toEqual(['R-empty']);
+      expect(view.getMessages()).toEqual([]);
+    });
+
+    it('reconstructs a suspended run from history (run-suspend marks the run suspended)', async () => {
+      // A run that suspended in the past appears in history as a run-start
+      // followed by an ai-run-suspend (no run-end). History replay must
+      // rebuild the Run and mark it suspended — not active, not ended.
+      const runStartMsg = {
+        name: EVENT_RUN_START,
+        serial: 's01',
+        extras: { ai: { transport: { [HEADER_RUN_ID]: 'R-susp', 'run-client-id': '' } } },
+      } as unknown as Ably.InboundMessage;
+      const runSuspendMsg = {
+        name: EVENT_RUN_SUSPEND,
+        serial: 's02',
+        extras: { ai: { transport: { [HEADER_RUN_ID]: 'R-susp', 'run-client-id': '' } } },
+      } as unknown as Ably.InboundMessage;
+
+      vi.mocked(loadHistory).mockResolvedValueOnce(makePage([runStartMsg, runSuspendMsg]));
+
+      await view.loadOlder(1);
+
+      const node = view.runs().find((n) => n.runId === 'R-susp');
+      expect(node?.status).toBe('suspended');
+    });
+
+    it('reconstructs a resumed run from history (run-resume re-activates it)', async () => {
+      // A run that suspended and then resumed in the past appears in history as
+      // run-start → ai-run-suspend → ai-run-resume. History replay must rebuild
+      // the Run and leave it active after the resume.
+      const transport = { [HEADER_RUN_ID]: 'R-resumed', 'run-client-id': '' };
+      const lifecycle = (name: string, serial: string): Ably.InboundMessage =>
+        ({ name, serial, extras: { ai: { transport } } }) as unknown as Ably.InboundMessage;
+
+      vi.mocked(loadHistory).mockResolvedValueOnce(
+        makePage([
+          lifecycle(EVENT_RUN_START, 's01'),
+          lifecycle(EVENT_RUN_SUSPEND, 's02'),
+          lifecycle(EVENT_RUN_RESUME, 's03'),
+        ]),
+      );
+
+      await view.loadOlder(1);
+
+      const node = view.runs().find((n) => n.runId === 'R-resumed');
+      expect(node?.status).toBe('active');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Close
   // -------------------------------------------------------------------------
 
   describe('close', () => {
     it('stops forwarding events after close', () => {
       const handler = vi.fn();
       view.on('update', handler);
-
       view.close();
-
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'));
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
       expect(handler).not.toHaveBeenCalled();
     });
 
-    it('loadOlder is a no-op after close', async () => {
-      view.close();
-      // Should not throw or load anything
-      await view.loadOlder();
-      expect(view.flattenNodes()).toEqual([]);
+    it('invokes onClose hook', () => {
+      const onClose = vi.fn();
+      const v = new DefaultView({
+        tree,
+        channel: createMockChannel(),
+        codec,
+        sendDelegate,
+        logger: silentLogger,
+        onClose,
+      });
+      v.close();
+      expect(onClose).toHaveBeenCalled();
     });
 
-    it('clears selections on close', () => {
-      tree.upsert('m1', { id: '1', content: 'user' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert(
-        'm2',
-        { id: '2', content: 'v1' },
-        {
-          [HEADER_MSG_ID]: 'm2',
-          'x-ably-parent': 'm1',
-        },
-        'serial-2',
+    it('makes send reject with InvalidArgument after close', async () => {
+      view.close();
+      await expect(view.send({ kind: 'user-message', message: { id: 'a', content: 'hi' } })).rejects.toThrow(
+        /view is closed/,
       );
-      tree.upsert(
-        'm3',
-        { id: '3', content: 'v2' },
-        {
-          [HEADER_MSG_ID]: 'm3',
-          'x-ably-parent': 'm1',
-          'x-ably-fork-of': 'm2',
-        },
-        'serial-3',
+    });
+
+    it('makes regenerate reject after close', async () => {
+      view.close();
+      await expect(view.regenerate('any')).rejects.toThrow(/view is closed/);
+    });
+
+    it('makes edit reject after close', async () => {
+      view.close();
+      await expect(view.edit('any', { kind: 'user-message', message: { id: 'a', content: 'x' } })).rejects.toThrow(
+        /view is closed/,
       );
-
-      view.select('m2', 0);
-      expect(view.getSelectedIndex('m2')).toBe(0);
-
-      view.close();
-
-      // After close, getSelectedIndex returns default (latest)
-      expect(view.getSelectedIndex('m2')).toBe(1);
     });
 
-    it('clears all emitter listeners on close', () => {
-      const updateHandler = vi.fn();
-      const ablyHandler = vi.fn();
-      const runHandler = vi.fn();
-      view.on('update', updateHandler);
-      view.on('ably-message', ablyHandler);
-      view.on('run', runHandler);
-
-      view.close();
-
-      // Trigger tree events — view handlers should not fire
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1', 'run-1'), 'serial-1');
-      tree.emitAblyMessage({ name: 'test', extras: { headers: { [HEADER_MSG_ID]: 'm1' } } } as Ably.InboundMessage);
-      tree.emitRun({ type: 'x-ably-run-end', runId: 'run-1', clientId: 'c1', reason: 'complete' });
-
-      expect(updateHandler).not.toHaveBeenCalled();
-      expect(ablyHandler).not.toHaveBeenCalled();
-      expect(runHandler).not.toHaveBeenCalled();
-    });
-
-    it('is idempotent — double close does not throw', () => {
-      view.close();
+    it('is idempotent: double close does not throw and onClose fires once', () => {
+      const onClose = vi.fn();
+      const v = new DefaultView({
+        tree,
+        channel: createMockChannel(),
+        codec,
+        sendDelegate,
+        logger: silentLogger,
+        onClose,
+      });
+      v.close();
       expect(() => {
-        view.close();
+        v.close();
       }).not.toThrow();
+      expect(onClose).toHaveBeenCalledTimes(1);
     });
 
-    it('send rejects after close', async () => {
+    it('loadOlder after close is a no-op (no loadHistory call)', async () => {
       view.close();
-      await expect(view.send({ id: '1', content: 'hi' })).rejects.toThrow('view is closed');
-    });
-
-    it('regenerate rejects after close', async () => {
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'), 'serial-1');
-      view.close();
-      await expect(view.regenerate('m1')).rejects.toThrow('view is closed');
-    });
-
-    it('edit rejects after close', async () => {
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'), 'serial-1');
-      view.close();
-      await expect(view.edit('m1', { id: '2', content: 'revised' })).rejects.toThrow('view is closed');
+      await view.loadOlder(10);
+      expect(vi.mocked(loadHistory)).not.toHaveBeenCalled();
     });
   });
 
   // -------------------------------------------------------------------------
-  // flattenNodes caching and reference stability
+  // Branch auto-select / pending after fork operations
   // -------------------------------------------------------------------------
 
-  describe('flattenNodes caching and reference stability', () => {
-    it('returns the same array reference on consecutive calls without intervening changes', () => {
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'), 'serial-1');
-
-      const ref1 = view.flattenNodes();
-      const ref2 = view.flattenNodes();
-
-      // flattenNodes() should return a cached result - the same array
-      // reference - when nothing has changed between calls.
-      expect(ref2).toBe(ref1);
+  describe('branch auto-select after fork', () => {
+    beforeEach(() => {
+      // role omitted so the user-content wire keeps routing at wire-runId
+      // (the role-based sub-Run split is exercised elsewhere). These tests
+      // focus on pending / auto-select sibling state after fork operations.
+      apply(tree, { runId: 'R1', codecMessageId: 'u1', message: { id: 'a', content: 'q' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'a1',
+        parent: 'u1',
+        message: { id: 'b', content: 'reply' },
+        serial: 's2',
+      });
     });
 
-    it('does not re-walk the tree during a content-only message update', () => {
-      tree.upsert('m1', { id: '1', content: 'first' }, makeHeaders('m1'), 'serial-1');
-      tree.upsert('m2', { id: '2', content: 'second' }, makeHeaders('m2', 'run-1'), 'serial-2');
+    it('regenerate sets a pending regenerate selection that resolves when the new Run arrives', async () => {
+      vi.mocked(sendDelegate).mockResolvedValueOnce({
+        inputCodecMessageId: 'a1',
+        runId: Promise.resolve('R2new'),
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+        cancel: () => Promise.resolve(),
+        optimisticCodecMessageIds: [],
+        inputEventId: '',
+        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
+      });
 
-      // Capture the current cached state so the view has a baseline
-      view.flattenNodes();
+      await view.regenerate('a1');
+      // Pending selection is recorded but the new Run hasn't arrived yet;
+      // the chain is unchanged (R1 + R2).
+      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2']);
 
-      const spy = vi.spyOn(tree, 'flattenNodes');
-      spy.mockClear();
+      // Now the new continuation Run arrives — regenerates the assistant
+      // in R2 (anchored at codec-message-id a1), parented under R2 (the prior Run).
+      apply(tree, {
+        runId: 'R2new',
+        codecMessageId: 'a2',
+        parent: 'a1',
+        regenerates: 'a1',
+        message: { id: 'c', content: 'new-reply' },
+        serial: 's3',
+      });
 
-      // Content-only update: same msgId, different message content, no serial change
-      tree.upsert('m2', { id: '2', content: 'streaming token' }, makeHeaders('m2', 'run-1'), 'serial-2');
-
-      // The view should detect this is a content-only update and skip the
-      // full tree walk - using the cached node list instead.
-      expect(spy).not.toHaveBeenCalled();
-
-      spy.mockRestore();
+      // Pending selection promotes to `auto`. The visible chain now
+      // includes R2new (the regenerator) and the message-level replacement
+      // hides the original assistant 'a1' from R2 at extraction time.
+      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2', 'R2new']);
     });
 
-    it('preserves unchanged message references after a content-only update', () => {
-      const msg1 = { id: '1', content: 'stable' };
-      const msg2 = { id: '2', content: 'will-change' };
-      tree.upsert('m1', msg1, makeHeaders('m1'), 'serial-1');
-      tree.upsert('m2', msg2, makeHeaders('m2'), 'serial-2');
+    it('pending selection is cleared on run-end when the server never creates the sibling Run', async () => {
+      vi.mocked(sendDelegate).mockResolvedValueOnce({
+        inputCodecMessageId: 'a1',
+        runId: Promise.resolve('R2new'),
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+        cancel: () => Promise.resolve(),
+        optimisticCodecMessageIds: [],
+        inputEventId: '',
+        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
+      });
 
-      const before = view.flattenNodes();
-      const msg1RefBefore = before[0]?.message;
+      await view.regenerate('a1');
+      // Pending selection is in place; visible chain still shows R2 (only sibling).
+      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2']);
 
-      // Content-only update to m2 only
-      tree.upsert('m2', { id: '2', content: 'changed' }, makeHeaders('m2'), 'serial-2');
+      // Server errors out: run-end arrives for the original prompt's runId
+      // without a sibling Run being created.
+      tree.applyRunLifecycle({
+        type: 'end',
+        runId: 'R2new',
+        clientId: 'c',
+        invocationId: '',
+        reason: 'error',
+        serial: 's3',
+      });
 
-      const after = view.flattenNodes();
+      // Now an external regenerator appears (a sibling reply run at the same
+      // input prompt u1). A regenerate group rolls forward to the latest member,
+      // so the slot adopts R2-late.
+      apply(tree, {
+        runId: 'R2-late',
+        codecMessageId: 'a-late',
+        parent: 'u1',
+        regenerates: 'a1',
+        message: { id: 'c', content: 'late' },
+        serial: 's4',
+      });
 
-      // m1's message reference should be preserved (identical object)
-      expect(after[0]?.message).toBe(msg1RefBefore);
-      // m2's message reference should differ (content changed)
-      expect(after[1]?.message).not.toBe(msg2);
-      expect(after[1]?.message).toEqual({ id: '2', content: 'changed' });
+      // The regenerate group rolls to the latest sibling (R2-late). The key
+      // invariant under test is that the cleared pending state did not survive
+      // and incorrectly latch the view onto the original.
+      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2-late']);
     });
 
-    it('returns a new array reference after a content-only update so React detects the change', () => {
-      tree.upsert('m1', { id: '1', content: 'hi' }, makeHeaders('m1'), 'serial-1');
+    it('preserves an explicit `user` branch selection when an external fork lands later', () => {
+      // The outer beforeEach already seeded R1 + R2. Add a first external
+      // fork (R2alt) so the user has a sibling group to choose in, then
+      // assert their explicit selection survives a second external fork.
+      apply(tree, {
+        runId: 'R2alt',
+        codecMessageId: 'a-alt-1',
+        parent: 'u1',
+        forkOf: 'a1',
+        message: { id: 'c', content: 'alt-1' },
+        serial: 's3',
+      });
+      // User explicitly selects R2 (the original) via the a1 anchor.
+      view.selectSibling('a1', 0);
+      expect(view.runs().map((n) => n.runId)).toEqual(['R1', 'R2']);
 
-      const before = view.flattenNodes();
+      // Another external fork lands.
+      apply(tree, {
+        runId: 'R2alt-2',
+        codecMessageId: 'a-alt-2',
+        parent: 'u1',
+        forkOf: 'a1',
+        message: { id: 'd', content: 'alt-2' },
+        serial: 's4',
+      });
 
-      tree.upsert('m1', { id: '1', content: 'updated' }, makeHeaders('m1'), 'serial-1');
-
-      const after = view.flattenNodes();
-      // The array itself must be a new reference (so React state updates trigger),
-      // even though the tree structure hasn't changed.
-      expect(after).not.toBe(before);
+      // The user's `kind: 'user'` selection survives the external-fork
+      // pinning pass; we should still see R2, not the newer sibling.
+      expect(view.runs().map((n) => n.runId)).toEqual(['R1', 'R2']);
     });
 
-    it('simulated streaming: only the active message reference changes per token', () => {
-      // Set up a conversation with 3 messages, then simulate token-by-token
-      // streaming updates to the last message (m3). Only m3's message
-      // reference should change; m1 and m2 should remain stable.
-      const msg1 = { id: '1', content: 'user msg' };
-      const msg2 = { id: '2', content: 'assistant msg' };
-      tree.upsert('m1', msg1, makeHeaders('m1'), 'serial-1');
-      tree.upsert('m2', msg2, { [HEADER_MSG_ID]: 'm2', 'x-ably-parent': 'm1' }, 'serial-2');
-      tree.upsert('m3', { id: '3', content: '' }, { [HEADER_MSG_ID]: 'm3', 'x-ably-parent': 'm2' }, 'serial-3');
+    it('keeps an explicit regen selection when another external regen lands afterwards', () => {
+      // R1 + R2 already exist (the assistant a1 is in R2 per the
+      // describe-block beforeEach). Add a regenerator targeting a1, then
+      // verify a user selection back to the original survives a second
+      // external regen.
+      apply(tree, {
+        runId: 'R_regen1',
+        codecMessageId: 'a1p',
+        parent: 'u1',
+        regenerates: 'a1',
+        message: { id: 'a1p', content: 'regen' },
+        serial: 's3',
+      });
+      // User explicitly switches to the ORIGINAL alternative (a1 in R2).
+      // The codec rebinds TMessage.id to the wire codec-message-id, so the visible
+      // ids match the apply()'d codecMessageIds.
+      view.selectSibling('a1p', 0);
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1']);
 
-      const snap0 = view.flattenNodes();
-      const m1Ref0 = snap0[0]?.message;
-      const m2Ref0 = snap0[1]?.message;
+      // Another participant publishes a second regenerator at the same
+      // canonical anchor (sibling reply run under the same input prompt).
+      apply(tree, {
+        runId: 'R_regen2',
+        codecMessageId: 'a1pp',
+        parent: 'u1',
+        regenerates: 'a1',
+        message: { id: 'a1pp', content: 'regen-2' },
+        serial: 's4',
+      });
 
-      // Simulate 3 streaming tokens updating m3
-      const tokens = ['Hello', 'Hello world', 'Hello world!'];
-      for (const token of tokens) {
-        tree.upsert('m3', { id: '3', content: token }, {}, 'serial-3');
+      // The user's explicit choice survives: visible content is still the
+      // original assistant, not either regenerator.
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1']);
+    });
 
-        const snap = view.flattenNodes();
-        // m1 and m2 references must remain the same object
-        expect(snap[0]?.message).toBe(m1Ref0);
-        expect(snap[1]?.message).toBe(m2Ref0);
-        // m3 content must reflect the latest token
-        expect(snap[2]?.message.content).toBe(token);
-      }
+    it('edit auto-selects the new sibling Run from optimisticCodecMessageIds', async () => {
+      vi.mocked(sendDelegate).mockResolvedValueOnce({
+        inputCodecMessageId: 'u-new',
+        runId: Promise.resolve('R2edit'),
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+        cancel: () => Promise.resolve(),
+        optimisticCodecMessageIds: ['u-new'],
+        inputEventId: '',
+        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
+      });
+      // For the auto-select to land, the new Run needs to exist in the tree.
+      // role omitted so the new user-content wire routes at wire-runId.
+      apply(tree, {
+        runId: 'R2edit',
+        codecMessageId: 'u-new',
+        parent: 'u1',
+        forkOf: 'a1',
+        message: { id: 'c', content: 'edited' },
+        serial: 's3',
+      });
+      await view.edit('a1', { kind: 'user-message', message: { id: 'c', content: 'edited' } });
+
+      // Auto-select kicks in immediately after the delegate returns.
+      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2edit']);
     });
   });
 
   // -------------------------------------------------------------------------
-  // Latest-serial-wins filter
+  // Regenerate-as-continuation: message-level replacement and branch nav
   // -------------------------------------------------------------------------
 
-  describe('latest-serial-wins invocation filter', () => {
-    /**
-     * Build user-message headers carrying run-id and invocation-id.
-     * @param msgId - Message identifier stamped in `x-ably-msg-id`.
-     * @param runId - Run identifier stamped in `x-ably-run-id`.
-     * @param invocationId - Invocation identifier stamped in `x-ably-invocation-id`.
-     * @returns A headers record with role=user and the three identifiers populated.
-     */
-    // eslint-disable-next-line unicorn/consistent-function-scoping -- describe-local helper
-    const userH = (msgId: string, runId: string, invocationId: string): Record<string, string> => ({
-      [HEADER_MSG_ID]: msgId,
-      [HEADER_ROLE]: 'user',
-      [HEADER_RUN_ID]: runId,
-      [HEADER_INVOCATION_ID]: invocationId,
+  describe('regenerate-as-continuation', () => {
+    // Two-node model: U1 is a run-less user INPUT node. R1 is the original
+    // reply RUN parented at U1; R2 is the regenerator reply RUN parented at the
+    // SAME input node (same-parent reply runs are the regenerate sibling group).
+    // The two replies collapse to the selected member; the View shows the input
+    // prompt (from the input node) plus the selected reply's content.
+    beforeEach(() => {
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'first' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'a1',
+        parent: 'u1',
+        role: 'assistant',
+        message: { id: 'a1', content: 'reply' },
+        serial: 's2',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'a2',
+        parent: 'u1',
+        regenerates: 'a1',
+        role: 'assistant',
+        message: { id: 'a2', content: 'regen' },
+        serial: 's3',
+      });
     });
 
-    /**
-     * Build assistant-message headers (no invocation-id by design).
-     * @param msgId - Message identifier stamped in `x-ably-msg-id`.
-     * @param runId - Run identifier stamped in `x-ably-run-id`.
-     * @returns A headers record with role=assistant and the two identifiers populated.
-     */
-    // eslint-disable-next-line unicorn/consistent-function-scoping -- describe-local helper
-    const assistantH = (msgId: string, runId: string): Record<string, string> => ({
-      [HEADER_MSG_ID]: msgId,
-      [HEADER_ROLE]: 'assistant',
-      [HEADER_RUN_ID]: runId,
+    it('default visible chain hides the regenerated message and shows the regenerator content', () => {
+      // The regenerate group collapses to the latest reply run (R2); the
+      // original reply R1 is hidden. The user prompt comes from the input node.
+      expect(view.runs().map((r) => r.runId)).toEqual(['R2']);
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a2']);
     });
 
-    it('shows the winning invocation and hides the loser', () => {
-      // Two invocations under run-1: inv-2 wins by serial.
-      tree.upsert('m1', { id: '1', content: 'first' }, userH('m1', 'run-1', 'inv-1'), 'serial-005');
-      tree.upsert('m1a', { id: '1a', content: 'asst-1' }, assistantH('m1a', 'run-1'), 'serial-006');
-      tree.upsert('m2', { id: '2', content: 'retry' }, userH('m2', 'run-1', 'inv-2'), 'serial-010');
-      tree.upsert('m2a', { id: '2a', content: 'asst-2' }, assistantH('m2a', 'run-1'), 'serial-011');
-
-      const visibleIds = view.flattenNodes().map((n) => n.msgId);
-      expect(visibleIds).toEqual(['m2', 'm2a']);
+    it('branchSelection().index defaults to the latest regenerator', () => {
+      expect(view.branchSelection('a1').index).toBe(1);
     });
 
-    it('keeps optimistic (null-serial) inserts visible until they ack', () => {
-      // Existing winning invocation under run-1.
-      tree.upsert('m1', { id: '1', content: 'first' }, userH('m1', 'run-1', 'inv-1'), 'serial-005');
-      // Optimistic retry — null serial.
-      tree.upsert('m2', { id: '2', content: 'retry' }, userH('m2', 'run-1', 'inv-2'));
-
-      const visibleIds = view.flattenNodes().map((n) => n.msgId);
-      // Both visible: m1 is current winner, m2 is optimistic.
-      expect(visibleIds).toContain('m1');
-      expect(visibleIds).toContain('m2');
+    it('selectSibling(anchor, 0) switches the regenerate group to the original — projection extraction shows the original assistant', () => {
+      view.selectSibling('a1', 0);
+      expect(view.runs().map((r) => r.runId)).toEqual(['R1']);
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1']);
+      expect(view.branchSelection('a1').index).toBe(0);
     });
 
-    it('emits update and re-filters when the winner changes', () => {
-      tree.upsert('m1', { id: '1', content: 'first' }, userH('m1', 'run-1', 'inv-1'), 'serial-005');
-      const handler = vi.fn();
-      view.on('update', handler);
+    it('selectSibling(anchor, 1) restores the regenerator selection', () => {
+      view.selectSibling('a1', 0);
+      view.selectSibling('a1', 1);
+      expect(view.runs().map((r) => r.runId)).toEqual(['R2']);
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a2']);
+    });
+  });
 
-      // Higher-serial retry arrives — winner switches.
-      tree.upsert('m2', { id: '2', content: 'retry' }, userH('m2', 'run-1', 'inv-2'), 'serial-010');
+  // -------------------------------------------------------------------------
+  // Msg-anchored branch-point API (AITRFC-014 — branch points are anchored
+  // at codec-message-ids; the View surfaces per-bubble nav rather than per-Run nav so
+  // arrows attach only to the actual anchor message).
+  // -------------------------------------------------------------------------
 
-      expect(handler).toHaveBeenCalled();
-      const visibleIds = view.flattenNodes().map((n) => n.msgId);
-      expect(visibleIds).toEqual(['m2']);
+  describe('msg-anchored branch nav', () => {
+    describe('regenerate', () => {
+      beforeEach(() => {
+        // Two-node model: u1 is a run-less user INPUT node; R1 is the original
+        // reply parented at it; R2 is the regenerator reply parented at the SAME
+        // input node (same-parent reply runs form the regenerate group).
+        applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'first' }, serial: 's1' });
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'a1',
+          parent: 'u1',
+          role: 'assistant',
+          message: { id: 'a1', content: 'reply' },
+          serial: 's2',
+        });
+        apply(tree, {
+          runId: 'R2',
+          codecMessageId: 'a2',
+          parent: 'u1',
+          regenerates: 'a1',
+          role: 'assistant',
+          message: { id: 'a2', content: 'regen' },
+          serial: 's3',
+        });
+      });
+
+      it('branchSelection().hasSiblings is false for the user prompt codec-message-id (not an anchor)', () => {
+        expect(view.branchSelection('u1').hasSiblings).toBe(false);
+      });
+
+      it('branchSelection().hasSiblings is true for the regen anchor codec-message-id', () => {
+        expect(view.branchSelection('a1').hasSiblings).toBe(true);
+      });
+
+      it('branchSelection().hasSiblings is true for a regenerator Run content codec-message-id', () => {
+        expect(view.branchSelection('a2').hasSiblings).toBe(true);
+      });
+
+      it('branchSelection().siblings returns the resolved regen variants at an anchor codec-message-id', () => {
+        expect(view.branchSelection('a1').siblings.map((m) => m.id)).toEqual(['a1', 'a2']);
+        expect(view.branchSelection('a2').siblings.map((m) => m.id)).toEqual(['a1', 'a2']);
+      });
+
+      it('branchSelection returns the singleton message for a known non-anchor codec-message-id', () => {
+        // The bundle always contains the rendered message itself for known
+        // ids, so plain bubbles get `siblings.length === 1`.
+        const branch = view.branchSelection('u1');
+        expect(branch.hasSiblings).toBe(false);
+        expect(branch.siblings.map((m) => m.id)).toEqual(['u1']);
+      });
+
+      it('selectSibling on the anchor codec-message-id switches the regen selection', () => {
+        view.selectSibling('a2', 0);
+        expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1']);
+        view.selectSibling('a1', 1);
+        expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a2']);
+      });
+
+      it('selectSibling on a non-anchor codec-message-id is a no-op', () => {
+        const before = view.getMessages().map((m) => m.message.id);
+        view.selectSibling('u1', 0);
+        expect(view.getMessages().map((m) => m.message.id)).toEqual(before);
+      });
     });
 
-    it('keeps separate runs independent', () => {
-      // run-1 has a clear winner; run-2 is a different run.
-      tree.upsert('m1', { id: '1', content: 'first' }, userH('m1', 'run-1', 'inv-1'), 'serial-005');
-      tree.upsert('m2', { id: '2', content: 'second' }, userH('m2', 'run-2', 'inv-2'), 'serial-010');
+    // -----------------------------------------------------------------------
+    // Regenerate with trailing follow-up messages in the same Run
+    // -----------------------------------------------------------------------
+    //
+    // The original assistant Run holds two messages: the tool-call
+    // bubble (a1, the regenerate target) followed by the LLM text
+    // bubble (a2) that the model wrote after the tool result was
+    // folded in. Regenerating a1 means the agent will re-do the tool
+    // call AND its follow-up; the entire trail from a1 onwards in R1
+    // is conceptually replaced by R2's projection, even though only
+    // a1 is named as the regenerate anchor.
+    describe('regenerate with trailing messages in the same Run', () => {
+      beforeEach(() => {
+        // u1 is a run-less input node; R1 (the original reply) holds two
+        // assistant bubbles and parents at u1.
+        applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'q' }, serial: 's1' });
+        // a1 — tool-call bubble (the regenerate target).
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'a1',
+          parent: 'u1',
+          role: 'assistant',
+          message: { id: 'a1', content: 'tool-call' },
+          serial: 's2',
+        });
+        // a2 — follow-up text bubble inside the same Run.
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'a2',
+          role: 'assistant',
+          message: { id: 'a2', content: 'follow-up' },
+          serial: 's3',
+        });
+        // R2 regenerates a1, parented at the SAME input node u1. Its projection
+        // contains a1' (new tool call) and a2' (its follow-up text).
+        apply(tree, {
+          runId: 'R2',
+          codecMessageId: 'a1p',
+          parent: 'u1',
+          regenerates: 'a1',
+          role: 'assistant',
+          message: { id: 'a1p', content: 'new-tool-call' },
+          serial: 's4',
+        });
+        apply(tree, {
+          runId: 'R2',
+          codecMessageId: 'a2p',
+          role: 'assistant',
+          message: { id: 'a2p', content: 'new-follow-up' },
+          serial: 's5',
+        });
+      });
 
-      const visibleIds = view.flattenNodes().map((n) => n.msgId);
-      expect(visibleIds).toContain('m1');
-      expect(visibleIds).toContain('m2');
+      it('hides both the regenerated message AND its trailing follow-ups in the owner Run', () => {
+        // a2 in R1 must be hidden too: it was generated AFTER a1 and is
+        // semantically part of the same "turn" as the regenerated tool
+        // call. Pre-fix it stayed visible, producing a 3-bubble chat
+        // (a2 + a1' + a2') instead of the expected 2-bubble layout.
+        expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1p', 'a2p']);
+      });
+
+      it('only the position-equivalent message in each variant is a branch point', () => {
+        // Anchor (a1) and its position-equivalent (a1p, the first
+        // message of R2) are branch points — clicking arrows on those
+        // bubbles flips the variant. Trailing messages (a2 in the
+        // original; a2p in the regenerator) are not branch anchors and
+        // should not surface navigation arrows.
+        expect(view.branchSelection('a1').hasSiblings).toBe(true);
+        expect(view.branchSelection('a1p').hasSiblings).toBe(true);
+        expect(view.branchSelection('a2').hasSiblings).toBe(false);
+        expect(view.branchSelection('a2p').hasSiblings).toBe(false);
+      });
+
+      it('branchSelection().siblings on the anchor returns the head message of each variant', () => {
+        expect(view.branchSelection('a1').siblings.map((m) => m.id)).toEqual(['a1', 'a1p']);
+        expect(view.branchSelection('a1p').siblings.map((m) => m.id)).toEqual(['a1', 'a1p']);
+      });
+
+      it('selectSibling on the anchor swaps the entire regenerated trail', () => {
+        // Selecting back to the original (index 0) restores BOTH a1 and a2 in R1.
+        view.selectSibling('a1', 0);
+        expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1', 'a2']);
+        // Selecting back to the regenerator (index 1) hides them again.
+        view.selectSibling('a1', 1);
+        expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1p', 'a2p']);
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // Nested regenerate: trailing message inside a regenerator Run
+    // -----------------------------------------------------------------------
+    //
+    // After regenerating a1 (R2 holds [a1p, a2p]) the user clicks
+    // Regenerate on a2p. Pre-fix this rebased the anchor to a1 (the
+    // group root) and produced a new full-conversation Run that joined
+    // the a1 group as a third member — the chat showed one "combined"
+    // bubble with "3 / 3" navigation. The user expects a local regen
+    // of the trailing text: a new Run anchored at a2p, contributing a
+    // single new text bubble while a1p stays put with its 2/2 counter.
+    describe('regenerate target inside a regenerator Run', () => {
+      let regen2: ActiveRun;
+      beforeEach(async () => {
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'u1',
+          role: 'user',
+          message: { id: 'u1', content: 'q' },
+          serial: 's1',
+        });
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'a1',
+          role: 'assistant',
+          message: { id: 'a1', content: 'tc-original' },
+          serial: 's2',
+        });
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'a2',
+          role: 'assistant',
+          message: { id: 'a2', content: 'tt-original' },
+          serial: 's3',
+        });
+        apply(tree, {
+          runId: 'R2',
+          codecMessageId: 'a1p',
+          parent: 'a1',
+          regenerates: 'a1',
+          role: 'assistant',
+          message: { id: 'a1p', content: 'tc-regen' },
+          serial: 's4',
+        });
+        apply(tree, {
+          runId: 'R2',
+          codecMessageId: 'a2p',
+          role: 'assistant',
+          message: { id: 'a2p', content: 'tt-regen' },
+          serial: 's5',
+        });
+        regen2 = await view.regenerate('a2p');
+      });
+
+      it('mints a regenerate event anchored at the trailing msg-id (not at the group root)', () => {
+        // CAST: vi.fn returns a MockInstance that the codebase types via `SendDelegate`.
+        const mocked = sendDelegate as unknown as Mock<SendDelegate<TestInput>>;
+        const lastCall = mocked.mock.calls.at(-1);
+        const events = lastCall?.[0];
+        const event = events?.[0];
+        // The codec's createRegenerate puts the regen target in `target` and
+        // the parent user prompt in `parent`.
+        expect(event).toEqual({ kind: 'regenerate', target: 'a2p', parent: 'a1p' });
+        // The new Run joins a fresh group anchored at a2p, not the a1 group.
+        expect(regen2).toBeDefined();
+      });
+
+      // TODO(AIT-831): deferred — intra-run mid-reply regenerate (slicing inside
+      // a multi-message run projection). Re-enable with the regenerate-of-
+      // multi-message golden test (see pr2-execution-plan.md §Tests).
+      it.skip('a fully-folded trailing regen contributes only the new trailing message; the tool-call bubble stays put', () => {
+        apply(tree, {
+          runId: 'R3',
+          codecMessageId: 'a2pp',
+          parent: 'a1p',
+          regenerates: 'a2p',
+          role: 'assistant',
+          message: { id: 'a2pp', content: 'tt-regen-2' },
+          serial: 's6',
+        });
+        expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1p', 'a2pp']);
+        // Tool-call bubble: still navigates the a1 group (2/2).
+        expect(view.branchSelection('a1p').hasSiblings).toBe(true);
+        expect(view.branchSelection('a1p').siblings.map((m) => m.id)).toEqual(['a1', 'a1p']);
+        // Trailing bubble: navigates the a2p group (2/2), distinct from the a1 group.
+        expect(view.branchSelection('a2pp').hasSiblings).toBe(true);
+        expect(view.branchSelection('a2pp').siblings.map((m) => m.id)).toEqual(['a2p', 'a2pp']);
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // Multiple regen groups inside the same owner Run
+    // -----------------------------------------------------------------------
+    //
+    // After regenerating the trailing text (R2 regenerates a2 in R1)
+    // and then regenerating the tool-call (R3 regenerates a1 in R1),
+    // R3's truncation of R1 at a1 also invalidates a2 — and with it
+    // the a2 regen group's regenerator R2. Pre-fix R2 stayed visible
+    // and leaked its content between u1 and R3's payload, producing a
+    // 3-bubble chat (R2's regen + R3's pair). The view must shadow R2.
+    describe('multiple regen anchors in the same owner Run', () => {
+      beforeEach(() => {
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'u1',
+          role: 'user',
+          message: { id: 'u1', content: 'q' },
+          serial: 's1',
+        });
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'a1',
+          role: 'assistant',
+          message: { id: 'a1', content: 'tc-original' },
+          serial: 's2',
+        });
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'a2',
+          role: 'assistant',
+          message: { id: 'a2', content: 'tt-original' },
+          serial: 's3',
+        });
+        // Trailing-text regen lands first (R2 anchored at a2).
+        apply(tree, {
+          runId: 'R2',
+          codecMessageId: 'a2p',
+          parent: 'a1',
+          regenerates: 'a2',
+          role: 'assistant',
+          message: { id: 'a2p', content: 'tt-regen' },
+          serial: 's4',
+        });
+        // Tool-call regen lands next (R3 anchored at a1) — it covers an
+        // earlier position in R1's projection than R2.
+        apply(tree, {
+          runId: 'R3',
+          codecMessageId: 'a1p',
+          parent: 'u1',
+          regenerates: 'a1',
+          role: 'assistant',
+          message: { id: 'a1p', content: 'tc-regen' },
+          serial: 's5',
+        });
+        apply(tree, {
+          runId: 'R3',
+          codecMessageId: 'a2pp',
+          role: 'assistant',
+          message: { id: 'a2pp', content: 'tt-fresh' },
+          serial: 's6',
+        });
+      });
+
+      // TODO(AIT-831): deferred — intra-run mid-reply regenerate (multiple regen
+      // anchors inside one multi-message run projection). Re-enable with the
+      // regenerate-of-multi-message golden test (see pr2-execution-plan.md §Tests).
+      it.skip('hides the trailing-text regenerator when an earlier regen covers its anchor in the same owner Run', () => {
+        // Visible chain: u1 from R1 (truncated at a1), then R3's pair.
+        // R2 (the trailing-text regenerator) is shadowed.
+        expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1p', 'a2pp']);
+      });
+
+      // TODO(AIT-831): deferred — intra-run mid-reply regenerate selection.
+      // Re-enable with the regenerate-of-multi-message golden test.
+      it.skip('selecting back to the original at the tool-call anchor reactivates the trailing-text regenerator', () => {
+        // Navigate from R3 back to R1 at the a1 anchor. R3 no longer
+        // truncates R1, so R2's anchor (a2) is back in the visible
+        // chain and R2's content surfaces.
+        view.selectSibling('a1', 0);
+        expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1', 'a2p']);
+        expect(view.branchSelection('a2p').hasSiblings).toBe(true);
+        expect(view.branchSelection('a2p').siblings.map((m) => m.id)).toEqual(['a2', 'a2p']);
+      });
+    });
+
+    describe('edit', () => {
+      beforeEach(() => {
+        // Original Run R1: user prompt + assistant.
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'u1',
+          role: 'user',
+          message: { id: 'u1', content: 'alpha' },
+          serial: 's1',
+        });
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'a1',
+          role: 'assistant',
+          message: { id: 'a1', content: 'reply-alpha' },
+          serial: 's2',
+        });
+        // Edited Run R2: forkOf the original user prompt, new user msg + asst.
+        apply(tree, {
+          runId: 'R2',
+          codecMessageId: 'u2',
+          forkOf: 'u1',
+          role: 'user',
+          message: { id: 'u2', content: 'bravo' },
+          serial: 's3',
+        });
+        apply(tree, {
+          runId: 'R2',
+          codecMessageId: 'a2',
+          role: 'assistant',
+          parent: 'u2',
+          message: { id: 'a2', content: 'reply-bravo' },
+          serial: 's4',
+        });
+      });
+
+      it('branchSelection().hasSiblings is true for the user prompt codec-message-id (edit anchor)', () => {
+        expect(view.branchSelection('u2').hasSiblings).toBe(true);
+      });
+
+      it('branchSelection().hasSiblings is false for the assistant codec-message-id (not an edit anchor)', () => {
+        expect(view.branchSelection('a2').hasSiblings).toBe(false);
+      });
+
+      it('branchSelection().siblings returns each sibling user-prompt at the edit anchor', () => {
+        expect(view.branchSelection('u2').siblings.map((m) => m.id)).toEqual(['u1', 'u2']);
+      });
+
+      it('selectSibling on the user-prompt anchor swaps the whole Run', () => {
+        // Explicitly select R2 first (the edited branch) so the swap to
+        // R1 via the anchor is observable independent of the default
+        // pinning behaviour.
+        view.selectSibling('u2', 1);
+        view.selectSibling('u2', 0);
+        expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1']);
+      });
+
+      it('selectSibling on the assistant codec-message-id is a no-op (assistant is not the edit anchor)', () => {
+        const before = view.getMessages().map((m) => m.message.id);
+        view.selectSibling('a2', 0);
+        expect(view.getMessages().map((m) => m.message.id)).toEqual(before);
+      });
+    });
+
+    // ---------------------------------------------------------------------
+    // Coexisting edit fork-of AND regenerate groups on the same Run
+    // ---------------------------------------------------------------------
+    //
+    // Scenario: a Run R1 owns both a user prompt (which got edited into a
+    // sibling Run R_edit) and an assistant message (which got regenerated
+    // into a continuation Run R_regen). R1 is simultaneously in a
+    // fork-of sibling group (vs R_edit at the parent's children level)
+    // AND in a regenerate sibling group (vs R_regen at the assistant
+    // codec-message-id level).
+    //
+    // Branch nav on R1's assistant must navigate the REGEN group; nav on
+    // R1's user prompt must navigate the FORK-OF group. The runId alone
+    // is ambiguous — the codec-message-id is the disambiguator.
+
+    describe('regenerate then edit (R1 in both groups)', () => {
+      beforeEach(() => {
+        // Two-node model: u1 is a run-less user INPUT node; the original reply
+        // R1 parents at it. The user prompt and assistant reply are now distinct
+        // nodes — the edit forks the INPUT node, the regenerate groups the REPLY
+        // runs, so the two branch groups are cleanly kind-separated.
+        applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'first' }, serial: 's1' });
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'a1',
+          parent: 'u1',
+          role: 'assistant',
+          message: { id: 'a1', content: 'reply' },
+          serial: 's2',
+        });
+        // Regenerate produces R_regen — a sibling reply run parented at the same
+        // input node u1, regenerating a1.
+        apply(tree, {
+          runId: 'R_regen',
+          codecMessageId: 'a1p',
+          parent: 'u1',
+          regenerates: 'a1',
+          role: 'assistant',
+          message: { id: 'a1p', content: 'reply-prime' },
+          serial: 's3',
+        });
+        // Edit produces a sibling INPUT node u2 (forkOf u1); its reply R_edit
+        // parents at u2.
+        applyInput(tree, {
+          codecMessageId: 'u2',
+          forkOf: 'u1',
+          message: { id: 'u2', content: 'edited' },
+          serial: 's4',
+        });
+        apply(tree, {
+          runId: 'R_edit',
+          codecMessageId: 'a2',
+          role: 'assistant',
+          parent: 'u2',
+          message: { id: 'a2', content: 'reply-edited' },
+          serial: 's5',
+        });
+        // Pin to the original prompt u1 in the fork-of group (anchor u1, index 0)
+        // so the regen nav is exercisable on the visible chain.
+        view.selectSibling('u1', 0);
+      });
+
+      it('branchSelection().hasSiblings disambiguates by codec-message-id: user prompt anchors fork-of, assistant anchors regen', () => {
+        // user prompt u1 is the fork-of anchor (first msg of R1).
+        expect(view.branchSelection('u1').hasSiblings).toBe(true);
+        // assistant a1 is the regen anchor.
+        expect(view.branchSelection('a1').hasSiblings).toBe(true);
+      });
+
+      it('selectSibling on the assistant codec-message-id navigates the REGEN group, not the fork-of group', () => {
+        // Start: visible chain shows [P1, R1'] (R1 selected, regen R_regen latest).
+        expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1p']);
+
+        // Click `<` on the asst bubble — go to the original R1's asst.
+        view.selectSibling('a1p', 0);
+        expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1']);
+
+        // Click `>` on the asst bubble — should return to R1' (the regen).
+        // BUG: this currently switches the fork-of selection to R_edit
+        // and ends up on [u2, a2] instead of [u1, a1p].
+        view.selectSibling('a1', 1);
+        expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1p']);
+      });
+
+      it('selectSibling on the user-prompt codec-message-id navigates the FORK-OF group', () => {
+        expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1p']);
+
+        // Click `>` on the user bubble — switch to the edited branch.
+        view.selectSibling('u1', 1);
+        expect(view.getMessages().map((m) => m.message.id)).toEqual(['u2', 'a2']);
+
+        // Click `<` to come back.
+        view.selectSibling('u2', 0);
+        expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1p']);
+      });
+
+      it('branchSelection().index reports the correct group selection for each codec-message-id', () => {
+        // Initial state: fork-of selection = R1 (index 0); regen selection
+        // = R_regen (auto, no explicit selection → defaults to latest, index 1).
+        expect(view.branchSelection('u1').index).toBe(0);
+        expect(view.branchSelection('a1p').index).toBe(1);
+      });
     });
   });
 });

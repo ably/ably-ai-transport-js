@@ -21,18 +21,18 @@ sequenceDiagram
     SE->>AC: append " world"
     AC->>CD: deliver append
     Note right of CD: accumulate "Hello world"
-    SE->>AC: append (status: finished)
+    SE->>AC: append (status: complete)
     AC->>CD: deliver append
     Note right of CD: stream complete
 ```
 
-Each stream has a lifecycle tracked by the `x-ably-status` header:
+Each stream has a lifecycle tracked by the `status` header:
 
 | Status      | Meaning                               |
 | ----------- | ------------------------------------- |
 | `streaming` | Stream is open, more appends expected |
-| `finished`  | Stream completed normally             |
-| `aborted`   | Stream was cancelled or errored       |
+| `complete`  | Stream completed normally             |
+| `cancelled` | Stream was cancelled                  |
 
 ## Server
 
@@ -41,25 +41,33 @@ Pipe any `ReadableStream` of codec events through the run's `pipe()`:
 ```typescript
 import { streamText } from 'ai';
 import { Invocation } from '@ably/ai-transport';
-import { createAgentSession } from '@ably/ai-transport/vercel';
+import type { InvocationData } from '@ably/ai-transport';
+import { createAgentSession, vercelRunOutcome } from '@ably/ai-transport/vercel';
 
-const session = createAgentSession({ client: ably, channelName });
+const invocation = Invocation.fromJSON((await req.json()) as InvocationData);
+
+const session = createAgentSession({ client: ably, channelName: invocation.sessionName });
 await session.connect();
-const run = session.createRun(Invocation.fromJSON({ runId, clientId }));
+const run = session.createRun(invocation, { signal: req.signal });
 
 await run.start();
+// Replay the channel into the codec to reconstruct the conversation so far
+await run.loadConversation();
 
-// Publish user messages to the channel so all clients see them and they persist in history
-await run.addMessages(userMessages, { clientId });
+const result = streamText({ model, messages: run.messages, abortSignal: run.abortSignal });
+const pipeResult = await run.pipe(result.toUIMessageStream());
 
-const result = streamText({ model, messages: conversationHistory, abortSignal: run.abortSignal });
-const { reason } = await run.pipe(result.toUIMessageStream());
-await run.end(reason);
+const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
+if (outcome === 'suspend') {
+  await run.suspend();
+} else {
+  await run.end(outcome);
+}
 
 session.close();
 ```
 
-`pipe()` reads events from the stream and routes them through the encoder. Text deltas become message appends; lifecycle events (finish, error) become discrete messages that close the stream.
+`pipe()` reads events from the stream and routes them through the encoder, resolving to a `StreamResult` (`{ reason, error? }`). Text deltas become message appends; lifecycle events (finish, error) become discrete messages that close the stream.
 
 ## Client
 
@@ -67,33 +75,33 @@ On the client, every streaming event is accumulated into the conversation tree a
 
 ```typescript
 const view = session.view;
-const run = await view.send(userMessage);
+const run = await view.send(UIMessageCodec.createUserMessage(userMessage));
 
 // Subscribe to accumulated messages - updates on every token
 const unsubscribe = view.on('update', () => {
-  const messages = view.flattenNodes().map((n) => n.message);
+  const messages = view.getMessages();
   // the last assistant message grows as tokens arrive
 });
 ```
 
 This is the primary consumption path. In React, the `useView()` hook handles the subscription automatically.
 
-### The event stream
+### The output event
 
-`send()` also returns a `ReadableStream<TEvent>` on the `ActiveRun`. This exists as an integration seam for framework adapters - Vercel's `useChat()` expects a `ReadableStream` as its transport contract. Most application code should use the view instead, since the accumulator provides the same per-token granularity.
+For per-event granularity, subscribe to the tree's `output` event. Every decoded run output — for any run, own or observed — surfaces here carrying the raw `TOutput` events (for the Vercel codec, `UIMessageChunk`s). Each event is routed by `inputCodecMessageId` — the triggering input's `codec-message-id`, which `run.inputCodecMessageId` gives you synchronously (the agent mints the `runId` now, so `event.runId` may not yet be known):
 
 ```typescript
-// Framework adapter usage - most apps won't consume this directly
-const run = await view.send(userMessage);
-const reader = run.stream.getReader();
-while (true) {
-  const { done, value } = await reader.read();
-  if (done) break;
-  // value is a UIMessageChunk (text-delta, finish, etc.)
-}
+// Per-event consumption - most apps use the view instead
+const run = await view.send(UIMessageCodec.createUserMessage(userMessage));
+const unsubscribe = session.tree.on('output', (event) => {
+  if (event.inputCodecMessageId !== run.inputCodecMessageId) return;
+  for (const chunk of event.events) {
+    // chunk is a UIMessageChunk (text-delta, finish, etc.)
+  }
+});
 ```
 
-For runs started by other clients (observer runs), there is no stream - events are accumulated into messages and the tree updates via `tree.on('ably-message')`. See [Message lifecycle](../internals/message-lifecycle.md#own-runs-vs-observer-runs) for the full routing picture.
+The view (and `useView()`) sit on top of this, so most application code never touches it. Framework adapters that need a `ReadableStream` build one from this event: Vercel's `useChat()` expects a `ReadableStream` as its transport contract, and the [chat transport](../internals/chat-transport.md) constructs a per-run stream from the tree's `output` event in the Vercel layer. See [Message lifecycle](../internals/message-lifecycle.md#how-run-outputs-surface) for the full picture.
 
 ## Recovery
 
@@ -114,4 +122,4 @@ The transport streams whatever events the codec produces. For the Vercel AI SDK 
 
 Multiple content streams can be active within a single run (e.g., reasoning + text). Each gets its own message with its own stream ID.
 
-See [Tool calling](tool-calling.md) for how tool input deltas and results are streamed. See [React hooks reference](../reference/react-hooks.md) for the full `useView()` and `useClientSession()` API. See [Cancel](cancel.md) for how streams are aborted. For the internal mechanics of message encoding, decoding, and recovery, see the [Encoder](../internals/encoder.md), [Decoder](../internals/decoder.md), and [Wire protocol](../internals/wire-protocol.md) internals pages.
+See [Tool calling](tool-calling.md) for how tool input deltas and results are streamed. See [React hooks reference](../reference/react-hooks.md) for the full `useView()` and `useClientSession()` API. See [Cancel](cancel.md) for how streams are cancelled. For the internal mechanics of message encoding, decoding, and recovery, see the [Encoder](../internals/encoder.md), [Decoder](../internals/decoder.md), and [Wire protocol](../internals/wire-protocol.md) internals pages.

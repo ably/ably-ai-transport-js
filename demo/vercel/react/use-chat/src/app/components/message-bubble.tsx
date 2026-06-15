@@ -7,7 +7,12 @@ import { clientColor } from '../lib/client-color';
 
 interface MessageBubbleProps {
   message: UIMessage;
-  headers: Record<string, string> | undefined;
+  // Per-message metadata derived from the View at the list-glue layer
+  // (see MessageList) and passed as primitives so the bubble stays a
+  // pure renderer with no SDK type dependencies.
+  clientId: string | undefined;
+  runId: string | undefined;
+  status: 'streaming' | 'complete' | 'cancelled' | 'error' | 'suspended' | undefined;
   hasSiblings?: boolean;
   siblingCount?: number;
   selectedIndex?: number;
@@ -63,11 +68,11 @@ function Badge({ label, value, color }: { label: string; value: string; color: s
 
 function StatusBadge({ status }: { status: string }) {
   const color =
-    status === 'finished'
+    status === 'complete'
       ? 'bg-emerald-950 text-emerald-400'
       : status === 'streaming'
         ? 'bg-amber-950 text-amber-400'
-        : status === 'aborted'
+        : status === 'cancelled' || status === 'error'
           ? 'bg-red-950 text-red-400'
           : 'bg-zinc-900 text-zinc-500';
   return (
@@ -89,10 +94,10 @@ function bubbleClasses(isUser: boolean, status: string | undefined, userBgClass?
   if (status === 'streaming') {
     return `${base} bg-zinc-900 text-zinc-300 border border-amber-900/40`;
   }
-  if (status === 'finished') {
+  if (status === 'complete') {
     return `${base} bg-zinc-900 text-zinc-300 border border-emerald-900/40`;
   }
-  if (status === 'aborted') {
+  if (status === 'cancelled' || status === 'error') {
     return `${base} bg-zinc-900 text-zinc-300 border border-red-900/40`;
   }
   return `${base} bg-zinc-900 text-zinc-300 border border-zinc-800`;
@@ -163,7 +168,9 @@ function EditForm({
 
 export function MessageBubble({
   message,
-  headers,
+  clientId,
+  runId,
+  status,
   hasSiblings,
   siblingCount,
   selectedIndex,
@@ -176,10 +183,7 @@ export function MessageBubble({
   const isUser = message.role === 'user';
   const [isEditing, setIsEditing] = useState(false);
 
-  const role = headers?.['x-ably-role'] ?? message.role;
-  const clientId = headers?.['x-ably-run-client-id'];
-  const runId = headers?.['x-ably-run-id'];
-  const status = headers?.['x-ably-status'];
+  const role = message.role;
   const colors = clientId ? clientColor(clientId) : undefined;
 
   const messageText = message.parts
@@ -253,8 +257,8 @@ export function MessageBubble({
                 </button>
               )}
 
-              {/* Debug badges */}
-              {headers && (
+              {/* Debug badges (only when we know which Run the message belongs to). */}
+              {runId && (
                 <>
                   <Badge
                     label="role"
@@ -268,14 +272,12 @@ export function MessageBubble({
                       color={`bg-zinc-900 ${colors?.text ?? 'text-zinc-500'}`}
                     />
                   )}
-                  {runId && (
-                    <Badge
-                      label="run"
-                      value={runId.slice(0, 8)}
-                      color="bg-zinc-900 text-zinc-500"
-                    />
-                  )}
-                  {status && <StatusBadge status={status} />}
+                  <Badge
+                    label="run"
+                    value={runId.slice(0, 8)}
+                    color="bg-zinc-900 text-zinc-500"
+                  />
+                  {status && !isUser && <StatusBadge status={status} />}
                 </>
               )}
             </div>

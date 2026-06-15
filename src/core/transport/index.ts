@@ -1,21 +1,23 @@
 // Shared types
 export type {
   ActiveRun,
-  AddMessageOptions,
-  AddMessagesResult,
   AgentSession,
   AgentSessionOptions,
-  CancelFilter,
+  BranchSelection,
   CancelRequest,
   ClientSession,
   ClientSessionOptions,
-  CloseOptions,
-  EventsNode,
+  ConversationNode,
+  InputNode,
+  LoadConversationOptions,
   MessageNode,
+  OutputEvent,
   PipeOptions,
   Run,
   RunEndReason,
+  RunInfo,
   RunLifecycleEvent,
+  RunNode,
   RunRuntime,
   RunView,
   SendOptions,
@@ -23,15 +25,6 @@ export type {
   Tree,
   View,
 } from './types.js';
-
-// Deprecated aliases — intentional re-export of deprecated types for backwards compatibility.
-// eslint-disable-next-line @typescript-eslint/no-deprecated
-export type { EventNode } from './types.js';
-// eslint-disable-next-line @typescript-eslint/no-deprecated
-export type { TreeNode } from './types.js';
-
-// Internal tree interface (consumed by View implementations)
-export type { TreeInternal } from './tree.js';
 
 // Invocation
 export type { InvocationData } from './invocation.js';

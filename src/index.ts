@@ -1,22 +1,24 @@
 // Core transport
 export type {
   ActiveRun,
-  AddMessageOptions,
-  AddMessagesResult,
   AgentSession,
   AgentSessionOptions,
-  CancelFilter,
+  BranchSelection,
   CancelRequest,
   ClientSession,
   ClientSessionOptions,
-  CloseOptions,
-  EventsNode,
+  ConversationNode,
+  InputNode,
   InvocationData,
+  LoadConversationOptions,
   MessageNode,
+  OutputEvent,
   PipeOptions,
   Run,
   RunEndReason,
+  RunInfo,
   RunLifecycleEvent,
+  RunNode,
   RunRuntime,
   RunView,
   SendOptions,
@@ -24,53 +26,55 @@ export type {
   Tree,
   View,
 } from './core/transport/index.js';
-
-// Deprecated aliases — intentional re-export of deprecated types for backwards compatibility.
-// eslint-disable-next-line @typescript-eslint/no-deprecated
-export type { EventNode } from './core/transport/index.js';
-// eslint-disable-next-line @typescript-eslint/no-deprecated
-export type { TreeNode } from './core/transport/index.js';
 export { buildTransportHeaders, createAgentSession, createClientSession, Invocation } from './core/transport/index.js';
+
+// Channel modes
+export { OBJECT_MODES } from './core/channel-options.js';
 
 // Core codec
 export type {
   ChannelWriter,
   Codec,
+  CodecInputEvent,
+  CodecMessage,
+  CodecOutputEvent,
+  DecodedMessage,
+  Decoder,
   DecoderCore,
   DecoderCoreHooks,
   DecoderCoreOptions,
-  DecoderOutput,
-  DiscreteEncoder,
+  Encoder,
   EncoderCore,
   EncoderCoreOptions,
   EncoderOptions,
   Extras,
   LifecycleTracker,
-  MessageAccumulator,
   MessagePayload,
   PhaseConfig,
-  StreamDecoder,
-  StreamEncoder,
+  Reducer,
+  ReducerMeta,
+  Regenerate,
   StreamPayload,
   StreamTrackerState,
+  ToolApprovalResponse,
+  ToolResult,
+  ToolResultError,
+  UserMessage,
   WriteOptions,
 } from './core/codec/index.js';
-export { createDecoderCore, createEncoderCore, createLifecycleTracker, eventOutput } from './core/codec/index.js';
+export { createDecoderCore, createEncoderCore, createLifecycleTracker } from './core/codec/index.js';
 
 // Constants
 export {
-  DOMAIN_HEADER_PREFIX,
-  EVENT_ABORT,
   EVENT_CANCEL,
-  EVENT_ERROR,
   EVENT_RUN_END,
   EVENT_RUN_START,
-  HEADER_CANCEL_ALL,
-  HEADER_CANCEL_CLIENT_ID,
-  HEADER_CANCEL_OWN,
-  HEADER_CANCEL_RUN_ID,
+  HEADER_CODEC_MESSAGE_ID,
+  HEADER_ERROR_CODE,
+  HEADER_ERROR_MESSAGE,
   HEADER_FORK_OF,
-  HEADER_MSG_ID,
+  HEADER_INPUT_CLIENT_ID,
+  HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
@@ -83,7 +87,14 @@ export {
 
 // Utilities
 export type { DomainHeaderReader, DomainHeaderWriter, Stripped } from './utils.js';
-export { getHeaders, headerReader, headerWriter, mergeHeaders, stripUndefined } from './utils.js';
+export {
+  getCodecHeaders,
+  getTransportHeaders,
+  headerReader,
+  headerWriter,
+  mergeHeaders,
+  stripUndefined,
+} from './utils.js';
 
 // Event emitter
 export { EventEmitter } from './event-emitter.js';

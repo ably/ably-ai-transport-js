@@ -15,10 +15,16 @@ const flushMicrotasks = async (): Promise<void> => {
   });
 };
 
+import { OBJECT_MODES, resolveChannelModes } from '../../../src/core/channel-options.js';
+import type { CodecInputEvent, CodecOutputEvent } from '../../../src/core/codec/types.js';
 import type { ClientSession } from '../../../src/core/transport/types.js';
 import { ClientSessionProvider } from '../../../src/react/contexts/client-session-provider.js';
 import { useClientSession } from '../../../src/react/use-client-session.js';
 import { createMockSession } from '../helper/mock-session.js';
+
+// Capture the options the provider passes to ably-js's <ChannelProvider>.
+// Hoisted so the (hoisted) vi.mock factory can write to it.
+const channelProviderCapture = vi.hoisted(() => ({ options: undefined as Ably.ChannelOptions | undefined }));
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -29,12 +35,23 @@ import { createMockSession } from '../helper/mock-session.js';
 // so the shape only needs to satisfy TypeScript.
 const fakeAblyClient = { options: {} } as unknown as Ably.Realtime;
 
-vi.mock('ably/react', () => ({
-  useAbly: () => fakeAblyClient,
-}));
+// ClientSessionProvider wraps children in ably-js's <ChannelProvider>. No
+// <AblyProvider> is rendered in these tests, so stub it as a passthrough that
+// just renders children.
+vi.mock('ably/react', async () => {
+  const { createElement, Fragment } = await import('react');
+  return {
+    useAbly: () => fakeAblyClient,
+    ChannelProvider: ({ children, options }: { children?: ReactNode; options?: Ably.ChannelOptions }) => {
+      channelProviderCapture.options = options;
+      return createElement(Fragment, undefined, children);
+    },
+  };
+});
 
 // Typed with explicit parameter signature so mock.calls[0] is [unknown], enabling assertions
-const createClientSessionMock = vi.fn<(options: unknown) => ClientSession<unknown, unknown>>();
+const createClientSessionMock =
+  vi.fn<(options: unknown) => ClientSession<CodecInputEvent, CodecOutputEvent, unknown, unknown>>();
 
 vi.mock('../../../src/core/transport/client-session.js', () => ({
   createClientSession: (options: unknown) => createClientSessionMock(options),
@@ -48,37 +65,36 @@ vi.mock('../../../src/core/transport/client-session.js', () => ({
 // ClientSessionProvider on channelName "ai:test".
 const wrapDefault = ({ children }: { children: ReactNode }): ReactNode =>
   createElement(
-    ClientSessionProvider<unknown, unknown>,
-    { channelName: 'ai:test', codec: {} as never, api: '/test' },
+    ClientSessionProvider<CodecInputEvent, CodecOutputEvent, unknown, unknown>,
+    { channelName: 'ai:test', codec: {} as never },
     children,
   );
 
 // ClientSessionProvider with channelName "ai:demo" for channel-name forwarding test.
 const wrapDemo = ({ children }: { children: ReactNode }): ReactNode =>
   createElement(
-    ClientSessionProvider<unknown, unknown>,
-    { channelName: 'ai:demo', codec: {} as never, api: '/test' },
+    ClientSessionProvider<CodecInputEvent, CodecOutputEvent, unknown, unknown>,
+    { channelName: 'ai:demo', codec: {} as never },
     children,
   );
 
 // Nested outer (channelName="ai:outer") + inner (channelName="ai:inner") ClientSessionProvider pair.
 const wrapNested = ({ children }: { children: ReactNode }): ReactNode =>
   createElement(
-    ClientSessionProvider<unknown, unknown>,
-    { channelName: 'ai:outer', codec: {} as never, api: '/test' },
+    ClientSessionProvider<CodecInputEvent, CodecOutputEvent, unknown, unknown>,
+    { channelName: 'ai:outer', codec: {} as never },
     createElement(
-      ClientSessionProvider<unknown, unknown>,
-      { channelName: 'ai:inner', codec: {} as never, api: '/test' },
+      ClientSessionProvider<CodecInputEvent, CodecOutputEvent, unknown, unknown>,
+      { channelName: 'ai:inner', codec: {} as never },
       children,
     ),
   );
 
 // ClientSessionProvider with a parametric channelName, used by the channel-name change test.
 const renderProviderForChannel = (channelName: string): ReactNode =>
-  createElement(ClientSessionProvider<unknown, unknown>, {
+  createElement(ClientSessionProvider<CodecInputEvent, CodecOutputEvent, unknown, unknown>, {
     channelName,
     codec: {} as never,
-    api: '/test',
   });
 
 // ---------------------------------------------------------------------------
@@ -89,6 +105,7 @@ describe('ClientSessionProvider', () => {
   beforeEach(() => {
     createClientSessionMock.mockClear();
     createClientSessionMock.mockImplementation(() => createMockSession().session);
+    channelProviderCapture.options = undefined;
   });
 
   it('creates a session and makes it available via useClientSession(channelName)', () => {
@@ -194,6 +211,33 @@ describe('ClientSessionProvider', () => {
     expect(created[0]?.close).toHaveBeenCalledOnce();
   });
 
+  it('defers the session close to a microtask so a Strict Mode remount can cancel it', async () => {
+    const created: ReturnType<typeof createMockSession>[] = [];
+    createClientSessionMock.mockImplementation(() => {
+      const mock = createMockSession();
+      created.push(mock);
+      return mock.session;
+    });
+
+    const { unmount } = renderHook(() => useClientSession({ channelName: 'ai:test' }), { wrapper: wrapDefault });
+    unmount();
+
+    // close() is NOT run synchronously on unmount — it is scheduled as a
+    // microtask. This is the mechanism that makes the provider safe under React
+    // Strict Mode: the synchronous mount -> unmount -> remount cycle resets
+    // pendingCloseRef before the microtask drains, cancelling the close. Since
+    // close() now detaches the channel (see client-session.test.ts "detaches
+    // the channel it attached"), this deferral is what prevents a spurious
+    // channel detach during the Strict Mode remount.
+    expect(created[0]?.close).not.toHaveBeenCalled();
+
+    await flushMicrotasks();
+
+    // On a genuine unmount (nothing remounts to reset the guard) the deferred
+    // close runs exactly once, detaching the channel the session attached.
+    expect(created[0]?.close).toHaveBeenCalledOnce();
+  });
+
   it('connects the new session and closes the old one when channelName changes', async () => {
     const created: ReturnType<typeof createMockSession>[] = [];
     createClientSessionMock.mockImplementation(() => {
@@ -228,16 +272,42 @@ describe('ClientSessionProvider', () => {
     // wrapper closes over `logger` — unicorn/consistent-function-scoping does not fire for closures
     const wrapWithLogger = ({ children }: { children: ReactNode }): ReactNode =>
       createElement(
-        ClientSessionProvider<unknown, unknown>,
-        { channelName: 'ai:test', codec: {} as never, api: '/api/custom', logger },
+        ClientSessionProvider<CodecInputEvent, CodecOutputEvent, unknown, unknown>,
+        { channelName: 'ai:test', codec: {} as never, logger },
         children,
       );
 
     renderHook(() => useClientSession({ channelName: 'ai:test' }), { wrapper: wrapWithLogger });
 
     // CAST: accessing vitest mock call args as the known options type
-    const callArgs = createClientSessionMock.mock.calls[0]?.[0] as { api: string; logger: unknown };
-    expect(callArgs.api).toBe('/api/custom');
+    const callArgs = createClientSessionMock.mock.calls[0]?.[0] as { channelName: string; logger: unknown };
+    expect(callArgs.channelName).toBe('ai:test');
     expect(callArgs.logger).toBe(logger);
+  });
+
+  it('passes the resolved channel modes to <ChannelProvider> and the session identically', () => {
+    // wrapper closes over OBJECT_MODES — unicorn/consistent-function-scoping does not fire for closures
+    const wrapWithModes = ({ children }: { children: ReactNode }): ReactNode =>
+      createElement(
+        ClientSessionProvider<CodecInputEvent, CodecOutputEvent, unknown, unknown>,
+        // Pass the OBJECT_MODES constant as-is — the documented usage; the
+        // option must accept the readonly array without a copy.
+        { channelName: 'ai:test', codec: {} as never, channelModes: OBJECT_MODES },
+        children,
+      );
+
+    renderHook(() => useClientSession({ channelName: 'ai:test' }), { wrapper: wrapWithModes });
+
+    // The provider must hand <ChannelProvider> the canonically-resolved modes...
+    expect(channelProviderCapture.options?.modes).toEqual(resolveChannelModes(OBJECT_MODES));
+    // ...and the session must receive the same channelModes, so both resolve
+    // to the identical mode set and the provider never reverts the session's.
+    const callArgs = createClientSessionMock.mock.calls[0]?.[0] as { channelModes?: readonly Ably.ChannelMode[] };
+    expect(resolveChannelModes(callArgs.channelModes)).toEqual(channelProviderCapture.options?.modes);
+  });
+
+  it('sets no modes on <ChannelProvider> when channelModes is omitted', () => {
+    renderHook(() => useClientSession({ channelName: 'ai:test' }), { wrapper: wrapDefault });
+    expect(channelProviderCapture.options?.modes).toBeUndefined();
   });
 });

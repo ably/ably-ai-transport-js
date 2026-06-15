@@ -4,9 +4,10 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import * as Ably from 'ably';
 import { AblyProvider } from 'ably/react';
 import { createSessionHooks } from '@ably/ai-transport/react';
+import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
 import type * as AI from 'ai';
 
-export const SessionHooks = createSessionHooks<AI.UIMessageChunk, AI.UIMessage>();
+export const SessionHooks = createSessionHooks<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>();
 
 const AblyReadyContext = createContext(false);
 
@@ -19,6 +20,10 @@ export function Providers({ clientId, children }: { clientId?: string; children:
 
   useEffect(() => {
     const authParams = clientId ? `?clientId=${encodeURIComponent(clientId)}` : '';
+    // `NEXT_PUBLIC_ABLY_ENDPOINT` lets the e2e tests point the browser client at
+    // the Ably sandbox (`nonprod:sandbox`); unset in normal use, so it defaults
+    // to production. It must match the endpoint the agent connects to.
+    const endpoint = process.env.NEXT_PUBLIC_ABLY_ENDPOINT;
     const ably = new Ably.Realtime({
       authCallback: async (_tokenParams, callback) => {
         try {
@@ -30,6 +35,7 @@ export function Providers({ clientId, children }: { clientId?: string; children:
           callback(message, null);
         }
       },
+      ...(endpoint ? { endpoint } : {}),
     });
     setClient(ably);
     return () => {

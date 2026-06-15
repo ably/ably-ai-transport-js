@@ -1,5 +1,5 @@
 /**
- * useDemoProgress — derives which intro-card demo steps are still unfinished
+ * useDemoProgress - derives which intro-card demo steps are still unfinished
  * from the conversation tree, so suggestion chips stay in sync across clients
  * via the channel-backed history.
  *
@@ -7,18 +7,18 @@
  * - server-weather: a turn called getWeather without preceding getLocation
  * - client-weather: a turn called getLocation
  * - approval-forecast: a turn produced a getWeatherForecast output (approved)
- * - multi-tab: more than one distinct turn-client-id appears in node headers
- * - regenerate: any assistant node has siblings (forked via Regenerate)
- * - edit: any user node has siblings (forked via Edit)
+ * - multi-tab: more than one distinct Run.clientId appears across visible Runs
+ * - regenerate: any assistant message belongs to a Run with siblings
+ * - edit: any user message belongs to a Run with siblings
  *
  * Steps from the intro card that are NOT tracked here: cancel mid-stream
- * (no clean tree signal) and open Debug pane (local UI state only).
+ * (via channel events), open Debug pane (local UI state only).
  */
 
 import { useMemo } from 'react';
 import type * as Ably from 'ably';
 import type { DynamicToolUIPart, UIMessage } from 'ai';
-import { EVENT_CANCEL, type MessageNode } from '@ably/ai-transport';
+import { EVENT_CANCEL, type BranchSelection, type CodecMessage, type RunInfo } from '@ably/ai-transport';
 
 export type DemoStepId =
   | 'server-weather'
@@ -95,8 +95,9 @@ const ALL_STEPS: DemoStep[] = [
 ];
 
 export function useDemoProgress(
-  nodes: MessageNode<UIMessage>[],
-  hasSiblings: (msgId: string) => boolean,
+  messages: CodecMessage<UIMessage>[],
+  runOf: (codecMessageId: string) => RunInfo | undefined,
+  branchSelection: (codecMessageId: string) => BranchSelection<UIMessage>,
   ablyMessages: Ably.InboundMessage[],
 ): DemoStep[] {
   return useMemo(() => {
@@ -106,13 +107,13 @@ export function useDemoProgress(
       completed.add('cancel');
     }
 
-    for (let i = 0; i < nodes.length; i++) {
-      if (nodes[i].message.role !== 'user') continue;
+    for (let i = 0; i < messages.length; i++) {
+      if (messages[i].message.role !== 'user') continue;
 
       const turnTools = new Set<string>();
       const turnOutputs = new Set<string>();
-      for (let j = i + 1; j < nodes.length; j++) {
-        const m = nodes[j].message;
+      for (let j = i + 1; j < messages.length; j++) {
+        const m = messages[j].message;
         if (m.role === 'user') break;
         if (m.role !== 'assistant') continue;
         for (const part of m.parts) {
@@ -134,19 +135,17 @@ export function useDemoProgress(
       }
     }
 
-    const turnClientIds = new Set<string>();
-    for (const n of nodes) {
-      const cid = n.headers['x-ably-turn-client-id'];
-      if (cid) turnClientIds.add(cid);
+    const runClientIds = new Set<string>();
+    for (const { codecMessageId, message } of messages) {
+      const run = runOf(codecMessageId);
+      if (!run) continue;
+      if (run.clientId) runClientIds.add(run.clientId);
+      if (!branchSelection(codecMessageId).hasSiblings) continue;
+      if (message.role === 'assistant') completed.add('regenerate');
+      if (message.role === 'user') completed.add('edit');
     }
-    if (turnClientIds.size > 1) completed.add('multi-tab');
-
-    for (const n of nodes) {
-      if (!hasSiblings(n.msgId)) continue;
-      if (n.message.role === 'assistant') completed.add('regenerate');
-      if (n.message.role === 'user') completed.add('edit');
-    }
+    if (runClientIds.size > 1) completed.add('multi-tab');
 
     return ALL_STEPS.filter((s) => !completed.has(s.id));
-  }, [nodes, hasSiblings, ablyMessages]);
+  }, [messages, runOf, branchSelection, ablyMessages]);
 }

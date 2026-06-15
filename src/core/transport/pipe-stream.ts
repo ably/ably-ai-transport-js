@@ -1,53 +1,68 @@
 /**
  * Pure stream piping function.
  *
- * Reads events from a ReadableStream, writes them to a streaming encoder,
- * and handles abort/error. No dependencies on run state or session internals.
+ * Reads outputs from a ReadableStream, writes them to an encoder via
+ * `publishOutput`, and handles cancel/error. No dependencies on run
+ * state or session internals.
  */
 
 import type { Logger } from '../../logger.js';
-import type { StreamEncoder, WriteOptions } from '../codec/types.js';
+import type { CodecInputEvent, CodecOutputEvent, Encoder, WriteOptions } from '../codec/types.js';
 import type { StreamResult } from './types.js';
 
 /**
- * Pipe an event stream through an encoder to the channel.
+ * Adapt an AbortSignal into a promise that resolves once the signal aborts,
+ * paired with a cleanup that detaches the listener. With no signal the promise
+ * never resolves (there is no cancellation path); an already-aborted signal
+ * resolves immediately. `cleanup` is a no-op unless a listener was attached.
+ * @param signal - The AbortSignal to watch, or undefined for no cancellation.
+ * @returns The abort promise and a cleanup to call when racing is done.
+ */
+const abortSignalToPromise = (signal: AbortSignal | undefined): { promise: Promise<void>; cleanup: () => void } => {
+  let listener: (() => void) | undefined;
+  const promise =
+    signal === undefined
+      ? // eslint-disable-next-line @typescript-eslint/no-empty-function -- never-resolving promise: no signal means no cancellation path
+        new Promise<void>(() => {})
+      : signal.aborted
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => {
+            listener = () => {
+              resolve();
+            };
+            signal.addEventListener('abort', listener, { once: true });
+          });
+  const cleanup = (): void => {
+    if (listener && signal) signal.removeEventListener('abort', listener);
+  };
+  return { promise, cleanup };
+};
+
+/**
+ * Pipe an output stream through an encoder to the channel.
  *
  * Returns when the stream completes, is cancelled (via signal), or errors.
  * The `reason` field of the result indicates which case occurred.
- * @param stream - The event stream to read from.
- * @param encoder - The streaming encoder to write events through.
- * @param signal - Abort signal to monitor for cancellation.
- * @param onAbort - Optional callback invoked when the stream is cancelled, before the stream ends.
- * @param resolveWriteOptions - Optional per-event hook returning {@link WriteOptions} overrides to pass to `encoder.appendEvent`.
+ * @param stream - The output stream to read from.
+ * @param encoder - The encoder to publish outputs through.
+ * @param signal - AbortSignal to monitor for cancellation.
+ * @param onCancelled - Optional callback invoked when the stream is cancelled, before the stream ends.
+ * @param resolveWriteOptions - Optional per-output hook returning {@link WriteOptions} overrides to pass to `encoder.publishOutput`.
  * @param logger - Optional logger for diagnostic output.
- * @returns The reason the pipe ended.
+ * @returns A {@link StreamResult}: `reason` is why the pipe ended, and `error` holds the caught error when `reason` is `'error'`.
  */
-export const pipeStream = async <TEvent, TMessage>(
-  stream: ReadableStream<TEvent>,
-  encoder: StreamEncoder<TEvent, TMessage>,
+export const pipeStream = async <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent>(
+  stream: ReadableStream<TOutput>,
+  encoder: Encoder<TInput, TOutput>,
   signal: AbortSignal | undefined,
-  onAbort?: (write: (event: TEvent) => Promise<void>) => void | Promise<void>,
-  resolveWriteOptions?: (event: TEvent) => WriteOptions | undefined,
+  onCancelled?: (write: (output: TOutput) => Promise<void>) => void | Promise<void>,
+  resolveWriteOptions?: (output: TOutput) => WriteOptions | undefined,
   logger?: Logger,
 ): Promise<StreamResult> => {
   logger?.trace('pipeStream();');
 
   const reader = stream.getReader();
-
-  let abortListener: (() => void) | undefined;
-  const abortPromise = signal
-    ? new Promise<void>((resolve) => {
-        if (signal.aborted) {
-          resolve();
-          return;
-        }
-        abortListener = () => {
-          resolve();
-        };
-        signal.addEventListener('abort', abortListener, { once: true });
-      })
-    : // eslint-disable-next-line @typescript-eslint/no-empty-function -- never-resolving promise: no signal means no cancellation path
-      new Promise<void>(() => {});
+  const abort = abortSignalToPromise(signal);
 
   let reason: StreamResult['reason'] = 'complete';
   let caughtError: Error | undefined;
@@ -55,17 +70,17 @@ export const pipeStream = async <TEvent, TMessage>(
   try {
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- intentional infinite loop broken by return/break
     while (true) {
-      // .then() is intentional: transforms the abort signal into a discriminant
+      // .then() is intentional: transforms the AbortSignal into a discriminant
       // for Promise.race — no async/await equivalent for this pattern.
-      const result = await Promise.race([reader.read(), abortPromise.then(() => 'aborted' as const)]);
+      const result = await Promise.race([reader.read(), abort.promise.then(() => 'cancelled' as const)]);
 
-      if (result === 'aborted') {
+      if (result === 'cancelled') {
         reason = 'cancelled';
-        logger?.debug('pipeStream(); stream cancelled by abort signal');
-        if (onAbort) {
-          await onAbort(async (event: TEvent) => encoder.appendEvent(event));
+        logger?.debug('pipeStream(); stream cancelled by AbortSignal');
+        if (onCancelled) {
+          await onCancelled(async (output: TOutput) => encoder.publishOutput(output));
         }
-        await encoder.abort('cancelled');
+        await encoder.cancel('cancelled');
         break;
       }
 
@@ -76,7 +91,7 @@ export const pipeStream = async <TEvent, TMessage>(
         break;
       }
 
-      await encoder.appendEvent(value, resolveWriteOptions?.(value));
+      await encoder.publishOutput(value, resolveWriteOptions?.(value));
     }
   } catch (error) {
     reason = 'error';
@@ -90,7 +105,7 @@ export const pipeStream = async <TEvent, TMessage>(
       // the StreamResult reason ("error").
     }
   } finally {
-    if (abortListener) signal?.removeEventListener('abort', abortListener);
+    abort.cleanup();
     reader.releaseLock();
   }
 

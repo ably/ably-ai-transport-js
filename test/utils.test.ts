@@ -1,44 +1,75 @@
 import type * as Ably from 'ably';
 import { describe, expect, it } from 'vitest';
 
-import { DOMAIN_HEADER_PREFIX as D } from '../src/constants.js';
 import {
-  getHeaders,
+  compareBySerial,
+  getCodecHeaders,
+  getTransportHeaders,
   headerReader,
   headerWriter,
   mergeHeaders,
   parseBool,
   parseJson,
-  setHeadersIfPresent,
-  setIfPresent,
   stripUndefined,
 } from '../src/utils.js';
 
-describe('getHeaders', () => {
-  it('extracts headers from a well-formed message', () => {
-    const msg = { extras: { headers: { 'x-key': 'value' } } } as Ably.InboundMessage;
-    expect(getHeaders(msg)).toEqual({ 'x-key': 'value' });
+describe('getTransportHeaders', () => {
+  it('extracts the transport tier from a well-formed message', () => {
+    const msg = { extras: { ai: { transport: { 'run-id': 'r1' }, codec: { type: 'text' } } } } as Ably.InboundMessage;
+    expect(getTransportHeaders(msg)).toEqual({ 'run-id': 'r1' });
+  });
+
+  it('returns empty object when the transport tier is absent', () => {
+    const msg = { extras: { ai: { codec: { type: 'text' } } } } as Ably.InboundMessage;
+    expect(getTransportHeaders(msg)).toEqual({});
   });
 
   it('returns empty object when extras is undefined', () => {
     const msg = { extras: undefined } as Ably.InboundMessage;
-    expect(getHeaders(msg)).toEqual({});
+    expect(getTransportHeaders(msg)).toEqual({});
   });
 
   it('returns empty object when extras is falsy', () => {
     // CAST: testing runtime guard against falsy extras values
     const msg = { extras: 0 } as unknown as Ably.InboundMessage;
-    expect(getHeaders(msg)).toEqual({});
+    expect(getTransportHeaders(msg)).toEqual({});
   });
 
-  it('returns empty object when headers is missing', () => {
+  it('returns empty object when ai is missing', () => {
     const msg = { extras: {} } as Ably.InboundMessage;
-    expect(getHeaders(msg)).toEqual({});
+    expect(getTransportHeaders(msg)).toEqual({});
   });
 
   it('returns empty object when extras is not an object', () => {
     const msg = { extras: 'string' } as Ably.InboundMessage;
-    expect(getHeaders(msg)).toEqual({});
+    expect(getTransportHeaders(msg)).toEqual({});
+  });
+});
+
+describe('getCodecHeaders', () => {
+  it('extracts the codec tier from a well-formed message', () => {
+    const msg = { extras: { ai: { transport: { 'run-id': 'r1' }, codec: { type: 'text' } } } } as Ably.InboundMessage;
+    expect(getCodecHeaders(msg)).toEqual({ type: 'text' });
+  });
+
+  it('returns empty object when the codec tier is absent', () => {
+    const msg = { extras: { ai: { transport: { 'run-id': 'r1' } } } } as Ably.InboundMessage;
+    expect(getCodecHeaders(msg)).toEqual({});
+  });
+
+  it('returns empty object when extras is undefined', () => {
+    const msg = { extras: undefined } as Ably.InboundMessage;
+    expect(getCodecHeaders(msg)).toEqual({});
+  });
+
+  it('returns empty object when ai is missing', () => {
+    const msg = { extras: {} } as Ably.InboundMessage;
+    expect(getCodecHeaders(msg)).toEqual({});
+  });
+
+  it('returns empty object when extras is not an object', () => {
+    const msg = { extras: 'string' } as Ably.InboundMessage;
+    expect(getCodecHeaders(msg)).toEqual({});
   });
 });
 
@@ -58,53 +89,6 @@ describe('parseJson', () => {
 
   it('parses arrays', () => {
     expect(parseJson('[1,2]')).toEqual([1, 2]);
-  });
-});
-
-describe('setIfPresent', () => {
-  it('sets a string value', () => {
-    const h: Record<string, string> = {};
-    setIfPresent(h, 'key', 'value');
-    expect(h).toEqual({ key: 'value' });
-  });
-
-  it('sets a boolean value as string', () => {
-    const h: Record<string, string> = {};
-    setIfPresent(h, 'flag', true);
-    expect(h).toEqual({ flag: 'true' });
-  });
-
-  it('sets an object as JSON', () => {
-    const h: Record<string, string> = {};
-    setIfPresent(h, 'obj', { a: 1 });
-    expect(h).toEqual({ obj: '{"a":1}' });
-  });
-
-  it('skips undefined', () => {
-    const h: Record<string, string> = {};
-    setIfPresent(h, 'key', undefined);
-    expect(h).toEqual({});
-  });
-
-  it('sets a number as string', () => {
-    const h: Record<string, string> = {};
-    setIfPresent(h, 'num', 42);
-    expect(h).toEqual({ num: '42' });
-  });
-});
-
-describe('setHeadersIfPresent', () => {
-  it('sets multiple headers at once', () => {
-    const h: Record<string, string> = {};
-    setHeadersIfPresent(h, { a: 'one', b: 2, c: true });
-    expect(h).toEqual({ a: 'one', b: '2', c: 'true' });
-  });
-
-  it('skips undefined and null entries', () => {
-    const h: Record<string, string> = { existing: 'keep' };
-    // eslint-disable-next-line unicorn/no-null -- testing null handling
-    setHeadersIfPresent(h, { a: 'set', b: undefined, c: null });
-    expect(h).toEqual({ existing: 'keep', a: 'set' });
   });
 });
 
@@ -147,6 +131,26 @@ describe('parseBool', () => {
   });
 });
 
+describe('compareBySerial', () => {
+  it('orders serials lexicographically ascending', () => {
+    const sorted = [{ serial: 'c' }, { serial: 'a' }, { serial: 'b' }].toSorted(compareBySerial);
+    expect(sorted.map((r) => r.serial)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('sorts undefined serials last', () => {
+    const sorted = [{ serial: 'b' }, { serial: undefined }, { serial: 'a' }].toSorted(compareBySerial);
+    expect(sorted.map((r) => r.serial)).toEqual(['a', 'b', undefined]);
+  });
+
+  it('treats two undefined serials as equal', () => {
+    expect(compareBySerial({ serial: undefined }, { serial: undefined })).toBe(0);
+  });
+
+  it('treats two equal serials as equal', () => {
+    expect(compareBySerial({ serial: 'x' }, { serial: 'x' })).toBe(0);
+  });
+});
+
 describe('stripUndefined', () => {
   it('removes undefined values', () => {
     const result = stripUndefined({ a: 'keep', b: undefined, c: 42 });
@@ -181,10 +185,10 @@ describe('stripUndefined', () => {
 
 describe('headerReader', () => {
   const headers = {
-    [`${D}toolCallId`]: 'tc-1',
-    [`${D}dynamic`]: 'true',
-    [`${D}providerExecuted`]: 'false',
-    [`${D}providerMetadata`]: '{"anthropic":{"cacheControl":"ephemeral"}}',
+    toolCallId: 'tc-1',
+    dynamic: 'true',
+    providerExecuted: 'false',
+    providerMetadata: '{"anthropic":{"cacheControl":"ephemeral"}}',
   };
 
   it('reads string values with str()', () => {
@@ -216,18 +220,18 @@ describe('headerReader', () => {
 describe('headerWriter', () => {
   it('writes string values with str()', () => {
     const h = headerWriter().str('toolCallId', 'tc-1').build();
-    expect(h).toEqual({ [`${D}toolCallId`]: 'tc-1' });
+    expect(h).toEqual({ toolCallId: 'tc-1' });
   });
 
   it('skips undefined string values', () => {
     const title: string | undefined = undefined;
     const h = headerWriter().str('toolCallId', 'tc-1').str('title', title).build();
-    expect(h).toEqual({ [`${D}toolCallId`]: 'tc-1' });
+    expect(h).toEqual({ toolCallId: 'tc-1' });
   });
 
   it('writes boolean values with bool()', () => {
     const h = headerWriter().bool('dynamic', true).bool('providerExecuted', false).build();
-    expect(h).toEqual({ [`${D}dynamic`]: 'true', [`${D}providerExecuted`]: 'false' });
+    expect(h).toEqual({ dynamic: 'true', providerExecuted: 'false' });
   });
 
   it('skips undefined boolean values', () => {
@@ -240,7 +244,7 @@ describe('headerWriter', () => {
     const h = headerWriter()
       .json('providerMetadata', { anthropic: { key: 'val' } })
       .build();
-    expect(h).toEqual({ [`${D}providerMetadata`]: '{"anthropic":{"key":"val"}}' });
+    expect(h).toEqual({ providerMetadata: '{"anthropic":{"key":"val"}}' });
   });
 
   it('skips undefined and null JSON values', () => {
@@ -258,10 +262,10 @@ describe('headerWriter', () => {
       .json('providerMetadata', { k: 'v' })
       .build();
     expect(h).toEqual({
-      [`${D}toolCallId`]: 'tc-1',
-      [`${D}toolName`]: 'search',
-      [`${D}dynamic`]: 'true',
-      [`${D}providerMetadata`]: '{"k":"v"}',
+      toolCallId: 'tc-1',
+      toolName: 'search',
+      dynamic: 'true',
+      providerMetadata: '{"k":"v"}',
     });
   });
 

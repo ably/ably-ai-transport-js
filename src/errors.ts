@@ -23,7 +23,7 @@ export enum ErrorCode {
   // 104000 - 104999 are reserved for AI Transport SDK errors
 
   /**
-   * Encoder recovery failed after flush — one or more updateMessage calls
+   * Encoder recovery failed during flush — one or more updateMessage calls
    * could not recover a failed append pipeline.
    */
   EncoderRecoveryFailed = 104000,
@@ -74,16 +74,18 @@ export enum ErrorCode {
   StreamError = 104008,
 
   /**
-   * The client's send() did not observe `x-ably-run-start` for the run+invocation
-   * within the configured `runStartDeadlineMs`.
+   * The agent waited for the input event(s) the invocation points at —
+   * across the bounded history scan and the live subscription — but
+   * `inputEventLookupTimeoutMs` lapsed without seeing them.
    */
-  RunStartDeadlineExceeded = 104009,
+  InputEventNotFound = 104010,
 
   /**
-   * The agent attached to the channel and waited for the user-prompt message
-   * (rewind + live wait) but `promptLookupTimeoutMs` lapsed without seeing it.
+   * Channel history pagination failed after bounded retry — either the initial
+   * `channel.history()` call or a subsequent `page.next()` exhausted its
+   * retry budget. The original failure is preserved as `cause`.
    */
-  PromptNotFound = 104010,
+  HistoryFetchFailed = 104011,
 }
 
 /**

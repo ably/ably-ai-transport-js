@@ -1,11 +1,10 @@
-// Vercel-specific React hooks
+// Vercel-specific React entry point: providers, hooks, and their types
 export type { ChatTransport } from '../transport/chat-transport.js';
 export type { ChatTransportProviderProps } from './contexts/chat-transport-provider.js';
 export {
   ChatTransportProvider,
   ClientSessionProvider,
   useAblyMessages,
-  useActiveRuns,
   useClientSession,
   useCreateView,
   useTree,
@@ -15,4 +14,3 @@ export type { ChatTransportHandle, UseChatTransportOptions } from './use-chat-tr
 export { useChatTransport } from './use-chat-transport.js';
 export type { UseMessageSyncOptions } from './use-message-sync.js';
 export { useMessageSync } from './use-message-sync.js';
-export { useStagedAddToolApprovalResponse } from './use-staged-add-tool-approval-response.js';

@@ -3,69 +3,29 @@
 import { useState } from 'react';
 import type { UIMessage, DynamicToolUIPart } from 'ai';
 import { ToolInvocation } from './tool-invocation';
+import { clientColor } from '../lib/client-color';
 
 interface MessageBubbleProps {
   message: UIMessage;
-  headers: Record<string, string> | undefined;
+  // The SDK's codec-message-id for this message — the correlation key for
+  // tool approve/deny. Distinct from the domain `message.id`, which the SDK
+  // never treats as an identity (see CodecMessage).
+  codecMessageId: string;
+  // Per-message metadata derived from the View at the list-glue layer
+  // (see MessageList) and passed as primitives so the bubble stays a
+  // pure renderer with no SDK type dependencies.
+  clientId: string | undefined;
+  runId: string | undefined;
+  status: 'streaming' | 'complete' | 'cancelled' | 'error' | 'suspended' | undefined;
   hasSiblings: boolean;
-  siblings: UIMessage[];
+  siblingCount: number;
   selectedIndex: number;
   onSelectSibling: (index: number) => void;
   onRegenerate?: () => void;
   onEdit?: (newText: string) => void;
-  onToolApprove?: (msgId: string, toolCallId: string, input: unknown) => void;
-  onToolDeny?: (msgId: string, toolCallId: string, input: unknown) => void;
+  onToolApprove?: (codecMessageId: string, toolCallId: string) => void;
+  onToolDeny?: (codecMessageId: string, toolCallId: string) => void;
 }
-
-function Badge({ label, value, color }: { label: string; value: string; color: string }) {
-  return (
-    <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] leading-tight ${color}`}>
-      <span className="text-zinc-600">{label}</span>
-      <span>{value}</span>
-    </span>
-  );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const color =
-    status === 'finished'
-      ? 'bg-emerald-950 text-emerald-400'
-      : status === 'streaming'
-        ? 'bg-amber-950 text-amber-400'
-        : status === 'aborted'
-          ? 'bg-red-950 text-red-400'
-          : 'bg-zinc-900 text-zinc-500';
-  return (
-    <Badge
-      label="status"
-      value={status}
-      color={color}
-    />
-  );
-}
-
-function bubbleClasses(isUser: boolean, status: string | undefined): string {
-  const base = 'rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap';
-
-  if (isUser) {
-    return `${base} bg-zinc-800 text-zinc-200`;
-  }
-
-  if (status === 'streaming') {
-    return `${base} bg-zinc-900 text-zinc-300 border border-amber-900/40`;
-  }
-  if (status === 'finished') {
-    return `${base} bg-zinc-900 text-zinc-300 border border-emerald-900/40`;
-  }
-  if (status === 'aborted') {
-    return `${base} bg-zinc-900 text-zinc-300 border border-red-900/40`;
-  }
-  return `${base} bg-zinc-900 text-zinc-300 border border-zinc-800`;
-}
-
-// ---------------------------------------------------------------------------
-// Branch navigator: < 1/3 >
-// ---------------------------------------------------------------------------
 
 function BranchNavigator({
   current,
@@ -82,7 +42,7 @@ function BranchNavigator({
         onClick={() => onSelect(current - 1)}
         disabled={current === 0}
         className="text-[11px] text-zinc-400 hover:text-zinc-200 disabled:text-zinc-700 disabled:cursor-not-allowed transition-colors px-0.5"
-        title="Previous version"
+        title="Previous branch"
       >
         &lt;
       </button>
@@ -93,12 +53,58 @@ function BranchNavigator({
         onClick={() => onSelect(current + 1)}
         disabled={current >= total - 1}
         className="text-[11px] text-zinc-400 hover:text-zinc-200 disabled:text-zinc-700 disabled:cursor-not-allowed transition-colors px-0.5"
-        title="Next version"
+        title="Next branch"
       >
         &gt;
       </button>
     </div>
   );
+}
+
+function Badge({ label, value, color }: { label: string; value: string; color: string }) {
+  return (
+    <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] leading-tight ${color}`}>
+      <span className="text-zinc-600">{label}</span>
+      <span>{value}</span>
+    </span>
+  );
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const color =
+    status === 'complete'
+      ? 'bg-emerald-950 text-emerald-400'
+      : status === 'streaming'
+        ? 'bg-amber-950 text-amber-400'
+        : status === 'cancelled' || status === 'error'
+          ? 'bg-red-950 text-red-400'
+          : 'bg-zinc-900 text-zinc-500';
+  return (
+    <Badge
+      label="status"
+      value={status}
+      color={color}
+    />
+  );
+}
+
+function bubbleClasses(isUser: boolean, status: string | undefined, userBgClass?: string): string {
+  const base = 'rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap';
+
+  if (isUser) {
+    return `${base} ${userBgClass ?? 'bg-zinc-800'} text-zinc-100`;
+  }
+
+  if (status === 'streaming') {
+    return `${base} bg-zinc-900 text-zinc-300 border border-amber-900/40`;
+  }
+  if (status === 'complete') {
+    return `${base} bg-zinc-900 text-zinc-300 border border-emerald-900/40`;
+  }
+  if (status === 'cancelled' || status === 'error') {
+    return `${base} bg-zinc-900 text-zinc-300 border border-red-900/40`;
+  }
+  return `${base} bg-zinc-900 text-zinc-300 border border-zinc-800`;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,15 +170,14 @@ function EditForm({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Message bubble
-// ---------------------------------------------------------------------------
-
 export function MessageBubble({
   message,
-  headers,
+  codecMessageId,
+  clientId,
+  runId,
+  status,
   hasSiblings,
-  siblings,
+  siblingCount,
   selectedIndex,
   onSelectSibling,
   onRegenerate,
@@ -183,10 +188,8 @@ export function MessageBubble({
   const isUser = message.role === 'user';
   const [isEditing, setIsEditing] = useState(false);
 
-  const role = headers?.['x-ably-role'] ?? message.role;
-  const clientId = headers?.['x-ably-run-client-id'];
-  const runId = headers?.['x-ably-run-id'];
-  const status = headers?.['x-ably-status'];
+  const role = message.role;
+  const colors = clientId ? clientColor(clientId) : undefined;
 
   const messageText = message.parts
     .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
@@ -196,7 +199,6 @@ export function MessageBubble({
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div className="max-w-[75%]">
-        {/* Editing mode */}
         {isEditing && onEdit ? (
           <EditForm
             initialText={messageText}
@@ -205,25 +207,24 @@ export function MessageBubble({
           />
         ) : (
           <>
-            {/* Message content */}
-            <div className={bubbleClasses(isUser, status)}>
+            <div className={bubbleClasses(isUser, status, colors?.userBg)}>
               {message.parts.map((part, i) => {
                 if (part.type === 'text') return <span key={i}>{part.text}</span>;
                 if (part.type === 'dynamic-tool') {
                   const toolPart = part as DynamicToolUIPart;
+                  // eslint-disable-next-line @typescript-eslint/no-empty-function -- no-op fallback when no approval handler
+                  const noop = (): void => {};
                   return (
                     <ToolInvocation
                       key={i}
                       part={toolPart}
                       onApprove={
-                        toolPart.state === 'approval-requested' && onToolApprove && headers?.['x-ably-msg-id']
-                          ? () => onToolApprove(headers['x-ably-msg-id'], toolPart.toolCallId, toolPart.input)
-                          : undefined
+                        onToolApprove && codecMessageId
+                          ? () => onToolApprove(codecMessageId, toolPart.toolCallId)
+                          : noop
                       }
                       onDeny={
-                        toolPart.state === 'approval-requested' && onToolDeny && headers?.['x-ably-msg-id']
-                          ? () => onToolDeny(headers['x-ably-msg-id'], toolPart.toolCallId, toolPart.input)
-                          : undefined
+                        onToolDeny && codecMessageId ? () => onToolDeny(codecMessageId, toolPart.toolCallId) : noop
                       }
                     />
                   );
@@ -234,19 +235,17 @@ export function MessageBubble({
                 <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-amber-500/60 animate-pulse rounded-sm align-text-bottom" />
               )}
             </div>
-
-            {/* Action bar: branch nav, edit, regenerate, debug badges */}
             <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-              {/* Branch navigator */}
-              {hasSiblings && (
+              {/* Branch navigator (when the message has siblings) */}
+              {hasSiblings && siblingCount !== undefined && selectedIndex !== undefined && onSelectSibling && (
                 <BranchNavigator
                   current={selectedIndex}
-                  total={siblings.length}
+                  total={siblingCount}
                   onSelect={onSelectSibling}
                 />
               )}
 
-              {/* Edit button (user messages, always visible) */}
+              {/* Edit button (user messages) */}
               {onEdit && status !== 'streaming' && (
                 <button
                   onClick={() => setIsEditing(true)}
@@ -257,7 +256,7 @@ export function MessageBubble({
                 </button>
               )}
 
-              {/* Regenerate button (assistant messages, always visible) */}
+              {/* Regenerate button (assistant messages) */}
               {onRegenerate && status !== 'streaming' && (
                 <button
                   onClick={onRegenerate}
@@ -268,8 +267,8 @@ export function MessageBubble({
                 </button>
               )}
 
-              {/* Debug badges */}
-              {headers && (
+              {/* Debug badges (only when we know which Run the message belongs to). */}
+              {runId && (
                 <>
                   <Badge
                     label="role"
@@ -280,17 +279,15 @@ export function MessageBubble({
                     <Badge
                       label="client"
                       value={clientId}
-                      color="bg-zinc-900 text-zinc-500"
+                      color={`bg-zinc-900 ${colors?.text ?? 'text-zinc-500'}`}
                     />
                   )}
-                  {runId && (
-                    <Badge
-                      label="run"
-                      value={runId.slice(0, 8)}
-                      color="bg-zinc-900 text-zinc-500"
-                    />
-                  )}
-                  {status && <StatusBadge status={status} />}
+                  <Badge
+                    label="run"
+                    value={runId.slice(0, 8)}
+                    color="bg-zinc-900 text-zinc-500"
+                  />
+                  {status && !isUser && <StatusBadge status={status} />}
                 </>
               )}
             </div>

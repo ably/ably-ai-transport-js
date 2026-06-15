@@ -1,32 +1,54 @@
 'use client';
 
 import { useRef, useEffect } from 'react';
-import type { UIMessage, UIMessageChunk } from 'ai';
-import type { ViewHandle } from '@ably/ai-transport/react';
+import type { UIMessage } from 'ai';
+import type { BranchSelection, CodecMessage, RunInfo } from '@ably/ai-transport';
 import { MessageBubble } from './message-bubble';
+import { IntroCard } from './intro-card';
 
-interface MessageListProps {
-  view: ViewHandle<UIMessageChunk, UIMessage>;
-  onRegenerate: (messageId: string) => void;
-  onEdit: (messageId: string, newText: string) => void;
-  onToolApprove?: (msgId: string, toolCallId: string, input: unknown) => void;
-  onToolDeny?: (msgId: string, toolCallId: string, input: unknown) => void;
+interface ViewLookupApi {
+  branchSelection: (codecMessageId: string) => BranchSelection<UIMessage>;
+  selectSibling: (codecMessageId: string, index: number) => void;
+  runOf: (codecMessageId: string) => RunInfo | undefined;
 }
 
-export function MessageList({ view, onRegenerate, onEdit, onToolApprove, onToolDeny }: MessageListProps) {
-  const { nodes, hasOlder, loading, loadOlder } = view;
+interface MessageListProps {
+  // Visible messages paired with their codec-message-ids. The list keys all
+  // View correlation (runOf / branchSelection / selectSibling / edit /
+  // regenerate) on the codec-message-id, never the domain `message.id`.
+  messages: CodecMessage<UIMessage>[];
+  hasOlder: boolean;
+  loading: boolean;
+  view: ViewLookupApi;
+  onLoadOlder: () => void;
+  onRegenerate: (codecMessageId: string) => void;
+  onEdit: (codecMessageId: string, newText: string) => void;
+  onToolApprove?: (codecMessageId: string, toolCallId: string) => void;
+  onToolDeny?: (codecMessageId: string, toolCallId: string) => void;
+}
+
+export function MessageList({
+  messages,
+  hasOlder,
+  loading,
+  view,
+  onLoadOlder,
+  onRegenerate,
+  onEdit,
+  onToolApprove,
+  onToolDeny,
+}: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevLastIdRef = useRef<string | undefined>(undefined);
 
-  // Auto-scroll to bottom only when the last message changes
   useEffect(() => {
-    const lastId = nodes.length > 0 ? nodes[nodes.length - 1].message.id : undefined;
+    const lastId = messages.length > 0 ? messages[messages.length - 1].codecMessageId : undefined;
     if (lastId && lastId !== prevLastIdRef.current) {
       prevLastIdRef.current = lastId;
       endRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [nodes]);
+  }, [messages]);
 
   const handleScroll = () => {
     const el = scrollRef.current;
@@ -36,16 +58,13 @@ export function MessageList({ view, onRegenerate, onEdit, onToolApprove, onToolD
     }
   };
 
-  const onLoadOlder = () => {
-    void loadOlder();
-  };
-
   return (
     <div
       ref={scrollRef}
       onScroll={handleScroll}
       className="flex-1 overflow-y-auto px-4 py-4 space-y-4"
     >
+      <IntroCard />
       {hasOlder && (
         <div className="text-center">
           <button
@@ -58,24 +77,42 @@ export function MessageList({ view, onRegenerate, onEdit, onToolApprove, onToolD
         </div>
       )}
       {loading && <div className="text-center text-xs text-zinc-600 animate-pulse">Loading history...</div>}
-      {nodes.length === 0 && !loading && (
+      {messages.length === 0 && !loading && (
         <p className="text-sm text-zinc-600 text-center mt-20">Send a message to start chatting.</p>
       )}
-      {nodes.map((node) => (
-        <MessageBubble
-          key={node.message.id}
-          message={node.message}
-          headers={node.headers}
-          hasSiblings={view.hasSiblings(node.msgId)}
-          siblings={view.getSiblings(node.msgId)}
-          selectedIndex={view.getSelectedIndex(node.msgId)}
-          onSelectSibling={(index) => view.select(node.msgId, index)}
-          onRegenerate={node.message.role === 'assistant' ? () => onRegenerate(node.msgId) : undefined}
-          onEdit={node.message.role === 'user' ? (text) => onEdit(node.msgId, text) : undefined}
-          onToolApprove={onToolApprove}
-          onToolDeny={onToolDeny}
-        />
-      ))}
+      {messages.map(({ codecMessageId, message }) => {
+        // Project the owning Run + branch-selection bundle into primitives
+        // at this glue layer so the MessageBubble component stays free of
+        // SDK type dependencies. The bundle is total — safe to destructure
+        // for any message; non-anchor bubbles return `siblings = [message]`
+        // (length 1) so the bubble's render condition uses `hasSiblings`.
+        // All correlation keys on the codec-message-id, not `message.id`.
+        const run = view.runOf(codecMessageId);
+        const branch = view.branchSelection(codecMessageId);
+        // Translate the literal Run lifecycle state to the bubble's
+        // rendering vocabulary: `'active'` → `'streaming'`.
+        const bubbleStatus = run?.status === 'active' ? 'streaming' : run?.status;
+        return (
+          <MessageBubble
+            key={codecMessageId}
+            message={message}
+            codecMessageId={codecMessageId}
+            clientId={run?.clientId || undefined}
+            runId={run?.runId}
+            status={bubbleStatus}
+            hasSiblings={branch.hasSiblings}
+            siblingCount={branch.siblings.length}
+            selectedIndex={branch.index}
+            onSelectSibling={(index) => {
+              view.selectSibling(codecMessageId, index);
+            }}
+            onRegenerate={message.role === 'assistant' ? () => onRegenerate(codecMessageId) : undefined}
+            onEdit={message.role === 'user' ? (text) => onEdit(codecMessageId, text) : undefined}
+            onToolApprove={onToolApprove}
+            onToolDeny={onToolDeny}
+          />
+        );
+      })}
       <div ref={endRef} />
     </div>
   );

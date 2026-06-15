@@ -5,6 +5,7 @@ import * as Ably from 'ably';
 import { createElement, type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
+import type { CodecInputEvent, CodecOutputEvent } from '../../src/core/codec/types.js';
 import type { ClientSession } from '../../src/core/transport/types.js';
 import { ErrorCode } from '../../src/errors.js';
 import { ClientSessionContext } from '../../src/react/contexts/client-session-context.js';
@@ -13,7 +14,7 @@ import { createMockSession } from './helper/mock-session.js';
 
 // Wrap renderHook with a ClientSessionContext providing the given channelName-to-session record (no nearest).
 const withClientSessionContext =
-  (record: Record<string, ClientSession<unknown, unknown>>) =>
+  (record: Record<string, ClientSession<CodecInputEvent, CodecOutputEvent, unknown, unknown>>) =>
   ({ children }: { children: ReactNode }) =>
     createElement(
       ClientSessionContext.Provider,
@@ -28,7 +29,7 @@ const withClientSessionContext =
 
 // Wrap renderHook with a ClientSessionContext exposing only a nearest slot.
 const withNearestSession =
-  (session: ClientSession<unknown, unknown>) =>
+  (session: ClientSession<CodecInputEvent, CodecOutputEvent, unknown, unknown>) =>
   ({ children }: { children: ReactNode }) =>
     createElement(ClientSessionContext.Provider, { value: { nearest: { session }, providers: {} } }, children);
 
@@ -116,10 +117,17 @@ describe('useClientSession', () => {
       );
     });
 
+    it('stub object getter throws ErrorInfo with InvalidArgument', () => {
+      const { result } = renderHook(() => useClientSession({ skip: true }));
+      expect(() => result.current.session.object).toThrow(
+        expect.objectContaining({ code: ErrorCode.InvalidArgument, statusCode: 400 }),
+      );
+    });
+
     it('stub cancel throws ErrorInfo with InvalidArgument', () => {
       const { result } = renderHook(() => useClientSession({ skip: true }));
       expect(() => {
-        void result.current.session.cancel();
+        void result.current.session.cancel('run-x');
       }).toThrow(expect.objectContaining({ code: ErrorCode.InvalidArgument, statusCode: 400 }));
     });
 

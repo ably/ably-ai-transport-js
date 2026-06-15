@@ -8,23 +8,47 @@
 
 import type * as Ably from 'ably';
 
-import { DOMAIN_HEADER_PREFIX } from './constants.js';
-
 /**
- * Extract extras.headers from an Ably InboundMessage.
- * @param message - The Ably message to extract headers from.
- * @returns The headers record, or an empty object if absent.
+ * Read one tier of the SDK's `extras.ai` namespace from an Ably message.
+ * `extras.ai` is the SDK's reserved corner of the message envelope, split into
+ * a `transport` tier (generic transport headers) and a `codec` tier (codec
+ * headers). The application's own `extras.headers` is deliberately left
+ * untouched.
+ * @param message - The Ably message to read from.
+ * @param tier - Which `extras.ai` sub-namespace to read.
+ * @returns The tier's headers record, or an empty object if absent.
  */
-export const getHeaders = (message: Ably.InboundMessage): Record<string, string> => {
+const getAiTier = (message: Ably.InboundMessage, tier: 'transport' | 'codec'): Record<string, string> => {
   // CAST: Ably SDK types `extras` as `any`; runtime checks below guard access.
   const extras = message.extras as unknown;
   if (!extras || typeof extras !== 'object') return {};
-  const headers = (extras as { headers?: unknown }).headers;
-  if (!headers || typeof headers !== 'object') return {};
-  // CAST: Ably wire protocol guarantees headers is Record<string, string>
+  const ai = (extras as { ai?: unknown }).ai;
+  if (!ai || typeof ai !== 'object') return {};
+  const sub = (ai as Record<string, unknown>)[tier];
+  if (!sub || typeof sub !== 'object') return {};
+  // CAST: Ably wire protocol guarantees the tier is Record<string, string>
   // when present, verified by the runtime guards above.
-  return headers as Record<string, string>;
+  return sub as Record<string, string>;
 };
+
+/**
+ * Extract the transport-tier headers (`extras.ai.transport`) from an Ably
+ * InboundMessage. These are the generic transport headers (run/stream/identity/
+ * branching), set and read by the transport layer.
+ * @param message - The Ably message to extract headers from.
+ * @returns The transport headers record, or an empty object if absent.
+ */
+export const getTransportHeaders = (message: Ably.InboundMessage): Record<string, string> =>
+  getAiTier(message, 'transport');
+
+/**
+ * Extract the codec-tier headers (`extras.ai.codec`) from an Ably
+ * InboundMessage. These are the codec's own headers, with no prefix — the
+ * tier isolates them from transport headers.
+ * @param message - The Ably message to extract headers from.
+ * @returns The codec headers record, or an empty object if absent.
+ */
+export const getCodecHeaders = (message: Ably.InboundMessage): Record<string, string> => getAiTier(message, 'codec');
 
 /**
  * Parse a JSON string, returning undefined on failure.
@@ -37,36 +61,6 @@ export const parseJson = (value: string | undefined): unknown => {
     return JSON.parse(value) as unknown;
   } catch {
     return undefined;
-  }
-};
-
-/**
- * Set a header value if defined, skipping undefined and null. Strings are set directly,
- * booleans and numbers are stringified, objects are JSON-serialized.
- * @param headers - The headers object to mutate.
- * @param key - The header key.
- * @param value - The value to set.
- */
-export const setIfPresent = (headers: Record<string, string>, key: string, value: unknown): void => {
-  if (value === undefined || value === null) return;
-  if (typeof value === 'string') {
-    headers[key] = value;
-  } else if (typeof value === 'boolean' || typeof value === 'number') {
-    headers[key] = String(value);
-  } else if (typeof value === 'object') {
-    headers[key] = JSON.stringify(value);
-  }
-};
-
-/**
- * Set multiple headers at once, skipping entries whose values are undefined or null.
- * Each value is converted using the same rules as {@link setIfPresent}.
- * @param headers - The headers object to mutate.
- * @param entries - Key-value pairs to set.
- */
-export const setHeadersIfPresent = (headers: Record<string, string>, entries: Record<string, unknown>): void => {
-  for (const [key, value] of Object.entries(entries)) {
-    setIfPresent(headers, key, value);
   }
 };
 
@@ -95,30 +89,28 @@ export const parseBool = (value: string | undefined): boolean | undefined => {
   return value === 'true';
 };
 
-/**
- * Build a domain headers record from key-value pairs. Each key is automatically
- * prefixed with {@link DOMAIN_HEADER_PREFIX}. Values that are undefined or null
- * are skipped; strings are set directly; booleans, numbers, and objects are
- * converted using the same rules as {@link setIfPresent}.
- * @param entries - Unprefixed key-value pairs (e.g. `{ toolCallId: 'tc-1' }` becomes `{ 'x-domain-toolCallId': 'tc-1' }`).
- * @returns A new headers record with prefixed keys.
- */
-export const domainHeaders = (entries: Record<string, unknown>): Record<string, string> => {
-  const h: Record<string, string> = {};
-  for (const [key, value] of Object.entries(entries)) {
-    setIfPresent(h, DOMAIN_HEADER_PREFIX + key, value);
-  }
-  return h;
-};
+/** A record carrying an optional Ably `serial`, orderable by {@link compareBySerial}. */
+interface HasSerial {
+  /** Ably serial, or undefined if the server has not yet assigned one. */
+  readonly serial?: string;
+}
 
 /**
- * Read a domain header value from a headers record.
- * @param headers - The headers record to read from.
- * @param key - The unprefixed domain key (e.g. `'toolCallId'` reads `'x-domain-toolCallId'`).
- * @returns The header value, or undefined if absent.
+ * Comparator that orders records by their Ably `serial` ascending
+ * (chronological). Serials are lexicographically comparable; records whose
+ * serial is undefined sort last. Pass directly to `Array.prototype.sort`.
+ * @param a - First record to compare.
+ * @param b - Second record to compare.
+ * @returns Negative if `a` precedes `b`, positive if `a` follows `b`, 0 if equal.
  */
-export const getDomainHeader = (headers: Record<string, string>, key: string): string | undefined =>
-  headers[DOMAIN_HEADER_PREFIX + key];
+export const compareBySerial = (a: HasSerial, b: HasSerial): number => {
+  if (a.serial === undefined && b.serial === undefined) return 0;
+  if (a.serial === undefined) return 1;
+  if (b.serial === undefined) return -1;
+  if (a.serial < b.serial) return -1;
+  if (a.serial > b.serial) return 1;
+  return 0;
+};
 
 /**
  * Mapped type that converts properties whose type includes `undefined`
@@ -160,14 +152,14 @@ export const stripUndefined = <T extends Record<string, unknown>>(obj: T): Strip
 
 /**
  * Typed accessor wrapper around a headers record for reading domain headers.
- * Reduces repetitive `getDomainHeader` + `parseBool` / `parseJson` chains.
+ * Reduces repetitive header lookup + `parseBool` / `parseJson` chains.
  */
 export interface DomainHeaderReader {
   /** Read a domain header as a string, or undefined if absent. */
   str(key: string): string | undefined;
   /** Read a domain header as a string, falling back to a default if absent. */
   strOr(key: string, fallback: string): string;
-  /** Read a domain header as a boolean ("true"/"false"), or undefined if absent. */
+  /** Read a domain header as a boolean: `true` only for the exact string "true", `false` for any other present value, or undefined if absent. */
   bool(key: string): boolean | undefined;
   /** Read a domain header as parsed JSON, or undefined if absent or invalid. */
   json(key: string): unknown;
@@ -179,10 +171,10 @@ export interface DomainHeaderReader {
  * @returns A typed accessor for domain header values.
  */
 export const headerReader = (headers: Record<string, string>): DomainHeaderReader => ({
-  str: (key: string) => getDomainHeader(headers, key),
-  strOr: (key: string, fallback: string) => getDomainHeader(headers, key) ?? fallback,
-  bool: (key: string) => parseBool(getDomainHeader(headers, key)),
-  json: (key: string) => parseJson(getDomainHeader(headers, key)),
+  str: (key: string) => headers[key],
+  strOr: (key: string, fallback: string) => headers[key] ?? fallback,
+  bool: (key: string) => parseBool(headers[key]),
+  json: (key: string) => parseJson(headers[key]),
 });
 
 // ---------------------------------------------------------------------------
@@ -206,22 +198,22 @@ export interface DomainHeaderWriter {
 }
 
 /**
- * Create a {@link DomainHeaderWriter} for building a domain headers record.
- * @returns A fluent builder that prefixes each key with the domain header prefix.
+ * Create a {@link DomainHeaderWriter} for building a codec-tier headers record.
+ * @returns A fluent builder that accumulates codec headers under their bare keys.
  */
 export const headerWriter = (): DomainHeaderWriter => {
   const h: Record<string, string> = {};
   const writer: DomainHeaderWriter = {
     str: (key: string, value: string | undefined) => {
-      if (value !== undefined) h[DOMAIN_HEADER_PREFIX + key] = value;
+      if (value !== undefined) h[key] = value;
       return writer;
     },
     bool: (key: string, value: boolean | undefined) => {
-      if (value !== undefined) h[DOMAIN_HEADER_PREFIX + key] = String(value);
+      if (value !== undefined) h[key] = String(value);
       return writer;
     },
     json: (key: string, value: unknown) => {
-      if (value !== undefined && value !== null) h[DOMAIN_HEADER_PREFIX + key] = JSON.stringify(value);
+      if (value !== undefined && value !== null) h[key] = JSON.stringify(value);
       return writer;
     },
     build: () => h,

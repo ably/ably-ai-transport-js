@@ -13,38 +13,38 @@
  */
 
 import * as Ably from 'ably';
+// Also augments RealtimeChannel with `.object` (ably/liveobjects side-effect).
+import type * as AblyObjects from 'ably/liveobjects';
 import type * as AI from 'ai';
 import { useContext } from 'react';
 
 import type { ClientSession, Tree, View } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
+import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
 import type { ChatTransport } from '../transport/index.js';
 import { ChatTransportContext } from './contexts/chat-transport-context.js';
 
-const SKIPPED_CLIENT_SESSION: ClientSession<AI.UIMessageChunk, AI.UIMessage> = {
-  get tree(): Tree<AI.UIMessage> {
+const SKIPPED_CLIENT_SESSION: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> = {
+  get tree(): Tree<VercelOutput, VercelProjection> {
     throw new Ably.ErrorInfo('unable to access tree; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
-  get view(): View<AI.UIMessageChunk, AI.UIMessage> {
+  get view(): View<VercelInput, AI.UIMessage> {
     throw new Ably.ErrorInfo('unable to access view; hook is skipped', ErrorCode.InvalidArgument, 400);
+  },
+  get presence(): Ably.RealtimePresence {
+    throw new Ably.ErrorInfo('unable to access presence; hook is skipped', ErrorCode.InvalidArgument, 400);
+  },
+  get object(): AblyObjects.RealtimeObject {
+    throw new Ably.ErrorInfo('unable to access object; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   connect: () => {
     throw new Ably.ErrorInfo('unable to connect; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
-  createView: (): View<AI.UIMessageChunk, AI.UIMessage> => {
+  createView: (): View<VercelInput, AI.UIMessage> => {
     throw new Ably.ErrorInfo('unable to create view; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   cancel: () => {
     throw new Ably.ErrorInfo('unable to cancel; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  stageEvents: () => {
-    throw new Ably.ErrorInfo('unable to stage events; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  stageMessage: () => {
-    throw new Ably.ErrorInfo('unable to stage message; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  waitForRun: () => {
-    throw new Ably.ErrorInfo('unable to wait for run; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
   on: () => {
     throw new Ably.ErrorInfo('unable to subscribe; hook is skipped', ErrorCode.InvalidArgument, 400);
@@ -95,15 +95,16 @@ export interface ChatTransportHandle {
    * A throwing stub when `skip` is `true`, when no matching {@link ClientSessionProvider}
    * was found in the tree, or when session construction failed. Check `sessionError` before use.
    */
-  session: ClientSession<AI.UIMessageChunk, AI.UIMessage>;
+  session: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
   /**
    * The chat transport adapter for use with Vercel's `useChat` hook.
    *
-   * A throwing stub when `skip` is `true`, when no matching
-   * {@link ChatTransportProvider} was found in the tree, or when the underlying
-   * {@link ClientSession} construction failed. Check both `chatTransportError`
-   * and `sessionError` before use.
+   * A throwing stub when `skip` is `true` or when no matching
+   * {@link ChatTransportProvider} was found in the tree. When a provider is found
+   * but the underlying {@link ClientSession} failed to construct, this is the real
+   * transport and `sessionError` is set instead. Check `chatTransportError` and
+   * `sessionError` before use.
    */
   chatTransport: ChatTransport;
 
@@ -114,9 +115,10 @@ export interface ChatTransportHandle {
    */
   sessionError?: Ably.ErrorInfo | undefined;
   /**
-   * Set when no matching {@link ChatTransportProvider} was found or when session
-   * construction failed, and `skip` is `false`.
-   * `undefined` when the chat transport resolved successfully or when `skip` is `true`.
+   * Set only when no matching {@link ChatTransportProvider} was found and `skip` is
+   * `false`.
+   * `undefined` when the chat transport resolved successfully (even if session
+   * construction failed — see `sessionError`) or when `skip` is `true`.
    */
   chatTransportError?: Ably.ErrorInfo | undefined;
 }

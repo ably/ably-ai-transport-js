@@ -2,17 +2,10 @@
 
 import { useChat } from '@ai-sdk/react';
 import { lastAssistantMessageIsCompleteWithApprovalResponses, lastAssistantMessageIsCompleteWithToolCalls } from 'ai';
-import {
-  useAblyMessages,
-  useActiveRuns,
-  useChatTransport,
-  useMessageSync,
-  useView,
-  useStagedAddToolApprovalResponse,
-} from '@ably/ai-transport/vercel/react';
+import { useAblyMessages, useChatTransport, useMessageSync, useView } from '@ably/ai-transport/vercel/react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MessageList } from './components/message-list';
-import type { CallbackLogEntry } from './components/debug-pane';
+import type { CallbackLogEntry, ClientToolLogEntry } from './components/debug-pane';
 import { DebugPane } from './components/debug-pane';
 import { SuggestionChips } from './components/suggestion-chips';
 import { useClientTools } from './hooks/use-client-tools';
@@ -30,21 +23,27 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
   // -- Callback & status logging for debug pane ----------------------------
   const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
   const [statusLog, setStatusLog] = useState<{ time: number; status: string }[]>([]);
+  const [clientToolLog, setClientToolLog] = useState<ClientToolLogEntry[]>([]);
   const clearLogs = useCallback(() => {
     setCallbackLog([]);
     setStatusLog([]);
+    setClientToolLog([]);
   }, []);
 
-  const {
-    setMessages,
-    sendMessage,
-    stop,
-    status,
-    regenerate,
-    addToolResult,
-    addToolApprovalResponse,
-    messages: chatMessages,
-  } = useChat({
+  // Record client-side tool executions, keyed by toolCallId. Each onExecute
+  // call carries a complete entry, so the `done` entry replaces the earlier
+  // `executing` one in place.
+  const recordClientTool = useCallback((entry: ClientToolLogEntry) => {
+    setClientToolLog((prev) => {
+      const idx = prev.findIndex((e) => e.toolCallId === entry.toolCallId);
+      if (idx === -1) return [...prev, entry];
+      const next = [...prev];
+      next[idx] = entry;
+      return next;
+    });
+  }, []);
+
+  const { setMessages, sendMessage, stop, status, regenerate, addToolResult, addToolApprovalResponse } = useChat({
     id: chatId,
     transport: chatTransport,
     // Auto-submit after addToolResult resolves tool calls OR
@@ -77,29 +76,25 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
 
   useMessageSync({ setMessages });
 
-  // Wrap addToolApprovalResponse so the approval response patches the
-  // session tree synchronously on click. Eliminates useChat↔tree
-  // divergence and closes the observer-run race.
-  const stagedApproval = useStagedAddToolApprovalResponse(session, addToolApprovalResponse);
-
   // Track status transitions
   useEffect(() => {
     setStatusLog((prev) => [...prev, { time: Date.now(), status }]);
   }, [status]);
 
-  const activeRuns = useActiveRuns();
-  const hasAnyRuns = activeRuns.size > 0;
+  // Show Stop while useChat is mid-request (submitted before stream starts,
+  // streaming while chunks arrive). useChat.stop() targets the run it owns.
+  const hasAnyRuns = status === 'submitted' || status === 'streaming';
 
   // Auto-loads first page on mount
-  const { nodes, hasOlder, loading, loadOlder, hasSiblings, getSiblings, getSelectedIndex, select } = useView({
+  const { messages, hasOlder, loading, loadOlder, branchSelection, selectSibling, runOf } = useView({
     limit: historyLimit ?? 30,
   });
 
-  useClientTools(session, chatMessages, addToolResult, nodes, clientId);
+  useClientTools(session, messages, addToolResult, runOf, clientId, recordClientTool);
 
   const ablyMessages = useAblyMessages();
 
-  const unfinishedSteps = useDemoProgress(nodes, hasSiblings, ablyMessages);
+  const unfinishedSteps = useDemoProgress(messages, runOf, branchSelection, ablyMessages);
 
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -113,15 +108,21 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
       <div className="flex flex-1 flex-col">
         <Header clientId={clientId} />
         <MessageList
-          nodes={nodes}
+          messages={messages}
           hasOlder={hasOlder}
           loading={loading}
-          siblings={{ hasSiblings, getSiblings, getSelectedIndex, select }}
+          view={{
+            branchSelection,
+            selectSibling,
+            runOf,
+          }}
           onLoadOlder={loadOlder}
           onRegenerate={(messageId) => regenerate({ messageId })}
           onEdit={(messageId, text) => sendMessage({ text, messageId })}
-          onToolApprove={(approvalId) => stagedApproval({ id: approvalId, approved: true })}
-          onToolDeny={(approvalId) => stagedApproval({ id: approvalId, approved: false, reason: 'User denied' })}
+          onToolApprove={(approvalId) => addToolApprovalResponse({ id: approvalId, approved: true })}
+          onToolDeny={(approvalId) =>
+            addToolApprovalResponse({ id: approvalId, approved: false, reason: 'User denied' })
+          }
         />
         <div className="border-t border-zinc-800">
           <SuggestionChips
@@ -139,12 +140,12 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
         </div>
       </div>
       <DebugPane
-        messages={nodes.map((n) => n.message)}
+        messages={messages}
         ablyMessages={ablyMessages}
-        activeRuns={activeRuns}
         status={status}
         callbackLog={callbackLog}
         statusLog={statusLog}
+        clientToolLog={clientToolLog}
         onClearLogs={clearLogs}
       />
     </div>

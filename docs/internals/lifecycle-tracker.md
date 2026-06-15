@@ -6,7 +6,7 @@ The lifecycle tracker (`src/core/codec/lifecycle-tracker.ts`) ensures that requi
 
 When a client subscribes to a channel mid-stream (reconnect, late join, second client), the [decoder](decoder.md#first-contact) reconstructs stream state from the current message content. But the decoder only handles the stream-level lifecycle (start → delta → end). The higher-level message lifecycle (start → start-step → content → finish-step → finish) is composed of discrete events that may have already been published and lost.
 
-Without the lifecycle tracker, a late-joining client would see text deltas without a preceding `start` event. The [accumulator](codec-interface.md#accumulator) would fail to create a message container, and the events would be silently dropped.
+Without the lifecycle tracker, a late-joining client would see text deltas without a preceding `start` event. The [reducer](codec-interface.md#reducer-and-projection) would have no message to fold the deltas into, and the events would be silently dropped.
 
 ## How it works
 
@@ -25,7 +25,7 @@ const tracker = createLifecycleTracker<UIMessageChunk>([
 ]);
 ```
 
-Phases are scoped by an arbitrary string key - typically a [run IDs](glossary.md#run-id-vs-message-id). Each scope tracks independently which phases have been emitted.
+Phases are scoped by an arbitrary string key - typically a [run ID](glossary.md#run-id-vs-invocation-id-vs-message-id). Each scope tracks independently which phases have been emitted.
 
 ### ensurePhases
 
@@ -47,7 +47,7 @@ Resets a phase so it will be re-synthesized on the next `ensurePhases()` call. U
 
 ### clearScope
 
-Removes all tracking state for a scope. Called on run completion (`finish`, `abort`) to free memory.
+Removes all tracking state for a scope. Called on run completion (`finish`, `error`, `abort`) to free memory.
 
 ## Operations
 
@@ -62,16 +62,16 @@ Removes all tracking state for a scope. Called on run completion (`finish`, `abo
 
 The Vercel decoder creates a lifecycle tracker with two phases: `start` and `start-step`. It composes the tracker into the decoder hooks:
 
-- **Before every streamed event** - `ensurePhases()` is called with the run IDs and a context containing the `messageId` from headers. Any missing lifecycle events are prepended to the decoder output.
+- **Before every streamed event** - `ensurePhases()` is called with the run ID and a context containing the `messageId` from headers. Any missing lifecycle events are prepended to the decoder output.
 - **On `start` event** - `markEmitted(runId, 'start')`
 - **On `start-step` event** - `markEmitted(runId, 'start-step')`
 - **On `finish-step` event** - `resetPhase(runId, 'start-step')` (next step needs a new start-step)
-- **On `finish` or `abort`** - `clearScope(runId)`
+- **On `finish`, `error`, or `abort`** - `clearScope(runId)`
 
-This means a mid-stream join produces the sequence: synthetic `start` → synthetic `start-step` → real `text-delta` (from decoder first-contact) - which the accumulator can process correctly.
+This means a mid-stream join produces the sequence: synthetic `start` → synthetic `start-step` → real `text-delta` (from decoder first-contact) - which the reducer can process correctly.
 
 ## Design
 
 The tracker is generic - it knows nothing about Vercel's event types or the specific phases. Codecs configure it with their own phase list and call it from their decoder hooks. The `context` parameter passes through codec-specific data (like `messageId`) without the tracker needing to interpret it.
 
-See [Decoder](decoder.md) for how the decoder core handles stream-level reconstruction (first-contact, prefix-match). See [Vercel codec](vercel-codec.md) for the full Vercel decoder integration. See [Codec interface: accumulator](codec-interface.md#accumulator) for how accumulated events build messages.
+See [Decoder](decoder.md) for how the decoder core handles stream-level reconstruction (first-contact, prefix-match). See [Vercel codec](vercel-codec.md) for the full Vercel decoder integration. See [Codec interface: reducer and projection](codec-interface.md#reducer-and-projection) for how folded events build messages.

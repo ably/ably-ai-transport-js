@@ -4,14 +4,40 @@
  * - getWeather: server-executed, returns mock weather data
  * - getLocation: client-executed, no execute function — the client
  *   runs browser geolocation and sends the result back via view.update()
- * - getWeatherForecast: server-executed but gated on user approval
- *   (needsApproval: true). The client sees an approval-requested tool
- *   part; after addToolApprovalResponse, the server runs execute() and
- *   the result is stitched back onto the original assistant message.
+ * - getWeatherForecast: server-executed but gated on user approval.
+ *   `needsApproval` is a function that returns `false` once the matching
+ *   `toolCallId` has an `approval-responded` part in the message stream
+ *   — per-call approval, not per-tool-name.
  */
 
-import type { Tool } from 'ai';
+import type { ModelMessage, Tool } from 'ai';
 import { z } from 'zod';
+
+// `streamText` calls `needsApproval` with the model-message list it's
+// about to send to the LLM — `ModelMessage[]`, not `UIMessage[]`. Tool
+// approvals show up there as a `tool-approval-request` part on an
+// assistant message paired with a `tool-approval-response` part on a
+// later tool message; the pair is correlated by `approvalId`, with the
+// `toolCallId` only present on the request side.
+const isApprovedToolCall = (toolCallId: string, messages: readonly ModelMessage[]): boolean => {
+  const approvalIdToToolCallId = new Map<string, string>();
+  for (const message of messages) {
+    if (message.role !== 'assistant' || typeof message.content === 'string') continue;
+    for (const part of message.content) {
+      if (part.type === 'tool-approval-request') {
+        approvalIdToToolCallId.set(part.approvalId, part.toolCallId);
+      }
+    }
+  }
+  for (const message of messages) {
+    if (message.role !== 'tool') continue;
+    for (const part of message.content) {
+      if (part.type !== 'tool-approval-response' || !part.approved) continue;
+      if (approvalIdToToolCallId.get(part.approvalId) === toolCallId) return true;
+    }
+  }
+  return false;
+};
 
 const weatherInput = z.object({
   location: z.string().describe('The city and state or country, e.g. "San Francisco, CA"'),
@@ -55,7 +81,7 @@ export const tools: Record<string, Tool> = {
   getWeatherForecast: {
     description:
       'Get a 5-day weather forecast for a location. Requires user approval before executing. Use when the user asks about upcoming weather or a forecast.',
-    needsApproval: true as const,
+    needsApproval: (_input, { toolCallId, messages }) => !isApprovedToolCall(toolCallId, messages),
     inputSchema: z.object({
       location: z.string().describe('The city and state or country, e.g. "London, UK"'),
     }),

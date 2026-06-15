@@ -42,7 +42,7 @@ import { getTransportHeaders } from '../../utils.js';
 import { toCodecEvents } from '../codec/codec-event.js';
 import type { CodecEvent, CodecInputEvent, CodecOutputEvent, Reducer } from '../codec/types.js';
 import type { ConversationNode, InputNode, OutputEvent, RunLifecycleEvent, RunNode, Tree } from './types.js';
-import { recordWire, type WireLogEntry } from './wire-log.js';
+import { WireLog } from './wire-log.js';
 
 // ---------------------------------------------------------------------------
 // Internal node type
@@ -62,11 +62,12 @@ interface InternalNode<TInput extends CodecInputEvent, TOutput extends CodecOutp
   /** Insertion sequence — tiebreaker for nodes with no sort serial (optimistic). */
   insertSeq: number;
   /**
-   * The node's event log: the decoded events of every serial-bearing wire
-   * message applied to this node, ascending by serial. Optimistic
-   * (serial-less) applies are not recorded.
+   * The node's event log: every serial-bearing wire applied to this node, in
+   * canonical serial order. Owns its own record/refold/replay-guard/sweep
+   * mutation (see {@link WireLog}). Optimistic (serial-less) applies are not
+   * recorded.
    */
-  log: WireLogEntry<CodecEvent<TInput, TOutput>>[];
+  log: WireLog<CodecEvent<TInput, TOutput>>;
   /**
    * Max Ably message timestamp (epoch ms) of everything applied to this node,
    * including its run lifecycle events; 0 until a timestamped apply. The
@@ -80,16 +81,6 @@ interface InternalNode<TInput extends CodecInputEvent, TOutput extends CodecOutp
    * history page can deliver further wires for this node.
    */
   runStartSeen: boolean;
-  /**
-   * Whether the retention sweep has dropped this node's decoded events. The
-   * sweep keeps each log entry's replay key (serial + `decodedThrough`) but
-   * empties its events, so the version guard still drops whole-wire replays
-   * (a `loadOlder()` re-applying this run's history) while the bulk — the
-   * decoded events — is freed. A swept node folds a genuinely-new late wire
-   * incrementally (with a warn) and never refolds, since the events needed to
-   * rebuild are gone.
-   */
-  swept: boolean;
   /** Whether this node is already queued for sweeping (guards double-enqueue). */
   sweepQueued: boolean;
   /**
@@ -543,73 +534,51 @@ export class DefaultTree<
     version: string | undefined,
     streamed: boolean,
   ): void {
-    if (entry.swept) {
-      // The retention sweep dropped this node's decoded events but kept each
-      // entry's replay key (serial + `decodedThrough`), so the version guard
-      // still recognises a whole-wire replay — e.g. a `loadOlder()` re-applying
-      // this run's history — and drops it. Without that key a re-decoded
-      // discrete (which has no decoder tracker) would fold a second time. A
-      // wire that is genuinely new here is outside the reorder window — it
-      // should not occur; fold it incrementally in arrival order, since a
-      // refold can no longer rebuild the dropped events.
-      if (serial !== undefined && events.length > 0) {
-        const index = recordWire(entry.log, serial, messageId, events, version, streamed);
-        if (index === undefined) {
-          this._logger.debug('Tree._recordAndFold(); version guard dropped re-delivered wire (swept node)', {
-            key: nodeKey(entry.node),
-            serial,
-            version,
-          });
-          return;
-        }
-        this._logger.warn('Tree._recordAndFold(); late wire after log retention window; folding in arrival order', {
-          key: nodeKey(entry.node),
-          serial,
-        });
-        this._foldInto(entry, events, serial, messageId);
-        // Keep the replay key, not the (now-folded) events — the node stays
-        // event-free so a later replay is still dropped without re-accumulating.
-        const touched = entry.log[index];
-        if (touched) touched.events.length = 0;
-        return;
-      }
+    // A serial-less optimistic seed (or an empty batch) is not logged. Fold it
+    // in; a non-empty seed marks the node so its echo refolds the seed away.
+    if (serial === undefined || events.length === 0) {
+      if (serial === undefined && events.length > 0) entry.optimistic = true;
       this._foldInto(entry, events, serial, messageId);
       return;
     }
-    if (serial !== undefined && events.length > 0) {
-      const index = recordWire(entry.log, serial, messageId, events, version, streamed);
-      if (index === undefined) {
-        // The version guard dropped a re-delivery the log already incorporated
-        // — a whole-wire replay (second hydration, remount, agent re-walk) or
-        // an edit to a discrete. Nothing to fold.
-        this._logger.debug('Tree._recordAndFold(); version guard dropped re-delivered wire', {
-          key: nodeKey(entry.node),
-          serial,
-          version,
-          streamed,
-        });
-        return;
-      }
-      if (entry.optimistic) {
-        // First serial-bearing wire (the echo) on a node that carries an
-        // optimistic seed. The seed is in the projection but not the log, so
-        // refold from the log alone — the echo re-delivers the seeded content —
-        // rebuilding the projection without the seed instead of folding the
-        // echo on top of it.
-        entry.optimistic = false;
-        this._refold(entry);
-        return;
-      }
-      if (index !== entry.log.length - 1) {
-        this._refold(entry);
-        return;
-      }
-      this._foldInto(entry, events, serial, messageId);
+
+    const fold = entry.log.record(serial, messageId, events, version, streamed);
+    if (fold === 'dropped') {
+      // The version guard rejected a re-delivery the log already incorporated —
+      // a whole-wire replay (second hydration, remount, agent re-walk, or a
+      // `loadOlder()` re-applying a swept run's history) or an edit to a
+      // discrete. Nothing to fold.
+      this._logger.debug('Tree._recordAndFold(); version guard dropped re-delivered wire', {
+        key: nodeKey(entry.node),
+        serial,
+        version,
+        swept: entry.log.swept,
+      });
       return;
     }
-    // A serial-less optimistic seed (or an empty batch). Fold it in; a non-empty
-    // seed marks the node so its echo refolds the seed away (above).
-    if (serial === undefined && events.length > 0) entry.optimistic = true;
+    if (entry.optimistic && !entry.log.swept) {
+      // First serial-bearing wire (the echo) on a node that carries an
+      // optimistic seed. The seed is in the projection but not the log, so
+      // refold from the log alone — the echo re-delivers the seeded content —
+      // rebuilding the projection without the seed instead of folding the echo
+      // on top of it.
+      entry.optimistic = false;
+      this._refold(entry);
+      return;
+    }
+    if (fold === 'refold') {
+      this._refold(entry);
+      return;
+    }
+    // 'incremental'. On a swept log this is a genuinely-new wire outside the
+    // reorder window (it should not occur) folding in arrival order — the log
+    // could not refold it.
+    if (entry.log.swept) {
+      this._logger.warn('Tree._recordAndFold(); late wire after log retention window; folding in arrival order', {
+        key: nodeKey(entry.node),
+        serial,
+      });
+    }
     this._foldInto(entry, events, serial, messageId);
   }
 
@@ -631,19 +600,13 @@ export class DefaultTree<
    */
   private _refold(entry: InternalNode<TInput, TOutput, TProjection>): void {
     let projection = this._codec.init();
-    for (const logEntry of entry.log) {
-      for (const event of logEntry.events) {
-        try {
-          projection = this._codec.fold(projection, event, { serial: logEntry.serial, messageId: logEntry.messageId });
-        } catch (error) {
-          this._logger.error('Tree._refold(); fold threw', {
-            key: nodeKey(entry.node),
-            messageId: logEntry.messageId,
-            err: error,
-          });
-        }
+    entry.log.replay((event, serial, messageId) => {
+      try {
+        projection = this._codec.fold(projection, event, { serial, messageId });
+      } catch (error) {
+        this._logger.error('Tree._refold(); fold threw', { key: nodeKey(entry.node), messageId, err: error });
       }
-    }
+    });
     entry.node.projection = projection;
   }
 
@@ -681,7 +644,7 @@ export class DefaultTree<
   private _maybeQueueSweep(entry: InternalNode<TInput, TOutput, TProjection>): void {
     const node = entry.node;
     if (node.kind !== 'run') return;
-    if (entry.swept || entry.sweepQueued) return;
+    if (entry.log.swept || entry.sweepQueued) return;
     if (!entry.runStartSeen) return;
     if (node.status === 'active' || node.status === 'suspended') return;
     entry.sweepQueued = true;
@@ -701,19 +664,17 @@ export class DefaultTree<
     while (this._sweepQueue.length > 0) {
       const key = this._sweepQueue[0];
       const entry = key === undefined ? undefined : this._nodeIndex.get(key);
-      if (!entry || entry.swept) {
+      if (!entry || entry.log.swept) {
         this._sweepQueue.shift();
         continue;
       }
       if (entry.lastActivityTs + REORDER_WINDOW_MS >= this._clock) return;
       this._sweepQueue.shift();
-      entry.swept = true;
       entry.sweepQueued = false;
-      // Drop the decoded events (the unbounded cost) but keep each entry's
-      // replay key — serial + `decodedThrough` — so a post-sweep whole-wire
-      // replay is still recognised and dropped rather than re-folded. `swept`
-      // continues to block a refold, which the emptied events could not serve.
-      for (const logEntry of entry.log) logEntry.events.length = 0;
+      // Drop the decoded payloads (the unbounded cost) but keep each entry's
+      // replay key, so a post-sweep whole-wire replay is still recognised and
+      // dropped rather than re-folded (a refold can no longer rebuild them).
+      entry.log.sweep();
       this._logger.debug('Tree._drainSweepQueue(); dropped event-log payloads, kept replay keys', {
         key,
         lastActivityTs: entry.lastActivityTs,
@@ -1408,10 +1369,9 @@ export class DefaultTree<
     return {
       node,
       insertSeq: this._seqCounter++,
-      log: [],
+      log: new WireLog<CodecEvent<TInput, TOutput>>(),
       lastActivityTs: 0,
       runStartSeen,
-      swept: false,
       sweepQueued: false,
       optimistic: false,
     };

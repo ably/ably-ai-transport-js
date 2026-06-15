@@ -230,6 +230,42 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
   }
 
   // -------------------------------------------------------------------------
+  // Private: terminal-status transition
+  // -------------------------------------------------------------------------
+
+  /**
+   * Apply a stream's terminal status (complete / cancelled) to a tracker. On
+   * `complete` it emits end events (read before the tracker is closed) and
+   * then closes the tracker; on `cancelled` it closes silently. Both the
+   * append and prefix-match update paths funnel through here so they can't
+   * diverge. Covered replays and post-close deliveries are filtered upstream
+   * by `_alreadyIncorporated`, so no closed-once guard is needed here.
+   * Returns whether a terminal transition fired (so callers can log it).
+   * @param tracker - The stream tracker to close.
+   * @param status - The status header value from the message (may be undefined).
+   * @param closingCodecHeaders - Codec headers from the closing message, passed to buildEndEvents.
+   * @param outputs - The output array end events are pushed into.
+   * @returns True when this call closed the tracker; false otherwise.
+   */
+  private _applyTerminalStatus(
+    tracker: StreamTrackerState,
+    status: string | undefined,
+    closingCodecHeaders: Record<string, string>,
+    outputs: TEvent[],
+  ): boolean {
+    if (status === 'complete') {
+      outputs.push(...this._hooks.buildEndEvents(tracker, closingCodecHeaders));
+      this._closeTracker(tracker);
+      return true;
+    }
+    if (status === 'cancelled') {
+      this._closeTracker(tracker);
+      return true;
+    }
+    return false;
+  }
+
+  // -------------------------------------------------------------------------
   // Private: streamed message create
   // -------------------------------------------------------------------------
 
@@ -306,13 +342,13 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
       outputs.push(...this._hooks.buildDeltaEvents(tracker, delta));
     }
 
-    if (status === 'complete') {
-      outputs.push(...this._hooks.buildEndEvents(tracker, closingCodec));
-      this._closeTracker(tracker);
-      this._logger?.debug('DefaultDecoderCore._decodeAppend(); stream complete', { streamId: tracker.streamId });
-    } else if (status === 'cancelled') {
-      this._closeTracker(tracker);
-      this._logger?.debug('DefaultDecoderCore._decodeAppend(); stream cancelled', { streamId: tracker.streamId });
+    if (this._applyTerminalStatus(tracker, status, closingCodec, outputs)) {
+      this._logger?.debug(
+        `DefaultDecoderCore._decodeAppend(); stream ${status === 'complete' ? 'complete' : 'cancelled'}`,
+        {
+          streamId: tracker.streamId,
+        },
+      );
     }
 
     return outputs;
@@ -354,12 +390,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
         outputs.push(...this._hooks.buildDeltaEvents(tracker, delta));
       }
 
-      if (status === 'complete') {
-        outputs.push(...this._hooks.buildEndEvents(tracker, codec));
-        this._closeTracker(tracker);
-      } else if (status === 'cancelled') {
-        this._closeTracker(tracker);
-      }
+      this._applyTerminalStatus(tracker, status, codec, outputs);
 
       return outputs;
     }

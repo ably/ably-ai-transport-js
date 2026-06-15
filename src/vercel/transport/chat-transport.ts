@@ -38,6 +38,7 @@ import { EventEmitter } from '../../event-emitter.js';
 import { LogLevel, makeLogger } from '../../logger.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
 import { UIMessageCodec } from '../codec/index.js';
+import { isToolPart, type ToolPart } from '../tool-part.js';
 import { createRunOutputStream } from './run-output-stream.js';
 
 // ---------------------------------------------------------------------------
@@ -227,18 +228,6 @@ const wrapStreamWithDone = <T>(
 // ---------------------------------------------------------------------------
 
 /**
- * Whether a UIMessage part is a tool part — either the codec-normalised
- * `dynamic-tool` shape or the AI SDK's statically-declared `tool-${name}`
- * shape. Both carry `toolCallId` and `state`; the shape check at the end
- * is defensive against a future AI SDK release introducing a non-tool
- * variant under the `tool-` prefix (none exists today).
- * @param part - The UIMessage part to inspect.
- * @returns True when the part is a tool part of either representation.
- */
-const _isToolPart = (part: AI.UIMessage['parts'][number]): part is AI.DynamicToolUIPart | AI.ToolUIPart =>
-  (part.type === 'dynamic-tool' || part.type.startsWith('tool-')) && 'toolCallId' in part && 'state' in part;
-
-/**
  * Whether an assistant message has a `dynamic-tool` part that can't resolve
  * without further user action. Matches:
  * - `input-streaming` / `input-available` — tool call emitted, not yet run.
@@ -254,7 +243,7 @@ const hasUnresolvedToolCall = (msg: AI.UIMessage): boolean =>
   msg.role === 'assistant' &&
   msg.parts.some(
     (p) =>
-      _isToolPart(p) &&
+      isToolPart(p) &&
       (p.state === 'input-streaming' || p.state === 'input-available' || p.state === 'approval-requested'),
   );
 
@@ -314,15 +303,14 @@ const deriveContinuationInputs = (
     const { codecMessageId, message: treeMessage } = treeEntry;
 
     for (const overlayPart of overlay.parts) {
-      if (!_isToolPart(overlayPart)) continue;
+      if (!isToolPart(overlayPart)) continue;
       // The codec normalises every tool part to `dynamic-tool`, but the
       // AI SDK's useChat overlay emits `tool-${name}` parts for statically
       // declared tools. Match by toolCallId rather than the type prefix
       // so the cross-representation comparison works regardless of which
       // side the tool was declared on.
       const treePart = treeMessage.parts.find(
-        (p: AI.UIMessage['parts'][number]): p is AI.DynamicToolUIPart | AI.ToolUIPart =>
-          _isToolPart(p) && p.toolCallId === overlayPart.toolCallId,
+        (p: AI.UIMessage['parts'][number]): p is ToolPart => isToolPart(p) && p.toolCallId === overlayPart.toolCallId,
       );
 
       // Approval response: useChat's `addToolApprovalResponse` flipped the

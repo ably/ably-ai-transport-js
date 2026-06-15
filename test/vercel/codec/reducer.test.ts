@@ -3,8 +3,8 @@
  *
  * The Vercel reducer is a pure `(state, event, meta) -> state'` machine
  * folding the `VercelInput | VercelOutput` union. These tests validate
- * purity, idempotency (serial dedup), and the input folds
- * (user-message merging, tool-resolution transitions).
+ * purity, the no-dedup fold contract (the transport sequences and dedups),
+ * and the input folds (user-message merging, tool-resolution transitions).
  */
 
 import type * as AI from 'ai';
@@ -83,7 +83,6 @@ describe('Vercel reducer', () => {
     it('returns an empty projection', () => {
       const state = init();
       expect(state.messages).toEqual([]);
-      expect(state.conflictSerials.size).toBe(0);
       expect(state.trackers.size).toBe(0);
     });
 
@@ -92,7 +91,6 @@ describe('Vercel reducer', () => {
       const b = init();
       expect(a).not.toBe(b);
       expect(a.messages).not.toBe(b.messages);
-      expect(a.conflictSerials).not.toBe(b.conflictSerials);
       expect(a.trackers).not.toBe(b.trackers);
     });
   });
@@ -108,26 +106,17 @@ describe('Vercel reducer', () => {
     });
   });
 
-  // -- conflict-key idempotency --------------------------------------------
+  // -- no reducer-level dedup ----------------------------------------------
 
-  describe('conflict-key idempotency', () => {
-    it('drops a duplicate conflicting event at the same serial', () => {
-      let state = seedToolCall('tc-1', 'msg-1');
-      const event: VercelOutput = {
-        type: 'tool-output-available',
-        toolCallId: 'tc-1',
-        output: { v: 1 },
-        dynamic: true,
-      };
-      state = fold(state, event, meta('s2', 'msg-1'));
-      const partAfterFirst = msgById(state, 'msg-1')?.parts.find((p) => p.type === 'dynamic-tool');
-      state = fold(state, event, meta('s2', 'msg-1'));
-      const partAfterSecond = msgById(state, 'msg-1')?.parts.find((p) => p.type === 'dynamic-tool');
-      // Idempotent: the part reference and contents are unchanged.
-      expect(partAfterSecond).toBe(partAfterFirst);
-    });
+  describe('no reducer-level dedup', () => {
+    // The conflict-key high-water-mark gate is gone: the transport sequences
+    // events canonically and delivers each exactly once, so the reducer folds
+    // unconditionally and competing events resolve by fold order. These tests
+    // pin the reducer's half of that contract; the transport-level
+    // convergence (out-of-order refold, whole-wire replay drop) lives in
+    // tree-vercel-sequencing.test.ts.
 
-    it('highest-serial wins between conflicting events, regardless of arrival order', () => {
+    it('folds competing events in call order — the last write wins', () => {
       const lower: VercelOutput = {
         type: 'tool-output-available',
         toolCallId: 'tc-1',
@@ -140,87 +129,45 @@ describe('Vercel reducer', () => {
         output: { v: 'higher' },
         dynamic: true,
       };
-
-      // Forward order: lower then higher — higher overwrites.
-      let forward = seedToolCall('tc-1', 'msg-1');
-      forward = fold(forward, lower, meta('s2', 'msg-1'));
-      forward = fold(forward, higher, meta('s3', 'msg-1'));
-      const fwdPart = msgById(forward, 'msg-1')?.parts.find(
-        (p) => p.type === 'dynamic-tool' && p.toolCallId === 'tc-1',
-      );
-      expect(fwdPart?.type === 'dynamic-tool' && fwdPart.state === 'output-available' && fwdPart.output).toEqual({
-        v: 'higher',
-      });
-
-      // Reverse order: higher arrives first, lower arrives second and is dropped.
-      let reverse = seedToolCall('tc-1', 'msg-1');
-      reverse = fold(reverse, higher, meta('s3', 'msg-1'));
-      reverse = fold(reverse, lower, meta('s2', 'msg-1'));
-      const revPart = msgById(reverse, 'msg-1')?.parts.find(
-        (p) => p.type === 'dynamic-tool' && p.toolCallId === 'tc-1',
-      );
-      expect(revPart?.type === 'dynamic-tool' && revPart.state === 'output-available' && revPart.output).toEqual({
-        v: 'higher',
-      });
+      // Canonical order delivers the lower serial first; the higher folds last
+      // and overwrites. Out-of-order delivery is corrected by the transport's
+      // refold before fold ever sees it.
+      let state = seedToolCall('tc-1', 'msg-1');
+      state = fold(state, lower, meta('s2', 'msg-1'));
+      state = fold(state, higher, meta('s3', 'msg-1'));
+      const part = toolPartOf(state, 'msg-1', 'tc-1');
+      expect(part?.state === 'output-available' && part.output).toEqual({ v: 'higher' });
     });
 
-    it('does NOT drop unrelated events that happen to have a lower serial', () => {
-      // Regression test: the old stream-wide watermark dropped any event
-      // whose serial fell behind an unrelated earlier event. With per-key
-      // dedup, a low-serial event for a fresh conflict key still lands.
-      let state = init();
-
-      // High-serial user-message advances the user-msg key only.
-      const userInput: VercelInput = {
-        kind: 'user-message',
-        message: { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+    it('folds two same-key events delivered in one wire (same serial) — both apply, last wins', () => {
+      // All events of one wire share a serial. The old gate's `<=` check
+      // dropped the second; with the gate gone both fold in wire order.
+      const first: VercelOutput = {
+        type: 'tool-output-available',
+        toolCallId: 'tc-1',
+        output: { v: 'first' },
+        dynamic: true,
       };
-      state = fold(state, userInput, meta('s11'));
-
-      // Low-serial tool-input-start arrives later. Different conflict key —
-      // should be folded.
-      state = fold(
-        state,
-        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'echo', dynamic: true },
-        meta('s10', 'm-asst'),
-      );
-
-      const assistant = msgById(state, 'm-asst');
-      expect(assistant?.parts.find((p) => p.type === 'dynamic-tool')).toBeDefined();
-
-      const user = msgById(state, 'u-1');
-      expect(user?.role).toBe('user');
+      const second: VercelOutput = {
+        type: 'tool-output-available',
+        toolCallId: 'tc-1',
+        output: { v: 'second' },
+        dynamic: true,
+      };
+      let state = seedToolCall('tc-1', 'msg-1');
+      state = fold(state, first, meta('s2', 'msg-1'));
+      state = fold(state, second, meta('s2', 'msg-1'));
+      const part = toolPartOf(state, 'msg-1', 'tc-1');
+      expect(part?.state === 'output-available' && part.output).toEqual({ v: 'second' });
     });
 
-    it('does NOT dedup additive content (text-delta repeats are upstream-handled)', () => {
-      // text-delta has no conflict key — the reducer trusts upstream
-      // ordering. Two distinct delta events accumulate.
+    it('accumulates additive content (the reducer trusts the transport for ordering)', () => {
       let state = init();
       state = fold(state, { type: 'text-start', id: 't-1' }, meta('s1', 'msg-1'));
       state = fold(state, { type: 'text-delta', id: 't-1', delta: 'hello ' }, meta('s2', 'msg-1'));
       state = fold(state, { type: 'text-delta', id: 't-1', delta: 'world' }, meta('s3', 'msg-1'));
       const part = msgById(state, 'msg-1')?.parts.find((p) => p.type === 'text');
       expect(part?.type === 'text' && part.text).toBe('hello world');
-    });
-
-    it('records the highest serial per conflict key', () => {
-      let state = init();
-      const userA: VercelInput = {
-        kind: 'user-message',
-        message: { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'a' }] },
-      };
-      const userB: VercelInput = {
-        kind: 'user-message',
-        message: { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'b' }] },
-      };
-      // The conflict key derives from the wire codec-message-id plus the wire
-      // serial, never the domain `message.id` — each wire part of one user
-      // message records its own key, so distinct parts never compete while a
-      // replay of the same part (same serial) is dropped.
-      state = fold(state, userA, meta('s1', 'cm-x'));
-      state = fold(state, userB, meta('s5', 'cm-x'));
-      expect(state.conflictSerials.get('user-msg:cm-x:s1')).toBe('s1');
-      expect(state.conflictSerials.get('user-msg:cm-x:s5')).toBe('s5');
     });
   });
 
@@ -292,19 +239,6 @@ describe('Vercel reducer', () => {
         { type: 'text', text: 'hello' },
         { type: 'file', mediaType: 'image/png', url: 'https://x/y.png' },
       ]);
-    });
-
-    it('drops a replay of an already-folded part (same wire serial)', () => {
-      let state = init();
-      const textPart: AI.UIMessage = { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'hello' }] };
-
-      state = fold(state, { kind: 'user-message', message: textPart }, meta('s1', 'cm-1'));
-      // History replay re-delivers the same wire message with the same serial;
-      // the per-serial conflict key drops it, so the merge stays idempotent.
-      state = fold(state, { kind: 'user-message', message: textPart }, meta('s1', 'cm-1'));
-
-      expect(state.messages).toHaveLength(1);
-      expect(state.messages[0]?.message.parts).toEqual([{ type: 'text', text: 'hello' }]);
     });
   });
 
@@ -415,41 +349,6 @@ describe('Vercel reducer', () => {
       expect(toolPart.output).toEqual({ latitude: 51.5, longitude: -0.1 });
       // The owner assistant message stays visible — no projection-side filtering.
       expect(msgById(state, 'msg-1')).toBeDefined();
-    });
-
-    it('shares the tool-result conflict key — drops later duplicates', () => {
-      let state = init();
-      state = fold(
-        state,
-        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'getLocation' },
-        meta('s1', 'msg-1'),
-      );
-      state = fold(
-        state,
-        { type: 'tool-input-available', toolCallId: 'tc-1', toolName: 'getLocation', input: {} },
-        meta('s2', 'msg-1'),
-      );
-
-      const first: VercelInput = {
-        kind: 'tool-result',
-        codecMessageId: 'msg-1',
-        payload: { toolCallId: 'tc-1', output: { v: 1 } },
-      };
-      const second: VercelInput = {
-        kind: 'tool-result',
-        codecMessageId: 'msg-1',
-        payload: { toolCallId: 'tc-1', output: { v: 2 } },
-      };
-
-      state = fold(state, first, meta('s3', 'continuation-codec-message-id-0'));
-      // Second fold at the same conflict key (toolCallId) drops because the
-      // serial is not greater than the already-seen high-water-mark.
-      state = fold(state, second, meta('s3', 'continuation-codec-message-id-1'));
-
-      const message = msgById(state, 'msg-1');
-      const toolPart = message?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
-      if (toolPart?.state !== 'output-available') throw new Error('expected output-available');
-      expect(toolPart.output).toEqual({ v: 1 });
     });
 
     it('redirects tool-result-error onto the prior assistant by codecMessageId+toolCallId', () => {

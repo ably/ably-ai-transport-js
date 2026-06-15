@@ -30,9 +30,9 @@ import { toolBase, transitionToolPart } from './tool-transitions.js';
  * codec-message-id (the caller's `message.id` is preserved verbatim). A
  * multi-part user message fans out into one wire event per part, all sharing
  * the codec-message-id — folding appends the incoming parts to the existing
- * entry, reassembling the message part by part. Replays of an
- * already-folded wire part are dropped upstream by the per-serial conflict
- * key (see `conflictKeyOf`), keeping the merge idempotent.
+ * entry, reassembling the message part by part. The transport delivers each
+ * wire exactly once (its per-message version high-water-mark drops replays),
+ * so the merge sees every part once and stays consistent.
  * @param state - Projection to fold into.
  * @param message - The user message (or one decoded part of it) to add or merge.
  * @param meta - Transport-derived metadata carrying the codec-message-id.

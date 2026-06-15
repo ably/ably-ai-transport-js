@@ -11,11 +11,12 @@
  * with no instance state. Mutation in place is allowed — the projection
  * is single-owner.
  *
- * Idempotency is **per conflict key**, not stream-wide: when two events
- * compete for the same logical state (e.g. two `tool-output-available`
- * for the same `toolCallId`), the higher-serial one wins and the other
- * is dropped. Unrelated events arrive freely in any order. See
- * `conflictKeyOf` for the per-variant key derivation.
+ * The reducer does not dedup or reorder. The transport sequences events
+ * canonically — ascending by wire serial across messages, in decode order
+ * within a wire — and delivers each exactly once, so the reducer folds
+ * unconditionally. Last-writer-wins for events competing over the same
+ * logical state (e.g. two `tool-output-available` for one `toolCallId`)
+ * falls out of fold order: the highest-serial event folds last.
  *
  * Client-published tool resolutions (`ToolResult`, `ToolResultError`,
  * `ToolApprovalResponse`) carry `codecMessageId` targeting the assistant
@@ -33,7 +34,6 @@
 import type * as AI from 'ai';
 
 import type { CodecEvent, CodecMessage, ReducerMeta } from '../../core/codec/index.js';
-import { conflictKeyOf } from './conflict-key.js';
 import type { VercelInput, VercelOutput } from './events.js';
 import { foldContentPart } from './fold-content.js';
 import { foldDataPart } from './fold-data.js';
@@ -58,12 +58,11 @@ import type { VercelProjection } from './reducer-state.js';
  * Fold one input or output event into the projection. Mutates and returns
  * `state`.
  *
- * Idempotency is per conflict key (see `conflictKeyOf`): if the event has
- * a conflict key and the projection has already folded an event for that
- * key at a higher-or-equal serial, this call is a no-op. Events without a
- * conflict key (additive content, lifecycle markers) are folded
- * unconditionally. Orphan events (e.g. tool-output for an unknown
- * toolCallId) are dropped silently inside the per-variant fold helpers.
+ * The transport invokes `fold` exactly once per event, in canonical order,
+ * so the reducer folds unconditionally — no dedup or high-water-mark here.
+ * Competing events resolve by order (the highest-serial event folds last
+ * and wins). Orphan events (e.g. tool-output for an unknown toolCallId) are
+ * dropped silently inside the per-variant fold helpers.
  * @param state - Projection to fold into (may be mutated in place).
  * @param event - Input or output event to fold.
  * @param meta - Transport-derived metadata (serial, optional messageId).
@@ -74,17 +73,6 @@ export const fold = (
   event: CodecEvent<VercelInput, VercelOutput>,
   meta: ReducerMeta,
 ): VercelProjection => {
-  if (meta.serial) {
-    const key = conflictKeyOf(event, meta);
-    if (key !== undefined) {
-      const seen = state.conflictSerials.get(key);
-      if (seen !== undefined && meta.serial <= seen) {
-        return state;
-      }
-      state.conflictSerials.set(key, meta.serial);
-    }
-  }
-
   if (event.direction === 'input') {
     const input = event.event;
     switch (input.kind) {

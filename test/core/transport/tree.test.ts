@@ -819,6 +819,46 @@ describe('Tree', () => {
       expect(warns[0]).toContain('retention window');
     });
 
+    it('drops a replayed discrete wire on a swept run instead of double-folding', () => {
+      // A discrete output (no decoder tracker — the version guard's only
+      // protection) folds once into R1.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm14',
+        message: { id: 'd', content: 'discrete' },
+        serial: 's14',
+        version: 's14',
+        timestamp: 1000,
+      });
+      lifecycle(tree, 'end', 'R1', 's16', 1100);
+      lifecycle(tree, 'start', 'R1', 's10', 800);
+      // Clock advances past the window: R1 is swept (events dropped, replay
+      // key kept).
+      apply(tree, {
+        runId: 'R9',
+        codecMessageId: 'x1',
+        message: { id: 'x', content: 'live' },
+        serial: 's99',
+        timestamp: 1100 + T + 1,
+      });
+
+      // A loadOlder() re-applies R1's history: the identical discrete wire
+      // (same serial + version) is a whole-wire replay. The retained replay
+      // key must drop it rather than fold the part a second time.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm14',
+        message: { id: 'd', content: 'discrete' },
+        serial: 's14',
+        version: 's14',
+        timestamp: 1000,
+      });
+
+      expect(messagesOf(tree, 'R1')).toEqual([{ id: 'd', content: 'discrete' }]);
+      // A replay is a debug-level drop, not a degraded arrival-order fold.
+      expect(warns).toEqual([]);
+    });
+
     it('retains a complete run inside the reorder window and refolds its late wires', () => {
       lifecycle(tree, 'start', 'R1', 's10', 1000);
       apply(tree, {

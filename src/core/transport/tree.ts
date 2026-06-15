@@ -81,9 +81,13 @@ interface InternalNode<TInput extends CodecInputEvent, TOutput extends CodecOutp
    */
   runStartSeen: boolean;
   /**
-   * Whether the retention sweep has dropped this node's log. A swept node
-   * folds any late wire incrementally (with a warn) and never refolds — a
-   * partial rebuilt log would refold to partial state.
+   * Whether the retention sweep has dropped this node's decoded events. The
+   * sweep keeps each log entry's replay key (serial + `decodedThrough`) but
+   * empties its events, so the version guard still drops whole-wire replays
+   * (a `loadOlder()` re-applying this run's history) while the bulk — the
+   * decoded events — is freed. A swept node folds a genuinely-new late wire
+   * incrementally (with a warn) and never refolds, since the events needed to
+   * rebuild are gone.
    */
   swept: boolean;
   /** Whether this node is already queued for sweeping (guards double-enqueue). */
@@ -540,19 +544,34 @@ export class DefaultTree<
     streamed: boolean,
   ): void {
     if (entry.swept) {
-      // The retention sweep already dropped this node's log: a refold is no
-      // longer possible (a partial log would rebuild partial state), so fold
-      // incrementally and accept arrival order. A serial-bearing wire here is
-      // outside the reorder window — it should not occur. (Only run nodes are
-      // ever swept, and only input nodes are seeded optimistically, so this
-      // never collides with a pending seed — clear the flag regardless, since
-      // a refold can no longer honour it.)
-      entry.optimistic = false;
+      // The retention sweep dropped this node's decoded events but kept each
+      // entry's replay key (serial + `decodedThrough`), so the version guard
+      // still recognises a whole-wire replay — e.g. a `loadOlder()` re-applying
+      // this run's history — and drops it. Without that key a re-decoded
+      // discrete (which has no decoder tracker) would fold a second time. A
+      // wire that is genuinely new here is outside the reorder window — it
+      // should not occur; fold it incrementally in arrival order, since a
+      // refold can no longer rebuild the dropped events.
       if (serial !== undefined && events.length > 0) {
+        const index = recordWire(entry.log, serial, messageId, events, version, streamed);
+        if (index === undefined) {
+          this._logger.debug('Tree._recordAndFold(); version guard dropped re-delivered wire (swept node)', {
+            key: nodeKey(entry.node),
+            serial,
+            version,
+          });
+          return;
+        }
         this._logger.warn('Tree._recordAndFold(); late wire after log retention window; folding in arrival order', {
           key: nodeKey(entry.node),
           serial,
         });
+        this._foldInto(entry, events, serial, messageId);
+        // Keep the replay key, not the (now-folded) events — the node stays
+        // event-free so a later replay is still dropped without re-accumulating.
+        const touched = entry.log[index];
+        if (touched) touched.events.length = 0;
+        return;
       }
       this._foldInto(entry, events, serial, messageId);
       return;
@@ -690,8 +709,15 @@ export class DefaultTree<
       this._sweepQueue.shift();
       entry.swept = true;
       entry.sweepQueued = false;
-      entry.log.length = 0;
-      this._logger.debug('Tree._drainSweepQueue(); dropped event log', { key, lastActivityTs: entry.lastActivityTs });
+      // Drop the decoded events (the unbounded cost) but keep each entry's
+      // replay key — serial + `decodedThrough` — so a post-sweep whole-wire
+      // replay is still recognised and dropped rather than re-folded. `swept`
+      // continues to block a refold, which the emptied events could not serve.
+      for (const logEntry of entry.log) logEntry.events.length = 0;
+      this._logger.debug('Tree._drainSweepQueue(); dropped event-log payloads, kept replay keys', {
+        key,
+        lastActivityTs: entry.lastActivityTs,
+      });
     }
   }
 

@@ -8,9 +8,25 @@
  */
 
 import type { HeaderField } from './fields.js';
+import type { OutputDescriptor, OutputEventDescriptor } from './output-descriptors.js';
 
 /** The codec header carrying the SDK-controlled dispatch kind / stream family id. */
 export const KIND_HEADER = 'kind';
+
+/** The sentinel suffix marking a descriptor literal as a wildcard family. */
+const WILDCARD_SUFFIX = '-*';
+
+/**
+ * Derive a wildcard dispatch predicate from a descriptor literal: a literal
+ * ending in `-*` matches any value sharing its prefix, so the literal and its
+ * predicate can never disagree. Returns `undefined` for an exact literal.
+ * Shared by the output event builder and the input part builder so the `-*`
+ * sentinel rule lives in one place, next to the {@link partFor} that consumes it.
+ * @param literal - The declared descriptor literal (`type` / `partType`).
+ * @returns A prefix-match predicate for a wildcard literal, else `undefined`.
+ */
+export const wildcardMatcher = (literal: string): ((value: string) => boolean) | undefined =>
+  literal.endsWith(WILDCARD_SUFFIX) ? (value: string): boolean => value.startsWith(literal.slice(0, -1)) : undefined;
 
 /**
  * The codec header carrying a batch part's sub-discriminator. A batch stamps it
@@ -82,6 +98,36 @@ interface PartDispatch {
  */
 export const partFor = <P extends PartDispatch>(parts: readonly P[], partType: string): P | undefined =>
   parts.find((part) => !part.match && part.partType === partType) ?? parts.find((part) => part.match?.(partType));
+
+/** An output descriptor set's event descriptors, split for dispatch. */
+export interface OutputEventDispatch<U> {
+  /** Exact (non-wildcard) event descriptors, keyed by `type`. */
+  discreteByType: Map<string, OutputEventDescriptor<U>>;
+  /** Wildcard event descriptors, dispatched by their `match` predicate. */
+  wildcards: OutputEventDescriptor<U>[];
+}
+
+/**
+ * Partition an output descriptor set's `event` descriptors into an exact-type
+ * map and a wildcard list. Stream descriptors are skipped — each driver indexes
+ * those by its own key (phase on encode, kind on decode). Shared by the output
+ * encode and decode drivers so the exact-vs-wildcard split has one home.
+ * @template U - The codec's event union.
+ * @param descriptors - The full descriptor set (events + streamed families).
+ * @returns The event descriptors split into {@link OutputEventDispatch}.
+ */
+export const partitionOutputEvents = <U extends { type: string }>(
+  descriptors: readonly OutputDescriptor<U>[],
+): OutputEventDispatch<U> => {
+  const discreteByType = new Map<string, OutputEventDescriptor<U>>();
+  const wildcards: OutputEventDescriptor<U>[] = [];
+  for (const descriptor of descriptors) {
+    if (descriptor.construct !== 'event') continue;
+    if (descriptor.match) wildcards.push(descriptor);
+    else discreteByType.set(descriptor.type, descriptor);
+  }
+  return { discreteByType, wildcards };
+};
 
 export const readFields = (
   fields: readonly HeaderField<unknown>[],

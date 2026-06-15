@@ -12,13 +12,8 @@ import * as Ably from 'ably';
 
 import { ErrorCode } from '../../errors.js';
 import type { EncoderCore } from './encoder.js';
-import { prop, writeFields } from './field-bag.js';
-import type {
-  HeaderBuilder,
-  OutputDescriptor,
-  OutputEventDescriptor,
-  OutputStreamDescriptor,
-} from './output-descriptors.js';
+import { partitionOutputEvents, prop, writeFields } from './field-bag.js';
+import type { HeaderBuilder, OutputDescriptor, OutputStreamDescriptor } from './output-descriptors.js';
 import type { WriteOptions } from './types.js';
 
 /** Per-write output encode context threaded from the encoder. */
@@ -52,15 +47,11 @@ export const createOutputDescriptorEncoder = <U extends { type: string }>(
   descriptors: readonly OutputDescriptor<U>[],
   wireName: string,
 ): OutputDescriptorEncoder<U> => {
-  const discreteByType = new Map<string, OutputEventDescriptor<U>>();
-  const wildcards: OutputEventDescriptor<U>[] = [];
+  const { discreteByType, wildcards } = partitionOutputEvents(descriptors);
   const streamByPhase = new Map<string, { descriptor: OutputStreamDescriptor<U>; phase: 'start' | 'delta' | 'end' }>();
 
   for (const descriptor of descriptors) {
-    if (descriptor.construct === 'event') {
-      if (descriptor.match) wildcards.push(descriptor);
-      else discreteByType.set(descriptor.type, descriptor);
-    } else {
+    if (descriptor.construct === 'stream') {
       streamByPhase.set(descriptor.start, { descriptor, phase: 'start' });
       streamByPhase.set(descriptor.delta, { descriptor, phase: 'delta' });
       streamByPhase.set(descriptor.end, { descriptor, phase: 'end' });

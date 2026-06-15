@@ -18,6 +18,7 @@
 
 import type * as Ably from 'ably';
 
+import { wildcardMatcher } from './field-bag.js';
 import type { DataCodec, FieldFor, HeaderField } from './fields.js';
 import type { MessagePayload, WriteOptions } from './types.js';
 
@@ -315,15 +316,17 @@ export const inputBuilder = <U extends { kind: string }>(): InputBuilder<U> => {
     fields?: readonly HeaderField<unknown>[];
     data?: DataCodec<unknown>;
   }
-  const part = (partType: string, spec: ErasedPartSpec): PartDescriptor => ({
-    partType,
-    // A `-*` literal declares a wildcard family: the dispatch predicate is
-    // derived from the literal's prefix so the two can never disagree
-    // (mirrors the output builder's wildcard idiom).
-    ...(partType.endsWith('-*') ? { match: (t: string): boolean => t.startsWith(partType.slice(0, -1)) } : {}),
-    fields: spec.fields ?? [],
-    data: spec.data,
-  });
+  const part = (partType: string, spec: ErasedPartSpec): PartDescriptor => {
+    // A `-*` literal declares a wildcard family; the dispatch predicate is
+    // derived from the literal so the two can never disagree (see wildcardMatcher).
+    const match = wildcardMatcher(partType);
+    return {
+      partType,
+      ...(match ? { match } : {}),
+      fields: spec.fields ?? [],
+      data: spec.data,
+    };
+  };
   // CAST: the part sub-builder is exposed to authors narrowed (PartBuilder<P>) so
   // each `p(partType, spec)` narrows its spec to the selected part. Internally it
   // reads only the structural `fields`/`data`, so the narrowed specs erase to the

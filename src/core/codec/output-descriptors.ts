@@ -17,6 +17,7 @@
 
 import type * as Ably from 'ably';
 
+import { wildcardMatcher } from './field-bag.js';
 import type { DataCodec, FieldFor, HeaderField } from './fields.js';
 import type { MessagePayload, StreamPayload, WriteOptions } from './types.js';
 
@@ -295,9 +296,9 @@ export const outputBuilder = <U extends { type: string }>(): OutputBuilder<U> =>
       fields: spec?.fields ?? [],
       data: spec?.data,
       ephemeral: spec?.ephemeral,
-      // A `-*` literal declares a wildcard family: the dispatch predicate is
-      // derived from the literal's prefix so the two can never disagree.
-      match: type.endsWith('-*') ? (t: string): boolean => t.startsWith(type.slice(0, -1)) : undefined,
+      // A `-*` literal declares a wildcard family; the dispatch predicate is
+      // derived from the literal so the two can never disagree (see wildcardMatcher).
+      match: wildcardMatcher(type),
       encode: spec?.encode,
     }) as unknown as OutputDescriptor<U>,
   stream: (kind, spec) =>

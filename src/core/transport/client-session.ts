@@ -38,7 +38,7 @@ import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { LogLevel, makeLogger } from '../../logger.js';
-import { getTransportHeaders } from '../../utils.js';
+import { errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import { resolveChannelModes } from '../channel-options.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent, Encoder } from '../codec/types.js';
@@ -248,10 +248,10 @@ class DefaultClientSession<
       },
       (error: unknown) => {
         const errInfo = new Ably.ErrorInfo(
-          `unable to subscribe to channel; ${error instanceof Error ? error.message : String(error)}`,
+          `unable to subscribe to channel; ${errorMessage(error)}`,
           ErrorCode.SessionSubscriptionError,
           500,
-          error instanceof Ably.ErrorInfo ? error : undefined,
+          errorCause(error),
         );
         this._logger.error('DefaultClientSession.connect(); subscribe failed');
         this._emitter.emit('error', errInfo);
@@ -351,14 +351,13 @@ class DefaultClientSession<
       // 'update' events the apply triggers.
       this._tree.emitAblyMessage(ablyMessage);
     } catch (error) {
-      const cause = error instanceof Ably.ErrorInfo ? error : undefined;
       this._emitter.emit(
         'error',
         new Ably.ErrorInfo(
-          `unable to process channel message; ${error instanceof Error ? error.message : String(error)}`,
+          `unable to process channel message; ${errorMessage(error)}`,
           ErrorCode.SessionSubscriptionError,
           500,
-          cause,
+          errorCause(error),
         ),
       );
     }
@@ -620,12 +619,12 @@ class DefaultClientSession<
           });
         }
       } catch (error) {
-        const cause = error instanceof Ably.ErrorInfo ? error : undefined;
+        const cause = errorCause(error);
         const isPermission = cause?.statusCode === 401 || cause?.statusCode === 403;
         const err = new Ably.ErrorInfo(
           isPermission
             ? `unable to publish events; missing publish capability on the channel`
-            : `unable to publish events; ${error instanceof Error ? error.message : String(error)}`,
+            : `unable to publish events; ${errorMessage(error)}`,
           isPermission ? ErrorCode.InsufficientCapability : ErrorCode.SessionSendFailed,
           isPermission ? 401 : 500,
           cause,

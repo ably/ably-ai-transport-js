@@ -25,6 +25,7 @@ import * as Ably from 'ably';
 
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
+import { errorCause, errorMessage } from '../../utils.js';
 
 /** Options for {@link loadHistoryPages}. */
 export interface LoadHistoryPagesOptions {
@@ -117,7 +118,7 @@ const fetchPageWithRetry = async (
         'unable to fetch history page; signal aborted',
         ErrorCode.InvalidArgument,
         400,
-        lastError instanceof Ably.ErrorInfo ? lastError : undefined,
+        errorCause(lastError),
       );
     }
     try {
@@ -135,10 +136,10 @@ const fetchPageWithRetry = async (
     }
   }
   throw new Ably.ErrorInfo(
-    `unable to fetch history page; ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+    `unable to fetch history page; ${errorMessage(lastError)}`,
     ErrorCode.HistoryFetchFailed,
     500,
-    lastError instanceof Ably.ErrorInfo ? lastError : undefined,
+    errorCause(lastError),
   );
 };
 

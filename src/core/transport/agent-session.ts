@@ -27,7 +27,7 @@ import {
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import { type Logger, LogLevel, makeLogger } from '../../logger.js';
-import { compareBySerial, getTransportHeaders } from '../../utils.js';
+import { compareBySerial, errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import { resolveChannelModes } from '../channel-options.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
@@ -157,11 +157,38 @@ const countReplyRuns = <TProjection>(
 };
 
 /**
- * Extract a human-readable message from an unknown thrown value.
- * @param error - The thrown value.
- * @returns The error's message, or its string form.
+ * Flatten a conversation branch into its messages: walk the ancestor chain
+ * from `anchor` to root (root-first), concatenate each node's projection
+ * messages, then append the current run's own messages at the tail unless the
+ * walk already reached the run node. Shared by `Run.messages` (live read) and
+ * `_walkConversation` (post-hydration read) so the two read paths can't drift
+ * on the tail-append guard.
+ * @param codec - Codec used to extract per-node messages.
+ * @param tree - The Tree to walk.
+ * @param anchor - The codec-message-id to start from (the run's input node).
+ * @param runId - The current run's id, for the tail run-node lookup.
+ * @param maxRuns - Optional bound on ancestor reply RunNodes in the walk.
+ * @returns The branch messages (root-first), and the current run node's
+ *   projection when one exists (for callers that need the run's projection).
  */
-const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+const collectBranchMessages = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>(
+  codec: Codec<TInput, TOutput, TProjection, TMessage>,
+  tree: Tree<TOutput, TProjection>,
+  anchor: string | undefined,
+  runId: string,
+  maxRuns?: number,
+): { messages: TMessage[]; runProjection: TProjection | undefined } => {
+  const chain = walkAncestorChain(tree, anchor, maxRuns, runId);
+  const messages: TMessage[] = [];
+  for (const node of chain) {
+    for (const m of codec.getMessages(node.projection)) messages.push(m.message);
+  }
+  const runNode = tree.getRunNode(runId);
+  if (runNode !== undefined && !chain.some((n) => n.kind === 'run' && n.runId === runId)) {
+    for (const m of codec.getMessages(runNode.projection)) messages.push(m.message);
+  }
+  return { messages, runProjection: runNode?.projection };
+};
 
 /**
  * Wrap an unknown history-walk failure as `Ably.ErrorInfo`, preserving the
@@ -172,7 +199,7 @@ const errorMessage = (error: unknown): string => (error instanceof Error ? error
  * @returns The wrapped error.
  */
 const wrapHistoryError = (operation: string, error: unknown): Ably.ErrorInfo => {
-  const errInfo = error instanceof Ably.ErrorInfo ? error : undefined;
+  const errInfo = errorCause(error);
   return new Ably.ErrorInfo(
     `unable to ${operation}; ${errorMessage(error)}`,
     errInfo?.code ?? ErrorCode.HistoryFetchFailed,
@@ -379,7 +406,7 @@ class DefaultAgentSession<
           `unable to subscribe to channel; ${errorMessage(error)}`,
           ErrorCode.SessionSubscriptionError,
           500,
-          error instanceof Ably.ErrorInfo ? error : undefined,
+          errorCause(error),
         );
         this._logger?.error('DefaultAgentSession.connect(); subscribe failed');
         this._onError?.(errInfo);
@@ -556,7 +583,7 @@ class DefaultAgentSession<
         `unable to process cancel for run ${runId}; onCancel handler threw: ${errorMessage(error)}`,
         ErrorCode.CancelListenerError,
         500,
-        error instanceof Ably.ErrorInfo ? error : undefined,
+        errorCause(error),
       );
       this._logger?.error('DefaultAgentSession._cancelRegistration(); onCancel threw', { runId });
       (reg.onError ?? this._onError)?.(errInfo);
@@ -669,7 +696,7 @@ class DefaultAgentSession<
             `unable to route cancel message; ${errorMessage(error)}`,
             ErrorCode.CancelListenerError,
             500,
-            error instanceof Ably.ErrorInfo ? error : undefined,
+            errorCause(error),
           );
           this._logger?.error('DefaultAgentSession._handleChannelMessage(); cancel routing error');
           this._onError?.(errInfo);
@@ -681,7 +708,7 @@ class DefaultAgentSession<
         `unable to process channel message; ${errorMessage(error)}`,
         ErrorCode.SessionSubscriptionError,
         500,
-        error instanceof Ably.ErrorInfo ? error : undefined,
+        errorCause(error),
       );
       this._logger?.error('DefaultAgentSession._handleChannelMessage(); subscription error');
       this._onError?.(errInfo);
@@ -953,22 +980,14 @@ class DefaultAgentSession<
 
     await this._hydrateAncestors(runId, assistantParentFallback, signal, maxRuns, runIdAdopted);
 
-    const chain = walkAncestorChain(this._tree, assistantParentFallback, maxRuns, runId);
-    const messages: TMessage[] = [];
-    for (const node of chain) {
-      for (const m of this._codec.getMessages(node.projection)) {
-        messages.push(m.message);
-      }
-    }
-
-    const runNode = this._tree.getRunNode(runId);
-    if (runNode !== undefined && !chain.some((n) => n.kind === 'run' && n.runId === runId)) {
-      for (const m of this._codec.getMessages(runNode.projection)) {
-        messages.push(m.message);
-      }
-    }
-
-    return { messages, projection: runNode?.projection ?? this._codec.init() };
+    const { messages, runProjection } = collectBranchMessages(
+      this._codec,
+      this._tree,
+      assistantParentFallback,
+      runId,
+      maxRuns,
+    );
+    return { messages, projection: runProjection ?? this._codec.init() };
   }
 
   /**
@@ -1235,6 +1254,34 @@ class DefaultAgentSession<
       }
     };
 
+    /**
+     * Run a run-lifecycle publish (run-start / run-suspend / run-end) and wrap
+     * any failure as a `RunLifecycleError`, logging at error and rethrowing.
+     * Shared by start(), suspend(), and end() so the three publishes can't
+     * drift on the error code, message shape, or cause preservation.
+     * @param phase - The lifecycle wire phase, used in the error message.
+     * @param method - The Run method name, used in the log prefix.
+     * @param publish - The RunManager publish to run.
+     */
+    const publishLifecycle = async (
+      phase: 'run-start' | 'run-suspend' | 'run-end',
+      method: 'start' | 'suspend' | 'end',
+      publish: () => Promise<void>,
+    ): Promise<void> => {
+      try {
+        await publish();
+      } catch (error) {
+        const errInfo = new Ably.ErrorInfo(
+          `unable to publish ${phase} for run ${runId}; ${errorMessage(error)}`,
+          ErrorCode.RunLifecycleError,
+          500,
+          errorCause(error),
+        );
+        logger?.error(`Run.${method}(); failed to publish ${phase}`, { runId });
+        throw errInfo;
+      }
+    };
+
     const run: Run<TOutput, TProjection, TMessage> = {
       get runId() {
         return runId;
@@ -1259,17 +1306,7 @@ class DefaultAgentSession<
         // folded state. `getTree()` dereferences `this._tree` live so a
         // continuity-loss Tree swap is observed instead of returning stale
         // data from the abandoned tree.
-        const tree = getTree();
-        const chain = assistantParentFallback === undefined ? [] : walkAncestorChain(tree, assistantParentFallback);
-        const messages: TMessage[] = [];
-        for (const node of chain) {
-          for (const m of codec.getMessages(node.projection)) messages.push(m.message);
-        }
-        const runNode = tree.getRunNode(runId);
-        if (runNode !== undefined && !chain.some((n) => n.kind === 'run' && n.runId === runId)) {
-          for (const m of codec.getMessages(runNode.projection)) messages.push(m.message);
-        }
-        return messages;
+        return collectBranchMessages(codec, getTree(), assistantParentFallback, runId).messages;
       },
 
       // Spec: AIT-ST4, AIT-ST4a, AIT-ST4b
@@ -1380,8 +1417,8 @@ class DefaultAgentSession<
           await pullDeferredCancel(registration, resolvedInputCodecMessageId);
         }
 
-        try {
-          await runManager.startRun(runId, resolvedClientId, controller, {
+        await publishLifecycle('run-start', 'start', async () =>
+          runManager.startRun(runId, resolvedClientId, controller, {
             // Stamp the reply run's STRUCTURAL parent (its input node, M_user) —
             // the same value the output path stamps — not the input message's own
             // parent. Makes `parent` structural on every message so the Tree's two
@@ -1394,17 +1431,8 @@ class DefaultAgentSession<
             inputClientId: resolvedInputClientId,
             inputCodecMessageId: resolvedInputCodecMessageId,
             continuation: resolvedContinuation,
-          });
-        } catch (error) {
-          const errInfo = new Ably.ErrorInfo(
-            `unable to publish run-start for run ${runId}; ${errorMessage(error)}`,
-            ErrorCode.RunLifecycleError,
-            500,
-            error instanceof Ably.ErrorInfo ? error : undefined,
-          );
-          logger?.error('Run.start(); failed to publish run-start', { runId });
-          throw errInfo;
-        }
+          }),
+        );
 
         // Optimistically insert the fresh run's node into the session Tree so
         // reads that follow start() (loadConversation, Run.messages) see the
@@ -1508,7 +1536,7 @@ class DefaultAgentSession<
             `unable to pipe response for run ${runId}; ${result.error.message}`,
             ErrorCode.StreamError,
             500,
-            result.error instanceof Ably.ErrorInfo ? result.error : undefined,
+            errorCause(result.error),
           );
           logger?.error('Run.pipe(); stream error', { runId });
           runOnError?.(errInfo);
@@ -1549,16 +1577,9 @@ class DefaultAgentSession<
         state = RunState.ENDED;
 
         try {
-          await runManager.suspendRun(runId, invocationId, resolvedInputClientId, resolvedInputCodecMessageId);
-        } catch (error) {
-          const errInfo = new Ably.ErrorInfo(
-            `unable to publish run-suspend for run ${runId}; ${errorMessage(error)}`,
-            ErrorCode.RunLifecycleError,
-            500,
-            error instanceof Ably.ErrorInfo ? error : undefined,
+          await publishLifecycle('run-suspend', 'suspend', async () =>
+            runManager.suspendRun(runId, invocationId, resolvedInputClientId, resolvedInputCodecMessageId),
           );
-          logger?.error('Run.suspend(); failed to publish run-suspend', { runId });
-          throw errInfo;
         } finally {
           deregisterRun();
         }
@@ -1583,16 +1604,9 @@ class DefaultAgentSession<
         state = RunState.ENDED;
 
         try {
-          await runManager.endRun(runId, reason, invocationId, resolvedInputClientId, resolvedInputCodecMessageId);
-        } catch (error) {
-          const errInfo = new Ably.ErrorInfo(
-            `unable to publish run-end for run ${runId}; ${errorMessage(error)}`,
-            ErrorCode.RunLifecycleError,
-            500,
-            error instanceof Ably.ErrorInfo ? error : undefined,
+          await publishLifecycle('run-end', 'end', async () =>
+            runManager.endRun(runId, reason, invocationId, resolvedInputClientId, resolvedInputCodecMessageId),
           );
-          logger?.error('Run.end(); failed to publish run-end', { runId });
-          throw errInfo;
         } finally {
           deregisterRun();
         }

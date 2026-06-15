@@ -157,9 +157,12 @@ export interface StreamTrackerState {
  */
 export interface ReducerMeta {
   /**
-   * Ably channel serial of the message that produced this event. The reducer
-   * uses this for idempotency / dedup: events at or below the projection's
-   * high-water-mark serial must be skipped (no-op return).
+   * Ably channel serial of the wire message that produced this event, or `''`
+   * for a not-yet-sequenced optimistic (local) fold. Ordering context only:
+   * the transport invokes `fold` in canonical serial order and exactly once
+   * per event, so the reducer must not treat a same-or-lower serial as a
+   * replay to skip — ordering and dedup are the transport's job, not the
+   * reducer's.
    */
   serial: string;
   /**
@@ -176,9 +179,14 @@ export interface ReducerMeta {
  * result every time — `fold` is a pure function and the reducer holds no
  * instance state.
  *
- * Idempotency: re-folding an event whose serial has already been incorporated
- * must be a no-op. The reducer is free to store a high-water-mark inside the
- * projection.
+ * Ordering, deduplication, and replay are the transport's responsibility, not
+ * the reducer's. The transport invokes `fold` exactly once per event, in
+ * canonical order — wire messages ascending by serial, events within a wire in
+ * decode order — refolding a node from a fresh `init` when a late wire would
+ * otherwise land out of order. The reducer therefore folds unconditionally: it
+ * must not keep a serial high-water-mark or skip "already-seen" events.
+ * Last-writer-wins for events competing over the same state falls out of fold
+ * order, since the highest-serial event folds last.
  *
  * Mutation: `fold` is allowed to mutate the projection passed in and return
  * it. The caller treats the projection as single-owner and never retains a
@@ -188,12 +196,13 @@ export interface Reducer<TEvent, TProjection> {
   /**
    * Build an empty initial projection. Called once per conversation node — a
    * Run node or a run-less input node — before any of that node's events are
-   * folded.
+   * folded, and again on every refold of that node.
    */
   init(): TProjection;
   /**
    * Fold one TEvent into the projection and return the updated projection.
-   * The reducer may mutate `state` in place.
+   * Invoked exactly once per event, in canonical order; the reducer may mutate
+   * `state` in place.
    */
   fold(state: TProjection, event: TEvent, meta: ReducerMeta): TProjection;
 }

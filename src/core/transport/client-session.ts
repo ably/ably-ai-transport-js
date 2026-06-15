@@ -45,6 +45,7 @@ import type { Codec, CodecInputEvent, CodecOutputEvent, Encoder } from '../codec
 import { createWireApplier, type WireApplier } from './decode-fold.js';
 import { buildTransportHeaders } from './headers.js';
 import { Invocation } from './invocation.js';
+import { bestEffortDetach, continuityLostError, isContinuityLost, requireConnected } from './session-support.js';
 import type { DefaultTree } from './tree.js';
 import { createTree } from './tree.js';
 import type { ActiveRun, ClientSession, ClientSessionOptions, RunEndReason, SendOptions, Tree, View } from './types.js';
@@ -278,14 +279,7 @@ class DefaultClientSession<
   }
 
   private async _requireConnected(method: string): Promise<void> {
-    if (!this._connectPromise) {
-      throw new Ably.ErrorInfo(
-        `unable to ${method}; connect() must be called before ${method}()`,
-        ErrorCode.InvalidArgument,
-        400,
-      );
-    }
-    return this._connectPromise;
+    return requireConnected(this._connectPromise, method);
   }
 
   // ---------------------------------------------------------------------------
@@ -379,13 +373,7 @@ class DefaultClientSession<
       return;
     }
 
-    // Continuity-breaking states:
-    // - FAILED, SUSPENDED, DETACHED: no more messages expected (or gap)
-    // - ATTACHED with resumed: false (UPDATE): messages were lost
-    const continuityLost =
-      current === 'failed' || current === 'suspended' || current === 'detached' || (current === 'attached' && !resumed);
-
-    if (!continuityLost) return;
+    if (!isContinuityLost(stateChange)) return;
 
     this._logger.error('ClientSession._handleChannelStateChange(); channel continuity lost', {
       current,
@@ -393,12 +381,7 @@ class DefaultClientSession<
       previous: stateChange.previous,
     });
 
-    const err = new Ably.ErrorInfo(
-      `unable to deliver events; channel continuity lost (${current}${current === 'attached' ? ', resumed: false' : ''})`,
-      ErrorCode.ChannelContinuityLost,
-      500,
-      stateChange.reason,
-    );
+    const err = continuityLostError(stateChange, 'deliver events');
 
     // Surface the loss via the session `error` event. Consumers that expose a
     // per-run stream (e.g. the Vercel ChatTransport) error their stream off
@@ -776,19 +759,7 @@ class DefaultClientSession<
       // Swallow: encoder close is best-effort during teardown
     }
 
-    // Detach the channel this session attached. connect() subscribes (which
-    // implicitly attaches), so we only detach when connect() ran. Best-effort:
-    // a detach failure (e.g. the channel is already FAILED) must not throw out
-    // of close().
-    if (this._connectPromise) {
-      try {
-        await this._channel.detach();
-      } catch (error) {
-        // Swallowed (see above): a detach failure must not throw out of
-        // close(). Logged at debug for observability.
-        this._logger.debug('ClientSession.close(); channel detach failed', { error });
-      }
-    }
+    await bestEffortDetach(this._channel, this._connectPromise, this._logger, 'ClientSession');
   }
 }
 

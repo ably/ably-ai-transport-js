@@ -185,6 +185,30 @@ const _normaliseSend = <TInput extends CodecInputEvent>(input: TInput | TInput[]
 const _RUN_TO_MESSAGE_FETCH_FACTOR = 3;
 
 /**
+ * Find the index in `nodes` (chronological, oldest-first) at which the newest
+ * `limit` reply Runs begin. Walks newest-first counting reply runs; input
+ * nodes preceding a counted run are pulled into the tail batch (an input node
+ * travels with the reply run it precedes). Returns `0` when fewer than
+ * `limit + 1` reply Runs are present, so everything is revealed.
+ *
+ * Shared by the two paths that enforce the Run-unit `loadOlder(limit)`
+ * contract — the history-fetch reveal (`_splitReveal`) and the withheld-buffer
+ * drain — so they cannot diverge on what "`limit` runs" means.
+ * @param nodes - Candidate nodes, oldest-first.
+ * @param limit - Maximum number of reply Runs in the tail batch.
+ * @returns The split index; `nodes[splitIdx..]` is the newest `limit`-run batch.
+ */
+const _runTailSplitIndex = <TProjection>(nodes: ConversationNode<TProjection>[], limit: number): number => {
+  let runs = 0;
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    if (nodes[i]?.kind === 'run' && ++runs > limit) {
+      return i + 1; // split just after the (limit+1)-th newest run
+    }
+  }
+  return 0; // fewer than limit+1 runs — reveal everything
+};
+
+/**
  * Project a Tree `RunNode` down to the View-facing `RunInfo` shape:
  * drop the codec projection and the structural fields that callers
  * reach via `session.tree` when they need them.
@@ -460,11 +484,13 @@ export class DefaultView<
 
     try {
       // Drain withheld buffer first (older nodes, released newest-first). The
-      // buffer holds a union of input + reply nodes, so this splices the newest
-      // `limit` NODES, not `limit` runs. Because an input node travels with the
-      // reply run it precedes, a drain may surface fewer than `limit` runs.
+      // buffer holds a union of input + reply nodes; split it at the newest
+      // `limit` reply RUNS (each run's leading input node travels with it) so
+      // the drain path honours the same Run-unit contract as the history-fetch
+      // path in `_splitReveal`.
       if (this._withheldBuffer.length > 0) {
-        const batch = this._withheldBuffer.splice(-limit, limit);
+        const splitIdx = _runTailSplitIndex(this._withheldBuffer, limit);
+        const batch = this._withheldBuffer.splice(splitIdx);
         this._releaseWithheld(batch);
         return;
       }
@@ -995,19 +1021,9 @@ export class DefaultView<
    */
   private _splitReveal(newVisible: ConversationNode<TProjection>[], limit: number): void {
     // Reveal granularity is the reply RUN; an input node travels with the reply
-    // run it precedes. Walk newest-first, counting reply runs toward `limit`,
-    // and split the union list at the resulting boundary so an input + its reply
-    // are revealed or withheld together.
-    let runs = 0;
-    let splitIdx = newVisible.length; // index of first revealed node
-    for (let i = newVisible.length - 1; i >= 0; i--) {
-      const node = newVisible[i];
-      if (node?.kind === 'run') {
-        if (runs === limit) break;
-        runs++;
-      }
-      splitIdx = i;
-    }
+    // run it precedes. Split the union list at the newest `limit` reply runs so
+    // an input + its reply are revealed or withheld together.
+    const splitIdx = _runTailSplitIndex(newVisible, limit);
     const batch = newVisible.slice(splitIdx);
     const withheld = newVisible.slice(0, splitIdx);
     for (const n of withheld) {

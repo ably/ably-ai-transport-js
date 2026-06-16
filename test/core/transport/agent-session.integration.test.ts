@@ -876,20 +876,10 @@ describe('AgentSession integration', () => {
       await serverRun.start();
       const runId = await activeRun.runId;
       expect(runId).toBe(mintedRunId);
-      // start() only collects the primary trigger event (the last message of
-      // the send). The full prompt chain — both run-less input nodes — is
-      // reconstructed by loadConversation(), which reads channel.history()
-      // (eventually consistent) and walks the input nodes' parent chain. Retry
-      // until both have been indexed rather than asserting after a single read.
-      let messages = serverRun.messages;
-      await vi.waitFor(
-        async () => {
-          await serverRun.loadConversation();
-          messages = serverRun.messages;
-          expect(messages).toHaveLength(2);
-        },
-        { timeout: 10_000 },
-      );
+
+      await serverRun.loadConversation();
+      const messages = serverRun.messages;
+      expect(messages).toHaveLength(2);
 
       const ids = messages.map((m) => m.id);
       expect(ids).toEqual(['user-multi-1', 'user-multi-2']);

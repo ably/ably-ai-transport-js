@@ -902,59 +902,31 @@ describe('ClientSession integration', () => {
     }
   });
 
-  // TODO(AIT-848): disabled — exercises a pre-existing View bug,
-  // not a regression from removing addMessages. Incremental `loadOlder(n)`
-  // reveals 0 Runs when channel history has the production-realistic ordering
-  // (the client's user `ai-input` precedes the agent's `ai-run-start`); a full
-  // `loadOlder(10)` over the same history reveals all Runs, so only the
-  // run-by-run withhold/page-boundary logic in view.ts mis-segments Runs whose
-  // run-start follows their user message. The pagination source (view.ts /
-  // tree.ts / load-history.ts) is unchanged by this removal. This test only
-  // ever passed because the now-removed server-relay `addMessages` flow
-  // published run-start BEFORE the user message — an ordering that no longer
-  // occurs. The original test is preserved verbatim below (commented out
-  // because it calls the removed `run.addMessages`); restore it and re-seed the
-  // turns without addMessages once incremental pagination handles user-first
-  // history.
-  /*
+  // Spec: AIT-CT11 - run-unit pagination over multi-turn history.
   it('loadOlder paginates by Run across multiple calls and drains the withhold buffer', async () => {
     const channelName = uniqueChannelName('ct-paginate');
-    const serverClient = ablyRealtimeClient();
+    const seedClient = ablyRealtimeClient();
+    const seedChannel = seedClient.channels.get(channelName);
 
-    agentSession = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
-      client: serverClient,
-      channelName,
-      codec: UIMessageCodec,
-    });
-    await agentSession.connect();
-
-    const agent = agentSession;
-    const publishTurn = async (turn: number, parentId: string | undefined): Promise<string> => {
-      const runId = `run-page-${String(turn)}`;
-      const userMsgId = `pu-${String(turn)}`;
-      const run = createRunFromOpts(agent, { runId });
-      await run.start();
-      await run.addMessages([
-        {
-          kind: 'message',
-          message: { id: userMsgId, role: 'user', parts: [{ type: 'text', text: `pq${String(turn)}` }] },
-          codecMessageId: userMsgId,
-          parentId,
-          forkOf: undefined,
-          headers: {},
-          serial: undefined,
-        },
-      ]);
-      const asstMsgId = `pa-${String(turn)}`;
-      await run.pipe(textResponseStream(asstMsgId, `text-page-${String(turn)}`, `pr${String(turn)}`));
-      await run.end('complete');
+    const publishRun = async (runIndex: number, parentId: string | undefined): Promise<string> => {
+      const asstMsgId = `pa-${String(runIndex)}`;
+      await publishCompleteRun(seedChannel, {
+        runId: `run-page-${String(runIndex)}`,
+        invocationId: `inv-page-${String(runIndex)}`,
+        clientId: 'seed',
+        userMsgId: `pu-${String(runIndex)}`,
+        userText: `pq${String(runIndex)}`,
+        userParentMsgId: parentId,
+        asstMsgId,
+        asstText: `pr${String(runIndex)}`,
+      });
       return asstMsgId;
     };
 
-    // Publish six turns; chained via assistant->user parent links.
+    // Publish six runs; chained via assistant->user parent links.
     let parent: string | undefined;
     for (let i = 1; i <= 6; i++) {
-      parent = await publishTurn(i, parent);
+      parent = await publishRun(i, parent);
     }
 
     const historyClient = ablyRealtimeClient();
@@ -1011,7 +983,6 @@ describe('ClientSession integration', () => {
     const userIds = messages.filter((m) => m.role === 'user').map((m) => m.id);
     expect(userIds).toEqual(['pu-1', 'pu-2', 'pu-3', 'pu-4', 'pu-5', 'pu-6']);
   });
-  */
 
   it('surfaces streamed tool-input chunks via view update so client tool runners can react', async () => {
     // Validates that the View emits `update` events for streaming chunks

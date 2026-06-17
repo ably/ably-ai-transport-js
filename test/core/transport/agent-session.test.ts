@@ -3291,11 +3291,11 @@ interface HistoryPage {
 describe('Run.loadConversation concurrency + continuity-loss', () => {
   it('two concurrent loadConversation calls each receive a chain that matches their maxRuns', async () => {
     // Forward-looking guard for the silent-truncation class of bug: when A
-    // holds the hydration mutex and exits early on its own `needsFetch`, B
+    // holds the hydration chain and stops early on its own `needsFetch`, B
     // must not silently inherit a Tree that's only fully hydrated for A's
-    // walk depth. The fix re-loops B until ITS own needsFetch is satisfied.
-    // Asserts both walks produce the correct chain for their maxRuns under
-    // mutex sharing.
+    // walk depth. B's chain link re-checks ITS own needsFetch after A and tops
+    // up the extra it needs. Asserts both walks produce the correct chain for
+    // their maxRuns under single-flight sharing.
     const ch = createMockChannel();
     const codec = codecWithFunctionalDecoder();
 
@@ -3372,9 +3372,9 @@ describe('Run.loadConversation concurrency + continuity-loss', () => {
 
   it('B with a healthy signal completes loadConversation when A aborts before its own call starts', async () => {
     // Forward-looking guard for the shared-error-bleed class of bug:
-    // A's signal aborting during a shared IIFE used to reject every B
-    // awaiting the same mutex promise. The fix swallows fetch failures
-    // inside the IIFE so B re-loops and starts its own fetch under its
+    // A's signal aborting during a shared link used to reject every B
+    // awaiting the same chain promise. Each link swallows fetch failures
+    // internally so B's link proceeds and starts its own fetch under its
     // own (healthy) signal. Asserts A surfaces its abort while B's
     // unrelated walk completes.
     const ch = createMockChannel();
@@ -3433,9 +3433,9 @@ describe('Run.loadConversation concurrency + continuity-loss', () => {
     await Promise.all([startA, startB]);
 
     // Abort A immediately so its loadConversation throws InvalidArgument
-    // without ever starting (its first loop iteration trips the signal
-    // check). The mutex slot stays clean. B's own loadConversation runs
-    // under a healthy signal and must complete.
+    // without ever starting (the walk's signal check trips before hydration).
+    // No chain link is created, so the tail stays clean. B's own
+    // loadConversation runs under a healthy signal and must complete.
     ctrlA.abort();
     const aPromise = runA.loadConversation({ maxRuns: 5 });
     const bPromise = runB.loadConversation({ maxRuns: 5 });
@@ -3588,6 +3588,121 @@ describe('Run.loadConversation history failure + exhaustion', () => {
     await session.close();
   });
 
+  it('treats a spent cursor (next() yields nothing) as exhaustion, not an endless re-fetch', async () => {
+    // Regression: loadHistoryPages' next() can return undefined while a prior
+    // hasNext() said true (an Ably pagination edge) — that permanently spends
+    // the cursor, so it is genuine exhaustion. _foldHistoryUntil must report it
+    // so _hydrateAncestors records _historyExhausted and stops; otherwise its
+    // outer `while (needsFetch())` loop re-fetches a fresh cursor forever.
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    // u2's parent a1 is absent (retention expired the first turn), so the walk
+    // never reaches root and keeps wanting more — exhaustion detection is the
+    // only thing that can stop it.
+    const page = {
+      items: [makeInputMsg('u2', 's-03', { parent: 'a1' })],
+      hasNext: () => true, // claims more pages...
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
+      next: () => Promise.resolve(), // ...but yields nothing (cursor spent)
+    };
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
+    ch.history.mockImplementation(() => Promise.resolve(page));
+
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'spent-cursor',
+      codec,
+      inputEventLookupTimeoutMs: 5000,
+    });
+    await session.connect();
+
+    const run = createRunFromOpts(session, { runId: 'run-a', invocationId: 'inv-a', inputEventId: 'p-u2' });
+    const startPromise = run.start();
+    deliverInputEvent(ch, {
+      invocationId: 'inv-a',
+      codecMessageId: 'u2',
+      serial: 's-03',
+      inputEventId: 'p-u2',
+      parent: 'a1',
+    });
+    await startPromise;
+
+    // Resolves (does not spin) with the best-effort partial chain.
+    const first = await run.loadConversation();
+    expect(first.map((m) => m.id)).toEqual(['u2']);
+
+    // Exhaustion was recorded — a second walk does not re-fetch.
+    const callsAfterFirst = ch.history.mock.calls.length;
+    await run.loadConversation();
+    expect(ch.history.mock.calls.length).toBe(callsAfterFirst);
+
+    await session.close();
+  });
+
+  it('resumes the shared cursor past the lookback boundary instead of re-fetching', async () => {
+    // AgentView drives findInputEvent and loadConversation through ONE shared
+    // history cursor. findInputEvent passes a lookback bound and stops paging
+    // once it crosses the window — but that leaves the cursor PAUSED (not
+    // exhausted), not closed. A later loadConversation resumes the SAME cursor
+    // from that position and pages on to the conversation root, WITHOUT opening
+    // a second channel.history walk. (If the lookback stop had instead marked
+    // history exhausted, loadConversation would short-circuit and truncate the
+    // LLM context.)
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+
+    // Page 1 (newest) holds the trigger u1 (parent a0, in page 2). Its oldest
+    // item is timestamped well past a tiny lookback, so the input scan pages
+    // page 1 then gives up at the lookback boundary — pausing the cursor.
+    const triggerWire = {
+      name: 'text',
+      serial: 's-01',
+      version: { serial: 's-01' },
+      timestamp: Date.now() - 10 * 60 * 1000,
+      extras: {
+        ai: {
+          transport: {
+            [HEADER_ROLE]: 'user',
+            [HEADER_CODEC_MESSAGE_ID]: 'u1',
+            [HEADER_EVENT_ID]: 'p-u1',
+            [HEADER_INVOCATION_ID]: 'inv-lb',
+            [HEADER_PARENT]: 'a0',
+          },
+        },
+      },
+    } as unknown as Ably.InboundMessage;
+    const page1 = [triggerWire];
+    // Page 2 (older) holds the deeper ancestor turn u0 → a0 that the trigger
+    // chains onto; loadConversation must reach it to hit the conversation root.
+    const page2 = [makeContentMsg('run-0', 'a0', 's-002'), makeRunStartMsg('run-0', 'u0'), makeInputMsg('u0', 's-001')];
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises -- mock returns Promise directly
+    ch.history.mockImplementation(multiPageHistory([page1, page2]));
+
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'lookback-not-exhaustion',
+      codec,
+      inputEventLookupTimeoutMs: 5000,
+      // Tiny lookback so page 1's old oldest-item trips the lookback boundary.
+      inputEventLookbackMs: 50,
+    });
+    await session.connect();
+
+    const run = createRunFromOpts(session, { runId: 'run-lb', invocationId: 'inv-lb', inputEventId: 'p-u1' });
+    // History-only trigger: findInputEvent finds u1 in page 1, then gives up at
+    // the lookback boundary, leaving the shared cursor paused at page 1.
+    await run.start();
+    const callsAfterStart = ch.history.mock.calls.length;
+
+    // loadConversation resumes the SAME cursor past the boundary to the root
+    // (u0 → a0 → u1) — and issues NO new channel.history walk.
+    const history = await run.loadConversation({ maxRuns: 10 });
+    expect(history.map((m) => m.id)).toEqual(['u0', 'a0', 'u1']);
+    expect(ch.history.mock.calls.length).toBe(callsAfterStart);
+
+    await session.close();
+  });
+
   it('input-event lookup timeout surfaces the history-scan failure as cause', async () => {
     // Regression: a broken history fetch used to be masked behind the
     // lookup timeout — the caller saw a bare InputEventNotFound with no clue
@@ -3691,12 +3806,12 @@ describe('Run.loadConversation history failure + exhaustion', () => {
     await session.close();
   });
 
-  it('a mid-walk signal abort does not mark history as exhausted', async () => {
-    // Regression: the cursor's hasNext() returns false once the signal
-    // aborts, so an abort while a page fetch was in flight used to fall
-    // through to the exhaustion flag even though pages remained. Later
-    // walks in the same attach epoch then short-circuited and silently
-    // returned a truncated conversation.
+  it('a mid-walk signal abort does not mark history as exhausted; the next walk resumes the shared cursor', async () => {
+    // Regression: an abort while a page fetch was in flight must not fall
+    // through to the exhaustion flag while pages remain — else a later walk in
+    // the same epoch short-circuits and returns a truncated conversation. Under
+    // the single shared cursor, the healthy follow-up walk RESUMES that cursor
+    // (no second channel.history) rather than opening its own fetch.
     const ch = createMockChannel();
     const codec = codecWithFunctionalDecoder();
 
@@ -3752,21 +3867,23 @@ describe('Run.loadConversation history failure + exhaustion', () => {
     await expect(aPromise).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     expect(ch.history.mock.calls.length).toBe(1);
 
-    // A healthy walk in the same attach epoch must issue its own fetch —
-    // the aborted walk must not have recorded the channel as exhausted.
+    // A healthy walk in the same attach epoch resumes the shared cursor and
+    // completes — the aborted walk must not have recorded the channel as
+    // exhausted (which would short-circuit it). The cursor is reused, so no
+    // second channel.history is issued.
     morePages = false;
     const runB = createRunFromOpts(session, { runId: 'run-b', invocationId: 'inv-b' });
     await runB.loadConversation();
-    expect(ch.history.mock.calls.length).toBe(2);
+    expect(ch.history.mock.calls.length).toBe(1);
 
     await session.close();
   });
 
   it("a follower awaiting the hydration mutex is isolated from the owner's fetch failure", async () => {
     // Regression guard for the shared-error-bleed invariant under a LIVE
-    // failure: the shared hydration IIFE must never reject, so a follower
-    // parked on the mutex while the owner's fetch fails must re-loop and
-    // issue its own fetch rather than alias the owner's error.
+    // failure: a hydration chain link must never reject, so a follower
+    // linked behind a failing owner fetch proceeds and issues its own fetch
+    // rather than aliasing the owner's error.
     const ch = createMockChannel();
     const codec = codecWithFunctionalDecoder();
 
@@ -3781,7 +3898,7 @@ describe('Run.loadConversation history failure + exhaustion', () => {
       firstFetchRequested = res;
     });
     // Calls 1-4 (A's initial fetch + 3 retries) fail; call 5+ (B's own
-    // fetch after re-looping) succeeds.
+    // fetch from its chain link) succeeds.
     // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
     ch.history.mockImplementation(() => {
       calls++;
@@ -3811,7 +3928,7 @@ describe('Run.loadConversation history failure + exhaustion', () => {
       code: ErrorCode.HistoryFetchFailed,
       cause: { code: ErrorCode.HistoryFetchFailed },
     });
-    // ...while the follower re-loops, fetches under its own mutex slot, and
+    // ...while the follower's chain link fetches after the owner's and
     // completes. Aliasing the shared promise's failure would reject here.
     await bPromise;
     expect(session.tree.getNodeByCodecMessageId('u1')).toBeDefined();

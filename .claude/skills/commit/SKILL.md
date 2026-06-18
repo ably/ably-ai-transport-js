@@ -1,94 +1,43 @@
 ---
 name: commit
 description: Generate a commit message for the current staged changes and commit
-allowed-tools: Bash(git diff *), Bash(git status), Bash(git commit *), Bash(git log *), Bash(curl *), AskUserQuestion
+allowed-tools: Skill, Bash(git diff *), Bash(git status), AskUserQuestion
 ---
 
 # Commit Staged Changes
 
-Generate a high-quality commit message for the currently staged changes, present it
-for approval, then commit.
+This skill runs the shared `ably-skills:git-commit` workflow, with the
+project-specific additions below layered on top.
 
-## Step 1: Gather context
+## Step 1: Note the project-specific guidance
 
-Run these commands to understand the staged changes:
+These rules are specific to this repository. They take precedence over the
+general guidance in the shared skill when writing the commit message:
 
-1. `git diff --cached --stat` to see which files are staged
-2. `git diff --cached` to see the full diff
-3. `git status` to check overall state (never use -uall flag)
+- **Jira tickets**: do NOT include the ticket ID in the summary line.
+  Add it on its own line at the end of the body in square brackets
+  (e.g. `[PUB-123]`).
+- **Component prefix**: begin the summary with a capitalised prefix naming
+  the architectural area the change relates to, followed by `: ` and a
+  lowercase, imperative description. For example,
+  `Transport: extract shared session lifecycle helpers`. The prefix names the
+  area, not the file path.
+  - Primary areas: `Codec:`, `Transport:`, `React:`, `Vercel:`, `Docs:`,
+    `Demos:`, `Shared:`, `Project:`.
+  - For a change scoped to a single sub-component, name it directly instead
+    of the broad area — e.g. `Tree:`, `View:`, `ClientSession:`,
+    `AgentSession:`, `RunManager:`, `ChatTransport:`.
+  - Compose when a change is specific to one layer of an area:
+    `Vercel codec:`.
+  - Repository tooling uses a path-style prefix: `Claude/skills:`,
+    `Claude/rules:`.
 
-If there are no staged changes, tell the user and stop.
+  If changes span multiple unrelated areas, pick the most significant one or
+  use a broader prefix.
 
-## Step 2: Determine the intent
+## Step 2: Run the shared workflow
 
-Determine the **intent** of the change from the diff. If the intent is
-not clear from the code alone, use AskUserQuestion to ask the user to
-clarify the purpose of the change before writing the message.
-
-## Step 3: Generate the commit message
-
-Write a commit message following ALL of the guidance below. Where the
-project-specific guidance conflicts with the general guidance, the
-project-specific guidance takes precedence.
-
-### General commit guidance
-
-!`curl -sf https://raw.githubusercontent.com/ably/engineering/refs/heads/main/best-practices/commits.md`
-
-### Project-specific guidance (takes precedence)
-
-- If the commit refers to a Jira ticket, do NOT include the ticket ID
-  in the summary line. Instead, add it on its own line at the end of
-  the body in square brackets (e.g. `[PUB-123]`).
-- Always include a component prefix indicating what area the change
-  relates to (see below).
-- Keep the body concise. Explain **what** changed and **why**, not
-  just restate the diff. Focus on motivation and approach.
-  A short body of 1-3 sentences is usually sufficient.
-- Further paragraphs come after blank lines.
-  - Bullet points are okay, too
-  - Typically a hyphen (-) is used for the bullet, followed by a
-    single space
-  - Use a hanging indent
-- If the diff includes test changes, summarize what the tests cover.
-- Keep the message concise — omit the body entirely if the summary
-  alone is sufficient for a trivial change.
-
-### Project-specific component prefixes
-
-The component prefix is derived from the file paths in the diff. Examples:
-
-- `codec:` `codec/vercel:` `transport:` `transport/vercel:`
-- `react:` `react/vercel:`
-- `claude/skills:` `claude/rules:`
-- `docs:` `docs/concepts:`
-- `demo:`
-- `test/unit:`
-- `test/integration:`
-- `project:`
-
-If changes span multiple unrelated components, pick the most significant
-one or use a broader prefix.
-
-## Step 4: Present and confirm
-
-Show the complete commit message to the user in a fenced code block.
-
-Then use **AskUserQuestion** to ask: "Do you want to commit with this
-message, edit it, or cancel?" with three options: Commit, Edit, Cancel.
-
-## Step 5: Act on the response
-
-- **Commit**: Run the commit using a heredoc:
-  ```
-  git commit -m "$(cat <<'EOF'
-  <the message>
-  EOF
-  )"
-  ```
-- **Edit**: The user will provide a revised message or describe changes.
-  Apply their edits and show the updated message for confirmation again
-  (return to Step 3).
-- **Cancel**: Do nothing.
-
-After a successful commit, run `git log -1` to confirm.
+Invoke the `ably-skills:git-commit` skill with the Skill tool and follow its
+steps in full (gather context, determine intent, generate message, present,
+confirm, commit), applying the project-specific rules above when writing the
+message.

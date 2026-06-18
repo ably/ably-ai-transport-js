@@ -967,8 +967,8 @@ describe('ClientSession integration', () => {
     }
   });
 
-  // Spec: AIT-CT11 - run-unit pagination over multi-turn history.
-  it('loadOlder paginates by Run across multiple calls and drains the withhold buffer', async () => {
+  // Spec: AIT-CT11 - codecMessage-unit pagination over multi-turn history.
+  it('loadOlder paginates by codecMessage across multiple calls and drains the withhold buffer', async () => {
     const channelName = uniqueChannelName('ct-paginate');
     const seedClient = ablyRealtimeClient();
     const seedChannel = seedClient.channels.get(channelName);
@@ -1002,29 +1002,50 @@ describe('ClientSession integration', () => {
     });
     await clientSession.connect();
 
-    // Reveal two Runs at a time. The loader fetches enough channel pages to
-    // satisfy the Run-unit limit and withholds the rest.
-    await clientSession.view.loadOlder(2);
+    // Reveal four codecMessages at a time. Each turn is a user + assistant
+    // pair, so four messages is exactly two whole turns — the message window
+    // lands on a turn boundary and whole Runs surface. The loader fetches
+    // enough channel history to satisfy the message limit and withholds the
+    // rest.
+    // Helper: the visible message ids in order, so each page's reveal is
+    // asserted at the codecMessage level (not just by Run).
+    const visibleMsgIds = (): string[] => clientSession?.view.getMessages().map((m) => m.message.id) ?? [];
+
+    await clientSession.view.loadOlder(3);
     const after1 = clientSession.view.runs().map((n) => n.runId);
     expect(after1.length).toBe(2);
     // Newest two Runs revealed first.
     expect(after1).toEqual(['run-page-5', 'run-page-6']);
+    // Exactly the four newest codecMessages (turns 5 and 6), in order.
+    expect(visibleMsgIds()).toEqual(['pa-5', 'pu-6', 'pa-6']);
     expect(clientSession.view.hasOlder()).toBe(true);
 
-    await clientSession.view.loadOlder(2);
+    await clientSession.view.loadOlder(5);
     const after2 = clientSession.view.runs().map((n) => n.runId);
     expect(after2).toEqual(['run-page-3', 'run-page-4', 'run-page-5', 'run-page-6']);
+    expect(visibleMsgIds()).toEqual(['pu-3', 'pa-3', 'pu-4', 'pa-4', 'pu-5', 'pa-5', 'pu-6', 'pa-6']);
     expect(clientSession.view.hasOlder()).toBe(true);
 
-    await clientSession.view.loadOlder(2);
+    await clientSession.view.loadOlder(4);
     const after3 = clientSession.view.runs().map((n) => n.runId);
     expect(after3).toEqual(['run-page-1', 'run-page-2', 'run-page-3', 'run-page-4', 'run-page-5', 'run-page-6']);
+    expect(visibleMsgIds()).toEqual([
+      'pu-1',
+      'pa-1',
+      'pu-2',
+      'pa-2',
+      'pu-3',
+      'pa-3',
+      'pu-4',
+      'pa-4',
+      'pu-5',
+      'pa-5',
+      'pu-6',
+      'pa-6',
+    ]);
 
-    // One more call to let the loader probe past the last page and learn
-    // there is no more history. `hasOlder()` only flips when either the
-    // withhold buffer drains AND a subsequent fetch confirms no next page,
-    // so the UI keeps showing a load-more affordance until probed.
-    await clientSession.view.loadOlder(2);
+    // One more call confirms there is no older history left to reveal.
+    await clientSession.view.loadOlder(4);
     expect(clientSession.view.runs()).toHaveLength(6);
     expect(clientSession.view.hasOlder()).toBe(false);
 

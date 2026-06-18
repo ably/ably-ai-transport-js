@@ -26,7 +26,7 @@ export interface UseViewOptions<
 > extends BaseSessionOption<TInput, TOutput, TProjection, TMessage> {
   /** A specific {@link View} to subscribe to directly. Takes priority over `session`. */
   view?: View<TInput, TMessage> | null;
-  /** Maximum number of older Runs to reveal per page (the pagination unit is the Run, not the message). When provided, auto-loads the first page on mount. */
+  /** Number of older codecMessages to reveal per page (exactly `limit`, fewer only at the end of history). When provided, auto-loads the first page on mount. */
   limit?: number;
   /** When `true`, skip all subscriptions and return an empty handle immediately. */
   skip?: boolean;
@@ -46,7 +46,7 @@ export interface ViewHandle<TInput extends CodecInputEvent, TMessage> {
    * identity the domain `message` may carry. See {@link View.getMessages}.
    */
   messages: CodecMessage<TMessage>[];
-  /** Whether there are older Runs that can be revealed via `loadOlder`. */
+  /** Whether there are older messages that can be revealed via `loadOlder`. */
   hasOlder: boolean;
   /** Whether a page load is currently in progress. */
   loading: boolean;
@@ -128,7 +128,7 @@ const EMPTY_BRANCH_SELECTION: BranchSelection<never> = {
  * @param props - Options for selecting the view source and configuring auto-load.
  * @param props.session - Client session whose default view to subscribe to; defaults to the nearest provider.
  * @param props.view - A specific {@link View} to subscribe to directly. Takes priority over `session`.
- * @param props.limit - Max older Runs to reveal per page; when provided, auto-loads the first page on mount.
+ * @param props.limit - Number of older codecMessages to reveal per page (exactly `limit`, fewer only at end of history); when provided, auto-loads the first page on mount.
  * @param props.skip - When `true`, skip all subscriptions and return an empty handle.
  * @returns A {@link ViewHandle} with messages, pagination state, navigation, write operations, and loadOlder.
  */

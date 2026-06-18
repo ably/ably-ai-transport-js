@@ -164,20 +164,23 @@ export interface View<TInput extends CodecInputEvent, TMessage> {
    */
   runs(): RunInfo[];
 
-  /** Whether there are older Runs that can be loaded or revealed. */
+  /** Whether there are older messages that can be loaded or revealed. */
   hasOlder(): boolean;
 
   /**
-   * Reveal older Runs. Loads from channel history if the tree doesn't have
-   * enough, then advances the pagination window by up to `limit` Runs.
-   * Emits 'update' when the visible list changes.
+   * Reveal exactly `limit` older codecMessages — fewer only when channel history
+   * is exhausted. Loads from channel history when the tree doesn't already hold
+   * `limit` hidden messages, then advances the pagination window. Emits 'update'
+   * when the visible list changes.
    *
-   * The pagination unit is the **Run**, not the message. A single Run
-   * typically contributes more than one message to the flat list returned
-   * by {@link View.getMessages} (e.g. a user prompt + assistant reply
-   * pair). Revealing `limit` Runs may add 1..N messages each to the
-   * visible window.
-   * @param limit - Maximum number of older Runs to reveal. Defaults to 100.
+   * The pagination unit is the **codecMessage**. A node (a user prompt, or a
+   * reply Run) contributes 1..N messages to the flat list returned by
+   * {@link View.getMessages}; the window counts those messages, so a node
+   * straddling the boundary is **partially revealed** — only its newest messages
+   * enter the window — and the page lands exactly on `limit` rather than on a
+   * node boundary. Such a partially-revealed run still appears in
+   * {@link View.runs} and is event-scoped.
+   * @param limit - Number of older codecMessages to reveal. Defaults to 10.
    */
   loadOlder(limit?: number): Promise<void>;
 

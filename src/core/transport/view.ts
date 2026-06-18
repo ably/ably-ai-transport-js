@@ -201,46 +201,6 @@ type MessageBranchPoint =
 const _normaliseSend = <TInput extends CodecInputEvent>(input: TInput | TInput[]): TInput[] =>
   Array.isArray(input) ? input : [input];
 
-// ---------------------------------------------------------------------------
-// Fetch tuning
-// ---------------------------------------------------------------------------
-
-/**
- * Multiplier applied to the user-supplied Run-unit `loadOlder(limit)`
- * when issuing the first `loadHistory` page request. `loadHistory`
- * counts complete domain *messages* per page, not Runs; a typical Run
- * produces ~2 messages (user + assistant). Asking for `limit * factor`
- * messages on the first page reduces extra round-trips when the actual
- * messages-per-Run ratio is around the factor. `_loadUntilVisible`
- * still loops on the Run count regardless, so this is purely a
- * fetch-efficiency hint.
- */
-const _RUN_TO_MESSAGE_FETCH_FACTOR = 3;
-
-/**
- * Find the index in `nodes` (chronological, oldest-first) at which the newest
- * `limit` reply Runs begin. Walks newest-first counting reply runs; input
- * nodes preceding a counted run are pulled into the tail batch (an input node
- * travels with the reply run it precedes). Returns `0` when fewer than
- * `limit + 1` reply Runs are present, so everything is revealed.
- *
- * Shared by the two paths that enforce the Run-unit `loadOlder(limit)`
- * contract — the history-fetch reveal (`_splitReveal`) and the withheld-buffer
- * drain — so they cannot diverge on what "`limit` runs" means.
- * @param nodes - Candidate nodes, oldest-first.
- * @param limit - Maximum number of reply Runs in the tail batch.
- * @returns The split index; `nodes[splitIdx..]` is the newest `limit`-run batch.
- */
-const _runTailSplitIndex = <TProjection>(nodes: ConversationNode<TProjection>[], limit: number): number => {
-  let runs = 0;
-  for (let i = nodes.length - 1; i >= 0; i--) {
-    if (nodes[i]?.kind === 'run' && ++runs > limit) {
-      return i + 1; // split just after the (limit+1)-th newest run
-    }
-  }
-  return 0; // fewer than limit+1 runs — reveal everything
-};
-
 /**
  * Project a Tree `RunNode` down to the View-facing `RunInfo` shape:
  * drop the codec projection and the structural fields that callers
@@ -333,6 +293,17 @@ export class DefaultView<
   /** Buffer of withheld nodes (input + reply), drained newest-first by successive loadOlder() calls. */
   private readonly _withheldBuffer: ConversationNode<TProjection>[] = [];
 
+  /**
+   * Message-level trim on top of the run-level pagination window. Runs are
+   * revealed whole (via `_withheldRunIds`/`_withheldBuffer`), so a `loadOlder`
+   * may surface more messages than asked; this is the count of OLDEST messages
+   * of the visible node chain to hide from `getMessages()` so a page lands on
+   * exactly `limit` messages. The boundary run still appears in `runs()` (it's
+   * a revealed node); only its oldest messages are trimmed from the flat list.
+   * Live messages append at the newest end and are never trimmed.
+   */
+  private _hiddenMessageCount = 0;
+
   /** Unsubscribe functions for tree event subscriptions. */
   private readonly _unsubs: (() => void)[] = [];
 
@@ -406,7 +377,7 @@ export class DefaultView<
     // boundary already dedup by array reference, so a redundant emit is a
     // no-op for unchanged hook consumers.
     this._lastVisibleProjections = this._cachedNodes.map((n) => n.projection);
-    this._lastVisibleMessagePairs = this._extractMessages(this._cachedNodes);
+    this._lastVisibleMessagePairs = this._extractMessages(this._cachedNodes).slice(this._hiddenMessageCount);
     this._emitter.emit('update');
   }
 
@@ -598,66 +569,131 @@ export class DefaultView<
   }
 
   hasOlder(): boolean {
-    return this._withheldBuffer.length > 0 || this._hasMoreHistory;
+    return this._hiddenMessageCount > 0 || this._withheldBuffer.length > 0 || this._hasMoreHistory;
   }
 
   /**
-   * Reveal up to `limit` older Runs in this view.
+   * Reveal `limit` more older codecMessages in this view — fewer only when
+   * channel history is exhausted.
    *
-   * The pagination unit is the **Run**, not the message. A single Run
-   * typically materialises into multiple messages (e.g. user + assistant
-   * pair) so revealing `limit` Runs may add several messages to the flat
-   * list returned by {@link getMessages}. Channel pages don't align to
-   * Run boundaries, so {@link _loadUntilVisible} keeps fetching channel
-   * pages until at least `limit` Runs are buffered (or the channel is
-   * exhausted).
-   * @param limit - Maximum number of older Runs to reveal. Defaults to 100.
+   * Internally runs are revealed WHOLE (run-granular withholding), counting
+   * codecMessages to decide how many runs to bring in, then the flat list
+   * returned by {@link getMessages} is trimmed to exactly `limit` more
+   * messages. So a run straddling the boundary still appears in {@link runs}
+   * (it's a revealed node) while only its newest messages show in
+   * `getMessages`. Live messages append at the newest end and are never
+   * trimmed.
+   * @param limit - Number of older codecMessages to reveal. Defaults to 10.
    */
-  async loadOlder(limit = 100): Promise<void> {
+  async loadOlder(limit = 10): Promise<void> {
     if (this._closed || this._loadingOlder) return;
     this._loadingOlder = true;
     this._logger.trace('DefaultView.loadOlder();', { limit });
 
     try {
-      // Drain withheld buffer first (older nodes, released newest-first). The
-      // buffer holds a union of input + reply nodes; split it at the newest
-      // `limit` reply RUNS (each run's leading input node travels with it) so
-      // the drain path honours the same Run-unit contract as the history-fetch
-      // path in `_splitReveal`.
+      // Phase A: the boundary run is already revealed (a previous loadOlder
+      // pulled in a whole run that overshot the message limit); reveal more of
+      // its trimmed-off oldest messages without fetching or revealing new runs.
+      if (this._hiddenMessageCount >= limit) {
+        this._hiddenMessageCount -= limit;
+        this._recomputeAndEmit();
+        return;
+      }
+
+      // Phase B: reveal whole older runs covering the remaining message budget,
+      // then re-trim so exactly `limit` new messages surface. Runs are revealed
+      // whole (node granularity); the trim makes the message count exact.
+      const need = limit - this._hiddenMessageCount;
+      const before = this._extractMessages(this._computeFlatNodes()).length;
+      const revealedSoFar = (): number => this._extractMessages(this._computeFlatNodes()).length - before;
+
+      // Drain the withheld buffer toward `need` (whole older runs, newest-first).
       if (this._withheldBuffer.length > 0) {
-        const splitIdx = _runTailSplitIndex(this._withheldBuffer, limit);
+        const splitIdx = this._messageTailSplitIndex(this._withheldBuffer, need);
         const batch = this._withheldBuffer.splice(splitIdx);
         this._releaseWithheld(batch);
-        return;
       }
 
-      // Buffer exhausted - load from channel history.
-      if (!this._hasMoreHistory && !this._lastHistoryPage) {
-        await this._loadFirstPage(limit);
-        return;
+      // If the buffer was empty or fell short of `need` (e.g. it held a
+      // zero-message run), fetch channel history for the remainder. The fetch
+      // path loops over pages internally until it covers its target or history
+      // is exhausted, so a single call here suffices.
+      if (revealedSoFar() < need) {
+        await this._fetchOlder(need - revealedSoFar());
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- close() may be set during the await above
+        if (this._closed) return;
       }
 
-      if (!this._hasMoreHistory) return;
-
-      if (!this._lastHistoryPage?.hasNext()) {
-        this._hasMoreHistory = false;
-        return;
-      }
-
-      const nextPage = await this._lastHistoryPage.next();
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- close() may be called during await
-      if (this._closed || !nextPage) {
-        if (!nextPage) this._hasMoreHistory = false;
-        return;
-      }
-
-      await this._revealFromPage(nextPage, limit);
+      const after = this._extractMessages(this._computeFlatNodes()).length;
+      // `after - before` whole-run messages were added at the oldest end; show
+      // `limit` of them (newest), hiding the overshoot plus what was already
+      // trimmed. `<= 0` when history is exhausted before `limit` is reached.
+      this._hiddenMessageCount = Math.max(0, this._hiddenMessageCount + (after - before) - limit);
+      this._recomputeAndEmit();
     } catch (error) {
       this._logger.error('DefaultView.loadOlder(); failed', { error });
       throw error;
     } finally {
       this._loadingOlder = false;
     }
+  }
+
+  /**
+   * Fetch older channel history covering at least `target` more codecMessages,
+   * buffering the older nodes and revealing whole runs. The withheld buffer is
+   * assumed already drained by the caller. Loads the first page when no history
+   * has been fetched yet, otherwise advances to the next older page; the
+   * page-walk inside {@link _revealFromPage} loops until `target` messages are
+   * covered or history runs out. No-op (leaving `_hasMoreHistory` false) once
+   * channel history is exhausted.
+   * @param target - Minimum additional codecMessages this fetch aims to cover.
+   */
+  private async _fetchOlder(target: number): Promise<void> {
+    if (!this._hasMoreHistory && !this._lastHistoryPage) {
+      await this._loadFirstPage(target);
+      return;
+    }
+
+    if (!this._hasMoreHistory) return;
+
+    if (!this._lastHistoryPage?.hasNext()) {
+      this._hasMoreHistory = false;
+      return;
+    }
+
+    const nextPage = await this._lastHistoryPage.next();
+    if (this._closed || !nextPage) {
+      if (!nextPage) this._hasMoreHistory = false;
+      return;
+    }
+
+    await this._revealFromPage(nextPage, target);
+  }
+
+  /**
+   * Find the index in `nodes` (chronological, oldest-first) at which the newest
+   * whole runs covering at least `target` codecMessages begin. Walks newest-first
+   * summing each node's `codec.getMessages(projection)` count; once the running
+   * total reaches `target`, the current node (and everything newer) is the
+   * revealed batch — so whole runs are revealed and the batch may overshoot
+   * `target` (the caller trims). Returns `0` when the nodes hold fewer than
+   * `target` messages — reveal everything.
+   *
+   * Shared by the buffer-drain and history-fetch reveal paths so they agree on
+   * "covering `target` messages".
+   * @param nodes - Candidate nodes, oldest-first.
+   * @param target - Minimum codecMessages the revealed batch must cover.
+   * @returns The split index; `nodes[splitIdx..]` is the revealed batch.
+   */
+  private _messageTailSplitIndex(nodes: ConversationNode<TProjection>[], target: number): number {
+    let messages = 0;
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const node = nodes[i];
+      if (!node) continue;
+      messages += this._codec.getMessages(node.projection).length;
+      if (messages >= target) return i; // reveal nodes[i..]
+    }
+    return 0; // fewer than `target` messages — reveal everything
   }
 
   // -------------------------------------------------------------------------
@@ -1236,6 +1272,7 @@ export class DefaultView<
     this._nonHeadRegenSelections.clear();
     this._withheldRunIds.clear();
     this._withheldBuffer.length = 0;
+    this._hiddenMessageCount = 0;
     this._onClose?.();
   }
 
@@ -1243,47 +1280,45 @@ export class DefaultView<
   // Private: history loading
   // -------------------------------------------------------------------------
 
-  private async _loadFirstPage(limit: number): Promise<void> {
-    // loadHistory's limit counts complete domain messages per page (not
-    // Runs); see `_RUN_TO_MESSAGE_FETCH_FACTOR` for the scaling rationale.
-    const messageLimit = limit * _RUN_TO_MESSAGE_FETCH_FACTOR;
-    const firstPage = await loadHistory(this._channel, { limit: messageLimit }, this._logger);
+  private async _loadFirstPage(target: number): Promise<void> {
+    // `loadHistory`'s limit and this view's reveal target both count complete
+    // domain messages (codecMessages), so the target passes straight through.
+    const firstPage = await loadHistory(this._channel, { limit: target }, this._logger);
     if (this._closed) return;
-    await this._revealFromPage(firstPage, limit);
+    await this._revealFromPage(firstPage, target);
   }
 
   /**
-   * Walk channel history from `page` until at least `limit` new Runs are
-   * observed (or the channel is exhausted), then reveal the newest batch and
-   * withhold the rest. Snapshots the already-visible nodes up front so only
-   * newly-observed Runs count toward `limit`. No-op if the view closed during
-   * the page walk.
+   * Walk channel history from `page` until the newly-observed nodes hold at
+   * least `target` codecMessages (or the channel is exhausted), then reveal the
+   * newest whole runs covering `target` and withhold the rest. Snapshots the
+   * already-visible nodes up front so only newly-observed nodes count toward
+   * `target`. No-op if the view closed during the page walk.
    * @param page - The decoded history page to start from.
-   * @param limit - Max Runs to reveal in this batch.
+   * @param target - Minimum codecMessages to reveal in this batch.
    */
-  private async _revealFromPage(page: HistoryPage, limit: number): Promise<void> {
+  private async _revealFromPage(page: HistoryPage, target: number): Promise<void> {
     // Snapshot before loading: every node already in the tree stays visible.
     const beforeRunIds = new Set(this._treeVisibleNodes().map((n) => nodeKey(n)));
 
-    const { newVisible, lastPage } = await this._loadUntilVisible(page, limit, beforeRunIds);
+    const { newVisible, lastPage } = await this._loadUntilVisible(page, target, beforeRunIds);
     if (this._closed) return;
     this._lastHistoryPage = lastPage;
     this._hasMoreHistory = lastPage.hasNext();
-    this._splitReveal(newVisible, limit);
+    this._splitReveal(newVisible, target);
   }
 
   /**
-   * Reveal the newest `limit` Runs from `newVisible` and withhold the rest
-   * so subsequent `loadOlder` calls can drain them. Called by
-   * {@link _revealFromPage} to enforce the Run-unit pagination contract.
-   * @param newVisible - Newly observed Runs from the history fetch.
-   * @param limit - Max Runs to reveal in this batch.
+   * Reveal the newest whole runs covering `target` codecMessages from
+   * `newVisible` and withhold the rest so subsequent `loadOlder` calls can
+   * drain them. Reveal granularity is the whole run; the caller trims the flat
+   * message list (via `_hiddenMessageCount`) to make the visible message count
+   * exact. Called by {@link _revealFromPage}.
+   * @param newVisible - Newly observed nodes (inputs + reply runs) from the history fetch, chronological.
+   * @param target - Minimum codecMessages the revealed batch must cover.
    */
-  private _splitReveal(newVisible: ConversationNode<TProjection>[], limit: number): void {
-    // Reveal granularity is the reply RUN; an input node travels with the reply
-    // run it precedes. Split the union list at the newest `limit` reply runs so
-    // an input + its reply are revealed or withheld together.
-    const splitIdx = _runTailSplitIndex(newVisible, limit);
+  private _splitReveal(newVisible: ConversationNode<TProjection>[], target: number): void {
+    const splitIdx = this._messageTailSplitIndex(newVisible, target);
     const batch = newVisible.slice(splitIdx);
     const withheld = newVisible.slice(0, splitIdx);
     for (const n of withheld) {
@@ -1331,9 +1366,9 @@ export class DefaultView<
     const newVisibleCount = (): number => {
       let count = 0;
       for (const n of this._treeVisibleNodes()) {
-        // Pagination counts reply RUNS toward the target (an input node travels
-        // with the reply run it precedes — see `_splitReveal`).
-        if (n.kind === 'run' && !beforeRunIds.has(nodeKey(n))) count++;
+        // Count newly-visible codecMessages toward the target (whole runs are
+        // revealed; the caller trims to the exact message count).
+        if (!beforeRunIds.has(nodeKey(n))) count += this._codec.getMessages(n.projection).length;
       }
       return count;
     };
@@ -1370,7 +1405,10 @@ export class DefaultView<
     this._lastVisibleNodeKeys = resolved.map((n) => nodeKey(n));
     this._lastVisibleNodeKeySet = new Set(this._lastVisibleNodeKeys);
     this._lastVisibleProjections = resolved.map((n) => n.projection);
-    this._lastVisibleMessagePairs = this._extractMessages(resolved);
+    // Run-level reveal, message-level trim: drop the oldest `_hiddenMessageCount`
+    // messages so a `loadOlder` page lands on exactly `limit` messages even
+    // though whole runs were revealed.
+    this._lastVisibleMessagePairs = this._extractMessages(resolved).slice(this._hiddenMessageCount);
   }
 
   private _onTreeUpdate(): void {

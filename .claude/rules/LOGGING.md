@@ -78,10 +78,10 @@ this._logger.trace('ClientSession.send();');
 this._logger.debug('DefaultRunManager.startRun(); run started', { runId });
 
 // With context object
-this._logger.debug('Tree.upsert(); promoting serial', { msgId, serial });
+this._logger.debug('Tree.applyMessage(); promoting serial', { msgId, serial });
 
 // Decision/branch (debug)
-this._logger.debug('Tree.upsert(); inserting new node', { msgId, parentId, forkOf });
+this._logger.debug('Tree.applyMessage(); inserting new node', { msgId, parentId, forkOf });
 
 // Warning
 this._logger.warn('DefaultDecoderCore.decode(); unexpected message action', {
@@ -95,58 +95,16 @@ this._logger.error('DefaultAgentSession(); subscribe failed');
 
 ## When to Log at Each Level
 
-### Trace — method entry
-
-Every key public or internal method gets a `trace` at entry. This is the baseline for understanding call flow:
-
-```ts
-this._logger.trace('ClientSession.send();');
-this._logger.trace('ClientSession.regenerate();', { messageId });
-this._logger.trace('DefaultEncoderCore.publishDiscrete();', { name: payload.name });
-this._logger.trace('DefaultDecoderCore.decode();', { action, serial: message.serial, name: message.name });
-```
-
-### Debug — outcomes and decisions
-
-Log after an operation completes, when taking a branch, or when state changes:
-
-```ts
-this._logger.debug('DefaultRunManager.startRun(); run started', { runId });
-this._logger.debug('DefaultRunManager.endRun(); run ended', { runId, reason });
-this._logger.debug('StreamRouter.closeStream(); closing stream', { runId });
-this._logger.debug('Tree.select();', { msgId, index });
-```
-
-### Info — lifecycle events
-
-Operationally significant but not unexpected:
-
-```ts
-this._logger.info('ClientSession.close();');
-```
-
-### Warn — potential problems
-
-Not yet an error, but something that could cascade:
-
-```ts
-this._logger.warn('DefaultDecoderCore.decode(); unrecognized message name', {
-  name: message.name,
-  serial: message.serial,
-});
-```
-
-### Error — failed operations
-
-Log immediately before throwing or rejecting. Also use when a developer-provided callback throws:
-
-```ts
-this._logger.error('DefaultAgentSession(); subscribe failed');
-```
-
-```ts
-this._logger?.error('DefaultDecoderCore._invokeOnStreamUpdate(); callback threw', { error });
-```
+- **Trace** — at the entry of every key public or internal method. The
+  baseline for understanding call flow.
+- **Debug** — after an operation completes, when taking a branch, or when state
+  changes.
+- **Info** — operationally significant but expected lifecycle events
+  (session open/close).
+- **Warn** — not yet an error, but something that could cascade.
+- **Error** — immediately before throwing or rejecting, and when a
+  developer-provided callback throws (e.g. `callback threw`, with the error in
+  context).
 
 ## Context Objects
 

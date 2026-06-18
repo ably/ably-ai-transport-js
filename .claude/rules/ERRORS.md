@@ -15,7 +15,7 @@ Every error should either be handled internally with a clear recovery strategy, 
 
 ### Surfacing errors to developers
 
-- **Typed error taxonomy**: Give errors a `code` field with a finite set of string values developers can `switch` on. Keep the set small (5-10 codes).
+- **Typed error taxonomy**: Give errors a `code` field with a finite set of values developers can `switch` on. Keep the set small (5-10 codes).
 - **Distinguish fatal from recoverable**: Make it obvious which errors mean "this instance is broken, create a new one" vs. "this operation failed, try again." Use separate channels (thrown vs. emitted) or a flag — be consistent.
 - **Use the right delivery mechanism**:
   - Synchronous method, caller can handle it → throw

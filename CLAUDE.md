@@ -23,7 +23,7 @@ pnpm run precommit         # format:check + lint + typecheck
 
 ## Architecture & conventions
 
-Detailed guidance lives in `.claude/rules/`:
+Detailed guidance lives in `.claude/rules/`. These files state durable **principles, conventions, and rationale** — what an agent cannot cheaply reconstruct by reading the code. They deliberately avoid mirroring code-discoverable detail (directory trees, exhaustive export/symbol lists, exact enum values, real log strings, copied signatures), which only drifts and creates a second source of truth. When editing a rule, state the rule and its reason and point to the authoritative source in code for the instance; prefer generic examples (`Foo.bar()`) that can't drift against real symbols.
 
 | Rule file         | Covers                                                                                     |
 | ----------------- | ------------------------------------------------------------------------------------------ |
@@ -33,6 +33,7 @@ Detailed guidance lives in `.claude/rules/`:
 | `PROMISES.md`     | async/await policy, exception handling                                                     |
 | `TYPES.md`        | Type safety rules, import conventions, no `any`/`as`/`!` policy                            |
 | `TESTS.md`        | Unit vs integration tests, mocking strategy, coverage expectations                         |
+| `COMMENTS.md`     | Comments, JSDoc, and test descriptions anchor to present state, not prior/removed code     |
 | `AISDK.md`        | Vercel AI SDK v6 specifics                                                                 |
 
 Additional conventions not covered by rule files:
@@ -46,13 +47,14 @@ Additional conventions not covered by rule files:
 
 - **Never commit changes.** All changes must be reviewed by a human before committing. Stage files and present a summary of changes, but wait for the user to approve via `/commit` or explicit instruction.
 - **Never push or pull the remote.** Do not run `git push`, `git pull`, `git fetch`, or any command that interacts with the remote repository.
+- **Never edit submodule contents directly.** Do not modify, stage, or commit files inside the `ably-common/` or `specification/` working trees. A submodule's pinned ref may only be bumped to a commit that already exists upstream — made and reviewed through a proper clone of that repository, not authored in-place in the submodule working tree. If a submodule change is needed, say so and let the user make it in the real clone first.
 - **Run validation after every change.** After modifying source or test files, run `pnpm run typecheck`, `pnpm run lint`, and `pnpm run format:check`. Fix all errors **and warnings** before presenting changes. If tests exist for the changed code, run `pnpm test` too.
 - **Include test coverage with every change.** Every code change must include appropriate tests. New functions and modules need unit tests. Bug fixes need a test that would have caught the bug. Behavioral changes need updated tests. Only purely cosmetic changes (formatting, comments, renames) are exempt.
-- **Keep the specification in sync.** When implementing a new feature or changing behavior covered by the spec, update `specification/specifications/ai-transport-features.md` with new or amended `AIT-` spec points. Never commit spec changes — present them to the user for review alongside the code changes.
+- **The specification is not maintained.** `specification/` is stale and is not kept in sync with the code. Do not gate work on it, cite it as authority, or add new `// Spec: AIT-*` references to spec points. Treat `specification/` as read-only — revert any unintended changes there before presenting work. Existing `// Spec: AIT-*` comments may stay as-is. Implementation comments may describe new behaviour in prose without citing a spec ID. Only update the spec if the user explicitly asks for a specific change, and then only via the real-clone path above — never edit `specification/` in-tree.
 - **Review changes with an independent subagent.** After completing implementation work, use an independent subagent to review the changes against the plan (if one exists) and the project guidance in `.claude/rules/`. Address any issues found before presenting changes to the user.
 - **YAGNI — no unused or speculative code.** Never include unused, redundant, or speculative code. Do not add anything "in case we need it later." Every added line must be used and necessary for the current task. Remove dead code, unused imports, unused parameters, placeholder implementations, and premature abstractions.
 
 ## Submodules
 
 - `ably-common/` — shared Ably protocol resources. Contains `protocol/errors.json` with canonical error code definitions. Run `pnpm run check:error-codes` to validate `ErrorCode` enum values.
-- `specification/` — the Ably specification repo, on the `ai-transport-features` branch. Contains `specifications/ai-transport-features.md` with the AI Transport features spec using `AIT-` prefixed spec points. Reference spec points in code comments as `// Spec: AIT-CT2a`. Run `/spec` to cross-reference code against the specification. **Never commit changes to the specification submodule without explicit user approval** — always present proposed spec changes for review first.
+- `specification/` — the Ably specification repo, on the `ai-transport-features` branch (`specifications/ai-transport-features.md`, using `AIT-` prefixed spec points). **Stale and not maintained** — it is no longer kept in sync with the code; treat it as read-only and do not gate work on it (see the workflow rule above). Existing `// Spec: AIT-*` comments in the code may remain. Never edit this submodule in-tree (see the workflow rule above); any approved change is authored in a proper clone and the ref bumped separately.

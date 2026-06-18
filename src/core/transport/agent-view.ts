@@ -615,12 +615,6 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
     signal: AbortSignal,
     lookbackMs?: number,
   ): Promise<boolean> {
-    // Open the shared cursor once, then reuse it. No signal: it outlives any
-    // single caller (paused by findInputEvent, resumed by loadConversation).
-    // No lookback: it walks to attach, so its exhaustion is always genuine. A
-    // continuity-loss swap recreates this whole AgentView (with a fresh Tree),
-    // so an in-flight walk on a swapped-out instance folds into its own
-    // abandoned Tree — no guard needed.
     if (this._cursor === undefined) {
       this._cursor = await loadHistoryPages(this._channel, {
         pageLimit: 200,

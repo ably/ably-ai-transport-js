@@ -15,8 +15,6 @@
  *    exhaustion throws `Ably.ErrorInfo` with code `HistoryFetchFailed`.
  *  - `signal.aborted` is checked between pages; rejects with
  *    `Ably.ErrorInfo` (InvalidArgument) when aborted.
- *  - Optional `lookbackMs` stops paginating when the oldest message in a
- *    page is older than `Date.now() - lookbackMs`.
  *
  * Spec: AIT-CT11 / AIT-ST hydration.
  */
@@ -33,12 +31,6 @@ export interface LoadHistoryPagesOptions {
   pageLimit: number;
   /** Set `untilAttach: true` on the underlying history query for gapless continuity with live subscriptions. Default: true. */
   untilAttach?: boolean;
-  /**
-   * Stop paginating when the oldest message in a page is older than
-   * `Date.now() - lookbackMs`. Used by the agent's input-event scan to
-   * bound the lookback window. Omit for unbounded walks.
-   */
-  lookbackMs?: number;
   /** AbortSignal checked between pages. Rejects with InvalidArgument when aborted. */
   signal?: AbortSignal;
   /** Max retries per `page.next()` / initial `history()` failure. Default: 3. */
@@ -61,8 +53,8 @@ export interface HistoryPagesCursor {
   hasNext(): boolean;
   /**
    * Fetch the next Ably page's messages (newest-first within the page).
-   * Returns `undefined` when no more pages are available, the `lookbackMs`
-   * limit has been reached, or the abort signal has fired.
+   * Returns `undefined` when no more pages are available or the abort
+   * signal has fired.
    */
   next(): Promise<readonly Ably.InboundMessage[] | undefined>;
 }
@@ -163,7 +155,7 @@ export const loadHistoryPages = async (
   channel: Ably.RealtimeChannel,
   options: LoadHistoryPagesOptions,
 ): Promise<HistoryPagesCursor> => {
-  const { pageLimit, untilAttach = true, lookbackMs, signal, maxRetries = 3, retryBackoffMs = 100, logger } = options;
+  const { pageLimit, untilAttach = true, signal, maxRetries = 3, retryBackoffMs = 100, logger } = options;
 
   if (signal?.aborted) {
     throw new Ably.ErrorInfo('unable to load history; signal aborted', ErrorCode.InvalidArgument, 400);
@@ -172,8 +164,6 @@ export const loadHistoryPages = async (
   await channel.attach();
 
   const historyParams: Ably.RealtimeHistoryParams = { limit: pageLimit, untilAttach };
-
-  const lookbackThreshold = lookbackMs === undefined ? undefined : Date.now() - lookbackMs;
 
   let currentPage: Ably.PaginatedResult<Ably.InboundMessage> | undefined = await fetchPageWithRetry(
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- channel.history returns a real Promise
@@ -185,23 +175,13 @@ export const loadHistoryPages = async (
   );
   let firstYielded = false;
 
-  // Walk an Ably page to determine whether the lookback boundary has been
-  // crossed (the oldest message in the page is older than the threshold).
-  const oldestPastThreshold = (page: Ably.PaginatedResult<Ably.InboundMessage>): boolean => {
-    if (lookbackThreshold === undefined) return false;
-    const oldest = page.items.at(-1);
-    const oldestTimestamp = oldest?.timestamp;
-    return oldestTimestamp !== undefined && oldestTimestamp < lookbackThreshold;
-  };
-
   // Compute whether the cursor has another page available. Cheap — no
-  // network. Reflects the latest fetched page's `hasNext()` plus our own
-  // bound checks (lookbackMs, signal).
+  // network. Reflects the latest fetched page's `hasNext()` plus the signal
+  // check.
   const hasNext = (): boolean => {
     if (currentPage === undefined) return false;
     if (signal?.aborted) return false;
     if (!firstYielded) return true;
-    if (oldestPastThreshold(currentPage)) return false;
     return currentPage.hasNext();
   };
 
@@ -213,14 +193,7 @@ export const loadHistoryPages = async (
 
     if (!firstYielded) {
       firstYielded = true;
-      const items = currentPage.items;
-      if (oldestPastThreshold(currentPage)) {
-        logger?.debug('loadHistoryPages.next(); oldest message past lookback threshold', {
-          lookbackThreshold,
-        });
-        currentPage = undefined;
-      }
-      return items;
+      return currentPage.items;
     }
 
     if (!currentPage.hasNext()) {
@@ -240,14 +213,7 @@ export const loadHistoryPages = async (
       return undefined;
     }
     currentPage = nextPage;
-    const items = nextPage.items;
-    if (oldestPastThreshold(nextPage)) {
-      logger?.debug('loadHistoryPages.next(); oldest message past lookback threshold', {
-        lookbackThreshold,
-      });
-      currentPage = undefined;
-    }
-    return items;
+    return nextPage.items;
   };
 
   return { hasNext, next };

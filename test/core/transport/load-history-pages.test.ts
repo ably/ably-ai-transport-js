@@ -3,12 +3,11 @@
  *
  * `loadHistoryPages` is the cursor-based pagination engine consumed by
  * `load-history.ts` (client side, wrapped with the completion counter)
- * and by the agent session (`_findInputEvent` / `_walkConversation`).
+ * and by the agent's `AgentView` (input-event lookup / conversation walk).
  * These tests verify the contract independently of either consumer:
  *
  *  - cursor `hasNext()` reflects the underlying paginated result
  *  - `next()` returns wires newest-first within each page
- *  - `lookbackMs` stops paginating once the oldest in a page is older than the threshold
  *  - per-page failures are retried with bounded backoff
  *  - signal aborts surface as `InvalidArgument`
  */
@@ -25,17 +24,11 @@ const nextSerial = (): string => {
   return `01H${String(serialCounter).padStart(10, '0')}`;
 };
 
-interface MsgOpts {
-  serial?: string;
-  timestamp?: number;
-}
-
-const ablyMsg = (opts: MsgOpts = {}): Ably.InboundMessage =>
+const ablyMsg = (): Ably.InboundMessage =>
   ({
     name: 'msg',
     action: 'message.create',
-    serial: opts.serial ?? nextSerial(),
-    timestamp: opts.timestamp ?? Date.now(),
+    serial: nextSerial(),
     extras: { ai: { transport: {} } },
   }) as unknown as Ably.InboundMessage;
 
@@ -104,30 +97,6 @@ describe('loadHistoryPages', () => {
     const { channel, historyMock } = createMockChannel([[ablyMsg()]]);
     await loadHistoryPages(channel, { pageLimit: 10 });
     expect(historyMock).toHaveBeenCalledWith({ limit: 10, untilAttach: true });
-  });
-
-  it('stops paginating when the oldest message in a page is past the lookback threshold', async () => {
-    const now = Date.now();
-    // Recent wires in the first page, older wires in the second.
-    const recent1 = ablyMsg({ timestamp: now });
-    const recent2 = ablyMsg({ timestamp: now - 1000 });
-    const old1 = ablyMsg({ timestamp: now - 5 * 60_000 });
-    const old2 = ablyMsg({ timestamp: now - 6 * 60_000 });
-    const { channel } = createMockChannel([
-      [recent1, recent2],
-      [old1, old2],
-    ]);
-
-    const cursor = await loadHistoryPages(channel, { pageLimit: 2, lookbackMs: 60_000 });
-    const first = await cursor.next();
-    expect(first).toEqual([recent1, recent2]);
-    // The oldest in the first page is within the threshold (1s ago), so
-    // pagination continues. The next page's oldest is 6m ago — beyond the
-    // threshold — so the cursor stops AFTER yielding that page.
-    expect(cursor.hasNext()).toBe(true);
-    const second = await cursor.next();
-    expect(second).toEqual([old1, old2]);
-    expect(cursor.hasNext()).toBe(false);
   });
 
   it('retries the initial history call with backoff before rejecting `HistoryFetchFailed`', async () => {

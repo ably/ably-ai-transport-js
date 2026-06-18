@@ -3,6 +3,7 @@ import type { Mock } from 'vitest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  EVENT_RUN_END,
   EVENT_RUN_RESUME,
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
@@ -12,6 +13,7 @@ import {
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_ID,
+  HEADER_RUN_REASON,
 } from '../../../src/constants.js';
 import type { Codec, CodecEvent, CodecInputEvent, Decoder, ReducerMeta } from '../../../src/core/codec/types.js';
 import { createWireApplier } from '../../../src/core/transport/decode-fold.js';
@@ -246,6 +248,73 @@ const linearChainHeaders = (i: number): Record<string, string> => {
   if (i > 0) h[HEADER_PARENT] = `mh${String(i - 1)}`;
   return h;
 };
+
+/**
+ * History fixture where message-counting diverges from run-counting: the
+ * newest run `R-multi` contributes two codecMessages (`m-a`, `m-b`) while the
+ * older `R0` contributes one — all on a linear chain so both stay visible.
+ * @returns Raw wires, oldest-first.
+ */
+const multiMessagePage = (): Ably.InboundMessage[] => {
+  const headers = [
+    { [HEADER_RUN_ID]: 'R0', [HEADER_CODEC_MESSAGE_ID]: 'mh0' },
+    { [HEADER_RUN_ID]: 'R-multi', [HEADER_CODEC_MESSAGE_ID]: 'm-a', [HEADER_PARENT]: 'mh0' },
+    { [HEADER_RUN_ID]: 'R-multi', [HEADER_CODEC_MESSAGE_ID]: 'm-b', [HEADER_PARENT]: 'mh0' },
+  ];
+  return headers.map(
+    (h, i) =>
+      ({
+        name: 'fake',
+        serial: `s${String(i)}`,
+        version: { serial: `s${String(i)}` },
+        extras: { ai: { transport: h } },
+      }) as unknown as Ably.InboundMessage,
+  );
+};
+
+/**
+ * A content wire carrying one codecMessage for `runId`, on its own (dangling)
+ * parent so several such runs stay distinct visible runs rather than collapsing
+ * as same-parent siblings.
+ * @param runId - The reply run id.
+ * @param msgId - The codec-message-id of the content message.
+ * @param serial - The wire serial (orders the runs).
+ * @returns The content wire.
+ */
+const contentWire = (runId: string, msgId: string, serial: string): Ably.InboundMessage =>
+  ({
+    name: 'fake',
+    serial,
+    version: { serial },
+    extras: {
+      ai: { transport: { [HEADER_RUN_ID]: runId, [HEADER_CODEC_MESSAGE_ID]: msgId, [HEADER_PARENT]: `p-${runId}` } },
+    },
+  }) as unknown as Ably.InboundMessage;
+
+/**
+ * A run-lifecycle wire (`name`) for `runId`. Pass `reason` on a run-end to mark
+ * the run terminal.
+ * @param name - The lifecycle event name (run-start/run-end/etc.).
+ * @param runId - The run id.
+ * @param serial - The wire serial.
+ * @param reason - Optional run-end reason (marks the run terminal).
+ * @returns The lifecycle wire.
+ */
+const lifecycleWire = (name: string, runId: string, serial: string, reason?: string): Ably.InboundMessage =>
+  ({
+    name,
+    serial,
+    extras: {
+      ai: {
+        transport: {
+          [HEADER_RUN_ID]: runId,
+          [HEADER_PARENT]: `p-${runId}`,
+          'run-client-id': '',
+          ...(reason !== undefined && { [HEADER_RUN_REASON]: reason }),
+        },
+      },
+    },
+  }) as unknown as Ably.InboundMessage;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1792,11 +1861,12 @@ describe('DefaultView', () => {
       await p1;
     });
 
-    it('withholds excess Runs and drains them on subsequent loadOlder calls without re-fetching', async () => {
+    it('withholds excess nodes by message count and drains them on subsequent loadOlder calls without re-fetching', async () => {
       // First page reveals 3 Runs (R0, R1, R2) on a linear chain (each parented
       // at the prior run's message — two same-parent reply runs would collapse
-      // as regenerate siblings in the two-node model). With limit=2 the View
-      // reveals the newest 2 and withholds the oldest in the buffer.
+      // as regenerate siblings in the two-node model). Each run here contributes
+      // exactly one codecMessage, so a message limit of 2 reveals the newest 2
+      // nodes and withholds the oldest in the buffer.
       const rawMessages = [0, 1, 2].map(
         (i) =>
           ({
@@ -1829,6 +1899,56 @@ describe('DefaultView', () => {
           .map((r) => r.runId)
           .toSorted(),
       ).toEqual(['R0', 'R1', 'R2']);
+      expect(vi.mocked(loadHistory)).toHaveBeenCalledTimes(1);
+    });
+
+    it('counts codecMessages, not runs: a multi-message run fills the page limit alone', async () => {
+      // Nodes oldest→newest: R0 (1 msg), R-multi (2 msgs). With a message limit
+      // of 2, the newest run alone reaches the limit, so only R-multi is
+      // revealed and R0 is withheld — run-counting would have revealed both.
+      const v = makeView(headerDecoder());
+      vi.mocked(loadHistory).mockResolvedValueOnce(makePage(multiMessagePage()));
+
+      await v.loadOlder(2);
+      expect(v.runs().map((r) => r.runId)).toEqual(['R-multi']);
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['m-a', 'm-b']);
+      expect(v.hasOlder()).toBe(true);
+
+      // Draining reveals the withheld R0 without a second fetch.
+      await v.loadOlder(2);
+      expect(
+        v
+          .runs()
+          .map((r) => r.runId)
+          .toSorted(),
+      ).toEqual(['R-multi', 'R0'].toSorted());
+      expect(vi.mocked(loadHistory)).toHaveBeenCalledTimes(1);
+    });
+
+    it('partially reveals a node at the boundary so a page lands exactly on the message limit', async () => {
+      // R-multi carries 2 messages. Revealing one message at a time slices the
+      // node: loadOlder(1) shows only its newest message, the next reveals the
+      // rest, then the older R0 — never overshooting the limit.
+      const v = makeView(headerDecoder());
+      vi.mocked(loadHistory).mockResolvedValueOnce(makePage(multiMessagePage()));
+
+      // Exactly 1 message: R-multi's newest only. R-multi is partially revealed
+      // (still a visible run), R0 stays hidden.
+      await v.loadOlder(1);
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['m-b']);
+      expect(v.runs().map((r) => r.runId)).toEqual(['R-multi']);
+      expect(v.hasOlder()).toBe(true);
+
+      // Next message reveals the rest of R-multi (no re-fetch — already buffered).
+      await v.loadOlder(1);
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['m-a', 'm-b']);
+      expect(v.hasOlder()).toBe(true);
+
+      // Final message reveals R0; history is now exhausted.
+      await v.loadOlder(1);
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['mh0', 'm-a', 'm-b']);
+      expect(v.runs().map((r) => r.runId)).toEqual(['R0', 'R-multi']);
+      expect(v.hasOlder()).toBe(false);
       expect(vi.mocked(loadHistory)).toHaveBeenCalledTimes(1);
     });
 
@@ -1941,6 +2061,35 @@ describe('DefaultView', () => {
       const nodes = view.runs();
       expect(nodes.map((n) => n.runId)).toEqual(['R-empty']);
       expect(view.getMessages()).toEqual([]);
+    });
+
+    it('does not surface a terminal contentless run left half-loaded below the pagination window', async () => {
+      // Regression: paginating by codecMessage can stop mid-history, leaving an
+      // older COMPLETED run whose content never folded (run-start + run-end, no
+      // message) as a contentless node. It must not leak into runs(): it owns no
+      // visible message and is terminal, not an in-progress run. (A *contentless
+      // in-progress* run — active/suspended, no run-end — still shows; covered
+      // by the zero-message and suspended-run tests above.)
+      const v = makeView(headerDecoder());
+      // Oldest run: run-start + run-end, no content → terminal contentless node.
+      // Distinct dangling parents keep the runs from collapsing as siblings;
+      // serials order them oldest → newest.
+      vi.mocked(loadHistory).mockResolvedValueOnce(
+        makePage([
+          lifecycleWire(EVENT_RUN_START, 'R-old', 's00'),
+          lifecycleWire(EVENT_RUN_END, 'R-old', 's00b', 'complete'),
+          contentWire('R-mid', 'a-mid', 's01'),
+          contentWire('R-new', 'a-new', 's02'),
+        ]),
+      );
+
+      // Reveal a single message: the newest (a-new). a-mid is hidden (R-mid owns
+      // it but it's below the window), and the terminal contentless R-old is
+      // excluded — so runs() lists only R-new.
+      await v.loadOlder(1);
+
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['a-new']);
+      expect(v.runs().map((n) => n.runId)).toEqual(['R-new']);
     });
 
     it('reconstructs a suspended run from history (run-suspend marks the run suspended)', async () => {

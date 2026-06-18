@@ -133,7 +133,7 @@ await run.loadConversation();
 
 const result = streamText({ model, messages: run.messages, abortSignal: run.abortSignal });
 const { reason } = await run.pipe(result.toUIMessageStream());
-await run.end(reason);
+await run.end({ reason });
 ```
 
 The client stamps `parent`, `fork-of`, and `msg-regenerate` headers on the published input event. All clients on the channel see these headers and update their local tree; the agent resolves them through `loadConversation`.

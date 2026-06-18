@@ -6,12 +6,16 @@
  * the client session (optimistic message stamping).
  */
 
+import * as Ably from 'ably';
+
 import {
   EVENT_RUN_END,
   EVENT_RUN_RESUME,
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
   HEADER_CODEC_MESSAGE_ID,
+  HEADER_ERROR_CODE,
+  HEADER_ERROR_MESSAGE,
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
@@ -24,6 +28,7 @@ import {
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
 } from '../../constants.js';
+import { ErrorCode } from '../../errors.js';
 import type { RunEndReason, RunLifecycleEvent } from './types.js';
 
 /**
@@ -105,6 +110,11 @@ export const buildTransportHeaders = (opts: {
  * @param opts.inputClientId - ClientId of the triggering input event.
  * @param opts.inputCodecMessageId - Codec-message-id of the triggering input event.
  * @param opts.reason - Terminal reason; stamped on run-end only.
+ * @param opts.errorCode - Numeric error code stamped as `error-code` on
+ *   run-end. Set only when the run ended in error and the agent supplied an
+ *   error to surface; gives codec-agnostic consumers a baseline failure detail.
+ * @param opts.errorMessage - Error message stamped as `error-message` on
+ *   run-end. Paired with `errorCode`; set under the same condition.
  * @returns A headers record with the lifecycle headers set.
  */
 export const buildLifecycleHeaders = (opts: {
@@ -117,6 +127,8 @@ export const buildLifecycleHeaders = (opts: {
   inputClientId?: string;
   inputCodecMessageId?: string;
   reason?: RunEndReason;
+  errorCode?: number;
+  errorMessage?: string;
 }): Record<string, string> => {
   const h: Record<string, string> = {
     [HEADER_RUN_ID]: opts.runId,
@@ -129,6 +141,8 @@ export const buildLifecycleHeaders = (opts: {
   if (opts.invocationId !== undefined) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.inputClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.inputClientId;
   if (opts.inputCodecMessageId !== undefined) h[HEADER_INPUT_CODEC_MESSAGE_ID] = opts.inputCodecMessageId;
+  if (opts.errorCode !== undefined) h[HEADER_ERROR_CODE] = String(opts.errorCode);
+  if (opts.errorMessage !== undefined) h[HEADER_ERROR_MESSAGE] = opts.errorMessage;
   return h;
 };
 
@@ -150,6 +164,26 @@ type RunLifecycleName =
  */
 export const isRunLifecycleName = (name: string | undefined): name is RunLifecycleName =>
   name === EVENT_RUN_START || name === EVENT_RUN_SUSPEND || name === EVENT_RUN_RESUME || name === EVENT_RUN_END;
+
+/**
+ * Reconstruct the terminal `Ably.ErrorInfo` for a run that ended in error, from
+ * its run-end transport headers. Reads the `error-code` / `error-message`
+ * headers the agent stamps (see {@link buildLifecycleHeaders}); falls back to a
+ * generic code/message when a run ended in error without detail. Single source
+ * of truth for the header→ErrorInfo derivation, shared by the client session's
+ * `on('error')` emit and the Tree's `RunInfo.error`.
+ * @param headers - Transport headers from the inbound run-end message.
+ * @returns The reconstructed terminal error.
+ */
+export const buildRunEndError = (headers: Record<string, string>): Ably.ErrorInfo => {
+  const codeRaw = headers[HEADER_ERROR_CODE];
+  const parsedCode = codeRaw === undefined ? Number.NaN : Number(codeRaw);
+  const code = Number.isFinite(parsedCode) ? parsedCode : ErrorCode.SessionSubscriptionError;
+  const message = headers[HEADER_ERROR_MESSAGE] ?? 'agent reported an error';
+  // 5-digit codes encode their HTTP status in the leading 3 digits; otherwise 500.
+  const statusCode = code >= 10000 && code < 60000 ? Math.floor(code / 100) : 500;
+  return new Ably.ErrorInfo(message, code, statusCode);
+};
 
 /**
  * Parse an inbound run-lifecycle Ably message into a {@link RunLifecycleEvent}.
@@ -208,15 +242,20 @@ export const parseRunLifecycle = (
   if (name === EVENT_RUN_END) {
     // CAST: agent always writes a valid RunEndReason; default to 'complete' for robustness.
     const reason = (headers[HEADER_RUN_REASON] ?? 'complete') as RunEndReason;
-    return {
-      type: 'end',
-      runId,
-      clientId,
-      serial,
-      invocationId: headers[HEADER_INVOCATION_ID] ?? '',
-      reason,
-      ...stamped,
-    };
+    const invocationId = headers[HEADER_INVOCATION_ID] ?? '';
+    if (reason === 'error') {
+      return {
+        type: 'end',
+        runId,
+        clientId,
+        serial,
+        invocationId,
+        reason,
+        ...stamped,
+        error: buildRunEndError(headers),
+      };
+    }
+    return { type: 'end', runId, clientId, serial, invocationId, reason, ...stamped };
   }
 
   return undefined;

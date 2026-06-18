@@ -1,4 +1,4 @@
-import type * as Ably from 'ably';
+import * as Ably from 'ably';
 import type { Mock } from 'vitest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -2136,6 +2136,7 @@ describe('DefaultView', () => {
         clientId: 'c',
         invocationId: '',
         reason: 'error',
+        error: new Ably.ErrorInfo('boom', 104008, 500),
         serial: 's3',
       });
 

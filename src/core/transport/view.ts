@@ -251,8 +251,8 @@ const _runTailSplitIndex = <TProjection>(nodes: ConversationNode<TProjection>[],
 const _toRunInfo = <TProjection>(run: RunNode<TProjection>): RunInfo => ({
   runId: run.runId,
   clientId: run.clientId,
-  status: run.status,
   invocationId: run.invocationId,
+  ...run.state,
 });
 
 // ---------------------------------------------------------------------------

@@ -31,16 +31,8 @@ export interface LoadHistoryOptions {
 // View — windowed projection over the tree
 // ---------------------------------------------------------------------------
 
-/**
- * Projection-free, View-facing snapshot of a Run.
- *
- * Exposes the Run facts a UI consumer needs (`runId`, owner `clientId`,
- * lifecycle `status`, `invocationId`) without leaking the codec's
- * opaque per-Run projection or the Tree's structural fields. Callers
- * that need the full Run record (parent / fork relationships, serials,
- * projection) reach `session.tree.getRunNode(runId)` directly.
- */
-export interface RunInfo {
+/** Fields common to every {@link RunInfo} arm. */
+interface RunInfoBase {
   /** The Run's unique identifier. */
   runId: string;
   /**
@@ -48,14 +40,6 @@ export interface RunInfo {
    * when the wire didn't carry an owner client id.
    */
   clientId: string;
-  /**
-   * Run lifecycle status. `'active'` while the Run is streaming;
-   * `'suspended'` while it is paused awaiting input (still live, a
-   * continuation re-activates it); otherwise the {@link RunEndReason} the Run
-   * terminated with. Literal lifecycle vocabulary — UIs that want `'streaming'`
-   * rendering language translate at the component boundary.
-   */
-  status: 'active' | 'suspended' | RunEndReason;
   /**
    * The agent-minted `invocationId` observed for this Run, adopted from the
    * wire `ai-run-start`. Stable across the Run's lifecycle once observed.
@@ -65,6 +49,48 @@ export interface RunInfo {
    */
   invocationId: string;
 }
+
+/**
+ * Projection-free, View-facing snapshot of a Run.
+ *
+ * Exposes the Run facts a UI consumer needs (`runId`, owner `clientId`,
+ * lifecycle `status`, `invocationId`, and — only when it failed — the terminal
+ * `error`) without leaking the codec's opaque per-Run projection or the Tree's
+ * structural fields. Callers that need the full Run record (parent / fork
+ * relationships, serials, projection) reach `session.tree.getRunNode(runId)`
+ * directly.
+ *
+ * Discriminated on `status`: a Run with `status: 'error'` carries the terminal
+ * `error`; every other status has no `error`. So `info.error` is defined
+ * exactly when `info.status === 'error'`.
+ */
+export type RunInfo =
+  | (RunInfoBase & {
+      /**
+       * Run lifecycle status. `'active'` while the Run is streaming;
+       * `'suspended'` while it is paused awaiting input (still live, a
+       * continuation re-activates it); otherwise the non-error terminal
+       * {@link RunEndReason} (`'complete'` or `'cancelled'`). Literal lifecycle
+       * vocabulary — UIs that want `'streaming'` rendering language translate
+       * at the component boundary. The `'error'` terminal status lives on the
+       * other arm of this union, where it is paired with the terminal `error`.
+       */
+      status: 'active' | 'suspended' | Exclude<RunEndReason, 'error'>;
+      /** Never present for a non-error status. */
+      error?: never;
+    })
+  | (RunInfoBase & {
+      /** Terminal error status — the Run ended with {@link RunEndReason} `'error'`, carrying the terminal `error` below. */
+      status: 'error';
+      /**
+       * The terminal error. Carries the agent-stamped `error-code` /
+       * `error-message` detail (or a generic fallback when the run ended in
+       * error without detail), so a UI can show *why* a run failed alongside
+       * its `'error'` status. Mirrors the `Ably.ErrorInfo` delivered via
+       * `ClientSession.on('error')`.
+       */
+      error: Ably.ErrorInfo;
+    });
 
 /**
  * Bundle returned by {@link View.branchSelection} describing the

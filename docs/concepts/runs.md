@@ -27,7 +27,7 @@ await run.loadConversation();
 const { reason } = await run.pipe(llmStream);
 
 // 4. Publish run-end event with the completion reason
-await run.end(reason);
+await run.end({ reason });
 ```
 
 `createRun()` is synchronous - it creates the run and registers it for cancel routing, but doesn't touch the channel. This means a cancel signal that arrives before `start()` still fires the run's `AbortSignal`. The invocation body carries only `inputEventId` and `sessionName` — run identity and the user's prompt both live on the channel. `run.start()` locates the triggering input event (via channel rewind) and opens the run on the channel (`ai-run-start`, or `ai-run-resume` when the input re-enters an existing run). The run id itself is assigned when the run is created, not in `start()`. `run.loadConversation()` hydrates `run.messages` from the channel so you can feed them to the model.
@@ -40,7 +40,7 @@ await run.end(reason);
 | `'cancelled'` | A client published a cancel signal that matched this run |
 | `'error'`     | The stream or encoder encountered an error               |
 
-Pass `reason` to `end()` so all clients see why the run ended.
+Pass `reason` to `end()` so all clients see why the run ended. To give clients specific detail for a run that ends in `error`, you can optionally pass an `Ably.ErrorInfo`: `run.end({ reason: 'error', error: new Ably.ErrorInfo(message, code, statusCode) })`.
 
 ### Client side
 
@@ -118,8 +118,8 @@ await runB.start();
 
 // Each streams independently
 await Promise.all([
-  runA.pipe(streamA).then(({ reason }) => runA.end(reason)),
-  runB.pipe(streamB).then(({ reason }) => runB.end(reason)),
+  runA.pipe(streamA).then(({ reason }) => runA.end({ reason })),
+  runB.pipe(streamB).then(({ reason }) => runB.end({ reason })),
 ]);
 ```
 

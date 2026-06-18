@@ -58,7 +58,7 @@ const result = streamText({ model, messages: run.messages, abortSignal: run.abor
 const pipeResult = await run.pipe(result.toUIMessageStream());
 
 const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
-if (outcome === 'suspend') {
+if (outcome.reason === 'suspend') {
   await run.suspend();
 } else {
   await run.end(outcome);

@@ -64,9 +64,12 @@ export async function POST(req: Request) {
   after(async () => {
     const pipeResult = await run.pipe(result.toUIMessageStream());
     const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
-    if (outcome === 'suspend') {
+    if (outcome.reason === 'suspend') {
       await run.suspend();
     } else {
+      // We choose to forward the run's terminal error so clients can show why
+      // the run failed; a server could omit it to avoid exposing internal
+      // failure detail.
       await run.end(outcome);
     }
     await session.close();

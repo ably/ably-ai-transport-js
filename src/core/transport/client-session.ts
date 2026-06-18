@@ -24,8 +24,6 @@ import {
   EVENT_CANCEL,
   EVENT_RUN_END,
   HEADER_CODEC_MESSAGE_ID,
-  HEADER_ERROR_CODE,
-  HEADER_ERROR_MESSAGE,
   HEADER_EVENT_ID,
   HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
@@ -43,7 +41,7 @@ import { registerAgent } from '../agent.js';
 import { resolveChannelModes } from '../channel-options.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent, Encoder } from '../codec/types.js';
 import { createWireApplier, type WireApplier } from './decode-fold.js';
-import { buildTransportHeaders } from './headers.js';
+import { buildRunEndError, buildTransportHeaders } from './headers.js';
 import { Invocation } from './invocation.js';
 import { bestEffortDetach, continuityLostError, isContinuityLost, requireConnected } from './session-support.js';
 import type { DefaultTree } from './tree.js';
@@ -301,16 +299,11 @@ class DefaultClientSession<
         // CAST: agent always writes a valid RunEndReason; default to 'complete' for robustness
         const reason = (headers[HEADER_RUN_REASON] ?? 'complete') as RunEndReason;
         if (reason === 'error') {
-          const codeRaw = headers[HEADER_ERROR_CODE];
-          const parsedCode = codeRaw === undefined ? Number.NaN : Number(codeRaw);
-          const code = Number.isFinite(parsedCode) ? parsedCode : ErrorCode.SessionSubscriptionError;
-          const message = headers[HEADER_ERROR_MESSAGE] ?? 'agent reported an error';
-          const statusCode = code >= 10000 && code < 60000 ? Math.floor(code / 100) : 500;
-          const errInfo = new Ably.ErrorInfo(message, code, statusCode);
+          const errInfo = buildRunEndError(headers);
           this._logger.error('ClientSession._handleMessage(); agent error received', {
             runId: headers[HEADER_RUN_ID],
             invocationId: headers[HEADER_INVOCATION_ID],
-            code,
+            code: errInfo.code,
           });
           this._emitter.emit('error', errInfo);
         }

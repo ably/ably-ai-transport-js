@@ -239,6 +239,25 @@ export interface LoadConversationOptions {
 }
 
 /**
+ * How a run terminates, passed to {@link Run.end}. Discriminated on `reason`:
+ * an `'error'` end may carry a terminal `error`; any other reason carries none.
+ */
+export type RunEndParams =
+  | {
+      /** Why the run ended — any terminal reason other than `'error'`. */
+      reason: Exclude<RunEndReason, 'error'>;
+    }
+  | {
+      /** The run ended in error. */
+      reason: 'error';
+      /**
+       * Optional terminal error to surface to clients. Omit to end in error
+       * without detail.
+       */
+      error?: Ably.ErrorInfo;
+    };
+
+/**
  * A server-side run with explicit lifecycle methods. Generic over the codec's
  * output, projection, and message types. `TProjection` is retained for
  * parameter symmetry with {@link AgentSession.createRun}; it does not
@@ -330,8 +349,11 @@ export interface Run<TOutput extends CodecOutputEvent, TProjection, TMessage> {
    */
   suspend(): Promise<void>;
 
-  /** Publish run-end event to the channel and clean up. Terminal. */
-  end(reason: RunEndReason): Promise<void>;
+  /**
+   * Publish run-end event to the channel and clean up. Terminal.
+   * @param params - How the run ended; see {@link RunEndParams}.
+   */
+  end(params: RunEndParams): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------

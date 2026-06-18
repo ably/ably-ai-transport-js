@@ -65,7 +65,10 @@ export interface RunManager {
    * run-reason header) and drops the run's active-run entry. Carries the same
    * per-invocation attribution as {@link suspendRun} (`invocationId`,
    * `inputClientId`, `inputCodecMessageId`), since run-end is the terminal event
-   * of the ending invocation.
+   * of the ending invocation. When `reason` is `'error'` and an `error` is
+   * supplied, its `code` and `message` are additionally stamped as the
+   * `error-code` / `error-message` headers — a codec-agnostic baseline failure
+   * detail for consumers; omitting `error` publishes a bare `reason: 'error'`.
    */
   endRun(
     runId: string,
@@ -73,6 +76,7 @@ export interface RunManager {
     invocationId?: string,
     inputClientId?: string,
     inputCodecMessageId?: string,
+    error?: Ably.ErrorInfo,
   ): Promise<void>;
   /** Get the clientId that owns a run. */
   getClientId(runId: string): string | undefined;
@@ -161,9 +165,20 @@ class DefaultRunManager implements RunManager {
     invocationId?: string,
     inputClientId?: string,
     inputCodecMessageId?: string,
+    error?: Ably.ErrorInfo,
   ): Promise<void> {
     this._logger?.trace('DefaultRunManager.endRun();', { runId, reason });
-    await this._publishTerminal(EVENT_RUN_END, runId, { reason, invocationId, inputClientId, inputCodecMessageId });
+    // Stamp error detail only for a terminal error the agent chose to surface
+    // (AIT-ST6b4: explicit, never automatic). error-code / error-message are
+    // generic transport headers, so any codec or consumer can read them.
+    const errorAttribution = reason === 'error' && error ? { errorCode: error.code, errorMessage: error.message } : {};
+    await this._publishTerminal(EVENT_RUN_END, runId, {
+      reason,
+      invocationId,
+      inputClientId,
+      inputCodecMessageId,
+      ...errorAttribution,
+    });
     this._logger?.debug('DefaultRunManager.endRun(); run ended', { runId, reason });
   }
 
@@ -180,6 +195,8 @@ class DefaultRunManager implements RunManager {
    * @param attribution.invocationId - The invocation's id.
    * @param attribution.inputClientId - ClientId of the triggering input event.
    * @param attribution.inputCodecMessageId - Codec-message-id of the triggering input event.
+   * @param attribution.errorCode - Numeric error code; set for run-end only when a terminal error is surfaced.
+   * @param attribution.errorMessage - Error message; paired with errorCode.
    */
   private async _publishTerminal(
     eventName: string,
@@ -189,6 +206,8 @@ class DefaultRunManager implements RunManager {
       invocationId?: string;
       inputClientId?: string;
       inputCodecMessageId?: string;
+      errorCode?: number;
+      errorMessage?: string;
     },
   ): Promise<void> {
     const resolvedClientId = this._activeRuns.get(runId)?.clientId ?? '';

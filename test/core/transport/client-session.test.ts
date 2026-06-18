@@ -1289,7 +1289,7 @@ describe('ClientSession', () => {
       expect(lifecycle[1]?.type).toBe('suspend');
       // The run stays in the tree, marked suspended — a continuation that
       // reuses the runId resumes it.
-      expect(fix.session.tree.getRunNode('run-S')?.status).toBe('suspended');
+      expect(fix.session.tree.getRunNode('run-S')?.state.status).toBe('suspended');
     });
 
     it('re-activates a suspended run on run-resume', () => {
@@ -1308,7 +1308,7 @@ describe('ClientSession', () => {
           [HEADER_INVOCATION_ID]: 'inv-1',
         }),
       );
-      expect(fix.session.tree.getRunNode('run-R')?.status).toBe('suspended');
+      expect(fix.session.tree.getRunNode('run-R')?.state.status).toBe('suspended');
 
       simulateMessage(
         fix.channel,
@@ -1320,7 +1320,7 @@ describe('ClientSession', () => {
       );
 
       expect(lifecycle.at(-1)?.type).toBe('resume');
-      expect(fix.session.tree.getRunNode('run-R')?.status).toBe('active');
+      expect(fix.session.tree.getRunNode('run-R')?.state.status).toBe('active');
     });
 
     it('surfaces regenerates on the run-start event when msg-regenerate is set', () => {
@@ -1578,7 +1578,7 @@ describe('ClientSession', () => {
       );
 
       // The run reaches a terminal state.
-      expect(s.tree.getRunNode(runId)?.status).toBe('complete');
+      expect(s.tree.getRunNode(runId)?.state.status).toBe('complete');
       await s.close();
     });
 
@@ -1636,7 +1636,7 @@ describe('ClientSession', () => {
       );
 
       // applyRunLifecycle marks the Run complete.
-      expect(fix.session.tree.getRunNode(runId)?.status).toBe('complete');
+      expect(fix.session.tree.getRunNode(runId)?.state.status).toBe('complete');
     });
 
     it('continuation run reaches status=complete live after suspended → continuation → complete sequence', async () => {
@@ -1659,7 +1659,7 @@ describe('ClientSession', () => {
           [HEADER_INVOCATION_ID]: 'inv-1',
         }),
       );
-      expect(fix.session.tree.getRunNode(runId)?.status).toBe('suspended');
+      expect(fix.session.tree.getRunNode(runId)?.state.status).toBe('suspended');
 
       // Continuation send under the same runId; the agent mints a fresh
       // invocation-id when it wakes for the continuation.
@@ -1674,7 +1674,7 @@ describe('ClientSession', () => {
           [HEADER_INVOCATION_ID]: 'inv-2',
         }),
       );
-      expect(fix.session.tree.getRunNode(runId)?.status).toBe('active');
+      expect(fix.session.tree.getRunNode(runId)?.state.status).toBe('active');
 
       // Continuation run-end (complete).
       simulateMessage(
@@ -1690,7 +1690,7 @@ describe('ClientSession', () => {
       // The continuation's run-end must apply — otherwise the Run stays
       // at status=active and any UI gating on Run status sticks on
       // "streaming" / shows "Stop" forever.
-      expect(fix.session.tree.getRunNode(runId)?.status).toBe('complete');
+      expect(fix.session.tree.getRunNode(runId)?.state.status).toBe('complete');
     });
 
     it('processes continuation run-end on an observer session', () => {
@@ -1720,7 +1720,7 @@ describe('ClientSession', () => {
           [HEADER_INVOCATION_ID]: inv1,
         }),
       );
-      expect(fix.session.tree.getRunNode('run-obs')?.status).toBe('suspended');
+      expect(fix.session.tree.getRunNode('run-obs')?.state.status).toBe('suspended');
 
       // Continuation run-resume (inv2) — agent resumes after tool-output.
       simulateMessage(
@@ -1731,7 +1731,7 @@ describe('ClientSession', () => {
           [HEADER_INVOCATION_ID]: inv2,
         }),
       );
-      expect(fix.session.tree.getRunNode('run-obs')?.status).toBe('active');
+      expect(fix.session.tree.getRunNode('run-obs')?.state.status).toBe('active');
 
       // Continuation completes.
       simulateMessage(
@@ -1746,7 +1746,7 @@ describe('ClientSession', () => {
 
       // The continuation's run-end is applied and the Run reaches a
       // terminal state.
-      expect(fix.session.tree.getRunNode('run-obs')?.status).toBe('complete');
+      expect(fix.session.tree.getRunNode('run-obs')?.state.status).toBe('complete');
     });
 
     it('processes a continuation run-end carrying a fresh invocation', async () => {
@@ -2062,6 +2062,66 @@ describe('ClientSession', () => {
         }),
       );
       expect(calls).toEqual(['a', 'b']);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // run-end error detail
+  // -------------------------------------------------------------------------
+
+  describe('run-end error detail', () => {
+    it('surfaces the stamped error via on(error) and RunInfo.error', () => {
+      const errors: Ably.ErrorInfo[] = [];
+      fix.session.on('error', (e) => errors.push(e));
+
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_START, { [HEADER_RUN_ID]: 'run-err', [HEADER_RUN_CLIENT_ID]: 'other' }),
+      );
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: 'run-err',
+          [HEADER_RUN_CLIENT_ID]: 'other',
+          [HEADER_RUN_REASON]: 'error',
+          [HEADER_ERROR_CODE]: '104008',
+          [HEADER_ERROR_MESSAGE]: 'invalid x-api-key',
+        }),
+      );
+
+      // on('error') carries the stamped detail, not the generic fallback.
+      expect(errors).toHaveLength(1);
+      expect(errors[0]?.code).toBe(104008);
+      expect(errors[0]?.message).toBe('invalid x-api-key');
+
+      // RunInfo.error exposes the same detail for declarative per-run rendering.
+      const run = fix.session.view.run('run-err');
+      expect(run?.status).toBe('error');
+      expect(run?.error?.code).toBe(104008);
+      expect(run?.error?.message).toBe('invalid x-api-key');
+    });
+
+    it('falls back to a generic error when a run ends in error without detail', () => {
+      const errors: Ably.ErrorInfo[] = [];
+      fix.session.on('error', (e) => errors.push(e));
+
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_START, { [HEADER_RUN_ID]: 'run-bare', [HEADER_RUN_CLIENT_ID]: 'other' }),
+      );
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: 'run-bare',
+          [HEADER_RUN_CLIENT_ID]: 'other',
+          [HEADER_RUN_REASON]: 'error',
+        }),
+      );
+
+      expect(errors[0]?.message).toBe('agent reported an error');
+      const run = fix.session.view.run('run-bare');
+      expect(run?.status).toBe('error');
+      expect(run?.error?.message).toBe('agent reported an error');
     });
   });
 

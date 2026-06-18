@@ -52,7 +52,7 @@ Both runs produce independent event streams. The message list grows with respons
 
 ## Detecting whether a run is streaming
 
-Read the lifecycle status from the latest visible run. `RunInfo.status` is `'active'` while the run is producing chunks, `'suspended'` while it is paused awaiting input (still live), and one of the terminal `RunEndReason` values — `'complete'`, `'cancelled'`, or `'error'` — once it ends. Treat `'active'` and `'suspended'` as "in progress":
+Read the lifecycle status from the latest visible run. `RunInfo.status` is `'active'` while the run is producing chunks, `'suspended'` while it is paused awaiting input (still live), and one of the terminal `RunEndReason` values — `'complete'`, `'cancelled'`, or `'error'` — once it ends. When the status is `'error'`, `RunInfo.error` carries the `Ably.ErrorInfo` describing the failure. Treat `'active'` and `'suspended'` as "in progress":
 
 ```typescript
 const latest = session.view.runs().at(-1);

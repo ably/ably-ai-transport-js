@@ -117,7 +117,7 @@ export async function POST(req: Request) {
   // Stream the response over Ably in the background
   after(async () => {
     const { reason } = await run.pipe(result.toUIMessageStream());
-    await run.end(reason);
+    await run.end({ reason });
     session.close();
   });
 
@@ -254,7 +254,7 @@ await run.start();
 await run.loadConversation();
 
 const { reason } = await run.pipe(aiStream);
-await run.end(reason);
+await run.end({ reason });
 session.close();
 ```
 

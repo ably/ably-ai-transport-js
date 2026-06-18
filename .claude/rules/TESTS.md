@@ -13,7 +13,7 @@ Config: `vitest.config.ts` (unit, excludes `*.integration.test.ts`) and `vitest.
 
 ### Scope
 
-Every exported function and every non-trivial internal module gets its own `__tests__/<module>.test.ts` file. Aim for 90%+ line coverage on non-React code, 80%+ on React hooks.
+Every exported function and every non-trivial internal module gets its own test file. Tests live under `test/`, mirroring the `src/` layout. Aim for 90%+ line coverage on non-React code, 80%+ on React hooks.
 
 ### Style
 
@@ -60,7 +60,7 @@ To run against a different environment, set `VITE_ABLY_ENV`:
 - Unique channel names per test via `uniqueChannelName()` to avoid crosstalk
 - Clean up clients in `afterEach` via `closeAllClients()`
 - 30s test timeout; individual tests should complete in 2-5s
-- Helpers live in `src/__tests__/integration/helpers.ts`
+- Integration helpers live in `test/integration/helpers.ts`
 
 ### Scenarios to cover
 
@@ -73,7 +73,7 @@ Happy-path scenarios that validate the wire protocol and real Ably behavior:
 5. Cancel chain: client cancel -> server abort -> stream closes
 6. Multi-run sequential
 7. Concurrent runs
-8. History hydration: stream a run, new client hydrates from channel history via `decodeHistory`
+8. History hydration: stream a run, new client hydrates conversation state from channel history
 9. Reconnect / resume: client disconnects mid-stream, reconnects, receives the rest
 10. Conversation tree / branching: send, regenerate (fork), verify tree from history
 11. Error propagation: server error mid-stream, client receives and stream closes cleanly

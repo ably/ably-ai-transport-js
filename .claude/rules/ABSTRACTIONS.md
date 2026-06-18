@@ -1,114 +1,85 @@
 # Abstractions
 
-## Directory Layout
+## Layout
 
-```
-src/
-├── core/               # Core SDK — no model/agent library/framework -specific dependencies
-│   ├── codec/          # Core codec definitions
-│   └── transport/      # Core transport definitions
-├── react/              # React bindings
-│   ├── hooks/          # React hooks - one file per hook
-│   │   └── internal/   # Shared hook helpers (not exported)
-│   ├── providers/      # React providers - one file per provider
-│   ├── contexts/       # React contexts - one file per context
-│   └── types/          # Shared React-specific types
-├── vercel/             # Vercel AI SDK specific implementations
-│   ├── codec/          # Vercel codec definition
-│   └── transport/      # Vercel transport definitions
-├── index.ts            # Entry point for @ably/ai-transport
-└── vite.config.ts      # Build config for the main bundle
+The generic layer lives in `src/core/` and `src/react/`; the Vercel layer in
+`src/vercel/` (and `src/vercel/react/`). Within each layer, `codec/` and
+`transport/` are separate concerns. Shared header/event/message-name constants
+and Ably message helpers sit at the top of `src/` (`constants.ts`, `utils.ts`).
+Tests mirror `src/` under `test/`.
 
-test/
-├── core/               # Mirrors src/core/ — unit + integration tests
-├── react/              # Mirrors src/react/
-│   └── helper/         # React-specific test helpers
-└── helper/             # Shared test utilities, custom matchers, setup
+The package ships four entry points, each with its own `index.ts`. That
+`index.ts` is the authoritative list of what is public — only types and
+functions it re-exports are public API.
 
-__mocks__/                            # Module mocks (ably) for unit tests
-demo/                                 # Standalone demo apps (separate package.json)
-└── vercel/                           # Vercel AI SDK demos
-    └── react/                        # Vercel AI SDK React demos
-        └── use-chat/                 # Demo using useChat
-        └── use-client-session/       # Demo using useClientSession
-scripts/                              # Build and validation scripts
-ably-common/                          # Git submodule — shared protocol resources
-```
+| Entry point                       | Purpose                                                                                                          | Peer deps             |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------- | --------------------- |
+| `@ably/ai-transport`              | Core, codec-agnostic transport and codec interfaces (`createClientSession`, `createAgentSession`, `defineCodec`) | `ably`                |
+| `@ably/ai-transport/react`        | Generic React hooks and providers for any codec                                                                  | `ably`, `react`       |
+| `@ably/ai-transport/vercel`       | Vercel AI SDK codec, convenience factories, and the chat-transport adapter                                       | `ably`, `ai`          |
+| `@ably/ai-transport/vercel/react` | React hooks for Vercel's `useChat`                                                                               | `ably`, `ai`, `react` |
 
-## Package Exports
+## Two-layer architecture
 
-The SDK ships four entry points from a single package:
+The codebase splits into a **generic layer** and a **Vercel layer**. This
+separation is the most important invariant to preserve:
 
-| Export path                       | Contains                                                                                                    | Purpose                                                 | External deps                 |
-| --------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- | ----------------------------- |
-| `@ably/ai-transport`              | Generic codec interfaces, `createClientSession`, `createAgentSession`, shared utilities                     | Core primitives — codec-agnostic transport and encoding | `ably` (peer)                 |
-| `@ably/ai-transport/react`        | `ClientSessionProvider`,`useClientSession`, `useView`, `useTree`, `useAblyMessages`                         | Generic React hooks for any codec                       | `ably`, `react` (peers)       |
-| `@ably/ai-transport/vercel`       | `UIMessageCodec`, `createAgentSession`, `createClientSession`, `createChatTransport`, Vercel-specific types | Drop-in Vercel AI SDK integration                       | `ably`, `ai` (peers)          |
-| `@ably/ai-transport/vercel/react` | `useChatTransport`, `useMessageSync`                                                                        | React hooks for Vercel's `useChat`                      | `ably`, `ai`, `react` (peers) |
+- **Generic layer** (`src/core/`, `src/react/`) — defines the
+  `Codec<TEvent, TMessage>` interface and the codec-parameterized transport
+  (`ClientSession`, `AgentSession`, `Tree`, conversation loading). It is
+  framework-agnostic: it must know nothing about Vercel's `UIMessageChunk` or
+  `UIMessage`, and must read or write only transport-tier metadata — never
+  codec-specific domain metadata (see header discipline below).
+- **Vercel layer** (`src/vercel/`) — implements the codec for the Vercel AI
+  SDK and provides convenience factories plus React hooks. Its chat-transport
+  adapter wraps a generic `ClientSession` to satisfy the interface `useChat`
+  expects.
 
-## Two-Layer Architecture
-
-The codebase is split into a **generic layer** and a **Vercel layer**:
-
-### Generic layer (`src/core/`, `src/react/`)
-
-Defines the `Codec<TEvent, TMessage>` interface and provides `ClientSession`, `AgentSession`, `Tree`, and `decodeHistory` — all parameterized by codec. Framework-agnostic; knows nothing about Vercel's `UIMessageChunk` or `UIMessage`. Uses only `x-ably-*` headers — must never reference codec-specific domain headers.
-
-### Vercel layer (`src/vercel/`)
-
-Implements `UIMessageCodec` and provides convenience factories plus React hooks. The `ChatTransport` adapter wraps a generic `ClientSession` to satisfy the `ChatTransport` interface that `useChat` expects.
-
-### Shared (`src/constants.ts`, `src/utils.ts`)
-
-Header/event/message-name constants and Ably message utilities used by both layers.
+Codec and transport are themselves distinct: the **codec** owns the wire
+format (encode/decode of events and messages); the **transport** owns sessions,
+runs, channel I/O, and conversation state. The transport is parameterized by
+the codec and never hardcodes a wire format.
 
 ## Tree / View / Session split
 
-The client-side architecture separates three concerns:
+The client side separates three concerns, with the Tree as the single source
+of truth:
 
-| Component   | Owns                                                                                                           | Events                                                                                                                      |
-| ----------- | -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| **Tree**    | Complete conversation state — every node from live messages and history. Run tracking (active run → clientId). | `update` (any structural change), `ably-message` (every raw message), `run` (start/end) — unfiltered, fires for all changes |
-| **View**    | Pagination window — which history-loaded nodes are visible vs withheld.                                        | Same event names, but **scoped to the visible window** — only fires when the visible output changes                         |
-| **Session** | Write path (send/regenerate/edit/cancel), channel subscription, stream routing, decode loop.                   | `error` only — all data events moved to Tree/View                                                                           |
+- **Tree** — complete conversation state (every node, from live messages and
+  history) and active-run tracking. Emits unfiltered events for every change.
+- **View** — a pagination projection over the Tree: which history-loaded nodes
+  are visible, re-emitting the Tree's events scoped to the visible window.
+- **Session** — the write path (send/regenerate/edit/cancel), channel
+  subscription, and decode loop. Wires the channel into the Tree and exposes
+  both as `session.tree` and `session.view`. Surfaces only an `error` event;
+  all data events live on the Tree and View.
 
-The Tree is the source of truth. The View subscribes to Tree events and re-emits them filtered to what's visible. The Session wires the channel to the Tree and exposes both as `session.tree` and `session.view`.
+## Composition, not inheritance
 
-## Composition, Not Inheritance
+Sessions are assembled from composable parts, not class hierarchies. A
+`ClientSession` composes the codec, the Tree (state) and View (projection), and
+the channel subscription + decode loop. An `AgentSession` composes the codec's
+encoder with per-run stream piping and run tracking for cancel routing.
 
-The SDK uses composition, not inheritance. For example, a session is assembled from composable sub-components:
+## Dependency injection
 
-```
-ClientSession
-├── Codec (encoder + decoder + accumulator)
-├── Tree — branching history, run tracking, unfiltered events
-├── View — paginated projection over the tree, scoped events
-├── StreamRouter — maps run-scoped events to ReadableStream controllers
-└── (channel subscription + decode loop)
+All dependencies are passed through constructors or option objects. There are
+no singletons or service locators.
 
-AgentSession
-├── Codec (encoder)
-├── RunManager — tracks active runs for cancel routing
-└── Run (per request)
-    ├── Encoder instance
-    └── pipeStream — pipes ReadableStream through encoder
-```
+## Class pattern
 
-## Dependency Injection
+Use ES6 classes with the **interface + default implementation** pattern:
 
-All dependencies are passed through constructors. There are no singletons or service locators.
-
-## Class Pattern
-
-Use ES6 classes with the **Interface + Default Implementation** pattern:
-
-- Define a public **interface** for the contract (e.g. `ClientSession`, `Tree`, `View`).
-- Implement it with a **`Default*` class** (e.g. `DefaultClientSession`, `DefaultTree`, `DefaultView`).
-- Export the interface as public API; the class is internal.
+- Define a public **interface** for the contract (e.g. `ClientSession`, `Tree`,
+  `View`).
+- Implement it with a **`Default*` class** (e.g. `DefaultClientSession`,
+  `DefaultTree`, `DefaultView`). The interface is public API; the class is
+  internal.
 
 ### Private state
 
-Use TypeScript `private readonly` fields with underscore prefix. Store all constructor-injected dependencies as private fields:
+Use `private readonly` fields with an underscore prefix. Store all
+constructor-injected dependencies as private fields:
 
 ```ts
 class DefaultView<TEvent, TMessage> implements View<TMessage> {
@@ -124,31 +95,41 @@ class DefaultView<TEvent, TMessage> implements View<TMessage> {
 
 ### Property access
 
-Expose public state via getters that return the interface type, not the implementation:
-
-```ts
-get messages(): Messages {
-  return this._messages;
-}
-```
+Expose public state via getters that return the interface type, not the
+implementation.
 
 ### Factory functions as entry points
 
-Public-facing entry points (e.g. `createClientSession()`) are factory functions that instantiate and wire up the internal classes. Consumers never call `new Default*` directly.
+Public entry points (e.g. `createClientSession()`) are factory functions that
+instantiate and wire up the internal classes. Consumers never call `new
+Default*` directly.
 
-### When to use classes vs plain functions
+### Classes vs plain functions
 
-- **Class**: When a component holds state, manages subscriptions, or has a lifecycle (construct/dispose). Most transport sub-components fall here.
-- **Plain function**: Stateless transformations, one-shot utilities, codec encode/decode functions. If it takes input and returns output with no retained state, it should be a function.
+- **Class** — when a component holds state, manages subscriptions, or has a
+  lifecycle (construct/dispose). Most transport sub-components.
+- **Plain function** — stateless transformations, one-shot utilities, codec
+  encode/decode. Input in, output out, no retained state.
 
-## Summary of Principles
+## Summary of principles
 
-1. **Two-layer split**: Generic transport/codec knows nothing about Vercel. Vercel layer implements the codec and provides convenience wrappers.
-2. **Codec-parameterized**: All generic components are parameterized by `<TEvent, TMessage>` via the `Codec` interface.
-3. **Constructor/option injection**: All dependencies passed explicitly — no singletons, no globals.
-4. **Composition, not inheritance**: Transports compose features; no class hierarchies.
-5. **Interface-first**: Public contracts are TypeScript interfaces. Implementations are internal `Default*` classes, exposed to consumers via factory functions.
-6. **Header discipline**: Generic layer uses only `x-ably-*` headers. Domain-specific headers (e.g. `x-domain-*`) belong in the Vercel layer.
-7. **Explicit exports**: Only types and functions listed in `index.ts` files are public API.
-8. **Features are self-contained**: Each feature manages its own subscriptions, state, and cleanup.
-9. **Single shared channel**: One Ably channel per transport, shared by all features.
+1. **Two-layer split** — the generic transport/codec knows nothing about
+   Vercel; the Vercel layer implements the codec and provides wrappers.
+2. **Codec/transport separation** — codec owns the wire format; transport owns
+   sessions, runs, and state, parameterized by the codec.
+3. **Codec-parameterized** — generic components are parameterized by
+   `<TEvent, TMessage>` via the `Codec` interface.
+4. **Constructor/option injection** — no singletons, no globals.
+5. **Composition, not inheritance** — compose features; no class hierarchies.
+6. **Interface-first** — public contracts are interfaces; implementations are
+   internal `Default*` classes, exposed via factory functions.
+7. **Header discipline** — SDK metadata travels on the wire under an
+   `extras.ai` envelope split into a transport tier (`extras.ai.transport`,
+   always present) and an optional codec tier (`extras.ai.codec`). The generic
+   layer reads and writes only the transport tier; codec-specific metadata
+   belongs in the codec tier, owned by the codec/Vercel layer.
+8. **Explicit exports** — only what an `index.ts` re-exports is public API.
+9. **Self-contained features** — each manages its own subscriptions, state, and
+   cleanup.
+10. **Single shared channel** — one Ably channel per transport, shared by all
+    features.

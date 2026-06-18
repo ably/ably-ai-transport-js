@@ -112,6 +112,7 @@ export function MessageList({
             clientId={run?.clientId || undefined}
             runId={run?.runId}
             status={bubbleStatus}
+            errorMessage={run?.error?.message}
             hasSiblings={branch.hasSiblings}
             siblingCount={branch.siblings.length}
             selectedIndex={branch.index}

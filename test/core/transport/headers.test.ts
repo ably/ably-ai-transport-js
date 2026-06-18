@@ -1,3 +1,4 @@
+import * as Ably from 'ably';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -6,6 +7,8 @@ import {
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
   HEADER_CODEC_MESSAGE_ID,
+  HEADER_ERROR_CODE,
+  HEADER_ERROR_MESSAGE,
   HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
   HEADER_INPUT_CODEC_MESSAGE_ID,
@@ -19,9 +22,11 @@ import {
 } from '../../../src/constants.js';
 import {
   buildLifecycleHeaders,
+  buildRunEndError,
   buildTransportHeaders,
   parseRunLifecycle,
 } from '../../../src/core/transport/headers.js';
+import { ErrorCode } from '../../../src/errors.js';
 
 describe('buildTransportHeaders', () => {
   it('includes role, runId, and codecMessageId', () => {
@@ -179,6 +184,52 @@ describe('buildLifecycleHeaders', () => {
     expect(headers[HEADER_RUN_CLIENT_ID]).toBe('');
     expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('');
   });
+
+  it('stamps error-code (as a string) and error-message when provided', () => {
+    const headers = buildLifecycleHeaders({
+      runId: 'r',
+      runClientId: '',
+      reason: 'error',
+      errorCode: 104008,
+      errorMessage: 'invalid x-api-key',
+    });
+    expect(headers[HEADER_ERROR_CODE]).toBe('104008');
+    expect(headers[HEADER_ERROR_MESSAGE]).toBe('invalid x-api-key');
+  });
+
+  it('omits error-code and error-message when not provided', () => {
+    const headers = buildLifecycleHeaders({ runId: 'r', runClientId: '', reason: 'error' });
+    expect(headers).not.toHaveProperty(HEADER_ERROR_CODE);
+    expect(headers).not.toHaveProperty(HEADER_ERROR_MESSAGE);
+  });
+});
+
+describe('buildRunEndError', () => {
+  it('reconstructs an ErrorInfo from the error-code / error-message headers', () => {
+    const err = buildRunEndError({ [HEADER_ERROR_CODE]: '40003', [HEADER_ERROR_MESSAGE]: 'bad input' });
+    expect(err).toBeInstanceOf(Ably.ErrorInfo);
+    expect(err.code).toBe(40003);
+    expect(err.message).toBe('bad input');
+    expect(err.statusCode).toBe(400);
+  });
+
+  it('derives a 500 statusCode from a 5-digit server code', () => {
+    const err = buildRunEndError({ [HEADER_ERROR_CODE]: '50000', [HEADER_ERROR_MESSAGE]: 'boom' });
+    expect(err.statusCode).toBe(500);
+  });
+
+  it('falls back to a generic code/message/status when the headers are absent', () => {
+    const err = buildRunEndError({});
+    expect(err.code).toBe(ErrorCode.SessionSubscriptionError);
+    expect(err.message).toBe('agent reported an error');
+    expect(err.statusCode).toBe(500);
+  });
+
+  it('falls back to the generic code and a 500 status for a non-numeric code', () => {
+    const err = buildRunEndError({ [HEADER_ERROR_CODE]: 'not-a-number', [HEADER_ERROR_MESSAGE]: 'x' });
+    expect(err.code).toBe(ErrorCode.SessionSubscriptionError);
+    expect(err.statusCode).toBe(500);
+  });
 });
 
 describe('parseRunLifecycle', () => {
@@ -279,6 +330,46 @@ describe('parseRunLifecycle', () => {
       invocationId: '',
       reason: 'complete',
     });
+  });
+
+  it('parses a run-end error, reconstructing the terminal error from the error headers', () => {
+    const noTimestamp: number | undefined = undefined;
+    const event = parseRunLifecycle(
+      EVENT_RUN_END,
+      {
+        [HEADER_RUN_ID]: 'run-1',
+        [HEADER_RUN_CLIENT_ID]: 'user-a',
+        [HEADER_INVOCATION_ID]: 'inv-1',
+        [HEADER_RUN_REASON]: 'error',
+        [HEADER_ERROR_CODE]: '104008',
+        [HEADER_ERROR_MESSAGE]: 'invalid x-api-key',
+      },
+      's5',
+      noTimestamp,
+    );
+
+    if (event?.type !== 'end' || event.reason !== 'error') {
+      expect.fail('expected an error end event');
+    }
+    expect(event.error).toBeInstanceOf(Ably.ErrorInfo);
+    expect(event.error.code).toBe(104008);
+    expect(event.error.message).toBe('invalid x-api-key');
+  });
+
+  it('omits the error field on a non-error run-end', () => {
+    const noTimestamp: number | undefined = undefined;
+    const event = parseRunLifecycle(
+      EVENT_RUN_END,
+      { [HEADER_RUN_ID]: 'run-1', [HEADER_RUN_REASON]: 'complete' },
+      's6',
+      noTimestamp,
+    );
+
+    if (event?.type !== 'end') {
+      expect.fail('expected an end event');
+    }
+    expect(event.reason).toBe('complete');
+    expect('error' in event).toBe(false);
   });
 
   it('parses a run-suspend into a suspend event carrying runId, clientId, serial, and invocationId', () => {

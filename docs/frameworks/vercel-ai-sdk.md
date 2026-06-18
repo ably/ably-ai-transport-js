@@ -121,7 +121,7 @@ const result = streamText({
 
 const pipeResult = await run.pipe(result.toUIMessageStream());
 const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
-if (outcome === 'suspend') {
+if (outcome.reason === 'suspend') {
   await run.suspend();
 } else {
   await run.end(outcome);
@@ -129,7 +129,7 @@ if (outcome === 'suspend') {
 session.close();
 ```
 
-`result.toUIMessageStream()` produces a `ReadableStream<UIMessageChunk>` - the codec knows how to encode these chunks as Ably messages (message appends for text/reasoning, discrete messages for lifecycle events). `vercelRunOutcome()` translates the pipe result and Vercel's `finishReason` into either a `RunEndReason` to pass to `run.end()` or the `'suspend'` sentinel — `'tool-calls'` means the LLM requested tools that need client input, so the run suspends rather than ending.
+`result.toUIMessageStream()` produces a `ReadableStream<UIMessageChunk>` - the codec knows how to encode these chunks as Ably messages (message appends for text/reasoning, discrete messages for lifecycle events). `vercelRunOutcome()` maps the pipe result and Vercel's `finishReason` to a `VercelRunOutcome`. A `'suspend'` reason means the LLM requested tools that need client input - call `run.suspend()`; otherwise pass the outcome to `run.end()`, which forwards an `'error'` outcome's `error` to clients.
 
 ## Codec details
 

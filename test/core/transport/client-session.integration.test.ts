@@ -13,7 +13,7 @@
  * codec-message-id, which resolves the client's `run.runId` promise.
  */
 
-import type * as Ably from 'ably';
+import * as Ably from 'ably';
 import type * as AI from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -452,7 +452,7 @@ describe('ClientSession integration', () => {
 
     const stream = textResponseStream('asst-msg-rt-1', 'text-rt-1', 'Hello, how can I help?');
     await serverRun.pipe(stream);
-    await serverRun.end('complete');
+    await serverRun.end({ reason: 'complete' });
 
     const events = await outputsPromise;
     const types = events.map((e) => e.type);
@@ -513,7 +513,7 @@ describe('ClientSession integration', () => {
 
     const stream = textResponseStream('asst-msg-stream-1', 'text-stream-1', 'Server response');
     await serverRun.pipe(stream);
-    await serverRun.end('complete');
+    await serverRun.end({ reason: 'complete' });
 
     const events = await outputsPromise;
     const types = events.map((e) => e.type);
@@ -563,12 +563,77 @@ describe('ClientSession integration', () => {
 
     const stream = textResponseStream('msg-lc-1', 'text-lc-1', 'test');
     await run.pipe(stream);
-    await run.end('complete');
+    await run.end({ reason: 'complete' });
 
     await endPromise;
 
     expect(runEvents.some((e) => e.type === 'start' && e.runId === runId)).toBe(true);
     expect(runEvents.some((e) => e.type === 'end' && e.runId === runId)).toBe(true);
+  });
+
+  it('round-trips an agent run-end error with its detail to the client', async () => {
+    const channelName = uniqueChannelName('ct-run-error');
+    const serverClient = ablyRealtimeClient();
+    const clientClient = ablyRealtimeClient();
+
+    agentSession = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+      client: serverClient,
+      channelName,
+      codec: UIMessageCodec,
+    });
+    await agentSession.connect();
+
+    clientSession = createClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+      client: clientClient,
+      channelName,
+      codec: UIMessageCodec,
+    });
+    await clientSession.connect();
+
+    const activeRun = await sendUserMessage(clientSession.view, {
+      id: 'user-err-1',
+      role: 'user',
+      parts: [{ type: 'text', text: 'trigger an error' }],
+    });
+
+    const run = createRunFromOpts(agentSession, {
+      runId: crypto.randomUUID(),
+      inputEventId: activeRun.inputEventId,
+    });
+    await run.start();
+
+    const runId = await activeRun.runId;
+    const endPromise = waitForRunEvent(clientSession, runId, 'end');
+
+    // End the run in error, carrying a terminal error for the client to
+    // reconstruct from the run-end's error-code / error-message headers.
+    const agentError = new Ably.ErrorInfo('agent failed; upstream model timed out', 50000, 500);
+    await run.end({ reason: 'error', error: agentError });
+
+    const endEvent = await endPromise;
+
+    // The run-end lifecycle event carries the reconstructed error, discriminated
+    // on reason so `error` is present exactly on the error arm.
+    if (endEvent.type !== 'end' || endEvent.reason !== 'error') {
+      expect.fail('expected an error run-end event');
+    }
+    expect(endEvent.error).toBeErrorInfo({
+      code: 50000,
+      statusCode: 500,
+      message: 'agent failed; upstream model timed out',
+    });
+
+    // The Tree records it on the run node's state, discriminated on status, so
+    // a consumer reading `getRunNode(runId)?.state` sees the terminal error.
+    const node = clientSession.tree.getRunNode(runId);
+    if (node?.state.status !== 'error') {
+      expect.fail('expected the run node to be in the error state');
+    }
+    expect(node.state.error).toBeErrorInfo({
+      code: 50000,
+      statusCode: 500,
+      message: 'agent failed; upstream model timed out',
+    });
   });
 
   it('client cancel aborts the server stream', async () => {
@@ -874,7 +939,7 @@ describe('ClientSession integration', () => {
       });
       await serverRun.start();
       await serverRun.pipe(textResponseStream('a-concurrent-1', 'text-concurrent-1', 'hi from agent'));
-      await serverRun.end('complete');
+      await serverRun.end({ reason: 'complete' });
       await activeRun.runId;
 
       // Both views should now see the same conversation.
@@ -1068,7 +1133,7 @@ describe('ClientSession integration', () => {
       },
     });
     await serverRun.pipe(stream);
-    await serverRun.end('complete');
+    await serverRun.end({ reason: 'complete' });
     await activeRun.runId;
 
     const toolPart = await toolPartAvailable;
@@ -1117,7 +1182,7 @@ describe('ClientSession integration', () => {
     const endPromise = waitForRunEvent(clientSession, runId, 'end');
 
     await run.pipe(textResponseStream('asst-raw-1', 'text-raw-1', 'test'));
-    await run.end('complete');
+    await run.end({ reason: 'complete' });
 
     await endPromise;
 
@@ -1161,7 +1226,7 @@ describe('ClientSession integration', () => {
     const runId = await activeRun.runId;
 
     await run.pipe(textResponseStream('asst-hdr-1', 'text-hdr-1', 'Answer'));
-    await run.end('complete');
+    await run.end({ reason: 'complete' });
 
     await waitForMessages(clientSession, 2);
 
@@ -1386,8 +1451,8 @@ describe('ClientSession integration', () => {
     survivingController.enqueue({ type: 'finish', finishReason: 'stop' });
     survivingController.close();
     await survivingPipe;
-    await survivingRun.end('complete');
-    await targetRun.end('cancelled');
+    await survivingRun.end({ reason: 'complete' });
+    await targetRun.end({ reason: 'cancelled' });
 
     // Verify the cancel wire message carried run-id pointing at the target.
     expect(cancelMessages.length).toBeGreaterThanOrEqual(1);
@@ -1455,7 +1520,7 @@ describe('ClientSession integration', () => {
 
     const responseStream = textResponseStream('asst-rs-happy-1', 'text-rs-happy-1', 'Started');
     await serverRun.pipe(responseStream);
-    await serverRun.end('complete');
+    await serverRun.end({ reason: 'complete' });
 
     // The run's outputs surface on the Tree and carry the assistant response.
     const events = await outputsPromise;
@@ -1569,7 +1634,7 @@ describe('ClientSession integration', () => {
       },
     });
     await serverRun.pipe(stream);
-    await serverRun.end('complete');
+    await serverRun.end({ reason: 'complete' });
 
     await gotOutput;
 
@@ -1653,7 +1718,7 @@ describe('ClientSession integration', () => {
 
     // The agent ends the run as cancelled, mirroring how a real handler reacts
     // to the aborted signal.
-    await serverRun.end('cancelled');
+    await serverRun.end({ reason: 'cancelled' });
 
     const endEvent = await endPromise;
     expect(endEvent.type).toBe('end');
@@ -1743,7 +1808,7 @@ describe('ClientSession integration', () => {
       serverRunA.pipe(textResponseStream('asst-conc-a', 'text-conc-a', 'answer A')),
       serverRunB.pipe(textResponseStream('asst-conc-b', 'text-conc-b', 'answer B')),
     ]);
-    await Promise.all([serverRunA.end('complete'), serverRunB.end('complete')]);
+    await Promise.all([serverRunA.end({ reason: 'complete' }), serverRunB.end({ reason: 'complete' })]);
 
     const [eventsA, eventsB] = await Promise.all([outputsA, outputsB]);
 

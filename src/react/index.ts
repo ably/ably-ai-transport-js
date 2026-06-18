@@ -9,6 +9,7 @@ export type {
   MessageNode,
   RunInfo,
   RunNode,
+  RunNodeState,
   SendOptions,
 } from '../core/transport/types.js';
 export type { ClientSessionSlot } from './contexts/client-session-context.js';

@@ -44,7 +44,7 @@ A `RunNode<TProjection>` stores:
   regeneratesCodecMessageId: string | undefined; // From msg-regenerate; kept as a message-id, not resolved
   clientId: string; // From run-client-id - the client that started this Run
   invocationId: string; // Agent-minted invocation-id; '' until run-start arrives
-  status: 'active' | 'suspended' | RunEndReason; // RunEndReason = 'complete' | 'cancelled' | 'error'
+  state: RunNodeState; // { status: 'active' | 'suspended' | 'complete' | 'cancelled' } | { status: 'error'; error: Ably.ErrorInfo }
   projection: TProjection; // Codec-folded per-Run state
   startSerial: string | undefined; // First observed message's serial
   endSerial: string | undefined; // run-suspend / run-end serial
@@ -96,7 +96,7 @@ The log is bounded: a run node's log is dropped once the run is terminal, its `a
 
 ### `applyRunLifecycle(event)`
 
-Handles `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, and `ai-run-end` wire events (decoded into a `RunLifecycleEvent` whose `type` is `start` / `suspend` / `resume` / `end`). The event carries its own channel `serial`. Run-start creates the reply run if missing (else sets `status` to `'active'`), promotes `startSerial` from the event's serial, and backfills structural metadata (`parentCodecMessageId`, `forkOf`, `regeneratesCodecMessageId`) and the agent-minted `invocationId` onto an optimistic / wire-created node — the run-start is the canonical source. Run-suspend sets `status` to `'suspended'` and records `endSerial`, but keeps the run live so a resume under the same `runId` re-activates it. Run-resume re-activates a suspended run (`status` back to `'active'`) without touching its structure or serials — a pure re-entry; it is a no-op for an unknown, already-active, or terminal run. Run-end sets `status` to the end reason and `endSerial` from the event's serial. Always emits a `'run'` event to subscribers, then `'update'` only when the event changed the tree shape (only run-start can).
+Handles `ai-run-start`, `ai-run-suspend`, `ai-run-resume`, and `ai-run-end` wire events (decoded into a `RunLifecycleEvent` whose `type` is `start` / `suspend` / `resume` / `end`). The event carries its own channel `serial`. Run-start creates the reply run if missing (else sets `state.status` to `'active'`), promotes `startSerial` from the event's serial, and backfills structural metadata (`parentCodecMessageId`, `forkOf`, `regeneratesCodecMessageId`) and the agent-minted `invocationId` onto an optimistic / wire-created node — the run-start is the canonical source. Run-suspend sets `state.status` to `'suspended'` and records `endSerial`, but keeps the run live so a resume under the same `runId` re-activates it. Run-resume re-activates a suspended run (`state.status` back to `'active'`) without touching its structure or serials — a pure re-entry; it is a no-op for an unknown, already-active, or terminal run. Run-end sets `state` to the end reason, carrying the terminal `error` when the reason is `'error'`, and `endSerial` from the event's serial. Always emits a `'run'` event to subscribers, then `'update'` only when the event changed the tree shape (only run-start can).
 
 ### Structural version
 

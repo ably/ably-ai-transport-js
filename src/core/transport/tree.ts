@@ -211,15 +211,15 @@ export interface TreeInternal<
    * Apply a run-lifecycle event.
    *
    * - `start`: creates the reply run (if missing) or, for an existing run,
-   *   sets RunNode.status to 'active', promotes startSerial, and backfills
+   *   sets RunNode.state to 'active', promotes startSerial, and backfills
    *   structural metadata (parent / forkOf / regenerates / invocationId).
-   * - `suspend`: sets RunNode.status to 'suspended' and records `endSerial`.
+   * - `suspend`: sets RunNode.state to 'suspended' and records `endSerial`.
    *   The run stays live so a resume under the same `runId` picks up where it
    *   left off.
-   * - `resume`: re-activates an existing suspended Run (status back to
+   * - `resume`: re-activates an existing suspended Run (state back to
    *   'active') without touching its structure or serials — a pure re-entry
    *   signal. A no-op if the Run is not yet known.
-   * - `end`: sets RunNode.status to the terminal reason and records
+   * - `end`: sets RunNode.state to the terminal reason and records
    *   `endSerial`.
    *
    * Always emits a 'run' event to subscribers.
@@ -646,7 +646,7 @@ export class DefaultTree<
     if (node.kind !== 'run') return;
     if (entry.log.swept || entry.sweepQueued) return;
     if (!entry.runStartSeen) return;
-    if (node.status === 'active' || node.status === 'suspended') return;
+    if (node.state.status === 'active' || node.state.status === 'suspended') return;
     entry.sweepQueued = true;
     this._sweepQueue.push(node.runId);
   }
@@ -1179,8 +1179,8 @@ export class DefaultTree<
       // run's terminal event (history pages replay newest-first, so an older
       // page delivers the start last) — like a stray resume, it must never
       // resurrect a run that has ended.
-      if (node.status === 'suspended') {
-        node.status = 'active';
+      if (node.state.status === 'suspended') {
+        node.state = { status: 'active' };
       }
       if (event.serial && !node.startSerial) {
         node.startSerial = event.serial;
@@ -1248,7 +1248,7 @@ export class DefaultTree<
   private _applyRunSuspend(event: RunLifecycleEvent & { type: 'suspend' }): void {
     const run = this._nodeIndex.get(event.runId);
     if (run?.node.kind === 'run') {
-      run.node.status = 'suspended';
+      run.node.state = { status: 'suspended' };
       run.node.endSerial = event.serial;
       this._recordActivity(run, event.timestamp);
     }
@@ -1267,17 +1267,17 @@ export class DefaultTree<
    */
   private _applyRunResume(event: RunLifecycleEvent & { type: 'resume' }): void {
     const run = this._nodeIndex.get(event.runId);
-    if (run?.node.kind === 'run' && run.node.status === 'suspended') {
-      run.node.status = 'active';
+    if (run?.node.kind === 'run' && run.node.state.status === 'suspended') {
+      run.node.state = { status: 'active' };
       this._recordActivity(run, event.timestamp);
     }
   }
 
   /**
-   * Apply a run-end lifecycle event: record the terminal reason as the node's
-   * status and the serial it ended at. Status/endSerial are content, not
-   * structure, so this never mutates `_structuralVersion`; the caller owns the
-   * emits.
+   * Apply a run-end lifecycle event: record the terminal reason (and, for an
+   * error end, the error) as the node's state, plus the serial it ended at.
+   * State/endSerial are content, not structure, so this never mutates
+   * `_structuralVersion`; the caller owns the emits.
    *
    * A run-end for an unknown runId is a no-op: nothing else is known about the
    * run yet, so there is no node to mark. When that happens during history
@@ -1290,7 +1290,7 @@ export class DefaultTree<
   private _applyRunEnd(event: RunLifecycleEvent & { type: 'end' }): void {
     const run = this._nodeIndex.get(event.runId);
     if (run?.node.kind === 'run') {
-      run.node.status = event.reason;
+      run.node.state = event.reason === 'error' ? { status: 'error', error: event.error } : { status: event.reason };
       run.node.endSerial = event.serial;
       this._recordActivity(run, event.timestamp);
       this._maybeQueueSweep(run);
@@ -1410,7 +1410,7 @@ export class DefaultTree<
       regeneratesCodecMessageId: params.regeneratesCodecMessageId,
       clientId: params.clientId,
       invocationId: params.invocationId,
-      status: 'active',
+      state: { status: 'active' },
       projection: this._codec.init(),
       startSerial: params.startSerial,
       endSerial: undefined,

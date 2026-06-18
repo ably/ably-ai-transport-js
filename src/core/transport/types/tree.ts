@@ -90,12 +90,23 @@ export type RunLifecycleEvent =
        * optimistic local event. The Tree reads it to set the Run's endSerial.
        */
       serial: string | undefined;
-      /**
-       * Why the run ended — the terminal reason the Tree records as the
-       * RunNode's status: `complete`, `cancelled`, or `error`.
-       */
-      reason: RunEndReason;
-    });
+    } & (
+        | {
+            /** Why the run ended — any terminal reason other than `'error'`. */
+            reason: Exclude<RunEndReason, 'error'>;
+          }
+        | {
+            /** The run ended in error. */
+            reason: 'error';
+            /**
+             * Terminal error detail, reconstructed from the run-end's
+             * `error-code` / `error-message` headers (or a generic fallback
+             * when the run ended in error without detail). The Tree records it
+             * on the RunNode and exposes it via `RunInfo.error`.
+             */
+            error: Ably.ErrorInfo;
+          }
+      ));
 
 // ---------------------------------------------------------------------------
 // Conversation tree (branching history)
@@ -122,6 +133,27 @@ export interface MessageNode<TMessage> {
    */
   serial: string | undefined;
 }
+
+/**
+ * A Run's lifecycle state, modelled as one discriminated value so the terminal
+ * `error` is carried exactly when `status` is `'error'`. A RunNode is mutated
+ * in place, so status and its dependent error move together — transitions
+ * reassign `node.state` wholesale rather than setting fields individually.
+ */
+export type RunNodeState =
+  | {
+      /** `'active'` (streaming), `'suspended'` (paused), or a non-error terminal reason. */
+      status: 'active' | 'suspended' | Exclude<RunEndReason, 'error'>;
+    }
+  | {
+      /** Terminal error status. */
+      status: 'error';
+      /**
+       * The run-end's stamped error (or a generic fallback). Exposed to
+       * consumers via `RunInfo.error`.
+       */
+      error: Ably.ErrorInfo;
+    };
 
 /**
  * A node in the conversation tree, representing a single Run.
@@ -179,13 +211,12 @@ export interface RunNode<TProjection> {
    */
   clientId: string;
   /**
-   * Run lifecycle status.
-   * - `'active'` — run-start observed, no terminal event yet.
-   * - `'suspended'` — run-suspend observed; the run is paused awaiting input
-   *   and stays live (a continuation re-activates it). Not terminal.
-   * - {@link RunEndReason} — terminal state reflecting the run-end reason.
+   * Run lifecycle state — see {@link RunNodeState}. `'active'` until a terminal
+   * event; `'suspended'` while paused (a continuation re-activates it);
+   * otherwise the run-end reason, carrying `error` when that reason is
+   * `'error'`.
    */
-  status: 'active' | 'suspended' | RunEndReason;
+  state: RunNodeState;
   /** Per-Run codec projection. Folded by the Tree from every event published under this run-id. */
   projection: TProjection;
   /**

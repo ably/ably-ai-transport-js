@@ -62,7 +62,7 @@ When the stream throws or `publishOutput()` fails, `pipeStream` catches the erro
 
 ### Return value
 
-Returns `{ reason, error? }` where reason is `'complete'`, `'cancelled'`, or `'error'`; `error` is present only when reason is `'error'` and carries the original provider error. `Run.pipe()` returns this result to the caller, and on a `'cancelled'` reason it calls `run.end('cancelled')` itself so the transport `ai-run-end` terminal fires even if the developer's handler omits it (a later `run.end()` is a no-op).
+Returns `{ reason, error? }` where reason is `'complete'`, `'cancelled'`, or `'error'`; `error` is present only when reason is `'error'` and carries the original provider error. `Run.pipe()` returns this result to the caller, and on a `'cancelled'` reason it calls `run.end({ reason: 'cancelled' })` itself so the transport `ai-run-end` terminal fires even if the developer's handler omits it (a later `run.end()` is a no-op).
 
 ## Cancel routing (agent session)
 

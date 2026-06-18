@@ -1004,10 +1004,10 @@ describe('Tree', () => {
         timestamp: 1000,
       });
       lifecycle(tree, 'end', 'R1', 's16', 1100);
-      expect(tree.getRunNode('R1')?.status).toBe('complete');
+      expect(tree.getRunNode('R1')?.state.status).toBe('complete');
 
       lifecycle(tree, 'start', 'R1', 's10', 800);
-      expect(tree.getRunNode('R1')?.status).toBe('complete');
+      expect(tree.getRunNode('R1')?.state.status).toBe('complete');
     });
 
     it('stays swept when its lifecycle events are replayed', () => {
@@ -1730,7 +1730,7 @@ describe('Tree', () => {
         serial: 's1',
       });
       const run = tree.getRunNode('R1');
-      expect(run?.status).toBe('active');
+      expect(run?.state.status).toBe('active');
       expect(run?.startSerial).toBe('s1');
       // clientId is set on the RunNode itself, sourced from event.clientId.
       expect(run?.clientId).toBe('client-a');
@@ -1756,7 +1756,7 @@ describe('Tree', () => {
         invocationId: '',
         serial: 's2',
       });
-      expect(tree.getRunNode('R1')?.status).toBe('active');
+      expect(tree.getRunNode('R1')?.state.status).toBe('active');
       expect(tree.getRunNode('R1')?.clientId).toBe('client-a');
     });
 
@@ -1777,7 +1777,7 @@ describe('Tree', () => {
         serial: 's10',
       });
       const run = tree.getRunNode('R1');
-      expect(run?.status).toBe('complete');
+      expect(run?.state.status).toBe('complete');
       expect(run?.endSerial).toBe('s10');
     });
 
@@ -1820,7 +1820,7 @@ describe('Tree', () => {
         serial: 's5',
       });
       const run = tree.getRunNode('R1');
-      expect(run?.status).toBe('suspended');
+      expect(run?.state.status).toBe('suspended');
       expect(run?.endSerial).toBe('s5');
     });
 
@@ -1841,7 +1841,7 @@ describe('Tree', () => {
         invocationId: 'inv-1',
         serial: 's5',
       });
-      expect(tree.getRunNode('R1')?.status).toBe('suspended');
+      expect(tree.getRunNode('R1')?.state.status).toBe('suspended');
       tree.applyRunLifecycle({
         type: 'start',
         runId: 'R1',
@@ -1849,7 +1849,7 @@ describe('Tree', () => {
         invocationId: 'inv-2',
         serial: 's1',
       });
-      expect(tree.getRunNode('R1')?.status).toBe('active');
+      expect(tree.getRunNode('R1')?.state.status).toBe('active');
     });
 
     it('emits a run event on suspend', () => {
@@ -1888,7 +1888,7 @@ describe('Tree', () => {
         invocationId: 'inv-1',
         serial: 's5',
       });
-      expect(tree.getRunNode('R1')?.status).toBe('suspended');
+      expect(tree.getRunNode('R1')?.state.status).toBe('suspended');
 
       tree.applyRunLifecycle({
         type: 'resume',
@@ -1898,7 +1898,7 @@ describe('Tree', () => {
         serial: 's6',
       });
       const run = tree.getRunNode('R1');
-      expect(run?.status).toBe('active');
+      expect(run?.state.status).toBe('active');
       // Re-entry is not the start — the original startSerial is preserved.
       expect(run?.startSerial).toBe('s1');
     });
@@ -1935,7 +1935,7 @@ describe('Tree', () => {
         serial: 's5',
         reason: 'complete',
       });
-      expect(tree.getRunNode('R1')?.status).toBe('complete');
+      expect(tree.getRunNode('R1')?.state.status).toBe('complete');
 
       // A stray resume targeting an already-ended run must never flip it back
       // to active — only suspended runs resume.
@@ -1946,7 +1946,7 @@ describe('Tree', () => {
         invocationId: 'inv-2',
         serial: 's6',
       });
-      expect(tree.getRunNode('R1')?.status).toBe('complete');
+      expect(tree.getRunNode('R1')?.state.status).toBe('complete');
     });
 
     it('emits a run event on resume', () => {

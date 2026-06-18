@@ -66,7 +66,7 @@ await run.start();
 const history = await run.loadConversation();
 const result = streamText({ model, messages: history });
 const { reason } = await run.pipe(result.toUIMessageStream());
-await run.end(reason);
+await run.end({ reason });
 
 await session.close();
 ```

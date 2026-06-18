@@ -1,6 +1,8 @@
+import * as Ably from 'ably';
 import type * as AI from 'ai';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { ErrorCode } from '../../src/errors.js';
 import { vercelRunOutcome } from '../../src/vercel/run-end-reason.js';
 
 interface Deferred<T> {
@@ -23,30 +25,48 @@ const createDeferred = <T>(): Deferred<T> => {
 describe('vercelRunOutcome', () => {
   it('returns cancelled when pipe was cancelled without using finishReason value', async () => {
     const result = await vercelRunOutcome({ reason: 'cancelled' }, Promise.resolve<AI.FinishReason>('stop'));
-    expect(result).toBe('cancelled');
+    expect(result.reason).toBe('cancelled');
+    expect(result.error).toBeUndefined();
   });
 
-  it('returns error when pipe errored without using finishReason value', async () => {
+  it('returns error and surfaces the wrapped error when pipe errored without using finishReason value', async () => {
     const result = await vercelRunOutcome(
       { reason: 'error', error: new Error('boom') },
       Promise.resolve<AI.FinishReason>('stop'),
     );
-    expect(result).toBe('error');
+    expect(result.reason).toBe('error');
+    expect(result.error).toBeInstanceOf(Ably.ErrorInfo);
+    expect(result.error?.code).toBe(ErrorCode.StreamError);
+    expect(result.error?.message).toContain('boom');
+  });
+
+  it('passes through an error that is already an Ably.ErrorInfo unchanged', async () => {
+    const original = new Ably.ErrorInfo('invalid x-api-key', 40003, 400);
+    const result = await vercelRunOutcome(
+      { reason: 'error', error: original },
+      Promise.resolve<AI.FinishReason>('stop'),
+    );
+    expect(result.reason).toBe('error');
+    expect(result.error).toBe(original);
+    expect(result.error?.code).toBe(40003);
   });
 
   it('returns suspend when pipe completed and finishReason is tool-calls', async () => {
     const result = await vercelRunOutcome({ reason: 'complete' }, Promise.resolve('tool-calls'));
-    expect(result).toBe('suspend');
+    expect(result.reason).toBe('suspend');
+    expect(result.error).toBeUndefined();
   });
 
   it('returns complete when pipe completed and finishReason is stop', async () => {
     const result = await vercelRunOutcome({ reason: 'complete' }, Promise.resolve('stop'));
-    expect(result).toBe('complete');
+    expect(result.reason).toBe('complete');
+    expect(result.error).toBeUndefined();
   });
 
   it('returns complete when pipe completed and finishReason is length', async () => {
     const result = await vercelRunOutcome({ reason: 'complete' }, Promise.resolve('length'));
-    expect(result).toBe('complete');
+    expect(result.reason).toBe('complete');
+    expect(result.error).toBeUndefined();
   });
 
   it('returns cancelled when finishReason rejects with an abort error', async () => {
@@ -55,7 +75,8 @@ describe('vercelRunOutcome', () => {
     // when the stream is aborted before any step completes.
     const abortError = new DOMException('aborted', 'AbortError');
     const result = await vercelRunOutcome({ reason: 'complete' }, Promise.reject(abortError));
-    expect(result).toBe('cancelled');
+    expect(result.reason).toBe('cancelled');
+    expect(result.error).toBeUndefined();
   });
 
   it('returns cancelled when finishReason rejects with a non-DOMException abort-shaped error', async () => {
@@ -63,15 +84,19 @@ describe('vercelRunOutcome', () => {
     // rather than a DOMException. The mapping should still treat it as cancel.
     const abortError = Object.assign(new Error('aborted'), { name: 'AbortError' });
     const result = await vercelRunOutcome({ reason: 'complete' }, Promise.reject(abortError));
-    expect(result).toBe('cancelled');
+    expect(result.reason).toBe('cancelled');
+    expect(result.error).toBeUndefined();
   });
 
-  it('returns error when finishReason rejects with a non-abort error', async () => {
+  it('returns error and surfaces the wrapped error when finishReason rejects with a non-abort error', async () => {
     // E.g. Vercel's NoOutputGeneratedError when the stream produced no
     // steps for a reason other than abort. The mapping should surface
-    // this as an error-terminated run so the developer sees the failure.
+    // this as an error-terminated run, wrapped so the caller can stamp it.
     const result = await vercelRunOutcome({ reason: 'complete' }, Promise.reject(new Error('no output')));
-    expect(result).toBe('error');
+    expect(result.reason).toBe('error');
+    expect(result.error).toBeInstanceOf(Ably.ErrorInfo);
+    expect(result.error?.code).toBe(ErrorCode.StreamError);
+    expect(result.error?.message).toContain('no output');
   });
 
   describe('unhandled rejection regression', () => {
@@ -103,7 +128,7 @@ describe('vercelRunOutcome', () => {
       const deferred = createDeferred<AI.FinishReason>();
 
       const result = await vercelRunOutcome({ reason: 'cancelled' }, deferred.promise);
-      expect(result).toBe('cancelled');
+      expect(result.reason).toBe('cancelled');
 
       // Now reject after vercelRunOutcome has returned. A naive
       // implementation that returned early without attaching a handler
@@ -122,7 +147,7 @@ describe('vercelRunOutcome', () => {
       const deferred = createDeferred<AI.FinishReason>();
 
       const result = await vercelRunOutcome({ reason: 'error', error: new Error('boom') }, deferred.promise);
-      expect(result).toBe('error');
+      expect(result.reason).toBe('error');
 
       deferred.reject(new DOMException('aborted', 'AbortError'));
 

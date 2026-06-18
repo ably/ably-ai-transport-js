@@ -44,7 +44,7 @@ const messages = await run.loadConversation();
 
 const result = streamText({ model, messages, abortSignal: run.abortSignal });
 const { reason } = await run.pipe(result.toUIMessageStream());
-await run.end(reason);
+await run.end({ reason });
 ```
 
 Multiple runs can stream on the same channel at the same time. The agent routes each `ai-cancel` to its target run — by `run-id` for a known run, or by the triggering input's `codec-message-id` for a fresh send whose run-id has not yet been minted.

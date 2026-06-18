@@ -153,7 +153,7 @@ describe('AgentSession integration', () => {
 
     const stream = textResponseStream('msg-1', 'text-1', 'Hello, world!');
     const result = await run.pipe(stream);
-    await run.end('complete');
+    await run.end({ reason: 'complete' });
 
     await collector.done;
 
@@ -277,7 +277,7 @@ describe('AgentSession integration', () => {
       });
       await run.start();
       await run.pipe(textResponseStream(...opts.streamArgs));
-      await run.end('complete');
+      await run.end({ reason: 'complete' });
     };
 
     const runId = 'run-input-client-id';
@@ -394,7 +394,7 @@ describe('AgentSession integration', () => {
 
     const stream = textResponseStream('msg-lc-1', 'text-lc-1', 'test');
     await run.pipe(stream);
-    await run.end('complete');
+    await run.end({ reason: 'complete' });
 
     await gotEnd;
 
@@ -450,7 +450,7 @@ describe('AgentSession integration', () => {
     const result = await streamPromise;
     expect(result.reason).toBe('cancelled');
     expect(run.abortSignal.aborted).toBe(true);
-    await run.end('cancelled');
+    await run.end({ reason: 'cancelled' });
   });
 
   it('handles sequential runs', async () => {
@@ -490,13 +490,13 @@ describe('AgentSession integration', () => {
     const run1 = createRunFromOpts(session, { runId: 'run-seq-1' });
     await run1.start();
     const result1 = await run1.pipe(textResponseStream('msg-seq-1', 'text-seq-1', 'First response'));
-    await run1.end('complete');
+    await run1.end({ reason: 'complete' });
     expect(result1.reason).toBe('complete');
 
     const run2 = createRunFromOpts(session, { runId: 'run-seq-2' });
     await run2.start();
     const result2 = await run2.pipe(textResponseStream('msg-seq-2', 'text-seq-2', 'Second response'));
-    await run2.end('complete');
+    await run2.end({ reason: 'complete' });
     expect(result2.reason).toBe('complete');
 
     await twoFinishes;
@@ -545,7 +545,7 @@ describe('AgentSession integration', () => {
       run2.pipe(textResponseStream('msg-conc-2', 'text-conc-2', 'Response B')),
     ]);
 
-    await Promise.all([run1.end('complete'), run2.end('complete')]);
+    await Promise.all([run1.end({ reason: 'complete' }), run2.end({ reason: 'complete' })]);
 
     expect(result1.reason).toBe('complete');
     expect(result2.reason).toBe('complete');
@@ -597,7 +597,7 @@ describe('AgentSession integration', () => {
     const result = await run.pipe(stream);
     expect(result.reason).toBe('error');
 
-    await run.end('error');
+    await run.end({ reason: 'error' });
     await gotEnd;
 
     const endMsg = rawMessages.find((m) => m.name === EVENT_RUN_END);
@@ -628,7 +628,7 @@ describe('AgentSession integration', () => {
     const run = createRunFromOpts(session, { runId: 'run-sync-1' });
     await run.start();
     await run.pipe(textResponseStream('msg-sync-1', 'text-sync-1', 'Shared response'));
-    await run.end('complete');
+    await run.end({ reason: 'complete' });
 
     await Promise.all([c1.done, c2.done]);
 
@@ -738,7 +738,7 @@ describe('AgentSession integration', () => {
       expect(toolHeaders[HEADER_CODEC_MESSAGE_ID]).toBe('target-codec-message-id');
     }
 
-    await run.end('complete');
+    await run.end({ reason: 'complete' });
   });
 
   /**
@@ -807,7 +807,7 @@ describe('AgentSession integration', () => {
     expect(found?.codecMessageId).toBe(codecMessageId);
     expect(found?.message.parts[0]).toEqual({ type: 'text', text });
 
-    await serverRun.end('complete');
+    await serverRun.end({ reason: 'complete' });
   });
 
   /**
@@ -913,7 +913,7 @@ describe('AgentSession integration', () => {
 
       const responseStream = textResponseStream('asst-multi-1', 'text-multi-1', 'Got both');
       const result = await serverRun.pipe(responseStream);
-      await serverRun.end('complete');
+      await serverRun.end({ reason: 'complete' });
       expect(result.reason).toBe('complete');
 
       await outputsPromise;

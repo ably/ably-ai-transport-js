@@ -44,7 +44,7 @@ sequenceDiagram
     Run->>Ch: publish(ai-run-start)
     App->>Run: pipe(llmStream)
     Run->>Ch: publish + append (assistant response)
-    App->>Run: end('complete')
+    App->>Run: end({ reason: 'complete' })
     Run->>Ch: publish(ai-run-end)
 ```
 
@@ -68,11 +68,11 @@ Headers are built with `role: 'assistant'`, the assistant message's `codec-messa
 
 Returns a `StreamResult` - `{ reason; error? }`, where `reason` is `'complete'`, `'cancelled'`, or `'error'` and `error` carries the original failure when `reason` is `'error'`. A stream error is also wrapped as an `Ably.ErrorInfo` (code `StreamError`) and delivered to the run's `onError`.
 
-Run termination is a transport-tier concern. On a normal completion or error, `pipe()` does **not** call `end()` - the caller must do that after `pipe()` returns. On a `'cancelled'` result, however, `pipe()` calls `run.end('cancelled')` itself (best-effort) so that every observer's stream closes through the transport `ai-run-end` event even if the caller's handler omits `run.end()`; a later caller `run.end()` is a no-op via the ENDED guard. The cancellation path inside [pipeStream](transport-components.md#pipestream) also calls `encoder.cancelStreams()` to close any in-flight streamed messages as `status: cancelled` - pure transport mechanics that emit no codec output. Run termination is signalled separately by the transport `ai-run-end` event, not by any codec-level event.
+Run termination is a transport-tier concern. On a normal completion or error, `pipe()` does **not** call `end()` - the caller must do that after `pipe()` returns. On a `'cancelled'` result, however, `pipe()` calls `run.end({ reason: 'cancelled' })` itself (best-effort) so that every observer's stream closes through the transport `ai-run-end` event even if the caller's handler omits `run.end()`; a later caller `run.end()` is a no-op via the ENDED guard. The cancellation path inside [pipeStream](transport-components.md#pipestream) also calls `encoder.cancelStreams()` to close any in-flight streamed messages as `status: cancelled` - pure transport mechanics that emit no codec output. Run termination is signalled separately by the transport `ai-run-end` event, not by any codec-level event.
 
 ### end
 
-Publishes `ai-run-end` to the channel and unregisters the run from cancel routing. The lifecycle event carries `input-client-id` matching the value stamped on `ai-run-start` for the same invocation. Idempotent - calling `end()` twice is safe.
+Publishes `ai-run-end` to the channel and unregisters the run from cancel routing. The lifecycle event carries `input-client-id` matching the value stamped on `ai-run-start` for the same invocation. `end` takes a `RunEndParams` object: when it is `{ reason: 'error', error }`, the error's `code` and `message` are stamped as `error-code` / `error-message` headers on the run-end — the explicit, opt-in surfacing path of `AIT-ST6b4` (nothing is stamped automatically; a bare `{ reason: 'error' }` publishes no detail). Idempotent - calling `end()` twice is safe.
 
 ### suspend
 
@@ -114,9 +114,9 @@ Publish failures in `start()`, `suspend()`, and `end()` are **not** delivered vi
 
 There is no dedicated transport-level error event. Failures reach observers (and the originating client) through one of two paths, depending on whether `ai-run-start` was published:
 
-| Failure point                                         | Wire surface                                                                                                                                                                                                                                                                                                             |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Before `ai-run-start`** (e.g. `InputEventNotFound`) | No channel publish. `Run.start()` rejects; the developer's HTTP handler surfaces the failure as a non-2xx response, which the client's `send()` translates into a rejection. Publishing a phantom `ai-run-end` would break the `run-start → run-end` lifecycle invariant.                                                |
-| **Mid-run** (after `ai-run-start`)                    | `ai-run-end` published with `run-reason: error`. The agent does not stamp `error-code` / `error-message` headers; the client reifies an `Ably.ErrorInfo` from whatever headers are present (defaulting the message to `agent reported an error` when absent), errors the active stream, and emits `session.on('error')`. |
+| Failure point                                         | Wire surface                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Before `ai-run-start`** (e.g. `InputEventNotFound`) | No channel publish. `Run.start()` rejects; the developer's HTTP handler surfaces the failure as a non-2xx response, which the client's `send()` translates into a rejection. Publishing a phantom `ai-run-end` would break the `run-start → run-end` lifecycle invariant.                                                                                                                                                |
+| **Mid-run** (after `ai-run-start`)                    | `ai-run-end` published with `run-reason: error`. When the agent passes an error to `end('error', error)`, its `code` / `message` are stamped as `error-code` / `error-message` headers (opt-in; see [end](#end)). The client reifies an `Ably.ErrorInfo` from whatever headers are present (defaulting the message to `agent reported an error` when absent), errors the active stream, and emits `session.on('error')`. |
 
 See [Transport components](transport-components.md) for the RunManager, pipeStream, and cancel routing internals. See [Client session](client-session.md) for the client-side counterpart. See [Wire protocol](wire-protocol.md) for the header and event specification.

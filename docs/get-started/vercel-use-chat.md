@@ -130,7 +130,7 @@ export async function POST(req: Request) {
   after(async () => {
     const pipeResult = await run.pipe(result.toUIMessageStream());
     const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
-    await run.end(outcome === 'suspend' ? 'complete' : outcome);
+    await run.end(outcome.reason === 'suspend' ? { reason: 'complete' } : outcome);
     session.close();
     ably.close();
   });

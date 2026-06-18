@@ -1,4 +1,4 @@
-import type * as Ably from 'ably';
+import * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -6,6 +6,8 @@ import {
   EVENT_RUN_RESUME,
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
+  HEADER_ERROR_CODE,
+  HEADER_ERROR_MESSAGE,
   HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
   HEADER_INPUT_CODEC_MESSAGE_ID,
@@ -200,6 +202,45 @@ describe('RunManager', () => {
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
       expect(headers[HEADER_RUN_CLIENT_ID]).toBe('user-a');
       expect(headers[HEADER_RUN_REASON]).toBe('complete');
+    });
+
+    it('stamps error-code and error-message on a run-end with reason error and an error', async () => {
+      await manager.startRun('run-1', 'user-a');
+      await manager.endRun(
+        'run-1',
+        'error',
+        'inv-1',
+        'user-a',
+        'trigger',
+        new Ably.ErrorInfo('invalid x-api-key', 104008, 500),
+      );
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted by prior calls
+      const headers = headersOf(channel.publishCalls.at(1)!);
+      expect(headers[HEADER_RUN_REASON]).toBe('error');
+      expect(headers[HEADER_ERROR_CODE]).toBe('104008');
+      expect(headers[HEADER_ERROR_MESSAGE]).toBe('invalid x-api-key');
+    });
+
+    it('omits error headers on a run-end with reason error but no error supplied', async () => {
+      await manager.startRun('run-1', 'user-a');
+      await manager.endRun('run-1', 'error');
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted by prior calls
+      const headers = headersOf(channel.publishCalls.at(1)!);
+      expect(headers[HEADER_RUN_REASON]).toBe('error');
+      expect(headers).not.toHaveProperty(HEADER_ERROR_CODE);
+      expect(headers).not.toHaveProperty(HEADER_ERROR_MESSAGE);
+    });
+
+    it('does not stamp error headers when an error is passed with a non-error reason', async () => {
+      await manager.startRun('run-1', 'user-a');
+      await manager.endRun('run-1', 'complete', undefined, undefined, undefined, new Ably.ErrorInfo('x', 104008, 500));
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted by prior calls
+      const headers = headersOf(channel.publishCalls.at(1)!);
+      expect(headers).not.toHaveProperty(HEADER_ERROR_CODE);
+      expect(headers).not.toHaveProperty(HEADER_ERROR_MESSAGE);
     });
 
     it('removes run from active set after publish', async () => {

@@ -741,10 +741,34 @@ describe('AgentSession', () => {
     it('end() publishes run-end with reason', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
-      await run.end('complete');
+      await run.end({ reason: 'complete' });
 
       const endMsg = channel.publishCalls.find((m) => m.name === 'ai-run-end');
       expect(endMsg).toBeDefined();
+    });
+
+    it('end() stamps error-code and error-message when an error is supplied with reason error', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-err' });
+      await run.start();
+      await run.end({ reason: 'error', error: new Ably.ErrorInfo('invalid x-api-key', 104008, 500) });
+
+      const endMsg = channel.publishCalls.find((m) => m.name === 'ai-run-end');
+      const headers = (endMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+      expect(headers?.['run-reason']).toBe('error');
+      expect(headers?.['error-code']).toBe('104008');
+      expect(headers?.['error-message']).toBe('invalid x-api-key');
+    });
+
+    it('end() omits error headers when reason is error but no error is supplied', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-err-bare' });
+      await run.start();
+      await run.end({ reason: 'error' });
+
+      const endMsg = channel.publishCalls.find((m) => m.name === 'ai-run-end');
+      const headers = (endMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+      expect(headers?.['run-reason']).toBe('error');
+      expect(headers?.['error-code']).toBeUndefined();
+      expect(headers?.['error-message']).toBeUndefined();
     });
 
     it('start() stamps input attribution from the triggering input event', async () => {
@@ -793,7 +817,7 @@ describe('AgentSession', () => {
         publisherClientId: 'user-b',
       });
       await startPromise;
-      await run.end('complete');
+      await run.end({ reason: 'complete' });
 
       const endMsg = channel.publishCalls.find((m) => m.name === 'ai-run-end');
       const headers = (endMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
@@ -817,7 +841,7 @@ describe('AgentSession', () => {
 
     it('end() throws if run not started', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
-      await expect(run.end('complete')).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(run.end({ reason: 'complete' })).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
 
     it('suspend() publishes run-suspend (not run-end)', async () => {
@@ -866,7 +890,7 @@ describe('AgentSession', () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
       await run.suspend();
-      await run.end('complete');
+      await run.end({ reason: 'complete' });
 
       // The run was suspended, not ended — no run-end is published.
       expect(channel.publishCalls.filter((m) => m.name === 'ai-run-suspend')).toHaveLength(1);
@@ -966,7 +990,7 @@ describe('AgentSession', () => {
         },
       });
       await run.pipe(paused);
-      await run.end('cancelled');
+      await run.end({ reason: 'cancelled' });
 
       const endMsgs = channel.publishCalls.filter((m) => m.name === 'ai-run-end');
       expect(endMsgs).toHaveLength(1);
@@ -1477,7 +1501,7 @@ describe('AgentSession', () => {
         inputEventId,
       });
       await startPromise;
-      await run.end('complete');
+      await run.end({ reason: 'complete' });
 
       simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: inputCodecMessageId });
       await new Promise((r) => setTimeout(r, 5));
@@ -1570,7 +1594,7 @@ describe('AgentSession', () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
       vi.mocked(channel.publish).mockRejectedValueOnce(new Error('publish failed'));
-      await expect(run.end('complete')).rejects.toBeErrorInfoWithCode(ErrorCode.RunLifecycleError);
+      await expect(run.end({ reason: 'complete' })).rejects.toBeErrorInfoWithCode(ErrorCode.RunLifecycleError);
     });
 
     it('pipe() calls onError when the stream errors', async () => {

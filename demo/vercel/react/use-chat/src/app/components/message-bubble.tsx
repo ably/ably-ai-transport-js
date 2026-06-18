@@ -13,6 +13,7 @@ interface MessageBubbleProps {
   clientId: string | undefined;
   runId: string | undefined;
   status: 'streaming' | 'complete' | 'cancelled' | 'error' | 'suspended' | undefined;
+  errorMessage?: string;
   hasSiblings?: boolean;
   siblingCount?: number;
   selectedIndex?: number;
@@ -171,6 +172,7 @@ export function MessageBubble({
   clientId,
   runId,
   status,
+  errorMessage,
   hasSiblings,
   siblingCount,
   selectedIndex,
@@ -281,6 +283,9 @@ export function MessageBubble({
                 </>
               )}
             </div>
+            {!isUser && status === 'error' && errorMessage && (
+              <div className="mt-1 text-[11px] text-red-300 break-words">{errorMessage}</div>
+            )}
           </>
         )}
       </div>

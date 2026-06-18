@@ -47,7 +47,7 @@ import type {
   LoadConversationOptions,
   PipeOptions,
   Run,
-  RunEndReason,
+  RunEndParams,
   RunRuntime,
   RunView,
   StreamResult,
@@ -992,7 +992,7 @@ class DefaultAgentSession<
         // INITIALIZED here (pipe requires start()), so end()'s guards pass.
         if (result.reason === 'cancelled') {
           try {
-            await run.end('cancelled');
+            await run.end({ reason: 'cancelled' });
           } catch {
             logger?.error('Run.pipe(); run-end on cancel failed', { runId });
           }
@@ -1031,7 +1031,9 @@ class DefaultAgentSession<
       },
 
       // Spec: AIT-ST7, AIT-ST7a, AIT-ST7b
-      end: async (reason: RunEndReason): Promise<void> => {
+      end: async (params: RunEndParams): Promise<void> => {
+        const { reason } = params;
+        const error = params.reason === 'error' ? params.error : undefined;
         logger?.trace('Run.end();', { runId, reason });
 
         await requireConnected('end');
@@ -1048,7 +1050,7 @@ class DefaultAgentSession<
 
         try {
           await publishLifecycle('run-end', 'end', async () =>
-            runManager.endRun(runId, reason, invocationId, resolvedInputClientId, resolvedInputCodecMessageId),
+            runManager.endRun(runId, reason, invocationId, resolvedInputClientId, resolvedInputCodecMessageId, error),
           );
         } finally {
           deregisterRun();

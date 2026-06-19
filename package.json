@@ -1,6 +1,6 @@
 {
   "name": "@ably/ai-transport",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Ably transport and codecs for building AI applications with Ably.",
   "type": "module",
   "main": "dist/ably-ai-transport.umd.cjs",

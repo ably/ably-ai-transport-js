@@ -2,6 +2,31 @@
 
 This contains only the most important and/or user-facing changes; for a full changelog, see the commit history.
 
+## [0.3.0](https://github.com/ably/ably-ai-transport-js/tree/0.3.0) (2026-06-19)
+
+[Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.2.0...0.3.0)
+
+This release opens up Ably Pub/Sub features on AI sessions: Presence and LiveObjects now pass through to the session's channel alongside the AI stream. It also reworks codec authoring into a declarative `defineCodec` API backed by transport-owned event ordering, changes history pagination to count messages rather than Runs, raises the minimum `ably` version to 2.23.0, and completes agent run-error propagation to clients.
+
+### Breaking Changes
+
+- Raised the minimum `ably` peer dependency from `^2.21.0` to `^2.23.0`. [#202](https://github.com/ably/ably-ai-transport-js/pull/202)
+- Removed `clientId` from the `createClientSession` / `createAgentSession` options; sessions now read the client id from the Ably client you pass in. [#188](https://github.com/ably/ably-ai-transport-js/pull/188)
+- `View.loadOlder(limit)` (and the `useView` `limit`) now reveals exactly `limit` codec-messages, partially revealing a Run at the page boundary, instead of counting `limit` Runs; the `View.loadOlder` / `hasOlder` contract changes to match. [#201](https://github.com/ably/ably-ai-transport-js/pull/201)
+- Reworked the codec authoring surface into a declarative `defineCodec` API: added `defineCodec`, the `boolField` / `enumField` / `jsonField` / `strField` header-field helpers, and the descriptor and builder types (`InputDescriptor`, `OutputDescriptor`, `DefineCodecConfig`, and related), and moved event ordering, de-duplication, and replay into the transport so custom reducers no longer de-dupe against a stream-wide serial high-water-mark. [#184](https://github.com/ably/ably-ai-transport-js/pull/184) [#192](https://github.com/ably/ably-ai-transport-js/pull/192)
+- Removed unused public exports: the never-called cross-run event API (`Run.addEvents` and the `EventsNode` node type) and the `headerReader` / `headerWriter` / `DomainHeaderReader` / `DomainHeaderWriter` header utilities. [#177](https://github.com/ably/ably-ai-transport-js/pull/177) [#195](https://github.com/ably/ably-ai-transport-js/pull/195)
+
+### New Features
+
+- Pub/Sub Presence passthrough: sessions now expose the Ably Presence API, and the React session providers implicitly mount a `<ChannelProvider>` so ably-js's `usePresence` hook works against the session's channel. [#151](https://github.com/ably/ably-ai-transport-js/pull/151)
+- LiveObjects passthrough: sessions now expose the Ably LiveObjects API, and you can set explicit channel modes (merged with the session defaults) via the new `OBJECT_MODES` export. [#182](https://github.com/ably/ably-ai-transport-js/pull/182)
+- Agent run errors now carry their cause to clients via `ai-run-end` (`error-code` / `error-message`), instead of collapsing to a generic "agent reported an error". [#181](https://github.com/ably/ably-ai-transport-js/pull/181)
+
+### Bug Fixes
+
+- Fixed regenerating the follow-up text of a tool-call reply: it previously corrupted the reconstructed conversation (which then ended with an assistant message the model rejects) and rendered an orphan third bubble; the regenerated text now replaces the original in place with its own branch counter. [#189](https://github.com/ably/ably-ai-transport-js/pull/189)
+- Fixed late-delivered or reordered events being silently dropped: the transport now keeps a per-node event log and folds each node in canonical serial order with a version high-water-mark, so cross-publisher reordering and out-of-order history pages converge correctly. [#192](https://github.com/ably/ably-ai-transport-js/pull/192)
+
 ## [0.2.0](https://github.com/ably/ably-ai-transport-js/tree/0.2.0) (2026-06-08)
 
 [Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.1.0...0.2.0)

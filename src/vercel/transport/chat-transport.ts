@@ -571,6 +571,20 @@ export const createChatTransport = (
     let run: ActiveRun;
     if (isContinuation) {
       const inputs = deriveContinuationInputs(codecMessages, messages);
+      // Naive AIT-843 option: when the continuation has nothing to publish —
+      // the tool resolution is already reflected in the shared tree (e.g.
+      // another tab with the same clientId published it first) — short-circuit
+      // to an empty, immediately-closed stream instead of calling send([])
+      // (which throws the empty-inputs guard and flickers useChat to `error`).
+      // The resolved response still arrives via useMessageSync. See NOTES.md.
+      if (inputs.length === 0) {
+        console.log("LAWRENCE: deriveContinuationInputs returned empty; returning empty stream");
+        return new ReadableStream<AI.UIMessageChunk>({
+          start: (controller) => {
+            controller.close();
+          },
+        });
+      }
       run = await session.view.send(inputs, sendOpts);
     } else if (trigger === 'regenerate-message') {
       if (messageId === undefined) {

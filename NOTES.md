@@ -97,15 +97,6 @@ written as if that state were private/authoritative — that's the bug class.
     double-publish as the separate single-flight work.
 - The fix _line_ is the same either way; the question is which model it serves.
 
-## Code-quality finding (separate from the fix)
-
-`hasUnresolvedToolCall` (`chat-transport.ts:243`, used at `:475`) inlines the
-**same three states** as `UNRESOLVED_TOOL_STATES` (`:256`) — duplicated literal,
-drift hazard. They're the same concept ("tool call still awaiting a
-result/approval"), just applied to the overlay vs the tree. DRY cleanup: hoist
-the set, have `hasUnresolvedToolCall` use it, and sharpen the doc. No behaviour
-change (the literals already match).
-
 ## Key code locations
 
 - `src/vercel/transport/chat-transport.ts` — `deriveContinuationInputs` `:290`

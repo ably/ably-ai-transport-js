@@ -18,7 +18,7 @@
     "@ai-sdk/anthropic": "^3",
     "@ai-sdk/openai": "^3",
     "@ai-sdk/react": "^3.0.161",
-    "ably": "^2.22.1",
+    "ably": "^2.23.0",
     "ai": "^6",
     "jsonwebtoken": "^9",
     "next": "^16",

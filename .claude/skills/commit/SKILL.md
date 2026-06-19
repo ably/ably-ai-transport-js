@@ -17,20 +17,20 @@ general guidance in the shared skill when writing the commit message:
 - **Jira tickets**: do NOT include the ticket ID in the summary line.
   Add it on its own line at the end of the body in square brackets
   (e.g. `[PUB-123]`).
-- **Component prefix**: begin the summary with a capitalised prefix naming
+- **Component prefix**: begin the summary with a lowercase prefix naming
   the architectural area the change relates to, followed by `: ` and a
   lowercase, imperative description. For example,
-  `Transport: extract shared session lifecycle helpers`. The prefix names the
+  `transport: extract shared session lifecycle helpers`. The prefix names the
   area, not the file path.
-  - Primary areas: `Codec:`, `Transport:`, `React:`, `Vercel:`, `Docs:`,
-    `Demos:`, `Shared:`, `Project:`.
+  - Primary areas: `codec:`, `transport:`, `react:`, `vercel:`, `docs:`,
+    `demos:`, `shared:`, `project:`.
   - For a change scoped to a single sub-component, name it directly instead
-    of the broad area — e.g. `Tree:`, `View:`, `ClientSession:`,
-    `AgentSession:`, `RunManager:`, `ChatTransport:`.
+    of the broad area — e.g. `tree:`, `view:`, `clientSession:`,
+    `agentSession:`, `runManager:`, `chatTransport:`.
   - Compose when a change is specific to one layer of an area:
-    `Vercel codec:`.
-  - Repository tooling uses a path-style prefix: `Claude/skills:`,
-    `Claude/rules:`.
+    `vercel codec:`.
+  - Repository tooling uses a path-style prefix: `claude/skills:`,
+    `claude/rules:`.
 
   If changes span multiple unrelated areas, pick the most significant one or
   use a broader prefix.

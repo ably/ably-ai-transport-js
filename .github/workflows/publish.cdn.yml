@@ -14,7 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.ref }}
+          # github.ref/github.ref_name are empty for release events; read the
+          # tag from the event payload instead.
+          ref: ${{ github.event.release.tag_name }}
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -31,4 +33,4 @@ jobs:
         with:
           source-dir: dist
           file-regex: '^ably-ai-transport\.umd\.cjs$'
-          tag: ${{ github.ref_name }}
+          tag: ${{ github.event.release.tag_name }}

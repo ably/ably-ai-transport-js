@@ -48,6 +48,17 @@ serial-bounded agent history (rejected — counterexample in notes);
 distinct-run-id / sibling-NODES (fights the codec result-in-part + tree
 shared-ancestor invariants); transport-tier continuation-id (violates AITDR-011).
 
+**Spike status (2026-06-22): DONE — design is BUILDABLE.** See "Feasibility
+spike (2026-06-22) — results" at the end of the file. Headline: the recursive
+codec projection fits cleanly (the generic core treats the projection as fully
+opaque — zero structural access outside the Vercel codec), and the agent-scope
+sub-decision resolves to **(b) event-id keying**, which can act as the SINGLE
+continuation key across all three bridges (fold-routing, agent-generation scope,
+run-output-stream routing) and thereby ELIMINATE the client-minted
+continuation-id-in-`data` machinery — directly cutting the biggest pushback risk
+(overall complexity). Pre-spike action also done: last-write-wins is incidental
+(commit `9bc688a4` deleted the explicit dedup gate); nothing relies on it.
+
 **Next step (GREENLIT):** run a FEASIBILITY SPIKE on the leading design before
 implementing — it's reasoned, not verified against code (`reducer.ts` /
 projection shape / how `getMessages` is structured / agent continuation-id echo /
@@ -827,3 +838,166 @@ needs it was wrong.)
 
 AIT-843 (this), AIT-878 (incomplete runs), AIT-879 (run-end error stamping —
 now merged to main, `26d5a46c`).
+
+## Feasibility spike (2026-06-22) — results
+
+Verified the continuations-within-the-node design against the actual code. Read
+`reducer.ts`, `reducer-state.ts`, `fold-input.ts`, core codec `types.ts`,
+`tree.ts`, `agent-view.ts`, `view.ts`, `agent-session.ts`, `run-output-stream.ts`,
+`chat-transport.ts`, `invocation.ts`, `client.ts` (ActiveRun). **Verdict: the
+design is buildable.** No invariant blocks it. Details below; line refs are
+against the worktree at spike time.
+
+### Pre-spike ACTION (done): why last-write-wins exists — it's INCIDENTAL
+
+`git blame` on the reducer's last-write-wins comment lands on commit `9bc688a4`
+("Vercel codec: delete the conflict-key dedup gate", Mike Christensen). It
+DELETED an explicit per-conflict-key high-water-mark (`conflict-key.ts` +
+`conflictSerials`) that previously made folds idempotent / last-writer-wins under
+out-of-order delivery. It was removed because **the transport now owns ordering**
+(the Tree sequences each node's wires canonically and drops whole-wire replays via
+a per-message version high-water-mark), so the reducer folds unconditionally and
+"last-writer-wins falls out of fold order." So for tool-results, last-write-wins
+is the incidental residue of removing redundant machinery — NOT a deliberately-
+relied-on semantic. This confirms the design's claim: routing tool-results into
+separate continuations "replaces" last-write-wins for them and loses nothing
+(the property still governs text/reasoning/etc. and simply stops being exercised
+for tool-results). The fold stays pinned for everything else; no un-pinning needed.
+
+### Finding 1 — the projection is fully OPAQUE to the generic core (STRONG positive)
+
+Grepped the entire `src/core/` for any structural access to projection internals
+(`.messages` / `.trackers` / `.continuations`): **zero hits**. The core only ever
+calls `codec.init()`, `codec.fold(projection, event, meta)` (`tree.ts:488,605`),
+and `codec.getMessages(node.projection)` (16 call sites: 13 in `view.ts`, 3 in
+`agent-view.ts`). The tree stores `node.projection` as an opaque blob. So the
+recursive `{ base, continuations: Map<key, node> }` shape lives ENTIRELY inside
+the Vercel reducer — no generic-tree change for the branching itself. This is
+exactly what the design's AITDR-011 layering claim needs, and it's true in code.
+
+### Finding 2 — route-then-fold makes the recursive rewrite tractable
+
+All 7 `fold-*` helpers operate on `state` via `ensureMessage` / `ensureTrackers` /
+`state.messages` / `findOwner` (30 references). If the reducer's dispatcher first
+SELECTS the target sub-projection node (by continuation key) and passes THAT node
+as `state` to the existing per-concern fold helpers, the helpers run essentially
+unchanged. The rewrite is therefore: (a) make `VercelProjection` recursive —
+`{ messages, trackers, pendingToolResolutions, continuations: Map<key, node> }`
+where each continuation is the same node shape; (b) add a routing layer in `fold`
+that picks base-vs-continuation by the event's continuation key; (c) rewrite
+`getMessages` to walk root→leaf with the canonical pick at each branch (+ optional
+selector). Trackers become per-node (each sub-projection owns its maps) — fine,
+since `cm_tc` appears in base AND in each continuation (a deep COPY with that
+continuation's result folded on), and follow-ups live in their continuation.
+Meaty but well-contained to the Vercel codec.
+
+### Finding 3 — the continuation key: resolve (a) vs (b) → choose (b) event-id, and it UNIFIES all three bridges
+
+The three places that need to know "which continuation":
+
+1. **Fold routing** (reducer): which sub-projection a tool-result / follow-up
+   folds into. Reducer only gets `ReducerMeta = {serial, messageId?}` (`types.ts:158`).
+2. **Agent-generation scope** (`AgentView._collectConversation` → `getMessages`,
+   `agent-view.ts:505-530`): the agent must reconstruct history scoped to ITS
+   continuation (root→leaf), never a sibling's.
+3. **Run-output-stream routing** (`run-output-stream.ts:141`): currently routes by
+   `event.inputCodecMessageId` (= `cm_tc`, SHARED across continuations) → today
+   both tabs' streams would receive BOTH follow-ups. Must route per-continuation.
+
+The decisive code fact: **the triggering event-id is a transport-tier identifier
+that BOTH sides already hold.** `ActiveRun.inputEventId` (`client.ts:133`) gives
+the client its own tool-result publish's event-id synchronously at send time; the
+agent has the same value as `invocation.inputEventId` (`invocation.ts`). `event-id`
+is a generic header (`HEADER_EVENT_ID = 'event-id'`, `constants.ts:48`), already
+indexed in the tree (`_eventIdIndex`, `tree.ts:341`), already stamped on inputs
+(`headers.ts:89`) and forwarded in the POST body. So option (b) keys each
+continuation by its seeding tool-result's event-id and serves ALL THREE bridges
+with one key, via minimal generic plumbing:
+
+- The agent echoes the triggering input's event-id on its continuation outputs as
+  a generic provenance header (only when `resolvedContinuation` — `agent-session.ts:829`).
+  Name it transport-generically (e.g. `triggering-event-id` / `input-event-id`),
+  NOT "continuation" — it states a pure transport fact ("which input caused this
+  output"); the CODEC interprets it as the continuation key. This also closes the
+  "provenance gap" the Problem-2 analysis lamented.
+- The tree threads that header into `ReducerMeta` (a new generic `triggeringEventId?`
+  field) → reducer routes outputs into the keyed continuation. For tool-result
+  INPUTS, the codec uses the input's OWN event-id (the wire's `event-id`) — and it
+  already discriminates seeds by `kind: 'tool-result'`, so base-vs-continuation
+  needs no extra signal. The original run's `cm_tc` stream / user message carry no
+  echoed triggering-event-id (not a continuation) → fold into `base`.
+- The tree also adds `triggeringEventId` to its `output` event (`tree.ts:1120`)
+  so `run-output-stream` can match `event.triggeringEventId === run.inputEventId`.
+- The agent scopes `getMessages` with the event-id it already holds
+  (`invocation.inputEventId`) — no decoded-`TInput` retention needed (that was
+  option (a)'s cost).
+
+**Why this beats the design-as-sketched:** the sketch had the client MINT a
+continuation-id, carry it in the event `data` payload, the agent DECODE it from
+`data` and echo it. Option (b) needs none of that — no client-minted id, no
+continuation-id-in-`data`, no codec `data` decode for routing. It reuses an
+existing transport-tier handle and is arguably MORE AITDR-011-compliant (the
+routing key is transport provenance in an `x-ably-*`-class header, not codec
+domain data). This directly attacks the design's biggest stated pushback risk
+(overall complexity: "recursive projection + continuation-id-in-`data` + three
+scoping modes"). Recommend (b); drop the client-minted-continuation-id-in-`data`
+mechanism unless a later need for a domain-level id surfaces.
+
+Caveat to weigh: (b) keys a codec-internal structure (continuations) on a
+transport identifier (event-id). It stays opaque to the codec (just a Map string
+key) and the codec never parses it, so this reads as acceptable, not a layering
+violation — but it's the one judgement call to confirm with review.
+
+### Finding 4 — getMessages selector blast radius is small
+
+Adding `getMessages(projection, selector?)` with `selector` defaulting to the
+canonical pick keeps all 13 `view.ts` canonical-display call sites working
+UNCHANGED. Only the agent-generation path (`agent-view.ts`, 3 sites) and the
+reply/edit "descent-point" scoping (the THIRD mode — scope an ancestor to the
+continuation the descendant parented off, threaded through `walkAncestorChain`,
+`agent-view.ts:85`) must pass a selector. So the required-change surface is the
+agent-view walk + descent-point threading; display gets the canonical default free.
+
+### Finding 5 — recursive nesting / multi-step confirmed as the normal case
+
+The fold must LOCATE the target message within a nested projection (walk by
+codec-message-id to find the home node, then attach a child continuation there),
+because a follow-up can itself carry an unresolved tool call whose result spawns a
+child continuation. `findOwner` (`fold-input.ts:209`) currently does a flat
+`state.messages.find` — under the recursive model it becomes a recursive search
+for the home node, then attach/seed the child continuation. Selector resolves to a
+PATH; the canonical pick fires once per branch level in one materialisation. No
+blocker — just must be designed for the tree from the start (as the notes say).
+
+### Still-open sub-decisions after the spike
+
+- **Earliest-vs-latest canonical tie-break.** Unchanged by the spike (it's a
+  display/coherence choice, not a buildability one); now applied per-continuation
+  with explicit keys. Prior analysis leans **latest / single-rule** (matches the
+  pinned fold; neither direction is reliably flicker-free in the tight race). The
+  reply-stability risk argues weakly for first-stable. Lower-stakes; decide when
+  coding the canonical filter.
+- **Coherence Option 1 vs 2** (best-effort vs strict follow-the-part). Under (b),
+  continuations are already separated by event-id so each holds exactly one
+  result+follow-up pair — the pairing the provenance gap blocked is now intrinsic.
+  This effectively delivers Option-2-grade coherence WITHOUT the extra wire/reducer
+  stamping Option 2 required (event-id keying does the pairing). Revisit framing
+  when implementing; likely moots the Option 1/2 split.
+- **Confirm the layering judgement** in Finding 3's caveat with review.
+
+### Suggested implementation order (groundwork-first, reviewable)
+
+1. Generic: add `triggeringEventId?` to `ReducerMeta` + tree `output` event; tree
+   reads the new provenance header at fold/emit time (no behaviour change yet —
+   reducer ignores it).
+2. Agent: echo the triggering input's event-id as the provenance header on
+   continuation outputs (`Run.pipe`); pass the event-id selector to `getMessages`.
+3. Generic: add the optional `selector` param to `Codec.getMessages` + thread the
+   descent point through `walkAncestorChain` (default = canonical; no behaviour
+   change for existing flat codec).
+4. Vercel codec: make `VercelProjection` recursive; route-then-fold; recursive
+   `getMessages` with canonical pick + selector. This is the bulk.
+5. Vercel: route `run-output-stream` by `triggeringEventId === run.inputEventId`.
+6. Remove now-dead continuation-id-in-`data` ideas if any were scaffolded (none yet).
+
+Each step is independently typecheck-able; steps 1–3 are mechanical groundwork.

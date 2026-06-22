@@ -12,6 +12,7 @@ import {
   HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
   HEADER_INPUT_CODEC_MESSAGE_ID,
+  HEADER_INPUT_EVENT_ID,
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
@@ -110,6 +111,17 @@ describe('buildTransportHeaders', () => {
     expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
   });
 
+  it('includes triggeringInputEventId as input-event-id when provided', () => {
+    const headers = buildTransportHeaders({
+      role: 'assistant',
+      runId: 'run-1',
+      codecMessageId: 'msg-1',
+      triggeringInputEventId: 'evt-trigger',
+    });
+
+    expect(headers[HEADER_INPUT_EVENT_ID]).toBe('evt-trigger');
+  });
+
   it('includes regenerates as msg-regenerate when provided', () => {
     const headers = buildTransportHeaders({
       role: 'user',
@@ -133,6 +145,7 @@ describe('buildTransportHeaders', () => {
     expect(headers).not.toHaveProperty(HEADER_FORK_OF);
     expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
     expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
+    expect(headers).not.toHaveProperty(HEADER_INPUT_EVENT_ID);
     expect(headers).not.toHaveProperty(HEADER_MSG_REGENERATE);
   });
 });

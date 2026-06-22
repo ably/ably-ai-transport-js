@@ -934,6 +934,10 @@ describe('AgentSession', () => {
       const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
       expect(headers['input-client-id']).toBe('user-b');
       expect(headers['input-codec-message-id']).toBe('m-icid-pipe');
+      // The triggering input's event-id is echoed too, at finer (per-send)
+      // granularity than input-codec-message-id, so concurrent continuations
+      // of one run are distinguishable on their outputs.
+      expect(headers['input-event-id']).toBe(inputEventId);
     });
 
     it('publishes each stream event through encoder.publishOutput', async () => {

@@ -20,6 +20,7 @@ import {
   HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
   HEADER_INPUT_CODEC_MESSAGE_ID,
+  HEADER_INPUT_EVENT_ID,
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
@@ -59,6 +60,14 @@ import type { RunEndReason, RunLifecycleEvent } from './types.js';
  *   publishes for the invocation (run lifecycle + outputs), mirroring
  *   `inputClientId`, so the client can correlate any of those events back to
  *   the originating input by the id it owned at send time.
+ * @param opts.triggeringInputEventId - The `event-id` of the input event that
+ *   triggered the current invocation. The agent re-stamps it on its outputs as
+ *   `input-event-id`, mirroring `inputCodecMessageId` but at event-id
+ *   granularity: it is per-send, so concurrent continuations of one suspended
+ *   run carry distinct values (their own triggering tool-result's event-id),
+ *   which is what lets a per-request output stream and the codec separate them.
+ *   Distinct from `inputEventId` above, which sets THIS message's own
+ *   `event-id` on a client input.
  * @returns A headers record with the transport headers set.
  */
 export const buildTransportHeaders = (opts: {
@@ -73,6 +82,7 @@ export const buildTransportHeaders = (opts: {
   inputClientId?: string;
   inputCodecMessageId?: string;
   inputEventId?: string;
+  triggeringInputEventId?: string;
 }): Record<string, string> => {
   const h: Record<string, string> = {
     [HEADER_ROLE]: opts.role,
@@ -87,6 +97,7 @@ export const buildTransportHeaders = (opts: {
   if (opts.inputClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.inputClientId;
   if (opts.inputCodecMessageId !== undefined) h[HEADER_INPUT_CODEC_MESSAGE_ID] = opts.inputCodecMessageId;
   if (opts.inputEventId) h[HEADER_EVENT_ID] = opts.inputEventId;
+  if (opts.triggeringInputEventId !== undefined) h[HEADER_INPUT_EVENT_ID] = opts.triggeringInputEventId;
   return h;
 };
 

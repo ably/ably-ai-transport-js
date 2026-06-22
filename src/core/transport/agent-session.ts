@@ -964,6 +964,12 @@ class DefaultAgentSession<
           invocationId,
           inputClientId: resolvedInputClientId,
           inputCodecMessageId: resolvedInputCodecMessageId,
+          // Echo the triggering input's event-id on every assistant output, so
+          // the codec can fold concurrent continuations of one run into their
+          // own sub-projections and a per-request stream can route by it. It is
+          // per-send (each racing tool-result has a distinct event-id), unlike
+          // the shared inputCodecMessageId.
+          triggeringInputEventId: inputEventId,
           regenerates: assistantRegenerates,
         });
         const encoder = codec.createEncoder(channel, {

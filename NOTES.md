@@ -48,6 +48,26 @@ serial-bounded agent history (rejected — counterexample in notes);
 distinct-run-id / sibling-NODES (fights the codec result-in-part + tree
 shared-ancestor invariants); transport-tier continuation-id (violates AITDR-011).
 
+**Implementation status (2026-06-22): DONE on branch
+`AIT-843-continue-investigating-multiple-tool-call-responses`, committed,
+unmerged.** Continuations-within-the-node is built end-to-end via option (b)
+event-id keying (no `data`-borne / client-minted continuation-id). Commits:
+`45cdd29` (ReducerMeta + tree provenance), `a381268` (agent echoes
+`input-event-id`), `14c77ce` (getMessages `MessageSelector`), `97c7b5e`
+(recursive VercelProjection + continuations.ts), `d92f691` (agent scopes
+history to its own continuation — Problem 2 fixed), `9d533d5` (stream routes by
+event-id), `9219bad` (e2e tree+codec test), `1d1b42b` (review fixes). Full unit
+suite green (1147). An independent review found NO correctness bugs; its two
+cleanups (misleading comment, YAGNI optimistic-seed) are in `1d1b42b`.
+OUTSTANDING: (1) spec draft `AIT-CT21`–`CT26` in the `specification` submodule
+is UNCOMMITTED, awaiting Lawrence's approval (workflow: never commit spec
+without approval); (2) real-Ably integration test recommended as follow-up (the
+`9219bad` e2e covers the codec+tree seam with real headers, but not Ably wire
+serialisation); (3) tie-break is earliest-by-serial (still the open
+sub-decision); (4) Problem 1 (merge clobber) remains separate/upstream;
+(5) parallel multi-tool-per-send is a noted limitation. Add `// Spec: AIT-CT…`
+code refs once the spec point numbers are approved.
+
 **Spike status (2026-06-22): DONE — design is BUILDABLE.** See "Feasibility
 spike (2026-06-22) — results" at the end of the file. Headline: the recursive
 codec projection fits cleanly (the generic core treats the projection as fully

@@ -1,15 +1,13 @@
 ---
 name: docs
-description: Write, improve, or review markdown documentation for the AI Transport SDK - including auditing whether a code change has left docs/ stale or incomplete. Follows the project's doc principles (atomic pages, problem-first framing, one path then depth) and the established style from the docs that received positive feedback.
-allowed-tools: Read, Grep, Glob, Skill, Bash(git diff *), Bash(git show *), Bash(git log *), Bash(git status *), Bash(git ls-files *), Bash(git blame *), Bash(git rev-parse *), Bash(git merge-base *)
+description: Write or improve markdown documentation for the AI Transport SDK. Follows the project's doc principles (atomic pages, problem-first framing, one path then depth) and the established style from the docs that received positive feedback.
 ---
 
 # Writing Documentation
 
 Write markdown documentation for the AI Transport SDK. This skill covers
-creating new doc pages, improving existing ones, reviewing a page for
-consistency with the project's principles and voice, and auditing whether a code
-change has left the docs stale or incomplete.
+creating new doc pages, improving existing ones, and reviewing docs for
+consistency with the project's principles and voice.
 
 ## Before writing
 
@@ -262,8 +260,6 @@ sequenceDiagram
 ````
 `````
 
-````
-
 **When to use Mermaid vs plain text:**
 
 - **Mermaid `sequenceDiagram`** - wire sequences, request-response flows,
@@ -397,77 +393,10 @@ docs/
 
 If a page doesn't fit these categories, discuss placement before writing.
 
-## Reviewing a change for documentation drift and coverage
+## Verifying a page
 
-Use this when a code change lands and you need to check the docs it affects - not
-the quality of a single page (that is the checklist below), but whether the
-change left `docs/` **stale** or **incomplete**. Audit and report only; edit docs
-only if you have been asked to fix them.
-
-When running this as part of a code review, invoke the
-`ably-skills:code-review-protocol` skill (via the Skill tool) for scope and the
-report format, and report under concern `docs`.
-
-- **Accuracy** - the change has left nothing stale: signatures, names, examples,
-  behaviour, and cross-references still match the code.
-- **Coverage** - the change has left nothing undocumented: new public API,
-  options, behaviours, and edge cases are all covered.
-
-For each affected page, also apply the per-page **Review checklist** below.
-
-## Review checklist
-
-After writing a doc page, verify:
-
-**Content accuracy:**
-
-- [ ] Code examples are copy-pasteable and use real API surface
-- [ ] Code examples match current source code (read the implementation)
-- [ ] Code examples have all variables defined (no undefined references)
-- [ ] Import paths use real package entry points (`@ably/ai-transport`, `/react`, `/vercel`, `/vercel/react`)
-- [ ] Interface signatures match the source exactly - optional fields (`?`),
-      parameter names, parameter order, return types
-- [ ] Wire protocol values match source (`streaming`/`finished`/`aborted`, not `open`/`closed`)
-- [ ] Chunk/event type names match the actual codec implementation
-- [ ] No undocumented or invented API surface
-- [ ] Method behavior descriptions match the actual implementation (e.g.
-      which method is called in the error path - `close()` vs `abort()`)
-- [ ] Priority/ordering claims match the code (e.g. header merge order)
-
-**Structure and style:**
-
-- [ ] Opening sentence defines the concept in one direct statement
-- [ ] Feature pages have 1-2 sentence problem framing after the opening
-- [ ] Single developer intent per page
-- [ ] Both client and server sides shown (for feature pages)
-- [ ] No marketing language, no hedging, no meta-commentary
-- [ ] Tables used for structured comparisons
-- [ ] Headers work as a scannable table of contents
-
-**Diagrams:**
-
-- [ ] Multi-column sequence diagrams and flowcharts use Mermaid, not ASCII art
-- [ ] Mermaid diagrams render correctly (valid syntax, participants declared)
-- [ ] Plain-text diagrams (simple trees, pseudocode) have consistent alignment
-
-**Cross-references and definitions:**
-
-- [ ] Cross-references to related pages and at least one reference page
-- [ ] All cross-reference paths are correct relative paths to existing files
-- [ ] Cross-reference anchors point to headings that actually exist
-- [ ] Every concept mentioned that is explained elsewhere is linked at first
-      mention (not just in a "See also" at the bottom)
-- [ ] Internals pages link to specific heading anchors, not just page-level
-
-**Concept audit (do this last):**
-
-- [ ] Read each paragraph as an outsider - flag any term that isn't obvious
-- [ ] Ably-specific terms (serial, message actions, channel attach) are
-      defined or linked to the glossary at first mention
-- [ ] Architecture terms (own run, observer run, transport layer, domain
-      layer) are defined or linked at first mention
-- [ ] Protocol jargon (terminal event, fire-and-forget, prefix-match,
-      first-contact, optimistic reconciliation) is defined or linked at first mention
-- [ ] No concept is mentioned in passing without the reader being able to
-      understand it from context, an inline definition, or a link
-````
+Verification is owned by the `code-review-docs` skill - the review half of the
+docs writing loop. After writing or editing a page, run `code-review-docs` (or
+let the loop run it) to audit accuracy, coverage, structure and voice,
+cross-references, and concept coverage, then fix what it reports and repeat until
+it passes.

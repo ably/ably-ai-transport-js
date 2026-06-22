@@ -32,6 +32,12 @@ export async function POST(req: Request) {
   const data = (await req.json()) as InvocationData;
   const invocation = Invocation.fromJSON(data);
 
+  // TEMPORARY (AIT-843 debugging): log the triggering input event-id per POST so
+  // two concurrent tabs' invocations can be compared. Each tab's view.send mints
+  // a fresh inputEventId, so these SHOULD differ; an identical pair is the
+  // anomaly we're chasing.
+  console.log('[AIT-843] invocation received', { inputEventId: invocation.inputEventId });
+
   // A fresh Ably client per request (trusted environment, API key direct).
   // The agent is ephemeral: it attaches the channel, looks up the triggering
   // input event via `untilAttach: true` history (scoped by
@@ -49,7 +55,28 @@ export async function POST(req: Request) {
   await session.connect();
   const run = session.createRun(invocation, { signal: req.signal });
 
+  // TEMPORARY (AIT-843 testing aid — not a fix; the lookup race is tracked
+  // separately): run.start() looks up the triggering input event on the
+  // channel, and can lose the publish-then-immediately-query race against Ably
+  // history persistence, surfacing as `InputEventNotFound` (504). It's most
+  // visible in the multi-tab case, where several continuation invocations look
+  // up freshly-published tool-results at once. A short delay lets persistence
+  // settle so the single history scan finds the event. Gated behind
+  // AGENT_LOOKUP_DELAY_MS (unset/0 = off).
+  const lookupDelayMs = Number(process.env.AGENT_LOOKUP_DELAY_MS) || 0;
+  if (lookupDelayMs > 0) {
+    await new Promise((resolve) => {
+      setTimeout(resolve, lookupDelayMs);
+    });
+  }
+
   await run.start();
+
+  // TEMPORARY (AIT-843 debugging): the run-id is read off the triggering input
+  // event's headers. Two continuations of the same suspended run SHOULD resolve
+  // the same runId R but via DIFFERENT inputEventIds (logged above).
+  console.log('[AIT-843] run started', { inputEventId: invocation.inputEventId, runId: run.runId });
+
   await run.loadConversation();
 
   const result = streamText({

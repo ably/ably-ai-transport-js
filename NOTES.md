@@ -97,19 +97,13 @@ _publish_.
 
 Two boundaries kept attached to the principle:
 
-1. **It's about the result publish, not the continuation run.** We deliberately
-   want exactly one agent run (single-flight). Today's bug is that one
-   check — "is this tool part already resolved in the tree?" (the
+1. **It's about the result publish, not the continuation run.** Today's bug is
+   that one check — "is this tool part already resolved in the tree?" (the
    `UNRESOLVED_TOOL_STATES` skip at `:339`) — governs BOTH the publish and (via
-   emitting `[]` → `view.send([])` → empty-inputs throw) the run. Separate them:
-   publish unconditionally, single-flight the run downstream.
+   emitting `[]` → `view.send([])` → empty-inputs throw) the run.
 2. **"Don't discard" does NOT mean both results survive into history.** Both
-   tabs publish; reconciliation is downstream: the client tree fold is
-   idempotent (`fold-input.ts` `resolveOrPend`/`applyResolution`, keyed by
-   `toolCallId`, last-write-wins) + agent-side single-flight on the continuation
-   runId (continuations reuse the suspended run's runId, identical across tabs —
-   `chat-transport.ts` `sendOpts.runId = run.runId`). Suppression moves from a
-   non-deterministic source-side race to deterministic downstream dedup.
+   tabs publish AND both run (we do NOT prevent the second run — see decision
+   below). Reconciliation is downstream, at READ time.
 
 ### Why `deriveContinuationInputs` checks the tree at all
 
@@ -121,15 +115,127 @@ an accidental side effect of using shared, peer-mutable tree state as that
 proxy. So "always emit" can't mean "delete the check" (that re-publishes all
 resolved history every continuation step) — it means **replace the shared-tree
 proxy with a signal authoritative to THIS client** (toolCallIds it locally
-resolved but hasn't yet published).
+resolved but hasn't yet published — equivalently, the same "last assistant is
+complete-with-tool-calls, not yet continued" condition `sendAutomaticallyWhen`
+itself uses, so whenever useChat fires a continuation we always produce a real
+input → never `[]` → no empty path → no flicker, no infinite loop).
 
-### Open verification before scoping the agent-side work
+## Design: tolerate double-inference, canonicalize on read (decided 2026-06-22)
 
-Trace the agent's `loadConversation` / `AgentView` path to confirm duplicate
-tool-results collapse idempotently there too. Client tree confirmed; agent
-history reconstruction not yet. If it doesn't dedup, the agent-side work is
-single-flight + history-level dedup; if it does, it's just single-flight on the
-reused continuation runId.
+### Decision: do NOT prevent the second run
+
+Aborting/preventing the second continuation run (single-flight via a lock or an
+Ably-ordering claim) is **out of scope**: the SDK has no precedent for reaching
+into agent execution to cancel inference based on what a peer is doing, and the
+claim approach drags in a bounded-wait timing window (same fragility class as
+the 504 / InputEventNotFound lookups). So: **both tabs publish, both POST, both
+agents run.** We accept the cost (2× LLM + 2× channel traffic for N racing
+tabs) and reconcile at read time. Can revisit if double-inference proves a
+problem in practice.
+
+### Agent-side investigation findings (2026-06-22)
+
+- **History reconstruction reads the live Tree projection.** `Run.messages` →
+  `AgentView.messages()` → `_collectConversation` walks ancestors and calls
+  `codec.getMessages(node.projection)` (`agent-view.ts`). No separate history
+  cache.
+- **Duplicate tool-results collapse idempotently** in BOTH readers (client tree
+  and agent), because they fold ONTO the prior assistant's tool part keyed by
+  `toolCallId`, last-write-wins (`fold-input.ts`). So there is NO duplicate
+  tool-result _message_ — just one resolved part on the assistant.
+- **No dedup of the continuation RUN anywhere.** Both invocations adopt the same
+  reused runId R (`agent-session.ts:828`); in serverless they are two separate
+  `AgentSession` instances, each independently publishing `run-start` / outputs /
+  `run-end` under R. Duplicate `run-start`s for R are idempotent on the client
+  tree (`tree.ts:1174`), so the run NODE is fine.
+- **Each `Run.pipe()` mints a fresh codec-message-id** (`agent-session.ts:956`).
+  So the two continuation responses are two DISTINCT messages, both folded into
+  run node R (same runId → same node; distinct codec-message-id → not merged,
+  not forked into siblings).
+
+### The resulting tree shape
+
+Scenario: user `cm_i`, assistant `cm_tc` (holds the tool call, lives in reply
+run node R). Both tabs publish tool-results (Ably messages `am_tcr_1`,
+`am_tcr_2`). Inference fires twice → two follow-ups `am_followup_1`,
+`am_followup_2` (codec messages `cm_followup_1`, `cm_followup_2`).
+
+- **Raw tree / projection (faithful to the append-only channel, UNCHANGED):**
+  run node `R = [cm_tc(resolved), cm_followup_1, cm_followup_2]`. We cannot
+  rewrite this — the messages are on the channel forever.
+- **Materialized view (what we FILTER to):**
+  `R → [cm_tc(resolved), <one canonical follow-up>]`. Applied identically in the
+  client `View.getMessages()` (UX: avoid orphan/duplicate bubbles) and
+  `AgentView.messages()` (CORRECTNESS: two consecutive assistant messages are
+  malformed LLM history → Anthropic 400, the AIT-878 family).
+
+Canonicalization is a **read-time materialization filter**, never a tree mutation.
+
+### Coherence: "follow the part", show nothing until coherent
+
+The resolved tool-part on `cm_tc` and the kept follow-up must be a COHERENT
+pair: a follow-up was generated by an agent that saw a _specific_ tool result,
+so showing part = result-B with text answering result-A is incoherent (two
+responders may legitimately differ — e.g. same clientId, two locations; in
+general outputs can differ).
+
+Rule: the (pinned, see below) last-write-wins fold is the single source of truth
+for "which tool-result won"; the follow-up filter FOLLOWS the part (keep the
+follow-up paired with the winning tool-result), it does not pick independently.
+If the part-matching follow-up has not arrived yet (or its agent died), **show
+nothing until the coherent one arrives** — a brief gap beats answer-≠-input.
+
+NOTE: the existing last-write-wins reducer fold is **pinned** (not to be changed
+— it presumably exists for good reason elsewhere). Canonicalization stays purely
+a materialization concern.
+
+### The provenance gap (blocks strict coherence) — KEY FINDING
+
+To "follow the part" we must pair a follow-up with the tool-result that
+triggered it. We cannot, currently, on two levels:
+
+1. **Provenance isn't retained in the projection.** The reducer's `fold` only
+   receives `ReducerMeta = {serial, messageId}` (`types.ts:158`). The triggering
+   `input-codec-message-id` is read by the tree (`tree.ts:1080`) and emitted only
+   transiently on the `output` event; `VercelProjection.messages` is just
+   `{codecMessageId, message}` (`reducer-state.ts:59`). Materialization can't see
+   it. (Solvable: thread it through.)
+2. **The natural provenance field can't distinguish the follow-ups anyway.**
+   Both tool-results are built `createToolResult(cm_tc, …)` — stamped with the
+   prior assistant's id `cm_tc` (chat-transport.ts:343), so they fold onto it.
+   Each agent resolves `resolvedInputCodecMessageId = headers[CODEC_MESSAGE_ID] =
+cm_tc` (`agent-session.ts:820`). So BOTH follow-ups carry
+   `input-codec-message-id = cm_tc`. That field lets us GROUP the duplicate
+   continuations of `cm_tc` (what the filter needs to find them) but cannot PAIR
+   a follow-up to a specific tool-result. The only thing distinguishing
+   `am_tcr_1` from `am_tcr_2` is their Ably event-id / serial (the invocation's
+   `inputEventId`), and that is NOT stamped onto the follow-up outputs.
+
+Compounded by the pinned reducer: the projection retains only the LAST
+tool-result's output on `cm_tc` (earliest is overwritten and gone). So even if we
+thread provenance, we can't reconstruct the earliest result, and we can't
+identify which follow-up matches whichever result won.
+
+### Options (open decision)
+
+- **Option 1 — best-effort coherence (proportionate).** Thread
+  `input-codec-message-id` into the projection (level 1), GROUP duplicate
+  continuations of `cm_tc`, keep earliest-by-serial. Coherent in the common case:
+  when both agents load history AFTER both tool-results exist, both materialize
+  the same canonical result and both answer about the same thing → either
+  follow-up is coherent with the part. Possible transient part/text mismatch ONLY
+  in the divergent tight race (each agent loaded before the other's tool-result
+  landed). Smallest change; no wire/reducer change.
+- **Option 2 — strict coherence (over-built?).** Stamp the triggering
+  `inputEventId` onto follow-up outputs and thread it through so follow-ups CAN
+  be paired to their tool-result; pair the kept follow-up to whichever result won
+  the part; show nothing until it arrives. Wire/header + reducer-meta change, for
+  a corner of a corner (the rare tight race we already accepted as the cost of
+  double-inference).
+
+Lean: Option 1. Tension: it consciously accepts that the rare tight race can
+briefly show an incoherent pair — the exact thing we said to avoid. Decide
+before coding the canonical filter.
 
 ## Fallback: observer stream (option B) — only if (A) proves intractable
 
@@ -159,10 +265,13 @@ Feasibility (checked 2026-06-19):
   non-trivial (projection → chunk-stream reconstruction). Same timing-fragility
   class as the 504 / InputEventNotFound lookups.
 
-NOTE: the `byRun(R)` observer-stream primitive is probably needed by option A
-too — a tab whose run is deduped downstream still needs its useChat stream to
-show the canonical run. So the primitive is NOT throwaway even under A; only the
-"keep race-dedup on the empty path" wiring is B-specific.
+NOTE (corrected 2026-06-22): the `byRun(R)` observer-stream primitive is NOT
+needed by the chosen direction. Under tolerate-double-inference, EVERY tab
+publishes and runs its own continuation, so every tab consumes its own run
+stream (keyed on its own tool-result's `inputCodecMessageId`) — nobody is left
+streamless. The observer primitive is only needed if a run is SUPPRESSED
+(single-flight / option B), which we are not doing. (Earlier note claiming A
+needs it was wrong.)
 
 ## Key code locations
 

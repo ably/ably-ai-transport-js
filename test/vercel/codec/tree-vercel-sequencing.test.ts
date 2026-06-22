@@ -21,7 +21,14 @@
 import type * as AI from 'ai';
 import { describe, expect, it } from 'vitest';
 
-import { HEADER_CODEC_MESSAGE_ID, HEADER_ROLE, HEADER_RUN_ID, HEADER_STREAM } from '../../../src/constants.js';
+import {
+  HEADER_CODEC_MESSAGE_ID,
+  HEADER_EVENT_ID,
+  HEADER_INPUT_EVENT_ID,
+  HEADER_ROLE,
+  HEADER_RUN_ID,
+  HEADER_STREAM,
+} from '../../../src/constants.js';
 import { createTree } from '../../../src/core/transport/tree.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 import type { VercelInput, VercelOutput } from '../../../src/vercel/codec/events.js';
@@ -108,6 +115,24 @@ const toolOutput = (v: string): VercelOutput => ({
   output: { v },
   dynamic: true,
 });
+
+/**
+ * Text of the first text part in a message, if any.
+ * @param m - The message to read.
+ * @returns The text, or undefined.
+ */
+const textOf = (m: AI.UIMessage | undefined): string | undefined =>
+  m?.parts.find((p): p is AI.TextUIPart => p.type === 'text')?.text;
+
+/**
+ * The resolved output of the first dynamic-tool part in a message, if resolved.
+ * @param m - The message to read.
+ * @returns The tool output, or undefined when no resolved tool part is present.
+ */
+const outputOf = (m: AI.UIMessage | undefined): unknown => {
+  const part = m?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
+  return part?.state === 'output-available' ? part.output : undefined;
+};
 
 describe('Vercel codec over the Tree', () => {
   it('resolves competing tool outputs by serial — the highest-serial write wins regardless of arrival order', () => {
@@ -214,5 +239,84 @@ describe('Vercel codec over the Tree', () => {
       { type: 'text', text: 'hello' },
       { type: 'file', mediaType: 'image/png', url: 'https://x/y.png' },
     ]);
+  });
+
+  it('isolates two tabs continuing one run into separate continuations (AIT-843)', () => {
+    const tree = createTree<VercelInput, VercelOutput, VercelProjection>(UIMessageCodec, silentLogger);
+
+    // Seed the suspended assistant cm_tc with an unresolved client tool call.
+    applyOutput(tree, [toolInputStart], 's01', 's01');
+    applyOutput(tree, [toolInputAvailable], 's02', 's02');
+
+    // Two tabs each publish a tool-result for cm_tc, with DISTINCT wire event-ids.
+    const resultInput = (v: string): VercelInput => ({
+      kind: 'tool-result',
+      codecMessageId: ASSISTANT,
+      payload: { toolCallId: 'tc-1', output: { v } },
+    });
+    tree.applyMessage(
+      { inputs: [resultInput('A')], outputs: [] },
+      { [HEADER_RUN_ID]: RUN_ID, [HEADER_CODEC_MESSAGE_ID]: ASSISTANT, [HEADER_EVENT_ID]: 'EA' },
+      's03',
+      undefined,
+      's03',
+    );
+    tree.applyMessage(
+      { inputs: [resultInput('B')], outputs: [] },
+      { [HEADER_RUN_ID]: RUN_ID, [HEADER_CODEC_MESSAGE_ID]: ASSISTANT, [HEADER_EVENT_ID]: 'EB' },
+      's04',
+      undefined,
+      's04',
+    );
+
+    // Each tab's agent streams a follow-up under its own codec-message-id,
+    // echoing its triggering input's event-id as `input-event-id`.
+    const followup = (cmId: string, eventId: string, text: string, base: string): void => {
+      const headers = {
+        [HEADER_RUN_ID]: RUN_ID,
+        [HEADER_CODEC_MESSAGE_ID]: cmId,
+        [HEADER_INPUT_EVENT_ID]: eventId,
+        [HEADER_STREAM]: 'true',
+      };
+      tree.applyMessage(
+        { inputs: [], outputs: [{ type: 'start', messageId: cmId }] },
+        headers,
+        `${base}1`,
+        undefined,
+        `${base}1`,
+      );
+      tree.applyMessage(
+        { inputs: [], outputs: [{ type: 'text-start', id: `${eventId}t` }] },
+        headers,
+        `${base}2`,
+        undefined,
+        `${base}2`,
+      );
+      tree.applyMessage(
+        { inputs: [], outputs: [{ type: 'text-delta', id: `${eventId}t`, delta: text }] },
+        headers,
+        `${base}3`,
+        undefined,
+        `${base}3`,
+      );
+    };
+    followup('cm_fuA', 'EA', 'You are in A', 's05');
+    followup('cm_fuB', 'EB', 'You are in B', 's06');
+
+    const run = tree.getRunNode(RUN_ID);
+    expect(run).toBeDefined();
+    if (!run) return;
+
+    // Canonical pick (no selector) → earliest continuation by serial → tab A.
+    const canonical = UIMessageCodec.getMessages(run.projection);
+    expect(canonical.map((m) => m.codecMessageId)).toEqual([ASSISTANT, 'cm_fuA']);
+    expect(outputOf(canonical[0]?.message)).toEqual({ v: 'A' });
+    expect(textOf(canonical[1]?.message)).toBe('You are in A');
+
+    // Selector → tab B's continuation; its follow-up never leaks into A's.
+    const scopedToB = UIMessageCodec.getMessages(run.projection, { continuationEventId: 'EB' });
+    expect(scopedToB.map((m) => m.codecMessageId)).toEqual([ASSISTANT, 'cm_fuB']);
+    expect(outputOf(scopedToB[0]?.message)).toEqual({ v: 'B' });
+    expect(textOf(scopedToB[1]?.message)).toBe('You are in B');
   });
 });

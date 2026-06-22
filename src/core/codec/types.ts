@@ -171,7 +171,35 @@ export interface ReducerMeta {
    * amend an existing assistant message addressed by its codec-message-id).
    */
   messageId?: string;
+  /**
+   * Optional `event-id` of the inbound wire itself (the per-send identifier
+   * the publisher stamped). Distinct from {@link messageId}: a `codec-message-id`
+   * can be shared (a continuation amends an existing assistant under the same
+   * id), whereas the `event-id` is unique per published event. Reducers that
+   * branch on the originating event — e.g. keying a client tool-result's
+   * resolution by the event that carried it — read this. `undefined` when the
+   * wire carried no `event-id`.
+   */
+  eventId?: string;
+  /**
+   * Optional `event-id` of the input event that TRIGGERED the run carrying
+   * this event — the agent's `input-event-id` echo. Lets a reducer attribute
+   * an agent output back to the specific triggering input (e.g. routing a
+   * continuation's follow-up outputs to the sub-projection that input opened),
+   * at finer granularity than the shared `input-codec-message-id`. `undefined`
+   * on client inputs (which carry their own {@link eventId}, not an echo) and
+   * when the wire carried no such header.
+   */
+  inputEventId?: string;
 }
+
+/**
+ * The reducer-routing subset of {@link ReducerMeta} — every field except the
+ * per-wire {@link ReducerMeta.serial}. Retained per wire in the transport's
+ * event log so a refold can reconstruct each event's full {@link ReducerMeta}
+ * (the log owns the serial separately).
+ */
+export type WireRoutingMeta = Omit<ReducerMeta, 'serial'>;
 
 /**
  * Pure, stateless reducer contract. A reducer folds TEvents into an opaque

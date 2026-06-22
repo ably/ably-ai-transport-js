@@ -18,15 +18,19 @@
  * caller hands it a wire and is told only how to fold (see {@link WireLogFold}).
  */
 
+import type { WireRoutingMeta } from '../codec/index.js';
+
 /** One wire message in a node's event log: a serial and its decoded events. */
 interface WireLogEntry<TEvent> {
   /** Ably channel serial of the wire message. */
   serial: string;
   /**
-   * The wire's codec-message-id — the reducer routing key the events were
-   * folded alongside; undefined when the wire carried none.
+   * The wire's reducer-routing metadata (codec-message-id, event-id,
+   * triggering input event-id) — every {@link ReducerMeta} field except the
+   * per-entry serial — folded alongside the events and replayed verbatim on a
+   * refold so each event's full `ReducerMeta` can be reconstructed.
    */
-  messageId: string | undefined;
+  routing: WireRoutingMeta;
   /**
    * The decoded events from this wire message's deliveries, in arrival order.
    * Same-serial deliveries (the create plus each append/update) extend the
@@ -96,7 +100,8 @@ export class WireLog<TEvent> {
    * the fold is never `refold` — a genuinely-new wire there is outside the
    * reorder window and folds incrementally in arrival order.
    * @param serial - The Ably channel serial of the wire message.
-   * @param messageId - The wire's codec-message-id, or undefined.
+   * @param routing - The wire's reducer-routing metadata (codec-message-id,
+   *   event-id, triggering input event-id).
    * @param events - The decoded events to record, in arrival order.
    * @param version - The delivery's `Message.version.serial`, or undefined
    *   when the delivery carried none (guard disabled for this delivery).
@@ -107,7 +112,7 @@ export class WireLog<TEvent> {
    */
   record(
     serial: string,
-    messageId: string | undefined,
+    routing: WireRoutingMeta,
     events: TEvent[],
     version: string | undefined,
     streamed: boolean,
@@ -115,7 +120,7 @@ export class WireLog<TEvent> {
     // A swept log retains replay keys but not payloads: record an empty event
     // list so the key advances while nothing is stored. The caller folds the
     // events it already holds.
-    const index = this._recordEntry(serial, messageId, this._swept ? [] : events, version, streamed);
+    const index = this._recordEntry(serial, routing, this._swept ? [] : events, version, streamed);
     if (index === undefined) return 'dropped';
     if (this._swept) return 'incremental';
     return index === this._entries.length - 1 ? 'incremental' : 'refold';
@@ -127,9 +132,9 @@ export class WireLog<TEvent> {
    * routing metadata, for a refold.
    * @param visit - Called once per event, in canonical order.
    */
-  replay(visit: (event: TEvent, serial: string, messageId: string | undefined) => void): void {
+  replay(visit: (event: TEvent, serial: string, routing: WireRoutingMeta) => void): void {
     for (const entry of this._entries) {
-      for (const event of entry.events) visit(event, entry.serial, entry.messageId);
+      for (const event of entry.events) visit(event, entry.serial, entry.routing);
     }
   }
 
@@ -147,7 +152,7 @@ export class WireLog<TEvent> {
   /**
    * Insert or extend the entry for `serial`, guarding replays by version.
    * @param serial - The Ably channel serial of the wire message.
-   * @param messageId - The wire's codec-message-id, or undefined.
+   * @param routing - The wire's reducer-routing metadata.
    * @param events - The decoded events to store (empty on a swept log).
    * @param version - The delivery's `Message.version.serial`, or undefined.
    * @param streamed - Whether the delivery is part of a streamed wire.
@@ -156,7 +161,7 @@ export class WireLog<TEvent> {
    */
   private _recordEntry(
     serial: string,
-    messageId: string | undefined,
+    routing: WireRoutingMeta,
     events: TEvent[],
     version: string | undefined,
     streamed: boolean,
@@ -178,12 +183,12 @@ export class WireLog<TEvent> {
         return i;
       }
       if (entry.serial < serial) {
-        this._entries.splice(i + 1, 0, { serial, messageId, events: [...events], decodedThrough: version ?? serial });
+        this._entries.splice(i + 1, 0, { serial, routing, events: [...events], decodedThrough: version ?? serial });
         return i + 1;
       }
     }
     // Lower than every logged serial (or the log is empty): insert at the head.
-    this._entries.unshift({ serial, messageId, events: [...events], decodedThrough: version ?? serial });
+    this._entries.unshift({ serial, routing, events: [...events], decodedThrough: version ?? serial });
     return 0;
   }
 }

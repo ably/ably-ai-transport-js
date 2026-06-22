@@ -301,6 +301,17 @@ export interface OutputEvent<TOutput extends CodecOutputEvent> {
    */
   inputCodecMessageId: string | undefined;
   /**
+   * The `event-id` of the input event that triggered this run — the agent's
+   * `input-event-id` header. Like {@link inputCodecMessageId} it attributes
+   * outputs to the triggering request, but per-send: concurrent continuations
+   * of one suspended run share an {@link inputCodecMessageId} yet each carries
+   * a DISTINCT `inputEventId`, so a per-request output stream routes on this to
+   * receive only its own continuation's outputs. `undefined` when the carrying
+   * message had no such header (e.g. a fresh run before the agent echoes it, or
+   * an optimistic local fold).
+   */
+  inputEventId: string | undefined;
+  /**
    * The `codec-message-id` the outputs were published under, or `undefined`
    * when the message carried none.
    */

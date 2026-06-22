@@ -34,6 +34,7 @@ const serials = (log: WireLog<TestEvent>): string[] => {
 };
 
 // record with streamed default — ordering tests use increasing versions per serial.
+// The `messageId` arg is wrapped into the routing bundle the log now threads.
 const rec = (
   log: WireLog<TestEvent>,
   serial: string,
@@ -41,7 +42,7 @@ const rec = (
   evts: TestEvent[],
   version?: string,
   streamed = true,
-): ReturnType<WireLog<TestEvent>['record']> => log.record(serial, messageId, evts, version, streamed);
+): ReturnType<WireLog<TestEvent>['record']> => log.record(serial, { messageId }, evts, version, streamed);
 
 describe('WireLog', () => {
   it('records into an empty log, folding incrementally', () => {
@@ -136,8 +137,23 @@ describe('WireLog', () => {
     rec(log, 's1', 'msg-1', [ev('a')], 's1@1');
     rec(log, 's2', undefined, [ev('b')], 's2@1');
     const ids: (string | undefined)[] = [];
-    log.replay((_event, _serial, messageId) => ids.push(messageId));
+    log.replay((_event, _serial, routing) => ids.push(routing.messageId));
     expect(ids).toEqual(['msg-1', undefined]);
+  });
+
+  it('replays the full routing bundle (event-id and triggering input event-id) verbatim', () => {
+    const log = new WireLog<TestEvent>();
+    // A client tool-result wire: carries its own event-id, no input-event-id.
+    log.record('s1', { messageId: 'cm_tc', eventId: 'evt-1' }, [ev('result')], 's1@1', true);
+    // The agent's follow-up wire: echoes the triggering input's event-id.
+    log.record('s2', { messageId: 'cm_followup', inputEventId: 'evt-1' }, [ev('answer')], 's2@1', true);
+
+    const routings: { messageId?: string; eventId?: string; inputEventId?: string }[] = [];
+    log.replay((_event, _serial, routing) => routings.push(routing));
+    expect(routings).toEqual([
+      { messageId: 'cm_tc', eventId: 'evt-1' },
+      { messageId: 'cm_followup', inputEventId: 'evt-1' },
+    ]);
   });
 
   // -- version guard ---------------------------------------------------------

@@ -28,6 +28,7 @@ import {
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
   HEADER_INPUT_CODEC_MESSAGE_ID,
+  HEADER_INPUT_EVENT_ID,
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
@@ -40,7 +41,7 @@ import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
 import { toCodecEvents } from '../codec/codec-event.js';
-import type { CodecEvent, CodecInputEvent, CodecOutputEvent, Reducer } from '../codec/types.js';
+import type { CodecEvent, CodecInputEvent, CodecOutputEvent, Reducer, WireRoutingMeta } from '../codec/types.js';
 import type { ConversationNode, InputNode, OutputEvent, RunLifecycleEvent, RunNode, Tree } from './types.js';
 import { WireLog } from './wire-log.js';
 
@@ -475,19 +476,24 @@ export class DefaultTree<
    * @param entry - The internal node whose projection is folded in place.
    * @param events - The decoded events to fold, in wire order.
    * @param serial - Ably channel serial; coerced to '' for an optimistic insert.
-   * @param messageId - The reducer routing key (codec-message-id), or undefined.
+   * @param routing - The wire's reducer-routing metadata (codec-message-id,
+   *   event-id, triggering input event-id).
    */
   private _foldInto(
     entry: InternalNode<TInput, TOutput, TProjection>,
     events: CodecEvent<TInput, TOutput>[],
     serial: string | undefined,
-    messageId: string | undefined,
+    routing: WireRoutingMeta,
   ): void {
     for (const event of events) {
       try {
-        entry.node.projection = this._codec.fold(entry.node.projection, event, { serial: serial ?? '', messageId });
+        entry.node.projection = this._codec.fold(entry.node.projection, event, { serial: serial ?? '', ...routing });
       } catch (error) {
-        this._logger.error('Tree._foldInto(); fold threw', { key: nodeKey(entry.node), messageId, err: error });
+        this._logger.error('Tree._foldInto(); fold threw', {
+          key: nodeKey(entry.node),
+          messageId: routing.messageId,
+          err: error,
+        });
       }
     }
   }
@@ -522,7 +528,8 @@ export class DefaultTree<
    * @param entry - The internal node whose log and projection are updated.
    * @param events - The decoded events to fold, in wire order.
    * @param serial - Ably channel serial; undefined for an optimistic insert.
-   * @param messageId - The reducer routing key (codec-message-id), or undefined.
+   * @param routing - The wire's reducer-routing metadata (codec-message-id,
+   *   event-id, triggering input event-id).
    * @param version - The delivery's `Message.version.serial`, or undefined.
    * @param streamed - Whether the delivery is part of a streamed wire.
    */
@@ -530,7 +537,7 @@ export class DefaultTree<
     entry: InternalNode<TInput, TOutput, TProjection>,
     events: CodecEvent<TInput, TOutput>[],
     serial: string | undefined,
-    messageId: string | undefined,
+    routing: WireRoutingMeta,
     version: string | undefined,
     streamed: boolean,
   ): void {
@@ -538,11 +545,11 @@ export class DefaultTree<
     // in; a non-empty seed marks the node so its echo refolds the seed away.
     if (serial === undefined || events.length === 0) {
       if (serial === undefined && events.length > 0) entry.optimistic = true;
-      this._foldInto(entry, events, serial, messageId);
+      this._foldInto(entry, events, serial, routing);
       return;
     }
 
-    const fold = entry.log.record(serial, messageId, events, version, streamed);
+    const fold = entry.log.record(serial, routing, events, version, streamed);
     if (fold === 'dropped') {
       // The version guard rejected a re-delivery the log already incorporated —
       // a whole-wire replay (second hydration, remount, agent re-walk, or a
@@ -579,15 +586,15 @@ export class DefaultTree<
         serial,
       });
     }
-    this._foldInto(entry, events, serial, messageId);
+    this._foldInto(entry, events, serial, routing);
   }
 
   /**
    * Rebuild a node's projection from its event log in canonical serial order:
    * a fresh {@link Reducer.init} folded through every logged event, each with
-   * its own wire's serial and messageId. Used when a late, earlier-serial wire
-   * makes incremental folding unsound. Reducer purity (a fold is a function of
-   * its inputs alone) is what makes the rebuild faithful; the per-fold
+   * its own wire's serial and routing metadata. Used when a late, earlier-serial
+   * wire makes incremental folding unsound. Reducer purity (a fold is a function
+   * of its inputs alone) is what makes the rebuild faithful; the per-fold
    * try/catch mirrors {@link _foldInto} so one throwing event can't abort the
    * rebuild.
    *
@@ -600,11 +607,15 @@ export class DefaultTree<
    */
   private _refold(entry: InternalNode<TInput, TOutput, TProjection>): void {
     let projection = this._codec.init();
-    entry.log.replay((event, serial, messageId) => {
+    entry.log.replay((event, serial, routing) => {
       try {
-        projection = this._codec.fold(projection, event, { serial, messageId });
+        projection = this._codec.fold(projection, event, { serial, ...routing });
       } catch (error) {
-        this._logger.error('Tree._refold(); fold threw', { key: nodeKey(entry.node), messageId, err: error });
+        this._logger.error('Tree._refold(); fold threw', {
+          key: nodeKey(entry.node),
+          messageId: routing.messageId,
+          err: error,
+        });
       }
     });
     entry.node.projection = projection;
@@ -1036,7 +1047,14 @@ export class DefaultTree<
 
     // Log the wire and fold it — incrementally onto the tail in the common
     // case, or by refolding the node if this wire arrived out of serial order.
-    this._recordAndFold(entry, all, serial, codecMessageId, version, headers[HEADER_STREAM] === 'true');
+    this._recordAndFold(
+      entry,
+      all,
+      serial,
+      this._routingFromHeaders(codecMessageId, headers),
+      version,
+      headers[HEADER_STREAM] === 'true',
+    );
 
     // An input node owns no agent outputs; the event still fires (empty
     // outputs) so consumers observe the projection change. It has no run-id —
@@ -1044,6 +1062,7 @@ export class DefaultTree<
     this._emitter.emit('output', {
       runId: undefined,
       inputCodecMessageId: codecMessageId,
+      inputEventId: headers[HEADER_INPUT_EVENT_ID],
       codecMessageId,
       serial,
       events: [],
@@ -1078,6 +1097,9 @@ export class DefaultTree<
     // The triggering input's codec-message-id (the agent's echo), surfaced on
     // the `output` event as the stream's causal routing key.
     const inputCodecMessageId = headers[HEADER_INPUT_CODEC_MESSAGE_ID];
+    // The triggering input's event-id (the agent's per-send echo) — the
+    // finer-grained key that separates concurrent continuations of one run.
+    const inputEventId = headers[HEADER_INPUT_EVENT_ID];
     // Fold inputs first, then outputs, preserving wire order.
     const all: CodecEvent<TInput, TOutput>[] = toCodecEvents(events);
     const outputs = events.outputs;
@@ -1115,9 +1137,40 @@ export class DefaultTree<
     // case, or by refolding the node if this wire arrived out of serial order.
     // `run` may be a reconciled optimistic node: record on whichever entry
     // owns the fold.
-    this._recordAndFold(run, all, serial, codecMessageId, version, headers[HEADER_STREAM] === 'true');
+    this._recordAndFold(
+      run,
+      all,
+      serial,
+      this._routingFromHeaders(codecMessageId, headers),
+      version,
+      headers[HEADER_STREAM] === 'true',
+    );
 
-    this._emitter.emit('output', { runId: ownerKey, inputCodecMessageId, codecMessageId, serial, events: outputs });
+    this._emitter.emit('output', {
+      runId: ownerKey,
+      inputCodecMessageId,
+      inputEventId,
+      codecMessageId,
+      serial,
+      events: outputs,
+    });
+  }
+
+  /**
+   * Build the per-wire {@link WireRoutingMeta} a fold/log call needs from the
+   * inbound message's transport headers. `messageId` is the codec-message-id
+   * already extracted by the caller; `eventId` and `inputEventId` come from the
+   * `event-id` / `input-event-id` headers (each `undefined` when absent).
+   * @param codecMessageId - The wire's codec-message-id, or undefined.
+   * @param headers - Transport headers from the inbound Ably message.
+   * @returns The routing metadata to fold the wire's events alongside.
+   */
+  private _routingFromHeaders(codecMessageId: string | undefined, headers: Record<string, string>): WireRoutingMeta {
+    return {
+      messageId: codecMessageId,
+      eventId: headers[HEADER_EVENT_ID],
+      inputEventId: headers[HEADER_INPUT_EVENT_ID],
+    };
   }
 
   /**

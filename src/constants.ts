@@ -110,6 +110,24 @@ export const HEADER_RUN_REASON = 'run-reason';
  */
 export const HEADER_INPUT_CODEC_MESSAGE_ID = 'input-codec-message-id';
 
+/**
+ * Header: the `event-id` of the input event that triggered the run — the
+ * one whose `event-id` matches the invocation's `inputEventId`. The agent
+ * re-stamps it on every event it publishes for the invocation (run lifecycle
+ * + assistant outputs), mirroring `input-codec-message-id` but at `event-id`
+ * granularity rather than `codec-message-id` granularity.
+ *
+ * Where `input-codec-message-id` is the codec-message it amends (shared by
+ * every continuation of one suspended run, since they all amend the same
+ * assistant), this is per-send: each racing continuation of the same
+ * assistant carries a DISTINCT `input-event-id` (its own triggering
+ * tool-result's `event-id`). That makes it the key that separates concurrent
+ * continuations — for routing a follow-up stream back to the exact request
+ * that produced it, and for the codec to fold each continuation's outputs
+ * into their own sub-projection.
+ */
+export const HEADER_INPUT_EVENT_ID = 'input-event-id';
+
 // ---------------------------------------------------------------------------
 // Run-end error headers (set on `ai-run-end` when `run-reason: error`)
 // ---------------------------------------------------------------------------

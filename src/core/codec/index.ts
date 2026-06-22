@@ -20,6 +20,7 @@ export type {
   ToolResult,
   ToolResultError,
   UserMessage,
+  WireRoutingMeta,
   WriteOptions,
 } from './types.js';
 

@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   HEADER_CODEC_MESSAGE_ID,
+  HEADER_EVENT_ID,
   HEADER_FORK_OF,
   HEADER_INPUT_CODEC_MESSAGE_ID,
+  HEADER_INPUT_EVENT_ID,
   HEADER_INVOCATION_ID,
   HEADER_PARENT,
   HEADER_ROLE,
@@ -11,7 +13,14 @@ import {
   HEADER_RUN_ID,
   HEADER_STREAM,
 } from '../../../src/constants.js';
-import type { Codec, CodecEvent, CodecInputEvent, Regenerate, UserMessage } from '../../../src/core/codec/types.js';
+import type {
+  Codec,
+  CodecEvent,
+  CodecInputEvent,
+  ReducerMeta,
+  Regenerate,
+  UserMessage,
+} from '../../../src/core/codec/types.js';
 import type { TreeInternal } from '../../../src/core/transport/tree.js';
 import { createTree, REORDER_WINDOW_MS } from '../../../src/core/transport/tree.js';
 import type { ConversationNode, InputNode, RunNode } from '../../../src/core/transport/types.js';
@@ -63,6 +72,17 @@ const testCodec: Codec<TestInput, TestOutput, TestProjection, TestMessage> = {
   createUserMessage: (message: TestMessage) => ({ kind: 'user-message', message }),
   createRegenerate: (target: string, parent: string) => ({ kind: 'regenerate', target, parent }),
 };
+
+// A codec that captures the ReducerMeta of every fold, so a test can assert the
+// Tree threads the wire's `event-id` / `input-event-id` headers through to the
+// reducer — and that they survive a refold (replayed from the log).
+const captureCodec = (sink: ReducerMeta[]): Codec<TestInput, TestOutput, TestProjection, TestMessage> => ({
+  ...testCodec,
+  fold: (state: TestProjection, codecEvent: CodecEvent<TestInput, TestOutput>, meta: ReducerMeta) => {
+    sink.push(meta);
+    return testCodec.fold(state, codecEvent, meta);
+  },
+});
 
 const silentLogger = makeLogger({ logLevel: LogLevel.Silent });
 
@@ -2209,6 +2229,80 @@ describe('Tree', () => {
       expect(tree.getReplyRuns('u3').map((r) => r.runId)).toEqual(['R1']);
       // runs() surfaces reply runs only.
       expect(flatRunIds(tree)).toEqual(['R1']);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // ReducerMeta routing fields (event-id, input-event-id)
+  // -------------------------------------------------------------------------
+
+  describe('ReducerMeta routing', () => {
+    it('threads event-id and input-event-id from wire headers into ReducerMeta', () => {
+      const metas: ReducerMeta[] = [];
+      const tree = createTree(captureCodec(metas), silentLogger);
+
+      // A client tool-result wire amending cm_tc within run R1: carries its own
+      // event-id, no input-event-id.
+      tree.applyMessage(
+        { inputs: [{ kind: 'append-input', message: { id: 'cm_tc', content: 'result' } }], outputs: [] },
+        { [HEADER_RUN_ID]: 'R1', [HEADER_CODEC_MESSAGE_ID]: 'cm_tc', [HEADER_EVENT_ID]: 'evt-1' },
+        's2',
+        undefined,
+        's2@1',
+      );
+      // The agent's follow-up output echoes the triggering input's event-id.
+      tree.applyMessage(
+        { inputs: [], outputs: [{ type: 'append-message', message: { id: 'cm_fu', content: 'answer' } }] },
+        { [HEADER_RUN_ID]: 'R1', [HEADER_CODEC_MESSAGE_ID]: 'cm_fu', [HEADER_INPUT_EVENT_ID]: 'evt-1' },
+        's3',
+        undefined,
+        's3@1',
+      );
+
+      expect(metas).toEqual([
+        { serial: 's2', messageId: 'cm_tc', eventId: 'evt-1', inputEventId: undefined },
+        { serial: 's3', messageId: 'cm_fu', eventId: undefined, inputEventId: 'evt-1' },
+      ]);
+    });
+
+    it('preserves event-id and input-event-id across a refold', () => {
+      const metas: ReducerMeta[] = [];
+      const tree = createTree(captureCodec(metas), silentLogger);
+
+      // Two in-order wires, then a late earlier-serial wire that forces a refold
+      // of the whole node from its log.
+      tree.applyMessage(
+        { inputs: [{ kind: 'append-input', message: { id: 'cm_tc', content: 'result' } }], outputs: [] },
+        { [HEADER_RUN_ID]: 'R1', [HEADER_CODEC_MESSAGE_ID]: 'cm_tc', [HEADER_EVENT_ID]: 'evt-1' },
+        's2',
+        undefined,
+        's2@1',
+      );
+      tree.applyMessage(
+        { inputs: [], outputs: [{ type: 'append-message', message: { id: 'cm_fu', content: 'answer' } }] },
+        { [HEADER_RUN_ID]: 'R1', [HEADER_CODEC_MESSAGE_ID]: 'cm_fu', [HEADER_INPUT_EVENT_ID]: 'evt-1' },
+        's3',
+        undefined,
+        's3@1',
+      );
+
+      metas.length = 0; // discard the incremental folds; capture only the refold.
+      // A lower-serial run-start wire arrives late → refold replays s2 then s3.
+      tree.applyMessage(
+        { inputs: [], outputs: [{ type: 'append-message', message: { id: 'cm_start', content: 'pre' } }] },
+        { [HEADER_RUN_ID]: 'R1', [HEADER_CODEC_MESSAGE_ID]: 'cm_start', [HEADER_INPUT_EVENT_ID]: 'evt-0' },
+        's1',
+        undefined,
+        's1@1',
+      );
+
+      // The refold replays the full log in canonical serial order, each event
+      // with its own wire's routing metadata reconstructed intact.
+      expect(metas).toEqual([
+        { serial: 's1', messageId: 'cm_start', eventId: undefined, inputEventId: 'evt-0' },
+        { serial: 's2', messageId: 'cm_tc', eventId: 'evt-1', inputEventId: undefined },
+        { serial: 's3', messageId: 'cm_fu', eventId: undefined, inputEventId: 'evt-1' },
+      ]);
     });
   });
 });

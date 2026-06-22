@@ -149,9 +149,9 @@ problem in practice.
   `run-end` under R. Duplicate `run-start`s for R are idempotent on the client
   tree (`tree.ts:1174`), so the run NODE is fine.
 - **Each `Run.pipe()` mints a fresh codec-message-id** (`agent-session.ts:956`).
-  So the two continuation responses are two DISTINCT messages, both folded into
-  run node R (same runId → same node; distinct codec-message-id → not merged,
-  not forked into siblings).
+  So the two follow-ups are two DISTINCT messages, both folded into run node R
+  (same runId → same node; distinct codec-message-id → not merged, not forked
+  into siblings).
 
 ### The resulting tree shape
 
@@ -170,6 +170,38 @@ run node R). Both tabs publish tool-results (Ably messages `am_tcr_1`,
   malformed LLM history → Anthropic 400, the AIT-878 family).
 
 Canonicalization is a **read-time materialization filter**, never a tree mutation.
+
+### Run-lifecycle duplication: state-machine is safe, content flicker is the real one
+
+Two continuation runs both adopt reused runId R and re-enter via `ai-run-resume`
+(NOT `run-start` — the original run-start fired once when `cm_tc`'s run began).
+So R receives two resume/end pairs. Findings (checked 2026-06-22):
+
+- **Run STATE is flicker-safe by design.** `_applyRunResume` (`tree.ts:1268`)
+  only flips `suspended → active`; a resume on an already-terminal run is a
+  **no-op** ("a stray resume must never resurrect a run that has ended").
+  `_applyRunEnd` (`tree.ts:1290`) only ever writes terminal→terminal (end_2
+  re-marks the same terminal status; overwrites `endSerial` — harmless). So node
+  state is monotonic: `suspended → active → complete`, never back to active.
+- **UI re-derives from node state, not event type.** `_toRunInfo` spreads
+  `...run.state` (`view.ts:251`); `useView` re-derives via
+  `getMessages()`/`runs()`/`runOf()`. So even though `applyRunLifecycle` emits
+  the `run` event UNCONDITIONALLY for every lifecycle event including the no-op
+  resume_2 (`tree.ts:1162`), a consumer reacting to it just re-reads the
+  monotonic node state → same value → no status-badge / Stop-button flicker.
+- **Sharp edge for SDK consumers:** a consumer that keys off the raw
+  `event.type === 'resume'` as "streaming restarted" (instead of re-reading node
+  state via `runOf`) COULD flicker. The SDK's own consumers don't; worth a doc
+  note for developers using `tree.on('run')` directly.
+- **The REAL flicker is content, and the canonical filter fixes it.**
+  `cm_followup_2`'s output chunks fold into R AFTER end_1 — so a second answer
+  bubble streams in under an already-"complete" run. This is the message
+  duplication; the canonical materialization filter in `View.getMessages()` drops
+  it on every read, so it never reaches the rendered list. **The filter does
+  double duty: correct LLM history AND no second-bubble flicker.**
+- **Duplicate run-ends:** `createRunOutputStream` closes the consumer stream on
+  the first matching `end`; the second `end` is an idempotent no-op (settle
+  guard). Fine.
 
 ### Coherence: "follow the part", show nothing until coherent
 
@@ -206,7 +238,7 @@ triggered it. We cannot, currently, on two levels:
    Each agent resolves `resolvedInputCodecMessageId = headers[CODEC_MESSAGE_ID] =
 cm_tc` (`agent-session.ts:820`). So BOTH follow-ups carry
    `input-codec-message-id = cm_tc`. That field lets us GROUP the duplicate
-   continuations of `cm_tc` (what the filter needs to find them) but cannot PAIR
+   follow-ups of `cm_tc` (what the filter needs to find them) but cannot PAIR
    a follow-up to a specific tool-result. The only thing distinguishing
    `am_tcr_1` from `am_tcr_2` is their Ably event-id / serial (the invocation's
    `inputEventId`), and that is NOT stamped onto the follow-up outputs.
@@ -220,7 +252,7 @@ identify which follow-up matches whichever result won.
 
 - **Option 1 — best-effort coherence (proportionate).** Thread
   `input-codec-message-id` into the projection (level 1), GROUP duplicate
-  continuations of `cm_tc`, keep earliest-by-serial. Coherent in the common case:
+  follow-ups of `cm_tc`, keep earliest-by-serial. Coherent in the common case:
   when both agents load history AFTER both tool-results exist, both materialize
   the same canonical result and both answer about the same thing → either
   follow-up is coherent with the part. Possible transient part/text mismatch ONLY
@@ -236,6 +268,62 @@ identify which follow-up matches whichever result won.
 Lean: Option 1. Tension: it consciously accepts that the rare tight race can
 briefly show an incoherent pair — the exact thing we said to avoid. Decide
 before coding the canonical filter.
+
+### Open sub-decision: which follow-up to keep — earliest vs latest by serial
+
+(Pinned for later; affects Option 1's tie-break.) The tie-break is
+**coherence-neutral** (a follow-up's own serial doesn't track which tool-result
+triggered it — the provenance gap — so neither direction reliably pairs with the
+part). The filter MUST key on CGO serial regardless of direction: it is the only
+reader-agnostic order (a live subscriber and a hydrating-from-history client must
+converge on the same pick). The tree already maintains CGO order — the reducer
+folds in canonical serial order and REFOLDS from `init` when a late wire would
+land out of order (`types.ts:182-189`) — so the SETTLED state is
+CGO-deterministic for everyone.
+
+Flicker analysis (corrected — earlier draft was wrong). **Ably realtime delivery
+order is NOT guaranteed to equal CGO (canonical global order).** They tend to
+coincide for messages well-separated in time, but NOT for messages published
+close together — which is exactly the tight-race case where the two follow-ups
+arise. Consequences:
+
+- **Well-separated follow-ups** (agents complete far apart): delivery ≈ CGO →
+  earliest-by-serial wins is flicker-free (lower-serial = first-delivered, shown
+  and KEPT); latest-by-serial wins yanks (replaced when the higher arrives).
+- **Closely-spaced follow-ups** (the tight race): delivery order may be reversed
+  vs CGO → a live subscriber can render the higher-serial follow-up first, then
+  the lower arrives, the tree refolds, and the canonical pick flips → FLICKER
+  under EITHER direction. The flicker is transient (bounded by the inter-arrival
+  gap) and self-resolves to the CGO pick once both are present.
+
+So neither direction is reliably flicker-free in the case that matters (the tight
+race is exactly when duplication is most likely). earliest still WEAKLY dominates
+(flicker-free when well-separated; indeterminate when tight — vs latest which
+flickers when well-separated), but it is NOT strictly flicker-free as an earlier
+draft claimed. The tool-result/part has the SAME transient flicker during
+out-of-order delivery (tree refolds, last-write-wins re-settles) — so it is
+symmetric with the follow-up.
+
+Single-rule consideration (raised by Lawrence): tool-results are ALSO shown in
+the UI (e.g. the user's location), so "prose is more visible" does NOT justify a
+separate rule. And:
+
+- A "single rule = latest everywhere" is consistent with the (pinned) fold;
+  transient flicker happens either way in the tight race, so the consistency is
+  bought cheaply.
+- A truly flicker-free single rule (earliest everywhere) is IMPOSSIBLE while the
+  fold is pinned: the projection retains only the LATEST tool-result (earliest is
+  overwritten and gone), so we cannot display the earliest tool-result without
+  un-pinning the fold. So "single rule" in practice = latest.
+- The fold's last-write-wins is INCIDENTAL ("falls out of fold order" per the
+  reducer comment), not a deliberate "we want yank" choice.
+
+Trade (updated): since neither direction is reliably flicker-free in the tight
+race, the earlier flicker argument for earliest is much weaker — strengthening
+the single-rule case for **latest everywhere** (match the pinned fold, accept
+transient self-resolving flicker). earliest only buys flicker-freedom in the
+well-separated case, at the cost of diverging from the fold. UNRESOLVED;
+leaning shifted toward latest/single-rule.
 
 ## Fallback: observer stream (option B) — only if (A) proves intractable
 

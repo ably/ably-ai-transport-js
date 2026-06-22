@@ -183,6 +183,12 @@ const foldChunk = (state: VercelProjection, chunk: VercelOutput, meta: ReducerMe
  * assistants in place via `kind: 'tool-result'` etc. — they never
  * materialise as their own UIMessage in the projection, so no filtering is
  * needed here.
+ *
+ * The {@link Codec.getMessages} contract carries an optional branch `selector`,
+ * but the projection is currently flat (no internal branching) so there is
+ * nothing to scope to: this implementation omits the parameter and is
+ * assignable to the wider contract. It gains the parameter once the projection
+ * holds concurrent continuations.
  * @param projection - Projection produced by `init` + repeated `fold` calls.
  * @returns The visible messages with their codec-message-ids, in publication order.
  */

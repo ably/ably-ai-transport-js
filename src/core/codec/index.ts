@@ -11,6 +11,7 @@ export type {
   EncoderOptions,
   Extras,
   MessagePayload,
+  MessageSelector,
   Reducer,
   ReducerMeta,
   Regenerate,

@@ -44,6 +44,7 @@ import type {
   Decoder,
   Encoder,
   MessagePayload,
+  MessageSelector,
   ReducerMeta,
   StreamTrackerState,
   WriteOptions,
@@ -102,8 +103,11 @@ export interface CodecReducer<TInput, TOutput, TProjection, TMessage> {
   init: () => TProjection;
   /** Fold one direction-tagged input or output event into the projection. */
   fold: (state: TProjection, event: CodecEvent<TInput, TOutput>, meta: ReducerMeta) => TProjection;
-  /** Extract the per-message list (each paired with its codec-message-id). */
-  getMessages: (projection: TProjection) => CodecMessage<TMessage>[];
+  /**
+   * Extract the per-message list (each paired with its codec-message-id),
+   * optionally scoped by a {@link MessageSelector} (see {@link Codec.getMessages}).
+   */
+  getMessages: (projection: TProjection, selector?: MessageSelector) => CodecMessage<TMessage>[];
 }
 
 /**

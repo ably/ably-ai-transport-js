@@ -69,6 +69,7 @@ export type {
   LifecyclePolicy,
   LifecycleTracker,
   MessagePayload,
+  MessageSelector,
   OutputBuilder,
   OutputDecodeContext,
   OutputDescriptor,

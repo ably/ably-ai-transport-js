@@ -573,6 +573,27 @@ export interface CodecMessage<TMessage> {
   message: TMessage;
 }
 
+/**
+ * Optional scope for {@link Codec.getMessages}. Selects WHICH variant of a
+ * branched projection to materialize when a single node's projection holds
+ * concurrent alternatives — e.g. racing client-tool continuations, where two
+ * responders each produced a tool-result + follow-up under the same run.
+ *
+ * Omitted → the codec applies its own canonical pick (the default, used for
+ * display). The fields are codec-agnostic transport identifiers; a codec with
+ * no internal branching ignores the selector entirely.
+ */
+export interface MessageSelector {
+  /**
+   * Materialize the branch keyed by this triggering input event-id — the
+   * `input-event-id` the agent echoes onto a continuation's outputs (surfaced
+   * to the reducer as {@link ReducerMeta.inputEventId}). Used by agent
+   * generation to scope reconstructed history to the continuation it is
+   * producing, so it never sees a sibling responder's follow-up.
+   */
+  continuationEventId?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Codec — full contract for the transport
 // ---------------------------------------------------------------------------
@@ -614,8 +635,12 @@ export interface Codec<
    * `codecMessageId` to correlate messages — it never reads identity from
    * the message itself — and surfaces `message` to the application
    * unchanged.
+   * @param projection - The projection produced by `init` + repeated `fold`.
+   * @param selector - Optional scope selecting which variant of a branched
+   *   projection to materialize (see {@link MessageSelector}). Omitted → the
+   *   codec's canonical pick. A codec with no internal branching ignores it.
    */
-  getMessages(projection: TProjection): CodecMessage<TMessage>[];
+  getMessages(projection: TProjection, selector?: MessageSelector): CodecMessage<TMessage>[];
   /**
    * Wrap a TMessage as the codec's well-known {@link UserMessage} variant,
    * returned as a `TInput` ready to publish on the `ai-input` wire. This is

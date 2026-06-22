@@ -47,8 +47,8 @@ const makeEmitter = (): {
 
 interface MockSession {
   session: VercelSession;
-  /** Emit a Tree `output` event, optionally carrying a triggering input-codec-message-id. */
-  output: (runId: string, events: VercelOutput[], inputCodecMessageId?: string) => void;
+  /** Emit a Tree `output` event, optionally carrying a triggering input event-id. */
+  output: (runId: string, events: VercelOutput[], inputEventId?: string) => void;
   /** Emit a Tree `run` run-end event with the given reason. */
   runEnd: (runId: string, reason: string) => void;
   /** Emit a Tree `run` run-suspend event. */
@@ -69,8 +69,15 @@ const createMockSession = (): MockSession => {
 
   return {
     session,
-    output: (runId, events, inputCodecMessageId) => {
-      treeEmitter.emit('output', { runId, inputCodecMessageId, codecMessageId: 'm-1', serial: 's-1', events });
+    output: (runId, events, inputEventId) => {
+      treeEmitter.emit('output', {
+        runId,
+        inputCodecMessageId: undefined,
+        inputEventId,
+        codecMessageId: 'm-1',
+        serial: 's-1',
+        events,
+      });
     },
     runEnd: (runId, reason) => {
       treeEmitter.emit('run', {
@@ -99,6 +106,14 @@ const createMockSession = (): MockSession => {
 
 const textDelta = (delta: string): VercelOutput => ({ type: 'text-delta', id: 't1', delta });
 const finish = (): VercelOutput => ({ type: 'finish' });
+
+/**
+ * Extract the `delta` strings of the text-delta chunks from a drained list.
+ * @param events - The drained output events.
+ * @returns The text deltas in order.
+ */
+const deltaText = (events: VercelOutput[]): string[] =>
+  events.flatMap((e) => (e.type === 'text-delta' ? [e.delta] : []));
 
 const drain = async (stream: ReadableStream<VercelOutput>): Promise<VercelOutput[]> => {
   const reader = stream.getReader();
@@ -138,14 +153,30 @@ describe('createRunOutputStream', () => {
     expect(events.map((e) => e.type)).toEqual(['finish']);
   });
 
-  it('routes by input-codec-message-id independently of the runId', async () => {
+  it('separates two continuations of one run by event-id (multi-tab)', async () => {
+    const mock = createMockSession();
+    // Two tabs continue the SAME suspended run (same runId), each with its own
+    // tool-result event-id. Each consumer must receive only its own follow-up.
+    const a = createRunOutputStream(mock.session, Promise.resolve('run-1'), 'evt-a');
+    const b = createRunOutputStream(mock.session, Promise.resolve('run-1'), 'evt-b');
+
+    mock.output('run-1', [textDelta('A')], 'evt-a');
+    mock.output('run-1', [textDelta('B')], 'evt-b');
+    mock.output('run-1', [finish()], 'evt-a');
+    mock.output('run-1', [finish()], 'evt-b');
+
+    expect(deltaText(await drain(a.stream))).toEqual(['A']);
+    expect(deltaText(await drain(b.stream))).toEqual(['B']);
+  });
+
+  it('routes by input event-id independently of the runId', async () => {
     const mock = createMockSession();
     // Open the stream keyed by the triggering input id, with a runId promise
     // the agent resolves once it mints its own run-id.
     const { stream } = createRunOutputStream(mock.session, Promise.resolve('run-agent'), 'u-1');
 
     // An output under a different (agent-minted) runId still routes here
-    // because it carries the matching input-codec-message-id.
+    // because it carries the matching input event-id.
     mock.output('run-agent', [textDelta('hi')], 'u-1');
     // An output for a different input is ignored even though the runId matches.
     mock.output('run-agent', [textDelta('nope')], 'u-2');
@@ -155,12 +186,12 @@ describe('createRunOutputStream', () => {
     expect(events.map((e) => e.type)).toEqual(['text-delta', 'finish']);
   });
 
-  it('ignores an output carrying no input-codec-message-id', async () => {
+  it('ignores an output carrying no input event-id', async () => {
     const mock = createMockSession();
     const { stream } = createRunOutputStream(mock.session, Promise.resolve('run-1'), 'u-1');
 
-    // Routing is purely by input id now; an output with no input id (e.g. a
-    // local fold with no wire echo yet) does not route to this stream.
+    // Routing is purely by input event-id now; an output with no input event-id
+    // (e.g. a local fold with no wire echo yet) does not route to this stream.
     mock.output('run-1', [textDelta('orphan')]);
     mock.output('run-1', [finish()], 'u-1');
 

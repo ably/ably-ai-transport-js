@@ -572,12 +572,14 @@ export const createChatTransport = (
 
     // Build the consumer-facing stream from the Tree's events for this run.
     // Streaming is a useChat concern owned by the Vercel layer; the core
-    // session exposes no per-run stream. Key it on
-    // `run.inputCodecMessageId` — the triggering input's codec-message-id, which
-    // the client owns from send time and the agent echoes as
-    // `input-codec-message-id`. The agent mints the runId, supplied as
-    // `run.runId` (a promise) for the run-end safety-net.
-    const runStream = createRunOutputStream(session, run.runId, run.inputCodecMessageId);
+    // session exposes no per-run stream. Key it on `run.inputEventId` — the
+    // triggering input's event-id, which the client owns from send time and the
+    // agent echoes as `input-event-id`. Unlike the codec-message-id (shared by
+    // every continuation of one suspended run), the event-id is per-send, so
+    // two tabs continuing the same run each receive only their own follow-up.
+    // The agent mints the runId, supplied as `run.runId` (a promise) for the
+    // run-end safety-net.
+    const runStream = createRunOutputStream(session, run.runId, run.inputEventId);
 
     if (abortSignal) {
       const onAbort = (): void => {

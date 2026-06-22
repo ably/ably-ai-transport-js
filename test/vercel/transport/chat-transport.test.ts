@@ -98,9 +98,10 @@ const createMockSession = (): MockSession => {
   const treeEmitter = makeEmitter();
   const sessionEmitter = makeEmitter();
   const runId = 'run-1';
-  // The triggering input's codec-message-id — the synchronous routing key the
-  // consumer stream is built on (the agent mints the run-id separately).
+  // The triggering input's codec-message-id and event-id. The consumer stream
+  // is built on the EVENT-id (the agent mints the run-id separately).
   const inputCodecMessageId = 'input-1';
+  const inputEventId = 'evt-1';
 
   const mockRun: MockRun = {
     // The transport no longer reads this — it builds its own stream from Tree
@@ -111,15 +112,16 @@ const createMockSession = (): MockSession => {
     }),
     inputCodecMessageId,
     runId: Promise.resolve(runId),
-    inputEventId: '',
+    inputEventId,
     cancel: vi.fn(),
     optimisticCodecMessageIds: [],
-    toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'chat-1' }),
+    toInvocation: () => Invocation.fromJSON({ inputEventId, sessionName: 'chat-1' }),
     enqueue: (chunk: AI.UIMessageChunk) => {
-      // Route by the triggering input id — the key the consumer stream opens on.
+      // Route by the triggering input event-id — the key the stream opens on.
       treeEmitter.emit('output', {
         runId,
         inputCodecMessageId,
+        inputEventId,
         codecMessageId: 'm-1',
         serial: 's-1',
         events: [chunk],

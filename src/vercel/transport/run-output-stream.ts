@@ -56,21 +56,24 @@ interface RunOutputStream {
  * surface (local cancel). Session errors are wired internally to error the
  * stream.
  *
- * Outputs route PURELY by the triggering input's codec-message-id — the key the
- * client owns from send time, before the agent mints the runId. The agent's
- * minted runId is supplied as a promise so the run-end safety-net can still
- * close the stream once it resolves.
+ * Outputs route PURELY by the triggering input's EVENT-id — the per-send key
+ * the client owns from send time, before the agent mints the runId. Routing on
+ * the event-id (not the shared codec-message-id) is what lets two tabs that
+ * continue the same suspended run each receive ONLY their own continuation's
+ * follow-up: concurrent continuations share a codec-message-id but carry
+ * distinct event-ids. The agent's minted runId is supplied as a promise so the
+ * run-end safety-net can still close the stream once it resolves.
  * @param session - The Vercel client session whose Tree to observe.
  * @param runId - The agent-minted runId, resolved when run-start is observed.
- *   Used only by the run-end safety-net; routing keys on `inputCodecMessageId`.
- * @param inputCodecMessageId - The triggering input's codec-message-id. An
- *   output routes to this stream when it carries this id.
+ *   Used only by the run-end safety-net; routing keys on `inputEventId`.
+ * @param inputEventId - The triggering input's event-id. An output routes to
+ *   this stream when it carries this id (the agent's `input-event-id` echo).
  * @returns The stream and its external close handle.
  */
 export const createRunOutputStream = (
   session: VercelSession,
   runId: Promise<string>,
-  inputCodecMessageId: string,
+  inputEventId: string,
 ): RunOutputStream => {
   const holder: { controller?: ReadableStreamDefaultController<VercelOutput> } = {};
   // ReadableStream's start() runs synchronously, so the controller is captured
@@ -138,7 +141,7 @@ export const createRunOutputStream = (
 
   unsubscribe.push(
     session.tree.on('output', (event) => {
-      if (event.inputCodecMessageId !== inputCodecMessageId) return;
+      if (event.inputEventId !== inputEventId) return;
       for (const output of event.events) {
         try {
           controller.enqueue(output);

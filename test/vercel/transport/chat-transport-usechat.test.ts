@@ -120,21 +120,29 @@ interface MockRun {
 }
 
 const createMockRun = (runId: string, treeEmit: MockEmitter['emit']): MockRun => {
-  // The consumer stream routes purely by the triggering input's codec-message-id
-  // (the agent mints the run-id separately); key it per run.
+  // The consumer stream routes purely by the triggering input's EVENT-id (the
+  // agent mints the run-id separately); key it per run.
   const inputCodecMessageId = `${runId}-input`;
+  const inputEventId = `${runId}-evt`;
   return {
     // Inert placeholder — the transport builds its own stream from Tree events.
     // eslint-disable-next-line @typescript-eslint/no-empty-function -- inert placeholder stream
     stream: new ReadableStream<AI.UIMessageChunk>({ start: () => {} }),
     inputCodecMessageId,
     runId: Promise.resolve(runId),
-    inputEventId: '',
+    inputEventId,
     cancel: vi.fn(),
     optimisticCodecMessageIds: [],
-    toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'chat-1' }),
+    toInvocation: () => Invocation.fromJSON({ inputEventId, sessionName: 'chat-1' }),
     enqueue: (chunk: AI.UIMessageChunk) => {
-      treeEmit('output', { runId, inputCodecMessageId, codecMessageId: 'm-1', serial: 's-1', events: [chunk] });
+      treeEmit('output', {
+        runId,
+        inputCodecMessageId,
+        inputEventId,
+        codecMessageId: 'm-1',
+        serial: 's-1',
+        events: [chunk],
+      });
     },
     close: () => {
       treeEmit('run', {

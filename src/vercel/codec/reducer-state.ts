@@ -94,10 +94,11 @@ export interface VercelProjection {
  */
 export interface Continuation {
   /**
-   * Lowest canonical (CGO) serial seen for this continuation's seeding
-   * tool-result, or `''` while only an optimistic local seed exists. Orders
+   * Canonical (CGO) serial of this continuation's seeding tool-result. Orders
    * continuations deterministically for the canonical pick — the same order a
-   * live subscriber and a history-hydrating client converge on.
+   * live subscriber and a history-hydrating client converge on. Always a real
+   * serial: a tool-result carries a `codecMessageId`, so it is never folded
+   * optimistically (serial-less).
    */
   seedSerial: string;
   /** The continuation's sub-projection (resolved assistant copy + follow-up + any nested continuations). */

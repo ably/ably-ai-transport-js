@@ -976,7 +976,11 @@ class DefaultAgentSession<
           // the codec can fold concurrent continuations of one run into their
           // own sub-projections and a per-request stream can route by it. It is
           // per-send (each racing tool-result has a distinct event-id), unlike
-          // the shared inputCodecMessageId.
+          // the shared inputCodecMessageId. Stamped on EVERY run, not just
+          // continuations: a fresh run's outputs echo the user-message event-id,
+          // which keys no continuation (continuations are keyed only by
+          // tool-result event-ids, and event-ids are unique), so they fold into
+          // base — while the fresh run's output stream still routes by it.
           triggeringInputEventId: inputEventId,
           regenerates: assistantRegenerates,
         });

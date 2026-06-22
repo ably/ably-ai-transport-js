@@ -164,15 +164,21 @@ export const routeInput = (
 
   const existing = base.continuations.size > 0 ? findContinuationOwner(base, seedEventId) : undefined;
   if (existing) {
-    // Re-delivery / refold of a known continuation: keep the lowest real serial.
-    if (serial !== '' && (existing.seedSerial === '' || serial < existing.seedSerial)) existing.seedSerial = serial;
+    // A continuation already keyed by this event-id: keep the lowest serial as
+    // the canonical-order anchor. (Tool-results always carry a real serial.)
+    if (serial < existing.seedSerial) existing.seedSerial = serial;
     return existing.projection;
   }
 
   const home = findHomeNode(base, input.codecMessageId, toolCallId);
-  // Home not yet present (out-of-order live delivery): fold onto base; the
-  // pending-resolution buffer holds it and a refold re-routes it in canonical
-  // order once the assistant has folded.
+  // Home not present — the targeted assistant has not folded yet. In canonical
+  // order this cannot happen for a tool-result: a client only resolves a tool
+  // call after observing it, so the assistant precedes its own tool-result by
+  // serial and is folded first on both the incremental-tail and refold paths.
+  // This is a defensive fallback for a pathological out-of-order live delivery;
+  // the resolution then buffers in `base.pendingToolResolutions` and (only if
+  // the assistant somehow arrives in-order afterwards, which the invariant
+  // rules out) would resolve onto base flat rather than into a continuation.
   if (!home) return base;
 
   const continuation: Continuation = { seedSerial: serial, projection: seedContinuation(home) };
@@ -241,23 +247,14 @@ const choosePick = (node: VercelProjection, selector: MessageSelector | undefine
     }
     return undefined;
   }
+  // Canonical pick: earliest by seeding serial. Ably serials are totally
+  // ordered and compare lexicographically.
   let best: Continuation | undefined;
   for (const continuation of node.continuations.values()) {
-    if (best === undefined || compareSeedSerial(continuation.seedSerial, best.seedSerial) < 0) best = continuation;
+    if (best === undefined || continuation.seedSerial < best.seedSerial) best = continuation;
   }
   return best;
 };
-
-/**
- * Order two seeding serials for the canonical pick. Real serials compare
- * lexicographically (Ably serials are totally ordered); an optimistic `''`
- * sorts before any real serial so a local seed shows immediately and its echo
- * (same continuation key) keeps the slot once its real serial lands.
- * @param a - First serial.
- * @param b - Second serial.
- * @returns Negative when `a` precedes `b`, positive when after, 0 when equal.
- */
-const compareSeedSerial = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 /**
  * Materialise the visible message list from a projection, descending through

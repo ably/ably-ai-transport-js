@@ -30,7 +30,7 @@ import { HEADER_EVENT_ID } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { compareBySerial, errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
-import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
+import type { Codec, CodecInputEvent, CodecOutputEvent, MessageSelector } from '../codec/types.js';
 import type { WireApplier } from './decode-fold.js';
 import { type HistoryPagesCursor, loadHistoryPages } from './load-history-pages.js';
 import type { TreeInternal } from './tree.js';
@@ -463,6 +463,10 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
    *   undefined; the run that owns it is flattened only up to that message so
    *   the reconstructed history stops before the assistant message being
    *   replaced (which the model would otherwise reject).
+   * @param continuationEventId - When this run is a continuation, the triggering
+   *   input's event-id, used to scope the CURRENT run's projection to the
+   *   continuation this agent is generating — so its history never includes a
+   *   concurrent responder's follow-up (which would be a malformed prefill).
    * @returns The branch's messages (root-first) and the current run's projection.
    */
   async loadConversation(
@@ -472,6 +476,7 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
     maxRuns: number | undefined,
     runIdAdopted: boolean,
     regenerateTarget?: string,
+    continuationEventId?: string,
   ): Promise<{ messages: TMessage[]; projection: TProjection }> {
     if (signal.aborted) {
       throw new Ably.ErrorInfo(
@@ -483,7 +488,7 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
 
     await this._hydrateAncestors(runId, assistantParentFallback, signal, maxRuns, runIdAdopted);
 
-    return this._collectConversation(runId, assistantParentFallback, maxRuns, regenerateTarget);
+    return this._collectConversation(runId, assistantParentFallback, maxRuns, regenerateTarget, continuationEventId);
   }
 
   /**
@@ -499,6 +504,10 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
    *   the walk stops before that message (a regenerate of a non-head message
    *   anchors at the target's predecessor, so flattening its run whole would
    *   re-emit the target and end the history on the message being replaced).
+   * @param continuationEventId - When set, scopes the CURRENT run's projection
+   *   (whether it appears on the chain or is appended at the tail) to the
+   *   continuation keyed by this event-id; ancestor nodes always use the
+   *   canonical pick.
    * @returns The conversation messages (root-first) and the current run's
    *   projection (the codec's empty init when the run has no node yet).
    */
@@ -507,13 +516,20 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
     anchor: string | undefined,
     maxRuns?: number,
     regenerateTarget?: string,
+    continuationEventId?: string,
   ): { messages: TMessage[]; projection: TProjection } {
     const tree = this._tree;
     const chain = walkAncestorChain(tree, anchor, maxRuns, runId);
     const runNode = tree.getRunNode(runId);
+    // Scope only the current run's projection to the agent's continuation; an
+    // ancestor run is reconstructed with the canonical pick.
+    const selector: MessageSelector | undefined =
+      continuationEventId === undefined ? undefined : { continuationEventId };
+    const scopeFor = (node: ConversationNode<TProjection>): MessageSelector | undefined =>
+      node.kind === 'run' && node.runId === runId ? selector : undefined;
     const messages: TMessage[] = [];
     for (const node of chain) {
-      for (const m of this._codec.getMessages(node.projection)) {
+      for (const m of this._codec.getMessages(node.projection, scopeFor(node))) {
         if (regenerateTarget !== undefined && m.codecMessageId === regenerateTarget) {
           return { messages, projection: runNode?.projection ?? this._codec.init() };
         }
@@ -522,7 +538,7 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
     }
 
     if (runNode !== undefined && !chain.some((n) => n.kind === 'run' && n.runId === runId)) {
-      for (const m of this._codec.getMessages(runNode.projection)) {
+      for (const m of this._codec.getMessages(runNode.projection, selector)) {
         messages.push(m.message);
       }
     }
@@ -539,10 +555,18 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
    * @param anchor - The current run's input node codec-message-id (assistantParentFallback).
    * @param regenerateTarget - The codec-message-id being regenerated; when set,
    *   the walk stops before it (see {@link AgentView._collectConversation}).
+   * @param continuationEventId - When this run is a continuation, the triggering
+   *   input's event-id, scoping the current run's projection to the agent's own
+   *   continuation (see {@link AgentView._collectConversation}).
    * @returns The conversation messages, root-first.
    */
-  messages(runId: string, anchor: string | undefined, regenerateTarget?: string): TMessage[] {
-    return this._collectConversation(runId, anchor, undefined, regenerateTarget).messages;
+  messages(
+    runId: string,
+    anchor: string | undefined,
+    regenerateTarget?: string,
+    continuationEventId?: string,
+  ): TMessage[] {
+    return this._collectConversation(runId, anchor, undefined, regenerateTarget, continuationEventId).messages;
   }
 
   // -------------------------------------------------------------------------

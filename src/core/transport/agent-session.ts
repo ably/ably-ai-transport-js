@@ -653,6 +653,11 @@ class DefaultAgentSession<
     // run-creation time would silently keep returning data from the
     // abandoned Tree.
     const getTree = (): DefaultTree<TInput, TOutput, TProjection> => this._tree;
+    // When this run is a continuation, scope projection reads to the
+    // continuation this agent is generating (keyed by its triggering input's
+    // event-id), so the reconstructed history never includes a concurrent
+    // responder's follow-up. A fresh run generates into the base, so no scope.
+    const continuationEventId = (): string | undefined => (resolvedContinuation ? inputEventId : undefined);
     const view: RunView<TMessage> = {
       get messages() {
         if (resolvedInputCodecMessageId === undefined) return [];
@@ -660,7 +665,9 @@ class DefaultAgentSession<
         if (!node) return [];
         const sourceSerial = node.kind === 'input' ? node.serial : node.startSerial;
         const sourceForkOf = node.kind === 'input' ? node.forkOf : undefined;
-        return codec.getMessages(node.projection).map((m) => ({
+        const cont = continuationEventId();
+        const selector = cont === undefined ? undefined : { continuationEventId: cont };
+        return codec.getMessages(node.projection, selector).map((m) => ({
           kind: 'message' as const,
           message: m.message,
           codecMessageId: m.codecMessageId,
@@ -748,7 +755,7 @@ class DefaultAgentSession<
         // reflects the latest folded state. `getAgentView()` dereferences the
         // live AgentView so a continuity-loss swap is observed instead of
         // returning stale data from the abandoned tree.
-        return getAgentView().messages(runId, assistantParentFallback, resolvedRegenerates);
+        return getAgentView().messages(runId, assistantParentFallback, resolvedRegenerates, continuationEventId());
       },
 
       // Spec: AIT-ST4, AIT-ST4a, AIT-ST4b
@@ -914,6 +921,7 @@ class DefaultAgentSession<
           options?.maxRuns,
           runIdOverridden || resolvedContinuation,
           resolvedRegenerates,
+          continuationEventId(),
         );
         return messages;
       },

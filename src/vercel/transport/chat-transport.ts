@@ -249,62 +249,36 @@ const hasUnresolvedToolCall = (msg: AI.UIMessage): boolean =>
   );
 
 /**
- * Synthesize the {@link VercelInput}s for the tool resolutions on the
- * assistant message a continuation is resuming — the user executed a tool,
- * approved, or denied, and useChat's `sendAutomaticallyWhen` fired.
+ * Map the tool resolutions on the assistant being continued to the
+ * {@link VercelInput}s to publish — the user executed a tool, approved, or
+ * denied. The caller (`sendMessages`) decides WHICH assistant this is (the one
+ * `sendAutomaticallyWhen` fired on) and supplies its tree codec-message-id;
+ * this function only translates that assistant's resolved tool parts.
  *
- * Scope: only the LAST assistant message in the overlay. That is the message
- * `sendAutomaticallyWhen` fired on (`lastAssistantMessageIsCompleteWith*`); its
- * tool resolutions are the NEW ones to publish. Resolutions on earlier
- * assistants were published in their own continuation steps (each produced a
- * following assistant), so scoping to the last assistant suppresses
- * history-replay — re-publishing every prior continuation's results on every
- * step — WITHOUT consulting the tree.
+ * Always-publish (AIT-843): a resolution is emitted regardless of the tree's
+ * tool-part state. The tree is shared, channel-derived state a peer (the same
+ * `clientId` in another tab) can resolve first; gating on it made a client
+ * discard its own freshly-executed result, throwing the empty-inputs guard and
+ * flickering useChat to `error`. We always publish our own result and let
+ * downstream dedup (idempotent fold + read-time canonicalization) reconcile the
+ * duplicates. See NOTES.md.
  *
- * Crucially, this does NOT skip a resolution just because the tree's tool part
- * is already resolved. The tree is shared, channel-derived state that a peer
- * (the same `clientId` in another tab) can resolve first; gating on it made a
- * client discard its own freshly-executed result, throwing the empty-inputs
- * guard and flickering useChat to `error`. Per AIT-843 we always publish our
- * own result and let downstream dedup (idempotent fold + read-time
- * canonicalization) reconcile the duplicates. See NOTES.md.
- *
- * Each input carries the assistant's tree codec-message-id in its
- * `codecMessageId` field, so the encoder stamps `codec-message-id` and the
- * reducer's direct-fold path lands the resolution on that assistant in one
- * step. Every variant rides the `ai-input` wire, matching its publisher
- * (client → input).
- *
- * Three resolutions are produced:
+ * Each input carries `codecMessageId` so the encoder stamps `codec-message-id`
+ * and the reducer's direct-fold path lands the resolution on that assistant in
+ * one step. Every variant rides the `ai-input` wire (client → input):
  *
  * - `approval-responded` → `tool-approval-response` carrying the user's
  *   decision (`approved` = `overlayPart.approval.approved`, i.e. approve or deny)
  * - `output-available` → `tool-result`
  * - `output-error` → `tool-result-error`
- * @param codecMessages - The visible tree messages paired with their codec-message-ids.
- * @param messages - useChat's local overlay messages.
- * @returns The continuation inputs to publish. Each input carries its own
- *   `codecMessageId` targeting the assistant it folds onto.
+ * @param assistant - The assistant message being continued (useChat overlay).
+ * @param codecMessageId - That assistant's tree codec-message-id — the fold target.
+ * @returns The continuation inputs to publish.
  */
-const deriveContinuationInputs = (
-  codecMessages: CodecMessage<AI.UIMessage>[],
-  messages: AI.UIMessage[],
-): VercelInput[] => {
+const deriveContinuationInputs = (assistant: AI.UIMessage, codecMessageId: string): VercelInput[] => {
   const inputs: VercelInput[] = [];
 
-  // Only the last assistant is the one being continued — see doc comment.
-  const overlay = messages.findLast((m) => m.role === 'assistant');
-  if (!overlay) return inputs;
-
-  // Match the overlay to its tree message by domain id (both sides
-  // reconstruct the same stream id), but address the emitted inputs by the
-  // tree message's codec-message-id — the agent folds tool resolutions onto
-  // the assistant by codec-message-id, never by the domain `message.id`.
-  const treeEntry = codecMessages.find((p) => p.message.id === overlay.id);
-  if (!treeEntry) return inputs;
-  const { codecMessageId } = treeEntry;
-
-  for (const overlayPart of overlay.parts) {
+  for (const overlayPart of assistant.parts) {
     if (!isToolPart(overlayPart)) continue;
 
     // Approval response: useChat's `addToolApprovalResponse` flipped the
@@ -443,6 +417,22 @@ export const createChatTransport = (
     const lastMessageInTree = !!lastMessage && codecIdByDomainId.has(lastMessage.id);
     const isContinuation = trigger === 'submit-message' && lastMessage?.role === 'assistant' && lastMessageInTree;
 
+    // In continuation mode the last message IS the assistant being resumed
+    // (auto-submit after a tool resolution, or multi-step tool use) and is in
+    // the tree. Capture it and its codec-message-id once: this is the single
+    // place that decides "which message is being continued". The runId lookup
+    // and deriveContinuationInputs below both consume it, so neither re-derives
+    // the selection. Only the LAST assistant's resolutions are published —
+    // earlier assistants were continued in their own steps, so scoping here
+    // suppresses history-replay without consulting the tree.
+    let continuation: { assistant: AI.UIMessage; codecMessageId: string } | undefined;
+    if (isContinuation) {
+      // `isContinuation` narrows `lastMessage` to the in-tree assistant
+      // (aliased-condition narrowing), so its codec-message-id is defined.
+      const codecMessageId = codecIdOf(lastMessage.id);
+      if (codecMessageId !== undefined) continuation = { assistant: lastMessage, codecMessageId };
+    }
+
     // Fork-on-unresolved-tool: user sent a new message while the preceding
     // assistant has an unresolved tool call (approval-requested, input-*).
     // Fork the new message off the preceding assistant so the unresolved
@@ -533,12 +523,9 @@ export const createChatTransport = (
     if (parent !== undefined) sendOpts.parent = parent;
     // Continuations reuse the suspended assistant's runId so the agent's
     // existing run resumes under a fresh invocation rather than spinning
-    // up a brand-new run. `isContinuation` implies `lastMessage` is defined.
-    if (isContinuation) {
-      // `isContinuation` implies `lastMessage` is defined (it gates on
-      // `lastMessage?.role`). Route the runId lookup by codec-message-id.
-      const codecId = codecIdOf(lastMessage.id);
-      const run = codecId === undefined ? undefined : session.view.runOf(codecId);
+    // up a brand-new run. Routed by the assistant's codec-message-id.
+    if (continuation) {
+      const run = session.view.runOf(continuation.codecMessageId);
       if (run) sendOpts.runId = run.runId;
     }
 
@@ -557,8 +544,8 @@ export const createChatTransport = (
     // - Fresh send / edit: publish the new user-message input(s) via
     //   `view.send`.
     let run: ActiveRun;
-    if (isContinuation) {
-      const inputs = deriveContinuationInputs(codecMessages, messages);
+    if (continuation) {
+      const inputs = deriveContinuationInputs(continuation.assistant, continuation.codecMessageId);
       run = await session.view.send(inputs, sendOpts);
     } else if (trigger === 'regenerate-message') {
       if (messageId === undefined) {

@@ -1487,7 +1487,7 @@ describe('createChatTransport', () => {
       const [input] = send.mock.calls[0] as [VercelInput[]];
       expect(input).toHaveLength(1);
       expect(input[0]?.codecMessageId).toBe('a2');
-      expect(input[0]?.payload).toMatchObject({ toolCallId: 'tc2' });
+      expect(input[0]).toMatchObject({ payload: { toolCallId: 'tc2' } });
     });
   });
 });

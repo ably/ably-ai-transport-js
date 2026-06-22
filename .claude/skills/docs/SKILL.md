@@ -1,13 +1,15 @@
 ---
 name: docs
-description: Write or improve markdown documentation for the AI Transport SDK. Follows the project's doc principles (atomic pages, problem-first framing, one path then depth) and the established style from the docs that received positive feedback.
+description: Write, improve, or review markdown documentation for the AI Transport SDK - including auditing whether a code change has left docs/ stale or incomplete. Follows the project's doc principles (atomic pages, problem-first framing, one path then depth) and the established style from the docs that received positive feedback.
+allowed-tools: Read, Grep, Glob, Skill, Bash(git diff *), Bash(git show *), Bash(git log *), Bash(git status *), Bash(git ls-files *), Bash(git blame *), Bash(git rev-parse *), Bash(git merge-base *)
 ---
 
 # Writing Documentation
 
 Write markdown documentation for the AI Transport SDK. This skill covers
-creating new doc pages, improving existing ones, and reviewing docs for
-consistency with the project's principles and voice.
+creating new doc pages, improving existing ones, reviewing a page for
+consistency with the project's principles and voice, and auditing whether a code
+change has left the docs stale or incomplete.
 
 ## Before writing
 
@@ -394,6 +396,24 @@ docs/
 | `internals/`   | Internals page  | Definition → concepts → operations → algorithms → edge cases → cross-refs             |
 
 If a page doesn't fit these categories, discuss placement before writing.
+
+## Reviewing a change for documentation drift and coverage
+
+Use this when a code change lands and you need to check the docs it affects - not
+the quality of a single page (that is the checklist below), but whether the
+change left `docs/` **stale** or **incomplete**. Audit and report only; edit docs
+only if you have been asked to fix them.
+
+When running this as part of a code review, invoke the
+`ably-skills:code-review-protocol` skill (via the Skill tool) for scope and the
+report format, and report under concern `docs`.
+
+- **Accuracy** - the change has left nothing stale: signatures, names, examples,
+  behaviour, and cross-references still match the code.
+- **Coverage** - the change has left nothing undocumented: new public API,
+  options, behaviours, and edge cases are all covered.
+
+For each affected page, also apply the per-page **Review checklist** below.
 
 ## Review checklist
 

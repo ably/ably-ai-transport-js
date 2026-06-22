@@ -1364,4 +1364,130 @@ describe('createChatTransport', () => {
       },
     );
   });
+
+  // AIT-843: a client always publishes its own freshly-executed tool result.
+  // The continuation must NOT gate on the tree's tool-part state — that is
+  // shared, peer-mutable state, and gating on it let a same-clientId peer (e.g.
+  // another tab) resolve the tree first, causing this client to derive no
+  // inputs, throw the empty-inputs guard, and flicker useChat to `error`.
+  describe('sendMessages — continuation always-publishes (AIT-843)', () => {
+    it('publishes the tool-result even when the tree part is already resolved (multi-tab peer won the race)', async () => {
+      const { session, send, view, mockRun } = createMockSession();
+
+      const user1 = makeMessage('u1');
+      // Tree view: another tab with the same clientId already published its
+      // result, so the tree's tool part is already `output-available`.
+      const treeAssistant = makeAssistantWithToolPart('a1', {
+        type: 'dynamic-tool',
+        toolName: 'getLocation',
+        toolCallId: 'tc1',
+        state: 'output-available',
+        input: { highAccuracy: false },
+        output: { latitude: 51, longitude: 0 },
+      });
+      // This tab's overlay: it executed the tool too — also `output-available`.
+      const overlayAssistant: AI.UIMessage = {
+        id: 'a1',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'dynamic-tool',
+            toolName: 'getLocation',
+            toolCallId: 'tc1',
+            state: 'output-available',
+            input: { highAccuracy: false },
+            output: { latitude: 51, longitude: 0 },
+          },
+        ],
+      };
+
+      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue(asPairs([user1, treeAssistant]));
+      (view.runOf as ReturnType<typeof vi.fn>).mockReturnValue({
+        runId: 'run-a1',
+        clientId: '',
+        status: 'active',
+        invocationId: '',
+      });
+
+      const chat = createChatTransport(session);
+      const streamPromise = chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [user1, overlayAssistant],
+        abortSignal: undefined,
+      });
+      mockRun.close();
+      await streamPromise;
+
+      // Always-publish: a tool-result is still derived despite the resolved tree.
+      const [input] = send.mock.calls[0] as [VercelInput[]];
+      expect(input).toHaveLength(1);
+      expect(input[0]?.kind).toBe('tool-result');
+      expect(input[0]?.codecMessageId).toBe('a1');
+    });
+
+    it("emits only the last assistant's resolution, not earlier already-continued ones", async () => {
+      const { session, send, view, mockRun } = createMockSession();
+
+      const user1 = makeMessage('u1');
+      // An earlier step's client tool, already resolved AND already continued
+      // (a later assistant follows it). Re-publishing it on every continuation
+      // step would flood the channel with stale resolutions — scoping to the
+      // last assistant suppresses that history-replay.
+      const earlierAssistant: AI.UIMessage = {
+        id: 'a1',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'dynamic-tool',
+            toolName: 'getLocation',
+            toolCallId: 'tc1',
+            state: 'output-available',
+            input: {},
+            output: { step: 1 },
+          },
+        ],
+      };
+      // The freshly-resolved assistant the continuation is actually for.
+      const lastAssistant: AI.UIMessage = {
+        id: 'a2',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'dynamic-tool',
+            toolName: 'getLocation',
+            toolCallId: 'tc2',
+            state: 'output-available',
+            input: {},
+            output: { step: 2 },
+          },
+        ],
+      };
+
+      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue(asPairs([user1, earlierAssistant, lastAssistant]));
+      (view.runOf as ReturnType<typeof vi.fn>).mockReturnValue({
+        runId: 'run-a2',
+        clientId: '',
+        status: 'active',
+        invocationId: '',
+      });
+
+      const chat = createChatTransport(session);
+      const streamPromise = chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [user1, earlierAssistant, lastAssistant],
+        abortSignal: undefined,
+      });
+      mockRun.close();
+      await streamPromise;
+
+      const [input] = send.mock.calls[0] as [VercelInput[]];
+      expect(input).toHaveLength(1);
+      expect(input[0]?.codecMessageId).toBe('a2');
+      expect(input[0]?.payload).toMatchObject({ toolCallId: 'tc2' });
+    });
+  });
 });

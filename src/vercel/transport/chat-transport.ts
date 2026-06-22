@@ -39,7 +39,7 @@ import { LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
 import { UIMessageCodec } from '../codec/index.js';
-import { isToolPart, type ToolPart } from '../tool-part.js';
+import { isToolPart } from '../tool-part.js';
 import { createRunOutputStream } from './run-output-stream.js';
 
 // ---------------------------------------------------------------------------
@@ -249,110 +249,98 @@ const hasUnresolvedToolCall = (msg: AI.UIMessage): boolean =>
   );
 
 /**
- * `dynamic-tool` part states that mean "the LLM produced a tool call and
- * is waiting on it". Used to detect new client-side resolutions in the
- * useChat overlay relative to the tree.
- */
-const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'approval-requested']);
-
-/**
- * Walk the useChat message overlay against the session tree and synthesize
- * the {@link VercelInput}s needed to resolve every `dynamic-tool` part the
- * user acted on (executed a tool, approved, denied) but the tree's reduced
- * state hasn't reflected yet.
+ * Synthesize the {@link VercelInput}s for the tool resolutions on the
+ * assistant message a continuation is resuming — the user executed a tool,
+ * approved, or denied, and useChat's `sendAutomaticallyWhen` fired.
  *
- * Each input carries the prior assistant's tree codec-message-id (the one
- * holding the original `dynamic-tool` part the resolution targets) in its
- * `codecMessageId` field, so the encoder stamps `codec-message-id`
- * and the reducer's direct-fold path lands the resolution on that assistant
- * in one step — no cross-message redirect-by-toolCallId fallback. Every
- * variant rides the `ai-input` wire, matching its publisher (client → input).
+ * Scope: only the LAST assistant message in the overlay. That is the message
+ * `sendAutomaticallyWhen` fired on (`lastAssistantMessageIsCompleteWith*`); its
+ * tool resolutions are the NEW ones to publish. Resolutions on earlier
+ * assistants were published in their own continuation steps (each produced a
+ * following assistant), so scoping to the last assistant suppresses
+ * history-replay — re-publishing every prior continuation's results on every
+ * step — WITHOUT consulting the tree.
  *
- * The resulting inputs are passed alongside the continuation `view.send`
- * so the channel publish and the continuation POST land as ONE atomic
- * operation — the agent's `loadConversation()` history walk is guaranteed
- * to see them because the channel publish happens before the POST inside
- * `_internalSend`.
+ * Crucially, this does NOT skip a resolution just because the tree's tool part
+ * is already resolved. The tree is shared, channel-derived state that a peer
+ * (the same `clientId` in another tab) can resolve first; gating on it made a
+ * client discard its own freshly-executed result, throwing the empty-inputs
+ * guard and flickering useChat to `error`. Per AIT-843 we always publish our
+ * own result and let downstream dedup (idempotent fold + read-time
+ * canonicalization) reconcile the duplicates. See NOTES.md.
+ *
+ * Each input carries the assistant's tree codec-message-id in its
+ * `codecMessageId` field, so the encoder stamps `codec-message-id` and the
+ * reducer's direct-fold path lands the resolution on that assistant in one
+ * step. Every variant rides the `ai-input` wire, matching its publisher
+ * (client → input).
  *
  * Three resolutions are produced:
  *
- * - `approval-responded` overlay vs `approval-requested` tree →
- *   `tool-approval-response` carrying the user's decision
- *   (`approved` = `overlayPart.approval.approved`, i.e. approve or deny)
- * - `output-available` overlay vs unresolved tree → `tool-result`
- * - `output-error` overlay vs unresolved tree → `tool-result-error`
+ * - `approval-responded` → `tool-approval-response` carrying the user's
+ *   decision (`approved` = `overlayPart.approval.approved`, i.e. approve or deny)
+ * - `output-available` → `tool-result`
+ * - `output-error` → `tool-result-error`
  * @param codecMessages - The visible tree messages paired with their codec-message-ids.
  * @param messages - useChat's local overlay messages.
- * @returns The continuation inputs to publish, in tree order. Each input
- *   carries its own `codecMessageId` targeting the prior assistant it folds
- *   onto.
+ * @returns The continuation inputs to publish. Each input carries its own
+ *   `codecMessageId` targeting the assistant it folds onto.
  */
 const deriveContinuationInputs = (
   codecMessages: CodecMessage<AI.UIMessage>[],
   messages: AI.UIMessage[],
 ): VercelInput[] => {
   const inputs: VercelInput[] = [];
-  for (const overlay of messages) {
-    if (overlay.role !== 'assistant') continue;
-    // Match the overlay to its tree message by domain id (both sides
-    // reconstruct the same stream id), but address the emitted inputs by
-    // the tree message's codec-message-id — the agent folds tool
-    // resolutions onto the assistant by codec-message-id, never by the
-    // domain `message.id`.
-    const treeEntry = codecMessages.find((p) => p.message.id === overlay.id);
-    if (!treeEntry) continue;
-    const { codecMessageId, message: treeMessage } = treeEntry;
 
-    for (const overlayPart of overlay.parts) {
-      if (!isToolPart(overlayPart)) continue;
-      // The codec normalises every tool part to `dynamic-tool`, but the
-      // AI SDK's useChat overlay emits `tool-${name}` parts for statically
-      // declared tools. Match by toolCallId rather than the type prefix
-      // so the cross-representation comparison works regardless of which
-      // side the tool was declared on.
-      const treePart = treeMessage.parts.find(
-        (p: AI.UIMessage['parts'][number]): p is ToolPart => isToolPart(p) && p.toolCallId === overlayPart.toolCallId,
+  // Only the last assistant is the one being continued — see doc comment.
+  const overlay = messages.findLast((m) => m.role === 'assistant');
+  if (!overlay) return inputs;
+
+  // Match the overlay to its tree message by domain id (both sides
+  // reconstruct the same stream id), but address the emitted inputs by the
+  // tree message's codec-message-id — the agent folds tool resolutions onto
+  // the assistant by codec-message-id, never by the domain `message.id`.
+  const treeEntry = codecMessages.find((p) => p.message.id === overlay.id);
+  if (!treeEntry) return inputs;
+  const { codecMessageId } = treeEntry;
+
+  for (const overlayPart of overlay.parts) {
+    if (!isToolPart(overlayPart)) continue;
+
+    // Approval response: useChat's `addToolApprovalResponse` flipped the
+    // overlay part to `approval-responded`. Publish a `tool-approval-response`
+    // TInput so the agent's projection sees the decision.
+    if (overlayPart.state === 'approval-responded') {
+      inputs.push(
+        UIMessageCodec.createToolApprovalResponse(codecMessageId, {
+          toolCallId: overlayPart.toolCallId,
+          approved: overlayPart.approval.approved,
+          ...(overlayPart.approval.reason === undefined ? {} : { reason: overlayPart.approval.reason }),
+        }),
       );
+      continue;
+    }
 
-      // Approval response: useChat's `addToolApprovalResponse` flipped the
-      // overlay part to `approval-responded` while the tree still sits on
-      // `approval-requested`. Publish a `tool-approval-response` TInput so the
-      // agent's projection sees the decision.
-      if (overlayPart.state === 'approval-responded' && (!treePart || treePart.state === 'approval-requested')) {
-        inputs.push(
-          UIMessageCodec.createToolApprovalResponse(codecMessageId, {
-            toolCallId: overlayPart.toolCallId,
-            approved: overlayPart.approval.approved,
-            ...(overlayPart.approval.reason === undefined ? {} : { reason: overlayPart.approval.reason }),
-          }),
-        );
-        continue;
-      }
+    // Client-tool resolution: overlay has `output-available` / `output-error`.
+    // Construct a TInput variant (not a UIMessageChunk) so the encoder
+    // publishes on the `ai-input` wire — client tool results belong on
+    // `ai-input`, matching their client publisher, not on `ai-output`.
+    if (overlayPart.state !== 'output-available' && overlayPart.state !== 'output-error') continue;
 
-      // Client-tool resolution: overlay has `output-available` / `output-error`
-      // while the tree's part is still unresolved. Construct a TInput
-      // variant (not a UIMessageChunk) so the encoder publishes on the
-      // `ai-input` wire — client tool results belong on `ai-input`, matching
-      // their client publisher, not on `ai-output`.
-      if (overlayPart.state !== 'output-available' && overlayPart.state !== 'output-error') continue;
-      // Tree already resolved (echo arrived back) — nothing to do.
-      if (treePart && !UNRESOLVED_TOOL_STATES.has(treePart.state)) continue;
-
-      if (overlayPart.state === 'output-available') {
-        inputs.push(
-          UIMessageCodec.createToolResult(codecMessageId, {
-            toolCallId: overlayPart.toolCallId,
-            output: overlayPart.output,
-          }),
-        );
-      } else {
-        inputs.push(
-          UIMessageCodec.createToolResultError(codecMessageId, {
-            toolCallId: overlayPart.toolCallId,
-            message: overlayPart.errorText,
-          }),
-        );
-      }
+    if (overlayPart.state === 'output-available') {
+      inputs.push(
+        UIMessageCodec.createToolResult(codecMessageId, {
+          toolCallId: overlayPart.toolCallId,
+          output: overlayPart.output,
+        }),
+      );
+    } else {
+      inputs.push(
+        UIMessageCodec.createToolResultError(codecMessageId, {
+          toolCallId: overlayPart.toolCallId,
+          message: overlayPart.errorText,
+        }),
+      );
     }
   }
   return inputs;

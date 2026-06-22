@@ -49,7 +49,7 @@ Per-tab flow:
    (`chat-transport.ts:337` overlay-state check; `:339`
    `if (treePart && !UNRESOLVED_TOOL_STATES.has(treePart.state)) continue;`;
    `UNRESOLVED_TOOL_STATES = {input-streaming, input-available,
-   approval-requested}` at `:256`).
+approval-requested}` at `:256`).
 4. If the tree part already resolved (the **other tab's** result echoed in
    first), it returns `[]` → `session.view.send([])` (`:574`) → empty-inputs
    guard throws (`client-session.ts:559`) → status flickers to `error`.
@@ -64,7 +64,7 @@ Race outcomes:
 - **Staggered (common):** A publishes; B finds the tree already resolved → empty
   → flicker, then recovers.
 - **Tight race:** both compute before any echo → both publish → two tool-results
-  + two continuations → spills into the 504/duplicate-run/stuck territory.
+  plus two continuations → spills into the 504/duplicate-run/stuck territory.
 
 ## Why it's really a bug
 
@@ -82,20 +82,87 @@ actionable part means "_someone_ should act, maybe already has." "Unresolved"
 only ever means "unresolved _as of my last sync_." The demo logic is still
 written as if that state were private/authoritative — that's the bug class.
 
-## Fix (open design question)
+## Direction (locked 2026-06-19)
 
-- **Necessary, immediate:** at `chat-transport.ts:573`, when
-  `deriveContinuationInputs` returns `[]`, short-circuit to a **no-op** (return
-  an empty/closed stream to `useChat`) instead of calling `send`. Keep the
-  `client-session:559` empty guard for _fresh_ sends. This removes the flicker.
-- **But it only fixes the symptom.** The behaviour stays racy. The real decision:
-  - **(A) tolerate-and-dedup** — all tabs publish; dedup results downstream;
-    _single-flight the continuation_. Principled, but gated on a single-flight
-    mechanism (the core unsolved AIT-843 gap).
-  - **(B) best-effort one-responder** — keep the `:339` race-dedup, make empty a
-    clean no-op, accept non-deterministic which tab publishes; treat residual
-    double-publish as the separate single-flight work.
-- The fix _line_ is the same either way; the question is which model it serves.
+Option (A) tolerate-and-dedup is the chosen direction. Guiding principle:
+
+> **A client that executed a client-side tool call unconditionally publishes its
+> result. It must NOT suppress its own publish based on shared tree state a peer
+> can mutate.** The system, not the client's read of shared state, decides what
+> to do with duplicates.
+
+"Discard" = suppress the publish to the channel. The displayed value is never
+lost (it's in the overlay and arrives via sync) — what we refuse to drop is the
+_publish_.
+
+Two boundaries kept attached to the principle:
+
+1. **It's about the result publish, not the continuation run.** We deliberately
+   want exactly one agent run (single-flight). Today's bug is that one
+   check — "is this tool part already resolved in the tree?" (the
+   `UNRESOLVED_TOOL_STATES` skip at `:339`) — governs BOTH the publish and (via
+   emitting `[]` → `view.send([])` → empty-inputs throw) the run. Separate them:
+   publish unconditionally, single-flight the run downstream.
+2. **"Don't discard" does NOT mean both results survive into history.** Both
+   tabs publish; reconciliation is downstream: the client tree fold is
+   idempotent (`fold-input.ts` `resolveOrPend`/`applyResolution`, keyed by
+   `toolCallId`, last-write-wins) + agent-side single-flight on the continuation
+   runId (continuations reuse the suspended run's runId, identical across tabs —
+   `chat-transport.ts` `sendOpts.runId = run.runId`). Suppression moves from a
+   non-deterministic source-side race to deterministic downstream dedup.
+
+### Why `deriveContinuationInputs` checks the tree at all
+
+`sendMessages` is handed the full overlay with no signal about _which_
+resolution triggered the continuation, so it diffs overlay-vs-tree to tell NEW
+resolutions from already-resolved history (which must not be re-published — the
+overlay holds every prior `output-available` part too). The multi-tab dedup is
+an accidental side effect of using shared, peer-mutable tree state as that
+proxy. So "always emit" can't mean "delete the check" (that re-publishes all
+resolved history every continuation step) — it means **replace the shared-tree
+proxy with a signal authoritative to THIS client** (toolCallIds it locally
+resolved but hasn't yet published).
+
+### Open verification before scoping the agent-side work
+
+Trace the agent's `loadConversation` / `AgentView` path to confirm duplicate
+tool-results collapse idempotently there too. Client tree confirmed; agent
+history reconstruction not yet. If it doesn't dedup, the agent-side work is
+single-flight + history-level dedup; if it does, it's just single-flight on the
+reused continuation runId.
+
+## Fallback: observer stream (option B) — only if (A) proves intractable
+
+Keep the current race-dedup (loser does NOT publish), but on the empty-inputs
+path, instead of returning an empty stream (which infinite-loops — see
+`lawrence-learnings/why-the-sender-loses-the-race.md`), hand useChat a stream
+that **observes the winner's in-flight continuation run**. That delivers a real
+terminal chunk → clears `sendAutomaticallyWhen` → no loop, correct status.
+
+This contradicts the locked principle (it discards the loser's result) and only
+fixes the STAGGERED race — the tight race still double-publishes/double-runs. So
+it's a partial, pragmatic fix, recorded as a fallback if A's downstream
+single-flight/dedup proves intractable in serverless.
+
+Feasibility (checked 2026-06-19):
+
+- Output events already carry `runId` (`OutputEvent.runId`, stamped at
+  `tree.ts:1120`). The loser knows the reused continuation runId R via
+  `view.runOf(assistantCodecMessageId)`.
+- `createRunOutputStream` is ~90% reusable: generalise its routing predicate from
+  `inputCodecMessageId` match to `runId === R`. Run-lifecycle close-on-end and
+  terminal-chunk detection are reusable as-is.
+- Main risk: the join-mid-stream / catch-up gap. `tree.on('output')` is live
+  (post-subscribe only); the loser subscribes AFTER the winner started, so it can
+  miss chunks or join after the `start-step` and choke useChat. A proper fix
+  needs seeding from `tree.getRunNode(R)` then subscribing for the rest —
+  non-trivial (projection → chunk-stream reconstruction). Same timing-fragility
+  class as the 504 / InputEventNotFound lookups.
+
+NOTE: the `byRun(R)` observer-stream primitive is probably needed by option A
+too — a tab whose run is deduped downstream still needs its useChat stream to
+show the canonical run. So the primitive is NOT throwaway even under A; only the
+"keep race-dedup on the empty path" wiring is B-specific.
 
 ## Key code locations
 

@@ -10,7 +10,7 @@
 import type * as AI from 'ai';
 import { describe, expect, it } from 'vitest';
 
-import type { ReducerMeta } from '../../../src/core/codec/types.js';
+import type { CodecMessage, ReducerMeta } from '../../../src/core/codec/types.js';
 import type { VercelInput, VercelOutput } from '../../../src/vercel/codec/events.js';
 import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
 import { fold as foldEvent, getMessages, init, type VercelProjection } from '../../../src/vercel/codec/reducer.js';
@@ -74,6 +74,92 @@ const seedToolCall = (toolCallId: string, messageId: string): VercelProjection =
     meta('s1', messageId),
   );
   return state;
+};
+
+/**
+ * Text of the first text part in a message, if any.
+ * @param msg - The message to read.
+ * @returns The text, or undefined when the message has no text part.
+ */
+const textOf = (msg: AI.UIMessage): string | undefined =>
+  msg.parts.find((p): p is AI.TextUIPart => p.type === 'text')?.text;
+
+/**
+ * Text of the message at `index` in a materialised list (undefined if absent) —
+ * a `!`-free indexed read for the continuation assertions.
+ * @param msgs - The materialised message list.
+ * @param index - The position to read.
+ * @returns The message's text, or undefined.
+ */
+const textAt = (msgs: CodecMessage<AI.UIMessage>[], index: number): string | undefined => {
+  const entry = msgs[index];
+  return entry ? textOf(entry.message) : undefined;
+};
+
+/**
+ * Build a base projection: user `u1`, then assistant `cm_tc` issuing an
+ * unresolved client tool call `tc-1`. Folds carry no event-id, so everything
+ * lands in the base node.
+ * @returns The seeded base projection.
+ */
+const seedBaseWithToolCall = (): VercelProjection => {
+  let state = init();
+  state = fold(
+    state,
+    { kind: 'user-message', message: { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'where am i?' }] } },
+    meta('s0', 'u1'),
+  );
+  state = fold(
+    state,
+    { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'getLocation', dynamic: true },
+    meta('s1', 'cm_tc'),
+  );
+  state = fold(
+    state,
+    { type: 'tool-input-available', toolCallId: 'tc-1', toolName: 'getLocation', input: {}, dynamic: true },
+    meta('s2', 'cm_tc'),
+  );
+  return state;
+};
+
+/**
+ * Fold a client tool-result for `cm_tc` carrying its own wire event-id, then an
+ * agent follow-up that echoes that event-id as `inputEventId` — one full
+ * responder continuation.
+ * @param state - The projection to fold into.
+ * @param opts - The continuation's parameters.
+ * @param opts.eventId - The triggering input event-id (the continuation key).
+ * @param opts.serial - Serial prefix distinguishing this continuation's wires.
+ * @param opts.output - The tool result output.
+ * @param opts.followupId - Codec-message-id of the agent follow-up.
+ * @param opts.answer - The follow-up's answer text.
+ * @returns The updated projection.
+ */
+const addContinuation = (
+  state: VercelProjection,
+  opts: { eventId: string; serial: string; output: unknown; followupId: string; answer: string },
+): VercelProjection => {
+  let s = fold(
+    state,
+    { kind: 'tool-result', codecMessageId: 'cm_tc', payload: { toolCallId: 'tc-1', output: opts.output } },
+    { serial: `r${opts.serial}`, messageId: `tr-${opts.eventId}`, eventId: opts.eventId },
+  );
+  s = fold(
+    s,
+    { type: 'start', messageId: opts.followupId },
+    { serial: `f${opts.serial}`, messageId: opts.followupId, inputEventId: opts.eventId },
+  );
+  s = fold(
+    s,
+    { type: 'text-start', id: `tx-${opts.eventId}` },
+    { serial: `f${opts.serial}a`, messageId: opts.followupId, inputEventId: opts.eventId },
+  );
+  s = fold(
+    s,
+    { type: 'text-delta', id: `tx-${opts.eventId}`, delta: opts.answer },
+    { serial: `f${opts.serial}b`, messageId: opts.followupId, inputEventId: opts.eventId },
+  );
+  return s;
 };
 
 describe('Vercel reducer', () => {
@@ -374,6 +460,143 @@ describe('Vercel reducer', () => {
       const toolPart = message?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
       expect(toolPart?.state).toBe('output-available');
       expect(state.pendingToolResolutions).toHaveLength(0);
+    });
+  });
+
+  // -- continuations (multi-responder client tool calls) -------------------
+
+  describe('continuations', () => {
+    it('routes a tool-result + follow-up into a continuation and materialises them', () => {
+      let state = seedBaseWithToolCall();
+      state = addContinuation(state, {
+        eventId: 'E1',
+        serial: '1',
+        output: { city: 'London' },
+        followupId: 'cm_fu1',
+        answer: 'You are in London',
+      });
+
+      const msgs = getMessages(state);
+      expect(msgs.map((m) => m.codecMessageId)).toEqual(['u1', 'cm_tc', 'cm_fu1']);
+      const toolPart = msgs[1]?.message.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
+      expect(toolPart?.state).toBe('output-available');
+      if (toolPart?.state === 'output-available') expect(toolPart.output).toEqual({ city: 'London' });
+      expect(textAt(msgs, 2)).toBe('You are in London');
+
+      // The resolution lives in the continuation, NOT folded onto the base
+      // assistant in place — the base tool call stays unresolved.
+      expect(toolPartOf(state, 'cm_tc', 'tc-1')?.state).toBe('input-available');
+      expect(state.continuations.size).toBe(1);
+    });
+
+    it('keeps two responders separate; canonical picks earliest, selector picks either', () => {
+      let state = seedBaseWithToolCall();
+      state = addContinuation(state, {
+        eventId: 'E1',
+        serial: '1',
+        output: { city: 'London' },
+        followupId: 'cm_fu1',
+        answer: 'London',
+      });
+      state = addContinuation(state, {
+        eventId: 'E2',
+        serial: '2',
+        output: { city: 'Paris' },
+        followupId: 'cm_fu2',
+        answer: 'Paris',
+      });
+
+      expect(state.continuations.size).toBe(2);
+
+      // Canonical (no selector) → earliest by seeding serial → E1.
+      const canonical = getMessages(state);
+      expect(canonical.map((m) => m.codecMessageId)).toEqual(['u1', 'cm_tc', 'cm_fu1']);
+      expect(textAt(canonical, 2)).toBe('London');
+
+      // Selector → E2's branch; never the sibling's follow-up.
+      const scopedToE2 = getMessages(state, { continuationEventId: 'E2' });
+      expect(scopedToE2.map((m) => m.codecMessageId)).toEqual(['u1', 'cm_tc', 'cm_fu2']);
+      expect(textAt(scopedToE2, 2)).toBe('Paris');
+      const e2Tool = scopedToE2[1]?.message.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
+      if (e2Tool?.state === 'output-available') expect(e2Tool.output).toEqual({ city: 'Paris' });
+    });
+
+    it('scopes an agent to its own continuation, ending at the tool result (Problem 2)', () => {
+      // Both tool-results have landed but neither follow-up yet — the moment an
+      // agent reconstructs history before generating. Each must see ONLY its
+      // own result, with the conversation ending at that (a user-role turn),
+      // never a sibling's assistant follow-up (which would be a prefill error).
+      let state = seedBaseWithToolCall();
+      state = fold(
+        state,
+        { kind: 'tool-result', codecMessageId: 'cm_tc', payload: { toolCallId: 'tc-1', output: { city: 'London' } } },
+        { serial: 'r1', messageId: 'tr-E1', eventId: 'E1' },
+      );
+      state = fold(
+        state,
+        { kind: 'tool-result', codecMessageId: 'cm_tc', payload: { toolCallId: 'tc-1', output: { city: 'Paris' } } },
+        { serial: 'r2', messageId: 'tr-E2', eventId: 'E2' },
+      );
+
+      const forE2 = getMessages(state, { continuationEventId: 'E2' });
+      expect(forE2.map((m) => m.codecMessageId)).toEqual(['u1', 'cm_tc']);
+      const tool = forE2[1]?.message.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
+      expect(tool?.state).toBe('output-available');
+      if (tool?.state === 'output-available') expect(tool.output).toEqual({ city: 'Paris' });
+    });
+
+    it('nests continuations for a multi-step client-tool sequence', () => {
+      // cm_tc → result(E1) → follow-up cm_fu1 which ITSELF issues a client tool
+      // call tc-2 → result(E1a) → follow-up cm_fu2.
+      let state = seedBaseWithToolCall();
+      state = fold(
+        state,
+        { kind: 'tool-result', codecMessageId: 'cm_tc', payload: { toolCallId: 'tc-1', output: { city: 'London' } } },
+        { serial: 'r1', messageId: 'tr-E1', eventId: 'E1' },
+      );
+      // Follow-up cm_fu1 (in continuation E1) streams a second client tool call.
+      state = fold(
+        state,
+        { type: 'start', messageId: 'cm_fu1' },
+        { serial: 'f1', messageId: 'cm_fu1', inputEventId: 'E1' },
+      );
+      state = fold(
+        state,
+        { type: 'tool-input-start', toolCallId: 'tc-2', toolName: 'getWeather', dynamic: true },
+        { serial: 'f2', messageId: 'cm_fu1', inputEventId: 'E1' },
+      );
+      state = fold(
+        state,
+        { type: 'tool-input-available', toolCallId: 'tc-2', toolName: 'getWeather', input: {}, dynamic: true },
+        { serial: 'f3', messageId: 'cm_fu1', inputEventId: 'E1' },
+      );
+      // Resolve tc-2 — opens a CHILD continuation under E1, keyed E1a.
+      state = fold(
+        state,
+        { kind: 'tool-result', codecMessageId: 'cm_fu1', payload: { toolCallId: 'tc-2', output: { temp: 12 } } },
+        { serial: 'r2', messageId: 'tr-E1a', eventId: 'E1a' },
+      );
+      // Final follow-up cm_fu2 echoes E1a.
+      state = fold(
+        state,
+        { type: 'start', messageId: 'cm_fu2' },
+        { serial: 'g1', messageId: 'cm_fu2', inputEventId: 'E1a' },
+      );
+      state = fold(state, { type: 'text-start', id: 'gz' }, { serial: 'g2', messageId: 'cm_fu2', inputEventId: 'E1a' });
+      state = fold(
+        state,
+        { type: 'text-delta', id: 'gz', delta: '12 degrees' },
+        { serial: 'g3', messageId: 'cm_fu2', inputEventId: 'E1a' },
+      );
+
+      const msgs = getMessages(state);
+      expect(msgs.map((m) => m.codecMessageId)).toEqual(['u1', 'cm_tc', 'cm_fu1', 'cm_fu2']);
+      // cm_tc resolved to London, cm_fu1's tc-2 resolved to the weather, cm_fu2 the answer.
+      const cmTcTool = msgs[1]?.message.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
+      if (cmTcTool?.state === 'output-available') expect(cmTcTool.output).toEqual({ city: 'London' });
+      const fu1Tool = msgs[2]?.message.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
+      if (fu1Tool?.state === 'output-available') expect(fu1Tool.output).toEqual({ temp: 12 });
+      expect(textAt(msgs, 3)).toBe('12 degrees');
     });
   });
 

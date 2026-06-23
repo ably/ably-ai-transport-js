@@ -13,6 +13,7 @@ import type { CallbackLogEntry, ClientToolLogEntry } from './debug-pane';
 import { DebugPane } from './debug-pane';
 import { SessionHooks } from '../providers';
 import { clientColor } from '../lib/client-color';
+import { AvatarStack } from './avatar-stack';
 
 const { useClientSession, useView, useAblyMessages } = SessionHooks;
 
@@ -24,7 +25,7 @@ interface ChatProps {
   api: string;
 }
 
-export function Chat({ clientId, historyLimit, api }: ChatProps) {
+export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
   const { session } = useClientSession();
 
   const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
@@ -176,7 +177,10 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
   return (
     <div className="flex h-dvh">
       <div className="flex flex-1 flex-col">
-        <Header clientId={clientId} />
+        <Header
+          clientId={clientId}
+          channelName={chatId}
+        />
         <MessageList
           messages={messages}
           hasOlder={hasOlder}
@@ -232,7 +236,7 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
 // Header
 // ---------------------------------------------------------------------------
 
-function Header({ clientId }: { clientId?: string }) {
+function Header({ clientId, channelName }: { clientId?: string; channelName: string }) {
   return (
     <header className="flex h-16 flex-shrink-0 items-center gap-3 border-b border-zinc-800 px-4">
       <div className="flex flex-col gap-1.5">
@@ -261,7 +265,11 @@ function Header({ clientId }: { clientId?: string }) {
           </a>
         </div>
       </div>
-      <div className="ml-auto flex items-center gap-2">
+      <div className="ml-auto flex items-center gap-3">
+        <AvatarStack
+          channelName={channelName}
+          selfClientId={clientId}
+        />
         <button
           type="button"
           onClick={() => {

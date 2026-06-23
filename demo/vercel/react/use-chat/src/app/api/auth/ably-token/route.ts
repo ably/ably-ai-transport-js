@@ -31,7 +31,7 @@ export async function GET(req: Request) {
   const token = jwt.sign(
     {
       'x-ably-clientId': clientId,
-      'x-ably-capability': JSON.stringify({ [`${namespace}*`]: ['publish', 'subscribe', 'history'] }),
+      'x-ably-capability': JSON.stringify({ [`${namespace}*`]: ['publish', 'subscribe', 'presence', 'history'] }),
     },
     keySecret,
     {

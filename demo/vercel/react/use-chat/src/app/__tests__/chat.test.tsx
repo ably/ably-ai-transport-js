@@ -81,6 +81,14 @@ vi.mock('@ably/ai-transport/vercel/react', () => ({
   },
 }));
 
+// The header's AvatarStack enters presence and reads the member set via
+// ably-js's React presence hooks. Stub them so the Chat render needs no Ably
+// client; an empty member set renders no avatars, which the chat tests ignore.
+vi.mock('ably/react', () => ({
+  usePresence: () => ({ updateStatus: async () => {}, connectionError: null, channelError: null }),
+  usePresenceListener: () => ({ presenceData: [], connectionError: null, channelError: null }),
+}));
+
 // Chat must be imported AFTER vi.mock so it picks up the mocked module.
 // eslint-disable-next-line import/first
 import { Chat } from '../chat';

@@ -11,6 +11,7 @@ import { SuggestionChips } from './components/suggestion-chips';
 import { useClientTools } from './hooks/use-client-tools';
 import { useDemoProgress } from './hooks/use-demo-progress';
 import { clientColor } from './lib/client-color';
+import { AvatarStack } from './components/avatar-stack';
 
 // ---------------------------------------------------------------------------
 // Chat component
@@ -122,7 +123,10 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
   return (
     <div className="flex h-dvh">
       <div className="flex flex-1 flex-col">
-        <Header clientId={clientId} />
+        <Header
+          clientId={clientId}
+          channelName={chatId}
+        />
         <MessageList
           messages={messages}
           hasOlder={hasOlder}
@@ -172,7 +176,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
 // Header
 // ---------------------------------------------------------------------------
 
-function Header({ clientId }: { clientId?: string }) {
+function Header({ clientId, channelName }: { clientId?: string; channelName: string }) {
   return (
     <header className="flex h-16 flex-shrink-0 items-center gap-3 border-b border-zinc-800 px-4">
       <div className="flex flex-col gap-1.5">
@@ -201,7 +205,11 @@ function Header({ clientId }: { clientId?: string }) {
           </a>
         </div>
       </div>
-      <div className="ml-auto flex items-center gap-2">
+      <div className="ml-auto flex items-center gap-3">
+        <AvatarStack
+          channelName={channelName}
+          selfClientId={clientId}
+        />
         <button
           type="button"
           onClick={() => {

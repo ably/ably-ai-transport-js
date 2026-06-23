@@ -64,6 +64,10 @@ interface DebugPaneProps {
 
 type Tab = 'ably' | 'uimessages' | 'lifecycle';
 
+// Persist the pane's open/closed state across refreshes. Stored as a string so
+// an absent key (first visit) falls through to the default-open behaviour.
+const PANE_OPEN_STORAGE_KEY = 'ait-demo:debug-pane-open';
+
 const AI_TIERS = ['transport', 'codec'] as const;
 
 /**
@@ -309,7 +313,19 @@ export function DebugPane({
   clientToolLog,
   onClearLogs,
 }: DebugPaneProps) {
-  const [isOpen, setIsOpen] = useState(true);
+  // Restore the last open/closed choice. A lazy initialiser is safe here
+  // because the pane only mounts client-side, after the Ably connection is
+  // ready, so there is no server-rendered markup for this state to mismatch.
+  const [isOpen, setIsOpen] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    return localStorage.getItem(PANE_OPEN_STORAGE_KEY) !== 'false';
+  });
+
+  // Persist on every change so the next refresh reopens in the same state.
+  useEffect(() => {
+    localStorage.setItem(PANE_OPEN_STORAGE_KEY, String(isOpen));
+  }, [isOpen]);
+
   const [tab, setTab] = useState<Tab>('ably');
 
   // Project away the codec-message-id pairing — the pane renders raw messages.

@@ -259,8 +259,9 @@ We'd provide:
 
 ## 7. Demonstrating it
 
-**Recommendation: a toggle in the existing `use-chat` demo**, not a new app —
-because it shows the _same_ client working against both a `streamText` and a
+**Recommendation: a toggle in the existing `use-chat` demo** (e.g. via a
+`DEMO_GENERATION_MODE=complete'` environment variable), not a new app — because
+it shows the _same_ client working against both a `streamText` and a
 `generateText` backend (Ably bridging the gap), which is the strongest message.
 
 The concern is not bloating the slim `streamText` route. The fix is to extract
@@ -272,9 +273,7 @@ stays byte-for-byte what it is today:
 export const POST = withAgentRun(req, async (run) => (MODE === 'complete' ? handleOneShot(run) : handleStreaming(run)));
 ```
 
-(There's already appetite for this — the e2e launcher was recently extracted to a
-shared module.) Alternatively, a second route file reusing the same helper, so
-neither file carries a branch.
+Alternatively, a second route file reusing the same helper, so neither file carries a branch.
 
 ---
 

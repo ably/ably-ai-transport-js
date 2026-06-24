@@ -409,10 +409,19 @@ class DefaultView<
    * (it's a revealed node) while only its newest messages show in
    * `getMessages`. Live messages append at the newest end and are never
    * trimmed.
-   * @param limit - Number of older codecMessages to reveal. Defaults to 10.
+   * @param limit - Number of older codecMessages to reveal. Must be a positive
+   *   integer. Defaults to 10.
    * @returns The revealed codecMessages, oldest-first; `[]` when nothing older was revealed.
+   * @throws {Ably.ErrorInfo} `InvalidArgument` if `limit` is not a positive integer.
    */
   async loadOlder(limit = 10): Promise<CodecMessage<TMessage>[]> {
+    if (!Number.isInteger(limit) || limit <= 0) {
+      throw new Ably.ErrorInfo(
+        `unable to load older messages; limit must be a positive integer, got ${String(limit)}`,
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
     if (this._closed || this._loadingOlder) return [];
     this._loadingOlder = true;
     this._logger.trace('DefaultView.loadOlder();', { limit });

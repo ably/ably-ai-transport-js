@@ -34,6 +34,7 @@ import { createTree } from '../../../src/core/transport/tree.js';
 import type { ClientRun, ClientView, RunLifecycleEvent } from '../../../src/core/transport/types.js';
 import type { SendDelegate } from '../../../src/core/transport/view.js';
 import { createClientView } from '../../../src/core/transport/view.js';
+import { ErrorCode } from '../../../src/errors.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 import { makeFakeLoadUntil } from '../../helper/fake-load-until.js';
 import { makeHistoryCursor } from '../../helper/history-cursor.js';
@@ -1861,6 +1862,16 @@ describe('client view', () => {
   // -------------------------------------------------------------------------
 
   describe('loadOlder / hasOlder', () => {
+    it.each([
+      ['zero', 0],
+      ['negative', -1],
+      ['NaN', Number.NaN],
+      ['non-integer', 1.5],
+    ])('rejects a %s limit with InvalidArgument and never touches history', async (_label, limit) => {
+      await expect(view.loadOlder(limit)).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      expect(vi.mocked(loadHistoryPages)).not.toHaveBeenCalled();
+    });
+
     it('hasOlder is optimistically true until a loadOlder exhausts empty history', async () => {
       vi.mocked(loadHistoryPages).mockResolvedValueOnce(makeCursor([]));
       // Before any fetch the cursor is unopened, so exhaustion is unknown — the

@@ -197,6 +197,7 @@ export interface View<TMessage> {
    * {@link View.runs} and is event-scoped.
    * @param limit - Number of older codecMessages to reveal. Defaults to 10.
    * @returns The revealed codecMessages, oldest-first; `[]` when nothing older was revealed.
+   * @throws {Ably.ErrorInfo} `InvalidArgument` if `limit` is not a positive integer.
    */
   loadOlder(limit?: number): Promise<CodecMessage<TMessage>[]>;
 

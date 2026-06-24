@@ -513,30 +513,6 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
     const runNode = tree.getRunNode(runId);
     const messages: TMessage[] = [];
     for (const node of chain) {
-      // Drop every ancestor run that is not `complete` from the prompt
-      // (AIT-878). An incomplete run may hold an unresolved tool call —
-      // suspended mid-tool, terminated (cancelled/error) without resolving
-      // one, or still `active` while a long-running server-side tool executes
-      // (a server tool runs inline in streamText, so the run never suspends).
-      // Flattening such a run yields a dangling tool call with no matching
-      // result, which the model provider rejects. A dangling `active` run
-      // can't be told apart generically from a healthy still-streaming one, so
-      // we drop all non-`complete` ancestors; the cost is occasionally
-      // dropping a healthy in-flight or errored-with-text ancestor that
-      // carries no dangling call (a fidelity loss, never an invalid prompt).
-      // Real completed ancestors ARE `complete` here: the backward history
-      // walk folds a run's run-end (its newest wire) before the content the
-      // chain needs. The current run — the tail being produced or continued —
-      // is exempt: its own resolutions are overlaid before we prompt. Runs on
-      // every prompt build (initial inference and each continuation/resume),
-      // so a late re-walk can't reintroduce the run.
-      if (node.kind === 'run' && node.runId !== runId && node.state.status !== 'complete') {
-        this._logger?.debug('AgentView._collectConversation(); dropping incomplete ancestor run', {
-          runId: node.runId,
-          status: node.state.status,
-        });
-        continue;
-      }
       for (const m of this._codec.getMessages(node.projection)) {
         if (regenerateTarget !== undefined && m.codecMessageId === regenerateTarget) {
           return { messages, projection: runNode?.projection ?? this._codec.init() };

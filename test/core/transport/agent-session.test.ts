@@ -14,9 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   EVENT_CANCEL,
-  EVENT_RUN_END,
   EVENT_RUN_START,
-  EVENT_RUN_SUSPEND,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
@@ -26,7 +24,6 @@ import {
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_ID,
-  HEADER_RUN_REASON,
 } from '../../../src/constants.js';
 import type {
   ChannelWriter,
@@ -42,7 +39,6 @@ import type {
 } from '../../../src/core/codec/types.js';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
 import { createWireApplier } from '../../../src/core/transport/decode-fold.js';
-import { isRunLifecycleName, parseRunLifecycle } from '../../../src/core/transport/headers.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
@@ -2389,7 +2385,6 @@ describe('Run.messages', () => {
         makeContentMsg('run-2', 'a2', 's-06'),
         makeRunStartMsg('run-2', 'u2'),
         makeInputMsg('u2', 's-05', { parent: 'a1' }),
-        makeRunEndMsg('run-1', 'complete'),
         makeContentMsg('run-1', 'a1', 's-04'),
         makeRunStartMsg('run-1', 'u1'),
         makeInputMsg('u1', 's-02'),
@@ -2530,91 +2525,6 @@ const makeInputMsg = (
   } as unknown as Ably.InboundMessage;
 };
 
-/**
- * Build a synthetic ai-run-suspend wire for `runId`. Folds the run node to the
- * SUSPENDED state (the agent paused it awaiting a client tool resolution).
- * @param runId - The run to suspend.
- * @param serial - Optional serial override; defaults to `s-suspend-<runId>`.
- * @returns A synthetic inbound message mimicking an ai-run-suspend wire event.
- */
-const makeRunSuspendMsg = (runId: string, serial?: string): Ably.InboundMessage =>
-  ({
-    name: EVENT_RUN_SUSPEND,
-    serial: serial ?? `s-suspend-${runId}`,
-    extras: { ai: { transport: { [HEADER_RUN_ID]: runId } } },
-  }) as unknown as Ably.InboundMessage;
-
-/**
- * Build a synthetic ai-run-end wire for `runId` with a terminal reason. Folds
- * the run node to that terminal state (`complete` / `cancelled` / `error`).
- * @param runId - The run to end.
- * @param reason - The run-end reason stamped on the wire.
- * @param serial - Optional serial override; defaults to `s-end-<runId>`.
- * @returns A synthetic inbound message mimicking an ai-run-end wire event.
- */
-const makeRunEndMsg = (
-  runId: string,
-  reason: 'complete' | 'cancelled' | 'error',
-  serial?: string,
-): Ably.InboundMessage =>
-  ({
-    name: EVENT_RUN_END,
-    serial: serial ?? `s-end-${runId}`,
-    extras: { ai: { transport: { [HEADER_RUN_ID]: runId, [HEADER_RUN_REASON]: reason } } },
-  }) as unknown as Ably.InboundMessage;
-
-/**
- * AIT-878 fixture: reconstruct `run-2`'s prompt for the two-turn conversation
- * u1 → run-1 (a1) → u2 (parent=a1) → run-2 (current), with run-1's lifecycle
- * varied by `run1Lifecycle` (e.g. a suspend or run-end wire). Used to assert
- * whether run-1's assistant message `a1` survives into the prompt: a
- * suspended/cancelled/errored run-1 holds a dangling tool call and must be
- * dropped; an active/complete run-1 is kept.
- * @param run1Lifecycle - Extra run-1 lifecycle wires (newest-first), folded
- *   between `a1` and `u2`.
- * @returns The reconstructed conversation messages from `run-2.loadConversation()`.
- */
-const loadRun2WithRun1Lifecycle = async (run1Lifecycle: Ably.InboundMessage[]): Promise<TestMessage[]> => {
-  const ch = createMockChannel();
-  const codec = codecWithFunctionalDecoder();
-  // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
-  ch.history.mockImplementation(() => {
-    // Newest-first (Ably order); run-1's lifecycle sits between a1 and u2.
-    const items = [
-      makeRunStartMsg('run-2', 'u2'),
-      makeInputMsg('u2', 's-05', { parent: 'a1' }),
-      ...run1Lifecycle,
-      makeContentMsg('run-1', 'a1', 's-04'),
-      makeRunStartMsg('run-1', 'u1'),
-      makeInputMsg('u1', 's-02'),
-    ];
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
-    const page = { items, hasNext: () => false, next: () => Promise.resolve(page) };
-    return Promise.resolve(page);
-  });
-
-  const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
-    client: createMockClient(ch),
-    channelName: 'test-channel',
-    codec,
-    inputEventLookupTimeoutMs: 5000,
-  });
-  await session.connect();
-  const run = createRunFromOpts(session, { runId: 'run-2', invocationId: 'inv-2', inputEventId: 'p-u2' });
-  const startPromise = run.start();
-  deliverInputEvent(ch, {
-    invocationId: 'inv-2',
-    codecMessageId: 'u2',
-    serial: 's-05',
-    inputEventId: 'p-u2',
-    parent: 'a1',
-  });
-  await startPromise;
-  const history = await run.loadConversation();
-  await session.close();
-  return history;
-};
-
 // ---------------------------------------------------------------------------
 // Run.loadConversation
 // ---------------------------------------------------------------------------
@@ -2713,7 +2623,6 @@ describe('Run.loadConversation', () => {
       const items = [
         makeRunStartMsg('run-2', 'u2'),
         makeInputMsg('u2', 's-05', { parent: 'a1' }),
-        makeRunEndMsg('run-1', 'complete'),
         makeContentMsg('run-1', 'a1', 's-04'),
         makeRunStartMsg('run-1', 'u1'),
         makeInputMsg('u1', 's-02'),
@@ -2759,11 +2668,9 @@ describe('Run.loadConversation', () => {
       const items = [
         makeRunStartMsg('run-3', 'u3'),
         makeInputMsg('u3', 's-07', { parent: 'a2' }),
-        makeRunEndMsg('run-2', 'complete'),
         makeContentMsg('run-2', 'a2', 's-06'),
         makeRunStartMsg('run-2', 'u2'),
         makeInputMsg('u2', 's-05', { parent: 'a1' }),
-        makeRunEndMsg('run-1', 'complete'),
         makeContentMsg('run-1', 'a1', 's-04'),
         makeRunStartMsg('run-1', 'u1'),
         makeInputMsg('u1', 's-02'),
@@ -2801,101 +2708,6 @@ describe('Run.loadConversation', () => {
     await session.close();
   });
 
-  it('drops a SUSPENDED ancestor run from the prompt (the dangling client-tool case)', async () => {
-    expect(await loadRun2WithRun1Lifecycle([makeRunSuspendMsg('run-1')])).toEqual([
-      { id: 'u1', content: 'u1' },
-      { id: 'u2', content: 'u2' },
-    ]);
-  });
-
-  it('drops a CANCELLED ancestor run from the prompt', async () => {
-    expect(await loadRun2WithRun1Lifecycle([makeRunEndMsg('run-1', 'cancelled')])).toEqual([
-      { id: 'u1', content: 'u1' },
-      { id: 'u2', content: 'u2' },
-    ]);
-  });
-
-  it('drops an ERRORED ancestor run from the prompt (the poisoning cascade)', async () => {
-    expect(await loadRun2WithRun1Lifecycle([makeRunEndMsg('run-1', 'error')])).toEqual([
-      { id: 'u1', content: 'u1' },
-      { id: 'u2', content: 'u2' },
-    ]);
-  });
-
-  it('keeps a COMPLETE ancestor run — the filter is state-specific, not drop-all', async () => {
-    expect(await loadRun2WithRun1Lifecycle([makeRunEndMsg('run-1', 'complete')])).toEqual([
-      { id: 'u1', content: 'u1' },
-      { id: 'a1', content: 'a1' },
-      { id: 'u2', content: 'u2' },
-    ]);
-  });
-
-  it('drops an ACTIVE ancestor run (e.g. a server-side tool still executing)', async () => {
-    // No terminal/suspend wire for run-1, so it stays `active`. An ancestor run
-    // still mid server-tool-execution holds a dangling tool call — its assistant
-    // turn is incomplete — so only a run whose run-end folded it to `complete`
-    // contributes to the prompt. An active run is therefore dropped (only its
-    // input node survives).
-    expect(await loadRun2WithRun1Lifecycle([])).toEqual([
-      { id: 'u1', content: 'u1' },
-      { id: 'u2', content: 'u2' },
-    ]);
-  });
-
-  it('drops only the dangling run when one is sandwiched between healthy turns', async () => {
-    // u1 → run-1 (a1, COMPLETE) → u2 → run-2 (a2, SUSPENDED) → u3 → run-3 (current).
-    // The filter must drop run-2's a2 while keeping the complete run-1's a1 and
-    // every input node — i.e. keep walking the chain past the dropped run and
-    // retain healthy content on BOTH sides of it.
-    const ch = createMockChannel();
-    const codec = codecWithFunctionalDecoder();
-    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
-    ch.history.mockImplementation(() => {
-      // Newest-first; each run's terminal/suspend wire sits just after its content.
-      const items = [
-        makeRunStartMsg('run-3', 'u3'),
-        makeInputMsg('u3', 's-07', { parent: 'a2' }),
-        makeRunSuspendMsg('run-2'),
-        makeContentMsg('run-2', 'a2', 's-06'),
-        makeRunStartMsg('run-2', 'u2'),
-        makeInputMsg('u2', 's-05', { parent: 'a1' }),
-        makeRunEndMsg('run-1', 'complete'),
-        makeContentMsg('run-1', 'a1', 's-04'),
-        makeRunStartMsg('run-1', 'u1'),
-        makeInputMsg('u1', 's-02'),
-      ];
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
-      const page = { items, hasNext: () => false, next: () => Promise.resolve(page) };
-      return Promise.resolve(page);
-    });
-
-    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
-      client: createMockClient(ch),
-      channelName: 'test-channel',
-      codec,
-      inputEventLookupTimeoutMs: 5000,
-    });
-    await session.connect();
-    const run = createRunFromOpts(session, { runId: 'run-3', invocationId: 'inv-3', inputEventId: 'p-u3' });
-    const startPromise = run.start();
-    deliverInputEvent(ch, {
-      invocationId: 'inv-3',
-      codecMessageId: 'u3',
-      serial: 's-07',
-      inputEventId: 'p-u3',
-      parent: 'a2',
-    });
-    await startPromise;
-
-    expect(await run.loadConversation()).toEqual([
-      { id: 'u1', content: 'u1' },
-      { id: 'a1', content: 'a1' },
-      { id: 'u2', content: 'u2' },
-      { id: 'u3', content: 'u3' },
-    ]);
-    await session.close();
-  });
-
   it("maxRuns includes the bounding run's triggering input node, never starting assistant-first", async () => {
     // Regression: the bounded walk used to break immediately after the
     // maxRuns-th reply RunNode, dropping the input node above it — maxRuns: 1
@@ -2906,7 +2718,6 @@ describe('Run.loadConversation', () => {
     const page: Ably.InboundMessage[] = [
       makeRunStartMsg('run-3', 'u3'),
       makeInputMsg('u3', 's-07', { parent: 'a2' }),
-      makeRunEndMsg('run-2', 'complete'),
       makeContentMsg('run-2', 'a2', 's-06'),
       makeRunStartMsg('run-2', 'u2'),
       makeInputMsg('u2', 's-05', { parent: 'a1' }),
@@ -3018,7 +2829,6 @@ describe('Run.loadConversation', () => {
     ch.history.mockImplementation(() => {
       const items = [
         makeRunStartMsg('run-2', 'tc1', { regenerates: 'tt1' }),
-        makeRunEndMsg('run-1', 'complete'),
         makeContentMsg('run-1', 'tt1', 's-04'),
         makeContentMsg('run-1', 'tc1', 's-03'),
         makeRunStartMsg('run-1', 'u1'),
@@ -3084,7 +2894,6 @@ describe('Run.loadConversation', () => {
         makeContentMsg('run-2', 'a2', 's-06'),
         makeRunStartMsg('run-2', 'u2'),
         makeInputMsg('u2', 's-05', { parent: 'a1' }),
-        makeRunEndMsg('run-1', 'complete'),
         makeContentMsg('run-1', 'a1', 's-04'),
         makeRunStartMsg('run-1', 'u1'),
         makeInputMsg('u1', 's-02'),
@@ -3142,12 +2951,7 @@ describe('Run.loadConversation', () => {
     // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
     ch.history.mockImplementation(() => {
       // History has turn-1 only; the live-delivered u2 is not yet indexed.
-      const items = [
-        makeRunEndMsg('run-1', 'complete'),
-        makeContentMsg('run-1', 'a1', 's-04'),
-        makeRunStartMsg('run-1', 'u1'),
-        makeInputMsg('u1', 's-02'),
-      ];
+      const items = [makeContentMsg('run-1', 'a1', 's-04'), makeRunStartMsg('run-1', 'u1'), makeInputMsg('u1', 's-02')];
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
       const page = { items, hasNext: () => false, next: () => Promise.resolve(page) };
       return Promise.resolve(page);
@@ -3330,12 +3134,20 @@ const viewMessageIds = (wiresOldestFirst: Ably.InboundMessage[]): string[] => {
   );
   const decoder = codec.createDecoder();
   for (const wire of wiresOldestFirst) {
-    // Lifecycle wires (run-start / suspend / resume / end) carry no codec
-    // content — parse and apply them as run lifecycle so the Tree backfills run
-    // structural metadata and terminal state, exactly as the live path does.
-    if (isRunLifecycleName(wire.name)) {
-      const event = parseRunLifecycle(wire.name, transportHeadersOf(wire), wire.serial, wire.timestamp);
-      if (event) tree.applyRunLifecycle(event);
+    // Lifecycle wires carry no codec content — apply them as run lifecycle so
+    // the Tree backfills run structural metadata, exactly as the live path does.
+    if (wire.name === EVENT_RUN_START) {
+      const h = transportHeadersOf(wire);
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: h[HEADER_RUN_ID] ?? '',
+        clientId: '',
+        serial: wire.serial,
+        invocationId: h[HEADER_INVOCATION_ID] ?? '',
+        parent: h[HEADER_PARENT],
+        forkOf: h[HEADER_FORK_OF],
+        regenerates: h[HEADER_MSG_REGENERATE],
+      });
       continue;
     }
     const decoded = decoder.decode(wire);
@@ -3377,7 +3189,6 @@ describe('agent loadConversation ≡ client View.getMessages (cross-engine equiv
       makeContentMsg('run-2', 'a2', 's-06'),
       makeRunStartMsg('run-2', 'u2', { serial: 's-055' }),
       makeInputMsg('u2', 's-05', { parent: 'a1' }),
-      makeRunEndMsg('run-1', 'complete', 's-045'),
       makeContentMsg('run-1', 'a1', 's-04'),
       makeRunStartMsg('run-1', 'u1', { serial: 's-03' }),
       makeInputMsg('u1', 's-02'),
@@ -3419,11 +3230,9 @@ describe('agent loadConversation ≡ client View.getMessages (cross-engine equiv
       makeContentMsg('run-3', 'a3', 's-08'),
       makeRunStartMsg('run-3', 'u3', { serial: 's-075' }),
       makeInputMsg('u3', 's-07', { parent: 'a2' }),
-      makeRunEndMsg('run-2', 'complete', 's-065'),
       makeContentMsg('run-2', 'a2', 's-06'),
       makeRunStartMsg('run-2', 'u2', { serial: 's-055' }),
       makeInputMsg('u2', 's-05', { parent: 'a1' }),
-      makeRunEndMsg('run-1', 'complete', 's-045'),
       makeContentMsg('run-1', 'a1', 's-04'),
       makeRunStartMsg('run-1', 'u1', { serial: 's-03' }),
       makeInputMsg('u1', 's-02'),
@@ -3522,13 +3331,11 @@ describe('Run.loadConversation concurrency + continuity-loss', () => {
       makeContentMsg('run-3', 'a3', 's-08'),
       makeRunStartMsg('run-3', 'u3', { serial: 's-075' }),
       makeInputMsg('u3', 's-07', { parent: 'a2' }),
-      makeRunEndMsg('run-2', 'complete', 's-065'),
       makeContentMsg('run-2', 'a2', 's-06'),
       makeRunStartMsg('run-2', 'u2', { serial: 's-055' }),
       makeInputMsg('u2', 's-05', { parent: 'a1' }),
     ];
     const page2: Ably.InboundMessage[] = [
-      makeRunEndMsg('run-1', 'complete', 's-045'),
       makeContentMsg('run-1', 'a1', 's-04'),
       makeRunStartMsg('run-1', 'u1', { serial: 's-03' }),
       makeInputMsg('u1', 's-02'),
@@ -3601,7 +3408,6 @@ describe('Run.loadConversation concurrency + continuity-loss', () => {
       makeContentMsg('run-2', 'a2', 's-04'),
       makeRunStartMsg('run-2', 'u2', { serial: 's-035' }),
       makeInputMsg('u2', 's-03', { parent: 'a1' }),
-      makeRunEndMsg('run-1', 'complete', 's-025'),
       makeContentMsg('run-1', 'a1', 's-02'),
       makeRunStartMsg('run-1', 'u1', { serial: 's-015' }),
       makeInputMsg('u1', 's-01'),
@@ -3892,12 +3698,7 @@ describe('Run.loadConversation history failure + exhaustion', () => {
     const page1 = [triggerWire];
     // Page 2 (older) holds the deeper ancestor turn u0 → a0 that the trigger
     // chains onto; loadConversation must reach it to hit the conversation root.
-    const page2 = [
-      makeRunEndMsg('run-0', 'complete', 's-0025'),
-      makeContentMsg('run-0', 'a0', 's-002'),
-      makeRunStartMsg('run-0', 'u0'),
-      makeInputMsg('u0', 's-001'),
-    ];
+    const page2 = [makeContentMsg('run-0', 'a0', 's-002'), makeRunStartMsg('run-0', 'u0'), makeInputMsg('u0', 's-001')];
     // eslint-disable-next-line @typescript-eslint/no-misused-promises -- mock returns Promise directly
     ch.history.mockImplementation(multiPageHistory([page1, page2]));
 

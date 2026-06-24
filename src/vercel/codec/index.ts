@@ -22,7 +22,7 @@ import { createVercelDecodeLifecycle } from './decode-lifecycle.js';
 import type { VercelInput, VercelOutput } from './events.js';
 import { inputs } from './inputs.js';
 import { outputs } from './outputs.js';
-import { fold, getMessages, init } from './reducer.js';
+import { fold, getMessages, init, isPromptSafe } from './reducer.js';
 
 /**
  * Vercel AI SDK codec implementing
@@ -32,7 +32,7 @@ import { fold, getMessages, init } from './reducer.js';
 export const UIMessageCodec = defineCodec<VercelInput, VercelOutput>()({
   // Spec: AIT-CT1a3, AIT-ST1a3 — registers this codec as an Ably agent.
   adapterTag: 'vercel-ai-sdk-ui-message',
-  reducer: { init, fold, getMessages },
+  reducer: { init, fold, getMessages, isPromptSafe },
   output: outputs,
   input: inputs,
   decodeLifecycle: createVercelDecodeLifecycle,

@@ -513,6 +513,22 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
     const runNode = tree.getRunNode(runId);
     const messages: TMessage[] = [];
     for (const node of chain) {
+      // Omit an ancestor run whose projection isn't prompt-safe (AIT-878): the
+      // codec reports unresolved work — for the Vercel codec, an assistant tool
+      // call with no matching result — which the model provider would reject as
+      // a dangling tool call. Checked by projection content, not run state, so
+      // it catches a run still `active` while a server-side tool executes as
+      // well as a suspended/terminated one. The current run (the tail being
+      // produced or continued) is exempt: its own resolutions are applied
+      // before we prompt. Runs on every prompt build (initial inference and
+      // each continuation/resume), so a late re-walk can't reintroduce the run.
+      // A codec without isPromptSafe treats every projection as safe (no-op).
+      if (node.kind === 'run' && node.runId !== runId && this._codec.isPromptSafe?.(node.projection) === false) {
+        this._logger?.debug('AgentView._collectConversation(); omitting prompt-unsafe ancestor run', {
+          runId: node.runId,
+        });
+        continue;
+      }
       for (const m of this._codec.getMessages(node.projection)) {
         if (regenerateTarget !== undefined && m.codecMessageId === regenerateTarget) {
           return { messages, projection: runNode?.projection ?? this._codec.init() };

@@ -34,6 +34,7 @@
 import type * as AI from 'ai';
 
 import type { CodecEvent, CodecMessage, ReducerMeta } from '../../core/codec/index.js';
+import { isUnresolvedToolPart } from '../tool-part.js';
 import type { VercelInput, VercelOutput } from './events.js';
 import { foldContentPart } from './fold-content.js';
 import { foldDataPart } from './fold-data.js';
@@ -187,5 +188,22 @@ const foldChunk = (state: VercelProjection, chunk: VercelOutput, meta: ReducerMe
  * @returns The visible messages with their codec-message-ids, in publication order.
  */
 export const getMessages = (projection: VercelProjection): CodecMessage<AI.UIMessage>[] => projection.messages;
+
+// ---------------------------------------------------------------------------
+// isPromptSafe
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether the projection can be flattened into an LLM prompt without producing
+ * a dangling tool call (see {@link Codec.isPromptSafe}). False when any message
+ * holds an unresolved tool call ({@link isUnresolvedToolPart}) — a `tool_use`
+ * with no matching result, which the provider rejects; true otherwise (text
+ * only, or resolved tool calls). The "unresolved" definition is shared with the
+ * client-side fork-on-unresolved-tool gate so the two can't drift.
+ * @param projection - Projection produced by `init` + repeated `fold` calls.
+ * @returns True if the projection holds no unresolved tool call.
+ */
+export const isPromptSafe = (projection: VercelProjection): boolean =>
+  !projection.messages.some(({ message }) => message.parts.some((p) => isUnresolvedToolPart(p)));
 
 export { init, type VercelProjection } from './reducer-state.js';

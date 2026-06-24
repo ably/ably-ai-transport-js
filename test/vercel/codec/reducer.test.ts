@@ -13,7 +13,13 @@ import { describe, expect, it } from 'vitest';
 import type { ReducerMeta } from '../../../src/core/codec/types.js';
 import type { VercelInput, VercelOutput } from '../../../src/vercel/codec/events.js';
 import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
-import { fold as foldEvent, getMessages, init, type VercelProjection } from '../../../src/vercel/codec/reducer.js';
+import {
+  fold as foldEvent,
+  getMessages,
+  init,
+  isPromptSafe,
+  type VercelProjection,
+} from '../../../src/vercel/codec/reducer.js';
 
 const meta = (serial: string, messageId?: string): ReducerMeta =>
   messageId === undefined ? { serial } : { serial, messageId };
@@ -103,6 +109,49 @@ describe('Vercel reducer', () => {
       const msg: AI.UIMessage = { id: 'm-1', role: 'user', parts: [{ type: 'text', text: 'hi' }] };
       state.messages.push({ codecMessageId: 'cm-1', message: msg });
       expect(getMessages(state)).toEqual([{ codecMessageId: 'cm-1', message: msg }]);
+    });
+  });
+
+  // -- isPromptSafe --------------------------------------------------------
+
+  describe('isPromptSafe', () => {
+    it('is true for an empty projection', () => {
+      expect(isPromptSafe(init())).toBe(true);
+    });
+
+    it('is true for a text-only message (no tool calls)', () => {
+      let state = init();
+      state = fold(state, { type: 'text-start', id: 't-1' }, meta('s1', 'msg-1'));
+      state = fold(state, { type: 'text-delta', id: 't-1', delta: 'hello' }, meta('s2', 'msg-1'));
+      expect(isPromptSafe(state)).toBe(true);
+    });
+
+    it('is FALSE while a tool call sits in input-available (unresolved, emits a dangling tool_use)', () => {
+      expect(isPromptSafe(seedToolCall('tc-1', 'msg-1'))).toBe(false);
+    });
+
+    it('is true once the tool call resolves to output-available', () => {
+      let state = seedToolCall('tc-1', 'msg-1');
+      state = fold(
+        state,
+        { type: 'tool-output-available', toolCallId: 'tc-1', output: { ok: true }, dynamic: true },
+        meta('s2', 'msg-1'),
+      );
+      expect(isPromptSafe(state)).toBe(true);
+    });
+
+    it('is FALSE while a tool input is still streaming (unresolved at source)', () => {
+      // tool-input-start without a following tool-input-available leaves the
+      // part in `input-streaming`. Treated as unresolved rather than relying on
+      // convertToModelMessages dropping it — keeping the definition aligned with
+      // the client-side fork gate (see UNRESOLVED_TOOL_STATES).
+      let state = init();
+      state = fold(
+        state,
+        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'echo', dynamic: true },
+        meta('s1', 'msg-1'),
+      );
+      expect(isPromptSafe(state)).toBe(false);
     });
   });
 

@@ -39,7 +39,7 @@ import { LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
 import { UIMessageCodec } from '../codec/index.js';
-import { isToolPart, type ToolPart } from '../tool-part.js';
+import { isToolPart, isUnresolvedToolPart, type ToolPart, UNRESOLVED_TOOL_STATES } from '../tool-part.js';
 import { createRunOutputStream } from './run-output-stream.js';
 
 // ---------------------------------------------------------------------------
@@ -241,19 +241,7 @@ const wrapStreamWithDone = <T>(
  *   dangling tool call to the LLM.
  */
 const hasUnresolvedToolCall = (msg: AI.UIMessage): boolean =>
-  msg.role === 'assistant' &&
-  msg.parts.some(
-    (p) =>
-      isToolPart(p) &&
-      (p.state === 'input-streaming' || p.state === 'input-available' || p.state === 'approval-requested'),
-  );
-
-/**
- * `dynamic-tool` part states that mean "the LLM produced a tool call and
- * is waiting on it". Used to detect new client-side resolutions in the
- * useChat overlay relative to the tree.
- */
-const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'approval-requested']);
+  msg.role === 'assistant' && msg.parts.some((p) => isUnresolvedToolPart(p));
 
 /**
  * Walk the useChat message overlay against the session tree and synthesize

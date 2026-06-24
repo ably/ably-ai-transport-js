@@ -520,6 +520,47 @@ export const createChatTransport = (
       parent = findPredecessorCodecId(codecMessages, forkSourceDomainId);
     }
 
+    // TEMPORARY (AIT-878 debug): snapshot what the fork gate saw at send time,
+    // alongside the live view tail, to distinguish the three hypotheses for why
+    // a follow-up parents onto a dangling assistant without forking:
+    //   - at(-2) is the assistant but TEXT-ONLY  → preamble-window race
+    //     (the tool call had not streamed yet anywhere).
+    //   - at(-2) is the assistant WITH an input-available tool part, yet no
+    //     fork fired                              → gate bug, look closer.
+    //   - at(-2) is a user message / the assistant is absent, while the view
+    //     tail IS the assistant                   → useChat sync-lag skew.
+    // Remove before committing.
+    {
+      const summariseToolParts = (m: AI.UIMessage | undefined): { toolName: string; state: string }[] =>
+        m?.parts.filter(isToolPart).map((p) => ({ toolName: 'toolName' in p ? p.toolName : p.type, state: p.state })) ??
+        [];
+      const viewTail = codecMessages.at(-1);
+      console.dir(
+        {
+          tag: 'AIT-878 fork-gate',
+          trigger,
+          messageId,
+          isContinuation,
+          forkFired: forkSourceDomainId !== undefined,
+          forkOf,
+          parent,
+          optsMessagesRoles: messages.map((m) => m.role),
+          precedingMessageAtMinus2: precedingMessage
+            ? { id: precedingMessage.id, role: precedingMessage.role, toolParts: summariseToolParts(precedingMessage) }
+            : undefined,
+          viewTail: viewTail
+            ? {
+                codecMessageId: viewTail.codecMessageId,
+                id: viewTail.message.id,
+                role: viewTail.message.role,
+                toolParts: summariseToolParts(viewTail.message),
+              }
+            : undefined,
+        },
+        { depth: Infinity },
+      );
+    }
+
     let sendBody: Record<string, unknown>;
     let sendHeaders: Record<string, string> | undefined;
 

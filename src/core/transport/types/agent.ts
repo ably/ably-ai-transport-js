@@ -55,24 +55,6 @@ export interface AgentSessionOptions<
   inputEventLookupTimeoutMs?: number;
 
   /**
-   * How far back in time `Run.start()` scans channel history for the
-   * triggering input event. Implements the lookback bound for the
-   * input-event scan — anything older than `Date.now() - inputEventLookbackMs`
-   * is treated as outside the lookup window.
-   *
-   * History is fetched with `untilAttach: true` so the scan composes
-   * with the live subscription by serial boundary — together they cover
-   * every message within `inputEventLookbackMs` of attach.
-   *
-   * Increase this for long-suspended runs whose continuation may arrive
-   * many minutes after the original publish. Decrease it for stricter
-   * recency.
-   *
-   * Default: 120000 (2 minutes).
-   */
-  inputEventLookbackMs?: number;
-
-  /**
    * Extra Ably channel modes to request on the session's channel, on top of the
    * modes AI Transport always needs. Pass `OBJECT_MODES` (or
    * `['OBJECT_SUBSCRIBE', 'OBJECT_PUBLISH']`) to use Ably LiveObjects via

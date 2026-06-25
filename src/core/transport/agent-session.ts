@@ -33,6 +33,8 @@ import { type AgentView, createAgentView } from './agent-view.js';
 import { readCancelTarget } from './cancel-envelope.js';
 import { foldAndEmit, type WireApplier } from './decode-fold.js';
 import { buildTransportHeaders } from './headers.js';
+import { createHistoryHydrator, type HistoryHydrator } from './history-hydrator.js';
+import { locateInputEvent } from './input-event-locator.js';
 import { evictOldestIfFull } from './internal/bounded-map.js';
 import { Invocation } from './invocation.js';
 import { createMaterialisation } from './materialisation.js';
@@ -153,16 +155,21 @@ class DefaultAgentSession<
    */
   private _applier: WireApplier;
   /**
-   * Internal server-side view: input-event lookup + conversation loading over
-   * the session Tree. Holds the Tree/applier directly (like the client's
-   * DefaultView), so it is RECREATED — not mutated — when the Tree is swapped
-   * on continuity loss.
+   * The shared channel-history paging engine, bound to the current Tree/applier.
+   * Drives both the pre-run-start input-event lookup ({@link locateInputEvent})
+   * and the AgentView's ancestor hydration off ONE single-flight cursor.
+   * Recreated alongside the Tree/applier on continuity loss so the fresh Tree
+   * gets a fresh cursor and exhaustion state.
+   */
+  private _hydrator: HistoryHydrator;
+  /**
+   * Internal server-side view: conversation loading over the session Tree.
+   * Reads the Tree and drives the hydrator, so it is RECREATED — not mutated —
+   * when the Tree/hydrator are swapped on continuity loss.
    */
   private _agentView: AgentView<TInput, TOutput, TProjection, TMessage>;
   private readonly _channelListener: (msg: Ably.InboundMessage) => void;
   private readonly _inputEventLookupTimeoutMs: number;
-  /** Lookback bound passed to the AgentView's input-event scan (see {@link _createAgentView}). */
-  private readonly _inputEventLookbackMs: number;
 
   private _state = SessionState.READY;
   private _connectPromise: Promise<void> | undefined;
@@ -184,10 +191,10 @@ class DefaultAgentSession<
     this._onError = options.onError;
     this._runManager = createRunManager(this._channel, this._logger);
     this._inputEventLookupTimeoutMs = options.inputEventLookupTimeoutMs ?? 30000;
-    this._inputEventLookbackMs = options.inputEventLookbackMs ?? 120_000;
     const { tree, applier } = createMaterialisation(this._codec, this._logger);
     this._tree = tree;
     this._applier = applier;
+    this._hydrator = this._createHydrator();
     this._agentView = this._createAgentView();
 
     this._channelListener = (msg: Ably.InboundMessage) => {
@@ -211,20 +218,33 @@ class DefaultAgentSession<
   }
 
   /**
-   * Build an AgentView bound to the session's CURRENT Tree + applier. Called at
-   * construction and again after a continuity-loss swap — the AgentView holds
-   * the Tree/applier directly (like DefaultView), so a swap recreates it rather
-   * than mutating it in place.
-   * @returns A fresh AgentView over the current Tree/applier.
+   * Build a HistoryHydrator over the session's CURRENT Tree + applier. Called at
+   * construction and again after a continuity-loss swap so the fresh Tree gets a
+   * fresh single-flight cursor and exhaustion state.
+   * @returns A fresh hydrator over the current Tree/applier.
+   */
+  private _createHydrator(): HistoryHydrator {
+    return createHistoryHydrator({
+      channel: this._channel,
+      tree: this._tree,
+      applier: this._applier,
+      logger: this._logger,
+    });
+  }
+
+  /**
+   * Build an AgentView bound to the session's CURRENT Tree + hydrator. Called at
+   * construction and again after a continuity-loss swap — the AgentView reads the
+   * Tree and drives the hydrator, so a swap recreates it rather than mutating it
+   * in place.
+   * @returns A fresh AgentView over the current Tree/hydrator.
    */
   private _createAgentView(): AgentView<TInput, TOutput, TProjection, TMessage> {
     return createAgentView<TInput, TOutput, TProjection, TMessage>({
       tree: this._tree,
-      channel: this._channel,
       codec: this._codec,
-      applier: this._applier,
+      hydrator: this._hydrator,
       logger: this._logger,
-      inputEventLookbackMs: this._inputEventLookbackMs,
     });
   }
 
@@ -456,7 +476,7 @@ class DefaultAgentSession<
     const continuityErr = continuityLostError(stateChange, 'continue');
 
     // Abort every active run's controller FIRST so in-flight
-    // `loadConversation` / `findInputEvent` calls observe the abort before
+    // `loadConversation` / `locateInputEvent` calls observe the abort before
     // the Tree changes underneath them and reject (InvalidArgument from their
     // signal checks; the session-level onError carries ChannelContinuityLost).
     for (const reg of this._registeredRuns.values()) {
@@ -470,8 +490,9 @@ class DefaultAgentSession<
     const { tree, applier } = createMaterialisation(this._codec, this._logger);
     this._tree = tree;
     this._applier = applier;
-    // The AgentView holds the Tree/applier directly, so rebuild it against the
-    // fresh pair — this also resets its cursor and exhaustion state.
+    // Rebuild the hydrator against the fresh Tree/applier — this resets its
+    // cursor and exhaustion state — then the AgentView against the fresh pair.
+    this._hydrator = this._createHydrator();
     this._agentView = this._createAgentView();
 
     // Session-level notification: continuity loss is not scoped to any one
@@ -490,10 +511,10 @@ class DefaultAgentSession<
    * applier decodes the message and applies the result to the Tree (or
    * routes lifecycle messages through `applyRunLifecycle`);
    * `emitAblyMessage` notifies Tree subscribers AND populates the event-id
-   * index used by the AgentView's input-event lookup.
+   * index the input-event lookup ({@link locateInputEvent}) reads.
    *
    * A message that surfaces via more than one path (the live listener and
-   * the AgentView's history walk) does not
+   * the hydrator's history walk) does not
    * double-fold: the shared decoder's version-guarded trackers drop
    * re-delivered stream content, and the Tree's per-entry `decodedThrough`
    * high-water-mark drops whole-wire replays (including stateless discrete
@@ -603,9 +624,11 @@ class DefaultAgentSession<
     const runIdByInputCodecMessageId = this._runIdByInputCodecMessageId;
     const deferredCancels = this._deferredCancels;
     const requireConnected = this._requireConnected.bind(this);
-    // Live accessor (not a captured ref): a continuity-loss swap recreates the
-    // AgentView, and reads after the swap must observe the fresh instance.
+    // Live accessors (not captured refs): a continuity-loss swap recreates the
+    // AgentView and hydrator, and reads after the swap must observe the fresh
+    // instances.
     const getAgentView = (): AgentView<TInput, TOutput, TProjection, TMessage> => this._agentView;
+    const getHydrator = (): HistoryHydrator => this._hydrator;
     const pullDeferredCancel = this._pullDeferredCancel.bind(this);
     const inputEventId = invocation.inputEventId;
 
@@ -759,12 +782,15 @@ class DefaultAgentSession<
         // when no inputEventId is set (invocation requires no channel lookup).
         if (inputEventId && inputEventLookupTimeoutMs > 0) {
           try {
-            const found = await getAgentView().findInputEvent({
+            const found = await locateInputEvent({
+              tree: getTree(),
+              hydrator: getHydrator(),
               invocationId,
               runId,
               expectedEventId: inputEventId,
               timeoutMs: inputEventLookupTimeoutMs,
               signal,
+              logger,
             });
             if (found.headers !== undefined) lookupHeaders = found.headers;
             if (found.clientId !== undefined) resolvedInputClientId = found.clientId;

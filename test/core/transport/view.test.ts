@@ -23,9 +23,9 @@ import { Invocation } from '../../../src/core/transport/invocation.js';
 import { type HistoryPagesCursor, loadHistoryPages } from '../../../src/core/transport/load-history-pages.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
-import type { ActiveRun, RunLifecycleEvent } from '../../../src/core/transport/types.js';
+import type { ActiveRun, ClientView, RunLifecycleEvent } from '../../../src/core/transport/types.js';
 import type { SendDelegate } from '../../../src/core/transport/view.js';
-import { DefaultView } from '../../../src/core/transport/view.js';
+import { createClientView } from '../../../src/core/transport/view.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 import { makeHistoryCursor } from '../../helper/history-cursor.js';
 
@@ -321,9 +321,9 @@ const lifecycleWire = (name: string, runId: string, serial: string, reason?: str
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('DefaultView', () => {
+describe('client view', () => {
   let tree: DefaultTree<TestInput, TestOutput, TestProjection>;
-  let view: DefaultView<TestInput, TestOutput, TestProjection, TestMessage>;
+  let view: ClientView<TestInput, TestMessage>;
   let sendDelegate: SendDelegate<TestInput>;
   let codec: Codec<TestInput, TestOutput, TestProjection, TestMessage>;
 
@@ -351,12 +351,10 @@ describe('DefaultView', () => {
    * Build a View over the shared tree with a hydrator bound around `decoder`
    * (defaults to the test codec's no-op decoder).
    * @param decoder - Optional decoder to bind into the View's hydrator.
-   * @returns A new DefaultView over the shared tree.
+   * @returns A new client view over the shared tree.
    */
-  const makeView = (
-    decoder?: Decoder<TestInput, TestOutput>,
-  ): DefaultView<TestInput, TestOutput, TestProjection, TestMessage> =>
-    new DefaultView({
+  const makeView = (decoder?: Decoder<TestInput, TestOutput>): ClientView<TestInput, TestMessage> =>
+    createClientView({
       tree,
       codec,
       hydrator: makeHydrator(tree, decoder),
@@ -800,9 +798,9 @@ describe('DefaultView', () => {
     /**
      * Create a fresh view AFTER seeding so the View walks an already-populated
      * tree (no pin-on-external-fork behavior).
-     * @returns A new DefaultView observing the already-seeded tree.
+     * @returns A new client view observing the already-seeded tree.
      */
-    const freshViewAfterSeed = (): DefaultView<TestInput, TestOutput, TestProjection, TestMessage> => {
+    const freshViewAfterSeed = (): ClientView<TestInput, TestMessage> => {
       seedFork();
       return makeView();
     };
@@ -1703,7 +1701,7 @@ describe('DefaultView', () => {
       noopCodec.getMessages = (p) => p.messages.map((m) => ({ codecMessageId: m.id, message: m }));
 
       const noopTree = createTree<TestInput, TestOutput, TestProjection>(noopCodec, silentLogger);
-      const noopView = new DefaultView({
+      const noopView = createClientView({
         tree: noopTree,
         codec: noopCodec,
         hydrator: makeHydrator(noopTree, noopCodec.createDecoder()),
@@ -1741,7 +1739,7 @@ describe('DefaultView', () => {
   // -------------------------------------------------------------------------
 
   describe('multi-view', () => {
-    let viewB: DefaultView<TestInput, TestOutput, TestProjection, TestMessage>;
+    let viewB: ClientView<TestInput, TestMessage>;
 
     beforeEach(() => {
       viewB = makeView();
@@ -2194,7 +2192,7 @@ describe('DefaultView', () => {
 
     it('invokes onClose hook', () => {
       const onClose = vi.fn();
-      const v = new DefaultView({
+      const v = createClientView({
         tree,
         codec,
         hydrator: makeHydrator(tree),
@@ -2227,7 +2225,7 @@ describe('DefaultView', () => {
 
     it('is idempotent: double close does not throw and onClose fires once', () => {
       const onClose = vi.fn();
-      const v = new DefaultView({
+      const v = createClientView({
         tree,
         codec,
         hydrator: makeHydrator(tree),

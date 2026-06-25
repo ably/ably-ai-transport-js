@@ -19,7 +19,7 @@ import {
   HEADER_RUN_ID,
 } from '../../../src/constants.js';
 import type { CodecInputEvent, Decoder } from '../../../src/core/codec/types.js';
-import { createWireApplier } from '../../../src/core/transport/decode-fold.js';
+import { createWireApplier, foldAndEmit } from '../../../src/core/transport/decode-fold.js';
 import type { TreeInternal } from '../../../src/core/transport/tree.js';
 
 // ---------------------------------------------------------------------------
@@ -189,5 +189,46 @@ describe('WireApplier', () => {
       msg({ name: EVENT_RUN_START, headers: { [HEADER_RUN_ID]: 'R1' } }),
     );
     expect(tree.emitAblyMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('foldAndEmit', () => {
+  it('applies the wire then emits ably-message, in that order', () => {
+    const tree = makeTree();
+    const calls: string[] = [];
+    tree.applyMessage.mockImplementation(() => calls.push('apply'));
+    tree.emitAblyMessage.mockImplementation(() => calls.push('emit'));
+
+    const wire = msg({ headers: { [HEADER_RUN_ID]: 'R1' } });
+    foldAndEmit(createWireApplier(asTree(tree), makeDecoder([], [])), asTree(tree), wire);
+
+    // The emit must run after the apply so a subscriber resolving the owning
+    // node sees the freshly-folded Tree.
+    expect(calls).toEqual(['apply', 'emit']);
+    expect(tree.emitAblyMessage).toHaveBeenCalledWith(wire);
+  });
+
+  it('applies a run-lifecycle wire to the tree and emits it', () => {
+    const tree = makeTree();
+    foldAndEmit(
+      createWireApplier(asTree(tree), makeDecoder([], [])),
+      asTree(tree),
+      msg({ name: EVENT_RUN_START, headers: { [HEADER_RUN_ID]: 'R1' } }),
+    );
+
+    expect(tree.applyRunLifecycle).toHaveBeenCalledWith(expect.objectContaining({ type: 'start', runId: 'R1' }));
+    expect(tree.emitAblyMessage).toHaveBeenCalledOnce();
+  });
+
+  it('applies a codec-decoded wire to the tree and emits it', () => {
+    const tree = makeTree();
+    foldAndEmit(
+      createWireApplier(asTree(tree), makeDecoder([], [{ type: 'out' }])),
+      asTree(tree),
+      msg({ headers: { [HEADER_RUN_ID]: 'R1' } }),
+    );
+
+    expect(tree.applyMessage).toHaveBeenCalledOnce();
+    expect(tree.emitAblyMessage).toHaveBeenCalledOnce();
   });
 });

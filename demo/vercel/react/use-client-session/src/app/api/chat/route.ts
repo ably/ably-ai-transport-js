@@ -35,9 +35,8 @@ export async function POST(req: Request) {
 
   // A fresh Ably client per request. The agent is ephemeral: it attaches the
   // channel, looks up the triggering input event via `untilAttach: true`
-  // history (scoped by `inputEventLookbackMs`), streams the response, and
-  // closes. A per-request client keeps concurrent runs on the same channel
-  // from detaching each other.
+  // history, streams the response, and closes. A per-request client keeps
+  // concurrent runs on the same channel from detaching each other.
   // `ABLY_ENDPOINT` lets the e2e tests point the agent at the Ably sandbox
   // (`nonprod:sandbox`); unset in normal use, so it defaults to production.
   const ably = new Ably.Realtime({

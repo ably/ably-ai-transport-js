@@ -44,8 +44,8 @@ export interface AgentSessionOptions<
   onError?: (error: Ably.ErrorInfo) => void;
 
   /**
-   * How long `Run.start()` will wait for the input event(s) tagged with
-   * the run's `invocationId` to arrive on the channel — across both the
+   * How long `Run.start()` will wait for the triggering input event
+   * (`invocation.inputEventId`) to arrive on the channel — across both the
    * post-attach live subscription and the bounded history scan — before
    * rejecting with `InputEventNotFound`. The rejection bubbles up to the
    * developer's HTTP handler, which should surface it as a non-2xx response
@@ -208,16 +208,17 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
 // ---------------------------------------------------------------------------
 
 /**
- * Read-only view exposed on a {@link Run} of the conversation messages
+ * Read-only view exposed on a {@link Run} of the triggering input message
  * this run was created with.
  *
  * TODO(AIT-771): when the agent rebuilds full conversation history from
  * the channel, this should expose `RunNode[]`-shaped data to match the
- * client side. Today it carries the flat input messages handed to the
- * invocation.
+ * client side. Today it carries the messages of the single triggering input
+ * node (a user prompt is one message; the array shape mirrors
+ * {@link Codec.getMessages}).
  */
 export interface RunView<TMessage> {
-  /** Invocation input messages handed to this run; no branch awareness today. */
+  /** The triggering input node's messages; no branch awareness today. */
   readonly messages: MessageNode<TMessage>[];
 }
 

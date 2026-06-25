@@ -625,8 +625,8 @@ class DefaultAgentSession<
     const pullDeferredCancel = this._pullDeferredCancel.bind(this);
     const inputEventId = invocation.inputEventId;
 
-    // Per-run metadata resolved from the input-event lookup result. The first
-    // matched message message's headers carry the run's `clientId`, `parent`, and
+    // Per-run metadata resolved from the input-event lookup result. The matched
+    // input event's headers carry the run's `clientId`, `parent`, and
     // `forkOf`, and — for a continuation — the `run-id` it re-enters (a fresh
     // input carries none; the client stamps a run-id only when re-entering a
     // run it already knows). Its Ably-level publisher `clientId` becomes the
@@ -638,7 +638,7 @@ class DefaultAgentSession<
     let resolvedRegenerates: string | undefined;
     let resolvedInputCodecMessageId: string | undefined;
     let resolvedContinuation = false;
-    let firstLookupHeaders: Record<string, string> | undefined;
+    let lookupHeaders: Record<string, string> | undefined;
 
     // `Run.view.messages` is a LIVE read against the session's Tree:
     // returns the trigger node's currently-folded messages, reflecting any
@@ -778,12 +778,12 @@ class DefaultAgentSession<
             const found = await getAgentView().findInputEvent({
               invocationId,
               runId,
-              expectedEventIds: [inputEventId],
+              expectedEventId: inputEventId,
               timeoutMs: inputEventLookupTimeoutMs,
               signal,
             });
-            if (found.firstHeaders !== undefined) firstLookupHeaders = found.firstHeaders;
-            if (found.firstClientId !== undefined) resolvedInputClientId = found.firstClientId;
+            if (found.headers !== undefined) lookupHeaders = found.headers;
+            if (found.clientId !== undefined) resolvedInputClientId = found.clientId;
           } catch (error) {
             const errInfo =
               error instanceof Ably.ErrorInfo
@@ -804,14 +804,14 @@ class DefaultAgentSession<
           }
         }
 
-        // Resolve per-run metadata from the first matched message message's
+        // Resolve per-run metadata from the matched input event's
         // headers — they carry `clientId`, `parent`, and `forkOf`.
         // Continuations of a suspended run pick up the suspended assistant's
         // parent in the same headers (the continuation message parents off
         // the assistant). A `run-id` on the triggering input marks a
         // continuation (re-entry via `ai-run-resume`); a fresh input carries
         // none and opens the run with `ai-run-start`.
-        const sourceHeaders = firstLookupHeaders;
+        const sourceHeaders = lookupHeaders;
         if (sourceHeaders) {
           resolvedClientId = sourceHeaders[HEADER_RUN_CLIENT_ID];
           resolvedParent = sourceHeaders[HEADER_PARENT];

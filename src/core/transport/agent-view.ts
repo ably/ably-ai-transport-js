@@ -29,7 +29,7 @@ import * as Ably from 'ably';
 import { HEADER_EVENT_ID } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
-import { compareBySerial, errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
+import { errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
 import type { WireApplier } from './decode-fold.js';
 import { type HistoryPagesCursor, loadHistoryPages } from './load-history-pages.js';
@@ -43,22 +43,20 @@ import type { ConversationNode, Tree } from './types.js';
 /**
  * Result of {@link AgentView.findInputEvent}. The lookup races the session's
  * Tree (`findAblyMessageByEventId` pre-scan + `'ably-message'` event for live
- * arrivals) against a bounded history scan; resolves with the matched messages
- * sorted by Ably `serial` ascending.
+ * arrivals) against a bounded history scan; resolves with the single matched
+ * input event.
  *
- * Run.start reads `firstHeaders` / `firstClientId` from the smallest-serial
- * matched message to derive per-run metadata (run-id, parent, forkOf,
- * continuation flag, publisher clientId). The Tree has already folded each
- * message by the time the lookup resolves, so callers do NOT need to decode the
- * raw matched messages themselves.
+ * Run.start reads `headers` / `clientId` from the matched message to derive
+ * per-run metadata (run-id, parent, forkOf, continuation flag, publisher
+ * clientId). The Tree has already folded the message by the time the lookup
+ * resolves, so callers do NOT need to decode the raw matched message
+ * themselves.
  */
 export interface InputEventLookupResult {
-  /** Raw Ably messages matched by the lookup, sorted by serial ascending. */
-  rawMessages: Ably.InboundMessage[];
-  /** Transport headers of the smallest-serial matched message (run metadata). */
-  firstHeaders?: Record<string, string>;
-  /** Publisher's Ably channel-level `clientId` from the smallest-serial message. */
-  firstClientId?: string;
+  /** Transport headers of the matched input event (run metadata). */
+  headers?: Record<string, string>;
+  /** Publisher's Ably channel-level `clientId` from the matched input event. */
+  clientId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -253,49 +251,43 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
   // -------------------------------------------------------------------------
 
   /**
-   * Find every message whose `event-id` matches one of `expectedEventIds`,
+   * Find the single message whose `event-id` matches `expectedEventId`,
    * racing three sources:
    *
-   *  1. A pre-scan of the Tree via `findAblyMessageByEventId` for messages already
-   *     folded into it from prior live arrivals.
+   *  1. A pre-scan of the Tree via `findAblyMessageByEventId` for a message
+   *     already folded into it from a prior live arrival.
    *  2. A live listener on the Tree's `ably-message` event for new arrivals
    *     during the call.
    *  3. The shared history walk (lookback-bounded) — pages fold into the Tree
    *     and surface through the same `ably-message` event.
    *
-   * Resolves when every expected event-id has been matched. Per-id race
-   * resolution — whichever source surfaces a matched message first wins
-   * (dedup by serial). On timeout: cancels the in-flight history scan and
+   * Resolves when the expected event-id is matched — whichever source
+   * surfaces it first wins. On timeout: cancels the in-flight history scan and
    * rejects with `InputEventNotFound`, wrapping any history-scan failure as
    * `cause` so a broken history fetch isn't masked behind the timeout. On
    * signal abort: rejects with `InvalidArgument`.
    *
-   * `firstHeaders` and `firstClientId` are read from the matched message with
-   * the smallest serial (`compareBySerial`), giving stable run-level
-   * metadata regardless of arrival ordering across sources.
+   * `headers` and `clientId` are read from the matched message for downstream
+   * run-level metadata (run-id, parent, forkOf, continuation flag, publisher
+   * clientId).
    * @param opts - Lookup parameters.
    * @param opts.invocationId - The invocation id this lookup is for (logging / error messages).
    * @param opts.runId - The run id this lookup is for (logging / error messages).
-   * @param opts.expectedEventIds - The set of `event-id`s the lookup must observe before resolving.
+   * @param opts.expectedEventId - The `event-id` the lookup must observe before resolving.
    * @param opts.timeoutMs - Maximum total wait across live + history sources.
    * @param opts.signal - AbortSignal that aborts the lookup if the run is cancelled.
-   * @returns Raw matched Ably messages sorted by serial ascending, plus the
-   *   smallest-serial message's headers and clientId for downstream metadata.
+   * @returns The matched message's transport headers and publisher clientId.
    */
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- the body IS a Promise executor; async would double-wrap it
   findInputEvent(opts: {
     invocationId: string;
     runId: string;
-    expectedEventIds: readonly string[];
+    expectedEventId: string;
     timeoutMs: number;
     signal: AbortSignal;
   }): Promise<InputEventLookupResult> {
-    const { invocationId, runId, expectedEventIds, timeoutMs, signal } = opts;
+    const { invocationId, runId, expectedEventId, timeoutMs, signal } = opts;
     const logger = this._logger;
-    const expectedSet = new Set(expectedEventIds);
-    const expectedCount = expectedSet.size;
-
-    const matchedByEventId = new Map<string, Ably.InboundMessage>();
 
     // Bounded history fetch in parallel with the live wait; this controller
     // lets the lookup cancel the in-flight fetch on timeout / abort,
@@ -333,41 +325,19 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
         );
       };
 
-      const finishOk = (): void => {
+      const finishOk = (m: Ably.InboundMessage): void => {
         if (settled) return;
         settled = true;
         cleanup();
-        // Sort matched messages by serial for deterministic publish-order
-        // delivery to the caller — firstHeaders / firstClientId come from
-        // the smallest-serial message.
-        const sorted = [...matchedByEventId.values()].toSorted(compareBySerial);
-        let firstHeaders: Record<string, string> | undefined;
-        let firstClientId: string | undefined;
-        for (const m of sorted) {
-          if (firstHeaders === undefined) {
-            firstHeaders = getTransportHeaders(m);
-            firstClientId = m.clientId;
-            break;
-          }
-        }
-        logger?.debug('AgentView.findInputEvent(); collected input events', {
+        logger?.debug('AgentView.findInputEvent(); matched input event', {
           runId,
           invocationId,
-          count: sorted.length,
         });
-        resolve({ rawMessages: sorted, firstHeaders, firstClientId });
+        resolve({ headers: getTransportHeaders(m), clientId: m.clientId });
       };
 
-      // Consider a message for matching against the expected set; returns true
-      // when the lookup is now fully satisfied.
-      const consider = (m: Ably.InboundMessage): boolean => {
-        if (settled) return false;
-        const headers = getTransportHeaders(m);
-        const eventId = headers[HEADER_EVENT_ID];
-        if (!eventId || !expectedSet.has(eventId) || matchedByEventId.has(eventId)) return false;
-        matchedByEventId.set(eventId, m);
-        return matchedByEventId.size >= expectedCount;
-      };
+      // Whether a message is the expected input event.
+      const matches = (m: Ably.InboundMessage): boolean => getTransportHeaders(m)[HEADER_EVENT_ID] === expectedEventId;
 
       signal.addEventListener('abort', onCancelled, { once: true });
       if (signal.aborted) {
@@ -375,16 +345,13 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
         return;
       }
 
-      // 1. Pre-scan the Tree's event-id index for already-folded matches.
+      // 1. Pre-scan the Tree's event-id index for an already-folded match.
       //    Multi-run sessions where a prior run folded the message hit here
       //    synchronously.
-      for (const id of expectedEventIds) {
-        const ablyMessage = this._tree.findAblyMessageByEventId(id);
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- settled may mutate via synchronous callbacks during consider()
-        if (ablyMessage && consider(ablyMessage) && !settled) {
-          finishOk();
-          return;
-        }
+      const preScanned = this._tree.findAblyMessageByEventId(expectedEventId);
+      if (preScanned) {
+        finishOk(preScanned);
+        return;
       }
 
       // 2. Subscribe to the Tree's `ably-message` event for live arrivals.
@@ -393,7 +360,7 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
       //    history fetch flow through the same event so the listener picks
       //    them up uniformly.
       unregisterLive = this._tree.on('ably-message', (msg) => {
-        if (consider(msg) && !settled) finishOk();
+        if (!settled && matches(msg)) finishOk(msg);
       });
 
       // 3. Drive the shared history walk in parallel, lookback-bounded so the
@@ -425,7 +392,7 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
         cleanup();
         reject(
           new Ably.ErrorInfo(
-            `unable to look up input event; received ${String(matchedByEventId.size)} of ${String(expectedCount)} input events for invocation ${invocationId} within ${String(timeoutMs)}ms`,
+            `unable to look up input event; input event ${expectedEventId} for invocation ${invocationId} not found within ${String(timeoutMs)}ms`,
             ErrorCode.InputEventNotFound,
             504,
             historyError,

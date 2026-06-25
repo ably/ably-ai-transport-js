@@ -18,8 +18,9 @@
  * resolver), and additionally owns the branch-navigation surface
  * (`branchSelection`, selection recording, fork/regenerate auto-select) the
  * client's write path drives — none of which is part of the read-only
- * `BranchSource` contract. A second, leaf-pinned strategy backing the agent's
- * `run.view` is planned, sharing the same read contract.
+ * `BranchSource` contract. The agent's `LeafBranchSource` is the other strategy:
+ * a single leaf-pinned branch (a parent walk) backing `run.view`, sharing this
+ * same read contract.
  */
 
 import type { Logger } from '../../logger.js';
@@ -34,10 +35,10 @@ import type { ActiveRun, BranchHandle, ConversationNode, RunNode, SendOptions } 
 
 /**
  * The branch strategy a {@link View} reads through. Implemented by
- * {@link NavigableBranchSource} (the client's whole-tree navigation); a
- * leaf-pinned agent strategy backing `run.view` is planned. The View owns
- * pagination and events; the source owns "what is the branch and how does it
- * flatten".
+ * {@link NavigableBranchSource} (the client's whole-tree navigation) and the
+ * agent's `LeafBranchSource` (a single leaf-pinned branch backing `run.view`).
+ * The View owns pagination and events; the source owns "what is the branch and
+ * how does it flatten".
  */
 export interface BranchSource<TProjection, TMessage> {
   /**

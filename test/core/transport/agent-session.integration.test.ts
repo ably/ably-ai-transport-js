@@ -811,23 +811,19 @@ describe('AgentSession integration', () => {
   });
 
   /**
-   * Scenario: multi-message `send([m1, m2])` round-trip.
+   * Scenario: a multi-turn conversation reconstructed via `loadConversation()`.
    *
-   * In the two-node model the client publishes each user message as its own
-   * run-less input node (chained by `parent`). The agent's `start()` lookup
-   * collects the primary trigger (the last message); the full prompt chain is
-   * reconstructed via `loadConversation()`, which walks the input nodes'
-   * structural parent chain and folds each, surfacing both messages in publish
-   * order on `run.messages`. The agent then pipes an assistant response that
-   * the client receives.
-   *
-   * This is the regression test for PR #90: previously the lookup settled
-   * on the first matching arrival and dropped subsequent messages.
+   * Each turn is a single user message — the SDK sends one input message per
+   * send. Turn 1's assistant reply folds onto the channel; turn 2's run then
+   * walks the ancestor chain (turn-1 user input -> turn-1 assistant reply ->
+   * turn-2 user input), and `loadConversation()` reconstructs the full prompt
+   * in chronological order. Exercises the agent's single-event lookup and the
+   * cross-turn ancestor walk end-to-end over real Ably.
    */
-  it('reconstructs all messages of a multi-message send via loadConversation', async () => {
+  it('reconstructs a multi-turn conversation via loadConversation', async () => {
     // Lazy-import to keep the existing test imports above stable.
     const { createClientSession } = await import('../../../src/core/transport/client-session.js');
-    const channelName = uniqueChannelName('st-multi-msg');
+    const channelName = uniqueChannelName('st-multi-turn');
     const serverClient = ablyRealtimeClient();
     const clientClient = ablyRealtimeClient();
 
@@ -843,80 +839,97 @@ describe('AgentSession integration', () => {
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
-      // `send()` would otherwise block awaiting `ai-run-start` — but
-      // the agent only publishes that AFTER its lookup resolves, which
-      // requires `send()` to publish the user messages first. The
-      // happy-path run-start wait is exercised in client-session integration
-      // tests (Commit 2); this test focuses on the lookup itself.
     });
     await clientSession.connect();
 
-    try {
-      const activeRun = await clientSession.view.send([
-        UIMessageCodec.createUserMessage({
-          id: 'user-multi-1',
-          role: 'user',
-          parts: [{ type: 'text', text: 'First' }],
-        }),
-        UIMessageCodec.createUserMessage({
-          id: 'user-multi-2',
-          role: 'user',
-          parts: [{ type: 'text', text: 'Second' }],
-        }),
-      ]);
-
-      // The agent is the run-id authority: it mints the reply run-id and
-      // drives off the client's input event. The client's `run.runId` resolves
-      // to this minted id once run-start lands.
-      const mintedRunId = crypto.randomUUID();
-      const serverRun = createRunFromOpts(session, {
-        runId: mintedRunId,
-        inputEventId: activeRun.inputEventId,
-      });
-      await serverRun.start();
-      const runId = await activeRun.runId;
-      expect(runId).toBe(mintedRunId);
-
-      await serverRun.loadConversation();
-      const messages = serverRun.messages;
-      expect(messages).toHaveLength(2);
-
-      const ids = messages.map((m) => m.id);
-      expect(ids).toEqual(['user-multi-1', 'user-multi-2']);
-      const firstText = messages[0]?.parts.find((p): p is AI.TextUIPart => p.type === 'text')?.text;
-      const secondText = messages[1]?.parts.find((p): p is AI.TextUIPart => p.type === 'text')?.text;
-      expect(firstText).toBe('First');
-      expect(secondText).toBe('Second');
-
-      // Streaming was hoisted out of the core, so the response reaches the
-      // client on the Tree's `output` event rather than an ActiveRun stream.
-      // Collect outputs for this run until its terminal run-end lands.
-      const events: VercelOutput[] = [];
-      const outputsPromise = new Promise<VercelOutput[]>((resolve, reject) => {
+    // Resolve once the given run's terminal run-end has folded on the client,
+    // so the next turn auto-parents on the assistant reply just received and
+    // the channel carries the full prior turn before the next lookup runs.
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- the body IS a Promise executor; async would double-wrap it
+    const awaitRunEnd = (runId: string): Promise<void> =>
+      new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => {
-          unsubOutput();
-          unsubRun();
-          reject(new Error('timed out collecting run outputs'));
+          unsub();
+          reject(new Error(`timed out waiting for run-end of ${runId}`));
         }, 10_000);
-        const unsubOutput = clientSession.tree.on('output', (e) => {
-          if (e.runId === runId) events.push(...e.events);
-        });
-        const unsubRun = clientSession.tree.on('run', (e) => {
+        const unsub = clientSession.tree.on('run', (e) => {
           if (e.runId === runId && e.type === 'end') {
             clearTimeout(timer);
-            unsubOutput();
-            unsubRun();
-            resolve(events);
+            unsub();
+            resolve();
           }
         });
       });
 
-      const responseStream = textResponseStream('asst-multi-1', 'text-multi-1', 'Got both');
-      const result = await serverRun.pipe(responseStream);
-      await serverRun.end({ reason: 'complete' });
-      expect(result.reason).toBe('complete');
+    try {
+      // --- Turn 1: user "First" -> assistant "Reply one" ---
+      const turn1 = await clientSession.view.send(
+        UIMessageCodec.createUserMessage({
+          id: 'user-turn-1',
+          role: 'user',
+          parts: [{ type: 'text', text: 'First' }],
+        }),
+      );
 
-      await outputsPromise;
+      // The agent mints the reply run-id and drives off the client's input
+      // event; `turn1.runId` resolves to it once run-start lands.
+      const run1Id = crypto.randomUUID();
+      const serverRun1 = createRunFromOpts(session, { runId: run1Id, inputEventId: turn1.inputEventId });
+      await serverRun1.start();
+      expect(await turn1.runId).toBe(run1Id);
+
+      // The first turn's prompt is the single user message.
+      await serverRun1.loadConversation();
+      expect(serverRun1.messages.map((m) => m.id)).toEqual(['user-turn-1']);
+
+      // Subscribe to the run-end before piping so the terminal event can't be
+      // missed by a late listener.
+      const run1Ended = awaitRunEnd(run1Id);
+      await serverRun1.pipe(textResponseStream('asst-turn-1', 'text-turn-1', 'Reply one'));
+      await serverRun1.end({ reason: 'complete' });
+      await run1Ended;
+
+      // --- Turn 2: user "Second" (auto-parented on the assistant reply) ---
+      const turn2 = await clientSession.view.send(
+        UIMessageCodec.createUserMessage({
+          id: 'user-turn-2',
+          role: 'user',
+          parts: [{ type: 'text', text: 'Second' }],
+        }),
+      );
+
+      const run2Id = crypto.randomUUID();
+      const serverRun2 = createRunFromOpts(session, { runId: run2Id, inputEventId: turn2.inputEventId });
+      await serverRun2.start();
+      expect(await turn2.runId).toBe(run2Id);
+
+      // loadConversation walks the ancestor chain across both turns and
+      // reconstructs the full prompt in chronological order: the turn-1 user
+      // message, its assistant reply, then the turn-2 user message.
+      await serverRun2.loadConversation();
+      const messages = serverRun2.messages;
+      expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
+      expect(messages[0]?.id).toBe('user-turn-1');
+      expect(messages[2]?.id).toBe('user-turn-2');
+      const textOf = (m: AI.UIMessage | undefined): string | undefined =>
+        m?.parts.find((p): p is AI.TextUIPart => p.type === 'text')?.text;
+      expect(textOf(messages[0])).toBe('First');
+      expect(textOf(messages[1])).toBe('Reply one');
+      expect(textOf(messages[2])).toBe('Second');
+
+      // The second turn's response reaches the client end-to-end.
+      const events: VercelOutput[] = [];
+      const unsubOutput = clientSession.tree.on('output', (e) => {
+        if (e.runId === run2Id) events.push(...e.events);
+      });
+      const run2Ended = awaitRunEnd(run2Id);
+      try {
+        await serverRun2.pipe(textResponseStream('asst-turn-2', 'text-turn-2', 'Reply two'));
+        await serverRun2.end({ reason: 'complete' });
+        await run2Ended;
+      } finally {
+        unsubOutput();
+      }
       expect(events.some((e) => e.type === 'finish')).toBe(true);
     } finally {
       await clientSession.close();

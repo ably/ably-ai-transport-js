@@ -124,29 +124,6 @@ export const parseBool = (value: string | undefined): boolean | undefined => {
   return value === 'true';
 };
 
-/** A record carrying an optional Ably `serial`, orderable by {@link compareBySerial}. */
-interface HasSerial {
-  /** Ably serial, or undefined if the server has not yet assigned one. */
-  readonly serial?: string;
-}
-
-/**
- * Comparator that orders records by their Ably `serial` ascending
- * (chronological). Serials are lexicographically comparable; records whose
- * serial is undefined sort last. Pass directly to `Array.prototype.sort`.
- * @param a - First record to compare.
- * @param b - Second record to compare.
- * @returns Negative if `a` precedes `b`, positive if `a` follows `b`, 0 if equal.
- */
-export const compareBySerial = (a: HasSerial, b: HasSerial): number => {
-  if (a.serial === undefined && b.serial === undefined) return 0;
-  if (a.serial === undefined) return 1;
-  if (b.serial === undefined) return -1;
-  if (a.serial < b.serial) return -1;
-  if (a.serial > b.serial) return 1;
-  return 0;
-};
-
 /**
  * Mapped type that converts properties whose type includes `undefined`
  * into optional properties with `undefined` excluded from the value.

@@ -18,7 +18,6 @@ import {
   EVENT_CANCEL,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_FORK_OF,
-  HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_RUN_CLIENT_ID,
@@ -26,11 +25,12 @@ import {
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import { type Logger, LogLevel, makeLogger } from '../../logger.js';
-import { errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
+import { errorCause, errorMessage } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import { resolveChannelModes } from '../channel-options.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
 import { type AgentView, createAgentView } from './agent-view.js';
+import { readCancelTarget } from './cancel-envelope.js';
 import { createWireApplier, foldAndEmit, type WireApplier } from './decode-fold.js';
 import { buildTransportHeaders } from './headers.js';
 import { evictOldestIfFull } from './internal/bounded-map.js';
@@ -318,9 +318,7 @@ class DefaultAgentSession<
   // -------------------------------------------------------------------------
 
   private async _handleCancelMessage(msg: Ably.InboundMessage): Promise<void> {
-    const headers = getTransportHeaders(msg);
-    const runId = headers[HEADER_RUN_ID];
-    const inputCodecMessageId = headers[HEADER_INPUT_CODEC_MESSAGE_ID];
+    const { runId, inputCodecMessageId } = readCancelTarget(msg);
 
     // Malformed cancel: drop with warn. A cancel must identify its target by
     // `run-id` (a continuation, whose run-id the client knows) and/or by

@@ -39,6 +39,7 @@ import type {
 } from '../../../src/core/codec/types.js';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
 import { createWireApplier } from '../../../src/core/transport/decode-fold.js';
+import { createHistoryHydrator } from '../../../src/core/transport/history-hydrator.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
@@ -3169,9 +3170,13 @@ const viewMessageIds = (wiresOldestFirst: Ably.InboundMessage[]): string[] => {
     );
   const view = new DefaultView<TestInput, TestOutput, TestProjection, TestMessage>({
     tree,
-    channel: createMockChannel(),
     codec,
-    applier: createWireApplier(tree, codec.createDecoder()),
+    hydrator: createHistoryHydrator({
+      channel: createMockChannel(),
+      tree,
+      applier: createWireApplier(tree, codec.createDecoder()),
+      logger,
+    }),
     sendDelegate,
     logger,
   });

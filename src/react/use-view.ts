@@ -12,7 +12,7 @@ import * as Ably from 'ably';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { CodecInputEvent, CodecMessage, CodecOutputEvent } from '../core/codec/types.js';
-import type { ActiveRun, BranchSelection, RunInfo, SendOptions, View } from '../core/transport/types.js';
+import type { ActiveRun, BranchHandle, RunInfo, SendOptions, View } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
 import type { BaseSessionOption } from './internal/use-resolved-session.js';
 import { useResolvedSession } from './internal/use-resolved-session.js';
@@ -41,7 +41,7 @@ export interface ViewHandle<TInput extends CodecInputEvent, TMessage> {
    * `message` field.
    *
    * Correlate a rendered message back to the View — `runOf`,
-   * `branchSelection`, `selectSibling`, `regenerate`, or `edit` — via its
+   * `branchSelection`, `regenerate`, or `edit` — via its
    * `codecMessageId`, which the SDK assigns and tracks independently of any
    * identity the domain `message` may carry. See {@link View.getMessages}.
    */
@@ -79,17 +79,11 @@ export interface ViewHandle<TInput extends CodecInputEvent, TMessage> {
    */
   runs: () => RunInfo[];
   /**
-   * Resolve the {@link BranchSelection} bundle anchored at
-   * `codecMessageId`. Always returns a safe object — see
-   * {@link BranchSelection}. See {@link View.branchSelection}.
+   * Resolve the {@link BranchHandle} anchored at `codecMessageId`: the
+   * sibling state plus a `select` verb to navigate it. Always returns a
+   * safe handle — see {@link BranchHandle}. See {@link View.branchSelection}.
    */
-  branchSelection: (codecMessageId: string) => BranchSelection<TMessage>;
-  /**
-   * Select a sibling at the branch point anchored at `codecMessageId`.
-   * `index` is clamped to `[0, siblings.length - 1]`. Silent no-op when
-   * `codecMessageId` isn't a branch anchor. See {@link View.selectSibling}.
-   */
-  selectSibling: (codecMessageId: string, index: number) => void;
+  branchSelection: (codecMessageId: string) => BranchHandle<TMessage>;
   /**
    * Send one input message on the channel and fire a POST. See {@link View.send}.
    * @throws Ably.ErrorInfo with code {@link ErrorCode.InvalidArgument} when no view is resolved (before the session is available, or when `skip` is `true`).
@@ -110,13 +104,17 @@ export interface ViewHandle<TInput extends CodecInputEvent, TMessage> {
 /**
  * Fallback returned by `branchSelection` when the view isn't resolved.
  * Same shape the view returns for an unknown codec-message-id, so callers
- * can destructure uniformly.
+ * can destructure uniformly; `select` is a no-op (there is no view to
+ * navigate).
  */
-const EMPTY_BRANCH_SELECTION: BranchSelection<never> = {
+const EMPTY_BRANCH_HANDLE: BranchHandle<never> = {
   hasSiblings: false,
   siblings: [],
   index: 0,
   selected: undefined,
+  select: () => {
+    // no view resolved — nothing to select
+  },
 };
 
 /**
@@ -212,20 +210,13 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
 
   const runs = useCallback((): RunInfo[] => resolvedView?.runs() ?? [], [resolvedView]);
 
-  // Branch navigation
+  // Branch navigation — the handle carries `select`, bound to the view.
   const branchSelection = useCallback(
-    (codecMessageId: string): BranchSelection<TMessage> =>
-      // CAST: `EMPTY_BRANCH_SELECTION` is typed `BranchSelection<never>`; `never` is
-      // assignable to any `TMessage`, so the empty bundle is a valid fallback for
+    (codecMessageId: string): BranchHandle<TMessage> =>
+      // CAST: `EMPTY_BRANCH_HANDLE` is typed `BranchHandle<never>`; `never` is
+      // assignable to any `TMessage`, so the empty handle is a valid fallback for
       // the not-yet-resolved view case.
-      resolvedView?.branchSelection(codecMessageId) ?? (EMPTY_BRANCH_SELECTION as BranchSelection<TMessage>),
-    [resolvedView],
-  );
-
-  const selectSibling = useCallback(
-    (codecMessageId: string, index: number) => {
-      resolvedView?.selectSibling(codecMessageId, index);
-    },
+      resolvedView?.branchSelection(codecMessageId) ?? (EMPTY_BRANCH_HANDLE as BranchHandle<TMessage>),
     [resolvedView],
   );
 
@@ -267,7 +258,6 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
     run,
     runs,
     branchSelection,
-    selectSibling,
     send,
     regenerate,
     edit,

@@ -5,7 +5,7 @@ import * as Ably from 'ably';
 import { createElement, type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { BranchSelection, RunInfo } from '../../src/core/transport/types.js';
+import type { BranchHandle, RunInfo } from '../../src/core/transport/types.js';
 import { ErrorCode } from '../../src/errors.js';
 import { ClientSessionContext } from '../../src/react/contexts/client-session-context.js';
 import { useView } from '../../src/react/use-view.js';
@@ -185,25 +185,37 @@ describe('useView', () => {
   describe('Branch selection callbacks', () => {
     it('branchSelection forwards to view.branchSelection', () => {
       const mock = createMockSession();
-      const bundle: BranchSelection<string> = {
+      const handle: BranchHandle<string> = {
         hasSiblings: true,
         siblings: ['a', 'b', 'c'],
         index: 1,
         selected: 'b',
+        select: vi.fn(),
       };
-      (mock.view.branchSelection as ReturnType<typeof vi.fn>).mockReturnValue(bundle);
+      (mock.view.branchSelection as ReturnType<typeof vi.fn>).mockReturnValue(handle);
       const { result } = renderHook(() => useView({ session: mock.session }));
-      expect(result.current.branchSelection('msg-1')).toEqual(bundle);
+      expect(result.current.branchSelection('msg-1')).toEqual(handle);
     });
 
-    it('selectSibling forwards to view.selectSibling', () => {
+    it('branchSelection() returns the view-supplied handle and select() drives it', () => {
       const mock = createMockSession();
+      const select = vi.fn();
+      (mock.view.branchSelection as ReturnType<typeof vi.fn>).mockReturnValue({
+        hasSiblings: true,
+        siblings: ['a', 'b'],
+        index: 0,
+        selected: 'a',
+        select,
+      });
       const { result } = renderHook(() => useView({ session: mock.session }));
       act(() => {
-        result.current.selectSibling('msg-1', 1);
+        result.current.branchSelection('msg-1').select(1);
       });
+      // The hook forwards the id to the view and hands back the view's own
+      // handle, so select() routes to the view-supplied spy — not a wrapper.
       // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock
-      expect(mock.view.selectSibling).toHaveBeenCalledWith('msg-1', 1);
+      expect(mock.view.branchSelection).toHaveBeenCalledWith('msg-1');
+      expect(select).toHaveBeenCalledWith(1);
     });
 
     it('safe defaults when no session is available', () => {
@@ -213,9 +225,9 @@ describe('useView', () => {
       expect(branch.siblings).toEqual([]);
       expect(branch.index).toBe(0);
       expect(branch.selected).toBeUndefined();
-      // selectSibling is a no-op without a session; just confirm it doesn't throw.
+      // select is a no-op without a session; just confirm it doesn't throw.
       expect(() => {
-        result.current.selectSibling('msg-1', 0);
+        branch.select(0);
       }).not.toThrow();
     });
   });

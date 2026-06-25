@@ -2,20 +2,19 @@
 
 import { useRef, useEffect } from 'react';
 import type { UIMessage } from 'ai';
-import type { BranchSelection, CodecMessage, RunInfo } from '@ably/ai-transport';
+import type { BranchHandle, CodecMessage, RunInfo } from '@ably/ai-transport';
 import { MessageBubble } from './message-bubble';
 import { IntroCard } from './intro-card';
 
 interface ViewLookupApi {
-  branchSelection: (codecMessageId: string) => BranchSelection<UIMessage>;
-  selectSibling: (codecMessageId: string, index: number) => void;
+  branchSelection: (codecMessageId: string) => BranchHandle<UIMessage>;
   runOf: (codecMessageId: string) => RunInfo | undefined;
 }
 
 interface MessageListProps {
   // Visible messages paired with their codec-message-ids. The list keys all
-  // View correlation (runOf / branchSelection / selectSibling / edit /
-  // regenerate) on the codec-message-id, never the domain `message.id`.
+  // View correlation (runOf / branchSelection / edit / regenerate) on the
+  // codec-message-id, never the domain `message.id`.
   messages: CodecMessage<UIMessage>[];
   hasOlder: boolean;
   loading: boolean;
@@ -117,7 +116,7 @@ export function MessageList({
             siblingCount={branch.siblings.length}
             selectedIndex={branch.index}
             onSelectSibling={(index) => {
-              view.selectSibling(codecMessageId, index);
+              branch.select(index);
             }}
             onRegenerate={message.role === 'assistant' ? () => onRegenerate(codecMessageId) : undefined}
             onEdit={message.role === 'user' ? (text) => onEdit(codecMessageId, text) : undefined}

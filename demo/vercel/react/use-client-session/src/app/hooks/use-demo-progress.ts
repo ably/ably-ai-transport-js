@@ -94,11 +94,11 @@ const ALL_STEPS: DemoStep[] = [
   },
 ];
 
-import type { BranchSelection, CodecMessage, RunInfo } from '@ably/ai-transport';
+import type { BranchHandle, CodecMessage, RunInfo } from '@ably/ai-transport';
 
 export function useDemoProgress(
   messages: CodecMessage<UIMessage>[],
-  branchSelection: (codecMessageId: string) => BranchSelection<UIMessage>,
+  branchSelection: (codecMessageId: string) => BranchHandle<UIMessage>,
   runOf: (codecMessageId: string) => RunInfo | undefined,
   ablyMessages: Ably.InboundMessage[],
 ): DemoStep[] {

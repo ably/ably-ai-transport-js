@@ -8,7 +8,8 @@ import type { Logger } from '../../../logger.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent, WriteOptions } from '../../codec/types.js';
 import type { Invocation } from '../invocation.js';
 import type { CancelRequest, RunEndReason } from './shared.js';
-import type { MessageNode, Tree } from './tree.js';
+import type { Tree } from './tree.js';
+import type { View } from './view.js';
 
 // ---------------------------------------------------------------------------
 // Agent session options
@@ -189,21 +190,6 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
 // Run interface
 // ---------------------------------------------------------------------------
 
-/**
- * Read-only view exposed on a {@link Run} of the triggering input message
- * this run was created with.
- *
- * TODO(AIT-771): when the agent rebuilds full conversation history from
- * the channel, this should expose `RunNode[]`-shaped data to match the
- * client side. Today it carries the messages of the single triggering input
- * node (a user prompt is one message; the array shape mirrors
- * {@link Codec.getMessages}).
- */
-export interface RunView<TMessage> {
-  /** The triggering input node's messages; no branch awareness today. */
-  readonly messages: MessageNode<TMessage>[];
-}
-
 /** Options for {@link Run.loadConversation}. */
 export interface LoadConversationOptions {
   /**
@@ -264,8 +250,14 @@ export interface Run<TOutput extends CodecOutputEvent, TProjection, TMessage> {
   /** AbortSignal scoped to this run. Fires when a cancel event arrives for this runId. */
   readonly abortSignal: AbortSignal;
 
-  /** Read-only view of the conversation messages associated with this run. */
-  readonly view: RunView<TMessage>;
+  /**
+   * Read-only, leaf-pinned {@link View} of this run's branch — the parent chain
+   * from the run's triggering input back to the conversation root. Pinned at
+   * `createRun` to `invocation.inputEventId`; empty until that trigger folds into
+   * the Tree (live or via `loadOlder`). The same paginating read base the
+   * client's `session.view` exposes, with no navigation or write path.
+   */
+  readonly view: View<TMessage>;
 
   /**
    * The conversation messages this run should feed to the model.

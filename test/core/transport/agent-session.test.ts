@@ -1060,7 +1060,7 @@ describe('AgentSession', () => {
 
     it('defaults assistant parent to the most recently looked-up input event', async () => {
       // Stand up a session whose input-event lookup will resolve via the channel
-      // dispatcher — this populates `run.view.messages` with the input event
+      // dispatcher — this populates `run.view.getMessages()` with the input event
       // before pipe runs, exercising the new default.
       const ch = createMockChannel();
       const base = codecWithFunctionalDecoder();
@@ -1094,9 +1094,9 @@ describe('AgentSession', () => {
       await s.close();
     });
 
-    it('omits parent header when view.messages is empty and no pipe parent is supplied', async () => {
+    it('omits parent header when the run has no resolved input and no pipe parent is supplied', async () => {
       // Per-message metadata is resolved from the input-event lookup result. With
-      // no event-id (and thus no lookup), `run.view.messages` stays empty
+      // no event-id (and thus no lookup), `run.view.getMessages()` stays empty
       // and pipe falls through with no parent header on the encoder defaults.
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
@@ -1805,8 +1805,8 @@ describe('AgentSession', () => {
       deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', inputEventId: 'p-a' });
 
       await startPromise;
-      expect(run.view.messages).toHaveLength(1);
-      expect(run.view.messages[0]?.codecMessageId).toBe('a');
+      expect(run.view.getMessages()).toHaveLength(1);
+      expect(run.view.getMessages()[0]?.codecMessageId).toBe('a');
       await s.close();
     });
 
@@ -1855,7 +1855,7 @@ describe('AgentSession', () => {
 
       // start() should resolve immediately by draining the buffer.
       await startPromise;
-      expect(run.view.messages.map((m) => m.codecMessageId)).toEqual(['first']);
+      expect(run.view.getMessages().map((m) => m.codecMessageId)).toEqual(['first']);
       await s.close();
     });
 
@@ -1922,7 +1922,7 @@ describe('AgentSession', () => {
       const run = createRunFromOpts(s, { runId, invocationId, inputEventId: 'p-a' });
       await run.start();
 
-      expect(run.view.messages.map((m) => m.codecMessageId)).toEqual(['a']);
+      expect(run.view.getMessages().map((m) => m.codecMessageId)).toEqual(['a']);
       await s.close();
     });
 
@@ -1953,7 +1953,7 @@ describe('AgentSession', () => {
       });
 
       await startPromise;
-      expect(run.view.messages.map((m) => m.codecMessageId)).toEqual(['a']);
+      expect(run.view.getMessages().map((m) => m.codecMessageId)).toEqual(['a']);
       await s.close();
     });
 
@@ -2129,7 +2129,7 @@ describe('AgentSession input-event lookup', () => {
     await expect(run.start()).resolves.toBeUndefined();
 
     expect(ch.history).toHaveBeenCalled();
-    expect(run.view.messages.map((m) => m.codecMessageId)).toEqual(['u1']);
+    expect(run.view.getMessages().map((m) => m.codecMessageId)).toEqual(['u1']);
     await session.close();
   });
 
@@ -3477,11 +3477,15 @@ describe('Run.loadConversation concurrency + continuity-loss', () => {
     await session.close();
   });
 
-  it('Run.view.messages and Run.messages read the fresh Tree after continuity-loss swap', async () => {
-    // Regression for stale-closure bug: getters used to close over the
-    // tree captured at run-creation time. After a continuity-loss swap
-    // they kept returning the abandoned Tree's content. The fix
-    // dereferences `this._tree` live via `getTree()`.
+  it('Run.messages reads the fresh Tree after a continuity-loss swap', async () => {
+    // Regression for a stale-closure bug: the conversation reconstruction used
+    // to close over the Tree captured at run-creation time, so after a
+    // continuity-loss swap it kept returning the abandoned Tree's content. The
+    // leaf source dereferences the session Tree live via `getTree()`, so
+    // `Run.messages` (the model-context read) reflects the fresh, empty Tree
+    // after the swap. `run.view` is a per-run snapshot pinned to the run's Tree
+    // and the swap aborts the run, so run.view is not expected to roll onto the
+    // new Tree — the live `Run.messages` read is what must stay correct.
     const ch = createMockChannel();
     const codec = codecWithFunctionalDecoder();
 
@@ -3517,17 +3521,18 @@ describe('Run.loadConversation concurrency + continuity-loss', () => {
 
     // Sanity: the Tree is populated and the getters see content.
     expect(run.messages.length).toBeGreaterThan(0);
-    expect(run.view.messages.length).toBeGreaterThan(0);
+    expect(run.view.getMessages().length).toBeGreaterThan(0);
 
     // Trigger continuity loss — swaps `this._tree` for a fresh empty
     // instance and aborts every registered run's controller.
     simulateStateChange(ch, { current: 'suspended', previous: 'attached' } as Ably.ChannelStateChange);
     expect(onError).toHaveBeenCalledWith(expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost }));
 
-    // After the swap the new Tree is empty, so both getters return [].
-    // Stale-closure code would still return data from the abandoned Tree.
+    // The swap aborts the run and the new Tree is empty, so the live
+    // `Run.messages` read returns []. Stale-closure code would still return data
+    // from the abandoned Tree.
+    expect(run.abortSignal.aborted).toBe(true);
     expect(run.messages).toEqual([]);
-    expect(run.view.messages).toEqual([]);
 
     await session.close();
   });

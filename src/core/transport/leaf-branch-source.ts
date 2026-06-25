@@ -1,27 +1,30 @@
 /**
- * AgentView — internal, server-side conversation reader for AgentSession.
+ * LeafBranchSource — the agent's leaf-pinned branch strategy.
  *
- * Reconstructs the ancestor chain an agent run needs for its LLM prompt: it
- * hydrates the session Tree via the shared {@link HistoryHydrator} as far back
- * as the walk requires ({@link AgentView.loadConversation}), then reads the
- * already-folded projections off the Tree's nodes
- * ({@link AgentView.messages} / `loadConversation`).
+ * The agent handles one run at a time, against a single branch: the parent chain
+ * from the run's triggering input back to the conversation root. This source
+ * resolves that branch and serves it two ways:
  *
- * It does NOT own the materialisation Tree or the hydrator — AgentSession owns
- * the Tree, applier, and hydrator (and swaps all three on channel continuity
- * loss) and injects the Tree, codec, and hydrator here as `readonly` fields.
- * Because AgentSession swaps the Tree/hydrator, it RECREATES the AgentView on
- * continuity loss (a fresh instance bound to the fresh Tree/hydrator) rather
- * than mutating it — so this class never needs a tree accessor or a reset hook.
+ *  - As a {@link BranchSource} for the run's paginating `run.view` — a read-only
+ *    {@link View} over the same base the client uses. The session calls
+ *    {@link LeafBranchSource.setPin} from `Run.start()` once it has resolved the
+ *    trigger's headers, fixing the branch `run.view` projects; before that
+ *    `run.view` is empty. It then pages history like the client.
+ *  - Via the direct {@link LeafBranchSource.messages} /
+ *    {@link LeafBranchSource.loadConversation} methods that back `Run.messages`
+ *    and `Run.loadConversation` — the full (un-paginated) conversation the agent
+ *    feeds the model, taking the anchor/run-id/regenerate-target the session
+ *    resolved at `start()`. (`loadConversation` additionally hydrates ancestors
+ *    and honours `maxRuns`.)
  *
- * This is deliberately internal: it is not exported from any entry point and
- * does NOT implement the public `View` interface (that is the client-side
- * `DefaultView`, unrelated to this class).
+ * It does NOT own the Tree or hydrator — the session owns them and swaps both on
+ * channel continuity loss, so this reads them through `getTree()` / `getHydrator()`
+ * live accessors rather than captured references, observing a swap instead of
+ * holding the abandoned instances.
  *
- * The pre-run-start input-event lookup lives separately in
- * {@link locateInputEvent}; both it and `loadConversation` drive the SAME
- * session hydrator, so a `start()` input scan and a concurrent `loadConversation`
- * share folded pages instead of each scanning the channel.
+ * The branch is a linear parent walk, so flattening is a plain concatenation
+ * (truncated before the regenerate target where one is set) — there is no
+ * sibling/regenerate collapse to apply, unlike the client's navigable source.
  */
 
 import * as Ably from 'ably';
@@ -29,10 +32,11 @@ import * as Ably from 'ably';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { errorMessage } from '../../utils.js';
-import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
+import type { Codec, CodecInputEvent, CodecMessage, CodecOutputEvent } from '../codec/types.js';
+import type { BranchSource } from './branch-source.js';
 import type { HistoryHydrator } from './history-hydrator.js';
-import type { TreeInternal } from './tree.js';
-import type { ConversationNode, Tree } from './types.js';
+import { nodeKey, type TreeInternal } from './tree.js';
+import type { ConversationNode, RunNode, Tree } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Ancestor-chain walk over the Tree
@@ -55,7 +59,7 @@ import type { ConversationNode, Tree } from './types.js';
  * context, so it never counts toward `maxRuns`.
  * @returns Nodes from root to anchor in chronological order.
  */
-export const walkAncestorChain = <TOutput extends CodecOutputEvent, TProjection>(
+const walkAncestorChain = <TOutput extends CodecOutputEvent, TProjection>(
   tree: Tree<TOutput, TProjection>,
   anchor: string | undefined,
   maxRuns?: number,
@@ -107,26 +111,44 @@ const countReplyRuns = <TProjection>(
 // ---------------------------------------------------------------------------
 
 /**
- * Constructor dependencies for {@link AgentView}, injected by AgentSession.
+ * Constructor dependencies for {@link LeafBranchSource}, injected by AgentSession
+ * per run.
  *
- * AgentView reads the `tree` and drives the `hydrator`; AgentSession owns both
- * and, because it SWAPS them on continuity loss, recreates the AgentView with
- * the fresh pair rather than mutating them in place.
+ * The Tree and hydrator are read through accessors, not captured references: the
+ * session swaps both on continuity loss, and the source must observe the swap.
  */
-export interface AgentViewOptions<
+export interface LeafBranchSourceOptions<
   TInput extends CodecInputEvent,
   TOutput extends CodecOutputEvent,
   TProjection,
   TMessage,
 > {
-  /** The session's materialisation Tree (read for ancestor walks). */
-  tree: TreeInternal<TInput, TOutput, TProjection>;
+  /** Live accessor for the session's current materialisation Tree. */
+  getTree: () => TreeInternal<TInput, TOutput, TProjection>;
+  /** Live accessor for the session's current shared history hydrator. */
+  getHydrator: () => HistoryHydrator;
   /** Codec used to project per-node messages. */
   codec: Codec<TInput, TOutput, TProjection, TMessage>;
-  /** The session's shared history hydrator; ancestor hydration drives it. */
-  hydrator: HistoryHydrator;
   /** Logger for diagnostic output. */
-  logger?: Logger;
+  logger: Logger;
+}
+
+/**
+ * The resolved leaf pin: the branch `run.view` projects. Set via
+ * {@link LeafBranchSource.setPin} once the run's `start()` has resolved the
+ * triggering input's headers.
+ */
+interface LeafPin {
+  /**
+   * The branch anchor — the triggering input's codec-message-id when it backs a
+   * Tree node, else its `parent` (for wire-only regenerate carriers). Mirrors
+   * the session's `assistantParentFallback`.
+   */
+  anchor: string | undefined;
+  /** The run's resolved id (provisional for a fresh run, the wire id for a continuation). */
+  runId: string;
+  /** The codec-message-id being regenerated, if any — flattening stops before it. */
+  regenerateTarget: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -134,24 +156,113 @@ export interface AgentViewOptions<
 // ---------------------------------------------------------------------------
 
 /**
- * Internal server-side view: conversation loading over the session Tree. See
- * the file header for the ownership boundary.
+ * The agent's leaf-pinned {@link BranchSource}. See the file header for the two
+ * roles (paginating `run.view` vs the direct `Run.messages`/`loadConversation`
+ * reconstruction).
  */
-export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage> {
-  private readonly _tree: TreeInternal<TInput, TOutput, TProjection>;
+export class LeafBranchSource<
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+> implements BranchSource<TProjection, TMessage> {
+  private readonly _getTree: () => TreeInternal<TInput, TOutput, TProjection>;
+  private readonly _getHydrator: () => HistoryHydrator;
   private readonly _codec: Codec<TInput, TOutput, TProjection, TMessage>;
-  private readonly _hydrator: HistoryHydrator;
-  private readonly _logger?: Logger;
+  private readonly _logger: Logger;
 
-  constructor(options: AgentViewOptions<TInput, TOutput, TProjection, TMessage>) {
-    this._tree = options.tree;
+  /**
+   * The resolved branch `run.view` projects. `undefined` until `start()` resolves
+   * the trigger and calls {@link setPin} — so `run.view` is empty before the run
+   * starts.
+   */
+  private _pin: LeafPin | undefined;
+  /** Notifies the owning View to recompute; set by `createLeafView`. */
+  private _notify: (() => void) | undefined;
+
+  constructor(options: LeafBranchSourceOptions<TInput, TOutput, TProjection, TMessage>) {
+    this._getTree = options.getTree;
+    this._getHydrator = options.getHydrator;
     this._codec = options.codec;
-    this._hydrator = options.hydrator;
-    this._logger = options.logger?.withContext({ component: 'AgentView' });
+    this._logger = options.logger.withContext({ component: 'LeafBranchSource' });
+  }
+
+  /**
+   * Pin `run.view` to the run's branch. Called by `AgentSession` from `Run.start()`
+   * once the triggering input's headers are resolved (the same anchor / run-id /
+   * regenerate-target the session feeds `Run.messages`). Nudges the owning View to
+   * recompute, since a pin change is not itself a Tree event.
+   * @param anchor - The branch anchor (see {@link LeafPin.anchor}).
+   * @param runId - The run's resolved id.
+   * @param regenerateTarget - The codec-message-id being regenerated, if any.
+   */
+  setPin(anchor: string | undefined, runId: string, regenerateTarget: string | undefined): void {
+    this._pin = { anchor, runId, regenerateTarget };
+    this._notify?.();
+  }
+
+  /**
+   * Register the owning View's recompute callback. Called by `createLeafView` so
+   * {@link setPin} can refresh the view's snapshot.
+   * @param notify - The recompute callback.
+   */
+  setNotify(notify: () => void): void {
+    this._notify = notify;
   }
 
   // -------------------------------------------------------------------------
-  // Conversation walk
+  // BranchSource contract — drives the run's paginating run.view
+  // -------------------------------------------------------------------------
+
+  visibleNodes(): ConversationNode<TProjection>[] {
+    const pin = this._pin;
+    if (pin === undefined) return [];
+    const tree = this._getTree();
+    const chain = walkAncestorChain(tree, pin.anchor, undefined, pin.runId);
+    const runNode = tree.getRunNode(pin.runId);
+    // Append the current run's own node (the leaf) when the ancestor walk didn't
+    // already reach it — it is the conversation tail, not ancestor context.
+    if (runNode !== undefined && !chain.some((n) => n.kind === 'run' && n.runId === pin.runId)) {
+      return [...chain, runNode];
+    }
+    return [...chain];
+  }
+
+  extractMessages(nodes: ConversationNode<TProjection>[]): CodecMessage<TMessage>[] {
+    // Linear parent walk — plain concatenation, no sibling/regenerate collapse.
+    // Stop before the regenerate target (where set) so the reconstructed history
+    // ends on the message the agent is about to replace, not on it.
+    const regenerateTarget = this._pin?.regenerateTarget;
+    const out: CodecMessage<TMessage>[] = [];
+    for (const node of nodes) {
+      for (const m of this._codec.getMessages(node.projection)) {
+        if (regenerateTarget !== undefined && m.codecMessageId === regenerateTarget) return out;
+        out.push(m);
+      }
+    }
+    return out;
+  }
+
+  selectedReplyRun(inputCodecMessageId: string): RunNode<TProjection> | undefined {
+    const replies = this._getTree().getReplyRuns(inputCodecMessageId);
+    if (replies.length <= 1) return replies[0];
+    // Prefer the reply run on this leaf's branch; otherwise the latest.
+    const onBranch = new Set(this.visibleNodes().map((n) => nodeKey(n)));
+    return (
+      replies.find((r) => onBranch.has(r.runId)) ??
+      replies.toSorted((a, b) => (a.startSerial ?? '￿').localeCompare(b.startSerial ?? '￿')).at(-1)
+    );
+  }
+
+  // The leaf branch is fixed by its pin — no navigation state to reconcile, so
+  // the BranchSource maintenance hook is a no-op (the `prevVisibleNodeKeys`
+  // argument the contract passes is unused).
+  onVisibleNodesChanged(): void {
+    // intentional no-op
+  }
+
+  // -------------------------------------------------------------------------
+  // Direct reconstruction — backs Run.messages / Run.loadConversation
   // -------------------------------------------------------------------------
 
   /**
@@ -160,7 +271,7 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
    * projections off the Tree's nodes.
    *
    * Hydrates the Tree as needed via the shared hydrator
-   * ({@link AgentView._hydrateAncestors}), then concatenates
+   * ({@link LeafBranchSource._hydrateAncestors}), then concatenates
    * `codec.getMessages(node.projection)` per node (root first) and appends the
    * current run's projection at the tail.
    * @param runId - The current run's id (for the tail run's projection lookup).
@@ -199,11 +310,26 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
   }
 
   /**
+   * Synchronous live read of the conversation messages for `Run.messages`:
+   * walk the parent chain from `anchor` (no `maxRuns` bound), concatenate each
+   * ancestor's projection, then append the current run's messages if its node
+   * isn't already on the chain. No I/O — reflects whatever is currently folded.
+   * @param runId - The current run's id (for the tail run's projection lookup).
+   * @param anchor - The current run's input node codec-message-id (assistantParentFallback).
+   * @param regenerateTarget - The codec-message-id being regenerated; when set,
+   *   the walk stops before it (see {@link LeafBranchSource._collectConversation}).
+   * @returns The conversation messages, root-first.
+   */
+  messages(runId: string, anchor: string | undefined, regenerateTarget?: string): TMessage[] {
+    return this._collectConversation(runId, anchor, undefined, regenerateTarget).messages;
+  }
+
+  /**
    * Walk the parent chain from `anchor` over the current Tree and concatenate
    * each node's projected messages (root-first), then append the current run's
    * own messages when its RunNode isn't already on the chain. Shared by
-   * {@link AgentView.loadConversation} and {@link AgentView.messages}. Pure read
-   * over whatever is currently folded — no fetching.
+   * {@link LeafBranchSource.loadConversation} and {@link LeafBranchSource.messages}.
+   * Pure read over whatever is currently folded — no fetching.
    * @param runId - The current run's id (for the tail run's projection lookup).
    * @param anchor - The current run's input node codec-message-id.
    * @param maxRuns - Optional bound on the ancestor walk (counts reply runs).
@@ -220,7 +346,7 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
     maxRuns?: number,
     regenerateTarget?: string,
   ): { messages: TMessage[]; projection: TProjection } {
-    const tree = this._tree;
+    const tree = this._getTree();
     const chain = walkAncestorChain(tree, anchor, maxRuns, runId);
     const runNode = tree.getRunNode(runId);
     const messages: TMessage[] = [];
@@ -241,25 +367,6 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
 
     return { messages, projection: runNode?.projection ?? this._codec.init() };
   }
-
-  /**
-   * Synchronous live read of the conversation messages for `Run.messages`:
-   * walk the parent chain from `anchor` (no `maxRuns` bound), concatenate each
-   * ancestor's projection, then append the current run's messages if its node
-   * isn't already on the chain. No I/O — reflects whatever is currently folded.
-   * @param runId - The current run's id (for the tail run's projection lookup).
-   * @param anchor - The current run's input node codec-message-id (assistantParentFallback).
-   * @param regenerateTarget - The codec-message-id being regenerated; when set,
-   *   the walk stops before it (see {@link AgentView._collectConversation}).
-   * @returns The conversation messages, root-first.
-   */
-  messages(runId: string, anchor: string | undefined, regenerateTarget?: string): TMessage[] {
-    return this._collectConversation(runId, anchor, undefined, regenerateTarget).messages;
-  }
-
-  // -------------------------------------------------------------------------
-  // Ancestor hydration
-  // -------------------------------------------------------------------------
 
   /**
    * Populate the Tree with enough ancestor coverage to walk from `anchor` to
@@ -286,7 +393,7 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
     // Check whether the Tree already has what we need: the current run node
     // exists AND (no anchor OR anchor's chain reaches root / maxRuns).
     const needsFetch = (): boolean => {
-      const tree = this._tree;
+      const tree = this._getTree();
       // Only an adopted run-id (runtime override or continuation) can name a
       // run already present in channel history. A fresh agent-minted run's
       // run-start is published after attach, so the `untilAttach` walk can
@@ -318,9 +425,9 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
       // The hydrator pages until `needsFetch()` is satisfied or the channel is
       // exhausted (it owns and short-circuits on its own exhaustion), folding
       // each page into the Tree.
-      await this._hydrator.foldUntil(() => !needsFetch(), signal);
+      await this._getHydrator().foldUntil(() => !needsFetch(), signal);
     } catch (error) {
-      this._logger?.error('AgentView._hydrateAncestors(); history fetch failed', {
+      this._logger.error('LeafBranchSource._hydrateAncestors(); history fetch failed', {
         runId,
         error: errorMessage(error),
       });
@@ -336,16 +443,16 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
 }
 
 /**
- * Create an {@link AgentView}. Factory entry point mirroring `createTree`;
- * AgentSession never calls `new AgentView` directly.
+ * Create a {@link LeafBranchSource}. Factory entry point; AgentSession never
+ * calls `new LeafBranchSource` directly.
  * @param options - Injected dependencies.
- * @returns A new AgentView.
+ * @returns A new LeafBranchSource.
  */
-export const createAgentView = <
+export const createLeafBranchSource = <
   TInput extends CodecInputEvent,
   TOutput extends CodecOutputEvent,
   TProjection,
   TMessage,
 >(
-  options: AgentViewOptions<TInput, TOutput, TProjection, TMessage>,
-): AgentView<TInput, TOutput, TProjection, TMessage> => new AgentView(options);
+  options: LeafBranchSourceOptions<TInput, TOutput, TProjection, TMessage>,
+): LeafBranchSource<TInput, TOutput, TProjection, TMessage> => new LeafBranchSource(options);

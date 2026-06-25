@@ -35,6 +35,7 @@ import type { Codec, CodecInputEvent, CodecMessage, CodecOutputEvent } from '../
 import { type BranchSource, NavigableBranchSource } from './branch-source.js';
 import { messageTailSplitIndex } from './conversation-projection.js';
 import type { HistoryHydrator } from './history-hydrator.js';
+import type { LeafBranchSource } from './leaf-branch-source.js';
 import { nodeKey, type TreeInternal } from './tree.js';
 import type {
   ActiveRun,
@@ -988,4 +989,25 @@ export const createClientView = <
     sendDelegate: options.sendDelegate,
     logger: options.logger,
   });
+};
+
+/**
+ * Create a read-only leaf View — a paginated window over a Tree pinned to one
+ * branch via the supplied {@link LeafBranchSource} (the agent's leaf-pinned
+ * source). No navigation or write path: this is the shared read base, used for
+ * the agent's `run.view`. Wires the source's `setNotify` to the view's recompute
+ * so a `setPin` refreshes the snapshot.
+ * @param options - The tree, codec, hydrator, leaf branch source, and logger to use.
+ * @returns A new read-only {@link View}.
+ */
+export const createLeafView = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>(
+  options: Omit<ViewOptions<TInput, TOutput, TProjection, TMessage>, 'branchSource'> & {
+    branchSource: LeafBranchSource<TInput, TOutput, TProjection, TMessage>;
+  },
+): View<TMessage> => {
+  const base = new DefaultView<TInput, TOutput, TProjection, TMessage>(options);
+  options.branchSource.setNotify(() => {
+    base.recomputeAndEmit();
+  });
+  return base;
 };

@@ -802,8 +802,8 @@ describe('AgentSession integration', () => {
 
     await startPromise;
 
-    expect(serverRun.view.messages).toHaveLength(1);
-    const found = serverRun.view.messages[0];
+    expect(serverRun.view.getMessages()).toHaveLength(1);
+    const found = serverRun.view.getMessages()[0];
     expect(found?.codecMessageId).toBe(codecMessageId);
     expect(found?.message.parts[0]).toEqual({ type: 'text', text });
 

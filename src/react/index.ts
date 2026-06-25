@@ -6,7 +6,6 @@ export type {
   ClientSession,
   ConversationNode,
   InputNode,
-  MessageNode,
   RunInfo,
   RunNode,
   RunNodeState,

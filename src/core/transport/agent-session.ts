@@ -25,11 +25,11 @@ import {
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
+import { LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import { resolveChannelModes } from '../channel-options.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
-import { type AgentView, createAgentView } from './agent-view.js';
 import { readCancelTarget } from './cancel-envelope.js';
 import { foldAndEmit, type WireApplier } from './decode-fold.js';
 import { buildTransportHeaders } from './headers.js';
@@ -37,6 +37,7 @@ import { createHistoryHydrator, type HistoryHydrator } from './history-hydrator.
 import { locateInputEvent } from './input-event-locator.js';
 import { evictOldestIfFull } from './internal/bounded-map.js';
 import { Invocation } from './invocation.js';
+import { createLeafBranchSource } from './leaf-branch-source.js';
 import { createMaterialisation } from './materialisation.js';
 import { pipeStream } from './pipe-stream.js';
 import type { RunManager } from './run-manager.js';
@@ -60,10 +61,11 @@ import type {
   Run,
   RunEndParams,
   RunRuntime,
-  RunView,
   StreamResult,
   Tree,
+  View,
 } from './types.js';
+import { createLeafView } from './view.js';
 
 /**
  * Upper bound on buffered deferred cancels. Deferred cancels are bounded so
@@ -162,12 +164,6 @@ class DefaultAgentSession<
    * gets a fresh cursor and exhaustion state.
    */
   private _hydrator: HistoryHydrator;
-  /**
-   * Internal server-side view: conversation loading over the session Tree.
-   * Reads the Tree and drives the hydrator, so it is RECREATED — not mutated —
-   * when the Tree/hydrator are swapped on continuity loss.
-   */
-  private _agentView: AgentView<TInput, TOutput, TProjection, TMessage>;
   private readonly _channelListener: (msg: Ably.InboundMessage) => void;
   private readonly _inputEventLookupTimeoutMs: number;
 
@@ -195,7 +191,6 @@ class DefaultAgentSession<
     this._tree = tree;
     this._applier = applier;
     this._hydrator = this._createHydrator();
-    this._agentView = this._createAgentView();
 
     this._channelListener = (msg: Ably.InboundMessage) => {
       this._handleChannelMessage(msg);
@@ -228,22 +223,6 @@ class DefaultAgentSession<
       channel: this._channel,
       tree: this._tree,
       applier: this._applier,
-      logger: this._logger,
-    });
-  }
-
-  /**
-   * Build an AgentView bound to the session's CURRENT Tree + hydrator. Called at
-   * construction and again after a continuity-loss swap — the AgentView reads the
-   * Tree and drives the hydrator, so a swap recreates it rather than mutating it
-   * in place.
-   * @returns A fresh AgentView over the current Tree/hydrator.
-   */
-  private _createAgentView(): AgentView<TInput, TOutput, TProjection, TMessage> {
-    return createAgentView<TInput, TOutput, TProjection, TMessage>({
-      tree: this._tree,
-      codec: this._codec,
-      hydrator: this._hydrator,
       logger: this._logger,
     });
   }
@@ -491,9 +470,10 @@ class DefaultAgentSession<
     this._tree = tree;
     this._applier = applier;
     // Rebuild the hydrator against the fresh Tree/applier — this resets its
-    // cursor and exhaustion state — then the AgentView against the fresh pair.
+    // cursor and exhaustion state. Each run's leaf source reads the Tree and
+    // hydrator through live `getTree()`/`getHydrator()` accessors, so it observes
+    // the swap without being recreated.
     this._hydrator = this._createHydrator();
-    this._agentView = this._createAgentView();
 
     // Session-level notification: continuity loss is not scoped to any one
     // run. Per-run onError handlers are reserved for errors from that run's
@@ -624,10 +604,10 @@ class DefaultAgentSession<
     const runIdByInputCodecMessageId = this._runIdByInputCodecMessageId;
     const deferredCancels = this._deferredCancels;
     const requireConnected = this._requireConnected.bind(this);
-    // Live accessors (not captured refs): a continuity-loss swap recreates the
-    // AgentView and hydrator, and reads after the swap must observe the fresh
-    // instances.
-    const getAgentView = (): AgentView<TInput, TOutput, TProjection, TMessage> => this._agentView;
+    // Live accessors (not captured refs): a continuity-loss swap replaces the
+    // Tree and hydrator, and reads after the swap must observe the fresh
+    // instances. The per-run leaf source and run.view read through these.
+    const getTree = (): DefaultTree<TInput, TOutput, TProjection> => this._tree;
     const getHydrator = (): HistoryHydrator => this._hydrator;
     const pullDeferredCancel = this._pullDeferredCancel.bind(this);
     const inputEventId = invocation.inputEventId;
@@ -647,37 +627,29 @@ class DefaultAgentSession<
     let resolvedContinuation = false;
     let lookupHeaders: Record<string, string> | undefined;
 
-    // `Run.view.messages` is a LIVE read against the session's Tree:
-    // returns the trigger node's currently-folded messages, reflecting any
-    // amendments (tool resolutions etc.) that have arrived since
-    // `Run.start()`. No internal `viewMessages` array — the Tree is the
-    // single source of truth. The trigger node may be an input node (fresh
-    // send) or a reply run (continuation re-entry with run-id on the
-    // triggering message); both expose a projection the codec can read.
-    //
-    // Resolved via an arrow accessor so the closure picks up `this._tree`
-    // after a continuity-loss swap; capturing `this._tree` into a local at
-    // run-creation time would silently keep returning data from the
-    // abandoned Tree.
-    const getTree = (): DefaultTree<TInput, TOutput, TProjection> => this._tree;
-    const view: RunView<TMessage> = {
-      get messages() {
-        if (resolvedInputCodecMessageId === undefined) return [];
-        const node = getTree().getNodeByCodecMessageId(resolvedInputCodecMessageId);
-        if (!node) return [];
-        const sourceSerial = node.kind === 'input' ? node.serial : node.startSerial;
-        const sourceForkOf = node.kind === 'input' ? node.forkOf : undefined;
-        return codec.getMessages(node.projection).map((m) => ({
-          kind: 'message' as const,
-          message: m.message,
-          codecMessageId: m.codecMessageId,
-          parentId: node.parentCodecMessageId,
-          forkOf: sourceForkOf,
-          headers: {},
-          serial: sourceSerial,
-        }));
-      },
-    };
+    // The run's leaf-pinned branch strategy. It projects no branch until
+    // `Run.start()` resolves the trigger and calls `leafSource.setPin(...)` (so
+    // run.view is empty until the run starts), and reads the live Tree / hydrator
+    // above, observing a continuity-loss swap. It also backs `Run.messages` /
+    // `Run.loadConversation` — the full, un-paginated reconstruction the agent
+    // feeds the model.
+    const viewLogger = logger ?? makeLogger({ logLevel: LogLevel.Silent });
+    const leafSource = createLeafBranchSource<TInput, TOutput, TProjection, TMessage>({
+      getTree,
+      getHydrator,
+      codec,
+      logger: viewLogger,
+    });
+    // run.view — the run's read-only, leaf-pinned, paginating View: the same read
+    // base the client's `session.view` exposes, projecting the branch the leaf
+    // source resolves.
+    const view: View<TMessage> = createLeafView<TInput, TOutput, TProjection, TMessage>({
+      tree: getTree(),
+      codec,
+      hydrator: getHydrator(),
+      branchSource: leafSource,
+      logger: viewLogger,
+    });
     /**
      * The reply run's structural-parent fallback, computed once in
      * `Run.start()` once the input-event lookup resolves the triggering
@@ -688,11 +660,12 @@ class DefaultAgentSession<
      */
     let assistantParentFallback: string | undefined;
     /**
-     * Remove this run from the session's routing maps. Drops the
-     * `_registeredRuns` entry plus the `input-codec-message-id → run-id`
+     * Remove this run from the session's routing maps and close its `run.view`.
+     * Drops the `_registeredRuns` entry plus the `input-codec-message-id → run-id`
      * reverse index (and any stale deferred cancel still buffered for that
-     * input), keeping the cancel-routing state consistent when the run ends,
-     * suspends, or its start fails.
+     * input), and tears down `run.view`'s Tree subscriptions so they don't
+     * accumulate across the runs of a long-lived session. Called when the run
+     * ends, suspends, or its start fails.
      */
     const deregisterRun = (): void => {
       registeredRuns.delete(runId);
@@ -700,6 +673,7 @@ class DefaultAgentSession<
         runIdByInputCodecMessageId.delete(resolvedInputCodecMessageId);
         deferredCancels.delete(resolvedInputCodecMessageId);
       }
+      view.close();
     };
 
     /**
@@ -744,7 +718,7 @@ class DefaultAgentSession<
         return view;
       },
       get messages() {
-        // Always derive live from the Tree via the AgentView. Walks the parent
+        // Always derive live from the Tree via the leaf source. Walks the parent
         // chain from the run's structural-parent anchor and concatenates each
         // ancestor's projection, then appends the current reply run's messages
         // at the tail. Uses `assistantParentFallback` (which falls back to the
@@ -752,10 +726,10 @@ class DefaultAgentSession<
         // codec-message-id has no Tree node) — same anchor `loadConversation`
         // uses, and passes `resolvedRegenerates` so a regenerate's history
         // stops before the message being replaced. No cache: every read
-        // reflects the latest folded state. `getAgentView()` dereferences the
-        // live AgentView so a continuity-loss swap is observed instead of
+        // reflects the latest folded state. The leaf source reads the live Tree
+        // (via `getTree()`), so a continuity-loss swap is observed instead of
         // returning stale data from the abandoned tree.
-        return getAgentView().messages(runId, assistantParentFallback, resolvedRegenerates);
+        return leafSource.messages(runId, assistantParentFallback, resolvedRegenerates);
       },
 
       // Spec: AIT-ST4, AIT-ST4a, AIT-ST4b
@@ -857,6 +831,11 @@ class DefaultAgentSession<
             ? resolvedInputCodecMessageId
             : resolvedParent;
 
+        // Pin run.view to this run's branch now the trigger is resolved — the
+        // same anchor / run-id / regenerate-target the conversation getters use.
+        // Until this, run.view is empty.
+        leafSource.setPin(assistantParentFallback, runId, resolvedRegenerates);
+
         // The triggering input's codec-message-id is now resolved, so the
         // `input-codec-message-id → run` linkage exists: index it for live
         // cancels and pull any cancel that arrived before the run was known
@@ -913,11 +892,11 @@ class DefaultAgentSession<
       loadConversation: async (options?: LoadConversationOptions): Promise<TMessage[]> => {
         logger?.trace('Run.loadConversation();', { runId });
         await requireConnected('loadConversation');
-        // No cache. Drives Tree hydration via the AgentView's conversation walk
-        // and computes a fresh snapshot of the parent-chain messages at
+        // No cache. Drives Tree hydration via the leaf source's conversation
+        // walk and computes a fresh snapshot of the parent-chain messages at
         // return time. After this call, `Run.messages` continues to work
         // as a live Tree read.
-        const { messages } = await getAgentView().loadConversation(
+        const { messages } = await leafSource.loadConversation(
           runId,
           assistantParentFallback,
           signal,

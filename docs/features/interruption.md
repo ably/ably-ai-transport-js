@@ -37,7 +37,7 @@ async function handleSend(text: string) {
 
 The cancel publishes a signal to the channel (see [Cancel](cancel.md)), the server cancels the current run, and the new run starts cleanly.
 
-`send` takes one or more codec input events — build a user-message input with the codec's `createUserMessage(message)` rather than passing a raw domain message.
+`send` takes a single codec input message — build a user-message input with the codec's `createUserMessage(message)` rather than passing a raw domain message.
 
 ## Send alongside (concurrent runs)
 

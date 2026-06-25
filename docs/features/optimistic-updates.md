@@ -61,13 +61,13 @@ Serial promotion happens inside the conversation tree's apply path: the input no
 
 No server-side code is needed for optimistic updates. The user input is published by the client directly to the channel, carrying its own `codec-message-id`; the channel echo redelivers it to the sender for reconciliation. The agent simply locates the triggering input event by its `event-id` and publishes its run lifecycle events and assistant chunks. See [Streaming: server](streaming.md#server) for the standard server run flow.
 
-## Multi-message sends
+## One new message per send
 
-When `send()` receives an array of inputs, each fresh user message gets its own `codec-message-id` and each is optimistically inserted. The messages are chained - each subsequent message auto-parents off the previous one, forming a linear thread rather than siblings. See [Conversation branching](branching.md) for how parent relationships work.
+A send introduces at most one new message. The fresh user message gets its own `codec-message-id` and is optimistically inserted; passing more than one new message rejects with `InvalidArgument`. The array form is reserved for the wire-only inputs that resolve a single assistant turn (tool results / approval responses), which reference existing messages rather than introducing new ones and so are not optimistically inserted. See [Conversation branching](branching.md) for how parent relationships work.
 
 ```typescript
-// Both messages appear immediately, chained in order
-const run = await view.send([questionOne, questionTwo]);
+// The user message appears immediately
+const run = await view.send(question);
 ```
 
 ## Edge cases

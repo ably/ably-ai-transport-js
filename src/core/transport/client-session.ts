@@ -21,10 +21,8 @@ import * as Ably from 'ably';
 import type * as AblyObjects from 'ably/liveobjects';
 
 import {
-  EVENT_CANCEL,
   EVENT_RUN_END,
   HEADER_CODEC_MESSAGE_ID,
-  HEADER_EVENT_ID,
   HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_PARENT,
@@ -40,6 +38,7 @@ import { errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import { resolveChannelModes } from '../channel-options.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent, Encoder } from '../codec/types.js';
+import { buildCancelMessage, type CancelTarget } from './cancel-envelope.js';
 import { createWireApplier, type WireApplier } from './decode-fold.js';
 import { buildRunEndError, buildTransportHeaders } from './headers.js';
 import { Invocation } from './invocation.js';
@@ -696,12 +695,9 @@ class DefaultClientSession<
    * intact so late agent events (a cancel append, a trailing
    * `status: cancelled`) still fold into the Run's projection.
    * @param target - The run identifier(s) to cancel. At least one of `runId` /
-   *   `inputCodecMessageId` must be set.
-   * @param target.runId - The run-id to cancel (continuations).
-   * @param target.inputCodecMessageId - The triggering input's
-   *   codec-message-id to cancel (fresh sends, before run-start).
+   *   `inputCodecMessageId` must be set (see {@link CancelTarget}).
    */
-  private async _publishCancel(target: { runId?: string; inputCodecMessageId?: string }): Promise<void> {
+  private async _publishCancel(target: CancelTarget): Promise<void> {
     if (this._state === ClientSessionState.CLOSED) return;
     await this._requireConnected('cancel');
     // CAST: re-check after await — close() may have been called while waiting for connect.
@@ -711,18 +707,7 @@ class DefaultClientSession<
       inputCodecMessageId: target.inputCodecMessageId,
     });
 
-    const headers: Record<string, string> = {
-      // Stamp a per-cancel event-id so channel rewind redelivers this cancel
-      // to an agent that attaches after it was published.
-      [HEADER_EVENT_ID]: crypto.randomUUID(),
-    };
-    if (target.runId !== undefined) headers[HEADER_RUN_ID] = target.runId;
-    if (target.inputCodecMessageId !== undefined) headers[HEADER_INPUT_CODEC_MESSAGE_ID] = target.inputCodecMessageId;
-
-    await this._channel.publish({
-      name: EVENT_CANCEL,
-      extras: { ai: { transport: headers } },
-    });
+    await this._channel.publish(buildCancelMessage(target));
   }
 
   // Spec: AIT-CT8, AIT-CT8c, AIT-CT8d

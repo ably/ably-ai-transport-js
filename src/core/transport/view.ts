@@ -31,7 +31,7 @@ import type { HistoryHydrator } from './history-hydrator.js';
 import { nodeKey, type TreeInternal } from './tree.js';
 import type {
   ActiveRun,
-  BranchSelection,
+  BranchHandle,
   ConversationNode,
   OutputEvent,
   RunInfo,
@@ -107,11 +107,11 @@ interface ViewOptions<TInput extends CodecInputEvent, TOutput extends CodecOutpu
 /**
  * Internal tagged union representing why a branch was selected for an
  * edit-fork group. Stored per group-root runId in the View's
- * `_branchSelections` map. Not the public-facing {@link BranchSelection}
- * — that's a UI-facing bundle returned by `view.branchSelection(id)`.
+ * `_branchSelections` map. Not the public-facing {@link BranchHandle}
+ * — that's a UI-facing handle returned by `view.branchSelection(id)`.
  */
 type BranchSelectionState =
-  /** Explicit navigation via `selectSibling()`. The selected input-node key. */
+  /** Explicit navigation via `branchSelection().select()`. The selected input-node key. */
   | { kind: 'user'; selectedKey: string }
   /** This view initiated an edit fork — auto-selected the new input node. */
   | { kind: 'auto'; selectedKey: string }
@@ -130,7 +130,7 @@ type BranchSelectionState =
  * forward unless the user has explicitly selected an earlier member.
  */
 type RegenSelection =
-  /** Explicit navigation via `selectSibling()`. The selected reply-run id. */
+  /** Explicit navigation via `branchSelection().select()`. The selected reply-run id. */
   | { kind: 'user'; selectedRunId: string }
   /** This view initiated a regenerate — auto-selected the new reply run when it arrived. */
   | { kind: 'auto'; selectedRunId: string }
@@ -144,7 +144,7 @@ type RegenSelection =
 /**
  * One alternative inside a {@link MessageBranchPoint}. The representative is the
  * member's own head message for fork-of and whole-reply regen groups, but the
- * *regenerate target* (a non-head message) for a non-head regen group - so it is
+ * regenerate target (a non-head message) for a non-head regen group - so it is
  * tracked explicitly rather than re-derived from the node's head.
  */
 interface BranchMember {
@@ -689,7 +689,14 @@ export class DefaultView<
   // appropriate internal selection map. Tree-level introspection
   // (RunNode access, runId-keyed queries) remains on the {@link Tree}.
 
-  branchSelection(codecMessageId: string): BranchSelection<TMessage> {
+  branchSelection(codecMessageId: string): BranchHandle<TMessage> {
+    // Every handle carries the same `select` verb bound to this anchor; the
+    // underlying `_selectSibling` resolves the branch point itself and no-ops
+    // when the id anchors no group, so the non-anchor / unknown-id handles get
+    // a safe no-op select without special-casing here.
+    const select = (index: number): void => {
+      this._selectSibling(codecMessageId, index);
+    };
     const branch = this._resolveMessageBranchPoint(codecMessageId);
     if (branch) {
       // Each member contributes its representative message as the branch-arrow
@@ -715,11 +722,12 @@ export class DefaultView<
           siblings,
           index: clamped,
           selected,
+          select,
         };
       }
     }
 
-    // Known non-anchor message: the bundle's invariant is that
+    // Known non-anchor message: the handle's invariant is that
     // `siblings` contains the rendered message itself for any known
     // codec-message-id, so plain bubbles get `siblings.length === 1`
     // (not `0`) and the indexing space matches between read and write.
@@ -729,7 +737,7 @@ export class DefaultView<
     if (owner) {
       const found = this._codec.getMessages(owner.projection).find((m) => m.codecMessageId === codecMessageId);
       if (found !== undefined) {
-        return { hasSiblings: false, siblings: [found.message], index: 0, selected: found.message };
+        return { hasSiblings: false, siblings: [found.message], index: 0, selected: found.message, select };
       }
     }
 
@@ -737,13 +745,13 @@ export class DefaultView<
     // a message with this id from the projection (e.g. an event-only fold
     // such as a tool result that mutates an assistant in-place without
     // exposing its own TMessage). Treat both as "no rendered message",
-    // returning the safe empty bundle.
-    return { hasSiblings: false, siblings: [], index: 0, selected: undefined };
+    // returning the safe empty handle.
+    return { hasSiblings: false, siblings: [], index: 0, selected: undefined, select };
   }
 
   // Spec: AIT-CT13c, AIT-CT13d
-  selectSibling(codecMessageId: string, index: number): void {
-    this._logger.trace('DefaultView.selectSibling();', { codecMessageId, index });
+  private _selectSibling(codecMessageId: string, index: number): void {
+    this._logger.trace('DefaultView._selectSibling();', { codecMessageId, index });
     const branch = this._resolveMessageBranchPoint(codecMessageId);
     if (!branch) return;
     const clamped = Math.max(0, Math.min(index, branch.members.length - 1));
@@ -751,7 +759,7 @@ export class DefaultView<
     if (!selected) return; // unreachable: clamped is always in bounds
     if (branch.kind === 'fork-of') {
       this._branchSelections.set(branch.groupRoot, { kind: 'user', selectedKey: selected.memberNodeKey });
-      this._logger.debug('DefaultView.selectSibling(); fork-of', {
+      this._logger.debug('DefaultView._selectSibling(); fork-of', {
         codecMessageId,
         index: clamped,
         selectedKey: selected.memberNodeKey,
@@ -760,7 +768,7 @@ export class DefaultView<
       // Non-head groups live outside the visibleNodes sibling space — store in
       // the dedicated map the message-extraction substitution reads.
       this._nonHeadRegenSelections.set(branch.groupRoot, { kind: 'user', selectedRunId: selected.memberNodeKey });
-      this._logger.debug('DefaultView.selectSibling(); non-head-regen', {
+      this._logger.debug('DefaultView._selectSibling(); non-head-regen', {
         codecMessageId,
         index: clamped,
         selectedRunId: selected.memberNodeKey,
@@ -768,7 +776,7 @@ export class DefaultView<
       });
     } else {
       this._regenSelections.set(branch.groupRoot, { kind: 'user', selectedRunId: selected.memberNodeKey });
-      this._logger.debug('DefaultView.selectSibling(); regenerate', {
+      this._logger.debug('DefaultView._selectSibling(); regenerate', {
         codecMessageId,
         index: clamped,
         selectedRunId: selected.memberNodeKey,
@@ -1326,7 +1334,7 @@ export class DefaultView<
    * sources.
    *
    * Exception: if the fork was initiated by this view (tracked as a
-   * `pending` BranchSelection), select the newest sibling (the awaited Run)
+   * `pending` branch selection), select the newest sibling (the awaited Run)
    * instead of pinning the old one.
    */
   private _pinBranchSelections(): void {

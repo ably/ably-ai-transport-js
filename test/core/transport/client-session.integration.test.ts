@@ -824,7 +824,7 @@ describe('ClientSession integration', () => {
     // Navigate back to the original branch via the user-prompt anchor.
     const originalBranch = clientSession.view.branchSelection('u2');
     const originalIdx = originalBranch.siblings.findIndex((m) => m.id === 'u2');
-    clientSession.view.selectSibling('u2', originalIdx);
+    clientSession.view.branchSelection('u2').select(originalIdx);
 
     const nodesOriginal = clientSession.view.runs();
     expect(nodesOriginal.map((n) => n.runId)).toEqual(['run-t1', 'run-t2']);
@@ -890,7 +890,7 @@ describe('ClientSession integration', () => {
     // Sibling order is chronological by startSerial — the original
     // (run-t2) is index 0, the regenerator (run-t2-regen) is index 1.
     // Navigate back to the original assistant.
-    clientSession.view.selectSibling('a2', 0);
+    clientSession.view.branchSelection('a2').select(0);
 
     const messagesOriginal = clientSession.view.getMessages().map((m) => m.message);
     const asstOriginal = messagesOriginal.find((m) => m.role === 'assistant' && m.id !== 'a1');

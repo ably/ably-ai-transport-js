@@ -73,8 +73,9 @@ export type RunInfo =
     });
 
 /**
- * Bundle returned by {@link View.branchSelection} describing the
- * sibling group anchored at a given codec-message-id.
+ * Handle returned by {@link View.branchSelection} for the sibling group
+ * anchored at a given codec-message-id: the resolved sibling state plus the
+ * `select` verb that navigates it.
  *
  * Total / always-defined — `view.branchSelection(id)` is safe to call
  * for any message:
@@ -91,10 +92,10 @@ export type RunInfo =
  * Because `siblings` always contains the currently rendered message
  * (for known ids), `siblings.length` is `1` for a plain bubble (not
  * `0`) and the indexing space matches between read and write —
- * passing `branch.index` back into {@link View.selectSibling} is a
+ * passing `branch.index` back into {@link BranchHandle.select} is a
  * round-trip no-op.
  */
-export interface BranchSelection<TMessage> {
+export interface BranchHandle<TMessage> {
   /** True when the codec-message-id is a branch anchor with more than one sibling. Equivalent to `siblings.length > 1`. */
   hasSiblings: boolean;
   /**
@@ -108,6 +109,14 @@ export interface BranchSelection<TMessage> {
   index: number;
   /** Convenience reference to `siblings[index]`. `undefined` only when `siblings` is empty. */
   selected: TMessage | undefined;
+  /**
+   * Select a sibling at this branch point. `index` is clamped to
+   * `[0, siblings.length - 1]`. Silent no-op when the anchoring
+   * codec-message-id is not a branch anchor. Emits 'update' when the
+   * visible output changes.
+   * @param index - The index of the sibling to select.
+   */
+  select(index: number): void;
 }
 
 /**
@@ -187,27 +196,17 @@ export interface View<TInput extends CodecInputEvent, TMessage> {
   // --- Branch navigation ---
 
   /**
-   * Resolve the {@link BranchSelection} bundle anchored at
-   * `codecMessageId`. Always returns a safe object — see
-   * {@link BranchSelection} for the per-case shape.
+   * Resolve the {@link BranchHandle} anchored at `codecMessageId`: the
+   * sibling state plus a `select` verb to navigate it. Always returns a
+   * safe handle — see {@link BranchHandle} for the per-case shape.
    *
    * Per AITRFC-014, branch points are message-anchored: edit forks
    * point at the user prompt's codec-message-id, regenerate forks
-   * point at the assistant message's codec-message-id.
+   * point at the assistant message's codec-message-id. Switch sibling
+   * via the returned handle's {@link BranchHandle.select}.
    * @param codecMessageId - The codec-message-id of the bubble being rendered.
    */
-  branchSelection(codecMessageId: string): BranchSelection<TMessage>;
-
-  /**
-   * Select a sibling at the branch point anchored at
-   * `codecMessageId`. `index` is clamped to
-   * `[0, siblings.length - 1]`. Silent no-op when `codecMessageId`
-   * is not a branch anchor. Emits 'update' when the visible output
-   * changes.
-   * @param codecMessageId - The codec-message-id of the bubble being rendered.
-   * @param index - The index of the sibling to select.
-   */
-  selectSibling(codecMessageId: string, index: number): void;
+  branchSelection(codecMessageId: string): BranchHandle<TMessage>;
 
   // --- Write operations ---
 

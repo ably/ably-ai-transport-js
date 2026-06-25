@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { useEffect, useState, type ReactNode } from 'react';
 import type * as AI from 'ai';
-import type { BranchSelection, ClientSession, RunInfo } from '@ably/ai-transport';
+import type { BranchHandle, ClientSession, RunInfo } from '@ably/ai-transport';
 import type { ChatTransport, VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
 
 // jsdom doesn't implement Element.prototype.scrollIntoView; MessageList's
@@ -42,11 +42,12 @@ const mockSession = {
   on: vi.fn(() => () => {}),
 } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
-const emptyBranchSelection = (): BranchSelection<AI.UIMessage> => ({
+const emptyBranchHandle = (): BranchHandle<AI.UIMessage> => ({
   hasSiblings: false,
   siblings: [],
   index: 0,
   selected: undefined,
+  select: () => {},
 });
 
 vi.mock('@ably/ai-transport/vercel/react', () => ({
@@ -73,8 +74,7 @@ vi.mock('@ably/ai-transport/vercel/react', () => ({
       hasOlder: false,
       loading: false,
       loadOlder: async () => {},
-      branchSelection: emptyBranchSelection,
-      selectSibling: () => {},
+      branchSelection: emptyBranchHandle,
       runOf: () => undefined,
       run: (runId: string) => state.runs.get(runId),
     };

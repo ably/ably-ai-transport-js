@@ -17,7 +17,7 @@ The subscription is unfiltered so the Tree folds every post-attach message regar
 
 ## Input-event lookup
 
-The client publishes the user prompt directly on the channel; the agent locates it by its `event-id`. Messages published before the agent attached are found via a bounded history scan: `loadHistoryPages` with `untilAttach: true` (gapless with the live subscription by serial boundary), looking back `AgentSessionOptions.inputEventLookbackMs` (default 2 minutes) from attach. A longer window improves the chances of finding a user prompt for an agent with a slow cold start but increases the history volume scanned.
+The client publishes the user prompt directly on the channel; the agent locates it by its `event-id` via `locateInputEvent` (`src/core/transport/input-event-locator.ts`). Messages published before the agent attached are found by driving the session's shared [history hydrator](history.md) with `untilAttach: true` (gapless with the live subscription by serial boundary). The scan pages backward only until the trigger is found — there is no "how far back" window; it is bounded instead by the lookup deadline (`AgentSessionOptions.inputEventLookupTimeoutMs`) and the channel's `untilAttach` exhaustion.
 
 Inside `Run.start()`:
 

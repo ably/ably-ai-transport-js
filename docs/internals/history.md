@@ -1,111 +1,66 @@
 # History hydration
 
-`loadHistory()` (`src/core/transport/load-history.ts`) loads conversation history from an Ably channel's history API and returns the **raw wire messages** as a paginated `HistoryPage`. It does **not** decode: it pages back through Ably history until enough complete messages are present, then hands the raw Ably messages (oldest-first) to the caller. The [View](client-session.md) re-decodes them into the [Tree](conversation-tree.md) itself, so `loadHistory` only needs a cheap, header-based completion counter to decide when to stop paging - the [decoder](decoder.md) never runs here.
+The transport reconstructs past conversation state by paging an Ably channel's history backward and folding each wire into the [Tree](conversation-tree.md). One engine — the **history hydrator** (`createHistoryHydrator`, `src/core/transport/history-hydrator.ts`) — serves every history route: the client [View](client-session.md)'s `loadOlder()` pagination, and the agent's [input-event lookup](agent-session.md#input-event-lookup) and ancestor hydration. A single engine means the two sides cannot drift on stop conditions or exhaustion, and a session pages its channel **once** across concurrent callers.
+
+## Two layers
+
+- **`loadHistoryPages` (`src/core/transport/load-history-pages.ts`)** — the low-level cursor. It [attaches the channel](glossary.md#channel-attach-ably) (idempotent), then pages `channel.history()` with [`untilAttach: true`](glossary.md#untilattach-ably), exposing a `HistoryPagesCursor` with `hasNext()` (cheap, no network) and `next()` (one Ably page per call, newest-first within the page, with bounded retry/backoff). It returns **raw** Ably messages and does not decode.
+- **`HistoryHydrator` (`src/core/transport/history-hydrator.ts`)** — drives that cursor and folds each page into the Tree as it pages. It owns one cursor per attach epoch and exposes `foldUntil(shouldStop, signal?)` and `hasNext()`.
 
 ## The problem
 
-Ably's history API returns messages newest-first. The View's decode replay needs messages oldest-first (chronological) because [stream accumulation](decoder.md#stream-tracker) depends on seeing the create before the appends. A single domain message may span many Ably [wire messages](wire-protocol.md#streamed-messages) (create + N appends + close), and a run's messages may span page boundaries.
+Ably's history API returns messages newest-first, but [stream accumulation](decoder.md#stream-tracker) needs them oldest-first (the create before its appends), and a single domain message may span many [wire messages](wire-protocol.md#streamed-messages) (create + N appends + close) and page boundaries. The hydrator reverses each fetched page to chronological order before folding, so projections build oldest-to-newest exactly as they do live.
 
-Additionally, the `limit` parameter should control the number of complete **messages** returned, not the number of raw Ably messages fetched. A single message with 100 token deltas produces 100+ Ably messages.
+## Fold while paging — the caller owns the stop
 
-## Strategy: count via headers, never decode
+Unlike a fetch-then-decode design, the hydrator folds each page straight into the Tree through the Tree's shared decode-and-apply engine (`foldAndEmit` → `applyWireMessage`, `src/core/transport/decode-fold.ts`) — the **same** engine and decoder instance the live subscription uses, so history replay and the live loop can never drift. There is no separate completion counter and no "how far back" heuristic: each caller expresses its own stop condition as a predicate.
 
-`loadHistory()` collects raw Ably messages across all fetched pages and decides when to stop by scanning transport headers on newly-added messages - O(n) counter work across the whole traversal, regardless of how many pages are fetched. The decoder is never run in `loadHistory`; the caller (the View) re-decodes the returned raw wires.
+`foldUntil(shouldStop, signal?)`:
 
-1. Fetch a page of Ably history (newest-first)
-2. Append raw messages to the collection
-3. Scan the new messages' transport headers to update the [completion counter](#completion-counter)
-4. If the counter shows enough completed messages, stop; otherwise fetch the next page and repeat
-5. When building a page result, reverse the new raw messages to chronological order and return them to the caller
+1. Lazily opens the cursor on first use (capturing the attach serial then).
+2. Before each page, polls `shouldStop()`; if true, pauses — the cursor stays open for the next caller.
+3. Otherwise fetches the next page, reverses it to chronological order, and folds each wire into the Tree.
+4. Stops when the predicate trips, the channel is exhausted, or `signal` aborts.
 
-Counting via headers (rather than decoding per page) is what lets the implementation handle runs that span page boundaries, interleaved concurrent runs, and the many-to-one wire-message-to-domain-message ratio without paying an O(n) decode cost per page - the decode happens once, in the View, over the returned raw wires.
+It returns `{ exhausted }`, true only when the cursor genuinely reached attach. The hydrator records exhaustion once, and `hasNext()` reports it truthfully thereafter — it returns `true` before the cursor is first opened, because exhaustion is unknown until something pages.
 
-## Completion counter
+Because folding is idempotent — the shared decoder's version-guarded [stream trackers](decoder.md#stream-tracker) drop re-delivered content and the Tree's per-entry high-water-mark drops whole-wire replays — a wire that surfaces both live and via a history page folds exactly once. This is what makes the overlap between the `untilAttach` history scan and the live subscription safe.
 
-The fetch loop's stop condition uses three `Set<string>`s on `HistoryState`. Each time a page is fetched, `countNewCompletions()` scans the new messages and updates these sets incrementally:
+## Single-flight shared cursor
 
-- `startedCodecMessageIds` - codec-message-ids for which the decoder will have content to work with.
-- `terminatedCodecMessageIds` - codec-message-ids whose stream has a terminal wire signal.
-- `completedCodecMessageIds` - the intersection (both started AND terminated). The loop reads `completedCodecMessageIds.size` to decide when to stop.
+The cursor is **single-flight**: concurrent `foldUntil` calls serialise behind one another, so the cursor is advanced by one caller at a time and a follower resumes from where the previous caller paused rather than re-paging from newest. An agent's pre-run-start input-event lookup and a concurrent ancestor hydration therefore share each other's folded pages — the channel is walked once. A failed page fetch is isolated to its own caller (it rejects that `foldUntil`); a follower still runs its own walk.
 
-A codec-message-id is **started** when any of these is seen on a message carrying [`codec-message-id`](wire-protocol.md#message-identity-codec-message-id):
+The hydrator follows the lifecycle of the Tree it folds into: the client session creates one; the agent session recreates it alongside the Tree and applier on a channel continuity-loss swap, so the fresh Tree gets a fresh cursor and exhaustion state.
 
-- `message.create` with `discrete` - a discrete user or history message, started and terminated by the same wire message.
-- `message.create`, `message.update`, or `message.append` with `stream: "true"` - the decoder establishes a tracker for this serial via create or [first-contact](decoder.md#update-handling-first-contact-vs-prefix-match).
+## Stop predicates, per caller
 
-A codec-message-id is **terminated** when:
+| Caller                                                                               | `shouldStop` predicate                                                                        |
+| ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------- |
+| Client `View.loadOlder`                                                              | enough newly-visible codecMessages have folded to cover the requested page                    |
+| Agent input-event lookup ([`locateInputEvent`](agent-session.md#input-event-lookup)) | the triggering `event-id` has been found (via the Tree's `ably-message` event the fold emits) |
+| Agent ancestor hydration (`loadConversation`)                                        | the run's parent chain reaches the conversation root (or the `maxRuns` bound)                 |
 
-- `discrete` is present on the create.
-- `status` is `"complete"` or `"cancelled"` on any later action.
+The transport never reads inside a domain message to decide when to stop — the criterion lives entirely in caller code.
 
-Amend-class wire messages (events targeting an existing message via `codec-message-id`) flow through the same counter - the Sets naturally dedup, so a tool-output amend on an already-seen codec-message-id is idempotent. Messages without `codec-message-id` (run lifecycle events) are skipped. `message.delete` is never a start signal: it clears the decoder's tracker and emits nothing.
+## Client pagination
 
-Requiring both halves matters when a streaming run spans a page boundary. The terminal arrives in the newer (first-fetched) page while the start sits in an older page. Counting the terminal alone would stop the fetch loop prematurely - the decoder would have no stream state to resolve, and the message wouldn't make it into the result.
-
-Accepting `message.update` and `message.append` as starts matters because Ably history can compact a live `create + append + ... + append{status:complete}` sequence into a single `message.update` with the accumulated data and terminal status - the decoder handles that via first-contact, and the counter has to recognise it or the loop pages past compacted runs without ever marking them complete.
-
-The counter is an approximation, not a proof: a truncated history where every start signal for a codec-message-id has rolled off but a terminal survives will never complete that codec-message-id in the counter. The loop keeps fetching until it exhausts Ably pages, then returns whatever the decoder actually produced - which for this pathological case is nothing for that codec-message-id.
-
-## Decoding happens in the View, not here
-
-`loadHistory` returns only raw wires - it never folds them into messages. The [View](client-session.md) re-decodes the returned raw wires into the [Tree](conversation-tree.md) via the shared `applyWireMessage` primitive (`src/core/transport/decode-fold.ts`), which classifies each wire as run-lifecycle or codec-decoded and applies it. The Tree groups events by their owning node — reply runs by [`run-id`](wire-protocol.md#transport-headers), run-less input nodes by `codec-message-id` — and folds each node's events into its own opaque per-node `TProjection` via the codec's [`Reducer`](codec-interface.md#reducer-and-projection) half (`init()` / `fold()`).
-
-Folding per Run is what keeps concurrent runs isolated: a text-delta from run A is folded into run A's projection, never run B's. Partial messages at page boundaries simply contribute to a projection that completes once a later page supplies the rest of the run's wires.
-
-## Pagination
-
-`loadHistory` itself paginates by completed messages; the `View` wraps it to paginate by **Runs**. `View.loadOlder(limit)` (default `100`) reveals up to `limit` Runs per call. The View loops `loadHistory` pages (using an internal multiplier to amortise round-trips) until enough Runs are buffered, then withholds excess for subsequent calls.
-
-The `limit` option on the lower-level `loadHistory` still counts completed messages (not Runs) and is the contract documented below:
+`View.loadOlder(limit)` (default `10`) reveals up to `limit` older codecMessages. After draining what it already holds (hidden messages and the withheld-node buffer), it drives `foldUntil` with a predicate that stops once enough newly-visible codecMessages have folded to cover the remaining page budget — all under a processing-history guard (so a fold doesn't surface transient events before the window is set up) — then reveals the newest whole runs covering the page and withholds the rest for the next call. `View.hasOlder()` reads `hydrator.hasNext()` for its history component, so it reflects real cursor exhaustion: it is optimistically `true` before the first fetch (history may exist) and `false` once the channel is drained — which is what the `while (view.hasOlder()) await view.loadOlder()` drain loop relies on.
 
 ```typescript
 await view.loadOlder(10);
-// view.runs() returns the visible RunInfo[] including up to 10
-//   newly-revealed older Runs.
-// view.getMessages() returns the concatenated flat TMessage list across
-//   all visible Runs.
-// view.hasOlder() - whether more history is available
-// view.loadOlder(10) - load more older Runs
+// view.getMessages() — the concatenated flat TMessage list across visible Runs
+// view.runs()        — the visible RunInfo[]
+// view.hasOlder()    — whether more history may be revealed
 ```
 
-### Wire limit multiplier
+A run whose stream is still in progress, or spans a page boundary, simply contributes to a projection that completes once a later page supplies the rest of its wires — no special handling, because folding is incremental and idempotent. Concurrent runs stay isolated for the same reason they do live: each wire folds into its owning node's projection, keyed by [`run-id`](wire-protocol.md#transport-headers).
 
-`loadHistory` requests `limit * 10` Ably messages per page (`wireLimit`) to account for the many-to-one ratio between wire and domain messages. This is a heuristic; a single assistant message with streaming may produce dozens of Ably messages, so fetching only `limit` Ably messages would almost never yield `limit` complete messages.
+## Page size
 
-The View applies its own multiplier (`_RUN_TO_MESSAGE_FETCH_FACTOR = 3`) on top of this when requesting pages for `loadOlder(limit)`. Because the View paginates by **Runs** but `loadHistory` paginates by **messages**, the factor amortises the typical messages-per-Run ratio (~2 for a user + assistant pair, with headroom for tool calls) so a single round-trip usually satisfies the Run-unit target before `_loadUntilVisible` has to fetch another page.
-
-### Completed vs partial
-
-The completion counter only counts messages whose terminal wire `status` — `complete` or `cancelled` — has been seen (an errored run ends via the `ai-run-end` lifecycle event, which carries no `codec-message-id` and so doesn't advance the counter). A run whose stream is still in progress, or spans a page boundary, doesn't advance the counter until a later page supplies its terminal signal, so the fetch loop keeps paging. The raw wires for a partial run are still returned - the View buffers and re-decodes them once the rest of the run arrives.
-
-## Result shape
-
-```typescript
-/** A page of raw history wires from the channel. Internal to View/loadHistory. */
-interface HistoryPage {
-  rawMessages: Ably.InboundMessage[]; // Raw Ably messages, chronological (oldest first)
-  hasNext(): boolean;
-  next(): Promise<HistoryPage | undefined>;
-}
-```
-
-`HistoryPage` (defined in `src/core/transport/types/view.ts`) carries only raw wires - there is no decoded `message`, header, or serial field, because `loadHistory` doesn't decode. `rawMessages` holds the Ably messages fetched since the previous page, reversed to chronological order (oldest first). The View re-decodes these into the [conversation tree](conversation-tree.md#apply-the-two-mutation-entry-points), reading [branching metadata](wire-protocol.md#branching-headers) and serials directly off each raw wire.
+The cursor fetches a fixed `HISTORY_PAGE_LIMIT` (200) wire messages per Ably page, over-provisioning for the many-wire-messages-per-domain-message ratio so a single round-trip usually covers several domain messages. `loadOlder`'s `limit` controls how many codecMessages are **revealed**, decoupled from how many wires are fetched per round-trip.
 
 ## Channel attach and untilAttach
 
-`loadHistory()` [attaches the channel](glossary.md#channel-attach-ably) (idempotent) and uses [`untilAttach: true`](glossary.md#untilattach-ably) on the history call. This guarantees no gap between historical messages and the live subscription - the history ends exactly where the subscription starts.
+The cursor [attaches the channel](glossary.md#channel-attach-ably) (idempotent) and uses [`untilAttach: true`](glossary.md#untilattach-ably), so there is no gap between historical messages and the live subscription — history ends exactly where the subscription starts.
 
-## Shared state across pages
-
-The `HistoryState` object persists across `next()` calls within a single history traversal:
-
-- `rawMessages` - all Ably messages collected across all pages, in newest-first order (as received from Ably)
-- `returnedCount` - how many completed messages have been served to the consumer so far
-- `returnedRawCount` - how many raw Ably messages have been served so far (so each page's `rawMessages` slice covers only newly-fetched wires)
-- `lastAblyPage` - cursor for Ably pagination
-- `startedCodecMessageIds` / `terminatedCodecMessageIds` / `completedCodecMessageIds` - the [completion counter](#completion-counter)
-- `logger` - logger for diagnostic output
-
-Each `next()` call either serves a buffered page (when an earlier fetch already gathered more than `limit` completions) or fetches more Ably pages, which extends `rawMessages` and re-runs the header scan. The returned page's `rawMessages` are the wires fetched since the previous page (empty for a buffered page).
-
-See [Decoder](decoder.md) for how the decoder processes Ably messages into domain events. See [Conversation tree](conversation-tree.md) for how the View applies decoded messages into the tree using headers and serials read off each raw wire. See [Codec interface](codec-interface.md#reducer-and-projection) for the reducer that folds decoder outputs into a per-Run projection.
+See [Decoder](decoder.md) for how wires become domain events, [Conversation tree](conversation-tree.md) for how folded events group by owning node, and [Agent session](agent-session.md#input-event-lookup) for the input-event lookup that shares this engine.

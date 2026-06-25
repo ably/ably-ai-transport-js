@@ -76,10 +76,10 @@ Every `'update'` event reads the View's pre-computed visible message snapshot vi
 
 [History hydration](history.md) replays raw channel history through the **same** decode-and-apply engine the live loop uses (`applyWireMessage` in `decode-fold.ts`), so the two paths can never drift:
 
-1. `loadHistory` fetches raw Ably wire messages from channel history (newest-first), returning them as a paginated `HistoryPage` of `rawMessages` — it does not decode.
-2. The View's `_processHistoryPage` reverses each page to chronological order and feeds every raw message through `applyWireMessage(tree, decoder, rawMsg)` — the identical classification used live: run-lifecycle wires apply via `applyRunLifecycle`, everything else decodes and folds via `applyMessage`.
+1. The session's shared `HistoryHydrator` pages channel history backward (newest-first) via `loadHistoryPages`, reversing each page to chronological order.
+2. It folds every wire through `foldAndEmit` → `applyWireMessage(tree, decoder, rawMsg)` as it pages — the identical classification used live: run-lifecycle wires apply via `applyRunLifecycle`, everything else decodes and folds via `applyMessage`. There is no fetch-raw-then-re-decode step.
 3. The messages land in the same `Tree`, folded into each node's projection. There is no separate accumulator and no separate result array — history and live state share one tree.
-4. The View paginates by **Runs**: `loadOlder(limit)` (default 100) loops history pages until at least `limit` new Runs are revealed, withholding any excess for the next call.
+4. The View paginates by **codecMessages**: `loadOlder(limit)` (default 10) drives the hydrator until at least `limit` newly-visible messages have folded, withholding any excess whole runs for the next call.
 
 A single shared decoder instance is reused across a page's messages so a stream's accumulation state spans the wires of a run. Because the live loop and history replay run through the same engine, concurrent runs are kept separate exactly as they are live — by folding into the run's own node projection, keyed by [`run-id`](wire-protocol.md#transport-headers).
 

@@ -26,7 +26,7 @@ import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
 import type { Codec, CodecInputEvent, CodecMessage, CodecOutputEvent } from '../codec/types.js';
-import { collectMessages } from './collect-messages.js';
+import { collectMessages, messageTailSplitIndex } from './conversation-projection.js';
 import type { HistoryHydrator } from './history-hydrator.js';
 import { nodeKey, type TreeInternal } from './tree.js';
 import type {
@@ -542,7 +542,7 @@ export class DefaultView<
 
       // Drain the withheld buffer toward `need` (whole older runs, newest-first).
       if (this._withheldBuffer.length > 0) {
-        const splitIdx = this._messageTailSplitIndex(this._withheldBuffer, need);
+        const splitIdx = messageTailSplitIndex(this._withheldBuffer, need, (p) => this._codec.getMessages(p));
         const batch = this._withheldBuffer.splice(splitIdx);
         this._releaseWithheld(batch);
       }
@@ -607,32 +607,6 @@ export class DefaultView<
 
     const newVisible = this._treeVisibleNodes().filter((n) => !beforeKeys.has(nodeKey(n)));
     this._splitReveal(newVisible, target);
-  }
-
-  /**
-   * Find the index in `nodes` (chronological, oldest-first) at which the newest
-   * whole runs covering at least `target` codecMessages begin. Walks newest-first
-   * summing each node's `codec.getMessages(projection)` count; once the running
-   * total reaches `target`, the current node (and everything newer) is the
-   * revealed batch — so whole runs are revealed and the batch may overshoot
-   * `target` (the caller trims). Returns `0` when the nodes hold fewer than
-   * `target` messages — reveal everything.
-   *
-   * Shared by the buffer-drain and history-fetch reveal paths so they agree on
-   * "covering `target` messages".
-   * @param nodes - Candidate nodes, oldest-first.
-   * @param target - Minimum codecMessages the revealed batch must cover.
-   * @returns The split index; `nodes[splitIdx..]` is the revealed batch.
-   */
-  private _messageTailSplitIndex(nodes: ConversationNode<TProjection>[], target: number): number {
-    let messages = 0;
-    for (let i = nodes.length - 1; i >= 0; i--) {
-      const node = nodes[i];
-      if (!node) continue;
-      messages += this._codec.getMessages(node.projection).length;
-      if (messages >= target) return i; // reveal nodes[i..]
-    }
-    return 0; // fewer than `target` messages — reveal everything
   }
 
   // -------------------------------------------------------------------------
@@ -1236,7 +1210,7 @@ export class DefaultView<
    * @param target - Minimum codecMessages the revealed batch must cover.
    */
   private _splitReveal(newVisible: ConversationNode<TProjection>[], target: number): void {
-    const splitIdx = this._messageTailSplitIndex(newVisible, target);
+    const splitIdx = messageTailSplitIndex(newVisible, target, (p) => this._codec.getMessages(p));
     const batch = newVisible.slice(splitIdx);
     const withheld = newVisible.slice(0, splitIdx);
     for (const n of withheld) {

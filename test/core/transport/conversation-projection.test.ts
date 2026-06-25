@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import type { CodecMessage } from '../../../src/core/codec/types.js';
-import { collectMessages, type NonHeadRegenerateResolver } from '../../../src/core/transport/collect-messages.js';
+import {
+  collectMessages,
+  messageTailSplitIndex,
+  type NonHeadRegenerateResolver,
+} from '../../../src/core/transport/conversation-projection.js';
 import type { ConversationNode, RunNode } from '../../../src/core/transport/types.js';
 
 // ---------------------------------------------------------------------------
@@ -61,6 +65,9 @@ const collect = (
   nodes: ConversationNode<TestProjection>[],
   resolver: NonHeadRegenerateResolver<TestProjection> = plainResolver(),
 ): string[] => collectMessages(nodes, getMessages, resolver).map((m) => m.codecMessageId);
+
+const split = (chain: ConversationNode<TestProjection>[], target: number): number =>
+  messageTailSplitIndex(chain, target, getMessages);
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -174,5 +181,32 @@ describe('collectMessages', () => {
       });
       expect(collect([ownerWithTail, ra2, ra3, ra3prime], resolver)).toEqual(['a1', 'a2b']);
     });
+  });
+});
+
+describe('messageTailSplitIndex', () => {
+  // Three nodes contributing [1, 2, 1] = 4 messages total, oldest-first.
+  const nodes = [inputNode('u1', ['u1']), runNode('r1', ['a1', 'a2']), inputNode('u2', ['u2'])];
+
+  it('returns the index of the newest run whose tail covers the target', () => {
+    // target 1 is covered by the last node alone (u2): split at index 2.
+    expect(split(nodes, 1)).toBe(2);
+  });
+
+  it('walks newer-to-older, including whole runs that overshoot the target', () => {
+    // target 2: u2 (1) is short, so r1 (2 more) is pulled in whole — total 3,
+    // overshooting 2. Split lands on r1 at index 1, not mid-run.
+    expect(split(nodes, 2)).toBe(1);
+    // target 3 lands on the same boundary (u2 + r1 = 3 exactly).
+    expect(split(nodes, 3)).toBe(1);
+  });
+
+  it('returns 0 when the chain holds fewer than `target` messages — reveal everything', () => {
+    expect(split(nodes, 4)).toBe(0); // exactly all 4
+    expect(split(nodes, 99)).toBe(0); // more than available
+  });
+
+  it('returns 0 for an empty chain', () => {
+    expect(split([], 1)).toBe(0);
   });
 });

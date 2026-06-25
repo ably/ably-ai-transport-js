@@ -112,28 +112,6 @@ export type RunLifecycleEvent =
 // Conversation tree (branching history)
 // ---------------------------------------------------------------------------
 
-/** A node in the conversation tree, representing a single domain message. */
-export interface MessageNode<TMessage> {
-  /** Discriminator — identifies this as a message node. */
-  kind: 'message';
-  /** The domain message. */
-  message: TMessage;
-  /** The codec-message-id of this node — primary key in the tree. */
-  codecMessageId: string;
-  /** Parent node's codec-message-id (parent), or undefined for root messages. */
-  parentId: string | undefined;
-  /** The codec-message-id this node forks from (fork-of), or undefined if first version. */
-  forkOf: string | undefined;
-  /** The transport-tier headers (`extras.ai.transport`) for this message: the run/stream/identity/branching headers set and read by the transport layer. Codec-tier headers (`extras.ai.codec`) are not included. */
-  headers: Record<string, string>;
-  /**
-   * Ably serial for this message. Lexicographically comparable for total order.
-   * Used to sort siblings deterministically regardless of delivery/history order.
-   * Absent for optimistic messages (set when the server relay arrives).
-   */
-  serial: string | undefined;
-}
-
 /**
  * A Run's lifecycle state, modelled as one discriminated value so the terminal
  * `error` is carried exactly when `status` is `'error'`. A RunNode is mutated

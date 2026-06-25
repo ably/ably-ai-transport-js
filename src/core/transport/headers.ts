@@ -13,6 +13,9 @@ import {
   EVENT_RUN_RESUME,
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
+  EVENT_STEP_END,
+  EVENT_STEP_START,
+  HEADER_ATTEMPT_ID,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
@@ -27,9 +30,11 @@ import {
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_STEP_ID,
+  HEADER_STEP_REASON,
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
-import type { RunEndReason, RunLifecycleEvent } from './types.js';
+import type { RunEndReason, RunLifecycleEvent, StepEndReason, StepLifecycleEvent } from './types.js';
 
 /**
  * Build the standard transport header set for a message.
@@ -59,6 +64,9 @@ import type { RunEndReason, RunLifecycleEvent } from './types.js';
  *   publishes for the invocation (run lifecycle + outputs), mirroring
  *   `inputClientId`, so the client can correlate any of those events back to
  *   the originating input by the id it owned at send time.
+ * @param opts.stepId - The owning step's id, when the output is published within
+ *   a `Run.step`. See {@link HEADER_STEP_ID}.
+ * @param opts.attemptId - The publishing attempt's id, paired with `stepId`.
  * @returns A headers record with the transport headers set.
  */
 export const buildTransportHeaders = (opts: {
@@ -73,6 +81,8 @@ export const buildTransportHeaders = (opts: {
   inputClientId?: string;
   inputCodecMessageId?: string;
   inputEventId?: string;
+  stepId?: string;
+  attemptId?: string;
 }): Record<string, string> => {
   const h: Record<string, string> = {
     [HEADER_ROLE]: opts.role,
@@ -87,6 +97,8 @@ export const buildTransportHeaders = (opts: {
   if (opts.inputClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.inputClientId;
   if (opts.inputCodecMessageId !== undefined) h[HEADER_INPUT_CODEC_MESSAGE_ID] = opts.inputCodecMessageId;
   if (opts.inputEventId) h[HEADER_EVENT_ID] = opts.inputEventId;
+  if (opts.stepId !== undefined) h[HEADER_STEP_ID] = opts.stepId;
+  if (opts.attemptId !== undefined) h[HEADER_ATTEMPT_ID] = opts.attemptId;
   return h;
 };
 
@@ -256,6 +268,91 @@ export const parseRunLifecycle = (
       };
     }
     return { type: 'end', runId, clientId, serial, invocationId, reason, ...stamped };
+  }
+
+  return undefined;
+};
+
+/**
+ * Build the transport header set for a step-lifecycle event (step-start /
+ * step-end). Mirrors {@link buildLifecycleHeaders} for the step layer.
+ * `run-id`, `step-id`, and `attempt-id` are always present; `step-reason` is
+ * stamped on step-end only.
+ * @param opts - The step header values to include.
+ * @param opts.runId - The run the step belongs to.
+ * @param opts.stepId - The step's id (stable across retry attempts).
+ * @param opts.attemptId - This attempt's id (distinct per retry).
+ * @param opts.reason - Terminal reason; stamped on step-end only.
+ * @returns A headers record with the step headers set.
+ */
+export const buildStepHeaders = (opts: {
+  runId: string;
+  stepId: string;
+  attemptId: string;
+  reason?: StepEndReason;
+}): Record<string, string> => {
+  const h: Record<string, string> = {
+    [HEADER_RUN_ID]: opts.runId,
+    [HEADER_STEP_ID]: opts.stepId,
+    [HEADER_ATTEMPT_ID]: opts.attemptId,
+  };
+  if (opts.reason !== undefined) h[HEADER_STEP_REASON] = opts.reason;
+  return h;
+};
+
+/** The two step-lifecycle Ably message names. */
+type StepLifecycleName = typeof EVENT_STEP_START | typeof EVENT_STEP_END;
+
+/**
+ * Whether an Ably message `name` is one of the step-lifecycle event names
+ * (step-start / step-end). Single source of truth for the classification the
+ * shared decode-and-apply engine uses to route step lifecycle wires away from
+ * the codec decoder, mirroring {@link isRunLifecycleName}. Narrows `name` so
+ * callers can pass it straight to {@link parseStepLifecycle}.
+ * @param name - The inbound Ably message `name`, or undefined.
+ * @returns True when `name` is a step-lifecycle event name.
+ */
+export const isStepLifecycleName = (name: string | undefined): name is StepLifecycleName =>
+  name === EVENT_STEP_START || name === EVENT_STEP_END;
+
+/**
+ * Parse an inbound step-lifecycle Ably message into a {@link StepLifecycleEvent}.
+ *
+ * Mirrors {@link parseRunLifecycle} for the step layer: turns the wire message
+ * `name`, transport headers, and channel serial into the structured event the
+ * Tree consumes. Used by the shared decode-and-apply engine for both the live
+ * loop and history replay so they build the event identically.
+ * @param name - The inbound Ably message `name`.
+ * @param headers - Transport headers from the inbound Ably message.
+ * @param serial - Ably channel serial of the message, or `undefined` for an
+ *   optimistic local event.
+ * @param timestamp - Ably server timestamp (epoch ms), or `undefined` for an
+ *   optimistic local event.
+ * @returns The step-lifecycle event, or `undefined` when `name` is not a
+ *   step-lifecycle name or the message is missing a `run-id`, `step-id`, or
+ *   `attempt-id`.
+ */
+export const parseStepLifecycle = (
+  name: string,
+  headers: Record<string, string>,
+  serial: string | undefined,
+  timestamp: number | undefined,
+): StepLifecycleEvent | undefined => {
+  const runId = headers[HEADER_RUN_ID];
+  const stepId = headers[HEADER_STEP_ID];
+  const attemptId = headers[HEADER_ATTEMPT_ID];
+  if (!runId || !stepId || !attemptId) return undefined;
+
+  const stamped = timestamp === undefined ? {} : { timestamp };
+
+  if (name === EVENT_STEP_START) {
+    return { type: 'step-start', runId, stepId, attemptId, serial, ...stamped };
+  }
+
+  if (name === EVENT_STEP_END) {
+    // CAST: agent always writes a valid StepEndReason; default to 'complete' for robustness.
+    const reason = (headers[HEADER_STEP_REASON] ?? 'complete') as StepEndReason;
+    return { type: 'step-end', runId, stepId, attemptId, serial, reason, ...stamped };
   }
 
   return undefined;

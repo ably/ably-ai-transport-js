@@ -264,6 +264,24 @@ const streamOf = (...events: TestOutput[]): ReadableStream<TestOutput> =>
     },
   });
 
+// A stream that enqueues one chunk then errors — drives a pipe to reason:'error'.
+const erroringStream = (): ReadableStream<TestOutput> =>
+  new ReadableStream<TestOutput>({
+    start: (controller) => {
+      controller.enqueue({ type: 'text', text: 'partial' });
+      controller.error(new Error('rate limit'));
+    },
+  });
+
+// The `extras.ai.transport` headers of every published message with a given name.
+const stepHeadersOf = (
+  channel: { publishCalls: Ably.Message[] },
+  name: string,
+): Record<string, string>[] =>
+  channel.publishCalls
+    .filter((m) => m.name === name)
+    .map((m) => (m.extras as { ai?: { transport?: Record<string, string> } }).ai?.transport ?? {});
+
 // eslint-disable-next-line @typescript-eslint/no-empty-function -- shared no-op for logger fakes
 const loggerNoop = (): void => {};
 
@@ -1121,6 +1139,240 @@ describe('AgentSession', () => {
       expect(enc?.publishCalls).toHaveLength(2);
       expect(enc?.publishCalls[0]?.opts).toBeUndefined();
       expect(enc?.publishCalls[1]?.opts).toEqual({ messageId: 'override-b' });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // step
+  // -------------------------------------------------------------------------
+
+  describe('step', () => {
+    it('brackets the closure with ai-step-start and ai-step-end(complete)', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      const value = await run.step(async (step) => {
+        await step.pipe(streamOf({ type: 'text', text: 'hi' }));
+        return 'done';
+      });
+
+      expect(value).toBe('done');
+      const starts = stepHeadersOf(channel, 'ai-step-start');
+      const ends = stepHeadersOf(channel, 'ai-step-end');
+      expect(starts).toHaveLength(1);
+      expect(ends).toHaveLength(1);
+      expect(starts[0]?.[HEADER_RUN_ID]).toBe('run-1');
+      // Default id is scoped to the invocation (createRunFromOpts pins it to
+      // `run-1-inv`), so continuations of the same run never collide.
+      expect(starts[0]?.['step-id']).toBe('run-1-inv-step-0');
+      expect(ends[0]?.['step-reason']).toBe('complete');
+      // The start and end carry the same step-id / attempt-id pair.
+      expect(ends[0]?.['step-id']).toBe(starts[0]?.['step-id']);
+      expect(ends[0]?.['attempt-id']).toBe(starts[0]?.['attempt-id']);
+    });
+
+    it('stamps step-id and attempt-id on output piped within the step', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      let seenStepId: string | undefined;
+      let seenAttemptId: string | undefined;
+      await run.step(async (step) => {
+        seenStepId = step.stepId;
+        seenAttemptId = step.attemptId;
+        await step.pipe(streamOf({ type: 'text', text: 'hi' }));
+      });
+
+      const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
+      expect(headers['step-id']).toBe(seenStepId);
+      expect(headers['attempt-id']).toBe(seenAttemptId);
+      expect(headers[HEADER_ROLE]).toBe('assistant');
+    });
+
+    it('ends the step failed (without throwing) when a piped stream errors', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      // The closure returns normally even though the pipe errored — mirroring
+      // the vercelRunOutcome flow that needs no try/catch.
+      const result = await run.step(async (step) => {
+        const r = await step.pipe(erroringStream());
+        return r.reason;
+      });
+
+      expect(result).toBe('error');
+      const ends = stepHeadersOf(channel, 'ai-step-end');
+      expect(ends[0]?.['step-reason']).toBe('failed');
+    });
+
+    it('ends the step failed and re-throws when the closure throws', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      await expect(
+        run.step(async () => {
+          await Promise.resolve();
+          throw new Error('boom');
+        }),
+      ).rejects.toThrow('boom');
+
+      const ends = stepHeadersOf(channel, 'ai-step-end');
+      expect(ends).toHaveLength(1);
+      expect(ends[0]?.['step-reason']).toBe('failed');
+    });
+
+    it('reuses the previous step id on a no-id retry after a failure (coalescing)', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      await expect(
+        run.step(async () => {
+          await Promise.resolve();
+          throw new Error('boom');
+        }),
+      ).rejects.toThrow('boom');
+
+      await run.step(async (step) => {
+        await step.pipe(streamOf({ type: 'text', text: 'ok' }));
+      });
+
+      const starts = stepHeadersOf(channel, 'ai-step-start');
+      expect(starts).toHaveLength(2);
+      // Same step-id (coalesced retry), distinct attempt-ids.
+      expect(starts[0]?.['step-id']).toBe('run-1-inv-step-0');
+      expect(starts[1]?.['step-id']).toBe('run-1-inv-step-0');
+      expect(starts[0]?.['attempt-id']).not.toBe(starts[1]?.['attempt-id']);
+    });
+
+    it('advances the step index across sequential successful steps', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      await run.step(async (step) => {
+        await step.pipe(streamOf({ type: 'text', text: 'a' }));
+      });
+      await run.step(async (step) => {
+        await step.pipe(streamOf({ type: 'text', text: 'b' }));
+      });
+
+      const starts = stepHeadersOf(channel, 'ai-step-start');
+      expect(starts.map((h) => h['step-id'])).toEqual(['run-1-inv-step-0', 'run-1-inv-step-1']);
+    });
+
+    it('scopes the default step id to the invocation so continuations do not collide', async () => {
+      // Two invocations of the SAME run (the original turn + a suspend/resume
+      // continuation) are distinct Run objects with distinct invocation ids.
+      // Their default step ids must differ, or the continuation's step would
+      // supersede the original's output (e.g. the tool-call bubble).
+      const original = createRunFromOpts(session, { runId: 'run-1', invocationId: 'inv-A' });
+      await original.start();
+      await original.step(async (step) => {
+        await step.pipe(streamOf({ type: 'text', text: 'a' }));
+      });
+
+      const continuation = createRunFromOpts(session, { runId: 'run-1', invocationId: 'inv-B' });
+      await continuation.start();
+      await continuation.step(async (step) => {
+        await step.pipe(streamOf({ type: 'text', text: 'b' }));
+      });
+
+      const ids = stepHeadersOf(channel, 'ai-step-start').map((h) => h['step-id']);
+      expect(ids).toEqual(['inv-A-step-0', 'inv-B-step-0']);
+      expect(ids[0]).not.toBe(ids[1]);
+    });
+
+    it('honours an explicit stepId', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      await run.step(
+        async (step) => {
+          await step.pipe(streamOf({ type: 'text', text: 'a' }));
+        },
+        { stepId: 'answer' },
+      );
+
+      const starts = stepHeadersOf(channel, 'ai-step-start');
+      expect(starts[0]?.['step-id']).toBe('answer');
+    });
+
+    it('throws when called before start()', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await expect(
+        run.step(async () => {
+          await Promise.resolve();
+        }),
+      ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+    });
+
+    it('throws when called after the run has ended', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+      await run.end({ reason: 'complete' });
+      await expect(
+        run.step(async () => {
+          await Promise.resolve();
+        }),
+      ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+    });
+
+    it('exposes the run abort signal as step.abortSignal', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+      let seen: AbortSignal | undefined;
+      await run.step(async (step) => {
+        seen = step.abortSignal;
+        await step.pipe(streamOf({ type: 'text', text: 'a' }));
+      });
+      expect(seen).toBe(run.abortSignal);
+    });
+
+    it('runs the cancel safety-net (run-end) when a step pipe is cancelled', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      // Cancel the run, then pipe a never-completing stream inside the step:
+      // pipeStream observes the abort and returns reason:'cancelled', which the
+      // shared doPipe turns into a run-end terminal.
+      simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
+      await new Promise((r) => setTimeout(r, 5));
+
+      const paused = new ReadableStream<TestOutput>({
+        start: () => {
+          /* never enqueues or closes */
+        },
+      });
+      const result = await run.step(async (step) => step.pipe(paused));
+
+      expect(result.reason).toBe('cancelled');
+      const ends = stepHeadersOf(channel, 'ai-step-end');
+      // A cancel is a run-level terminal, not a step failure: the step closes
+      // 'complete' (its output is final, not retried) and the run-end carries
+      // the cancellation.
+      expect(ends[0]?.['step-reason']).toBe('complete');
+      const runEnd = channel.publishCalls.find((m) => m.name === 'ai-run-end');
+      const runEndHeaders = (runEnd?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai
+        ?.transport;
+      expect(runEndHeaders?.['run-reason']).toBe('cancelled');
+    });
+
+    it('coalesces a cross-process retry that supplies the same explicit stepId', async () => {
+      // A durable-execution retry is a fresh Run (new invocation id, no
+      // in-memory step history) that re-attempts the same logical step by
+      // passing its stable id. Both attempts then carry the same step-id, so
+      // the later attempt's output supersedes the earlier one's.
+      const original = createRunFromOpts(session, { runId: 'run-1', invocationId: 'inv-A' });
+      await original.start();
+      await original.step(async (step) => step.pipe(streamOf({ type: 'text', text: 'a' })), { stepId: 'turn-1' });
+
+      const retry = createRunFromOpts(session, { runId: 'run-1', invocationId: 'inv-B' });
+      await retry.start();
+      await retry.step(async (step) => step.pipe(streamOf({ type: 'text', text: 'b' })), { stepId: 'turn-1' });
+
+      const starts = stepHeadersOf(channel, 'ai-step-start');
+      expect(starts.map((h) => h['step-id'])).toEqual(['turn-1', 'turn-1']);
+      // Distinct attempt-ids: the latest-serial start is the canonical attempt.
+      expect(starts[0]?.['attempt-id']).not.toBe(starts[1]?.['attempt-id']);
     });
   });
 

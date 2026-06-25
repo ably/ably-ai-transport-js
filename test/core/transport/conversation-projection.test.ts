@@ -49,6 +49,7 @@ const runNode = (
   invocationId: '',
   startSerial: undefined,
   endSerial: undefined,
+  steps: [],
   ...extra,
 });
 

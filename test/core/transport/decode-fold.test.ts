@@ -16,7 +16,11 @@ import {
   EVENT_RUN_RESUME,
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
+  EVENT_STEP_END,
+  EVENT_STEP_START,
+  HEADER_ATTEMPT_ID,
   HEADER_RUN_ID,
+  HEADER_STEP_ID,
 } from '../../../src/constants.js';
 import type { CodecInputEvent, Decoder } from '../../../src/core/codec/types.js';
 import { createWireApplier, foldAndEmit } from '../../../src/core/transport/decode-fold.js';
@@ -38,12 +42,14 @@ interface TestProjection {
 
 interface MockTree {
   applyRunLifecycle: ReturnType<typeof vi.fn>;
+  applyStepLifecycle: ReturnType<typeof vi.fn>;
   applyMessage: ReturnType<typeof vi.fn>;
   emitAblyMessage: ReturnType<typeof vi.fn>;
 }
 
 const makeTree = (): MockTree => ({
   applyRunLifecycle: vi.fn(),
+  applyStepLifecycle: vi.fn(),
   applyMessage: vi.fn(),
   emitAblyMessage: vi.fn(),
 });
@@ -124,6 +130,39 @@ describe('WireApplier', () => {
       expect(event).toBeUndefined();
       expect(tree.applyRunLifecycle).not.toHaveBeenCalled();
       expect(tree.applyMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('step-lifecycle messages', () => {
+    it.each([
+      [EVENT_STEP_START, 'step-start'],
+      [EVENT_STEP_END, 'step-end'],
+    ])('routes %s through applyStepLifecycle (never the decoder) and returns undefined', (name, type) => {
+      const tree = makeTree();
+      const decode = vi.fn(() => ({ inputs: [] as TestInput[], outputs: [] as TestOutput[] }));
+      const decoder: Decoder<TestInput, TestOutput> = { decode };
+
+      const event = createWireApplier(asTree(tree), decoder).apply(
+        msg({
+          name,
+          headers: { [HEADER_RUN_ID]: 'R1', [HEADER_STEP_ID]: 'S', [HEADER_ATTEMPT_ID]: 'A1' },
+          serial: 's1',
+        }),
+      );
+
+      expect(event).toBeUndefined();
+      expect(tree.applyStepLifecycle).toHaveBeenCalledWith(expect.objectContaining({ type, runId: 'R1', stepId: 'S' }));
+      expect(decode).not.toHaveBeenCalled();
+      expect(tree.applyMessage).not.toHaveBeenCalled();
+      expect(tree.applyRunLifecycle).not.toHaveBeenCalled();
+    });
+
+    it('skips applyStepLifecycle for a step name missing step-id / attempt-id', () => {
+      const tree = makeTree();
+      createWireApplier(asTree(tree), makeDecoder([], [])).apply(
+        msg({ name: EVENT_STEP_START, headers: { [HEADER_RUN_ID]: 'R1' } }),
+      );
+      expect(tree.applyStepLifecycle).not.toHaveBeenCalled();
     });
   });
 

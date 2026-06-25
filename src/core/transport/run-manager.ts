@@ -9,10 +9,17 @@
 
 import type * as Ably from 'ably';
 
-import { EVENT_RUN_END, EVENT_RUN_RESUME, EVENT_RUN_START, EVENT_RUN_SUSPEND } from '../../constants.js';
+import {
+  EVENT_RUN_END,
+  EVENT_RUN_RESUME,
+  EVENT_RUN_START,
+  EVENT_RUN_SUSPEND,
+  EVENT_STEP_END,
+  EVENT_STEP_START,
+} from '../../constants.js';
 import type { Logger } from '../../logger.js';
-import { buildLifecycleHeaders } from './headers.js';
-import type { RunEndReason } from './types.js';
+import { buildLifecycleHeaders, buildStepHeaders } from './headers.js';
+import type { RunEndReason, StepEndReason } from './types.js';
 
 /**
  * Per-invocation metadata carried on a run's opening lifecycle event. A
@@ -78,6 +85,17 @@ export interface RunManager {
     inputCodecMessageId?: string,
     error?: Ably.ErrorInfo,
   ): Promise<void>;
+  /**
+   * Publish `ai-step-start` to open a step attempt within a run. Carries
+   * `step-id` and `attempt-id`. A retry of a step publishes a fresh start with
+   * the same `stepId` and a new `attemptId`; the latest-serial start is the
+   * canonical attempt.
+   */
+  startStep(runId: string, stepId: string, attemptId: string): Promise<void>;
+  /**
+   * Publish `ai-step-end` to close a step attempt, stamping `step-reason`.
+   */
+  endStep(runId: string, stepId: string, attemptId: string, reason: StepEndReason): Promise<void>;
   /** Get the clientId that owns a run. */
   getClientId(runId: string): string | undefined;
   /** Cancel all active runs and clear state. */
@@ -214,6 +232,20 @@ class DefaultRunManager implements RunManager {
     const headers = buildLifecycleHeaders({ runId, runClientId: resolvedClientId, ...attribution });
     await this._channel.publish({ name: eventName, extras: { ai: { transport: headers } } });
     this._activeRuns.delete(runId);
+  }
+
+  async startStep(runId: string, stepId: string, attemptId: string): Promise<void> {
+    this._logger?.trace('DefaultRunManager.startStep();', { runId, stepId, attemptId });
+    const headers = buildStepHeaders({ runId, stepId, attemptId });
+    await this._channel.publish({ name: EVENT_STEP_START, extras: { ai: { transport: headers } } });
+    this._logger?.debug('DefaultRunManager.startStep(); step started', { runId, stepId, attemptId });
+  }
+
+  async endStep(runId: string, stepId: string, attemptId: string, reason: StepEndReason): Promise<void> {
+    this._logger?.trace('DefaultRunManager.endStep();', { runId, stepId, attemptId, reason });
+    const headers = buildStepHeaders({ runId, stepId, attemptId, reason });
+    await this._channel.publish({ name: EVENT_STEP_END, extras: { ai: { transport: headers } } });
+    this._logger?.debug('DefaultRunManager.endStep(); step ended', { runId, stepId, attemptId, reason });
   }
 
   getClientId(runId: string): string | undefined {

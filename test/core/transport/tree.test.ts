@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  HEADER_ATTEMPT_ID,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_FORK_OF,
   HEADER_INPUT_CODEC_MESSAGE_ID,
@@ -9,12 +10,13 @@ import {
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
+  HEADER_STEP_ID,
   HEADER_STREAM,
 } from '../../../src/constants.js';
 import type { Codec, CodecEvent, CodecInputEvent, Regenerate, UserMessage } from '../../../src/core/codec/types.js';
 import type { TreeInternal } from '../../../src/core/transport/tree.js';
 import { createTree, REORDER_WINDOW_MS } from '../../../src/core/transport/tree.js';
-import type { ConversationNode, InputNode, RunNode } from '../../../src/core/transport/types.js';
+import type { ConversationNode, InputNode, OutputEvent, RunNode, StepEndReason } from '../../../src/core/transport/types.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 
 // ---------------------------------------------------------------------------
@@ -89,6 +91,10 @@ interface ApplyOpts {
   version?: string;
   /** Sets the `stream` transport header so the wire folds as a streamed wire. */
   streamed?: boolean;
+  /** Sets the `step-id` transport header (step-attributed output). */
+  stepId?: string;
+  /** Sets the `attempt-id` transport header (step-attributed output). */
+  attemptId?: string;
   message?: TestMessage;
   /** Override events entirely. When set, `message` is ignored. */
   events?: (TestInput | TestOutput)[];
@@ -107,6 +113,8 @@ const apply = (tree: TreeInternal<TestInput, TestOutput, TestProjection>, opts: 
   if (opts.clientId) h[HEADER_RUN_CLIENT_ID] = opts.clientId;
   if (opts.inputCodecMessageId) h[HEADER_INPUT_CODEC_MESSAGE_ID] = opts.inputCodecMessageId;
   if (opts.streamed) h[HEADER_STREAM] = 'true';
+  if (opts.stepId !== undefined) h[HEADER_STEP_ID] = opts.stepId;
+  if (opts.attemptId !== undefined) h[HEADER_ATTEMPT_ID] = opts.attemptId;
 
   const events: TreeEvent[] = opts.events ?? (opts.message ? [{ type: 'append-message', message: opts.message }] : []);
   const inputs = events.filter((e): e is TestInput => 'kind' in e);
@@ -118,6 +126,10 @@ const messagesOf = (tree: TreeInternal<TestInput, TestOutput, TestProjection>, r
   const run = tree.getRunNode(runId);
   return run ? testCodec.getMessages(run.projection).map((cm) => cm.message) : [];
 };
+
+// The message ids materialised for a run (step-precedence assertions).
+const idsOf = (tree: TreeInternal<TestInput, TestOutput, TestProjection>, runId: string): string[] =>
+  messagesOf(tree, runId).map((m) => m.id);
 
 const inputMessagesOf = (
   tree: TreeInternal<TestInput, TestOutput, TestProjection>,
@@ -169,6 +181,42 @@ const lifecycle = (
       serial,
       timestamp,
       reason: 'complete',
+    });
+  }
+};
+
+// Apply a step-lifecycle event (step-start / step-end).
+const applyStep = (
+  tree: TreeInternal<TestInput, TestOutput, TestProjection>,
+  opts: {
+    type: 'step-start' | 'step-end';
+    runId: string;
+    stepId: string;
+    attemptId: string;
+    serial?: string;
+    timestamp?: number;
+    reason?: StepEndReason;
+  },
+): void => {
+  const stamped = opts.timestamp === undefined ? {} : { timestamp: opts.timestamp };
+  if (opts.type === 'step-start') {
+    tree.applyStepLifecycle({
+      type: 'step-start',
+      runId: opts.runId,
+      stepId: opts.stepId,
+      attemptId: opts.attemptId,
+      serial: opts.serial,
+      ...stamped,
+    });
+  } else {
+    tree.applyStepLifecycle({
+      type: 'step-end',
+      runId: opts.runId,
+      stepId: opts.stepId,
+      attemptId: opts.attemptId,
+      serial: opts.serial,
+      reason: opts.reason ?? 'complete',
+      ...stamped,
     });
   }
 };
@@ -2209,6 +2257,151 @@ describe('Tree', () => {
       expect(tree.getReplyRuns('u3').map((r) => r.runId)).toEqual(['R1']);
       // runs() surfaces reply runs only.
       expect(flatRunIds(tree)).toEqual(['R1']);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Step retry precedence: the latest-serial step-start is the canonical
+  // attempt; only its output materialises into the run projection.
+  // -------------------------------------------------------------------------
+  describe('step precedence', () => {
+    it('folds a single step attempt normally', () => {
+      applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', attemptId: 'A1', serial: 's1' });
+      apply(tree, { runId: 'R1', stepId: 'S', attemptId: 'A1', message: { id: 'm1', content: 'x' }, serial: 's2' });
+
+      expect(idsOf(tree, 'R1')).toEqual(['m1']);
+    });
+
+    it('supersedes an earlier attempt when a later-serial step-start arrives (retry)', () => {
+      applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', attemptId: 'A1', serial: 's1' });
+      apply(tree, { runId: 'R1', stepId: 'S', attemptId: 'A1', message: { id: 'm1', content: 'partial' }, serial: 's2' });
+      expect(idsOf(tree, 'R1')).toEqual(['m1']);
+
+      // Retry: same stepId, fresh attempt, higher-serial start supersedes A1.
+      applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', attemptId: 'A2', serial: 's3' });
+      // A1's already-folded output is dropped by the supersede refold.
+      expect(idsOf(tree, 'R1')).toEqual([]);
+
+      apply(tree, { runId: 'R1', stepId: 'S', attemptId: 'A2', message: { id: 'm2', content: 'full' }, serial: 's4' });
+      expect(idsOf(tree, 'R1')).toEqual(['m2']);
+    });
+
+    it('drops a superseded attempt whose output arrives LATE (earlier serial, forcing a refold)', () => {
+      // Canonical attempt A2 established first; its output folds.
+      applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', attemptId: 'A1', serial: 's1' });
+      applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', attemptId: 'A2', serial: 's3' });
+      apply(tree, { runId: 'R1', stepId: 'S', attemptId: 'A2', message: { id: 'm2', content: 'full' }, serial: 's4' });
+      expect(idsOf(tree, 'R1')).toEqual(['m2']);
+
+      // A1's output arrives late with a LOWER serial than m2 — this forces a
+      // whole-log refold. The refold must see this wire's own attribution
+      // (recorded before the fold) and gate it as the non-canonical attempt, so
+      // m1 never appears.
+      apply(tree, { runId: 'R1', stepId: 'S', attemptId: 'A1', message: { id: 'm1', content: 'stale' }, serial: 's2' });
+      expect(idsOf(tree, 'R1')).toEqual(['m2']);
+    });
+
+    it('does not gate an optimistic (serial-less) step-start before its echo', () => {
+      // The agent seeds its own step-start optimistically (no serial), then
+      // streams output, then the wire echo promotes the start's serial.
+      applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', attemptId: 'A1', serial: undefined });
+      apply(tree, { runId: 'R1', stepId: 'S', attemptId: 'A1', message: { id: 'm1', content: 'x' }, serial: 's2' });
+      expect(idsOf(tree, 'R1')).toEqual(['m1']);
+
+      // Echo of the same start with a concrete serial — same attempt, promotes
+      // the serial, no refold, output stays.
+      applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', attemptId: 'A1', serial: 's1' });
+      expect(idsOf(tree, 'R1')).toEqual(['m1']);
+    });
+
+    it('keeps distinct stepIds independent (no cross-step precedence)', () => {
+      applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S1', attemptId: 'A1', serial: 's1' });
+      apply(tree, { runId: 'R1', stepId: 'S1', attemptId: 'A1', message: { id: 'm1', content: '1' }, serial: 's2' });
+      applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S2', attemptId: 'A2', serial: 's3' });
+      apply(tree, { runId: 'R1', stepId: 'S2', attemptId: 'A2', message: { id: 'm2', content: '2' }, serial: 's4' });
+
+      // Both steps' output materialises — a later step never supersedes an
+      // earlier, different step.
+      expect(idsOf(tree, 'R1')).toEqual(['m1', 'm2']);
+    });
+
+    it('emits a projection-changed output (empty events) on a supersede so consumers repaint', () => {
+      applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', attemptId: 'A1', serial: 's1' });
+      apply(tree, { runId: 'R1', stepId: 'S', attemptId: 'A1', message: { id: 'm1', content: 'x' }, serial: 's2' });
+
+      const outputs: OutputEvent<TestOutput>[] = [];
+      tree.on('output', (e) => outputs.push(e));
+
+      applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', attemptId: 'A2', serial: 's3' });
+
+      const repaint = outputs.find((e) => e.runId === 'R1' && e.events.length === 0);
+      expect(repaint).toBeDefined();
+    });
+
+    it('suppresses the output emit for a known-superseded attempt', () => {
+      applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', attemptId: 'A1', serial: 's1' });
+      applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', attemptId: 'A2', serial: 's3' });
+
+      const outputs: OutputEvent<TestOutput>[] = [];
+      tree.on('output', (e) => outputs.push(e));
+
+      // Output for the already-superseded A1 — must neither fold nor emit.
+      apply(tree, { runId: 'R1', stepId: 'S', attemptId: 'A1', message: { id: 'm1', content: 'stale' }, serial: 's2' });
+      expect(idsOf(tree, 'R1')).toEqual([]);
+      expect(outputs.filter((e) => e.events.length > 0)).toHaveLength(0);
+    });
+
+    it('does not blank the projection when a supersede arrives after the log was swept', () => {
+      // Build a structurally complete, retention-eligible run, then sweep it.
+      const T = REORDER_WINDOW_MS;
+      lifecycle(tree, 'start', 'R1', 's1', 1000);
+      applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', attemptId: 'A1', serial: 's2', timestamp: 1000 });
+      apply(tree, {
+        runId: 'R1',
+        stepId: 'S',
+        attemptId: 'A1',
+        message: { id: 'm1', content: 'x' },
+        serial: 's3',
+        timestamp: 1000,
+      });
+      applyStep(tree, { type: 'step-end', runId: 'R1', stepId: 'S', attemptId: 'A1', serial: 's4', timestamp: 1000 });
+      lifecycle(tree, 'end', 'R1', 's5', 1000);
+      // Advance the clock past the reorder window on an unrelated node to sweep R1.
+      lifecycle(tree, 'start', 'R2', 's6', 1000 + T + 1);
+      expect(idsOf(tree, 'R1')).toEqual(['m1']);
+
+      // A late superseding step-start cannot refold a swept log — over-retain
+      // m1 rather than blank the projection.
+      applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', attemptId: 'A2', serial: 's7', timestamp: 1000 + T + 2 });
+      expect(idsOf(tree, 'R1')).toEqual(['m1']);
+    });
+
+    it('exposes a steps read-model reflecting the canonical attempt and attempt count', () => {
+      applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', attemptId: 'A1', serial: 's1' });
+      applyStep(tree, { type: 'step-end', runId: 'R1', stepId: 'S', attemptId: 'A1', serial: 's2', reason: 'failed' });
+      applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', attemptId: 'A2', serial: 's3' });
+
+      let steps = tree.getRunNode('R1')?.steps ?? [];
+      expect(steps).toHaveLength(1);
+      expect(steps[0]).toEqual({ stepId: 'S', status: 'active', attemptCount: 2 });
+
+      applyStep(tree, { type: 'step-end', runId: 'R1', stepId: 'S', attemptId: 'A2', serial: 's4', reason: 'complete' });
+      steps = tree.getRunNode('R1')?.steps ?? [];
+      // Status reflects the CANONICAL attempt (A2), which completed.
+      expect(steps[0]).toEqual({ stepId: 'S', status: 'complete', attemptCount: 2 });
+    });
+
+    it('leaves stepless run output and input-node folds unchanged (gate is the identity)', () => {
+      // A stepless reply run: outputs carry no step-id/attempt-id and all fold.
+      apply(tree, { runId: 'R1', message: { id: 'a1', content: '1' }, serial: 's1' });
+      apply(tree, { runId: 'R1', message: { id: 'a2', content: '2' }, serial: 's2' });
+      expect(idsOf(tree, 'R1')).toEqual(['a1', 'a2']);
+      // No step state is allocated on a stepless run.
+      expect(tree.getRunNode('R1')?.steps).toEqual([]);
+
+      // An input node folds normally and never carries step state.
+      applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'hi' }, serial: 's3' });
+      expect(inputMessagesOf(tree, 'u1').map((m) => m.id)).toEqual(['u1']);
     });
   });
 });

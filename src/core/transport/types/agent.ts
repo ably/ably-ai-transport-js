@@ -105,6 +105,33 @@ export interface PipeOptions<TOutput extends CodecOutputEvent> {
   resolveWriteOptions?: (output: TOutput) => WriteOptions | undefined;
 }
 
+/** Options for {@link Run.step}. */
+export interface StepOptions {
+  /**
+   * A stable identifier for this step, used to coalesce retries: a fresh
+   * attempt under an existing `stepId` supersedes the prior attempt's output
+   * (latest channel serial wins) instead of appending it to the conversation.
+   *
+   * Omit it for the common case. The SDK then assigns an id scoped to the
+   * current invocation, so steps from different invocations of the same run
+   * (e.g. the original turn and a suspend/resume continuation) never collide;
+   * and a no-`stepId` call made after this invocation's previous step ended
+   * `failed` reuses that step's id, so an in-process `try`/`catch` retry
+   * coalesces with no ceremony.
+   *
+   * Pass an explicit id when the SAME logical step re-attempts in a SEPARATE
+   * process — a durable-execution retry — since that fresh process has no
+   * in-memory step history to reuse. Use the framework's own stable step
+   * identity: a Vercel Workflow DevKit `getStepMetadata().stepId` (stable
+   * across retries) or a Temporal activity id, and supply a matching stable
+   * {@link RunRuntime.runId} so the retry re-attempts the same run. **Omit it
+   * on a cross-process retry and the SDK mints a fresh id, so the retry's
+   * output is appended beside the failed attempt's instead of superseding it —
+   * a silent double-output.**
+   */
+  stepId?: string;
+}
+
 /** The result of streaming a response through the encoder. */
 export interface StreamResult {
   /** Why the stream ended. */
@@ -138,6 +165,23 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
    * value for deterministic ids in tests or in-process drivers; the empty
    * string is not a valid override (it is the "unset" sentinel and does not
    * fall through to minting).
+   *
+   * Under durable execution, supply a stable value so a fresh-process retry of
+   * a FRESH run re-enters that run instead of minting a new UUID and opening a
+   * parallel one. This is independent of {@link StepOptions.stepId}: a run id
+   * is the conversation turn's identity, a step id is one re-attemptable unit
+   * within the turn. Both want a stable source on retry, but they are distinct
+   * ids — do not treat the framework's step id as a run id across turns, and
+   * note a continuation needs no override at all (its run id comes from the
+   * channel).
+   *
+   * A run is driven by one in-memory instance: {@link Run.step},
+   * {@link Run.suspend}, and {@link Run.end} require {@link Run.start} on that
+   * SAME instance (they read the anchors it resolves), so a turn's
+   * start/step/end belong in one durable activity — a single run cannot be
+   * split across several. A fresh-process retry re-runs `start()` and
+   * re-publishes `ai-run-start` under the stable id; receivers absorb the
+   * repeat idempotently (it never re-opens a terminal run).
    */
   runId?: string;
 
@@ -191,6 +235,51 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
    * is always still available on {@link StreamResult.error}.
    */
   onError?: (error: Ably.ErrorInfo) => void;
+}
+
+// ---------------------------------------------------------------------------
+// Run step
+// ---------------------------------------------------------------------------
+
+/**
+ * A single step attempt, passed to the {@link Run.step} closure.
+ *
+ * A **transport step** is a re-attemptable unit of agent execution within a
+ * run — it may wrap a whole agent loop (which itself runs many model/tool
+ * iterations; a codec such as the Vercel one surfaces those as `step-start`
+ * message *parts*, a different and finer notion than this transport step) or
+ * one scheduled stage of a durable workflow. Output published via
+ * {@link RunStep.pipe} is stamped with this step's id and attempt id, so a
+ * retry (a new attempt under the same `stepId`) supersedes the prior attempt's
+ * output cleanly rather than appending to the conversation.
+ * @template TOutput - The codec output type carried by the step's stream.
+ */
+export interface RunStep<TOutput extends CodecOutputEvent> {
+  /** This step's id — stable across retry attempts of the same step. */
+  readonly stepId: string;
+  /** This attempt's id — distinct on every retry of the step. */
+  readonly attemptId: string;
+  /**
+   * The run's AbortSignal (the same one as {@link Run.abortSignal}); there is
+   * no per-step abort. Fires when a cancel arrives for this run.
+   */
+  readonly abortSignal: AbortSignal;
+  /**
+   * Pipe an output stream through the encoder to the channel, stamping every
+   * output with this step's `step-id` and `attempt-id`. Otherwise identical to
+   * {@link Run.pipe}: returns when the stream completes, is cancelled, or
+   * errors. A stream error returns `{ reason: 'error' }` (it does NOT throw)
+   * and marks the step `failed` when {@link Run.step} closes it.
+   * @param stream - The output stream to pipe.
+   * @param options - Per-stream overrides. A per-output `resolveWriteOptions`
+   *   merges over the step's default headers, so a normal override (e.g. one
+   *   that only redirects `codecMessageId`) leaves `step-id` / `attempt-id`
+   *   intact. Do NOT set `step-id` / `attempt-id` in an override unless you
+   *   intend to re-attribute that output to a different attempt — doing so
+   *   changes which step the output is gated under.
+   * @returns The {@link StreamResult} for this pipe.
+   */
+  pipe(stream: ReadableStream<TOutput>, options?: PipeOptions<TOutput>): Promise<StreamResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -282,8 +371,56 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
    * Pipe a ReadableStream through the encoder to the channel.
    * Returns when the stream completes, is cancelled, or errors.
    * Does NOT call end() — the caller must call end() after pipe returns.
+   *
+   * For a re-attemptable unit of work whose retries must not pollute the
+   * conversation, use {@link Run.step} instead; `pipe` is the stepless path
+   * (its output is never superseded by a retry).
    */
   pipe(stream: ReadableStream<TOutput>, options?: PipeOptions<TOutput>): Promise<StreamResult>;
+
+  /**
+   * Run a step — a re-attemptable unit of agent work within this run, the
+   * counterpart of a Temporal activity or a Vercel Workflow DevKit function
+   * marked `"use step"`. Under such a framework, the framework owns execution
+   * durability (it re-runs the unit) and this call owns conversation
+   * cleanliness (a re-run supersedes the failed attempt's channel output);
+   * see {@link StepOptions.stepId}.
+   *
+   * Publishes `ai-step-start`, runs `fn(step)`, then publishes `ai-step-end`
+   * with reason:
+   * - `failed` — if `fn` threw, OR any `step.pipe()` in `fn` returned
+   *   `{ reason: 'error' }` (a stream/model/tool failure);
+   * - `complete` — otherwise.
+   *
+   * Re-throws **only** when `fn` itself threw — so a durable-execution
+   * framework's retry policy observes the error (and the run terminal is then
+   * the framework's / caller's responsibility). When `fn` returns normally,
+   * `step()` returns its value even if a piped stream errored, so the common
+   * "compute an outcome, then `run.end(outcome)`" flow needs no `try`/`catch`.
+   *
+   * If `fn` may throw and you are NOT relying on a framework to drive the run
+   * to a terminal, wrap the `step()` call and still publish a terminal on the
+   * throw path (e.g. `run.end({ reason: 'error', error })`); otherwise the run
+   * never publishes `ai-run-end` and every observer's UI stays stuck on
+   * `streaming`.
+   *
+   * A step terminal is NOT a run terminal: call {@link Run.suspend} /
+   * {@link Run.end} afterwards exactly as for {@link Run.pipe}. Must be called
+   * after {@link Run.start}; throws `InvalidArgument` if the run has already
+   * ended or suspended.
+   *
+   * `stepId` resolution (see {@link StepOptions.stepId}): an explicit
+   * `options.stepId` always wins; otherwise a per-run index is used, except a
+   * call with no `stepId` made after the previous step ended `failed` reuses
+   * that step's id (in-process retry coalescing). A fresh `attemptId` is minted
+   * on every call.
+   * @template T - The closure's return type.
+   * @param fn - The step body; receives a {@link RunStep}.
+   * @param options - Optional {@link StepOptions}.
+   * @returns The value returned by `fn`.
+   * @throws Whatever `fn` throws (re-thrown after the step is closed `failed`).
+   */
+  step<T>(fn: (step: RunStep<TOutput>) => Promise<T>, options?: StepOptions): Promise<T>;
 
   /**
    * Reconstruct the full multi-turn conversation by walking the ancestor

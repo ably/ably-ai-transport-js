@@ -6,6 +6,9 @@ import {
   EVENT_RUN_RESUME,
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
+  EVENT_STEP_END,
+  EVENT_STEP_START,
+  HEADER_ATTEMPT_ID,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
   HEADER_FORK_OF,
@@ -17,6 +20,8 @@ import {
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_STEP_ID,
+  HEADER_STEP_REASON,
 } from '../../../src/constants.js';
 import type { RunManager } from '../../../src/core/transport/run-manager.js';
 import { createRunManager } from '../../../src/core/transport/run-manager.js';
@@ -387,6 +392,38 @@ describe('RunManager', () => {
 
       expect(controller1.signal.aborted).toBe(true);
       expect(controller2.signal.aborted).toBe(true);
+    });
+  });
+
+  describe('startStep', () => {
+    it('publishes ai-step-start with run-id, step-id, and attempt-id', async () => {
+      await manager.startStep('run-1', 'step-0', 'att-1');
+
+      expect(channel.publishCalls).toHaveLength(1);
+      const [msg] = channel.publishCalls;
+      expect(msg?.name).toBe(EVENT_STEP_START);
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- narrowed by expect above
+      const headers = headersOf(msg!);
+      expect(headers[HEADER_RUN_ID]).toBe('run-1');
+      expect(headers[HEADER_STEP_ID]).toBe('step-0');
+      expect(headers[HEADER_ATTEMPT_ID]).toBe('att-1');
+      expect(headers[HEADER_STEP_REASON]).toBeUndefined();
+    });
+  });
+
+  describe('endStep', () => {
+    it('publishes ai-step-end stamping the step-reason', async () => {
+      await manager.endStep('run-1', 'step-0', 'att-1', 'failed');
+
+      expect(channel.publishCalls).toHaveLength(1);
+      const [msg] = channel.publishCalls;
+      expect(msg?.name).toBe(EVENT_STEP_END);
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- narrowed by expect above
+      const headers = headersOf(msg!);
+      expect(headers[HEADER_RUN_ID]).toBe('run-1');
+      expect(headers[HEADER_STEP_ID]).toBe('step-0');
+      expect(headers[HEADER_ATTEMPT_ID]).toBe('att-1');
+      expect(headers[HEADER_STEP_REASON]).toBe('failed');
     });
   });
 });

@@ -64,6 +64,9 @@ import type {
   PipeOptions,
   RunEndParams,
   RunRuntime,
+  RunStep,
+  StepEndReason,
+  StepOptions,
   StreamResult,
   Tree,
   View,
@@ -742,6 +745,107 @@ class DefaultAgentSession<
       codec,
     });
 
+    // Per-run step bookkeeping for default `stepId` resolution (see Run.step):
+    // a monotonic index for fresh steps, plus the previous step's id and
+    // terminal reason so an in-process retry (a no-`stepId` call after a
+    // `failed` step) coalesces onto that step rather than minting a new one.
+    let stepIndex = 0;
+    let lastStepId: string | undefined;
+    let lastStepReason: StepEndReason | undefined;
+
+    /**
+     * Pipe a stream through a fresh encoder to the channel. Shared by
+     * {@link AgentRun.pipe} (stepless — `stepHeaders` undefined) and
+     * {@link RunStep.pipe} (stamps the step's `step-id` / `attempt-id`). Builds
+     * the assistant message's default headers from the run's resolved structural
+     * anchors, pipes, surfaces a stream error via `onError`, and runs the
+     * cancel safety-net (`endOnCancel`) so every observer's stream closes even
+     * if the caller omits `run.end()`.
+     * @param stream - The output stream to pipe.
+     * @param streamOpts - Per-stream overrides.
+     * @param stepHeaders - The step's id/attempt-id, or undefined for a stepless pipe.
+     * @param endOnCancel - Called to end the run when the pipe is cancelled.
+     * @returns The {@link StreamResult}.
+     */
+    const doPipe = async (
+      stream: ReadableStream<TOutput>,
+      streamOpts: PipeOptions<TOutput> | undefined,
+      stepHeaders: { stepId: string; attemptId: string } | undefined,
+      endOnCancel: () => Promise<void>,
+    ): Promise<StreamResult> => {
+      await requireConnected('pipe');
+
+      if (state === RunState.INITIALIZED) {
+        throw new Ably.ErrorInfo(
+          `unable to pipe stream; start() must be called before pipe() (run ${runId})`,
+          ErrorCode.InvalidArgument,
+          400,
+        );
+      }
+
+      const runOwnerClientId = runManager.getClientId(runId);
+
+      // The assistant message's parent: an explicit per-stream `streamOpts.parent`
+      // from the caller, else the reply run's structural-parent fallback computed
+      // once at run-start (`assistantParentFallback`). Owning the default here
+      // means agent routes don't have to thread the parent to keep tree threading
+      // correct.
+      const assistantParent = streamOpts?.parent ?? assistantParentFallback;
+      const assistantForkOf = streamOpts?.forkOf ?? resolvedForkOf;
+      // Echo `msg-regenerate` on the assistant message so a client receiving the
+      // assistant chunk before `ai-run-start` can still populate
+      // `RunNode.regeneratesCodecMessageId` from headers.
+      const assistantRegenerates = resolvedRegenerates;
+
+      const codecMessageId = crypto.randomUUID();
+      const defaultHeaders = buildTransportHeaders({
+        role: 'assistant',
+        runId,
+        codecMessageId,
+        runClientId: runOwnerClientId,
+        parent: assistantParent,
+        forkOf: assistantForkOf,
+        invocationId,
+        inputClientId: resolvedInputClientId,
+        inputCodecMessageId: resolvedInputCodecMessageId,
+        regenerates: assistantRegenerates,
+        stepId: stepHeaders?.stepId,
+        attemptId: stepHeaders?.attemptId,
+      });
+      const encoder = codec.createEncoder(channel, {
+        extras: { headers: defaultHeaders },
+        onMessage,
+        messageId: codecMessageId,
+      });
+
+      const result = await pipeStream(stream, encoder, signal, onCancelled, streamOpts?.resolveWriteOptions, logger);
+
+      if (result.error) {
+        const errInfo = new Ably.ErrorInfo(
+          `unable to pipe response for run ${runId}; ${result.error.message}`,
+          ErrorCode.StreamError,
+          500,
+          errorCause(result.error),
+        );
+        logger?.error('Run.pipe(); stream error', { runId });
+        runOnError?.(errInfo);
+      }
+
+      // Run cancellation is transport-tier: guarantee the run-end terminal so
+      // every observer's stream closes even if the caller's handler omits
+      // run.end(). Best-effort — pipe must still return the StreamResult.
+      if (result.reason === 'cancelled') {
+        try {
+          await endOnCancel();
+        } catch {
+          logger?.error('Run.pipe(); run-end on cancel failed', { runId });
+        }
+      }
+
+      logger?.debug('Run.pipe(); stream finished', { runId, reason: result.reason });
+      return result;
+    };
+
     const run: AgentRun<TOutput, TProjection, TMessage> = {
       // Shared read members delegate to `base` (live getters, not snapshots).
       get runId() {
@@ -944,85 +1048,103 @@ class DefaultAgentSession<
       // Spec: AIT-ST6, AIT-ST6a, AIT-ST6b, AIT-ST6b1, AIT-ST6b2, AIT-ST6b3, AIT-ST6c
       pipe: async (stream: ReadableStream<TOutput>, streamOpts?: PipeOptions<TOutput>): Promise<StreamResult> => {
         logger?.trace('Run.pipe();', { runId });
+        // Stepless pipe: no step headers. The cancel safety-net ends the run.
+        return doPipe(stream, streamOpts, undefined, async () => run.end({ reason: 'cancelled' }));
+      },
 
-        await requireConnected('pipe');
+      step: async <T>(fn: (step: RunStep<TOutput>) => Promise<T>, options?: StepOptions): Promise<T> => {
+        logger?.trace('Run.step();', { runId });
+
+        await requireConnected('step');
 
         if (state === RunState.INITIALIZED) {
           throw new Ably.ErrorInfo(
-            `unable to pipe stream; start() must be called before pipe() (run ${runId})`,
+            `unable to run step; start() must be called before step() (run ${runId})`,
+            ErrorCode.InvalidArgument,
+            400,
+          );
+        }
+        if (state === RunState.ENDED) {
+          throw new Ably.ErrorInfo(
+            `unable to run step; run ${runId} has already ended`,
             ErrorCode.InvalidArgument,
             400,
           );
         }
 
-        const runOwnerClientId = runManager.getClientId(runId);
-
-        // The assistant message's parent: an explicit per-stream
-        // `streamOpts.parent` from the caller, else the reply run's
-        // structural-parent fallback computed once at run-start
-        // (`assistantParentFallback` — the triggering user message, or the
-        // input message's own parent for regenerate messages that produced no
-        // MessageNodes). Owning the default here means agent routes don't have
-        // to pass `{ parent: lastUserCodecMessageId }` to keep tree threading
-        // correct; edit-then-regenerate sibling resolution relies on the
-        // user→assistant chain being explicit.
-        const assistantParent = streamOpts?.parent ?? assistantParentFallback;
-        const assistantForkOf = streamOpts?.forkOf ?? resolvedForkOf;
-        // Echo `msg-regenerate` on the assistant message so that a
-        // client receiving the assistant chunk before `ai-run-start`
-        // (e.g. via history pagination across a page boundary, or a lost
-        // lifecycle publish) can still populate `RunNode.regeneratesCodecMessageId`
-        // when creating the Run from headers. Mirrors the symmetric
-        // behaviour for `assistantForkOf` on edit runs.
-        const assistantRegenerates = resolvedRegenerates;
-
-        const codecMessageId = crypto.randomUUID();
-        const defaultHeaders = buildTransportHeaders({
-          role: 'assistant',
-          runId,
-          codecMessageId,
-          runClientId: runOwnerClientId,
-          parent: assistantParent,
-          forkOf: assistantForkOf,
-          invocationId,
-          inputClientId: resolvedInputClientId,
-          inputCodecMessageId: resolvedInputCodecMessageId,
-          regenerates: assistantRegenerates,
-        });
-        const encoder = codec.createEncoder(channel, {
-          extras: { headers: defaultHeaders },
-          onMessage,
-          messageId: codecMessageId,
-        });
-
-        const result = await pipeStream(stream, encoder, signal, onCancelled, streamOpts?.resolveWriteOptions, logger);
-
-        if (result.error) {
-          const errInfo = new Ably.ErrorInfo(
-            `unable to pipe response for run ${runId}; ${result.error.message}`,
-            ErrorCode.StreamError,
-            500,
-            errorCause(result.error),
-          );
-          logger?.error('Run.pipe(); stream error', { runId });
-          runOnError?.(errInfo);
+        // Resolve the step id (see StepOptions.stepId / the Run.step contract):
+        // an explicit id wins; else reuse the previous step's id if it failed
+        // (in-process retry coalescing); else mint the next index. The default
+        // is scoped to THIS invocation's id so steps from different invocations
+        // of the same run (e.g. the original turn and a suspend/resume
+        // continuation) never collide and supersede each other — only an
+        // explicit, stable `stepId` coalesces across invocations. A fresh
+        // attempt id is always minted.
+        let stepId: string;
+        if (options?.stepId !== undefined) {
+          stepId = options.stepId;
+        } else if (lastStepReason === 'failed' && lastStepId !== undefined) {
+          stepId = lastStepId;
+        } else {
+          stepId = `${invocationId}-step-${String(stepIndex)}`;
+          stepIndex++;
         }
+        const attemptId = crypto.randomUUID();
 
-        // Run cancellation is transport-tier: guarantee the run-end terminal so
-        // every observer's stream closes even if the caller's handler omits
-        // run.end(). Best-effort — pipe must still return the StreamResult; a
-        // later run.end() is a no-op via the ENDED guard. The run is past
-        // INITIALIZED here (pipe requires start()), so end()'s guards pass.
-        if (result.reason === 'cancelled') {
+        await runManager.startStep(runId, stepId, attemptId);
+        // Optimistic step-start seed (serial-less) so reads before the wire echo
+        // see the step; the echo promotes its serial. Mirrors the run-start seed.
+        getTree().applyStepLifecycle({ type: 'step-start', runId, stepId, attemptId, serial: undefined });
+
+        // Object wrapper, not a bare `let`: TS flow-narrows a `let` to `false`
+        // past the `fn` call, hiding the mutation that happens inside it.
+        const pipeState = { errored: false };
+        const stepObj: RunStep<TOutput> = {
+          get stepId() {
+            return stepId;
+          },
+          get attemptId() {
+            return attemptId;
+          },
+          get abortSignal() {
+            return signal;
+          },
+          pipe: async (stream: ReadableStream<TOutput>, streamOpts?: PipeOptions<TOutput>): Promise<StreamResult> => {
+            const result = await doPipe(stream, streamOpts, { stepId, attemptId }, async () =>
+              run.end({ reason: 'cancelled' }),
+            );
+            // A piped stream error marks the step failed without throwing — so
+            // the common `vercelRunOutcome(...) -> run.end(outcome)` flow needs
+            // no try/catch, while the step status still reflects the failure.
+            if (result.reason === 'error') pipeState.errored = true;
+            return result;
+          },
+        };
+
+        const closeStep = async (reason: StepEndReason): Promise<void> => {
+          lastStepId = stepId;
+          lastStepReason = reason;
+          await runManager.endStep(runId, stepId, attemptId, reason);
+          getTree().applyStepLifecycle({ type: 'step-end', runId, stepId, attemptId, serial: undefined, reason });
+        };
+
+        try {
+          const value = await fn(stepObj);
+          await closeStep(pipeState.errored ? 'failed' : 'complete');
+          logger?.debug('Run.step(); step finished', { runId, stepId, attemptId, failed: pipeState.errored });
+          return value;
+        } catch (error) {
+          // The closure threw: close the step failed (best-effort — a close
+          // failure must not mask the original error) and re-throw so a durable
+          // framework's retry policy observes it.
           try {
-            await run.end({ reason: 'cancelled' });
+            await closeStep('failed');
           } catch {
-            logger?.error('Run.pipe(); run-end on cancel failed', { runId });
+            logger?.error('Run.step(); failed to close step after error', { runId, stepId });
           }
+          logger?.debug('Run.step(); step threw', { runId, stepId, attemptId });
+          throw error;
         }
-
-        logger?.debug('Run.pipe(); stream finished', { runId, reason: result.reason });
-        return result;
       },
 
       suspend: async (): Promise<void> => {

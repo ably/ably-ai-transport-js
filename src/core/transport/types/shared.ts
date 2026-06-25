@@ -31,6 +31,22 @@ export type RunEndReason = 'complete' | 'cancelled' | 'error';
 export type RunStatus = 'active' | 'suspended' | 'complete' | 'cancelled' | 'error';
 
 /**
+ * Why a step attempt ended (the `step-reason` on `ai-step-end`).
+ *
+ * Deliberately narrower than {@link RunEndReason}: a step has no `cancelled`
+ * or `error` arm. A cancel is a run-level concern (it ends the run, not a
+ * single step), and a step that hits a stream/model/tool error ends `failed`.
+ * Supersession is not a step-end reason — it is implicit: a later
+ * higher-serial `ai-step-start` for the same `step-id` makes the prior
+ * attempt's output non-canonical without any terminal event.
+ *
+ * - `complete` — the step attempt finished its work.
+ * - `failed` — the step attempt failed (the closure threw, or its piped
+ *   stream errored). A retry under the same `step-id` may follow.
+ */
+export type StepEndReason = 'complete' | 'failed';
+
+/**
  * Passed to a run's `onCancel` hook for authorization decisions.
  * The hook inspects the incoming cancel message and decides whether to
  * allow the targeted run to be cancelled.

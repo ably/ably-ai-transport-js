@@ -79,6 +79,7 @@ const runNode = (
   invocationId: '',
   startSerial: undefined,
   endSerial: undefined,
+  steps: [],
 });
 
 // A run getter for runs with no triggering input node — output-only turns.

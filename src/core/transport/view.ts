@@ -26,6 +26,7 @@ import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
 import type { Codec, CodecInputEvent, CodecMessage, CodecOutputEvent } from '../codec/types.js';
+import { collectMessages } from './collect-messages.js';
 import type { WireApplier } from './decode-fold.js';
 import { loadHistory } from './load-history.js';
 import { nodeKey, type TreeInternal } from './tree.js';
@@ -498,74 +499,18 @@ export class DefaultView<
   }
 
   /**
-   * Flatten visible nodes to messages, collapsing a non-head regenerate into the
-   * slot it replaces: while emitting a reply run, at each non-head message that
-   * has a selected regenerator, drop that message and the run's tail and emit the
-   * selected regenerator instead (recursive for regen-of-regen). Whole-reply
-   * regenerates need nothing here - visibleNodes already picks the sibling.
+   * Flatten visible nodes to messages, collapsing each non-head regenerate into
+   * the slot it replaces, via the shared {@link collectMessages}. The View
+   * supplies the codec's `getMessages` and resolves a non-head group's
+   * regenerators and selected member from its own navigation state.
    * @param nodes - Visible nodes (inputs + reply runs), chronological.
    * @returns The flat message list, each paired with its codec-message-id.
    */
   private _extractMessages(nodes: ConversationNode<TProjection>[]): CodecMessage<TMessage>[] {
-    const messages: CodecMessage<TMessage>[] = [];
-    // Regenerator runs already emitted via substitution at their anchor — skip
-    // them when the node walk reaches them directly.
-    const consumedRunIds = new Set<string>();
-
-    for (const node of nodes) {
-      if (node.kind === 'run' && consumedRunIds.has(node.runId)) continue;
-      this._emitNodeMessages(node, messages, consumedRunIds);
-    }
-    return messages;
-  }
-
-  /**
-   * Emit one visible node's messages into `out`, applying non-head regenerate
-   * substitution for a reply run (see `_extractMessages`). Input nodes and runs
-   * with no non-head regenerators emit their projection verbatim.
-   * @param node - The node to emit.
-   * @param out - The accumulating flat message list (mutated in place).
-   * @param consumedRunIds - Set of regenerator runIds already emitted via substitution (mutated in place).
-   */
-  private _emitNodeMessages(
-    node: ConversationNode<TProjection>,
-    out: CodecMessage<TMessage>[],
-    consumedRunIds: Set<string>,
-  ): void {
-    const own = this._codec.getMessages(node.projection);
-    if (node.kind !== 'run') {
-      out.push(...own);
-      return;
-    }
-    for (let i = 0; i < own.length; i++) {
-      const m = own[i];
-      if (!m) continue;
-      // Head message (i === 0) regenerates are whole-reply sibling runs, already
-      // resolved by visibleNodes — only non-head messages anchor a non-head group.
-      const predecessor = i > 0 ? own[i - 1]?.codecMessageId : undefined;
-      if (predecessor !== undefined) {
-        const regenerators = this._nonHeadRegenerators(m.codecMessageId, predecessor);
-        if (regenerators.length > 0) {
-          // Every regenerator (and any same-anchor sibling the Tree already
-          // collapsed in `visibleNodes`) is an alternative at THIS one slot, so
-          // mark them all consumed up front — the node walk must not re-emit the
-          // Tree's default-latest sibling once we render a different member here.
-          for (const r of regenerators) consumedRunIds.add(r.runId);
-          const selectedKey = this._selectedNonHeadMember(m.codecMessageId, node.runId, regenerators);
-          if (selectedKey !== node.runId) {
-            // A regenerator is selected: drop M and the rest of O, emit the
-            // selected regenerator in M's place (recursively for nested regen).
-            const chosen = regenerators.find((r) => r.runId === selectedKey);
-            if (chosen) {
-              this._emitNodeMessages(chosen, out, consumedRunIds);
-              return;
-            }
-          }
-          // Original (owner run) selected: fall through and emit M from O.
-        }
-      }
-      out.push(m);
-    }
+    return collectMessages(nodes, (projection) => this._codec.getMessages(projection), {
+      regenerators: (target, predecessor) => this._nonHeadRegenerators(target, predecessor),
+      selected: (target, ownerRunId, regenerators) => this._selectedNonHeadMember(target, ownerRunId, regenerators),
+    });
   }
 
   hasOlder(): boolean {

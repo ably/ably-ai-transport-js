@@ -36,7 +36,6 @@ const mockSend = vi.fn(
       runId: Promise.resolve('run-1'),
       inputEventId: 'ev-1',
       cancel: async () => {},
-      optimisticCodecMessageIds: [],
       toInvocation: () => Invocation.fromJSON({ inputEventId: 'ev-1', sessionName: 'demo' }),
     }),
 );

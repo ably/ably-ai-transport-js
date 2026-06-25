@@ -29,6 +29,7 @@ export default [
   {
     ignores: [
       'demo/**',
+      'usechat-generatetext-investigation/**',
       '**/eslint.config.js',
       '**/dist',
       '**/node_modules',

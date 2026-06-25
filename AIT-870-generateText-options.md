@@ -103,7 +103,10 @@ is weighed against forking the wire.
   requires a UI-message _stream_; `generateText`'s result has **no**
   `toUIMessageStream()` / `toUIMessageStreamResponse()` (those exist only on
   `streamText`). So we're enabling a pattern Vercel doesn't natively support,
-  not reproducing one.
+  not reproducing one. (This was challenged and then re-checked against the SDK
+  source and an empirical repro — see
+  [`usechat-generatetext-investigation/`](./usechat-generatetext-investigation/README.md)
+  for the full writeup and a runnable reproduction.)
 - **`generateText` reports failure by promise rejection / throw** (incl.
   `NoOutputGeneratedError`, abort errors, provider errors) — the opposite of
   `streamText`, where errors are in-stream. So the developer's `try/catch` is

@@ -50,7 +50,7 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
   }, []);
 
   const view = useView({ limit: historyLimit ?? 30 });
-  const { messages, hasOlder, loading, loadOlder, branchSelection, selectSibling, runOf } = view;
+  const { messages, hasOlder, loading, loadOlder, branchSelection, runOf } = view;
 
   useClientTools(view, clientId, api, recordClientTool);
 
@@ -183,7 +183,6 @@ export function Chat({ clientId, historyLimit, api }: ChatProps) {
           loading={loading}
           view={{
             branchSelection,
-            selectSibling,
             runOf,
           }}
           onLoadOlder={() => void loadOlder()}

@@ -102,7 +102,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
   const hasAnyRuns = status === 'submitted' || status === 'streaming';
 
   // Auto-loads first page on mount
-  const { messages, hasOlder, loading, loadOlder, branchSelection, selectSibling, runOf } = useView({
+  const { messages, hasOlder, loading, loadOlder, branchSelection, runOf } = useView({
     limit: historyLimit ?? 30,
   });
 
@@ -129,7 +129,6 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
           loading={loading}
           view={{
             branchSelection,
-            selectSibling,
             runOf,
           }}
           onLoadOlder={loadOlder}

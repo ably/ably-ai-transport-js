@@ -2,7 +2,7 @@ export { OBJECT_MODES } from '../core/channel-options.js';
 export type { CodecMessage } from '../core/codec/types.js';
 export type {
   ActiveRun,
-  BranchSelection,
+  BranchHandle,
   ClientSession,
   ConversationNode,
   InputNode,

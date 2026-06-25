@@ -6,17 +6,18 @@ import { vi } from 'vitest';
 
 import type { CodecInputEvent, CodecOutputEvent } from '../../../src/core/codec/types.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
-import type { BranchSelection, ClientSession, Tree, View } from '../../../src/core/transport/types.js';
+import type { BranchHandle, ClientSession, Tree, View } from '../../../src/core/transport/types.js';
 
 type TreeEventType = 'update' | 'ably-message' | 'run' | 'output';
 type SessionEventType = 'error';
 type Handler = ((...args: never[]) => void) | (() => void);
 
-const emptyBranchSelection = (): BranchSelection<string> => ({
+const emptyBranchHandle = (): BranchHandle<string> => ({
   hasSiblings: false,
   siblings: [],
   index: 0,
   selected: undefined,
+  select: vi.fn(),
 });
 
 export interface MockSession {
@@ -121,8 +122,7 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     runOf: vi.fn(() => undefined),
     // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires explicit undefined return for the contract
     run: vi.fn(() => undefined),
-    branchSelection: vi.fn(emptyBranchSelection),
-    selectSibling: vi.fn(),
+    branchSelection: vi.fn(emptyBranchHandle),
     send,
     regenerate,
     edit,

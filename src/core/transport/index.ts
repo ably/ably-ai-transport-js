@@ -3,7 +3,7 @@ export type {
   ActiveRun,
   AgentSession,
   AgentSessionOptions,
-  BranchSelection,
+  BranchHandle,
   CancelRequest,
   ClientSession,
   ClientSessionOptions,

@@ -18,7 +18,7 @@
 import { useMemo } from 'react';
 import type * as Ably from 'ably';
 import type { DynamicToolUIPart, UIMessage } from 'ai';
-import { EVENT_CANCEL, type BranchSelection, type CodecMessage, type RunInfo } from '@ably/ai-transport';
+import { EVENT_CANCEL, type BranchHandle, type CodecMessage, type RunInfo } from '@ably/ai-transport';
 
 export type DemoStepId =
   | 'server-weather'
@@ -97,7 +97,7 @@ const ALL_STEPS: DemoStep[] = [
 export function useDemoProgress(
   messages: CodecMessage<UIMessage>[],
   runOf: (codecMessageId: string) => RunInfo | undefined,
-  branchSelection: (codecMessageId: string) => BranchSelection<UIMessage>,
+  branchSelection: (codecMessageId: string) => BranchHandle<UIMessage>,
   ablyMessages: Ably.InboundMessage[],
 ): DemoStep[] {
   return useMemo(() => {

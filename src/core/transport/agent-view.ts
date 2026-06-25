@@ -31,7 +31,7 @@ import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
-import type { WireApplier } from './decode-fold.js';
+import { foldAndEmit, type WireApplier } from './decode-fold.js';
 import { type HistoryPagesCursor, loadHistoryPages } from './load-history-pages.js';
 import type { TreeInternal } from './tree.js';
 import type { ConversationNode, Tree } from './types.js';
@@ -242,8 +242,7 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
    * @param wire - The inbound Ably message to fold.
    */
   private _foldWire(wire: Ably.InboundMessage): void {
-    this._applier.apply(wire);
-    this._tree.emitAblyMessage(wire);
+    foldAndEmit(this._applier, this._tree, wire);
   }
 
   // -------------------------------------------------------------------------

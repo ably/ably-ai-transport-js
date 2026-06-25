@@ -31,7 +31,7 @@ import { registerAgent } from '../agent.js';
 import { resolveChannelModes } from '../channel-options.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
 import { type AgentView, createAgentView } from './agent-view.js';
-import { createWireApplier, type WireApplier } from './decode-fold.js';
+import { createWireApplier, foldAndEmit, type WireApplier } from './decode-fold.js';
 import { buildTransportHeaders } from './headers.js';
 import { evictOldestIfFull } from './internal/bounded-map.js';
 import { Invocation } from './invocation.js';
@@ -513,8 +513,7 @@ class DefaultAgentSession<
    * @param wire - The inbound Ably message to fold.
    */
   private _foldWire(wire: Ably.InboundMessage): void {
-    this._applier.apply(wire);
-    this._tree.emitAblyMessage(wire);
+    foldAndEmit(this._applier, this._tree, wire);
   }
 
   // -------------------------------------------------------------------------

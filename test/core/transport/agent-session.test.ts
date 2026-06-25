@@ -45,7 +45,7 @@ import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
 import type { AgentSession } from '../../../src/core/transport/types.js';
 import type { SendDelegate } from '../../../src/core/transport/view.js';
-import { DefaultView } from '../../../src/core/transport/view.js';
+import { createClientView } from '../../../src/core/transport/view.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 import { VERSION } from '../../../src/version.js';
@@ -3168,7 +3168,7 @@ const viewMessageIds = (wiresOldestFirst: Ably.InboundMessage[]): string[] => {
         toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       }),
     );
-  const view = new DefaultView<TestInput, TestOutput, TestProjection, TestMessage>({
+  const view = createClientView<TestInput, TestOutput, TestProjection, TestMessage>({
     tree,
     codec,
     hydrator: createHistoryHydrator({

@@ -1,21 +1,23 @@
 /**
- * DefaultView — a paginated, branch-aware projection over the Tree.
+ * DefaultView — a read-only, paginated, branch-aware projection over the Tree,
+ * and DefaultClientView — the client's navigable, writable view that composes it.
  *
- * Wraps a Tree (RunNode-keyed) and manages a pagination window that controls
- * which Runs are visible to the UI. New live Runs appear immediately; older
- * Runs are revealed progressively via `loadOlder()`.
+ * `DefaultView` owns the invariant machinery every view needs: a pagination
+ * window over the visible node chain, scoped event re-emission, and the read
+ * surface (`getMessages`/`runs`/`hasOlder`/`loadOlder`/`runOf`/`run`). It reads
+ * the branch through an injected {@link BranchSource} — the strategy that
+ * resolves which nodes are on the branch and how they flatten — so the same base
+ * can serve both the client's whole-tree navigation and a leaf-pinned read (the
+ * latter planned for the agent's `run.view`). `getMessages()` concatenates each
+ * visible node's
+ * `codec.getMessages(node.projection)` (with non-head-regenerate substitution the
+ * source applies) into the flat `CodecMessage<TMessage>[]` the UI renders.
  *
- * `getMessages()` reads the visible node chain (input nodes + reply runs, with
- * sibling selection applied) the injected {@link NavigableBranchSource} resolves
- * and concatenates each node's `codec.getMessages(node.projection)` to produce
- * the flat `CodecMessage<TMessage>[]` the UI renders.
- *
- * The View owns the invariant machinery — the pagination window, the scoped
- * event forwarding, and the read/write surface — while the branch strategy
- * (which nodes are on the branch, how they flatten, sibling navigation) lives in
- * the {@link NavigableBranchSource} it composes. Each View owns its own source
- * (its own selection state and pagination window), allowing multiple independent
- * Views over the same Tree.
+ * `DefaultClientView` adds the client's navigation + write path
+ * (`branchSelection` / `send` / `regenerate` / `edit`) on top, composing a
+ * `DefaultView` base and the {@link NavigableBranchSource} that base reads
+ * through. Each view owns its own source (its own selection state and pagination
+ * window), allowing multiple independent views over the same Tree.
  *
  * Events are scoped to the visible window — 'update' only fires when the
  * visible output changes, 'ably-message' only for messages corresponding to
@@ -30,7 +32,7 @@ import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
 import type { Codec, CodecInputEvent, CodecMessage, CodecOutputEvent } from '../codec/types.js';
-import { NavigableBranchSource } from './branch-source.js';
+import { type BranchSource, NavigableBranchSource } from './branch-source.js';
 import { messageTailSplitIndex } from './conversation-projection.js';
 import type { HistoryHydrator } from './history-hydrator.js';
 import { nodeKey, type TreeInternal } from './tree.js';
@@ -44,6 +46,7 @@ import type {
   RunLifecycleEvent,
   RunNode,
   SendOptions,
+  View,
 } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -85,17 +88,38 @@ export type SendDelegate<TInput extends CodecInputEvent> = (
 // Options
 // ---------------------------------------------------------------------------
 
-/** Options for creating a View. */
+/** Options for creating the read-only {@link DefaultView} base. */
 interface ViewOptions<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage> {
   /** The tree to project. */
   tree: TreeInternal<TInput, TOutput, TProjection>;
-  /** The codec used to project messages and mint regenerate inputs. */
+  /** The codec used to project messages. */
   codec: Codec<TInput, TOutput, TProjection, TMessage>;
   /**
    * The session's shared history hydrator. `loadOlder` drives it to fold older
    * channel pages into the Tree; it is owned by the session and shared by every
    * view, so the channel is paged once across views.
    */
+  hydrator: HistoryHydrator;
+  /**
+   * The branch strategy this view reads through — the client's
+   * {@link NavigableBranchSource} today (a leaf-pinned agent source is planned).
+   * Resolves the visible node chain and flattens it; the View layers pagination
+   * + events on top.
+   */
+  branchSource: BranchSource<TProjection, TMessage>;
+  /** Logger for diagnostic output. */
+  logger: Logger;
+  /** Called when the view is closed, allowing the owner to clean up references. */
+  onClose?: () => void;
+}
+
+/** Options for creating a client View — the navigable, writable {@link DefaultClientView}. */
+interface ClientViewOptions<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage> {
+  /** The tree to project and navigate. */
+  tree: TreeInternal<TInput, TOutput, TProjection>;
+  /** The codec used to project messages and mint regenerate inputs. */
+  codec: Codec<TInput, TOutput, TProjection, TMessage>;
+  /** The session's shared history hydrator (see {@link ViewOptions.hydrator}). */
   hydrator: HistoryHydrator;
   /** Delegate for executing sends through the session. */
   sendDelegate: SendDelegate<TInput>;
@@ -110,9 +134,9 @@ interface ViewOptions<TInput extends CodecInputEvent, TOutput extends CodecOutpu
 // ---------------------------------------------------------------------------
 
 /**
- * Normalise the two input shapes `View.send` accepts (a single TInput
+ * Normalise the two input shapes `ClientView.send` accepts (a single TInput
  * or an array) into the array shape the SendDelegate consumes.
- * @param input - The raw input from `View.send`.
+ * @param input - The raw input from `ClientView.send`.
  * @returns The normalised input array.
  */
 const _normaliseSend = <TInput extends CodecInputEvent>(input: TInput | TInput[]): TInput[] =>
@@ -133,30 +157,29 @@ const _toRunInfo = <TProjection>(run: RunNode<TProjection>): RunInfo => ({
 });
 
 // ---------------------------------------------------------------------------
-// Implementation
+// Read-only base
 // ---------------------------------------------------------------------------
 
-export class DefaultView<
+/**
+ * The read-only {@link View} base: pagination window, scoped events, and the
+ * read surface, over an injected {@link BranchSource}. `recomputeAndEmit` /
+ * `recomputeAndEmitIfChanged` are public so a composing client view can trigger
+ * a refresh after mutating the source's selection state; they are not part of
+ * the public {@link View} contract.
+ */
+class DefaultView<
   TInput extends CodecInputEvent,
   TOutput extends CodecOutputEvent,
   TProjection,
   TMessage,
-> implements ClientView<TInput, TMessage> {
+> implements View<TMessage> {
   private readonly _tree: TreeInternal<TInput, TOutput, TProjection>;
   private readonly _codec: Codec<TInput, TOutput, TProjection, TMessage>;
   private readonly _hydrator: HistoryHydrator;
-  private readonly _sendDelegate: SendDelegate<TInput>;
+  private readonly _branchSource: BranchSource<TProjection, TMessage>;
   private readonly _logger: Logger;
   private readonly _emitter: EventEmitter<ViewEventsMap>;
   private readonly _onClose?: () => void;
-
-  /**
-   * The branch strategy: resolves the visible node chain from this view's
-   * sibling/regenerate selections, flattens it, and owns the navigation surface
-   * the write path drives. Each view has its own source so views navigate
-   * independently over the shared Tree.
-   */
-  private readonly _branchSource: NavigableBranchSource<TInput, TOutput, TProjection, TMessage>;
 
   /** Spec: AIT-CT11c — runIds loaded from history but not yet revealed to the UI. */
   private readonly _withheldRunIds = new Set<string>();
@@ -213,16 +236,11 @@ export class DefaultView<
     this._tree = options.tree;
     this._codec = options.codec;
     this._hydrator = options.hydrator;
-    this._sendDelegate = options.sendDelegate;
+    this._branchSource = options.branchSource;
     this._onClose = options.onClose;
     this._logger = options.logger.withContext({ component: 'View' });
     this._logger.trace('DefaultView();');
     this._emitter = new EventEmitter<ViewEventsMap>(this._logger);
-    this._branchSource = new NavigableBranchSource({
-      tree: this._tree,
-      codec: this._codec,
-      logger: this._logger,
-    });
 
     // Compute initial cache and snapshot visible state
     this._cachedNodes = this._computeFlatNodes();
@@ -312,7 +330,7 @@ export class DefaultView<
    * `update` unconditionally. Use after a mutation that always changes the
    * visible output (e.g. an explicit selection or a withheld-batch reveal).
    */
-  private _recomputeAndEmit(): void {
+  recomputeAndEmit(): void {
     this._cachedNodes = this._computeFlatNodes();
     this._updateVisibleSnapshot(this._cachedNodes);
     this._emitter.emit('update');
@@ -324,7 +342,7 @@ export class DefaultView<
    * mutation that may or may not move the visible window (e.g. a structural
    * tree update, or a deferred regenerate promotion that may already match).
    */
-  private _recomputeAndEmitIfChanged(): void {
+  recomputeAndEmitIfChanged(): void {
     const nodes = this._computeFlatNodes();
     if (this._visibleChanged(nodes)) {
       this._cachedNodes = nodes;
@@ -361,7 +379,7 @@ export class DefaultView<
       // its trimmed-off oldest messages without fetching or revealing new runs.
       if (this._hiddenMessageCount >= limit) {
         this._hiddenMessageCount -= limit;
-        this._recomputeAndEmit();
+        this.recomputeAndEmit();
         return;
       }
 
@@ -394,7 +412,7 @@ export class DefaultView<
       // `limit` of them (newest), hiding the overshoot plus what was already
       // trimmed. `<= 0` when history is exhausted before `limit` is reached.
       this._hiddenMessageCount = Math.max(0, this._hiddenMessageCount + (after - before) - limit);
-      this._recomputeAndEmit();
+      this.recomputeAndEmit();
     } catch (error) {
       this._logger.error('DefaultView.loadOlder(); failed', { error });
       throw error;
@@ -462,193 +480,6 @@ export class DefaultView<
   }
 
   // -------------------------------------------------------------------------
-  // Branch navigation (msg-anchored)
-  // -------------------------------------------------------------------------
-
-  branchSelection(codecMessageId: string): BranchHandle<TMessage> {
-    // The handle's `select` records the selection on the branch source and, when
-    // a selection was actually recorded (the id anchors a group), recomputes the
-    // visible window. Non-anchor / unknown-id handles get this same closure; the
-    // source no-ops and returns false, so the recompute is skipped.
-    const select = (index: number): void => {
-      if (this._branchSource.recordSelection(codecMessageId, index)) this._recomputeAndEmit();
-    };
-    return this._branchSource.branchSelection(codecMessageId, select);
-  }
-
-  // -------------------------------------------------------------------------
-  // Write operations
-  // -------------------------------------------------------------------------
-
-  // Spec: AIT-CT3, AIT-CT4
-  async send(input: TInput | TInput[], options?: SendOptions): Promise<ActiveRun> {
-    this._logger.trace('DefaultView.send();');
-    if (this._closed) {
-      throw new Ably.ErrorInfo('unable to send; view is closed', ErrorCode.InvalidArgument, 400);
-    }
-
-    const normalised = _normaliseSend<TInput>(input);
-
-    // The codec-message-id of the visible branch tail — the delegate uses it
-    // for auto-parent routing on fresh user messages.
-    const parentCodecMessageId = this._lastVisibleMessagePairs.at(-1)?.codecMessageId;
-
-    const result = await this._sendDelegate(normalised, options, parentCodecMessageId);
-    // Auto-select the new fork branch; recompute only when a fork was set.
-    if (this._branchSource.applyForkAutoSelect(result, options)) this._recomputeAndEmit();
-    return result;
-  }
-
-  // Spec: AIT-CT5, AIT-CT13d
-  async regenerate(messageId: string, options?: SendOptions): Promise<ActiveRun> {
-    this._logger.trace('DefaultView.regenerate();', { messageId });
-
-    if (this._closed) {
-      throw new Ably.ErrorInfo('unable to regenerate; view is closed', ErrorCode.InvalidArgument, 400);
-    }
-
-    // `messageId` is the assistant being regenerated. The new Run is a
-    // continuation of the regenerated message's Run, not a fork: the
-    // message-level replacement (new assistant supersedes the original)
-    // happens at projection extraction time. We still resolve the parent
-    // user prompt so the new assistant's wire `parent` is correct,
-    // and we send the truncated history (through the parent inclusive)
-    // so the LLM re-answers the right message.
-    const targetRun = this._runByCodecMessageId(messageId);
-    if (!targetRun) {
-      throw new Ably.ErrorInfo(
-        `unable to regenerate; message not found in tree: ${messageId}`,
-        ErrorCode.InvalidArgument,
-        400,
-      );
-    }
-    const parentCodecMessageId = this._findParentMsgId(targetRun, messageId);
-    if (!parentCodecMessageId) {
-      throw new Ably.ErrorInfo(
-        `unable to regenerate; parent user message not found for ${messageId}`,
-        ErrorCode.InvalidArgument,
-        400,
-      );
-    }
-
-    // Canonical regen anchor: when the user clicks Regenerate on an
-    // already-regenerated assistant, the new alternative SHOULD belong
-    // to the SAME branch point as the previous regen — but ONLY when
-    // the target is the position-equivalent of the group anchor (the
-    // head message of the regenerator Run). For a trailing follow-up
-    // message inside a regenerator Run (e.g. the LLM text after the
-    // regenerated tool call), the user expects the regen to anchor at
-    // the specific message they clicked, not roll up to the group root.
-    // Rebasing trailing regens to the group root produces a confusing
-    // "N+1 / N+1" counter on the tool-call bubble and runs the whole
-    // turn from scratch instead of just regenerating the text.
-    let regenAnchorMsgId = messageId;
-    if (targetRun.regeneratesCodecMessageId !== undefined) {
-      const firstMsg = this._codec.getMessages(targetRun.projection).at(0);
-      if (firstMsg?.codecMessageId === messageId) {
-        regenAnchorMsgId = targetRun.regeneratesCodecMessageId;
-      }
-    }
-
-    const sendOptions: SendOptions = {
-      ...options,
-      parent: parentCodecMessageId,
-    };
-
-    // Mint a regenerate input via the codec. The codec's well-known
-    // `Regenerate` carries `target: regenAnchorMsgId` and `parent:
-    // parentCodecMessageId`; the session reads those fields off the input
-    // directly when building transport headers (`fork-of` and
-    // `parent`). The agent's input-event lookup catches the wire signal;
-    // no tree-upsert / projection fold runs locally.
-    const regenerate = this._codec.createRegenerate(regenAnchorMsgId, parentCodecMessageId);
-    const result = await this._sendDelegate([regenerate], sendOptions, parentCodecMessageId);
-    // Defer the regenerate group to the new run; promote/recompute if it changed
-    // the visible window (the run may have raced ahead into the tree already).
-    if (this._branchSource.applyRegenerateAutoSelect(result, regenAnchorMsgId)) this._recomputeAndEmitIfChanged();
-    return result;
-  }
-
-  // Spec: AIT-CT6
-  async edit(messageId: string, inputs: TInput | TInput[], options?: SendOptions): Promise<ActiveRun> {
-    this._logger.trace('DefaultView.edit();', { messageId });
-
-    if (this._closed) {
-      throw new Ably.ErrorInfo('unable to edit; view is closed', ErrorCode.InvalidArgument, 400);
-    }
-
-    // The edit target is a user prompt — a run-less INPUT node — so resolve
-    // it kind-blind, not via the reply-run-only lookup.
-    const targetNode = this._tree.getNodeByCodecMessageId(messageId);
-    if (!targetNode) {
-      throw new Ably.ErrorInfo(
-        `unable to edit; message not found in tree: ${messageId}`,
-        ErrorCode.InvalidArgument,
-        400,
-      );
-    }
-    const parentCodecMessageId = this._findParentMsgId(targetNode, messageId);
-
-    return this.send(inputs, {
-      ...options,
-      forkOf: messageId,
-      parent: parentCodecMessageId,
-    });
-  }
-
-  /**
-   * Resolve the reply Run that owns a codec-message-id, narrowing the Tree's
-   * node union to a {@link RunNode}. A user-input codec-message-id resolves to
-   * an input node and yields `undefined` here.
-   * @param codecMessageId - The codec-message-id to resolve.
-   * @returns The owning RunNode, or undefined if absent or not a reply Run.
-   */
-  private _runByCodecMessageId(codecMessageId: string): RunNode<TProjection> | undefined {
-    const node = this._tree.getNodeByCodecMessageId(codecMessageId);
-    return node?.kind === 'run' ? node : undefined;
-  }
-
-  /**
-   * Find the codec-message-id of the message immediately preceding `targetMsgId` in
-   * the visible conversation.
-   *
-   * Consults the View's visible message chain first so message-level
-   * replacements (regenerate) are respected: regenerating an
-   * already-regenerated assistant lands the predecessor on the user
-   * prompt the regen is responding to, NOT on the hidden original
-   * assistant that occupies the same conversation slot. Falls back to a
-   * projection-walk for the rare case where `targetMsgId` isn't on the
-   * visible chain (e.g. caller is operating on a Run that's selection-
-   * hidden by the current branch).
-   * @param targetNode - The node (input node or reply run) that owns `targetMsgId`.
-   * @param targetMsgId - The codec-message-id to find the parent of.
-   * @returns The parent codec-message-id, or undefined if no predecessor exists.
-   */
-  private _findParentMsgId(targetNode: ConversationNode<TProjection>, targetMsgId: string): string | undefined {
-    const visible = this._lastVisibleMessagePairs;
-    const visIdx = visible.findIndex((m) => m.codecMessageId === targetMsgId);
-    if (visIdx > 0) {
-      return visible[visIdx - 1]?.codecMessageId;
-    }
-    if (visIdx === 0) return undefined;
-
-    const messages = this._codec.getMessages(targetNode.projection);
-    const idx = messages.findIndex((m) => m.codecMessageId === targetMsgId);
-    if (idx > 0) {
-      return messages[idx - 1]?.codecMessageId;
-    }
-    if (idx === 0 && targetNode.parentCodecMessageId !== undefined) {
-      // The structural predecessor is the node owning parentCodecMessageId
-      // (an input node, or a prior reply run). Its tail message is the parent.
-      const parentNode = this._tree.getNodeByCodecMessageId(targetNode.parentCodecMessageId);
-      if (parentNode) {
-        return this._codec.getMessages(parentNode.projection).at(-1)?.codecMessageId;
-      }
-    }
-    return undefined;
-  }
-
-  // -------------------------------------------------------------------------
   // Event subscription
   // -------------------------------------------------------------------------
 
@@ -680,7 +511,6 @@ export class DefaultView<
     for (const unsub of this._unsubs) unsub();
     this._unsubs.length = 0;
     this._emitter.off();
-    this._branchSource.clear();
     this._withheldRunIds.clear();
     this._withheldBuffer.length = 0;
     this._hiddenMessageCount = 0;
@@ -717,7 +547,7 @@ export class DefaultView<
       this._withheldRunIds.delete(nodeKey(n));
     }
     if (nodes.length > 0) {
-      this._recomputeAndEmit();
+      this.recomputeAndEmit();
     }
   }
 
@@ -757,7 +587,7 @@ export class DefaultView<
     // regenerate selections forward) before the window is recomputed.
     this._branchSource.onVisibleNodesChanged(this._lastVisibleNodeKeys);
 
-    this._recomputeAndEmitIfChanged();
+    this.recomputeAndEmitIfChanged();
   }
 
   private _onTreeAblyMessage(msg: Ably.InboundMessage): void {
@@ -846,13 +676,301 @@ export class DefaultView<
 }
 
 // ---------------------------------------------------------------------------
+// Client view — navigation + write path over the base
+// ---------------------------------------------------------------------------
+
+/**
+ * The client's navigable, writable {@link ClientView}: composes a read-only
+ * {@link DefaultView} base (for pagination + events + reads) and the
+ * {@link NavigableBranchSource} that base reads through, adding branch
+ * navigation and the write path (`send`/`regenerate`/`edit`). Navigation/write
+ * mutate the source's selection state, then ask the base to recompute.
+ */
+class DefaultClientView<
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+> implements ClientView<TInput, TMessage> {
+  private readonly _base: DefaultView<TInput, TOutput, TProjection, TMessage>;
+  private readonly _branchSource: NavigableBranchSource<TInput, TOutput, TProjection, TMessage>;
+  private readonly _tree: TreeInternal<TInput, TOutput, TProjection>;
+  private readonly _codec: Codec<TInput, TOutput, TProjection, TMessage>;
+  private readonly _sendDelegate: SendDelegate<TInput>;
+  private readonly _logger: Logger;
+  private _closed = false;
+
+  constructor(options: {
+    base: DefaultView<TInput, TOutput, TProjection, TMessage>;
+    branchSource: NavigableBranchSource<TInput, TOutput, TProjection, TMessage>;
+    tree: TreeInternal<TInput, TOutput, TProjection>;
+    codec: Codec<TInput, TOutput, TProjection, TMessage>;
+    sendDelegate: SendDelegate<TInput>;
+    logger: Logger;
+  }) {
+    this._base = options.base;
+    this._branchSource = options.branchSource;
+    this._tree = options.tree;
+    this._codec = options.codec;
+    this._sendDelegate = options.sendDelegate;
+    this._logger = options.logger.withContext({ component: 'ClientView' });
+    this._logger.trace('DefaultClientView();');
+  }
+
+  // -------------------------------------------------------------------------
+  // Read surface — delegated to the base
+  // -------------------------------------------------------------------------
+
+  getMessages(): CodecMessage<TMessage>[] {
+    return this._base.getMessages();
+  }
+
+  runs(): RunInfo[] {
+    return this._base.runs();
+  }
+
+  hasOlder(): boolean {
+    return this._base.hasOlder();
+  }
+
+  async loadOlder(limit?: number): Promise<void> {
+    return this._base.loadOlder(limit);
+  }
+
+  runOf(codecMessageId: string): RunInfo | undefined {
+    return this._base.runOf(codecMessageId);
+  }
+
+  run(runId: string): RunInfo | undefined {
+    return this._base.run(runId);
+  }
+
+  on(event: 'update', handler: () => void): () => void;
+  on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
+  on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
+  on(
+    event: 'update' | 'ably-message' | 'run',
+    handler: (() => void) | ((msg: Ably.InboundMessage) => void) | ((event: RunLifecycleEvent) => void),
+  ): () => void {
+    // CAST: forward the discriminated overloads to the base unchanged; the base's
+    // own overloads re-narrow per event name.
+    return this._base.on(event as 'update', handler as () => void);
+  }
+
+  // -------------------------------------------------------------------------
+  // Branch navigation (msg-anchored)
+  // -------------------------------------------------------------------------
+
+  branchSelection(codecMessageId: string): BranchHandle<TMessage> {
+    // The handle's `select` records the selection on the branch source and, when
+    // a selection was actually recorded (the id anchors a group), recomputes the
+    // visible window. Non-anchor / unknown-id handles get this same closure; the
+    // source no-ops and returns false, so the recompute is skipped.
+    const select = (index: number): void => {
+      if (this._branchSource.recordSelection(codecMessageId, index)) this._base.recomputeAndEmit();
+    };
+    return this._branchSource.branchSelection(codecMessageId, select);
+  }
+
+  // -------------------------------------------------------------------------
+  // Write operations
+  // -------------------------------------------------------------------------
+
+  // Spec: AIT-CT3, AIT-CT4
+  async send(input: TInput | TInput[], options?: SendOptions): Promise<ActiveRun> {
+    this._logger.trace('DefaultClientView.send();');
+    if (this._closed) {
+      throw new Ably.ErrorInfo('unable to send; view is closed', ErrorCode.InvalidArgument, 400);
+    }
+
+    const normalised = _normaliseSend<TInput>(input);
+
+    // The codec-message-id of the visible branch tail — the delegate uses it
+    // for auto-parent routing on fresh user messages.
+    const parentCodecMessageId = this._base.getMessages().at(-1)?.codecMessageId;
+
+    const result = await this._sendDelegate(normalised, options, parentCodecMessageId);
+    // Auto-select the new fork branch; recompute only when a fork was set.
+    if (this._branchSource.applyForkAutoSelect(result, options)) this._base.recomputeAndEmit();
+    return result;
+  }
+
+  // Spec: AIT-CT5, AIT-CT13d
+  async regenerate(messageId: string, options?: SendOptions): Promise<ActiveRun> {
+    this._logger.trace('DefaultClientView.regenerate();', { messageId });
+
+    if (this._closed) {
+      throw new Ably.ErrorInfo('unable to regenerate; view is closed', ErrorCode.InvalidArgument, 400);
+    }
+
+    // `messageId` is the assistant being regenerated. The new Run is a
+    // continuation of the regenerated message's Run, not a fork: the
+    // message-level replacement (new assistant supersedes the original)
+    // happens at projection extraction time. We still resolve the parent
+    // user prompt so the new assistant's wire `parent` is correct,
+    // and we send the truncated history (through the parent inclusive)
+    // so the LLM re-answers the right message.
+    const targetRun = this._runByCodecMessageId(messageId);
+    if (!targetRun) {
+      throw new Ably.ErrorInfo(
+        `unable to regenerate; message not found in tree: ${messageId}`,
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+    const parentCodecMessageId = this._findParentMsgId(targetRun, messageId);
+    if (!parentCodecMessageId) {
+      throw new Ably.ErrorInfo(
+        `unable to regenerate; parent user message not found for ${messageId}`,
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+
+    // Canonical regen anchor: when the user clicks Regenerate on an
+    // already-regenerated assistant, the new alternative SHOULD belong
+    // to the SAME branch point as the previous regen — but ONLY when
+    // the target is the position-equivalent of the group anchor (the
+    // head message of the regenerator Run). For a trailing follow-up
+    // message inside a regenerator Run (e.g. the LLM text after the
+    // regenerated tool call), the user expects the regen to anchor at
+    // the specific message they clicked, not roll up to the group root.
+    // Rebasing trailing regens to the group root produces a confusing
+    // "N+1 / N+1" counter on the tool-call bubble and runs the whole
+    // turn from scratch instead of just regenerating the text.
+    let regenAnchorMsgId = messageId;
+    if (targetRun.regeneratesCodecMessageId !== undefined) {
+      const firstMsg = this._codec.getMessages(targetRun.projection).at(0);
+      if (firstMsg?.codecMessageId === messageId) {
+        regenAnchorMsgId = targetRun.regeneratesCodecMessageId;
+      }
+    }
+
+    const sendOptions: SendOptions = {
+      ...options,
+      parent: parentCodecMessageId,
+    };
+
+    // Mint a regenerate input via the codec. The codec's well-known
+    // `Regenerate` carries `target: regenAnchorMsgId` and `parent:
+    // parentCodecMessageId`; the session reads those fields off the input
+    // directly when building transport headers (`fork-of` and
+    // `parent`). The agent's input-event lookup catches the wire signal;
+    // no tree-upsert / projection fold runs locally.
+    const regenerate = this._codec.createRegenerate(regenAnchorMsgId, parentCodecMessageId);
+    const result = await this._sendDelegate([regenerate], sendOptions, parentCodecMessageId);
+    // Defer the regenerate group to the new run; promote/recompute if it changed
+    // the visible window (the run may have raced ahead into the tree already).
+    if (this._branchSource.applyRegenerateAutoSelect(result, regenAnchorMsgId)) this._base.recomputeAndEmitIfChanged();
+    return result;
+  }
+
+  // Spec: AIT-CT6
+  async edit(messageId: string, inputs: TInput | TInput[], options?: SendOptions): Promise<ActiveRun> {
+    this._logger.trace('DefaultClientView.edit();', { messageId });
+
+    if (this._closed) {
+      throw new Ably.ErrorInfo('unable to edit; view is closed', ErrorCode.InvalidArgument, 400);
+    }
+
+    // The edit target is a user prompt — a run-less INPUT node — so resolve
+    // it kind-blind, not via the reply-run-only lookup.
+    const targetNode = this._tree.getNodeByCodecMessageId(messageId);
+    if (!targetNode) {
+      throw new Ably.ErrorInfo(
+        `unable to edit; message not found in tree: ${messageId}`,
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+    const parentCodecMessageId = this._findParentMsgId(targetNode, messageId);
+
+    return this.send(inputs, {
+      ...options,
+      forkOf: messageId,
+      parent: parentCodecMessageId,
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Lifecycle
+  // -------------------------------------------------------------------------
+
+  close(): void {
+    if (this._closed) return;
+    this._closed = true;
+    this._branchSource.clear();
+    this._base.close();
+  }
+
+  // -------------------------------------------------------------------------
+  // Private helpers
+  // -------------------------------------------------------------------------
+
+  /**
+   * Resolve the reply Run that owns a codec-message-id, narrowing the Tree's
+   * node union to a {@link RunNode}. A user-input codec-message-id resolves to
+   * an input node and yields `undefined` here.
+   * @param codecMessageId - The codec-message-id to resolve.
+   * @returns The owning RunNode, or undefined if absent or not a reply Run.
+   */
+  private _runByCodecMessageId(codecMessageId: string): RunNode<TProjection> | undefined {
+    const node = this._tree.getNodeByCodecMessageId(codecMessageId);
+    return node?.kind === 'run' ? node : undefined;
+  }
+
+  /**
+   * Find the codec-message-id of the message immediately preceding `targetMsgId` in
+   * the visible conversation.
+   *
+   * Consults the View's visible message chain first so message-level
+   * replacements (regenerate) are respected: regenerating an
+   * already-regenerated assistant lands the predecessor on the user
+   * prompt the regen is responding to, NOT on the hidden original
+   * assistant that occupies the same conversation slot. Falls back to a
+   * projection-walk for the rare case where `targetMsgId` isn't on the
+   * visible chain (e.g. caller is operating on a Run that's selection-
+   * hidden by the current branch).
+   * @param targetNode - The node (input node or reply run) that owns `targetMsgId`.
+   * @param targetMsgId - The codec-message-id to find the parent of.
+   * @returns The parent codec-message-id, or undefined if no predecessor exists.
+   */
+  private _findParentMsgId(targetNode: ConversationNode<TProjection>, targetMsgId: string): string | undefined {
+    const visible = this._base.getMessages();
+    const visIdx = visible.findIndex((m) => m.codecMessageId === targetMsgId);
+    if (visIdx > 0) {
+      return visible[visIdx - 1]?.codecMessageId;
+    }
+    if (visIdx === 0) return undefined;
+
+    const messages = this._codec.getMessages(targetNode.projection);
+    const idx = messages.findIndex((m) => m.codecMessageId === targetMsgId);
+    if (idx > 0) {
+      return messages[idx - 1]?.codecMessageId;
+    }
+    if (idx === 0 && targetNode.parentCodecMessageId !== undefined) {
+      // The structural predecessor is the node owning parentCodecMessageId
+      // (an input node, or a prior reply run). Its tail message is the parent.
+      const parentNode = this._tree.getNodeByCodecMessageId(targetNode.parentCodecMessageId);
+      if (parentNode) {
+        return this._codec.getMessages(parentNode.projection).at(-1)?.codecMessageId;
+      }
+    }
+    return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
 /**
  * Create a client View — a paginated, navigable, writable window over a Tree.
+ * Wires a {@link NavigableBranchSource} (the client branch strategy) into a
+ * read-only {@link DefaultView} base, then layers the navigation + write path on
+ * top as a {@link DefaultClientView}.
  * @param options - The tree, codec, hydrator, send delegate, and logger to use.
- * @returns A new {@link DefaultView} instance, typed as the public {@link ClientView}.
+ * @returns A new client view, typed as the public {@link ClientView}.
  */
 export const createClientView = <
   TInput extends CodecInputEvent,
@@ -860,5 +978,27 @@ export const createClientView = <
   TProjection,
   TMessage,
 >(
-  options: ViewOptions<TInput, TOutput, TProjection, TMessage>,
-): ClientView<TInput, TMessage> => new DefaultView(options);
+  options: ClientViewOptions<TInput, TOutput, TProjection, TMessage>,
+): ClientView<TInput, TMessage> => {
+  const branchSource = new NavigableBranchSource<TInput, TOutput, TProjection, TMessage>({
+    tree: options.tree,
+    codec: options.codec,
+    logger: options.logger,
+  });
+  const base = new DefaultView<TInput, TOutput, TProjection, TMessage>({
+    tree: options.tree,
+    codec: options.codec,
+    hydrator: options.hydrator,
+    branchSource,
+    logger: options.logger,
+    onClose: options.onClose,
+  });
+  return new DefaultClientView<TInput, TOutput, TProjection, TMessage>({
+    base,
+    branchSource,
+    tree: options.tree,
+    codec: options.codec,
+    sendDelegate: options.sendDelegate,
+    logger: options.logger,
+  });
+};

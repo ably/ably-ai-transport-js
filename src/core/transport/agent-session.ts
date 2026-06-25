@@ -24,22 +24,23 @@ import {
   HEADER_RUN_ID,
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
-import { type Logger, LogLevel, makeLogger } from '../../logger.js';
+import type { Logger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import { resolveChannelModes } from '../channel-options.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
 import { type AgentView, createAgentView } from './agent-view.js';
 import { readCancelTarget } from './cancel-envelope.js';
-import { createWireApplier, foldAndEmit, type WireApplier } from './decode-fold.js';
+import { foldAndEmit, type WireApplier } from './decode-fold.js';
 import { buildTransportHeaders } from './headers.js';
 import { evictOldestIfFull } from './internal/bounded-map.js';
 import { Invocation } from './invocation.js';
+import { createMaterialisation } from './materialisation.js';
 import { pipeStream } from './pipe-stream.js';
 import type { RunManager } from './run-manager.js';
 import { createRunManager } from './run-manager.js';
 import { bestEffortDetach, continuityLostError, isContinuityLost, requireConnected } from './session-support.js';
-import { createTree, type DefaultTree } from './tree.js';
+import type { DefaultTree } from './tree.js';
 import type {
   AgentSession,
   AgentSessionOptions,
@@ -181,11 +182,9 @@ class DefaultAgentSession<
     this._runManager = createRunManager(this._channel, this._logger);
     this._inputEventLookupTimeoutMs = options.inputEventLookupTimeoutMs ?? 30000;
     this._inputEventLookbackMs = options.inputEventLookbackMs ?? 120_000;
-    this._tree = createTree<TInput, TOutput, TProjection>(
-      this._codec,
-      this._logger ?? makeLogger({ logLevel: LogLevel.Silent }),
-    );
-    this._applier = createWireApplier(this._tree, this._codec.createDecoder());
+    const { tree, applier } = createMaterialisation(this._codec, this._logger);
+    this._tree = tree;
+    this._applier = applier;
     this._agentView = this._createAgentView();
 
     this._channelListener = (msg: Ably.InboundMessage) => {
@@ -474,11 +473,9 @@ class DefaultAgentSession<
     // Tree's projections, indices, and ably-message listeners to GC. New
     // runs use the fresh Tree; lingering closures on the old Tree from
     // in-flight (now-aborted) lookups are bounded by the abort propagation.
-    this._tree = createTree<TInput, TOutput, TProjection>(
-      this._codec,
-      this._logger ?? makeLogger({ logLevel: LogLevel.Silent }),
-    );
-    this._applier = createWireApplier(this._tree, this._codec.createDecoder());
+    const { tree, applier } = createMaterialisation(this._codec, this._logger);
+    this._tree = tree;
+    this._applier = applier;
     // The AgentView holds the Tree/applier directly, so rebuild it against the
     // fresh pair — this also resets its cursor and exhaustion state.
     this._agentView = this._createAgentView();

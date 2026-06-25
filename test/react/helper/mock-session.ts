@@ -6,7 +6,7 @@ import { vi } from 'vitest';
 
 import type { CodecInputEvent, CodecOutputEvent } from '../../../src/core/codec/types.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
-import type { BranchHandle, ClientSession, Tree, View } from '../../../src/core/transport/types.js';
+import type { BranchHandle, ClientSession, ClientView, Tree } from '../../../src/core/transport/types.js';
 
 type TreeEventType = 'update' | 'ably-message' | 'run' | 'output';
 type SessionEventType = 'error';
@@ -34,7 +34,7 @@ export interface MockSession {
   /** Fire an event on tree/view (update, ably-message, run, output). */
   emitTree: (event: TreeEventType, ...args: unknown[]) => void;
   tree: Tree<CodecOutputEvent, unknown>;
-  view: View<CodecInputEvent, string>;
+  view: ClientView<CodecInputEvent, string>;
 }
 
 export const createMockSession = (initialMessages: string[] = []): MockSession => {
@@ -112,7 +112,7 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const edit = vi.fn(() => Promise.resolve(mockRun));
 
-  const view: View<CodecInputEvent, string> = {
+  const view: ClientView<CodecInputEvent, string> = {
     getMessages: vi.fn(() => initialMessages.map((m) => ({ codecMessageId: m, message: m }))),
     runs: vi.fn(() => []),
     hasOlder: vi.fn(() => false),

@@ -47,12 +47,17 @@ of truth:
 
 - **Tree** — complete conversation state (every node, from live messages and
   history) and active-run tracking. Emits unfiltered events for every change.
-- **View** — a pagination projection over the Tree: which history-loaded nodes
-  are visible, re-emitting the Tree's events scoped to the visible window.
-- **Session** — the write path (send/regenerate/edit/cancel), channel
-  subscription, and decode loop. Wires the channel into the Tree and exposes
-  both as `session.tree` and `session.view`. Surfaces only an `error` event;
-  all data events live on the Tree and View.
+- **View** — a read-only pagination projection over the Tree (`View<TMessage>`):
+  which history-loaded nodes are visible, re-emitting the Tree's events scoped
+  to the visible window. The branch a View walks is supplied by an injected
+  **BranchSource** strategy, so one projection serves both sides — the client's
+  whole-tree branch navigation and the agent's leaf-pinned read. The client's
+  `session.view` extends the base as `ClientView` (branch navigation + the write
+  path). See `src/core/transport/types/view.ts` and `branch-source.ts`.
+- **Session** — channel subscription, decode loop, and the send delegate behind
+  the View's write path (plus `cancel`). Wires the channel into the Tree and
+  exposes both as `session.tree` and `session.view`. Surfaces only an `error`
+  event; all data events live on the Tree and View.
 
 ## Composition, not inheritance
 
@@ -60,6 +65,13 @@ Sessions are assembled from composable parts, not class hierarchies. A
 `ClientSession` composes the codec, the Tree (state) and View (projection), and
 the channel subscription + decode loop. An `AgentSession` composes the codec's
 encoder with per-run stream piping and run tracking for cancel routing.
+
+The same applies one level down: a View composes an injected **BranchSource**
+strategy (visible-node resolution, message flattening, sibling navigation)
+rather than specialising via subclasses, so the one View implementation serves
+the client's navigable whole-tree branch and the agent's leaf-pinned branch
+alike. The read base is `View<TMessage>`; the client's writable/navigable
+surface is `ClientView extends View`.
 
 ## Dependency injection
 
@@ -82,13 +94,13 @@ Use `private readonly` fields with an underscore prefix. Store all
 constructor-injected dependencies as private fields:
 
 ```ts
-class DefaultView<TEvent, TMessage> implements View<TMessage> {
-  private readonly _tree: TreeInternal<TMessage>;
+class DefaultFoo<TEvent, TMessage> implements Foo<TMessage> {
+  private readonly _dep: SomeDependency<TMessage>;
   private readonly _logger: Logger;
 
-  constructor(options: ViewOptions<TEvent, TMessage>) {
-    this._tree = options.tree;
-    this._logger = options.logger.withContext({ component: 'View' });
+  constructor(options: FooOptions<TEvent, TMessage>) {
+    this._dep = options.dep;
+    this._logger = options.logger.withContext({ component: 'Foo' });
   }
 }
 ```

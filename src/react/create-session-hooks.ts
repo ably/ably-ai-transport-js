@@ -23,7 +23,7 @@ import type * as Ably from 'ably';
 import type { ComponentType } from 'react';
 
 import type { CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
-import type { ClientSession, View } from '../core/transport/types.js';
+import type { ClientSession, ClientView } from '../core/transport/types.js';
 import type { ClientSessionProviderProps } from './contexts/client-session-provider.js';
 import { ClientSessionProvider as _ClientSessionProvider } from './contexts/client-session-provider.js';
 import { useAblyMessages as _useAblyMessages } from './use-ably-messages.js';
@@ -73,8 +73,8 @@ export interface SessionHooks<TInput extends CodecInputEvent, TOutput extends Co
   useView: (props?: {
     /** Client session whose default view to subscribe to; defaults to the nearest {@link ClientSessionProvider}. */
     session?: ClientSession<TInput, TOutput, TProjection, TMessage> | null;
-    /** A specific {@link View} to subscribe to directly. Takes priority over `session`. */
-    view?: View<TInput, TMessage> | null;
+    /** A specific {@link ClientView} to subscribe to directly. Takes priority over `session`. */
+    view?: ClientView<TInput, TMessage> | null;
     /** When provided, auto-loads the first page on mount. */
     limit?: number;
     /** When `true`, skip all subscriptions and return an empty handle. */

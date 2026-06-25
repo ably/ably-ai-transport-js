@@ -1,11 +1,26 @@
 /**
- * collectMessages — flatten a visible node chain into the flat
- * `CodecMessage<TMessage>[]` a view renders.
+ * conversation-projection — the windowed branch projection over a visible node
+ * chain, shared by every View.
  *
- * Both the client view (navigable, selection-driven) and the agent view
- * (read-only, leaf-pinned) collect their messages through this one function, so
- * the two cannot drift on how a branch is rendered. It owns the one behaviour
- * not expressible in the Tree's `visibleNodes` sibling collapse:
+ * A View turns a chain of visible nodes (input nodes + reply runs, chronological)
+ * into the flat `CodecMessage<TMessage>[]` it renders, and pages that chain a
+ * message at a time. The two projection primitives both sides depend on live
+ * here so the client view (navigable, selection-driven) and the agent view
+ * (read-only, leaf-pinned) cannot drift on how a branch is flattened or how a
+ * page boundary is found:
+ *
+ *  - {@link collectMessages} — flatten a node chain to messages, collapsing each
+ *    non-head regenerate into the slot it replaces.
+ *  - {@link messageTailSplitIndex} — find the node index at which the newest
+ *    whole runs covering a target message count begin (run-granular reveal).
+ *
+ * Both are pure: they read nothing but their arguments. The caller supplies the
+ * codec's `getMessages` and a {@link NonHeadRegenerateResolver} — so the same
+ * projection serves a selection-map source (client) and a leaf-derived source
+ * (agent).
+ *
+ * `collectMessages` owns the one behaviour not expressible in the Tree's
+ * `visibleNodes` sibling collapse:
  *
  *  - **Non-head-regenerate substitution** — a regenerate that replaced a
  *    non-head message inside a multi-message reply run parents at the target's
@@ -21,11 +36,6 @@
  * surfaced it as a child of the owner run) would otherwise emit it twice, or —
  * when an earlier substitution dropped the slot it anchored on — leave a stale
  * tail message on the branch.
- *
- * Pure: it reads nothing but its arguments. The caller supplies the codec's
- * `getMessages` and a {@link NonHeadRegenerateResolver} — so the same
- * flattening serves a selection-map source (client) and a leaf-derived source
- * (agent).
  */
 
 import type { CodecMessage } from '../codec/types.js';
@@ -138,4 +148,35 @@ export const collectMessages = <TProjection, TMessage>(
     emitNode(node, out);
   }
   return out;
+};
+
+/**
+ * Find the index in `nodes` (chronological, oldest-first) at which the newest
+ * whole runs covering at least `target` codecMessages begin. Walks newest-first
+ * summing each node's `getMessages(projection)` count; once the running total
+ * reaches `target`, the current node (and everything newer) is the revealed
+ * batch — so whole runs are revealed and the batch may overshoot `target` (the
+ * caller trims). Returns `0` when the nodes hold fewer than `target` messages —
+ * reveal everything.
+ *
+ * Shared by the buffer-drain and history-fetch reveal paths so they agree on
+ * "covering `target` messages".
+ * @param nodes - Candidate nodes, oldest-first.
+ * @param target - Minimum codecMessages the revealed batch must cover.
+ * @param getMessages - The codec's projection-to-messages function.
+ * @returns The split index; `nodes[splitIdx..]` is the revealed batch.
+ */
+export const messageTailSplitIndex = <TProjection, TMessage>(
+  nodes: readonly ConversationNode<TProjection>[],
+  target: number,
+  getMessages: (projection: TProjection) => CodecMessage<TMessage>[],
+): number => {
+  let messages = 0;
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const node = nodes[i];
+    if (!node) continue;
+    messages += getMessages(node.projection).length;
+    if (messages >= target) return i; // reveal nodes[i..]
+  }
+  return 0; // fewer than `target` messages — reveal everything
 };

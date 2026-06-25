@@ -8,26 +8,6 @@ import type { RunEndReason } from './shared.js';
 import type { RunLifecycleEvent } from './tree.js';
 
 // ---------------------------------------------------------------------------
-// History / pagination
-// ---------------------------------------------------------------------------
-
-/** A page of raw history wires from the channel. Internal to View/decodeHistory. */
-export interface HistoryPage {
-  /** Raw Ably messages that produced this page, in chronological order (oldest first). */
-  rawMessages: Ably.InboundMessage[];
-  /** Whether there are older pages available. */
-  hasNext(): boolean;
-  /** Fetch the next (older) page. Returns undefined if no more pages. */
-  next(): Promise<HistoryPage | undefined>;
-}
-
-/** Options for loading channel history. */
-export interface LoadHistoryOptions {
-  /** Max messages per page. Default: 100. */
-  limit?: number;
-}
-
-// ---------------------------------------------------------------------------
 // View — windowed projection over the tree
 // ---------------------------------------------------------------------------
 

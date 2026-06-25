@@ -39,12 +39,12 @@ import { registerAgent } from '../agent.js';
 import { resolveChannelModes } from '../channel-options.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent, Encoder } from '../codec/types.js';
 import { buildCancelMessage, type CancelTarget } from './cancel-envelope.js';
-import { createWireApplier, type WireApplier } from './decode-fold.js';
+import type { WireApplier } from './decode-fold.js';
 import { buildRunEndError, buildTransportHeaders } from './headers.js';
 import { Invocation } from './invocation.js';
+import { createMaterialisation } from './materialisation.js';
 import { bestEffortDetach, continuityLostError, isContinuityLost, requireConnected } from './session-support.js';
 import type { DefaultTree } from './tree.js';
-import { createTree } from './tree.js';
 import type { ActiveRun, ClientSession, ClientSessionOptions, RunEndReason, SendOptions, Tree, View } from './types.js';
 import { createView, type DefaultView } from './view.js';
 
@@ -173,8 +173,9 @@ class DefaultClientSession<
     this._hasAttachedOnce = this._channel.state === 'attached';
 
     // Compose sub-components
-    this._tree = createTree<TInput, TOutput, TProjection>(this._codec, this._logger);
-    this._applier = createWireApplier(this._tree, this._codec.createDecoder());
+    const { tree, applier } = createMaterialisation(this._codec, this._logger);
+    this._tree = tree;
+    this._applier = applier;
     this._view = createView<TInput, TOutput, TProjection, TMessage>({
       tree: this._tree,
       channel: this._channel,

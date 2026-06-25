@@ -43,7 +43,15 @@ import type { WireApplier } from './decode-fold.js';
 import { buildRunEndError, buildTransportHeaders } from './headers.js';
 import { Invocation } from './invocation.js';
 import { createMaterialisation } from './materialisation.js';
-import { bestEffortDetach, continuityLostError, isContinuityLost, requireConnected } from './session-support.js';
+import {
+  bestEffortDetach,
+  continuityLostError,
+  handleWireMessage,
+  isContinuityLost,
+  requireConnected,
+  SessionState,
+  subscribeAndAttach,
+} from './session-support.js';
 import type { DefaultTree } from './tree.js';
 import type { ActiveRun, ClientSession, ClientSessionOptions, RunEndReason, SendOptions, Tree, View } from './types.js';
 import { createView, type DefaultView } from './view.js';
@@ -68,15 +76,6 @@ const noopUnsubscribe = (): void => {};
  */
 const isWireOnlyInput = (input: CodecInputEvent): boolean =>
   input.kind !== 'user-message' && (input.kind === 'regenerate' || input.codecMessageId !== undefined);
-
-// ---------------------------------------------------------------------------
-// Internal state machine
-// ---------------------------------------------------------------------------
-
-enum ClientSessionState {
-  READY = 'ready',
-  CLOSED = 'closed',
-}
 
 // ---------------------------------------------------------------------------
 // Event map for the session's typed EventEmitter
@@ -131,7 +130,7 @@ class DefaultClientSession<
   private _connectPromise: Promise<void> | undefined;
   private readonly _onMessage: (msg: Ably.InboundMessage) => void;
 
-  private _state = ClientSessionState.READY;
+  private _state = SessionState.READY;
   private _hasAttachedOnce: boolean;
   private readonly _onChannelStateChange: Ably.channelEventCallback;
 
@@ -248,27 +247,20 @@ class DefaultClientSession<
   // Spec: AIT-CT2
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- preserve reference equality across calls
   connect(): Promise<void> {
-    if (this._state === ClientSessionState.CLOSED) {
+    if (this._state === SessionState.CLOSED) {
       return Promise.reject(new Ably.ErrorInfo('unable to connect; session is closed', ErrorCode.SessionClosed, 400));
     }
     if (this._connectPromise) return this._connectPromise;
 
     this._logger.trace('DefaultClientSession.connect();');
     // Subscribe before attach (RTL7g) — subscribe implicitly attaches the channel.
-    this._connectPromise = this._channel.subscribe(this._onMessage).then(
-      () => {
-        this._logger.debug('DefaultClientSession.connect(); subscribed and attached');
-      },
-      (error: unknown) => {
-        const errInfo = new Ably.ErrorInfo(
-          `unable to subscribe to channel; ${errorMessage(error)}`,
-          ErrorCode.SessionSubscriptionError,
-          500,
-          errorCause(error),
-        );
-        this._logger.error('DefaultClientSession.connect(); subscribe failed');
-        this._emitter.emit('error', errInfo);
-        throw errInfo;
+    this._connectPromise = subscribeAndAttach(
+      this._channel,
+      this._onMessage,
+      this._logger,
+      'DefaultClientSession',
+      (error) => {
+        this._emitter.emit('error', error);
       },
     );
     return this._connectPromise;
@@ -299,69 +291,64 @@ class DefaultClientSession<
   // ---------------------------------------------------------------------------
 
   private _handleMessage(ablyMessage: Ably.InboundMessage): void {
-    if (this._state === ClientSessionState.CLOSED) return;
+    if (this._state === SessionState.CLOSED) return;
 
-    try {
-      // Spec: AIT-CT16a
-      // Live-only: surface an agent error carried on a run-end BEFORE applying
-      // it, preserving the original 'error'-before-tree-'run' emit ordering.
-      // Consumers that expose a per-run stream (e.g. the Vercel ChatTransport)
-      // error their stream off this event. The agent only publishes run-end
-      // after run-start, so no pending-run-start tracker is outstanding.
-      if (ablyMessage.name === EVENT_RUN_END) {
-        const headers = getTransportHeaders(ablyMessage);
-        // CAST: agent always writes a valid RunEndReason; default to 'complete' for robustness
-        const reason = (headers[HEADER_RUN_REASON] ?? 'complete') as RunEndReason;
-        if (reason === 'error') {
-          const errInfo = buildRunEndError(headers);
-          this._logger.error('ClientSession._handleMessage(); agent error received', {
-            runId: headers[HEADER_RUN_ID],
-            invocationId: headers[HEADER_INVOCATION_ID],
-            code: errInfo.code,
-          });
-          this._emitter.emit('error', errInfo);
-        }
-      }
-
-      // Reconstruct the tree via the Tree's single decode-and-apply engine —
-      // the same applier (and decoder instance) the Views' history replay
-      // uses, so the live loop can't drift from it and an attach-boundary
-      // stream isn't double-decoded.
-      const event = this._applier.apply(ablyMessage);
-
-      // Live-only: resolve the pending `runId` promise on a fresh run-start or
-      // a continuation run-resume. Key by the echoed `input-codec-message-id`
-      // — the mirror of the arming key on `_pendingRunStarts` (see that
-      // field's JSDoc). Every send carries at least one input, so the agent
-      // always echoes it.
-      if (event && (event.type === 'start' || event.type === 'resume')) {
-        const startedKey = getTransportHeaders(ablyMessage)[HEADER_INPUT_CODEC_MESSAGE_ID];
-        if (startedKey !== undefined) {
-          const pending = this._pendingRunStarts.get(startedKey);
-          if (pending) {
-            this._pendingRunStarts.delete(startedKey);
-            // Resolve the run handle's `runId` promise with the agent-minted id.
-            pending.resolve(event.runId);
+    handleWireMessage(
+      () => {
+        // Spec: AIT-CT16a
+        // Live-only: surface an agent error carried on a run-end BEFORE applying
+        // it, preserving the original 'error'-before-tree-'run' emit ordering.
+        // Consumers that expose a per-run stream (e.g. the Vercel ChatTransport)
+        // error their stream off this event. The agent only publishes run-end
+        // after run-start, so no pending-run-start tracker is outstanding.
+        if (ablyMessage.name === EVENT_RUN_END) {
+          const headers = getTransportHeaders(ablyMessage);
+          // CAST: agent always writes a valid RunEndReason; default to 'complete' for robustness
+          const reason = (headers[HEADER_RUN_REASON] ?? 'complete') as RunEndReason;
+          if (reason === 'error') {
+            const errInfo = buildRunEndError(headers);
+            this._logger.error('ClientSession._handleMessage(); agent error received', {
+              runId: headers[HEADER_RUN_ID],
+              invocationId: headers[HEADER_INVOCATION_ID],
+              code: errInfo.code,
+            });
+            this._emitter.emit('error', errInfo);
           }
         }
-      }
 
-      // Emit ably-message AFTER the apply so View subscribers can find the
-      // owning node in `_lastVisibleNodeKeySet` (keyed by run-id for reply runs
-      // and codec-message-id for inputs), which is refreshed by the tree
-      // 'update' events the apply triggers.
-      this._tree.emitAblyMessage(ablyMessage);
-    } catch (error) {
-      this._emitter.emit(
-        'error',
-        new Ably.ErrorInfo(
-          `unable to process channel message; ${errorMessage(error)}`,
-          ErrorCode.SessionSubscriptionError,
-          500,
-          errorCause(error),
-        ),
-      );
-    }
+        // Reconstruct the tree via the Tree's single decode-and-apply engine —
+        // the same applier (and decoder instance) the Views' history replay
+        // uses, so the live loop can't drift from it and an attach-boundary
+        // stream isn't double-decoded.
+        const event = this._applier.apply(ablyMessage);
+
+        // Live-only: resolve the pending `runId` promise on a fresh run-start or
+        // a continuation run-resume. Key by the echoed `input-codec-message-id`
+        // — the mirror of the arming key on `_pendingRunStarts` (see that
+        // field's JSDoc). Every send carries at least one input, so the agent
+        // always echoes it.
+        if (event && (event.type === 'start' || event.type === 'resume')) {
+          const startedKey = getTransportHeaders(ablyMessage)[HEADER_INPUT_CODEC_MESSAGE_ID];
+          if (startedKey !== undefined) {
+            const pending = this._pendingRunStarts.get(startedKey);
+            if (pending) {
+              this._pendingRunStarts.delete(startedKey);
+              // Resolve the run handle's `runId` promise with the agent-minted id.
+              pending.resolve(event.runId);
+            }
+          }
+        }
+
+        // Emit ably-message AFTER the apply so View subscribers can find the
+        // owning node in `_lastVisibleNodeKeySet` (keyed by run-id for reply runs
+        // and codec-message-id for inputs), which is refreshed by the tree
+        // 'update' events the apply triggers.
+        this._tree.emitAblyMessage(ablyMessage);
+      },
+      (error) => {
+        this._emitter.emit('error', error);
+      },
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -370,7 +357,7 @@ class DefaultClientSession<
 
   // Spec: AIT-CT19, AIT-CT19a
   private _handleChannelStateChange(stateChange: Ably.ChannelStateChange): void {
-    if (this._state === ClientSessionState.CLOSED) return;
+    if (this._state === SessionState.CLOSED) return;
 
     const { current, resumed } = stateChange;
 
@@ -427,7 +414,7 @@ class DefaultClientSession<
 
   // Spec: AIT-CT10b
   createView(): View<TInput, TMessage> {
-    if (this._state === ClientSessionState.CLOSED) {
+    if (this._state === SessionState.CLOSED) {
       throw new Ably.ErrorInfo('unable to create view; session is closed', ErrorCode.SessionClosed, 400);
     }
     this._logger.trace('DefaultClientSession.createView();');
@@ -450,14 +437,14 @@ class DefaultClientSession<
     sendOptions: SendOptions | undefined,
     parentCodecMessageId: string | undefined,
   ): Promise<ActiveRun> {
-    if (this._state === ClientSessionState.CLOSED) {
+    if (this._state === SessionState.CLOSED) {
       throw new Ably.ErrorInfo('unable to send; session is closed', ErrorCode.SessionClosed, 400);
     }
     await this._requireConnected('send');
     // CAST: re-check after await — close() may have been called while waiting for connect.
     // TypeScript's control flow narrows _state after the first check, but the
     // await yields and close() can mutate _state concurrently.
-    if ((this._state as ClientSessionState) === ClientSessionState.CLOSED) {
+    if ((this._state as SessionState) === SessionState.CLOSED) {
       throw new Ably.ErrorInfo('unable to send; session is closed', ErrorCode.SessionClosed, 400);
     }
 
@@ -699,10 +686,10 @@ class DefaultClientSession<
    *   `inputCodecMessageId` must be set (see {@link CancelTarget}).
    */
   private async _publishCancel(target: CancelTarget): Promise<void> {
-    if (this._state === ClientSessionState.CLOSED) return;
+    if (this._state === SessionState.CLOSED) return;
     await this._requireConnected('cancel');
     // CAST: re-check after await — close() may have been called while waiting for connect.
-    if ((this._state as ClientSessionState) === ClientSessionState.CLOSED) return;
+    if ((this._state as SessionState) === SessionState.CLOSED) return;
     this._logger.debug('ClientSession._publishCancel();', {
       runId: target.runId,
       inputCodecMessageId: target.inputCodecMessageId,
@@ -713,7 +700,7 @@ class DefaultClientSession<
 
   // Spec: AIT-CT8, AIT-CT8c, AIT-CT8d
   on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void {
-    if (this._state === ClientSessionState.CLOSED) return noopUnsubscribe;
+    if (this._state === SessionState.CLOSED) return noopUnsubscribe;
     // CAST: the overload signature enforces the correct handler type.
     const cb = handler;
     this._emitter.on(event, cb);
@@ -724,8 +711,8 @@ class DefaultClientSession<
 
   // Spec: AIT-CT12, AIT-CT12b, AIT-CT10c
   async close(): Promise<void> {
-    if (this._state === ClientSessionState.CLOSED) return;
-    this._state = ClientSessionState.CLOSED;
+    if (this._state === SessionState.CLOSED) return;
+    this._state = SessionState.CLOSED;
     this._logger.info('ClientSession.close();');
 
     if (this._connectPromise) {

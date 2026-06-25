@@ -3275,6 +3275,89 @@ describe('agent loadConversation ≡ client View.getMessages (cross-engine equiv
 });
 
 // ---------------------------------------------------------------------------
+// run.view: the agent's leaf-pinned read of the SHARED View base
+//
+// run.view is the same paginating View the client exposes, projecting the leaf
+// source's branch. These prove its lifecycle (empty until the run pins its
+// branch at start()) and that, drained, it reconstructs the identical branch
+// the client View does over the same wire history.
+// ---------------------------------------------------------------------------
+
+describe('agent run.view (shared read base)', () => {
+  it('is empty before start() and reflects the trigger once the run pins it', async () => {
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises -- mock returns Promise directly
+    ch.history.mockImplementation(singlePageHistory([]));
+
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'run-view-lifecycle',
+      codec,
+      inputEventLookupTimeoutMs: 5000,
+    });
+    await session.connect();
+
+    const run = createRunFromOpts(session, { runId: 'run-1', invocationId: 'inv-1', inputEventId: 'p-u1' });
+    // No branch is pinned until start() resolves the trigger, so run.view is empty here.
+    expect(run.view.getMessages()).toEqual([]);
+
+    const startPromise = run.start();
+    deliverInputEvent(ch, { invocationId: 'inv-1', codecMessageId: 'u1', serial: 's-01', inputEventId: 'p-u1' });
+    await startPromise;
+
+    // start() pinned the branch and nudged the view to recompute.
+    expect(run.view.getMessages().map((m) => m.codecMessageId)).toEqual(['u1']);
+    await session.close();
+  });
+
+  it('drained, reconstructs the identical multi-turn branch the client View does', async () => {
+    // Same two-turn history as the cross-engine block; the agent serves run-2.
+    const wiresNewestFirst = [
+      makeContentMsg('run-2', 'a2', 's-06'),
+      makeRunStartMsg('run-2', 'u2', { serial: 's-055' }),
+      makeInputMsg('u2', 's-05', { parent: 'a1' }),
+      makeContentMsg('run-1', 'a1', 's-04'),
+      makeRunStartMsg('run-1', 'u1', { serial: 's-03' }),
+      makeInputMsg('u1', 's-02'),
+    ];
+
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises -- mock returns Promise directly
+    ch.history.mockImplementation(singlePageHistory(wiresNewestFirst));
+
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'run-view-parity',
+      codec,
+      inputEventLookupTimeoutMs: 5000,
+    });
+    await session.connect();
+    const run = createRunFromOpts(session, { runId: 'run-2', invocationId: 'inv-2', inputEventId: 'p-u2' });
+    const startPromise = run.start();
+    deliverInputEvent(ch, {
+      invocationId: 'inv-2',
+      codecMessageId: 'u2',
+      serial: 's-05',
+      inputEventId: 'p-u2',
+      parent: 'a1',
+    });
+    await startPromise;
+
+    // Page run.view back to the conversation root — the same loadOlder drain the
+    // client uses — then read its branch.
+    while (run.view.hasOlder()) await run.view.loadOlder();
+    const runViewIds = run.view.getMessages().map((m) => m.message.id);
+    const clientIds = viewMessageIds(wiresNewestFirst.toReversed());
+
+    expect(runViewIds).toEqual(['u1', 'a1', 'u2', 'a2']);
+    expect(runViewIds).toEqual(clientIds);
+    await session.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // PR #180 review regressions: hydration mutex + continuity-loss swap
 // ---------------------------------------------------------------------------
 

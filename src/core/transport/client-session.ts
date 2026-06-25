@@ -54,8 +54,16 @@ import {
   subscribeAndAttach,
 } from './session-support.js';
 import type { DefaultTree } from './tree.js';
-import type { ActiveRun, ClientSession, ClientSessionOptions, RunEndReason, SendOptions, Tree, View } from './types.js';
-import { createView, type DefaultView } from './view.js';
+import type {
+  ActiveRun,
+  ClientSession,
+  ClientSessionOptions,
+  ClientView,
+  RunEndReason,
+  SendOptions,
+  Tree,
+} from './types.js';
+import { createClientView } from './view.js';
 
 /**
  * Returned from `on()` when the session is already closed — the subscription
@@ -107,8 +115,8 @@ class DefaultClientSession<
 
   // Sub-components
   private readonly _tree: DefaultTree<TInput, TOutput, TProjection>;
-  private readonly _view: DefaultView<TInput, TOutput, TProjection, TMessage>;
-  private readonly _views = new Set<DefaultView<TInput, TOutput, TProjection, TMessage>>();
+  private readonly _view: ClientView<TInput, TMessage>;
+  private readonly _views = new Set<ClientView<TInput, TMessage>>();
   /**
    * The Tree's single decode-and-apply engine, binding the session's one
    * decoder instance. Shared by the live decode loop and every View's history
@@ -131,7 +139,7 @@ class DefaultClientSession<
 
   // Spec: AIT-CT10, AIT-CT10a
   readonly tree: Tree<TOutput, TProjection>;
-  readonly view: View<TInput, TMessage>;
+  readonly view: ClientView<TInput, TMessage>;
 
   // Channel subscription is established lazily on connect()
   private _connectPromise: Promise<void> | undefined;
@@ -188,7 +196,7 @@ class DefaultClientSession<
       applier: this._applier,
       logger: this._logger,
     });
-    this._view = createView<TInput, TOutput, TProjection, TMessage>({
+    this._view = createClientView<TInput, TOutput, TProjection, TMessage>({
       tree: this._tree,
       codec: this._codec,
       hydrator: this._hydrator,
@@ -425,12 +433,12 @@ class DefaultClientSession<
   // ---------------------------------------------------------------------------
 
   // Spec: AIT-CT10b
-  createView(): View<TInput, TMessage> {
+  createView(): ClientView<TInput, TMessage> {
     if (this._state === SessionState.CLOSED) {
       throw new Ably.ErrorInfo('unable to create view; session is closed', ErrorCode.SessionClosed, 400);
     }
     this._logger.trace('DefaultClientSession.createView();');
-    const view = createView<TInput, TOutput, TProjection, TMessage>({
+    const view = createClientView<TInput, TOutput, TProjection, TMessage>({
       tree: this._tree,
       codec: this._codec,
       hydrator: this._hydrator,

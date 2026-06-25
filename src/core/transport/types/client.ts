@@ -8,7 +8,7 @@ import type { Logger } from '../../../logger.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../../codec/types.js';
 import type { Invocation } from '../invocation.js';
 import type { Tree } from './tree.js';
-import type { View } from './view.js';
+import type { ClientView } from './view.js';
 
 // ---------------------------------------------------------------------------
 // Client session options
@@ -170,7 +170,7 @@ export interface ClientSession<
   readonly tree: Tree<TOutput, TProjection>;
 
   /** The default paginated, branch-aware view for rendering — events scoped to visible messages. */
-  readonly view: View<TInput, TMessage>;
+  readonly view: ClientView<TInput, TMessage>;
 
   /**
    * The Ably presence object for this session's channel.
@@ -214,7 +214,7 @@ export interface ClientSession<
    * The caller is responsible for calling `close()` on the returned view
    * when it is no longer needed, or it will be closed when the session closes.
    */
-  createView(): View<TInput, TMessage>;
+  createView(): ClientView<TInput, TMessage>;
 
   /** Cancel the specified run by publishing an `ai-cancel` signal on the channel. The core does not own a per-run stream; closing any consumer-built stream is the responsibility of the layer that built it (e.g. the Vercel ChatTransport). */
   cancel(runId: string): Promise<void>;

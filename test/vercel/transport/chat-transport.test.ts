@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CodecMessage } from '../../../src/core/codec/types.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
-import type { ClientSession, SendOptions, Tree, View } from '../../../src/core/transport/types.js';
+import type { ClientSession, ClientView, SendOptions, Tree } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
 import type { ChatTransportOptions } from '../../../src/vercel/transport/chat-transport.js';
@@ -90,7 +90,7 @@ interface MockSession {
   close: ReturnType<typeof vi.fn>;
   mockRun: MockRun;
   tree: Tree<VercelOutput, VercelProjection>;
-  view: View<VercelInput, AI.UIMessage>;
+  view: ClientView<VercelInput, AI.UIMessage>;
 }
 
 const createMockSession = (): MockSession => {
@@ -173,7 +173,7 @@ const createMockSession = (): MockSession => {
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
     on: vi.fn(() => () => {}),
     close: vi.fn(),
-  } as unknown as View<VercelInput, AI.UIMessage>;
+  } as unknown as ClientView<VercelInput, AI.UIMessage>;
 
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const cancel = vi.fn(() => Promise.resolve());

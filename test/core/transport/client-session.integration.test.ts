@@ -33,7 +33,7 @@ import {
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
 import { createClientSession } from '../../../src/core/transport/client-session.js';
 import { buildTransportHeaders } from '../../../src/core/transport/headers.js';
-import type { AgentSession, ClientSession, RunLifecycleEvent, View } from '../../../src/core/transport/types.js';
+import type { AgentSession, ClientSession, ClientView, RunLifecycleEvent } from '../../../src/core/transport/types.js';
 import { getCodecHeaders, getTransportHeaders } from '../../../src/utils.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
 import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
@@ -57,7 +57,7 @@ type AgentSessionT = AgentSession<VercelOutput, VercelProjection, AI.UIMessage>;
  * @param message - The user message to send.
  * @returns The active run handle.
  */
-const sendUserMessage = async (view: View<VercelInput, AI.UIMessage>, message: AI.UIMessage) =>
+const sendUserMessage = async (view: ClientView<VercelInput, AI.UIMessage>, message: AI.UIMessage) =>
   view.send(UIMessageCodec.createUserMessage(message));
 
 // Merged view of the transport and codec header tiers. The two tiers carry

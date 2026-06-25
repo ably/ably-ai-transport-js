@@ -41,6 +41,7 @@ import type { Codec, CodecInputEvent, CodecOutputEvent, Encoder } from '../codec
 import { buildCancelMessage, type CancelTarget } from './cancel-envelope.js';
 import type { WireApplier } from './decode-fold.js';
 import { buildRunEndError, buildTransportHeaders } from './headers.js';
+import { createHistoryHydrator, type HistoryHydrator } from './history-hydrator.js';
 import { Invocation } from './invocation.js';
 import { createMaterialisation } from './materialisation.js';
 import {
@@ -116,6 +117,12 @@ class DefaultClientSession<
    */
   private readonly _applier: WireApplier;
   /**
+   * The session's shared history hydrator over the Tree/applier. Injected into
+   * every View so the channel is paged once across views, and `hasOlder()`
+   * reflects real cursor exhaustion.
+   */
+  private readonly _hydrator: HistoryHydrator;
+  /**
    * Shared encoder for the lifetime of the session. The client only ever
    * uses `publishInput` (input wire), so the encoder's stream tracker map
    * stays empty across the session. Closed once on session close.
@@ -175,11 +182,16 @@ class DefaultClientSession<
     const { tree, applier } = createMaterialisation(this._codec, this._logger);
     this._tree = tree;
     this._applier = applier;
+    this._hydrator = createHistoryHydrator({
+      channel: this._channel,
+      tree: this._tree,
+      applier: this._applier,
+      logger: this._logger,
+    });
     this._view = createView<TInput, TOutput, TProjection, TMessage>({
       tree: this._tree,
-      channel: this._channel,
       codec: this._codec,
-      applier: this._applier,
+      hydrator: this._hydrator,
       sendDelegate: this._internalSend.bind(this),
       logger: this._logger,
       onClose: () => this._views.delete(this._view),
@@ -420,9 +432,8 @@ class DefaultClientSession<
     this._logger.trace('DefaultClientSession.createView();');
     const view = createView<TInput, TOutput, TProjection, TMessage>({
       tree: this._tree,
-      channel: this._channel,
       codec: this._codec,
-      applier: this._applier,
+      hydrator: this._hydrator,
       sendDelegate: this._internalSend.bind(this),
       logger: this._logger,
       onClose: () => this._views.delete(view),

@@ -142,13 +142,6 @@ export interface ActiveRun {
    */
   cancel(): Promise<void>;
   /**
-   * The codec-message-id of every input in this send, in input order. Includes
-   * wire-only inputs (regenerate, tool resolutions), which are NOT folded into
-   * the local projection — so an entry here does not by itself mean an
-   * optimistic insert occurred.
-   */
-  optimisticCodecMessageIds: string[];
-  /**
    * Build the {@link Invocation} pointer for this run — only `inputEventId` and
    * the session's channel name as `sessionName`. The body carries no run-id: a
    * fresh run's run-id is minted by the agent, and a continuation's run-id is

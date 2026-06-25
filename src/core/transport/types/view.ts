@@ -232,19 +232,22 @@ export interface View<TInput extends CodecInputEvent, TMessage> {
   // --- Write operations ---
 
   /**
-   * Send one or more TInputs on the channel and fire a POST. Each TInput
-   * carries its own routing metadata (`parent` / `target` / `codecMessageId`)
-   * via the {@link CodecInputEvent} base; the SDK reads those fields
-   * directly without runtime classification.
+   * Send one input message on the channel. Each TInput carries its own routing
+   * metadata (`parent` / `target` / `codecMessageId`) via the
+   * {@link CodecInputEvent} base; the SDK reads those fields directly without
+   * runtime classification.
    *
    * To send a fresh user message, wrap the domain message with
    * {@link Codec.createUserMessage} and pass the result here, e.g.
    * `view.send(codec.createUserMessage(message))`.
    *
-   * Convention: a send containing at least one `UserMessage` is a
-   * fresh send (mints a new `runId`). A send containing only
-   * tool-resolution inputs is a continuation — pair with
-   * `options.runId` to extend a suspended run.
+   * A send introduces at most one new message: exactly one `UserMessage` for a
+   * fresh send (which mints a new `runId`), or none for a continuation. The
+   * array form exists only to carry the wire-only inputs that resolve a single
+   * assistant turn (e.g. the tool results / approval responses for that turn's
+   * parallel tool calls, published atomically); pair it with `options.runId`
+   * to extend a suspended run. Passing more than one new (non-wire-only)
+   * message rejects with `InvalidArgument`.
    *
    * The parent is auto-computed from this view's selected branch unless
    * overridden. The HTTP POST is fire-and-forget — the returned stream is
@@ -268,7 +271,9 @@ export interface View<TInput extends CodecInputEvent, TMessage> {
   /**
    * Edit a user message. Creates a new run that forks the target message
    * with replacement content. Automatically computes `forkOf` (the edited
-   * message) and `parent` from this view's branch.
+   * message) and `parent` from this view's branch. The replacement is a
+   * single new message — the same single-message rule as {@link View.send}
+   * applies.
    */
   edit(messageId: string, inputs: TInput | TInput[], options?: SendOptions): Promise<ActiveRun>;
 

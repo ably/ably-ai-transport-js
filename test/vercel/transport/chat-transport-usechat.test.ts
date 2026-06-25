@@ -109,8 +109,6 @@ interface MockRun {
   runId: Promise<string>;
   inputEventId: string;
   cancel: ReturnType<typeof vi.fn>;
-  /** The optimistic input codec-message-ids the stream may key on (empty in these mocks). */
-  optimisticCodecMessageIds: string[];
   /** Build the run's invocation pointer (the transport POSTs this to wake the agent). */
   toInvocation: () => Invocation;
   /** Emit a chunk as a Tree `output` event for this run (drives the consumer stream). */
@@ -131,7 +129,6 @@ const createMockRun = (runId: string, treeEmit: MockEmitter['emit']): MockRun =>
     runId: Promise.resolve(runId),
     inputEventId: '',
     cancel: vi.fn(),
-    optimisticCodecMessageIds: [],
     toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'chat-1' }),
     enqueue: (chunk: AI.UIMessageChunk) => {
       treeEmit('output', { runId, inputCodecMessageId, codecMessageId: 'm-1', serial: 's-1', events: [chunk] });

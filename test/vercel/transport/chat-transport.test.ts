@@ -73,7 +73,6 @@ interface MockRun {
   runId: Promise<string>;
   inputEventId: string;
   cancel: ReturnType<typeof vi.fn>;
-  optimisticCodecMessageIds: string[];
   toInvocation: () => Invocation;
   /** Emit a chunk as a Tree `output` event for this run (drives the consumer stream). */
   enqueue: (chunk: AI.UIMessageChunk) => void;
@@ -113,7 +112,6 @@ const createMockSession = (): MockSession => {
     runId: Promise.resolve(runId),
     inputEventId: '',
     cancel: vi.fn(),
-    optimisticCodecMessageIds: [],
     toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'chat-1' }),
     enqueue: (chunk: AI.UIMessageChunk) => {
       // Route by the triggering input id — the key the consumer stream opens on.

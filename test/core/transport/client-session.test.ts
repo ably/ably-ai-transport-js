@@ -60,7 +60,8 @@ import { createMockClient } from '../../helper/mock-client.js';
  */
 type TestInput =
   | ({ kind: 'user-message'; text?: string; message?: TestMessage } & CodecInputEvent)
-  | ({ kind: 'regenerate'; target: string; parent: string } & CodecInputEvent);
+  | ({ kind: 'regenerate'; target: string; parent: string } & CodecInputEvent)
+  | ({ kind: 'tool-result'; output?: string } & CodecInputEvent);
 
 /** Outputs published by the agent and surfaced on the consumer's stream. */
 interface TestOutput {
@@ -733,29 +734,23 @@ describe('ClientSession', () => {
     });
 
     it('pins the wire codec-message-id from TInput.codecMessageId instead of minting a fresh id', async () => {
-      // Each TInput carries its routing fields directly via the
+      // A TInput carries its routing fields directly via the
       // {@link CodecInputEvent} base. When `codecMessageId` is set, the
       // session stamps that value on the wire `codec-message-id`
       // header instead of minting a UUID. For a fresh user-message this
       // pins the message's own id (the TMessage.id == wire id convention);
       // for a continuation input it targets the assistant being amended.
-      await fix.session.view.send([
-        { kind: 'user-message', text: 'first', codecMessageId: 'target-a' },
-        { kind: 'user-message', text: 'second' },
-      ]);
+      await fix.session.view.send({ kind: 'user-message', text: 'first', codecMessageId: 'target-a' });
 
       const enc = fix.codec.lastEncoder();
       const userPublishes =
         enc?.publishCalls.filter(
           (c) => c.direction === 'input' && 'kind' in c.event && c.event.kind === 'user-message',
         ) ?? [];
-      expect(userPublishes).toHaveLength(2);
+      expect(userPublishes).toHaveLength(1);
 
-      // First entry used the supplied codecMessageId; second fell back to a fresh UUID.
+      // The supplied codecMessageId is stamped on the wire header.
       expect(userPublishes[0]?.opts?.extras?.headers?.[HEADER_CODEC_MESSAGE_ID]).toBe('target-a');
-      const secondMsgId = userPublishes[1]?.opts?.extras?.headers?.[HEADER_CODEC_MESSAGE_ID];
-      expect(secondMsgId).toBeDefined();
-      expect(secondMsgId).not.toBe('target-a');
     });
 
     it('folds an optimistic user message even when it carries a caller-supplied codecMessageId', async () => {
@@ -786,26 +781,21 @@ describe('ClientSession', () => {
       expect(messages[0]?.message.content).toBe('hello');
     });
 
-    it('mints a distinct event-id per user-message; ActiveRun.inputEventId is the last (primary trigger)', async () => {
-      const run = await fix.session.view.send([
-        { kind: 'user-message', text: 'first' },
-        { kind: 'user-message', text: 'second' },
-      ]);
-
-      const enc = fix.codec.lastEncoder();
-      const userPublishes =
-        enc?.publishCalls.filter(
-          (c) => c.direction === 'input' && 'kind' in c.event && c.event.kind === 'user-message',
-        ) ?? [];
-      expect(userPublishes).toHaveLength(2);
-      const stampedIds = userPublishes.map((c) => c.opts?.extras?.headers?.['event-id']);
-      expect(stampedIds[0]).toBeDefined();
-      expect(stampedIds[1]).toBeDefined();
-      expect(stampedIds[0]).not.toBe(stampedIds[1]);
-
-      // The run's primary trigger event is the last input — the one a caller's
-      // invocation points at.
-      expect(run.inputEventId).toBe(stampedIds[1]);
+    it('rejects a send carrying more than one new message', async () => {
+      // A send introduces at most one new (non-wire-only) message. Two
+      // user-messages in one send is rejected before any optimistic fold or
+      // publish, so no partial state lands.
+      await expect(
+        fix.session.view.send([
+          { kind: 'user-message', text: 'first' },
+          { kind: 'user-message', text: 'second' },
+        ]),
+      ).rejects.toBeErrorInfo({
+        code: ErrorCode.InvalidArgument,
+        message: 'unable to send; a send may introduce at most one new message',
+      });
+      // Nothing folded optimistically — the rejection landed before any fold.
+      expect(fix.session.view.getMessages()).toHaveLength(0);
     });
 
     it('auto-computes parent from the last visible message', async () => {
@@ -827,36 +817,11 @@ describe('ClientSession', () => {
       // The seed and the fresh send are both run-less user INPUT nodes; the new
       // send's optimistic input node must be parented at the seed's
       // codec-message-id (auto-computed from the last visible message).
-      expect(run.optimisticCodecMessageIds).toHaveLength(1);
-      const newCodecMessageId = run.optimisticCodecMessageIds[0];
-      const newNode =
-        newCodecMessageId === undefined ? undefined : seeded.tree.getNodeByCodecMessageId(newCodecMessageId);
+      const newCodecMessageId = run.inputCodecMessageId;
+      const newNode = seeded.tree.getNodeByCodecMessageId(newCodecMessageId);
       expect(newNode?.kind).toBe('input');
       expect(newNode?.parentCodecMessageId).toBe(seedCodecMessageId);
       await seeded.close();
-    });
-
-    it('chains multi-message sends in a thread', async () => {
-      await fix.session.view.send([
-        { kind: 'user-message', text: 'first' },
-        { kind: 'user-message', text: 'second' },
-      ]);
-      // Both messages land in the same Run's projection (one Run per send).
-      const messages = fix.session.view.getMessages();
-      expect(messages).toHaveLength(2);
-      expect(messages[0]?.message.content).toBe('first');
-      expect(messages[1]?.message.content).toBe('second');
-
-      // The encoder publishes each event with chained parents: second's parent header == first's codec-message-id.
-      const enc = fix.codec.lastEncoder();
-      const userPublishes =
-        enc?.publishCalls.filter(
-          (c) => c.direction === 'input' && 'kind' in c.event && c.event.kind === 'user-message',
-        ) ?? [];
-      expect(userPublishes).toHaveLength(2);
-      const firstMsgId = userPublishes[0]?.opts?.extras?.headers?.[HEADER_CODEC_MESSAGE_ID];
-      const secondParent = userPublishes[1]?.opts?.extras?.headers?.[HEADER_PARENT];
-      expect(secondParent).toBe(firstMsgId);
     });
 
     it('stamps forkOf on the publish headers when set', async () => {
@@ -943,6 +908,32 @@ describe('ClientSession', () => {
       expect(headers?.[HEADER_ROLE]).toBe('user');
       // No amend header — the old amend header is gone from the wire.
       expect(headers?.amend).toBeUndefined();
+    });
+
+    it('accepts multiple wire-only inputs in one continuation, folds none, and publishes all', async () => {
+      // The array form is preserved for resolving a single assistant turn's
+      // parallel tool calls atomically: multiple wire-only inputs (each pinning
+      // the assistant's codec-message-id) are accepted because none introduce a
+      // new message. None fold optimistically, and all are published.
+      await fix.session.view.send({ kind: 'user-message', text: 'hi' });
+      const { runId } = await ackPendingSend(fix.channel, fix.codec);
+
+      const enc = fix.codec.lastEncoder();
+      const baseCalls = enc?.publishCalls.length ?? 0;
+      const beforeMessages = fix.session.view.getMessages().length;
+
+      await fix.session.view.send(
+        [
+          { kind: 'tool-result', output: 'a', codecMessageId: 'assistant-1' },
+          { kind: 'tool-result', output: 'b', codecMessageId: 'assistant-1' },
+        ],
+        { runId },
+      );
+
+      // Both wire-only inputs published; neither folded a new message.
+      const newCalls = (enc?.publishCalls.length ?? 0) - baseCalls;
+      expect(newCalls).toBe(2);
+      expect(fix.session.view.getMessages()).toHaveLength(beforeMessages);
     });
 
     it('surfaces the continuation trigger event id and run identity on the ActiveRun', async () => {
@@ -1124,8 +1115,7 @@ describe('ClientSession', () => {
       // client learns it via the run-start's input-codec-message-id match, even
       // though the client never minted a run-id of its own.
       const run = await fix.session.view.send({ kind: 'user-message', text: 'hi' });
-      const triggerCodecMessageId = run.optimisticCodecMessageIds.at(-1);
-      expect(triggerCodecMessageId).toBeDefined();
+      const triggerCodecMessageId = run.inputCodecMessageId;
 
       simulateMessage(
         fix.channel,
@@ -1133,7 +1123,7 @@ describe('ClientSession', () => {
           [HEADER_RUN_ID]: 'agent-minted-run-id',
           [HEADER_RUN_CLIENT_ID]: 'client-1',
           [HEADER_INVOCATION_ID]: 'agent-minted-invocation-id',
-          [HEADER_INPUT_CODEC_MESSAGE_ID]: triggerCodecMessageId ?? '',
+          [HEADER_INPUT_CODEC_MESSAGE_ID]: triggerCodecMessageId,
         }),
       );
 
@@ -1147,15 +1137,14 @@ describe('ClientSession', () => {
       await fix.session.view.send({ kind: 'user-message', text: 'hi' });
       const { runId } = await ackPendingSend(fix.channel, fix.codec);
       const cont = await fix.session.view.send([{ kind: 'user-message', text: 'more' }], { runId });
-      const triggerCodecMessageId = cont.optimisticCodecMessageIds.at(-1);
-      expect(triggerCodecMessageId).toBeDefined();
+      const triggerCodecMessageId = cont.inputCodecMessageId;
 
       simulateMessage(
         fix.channel,
         ablyMsg(EVENT_RUN_RESUME, {
           [HEADER_RUN_ID]: runId,
           [HEADER_RUN_CLIENT_ID]: 'client-1',
-          [HEADER_INPUT_CODEC_MESSAGE_ID]: triggerCodecMessageId ?? '',
+          [HEADER_INPUT_CODEC_MESSAGE_ID]: triggerCodecMessageId,
         }),
       );
 

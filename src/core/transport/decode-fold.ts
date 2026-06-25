@@ -99,3 +99,30 @@ export const createWireApplier = <TInput extends CodecInputEvent, TOutput extend
 ): WireApplier => ({
   apply: (rawMsg: Ably.InboundMessage): RunLifecycleEvent | undefined => applyWireMessage(tree, decoder, rawMsg),
 });
+
+/**
+ * The single Tree capability {@link foldAndEmit} needs beyond the applier:
+ * forwarding a raw Ably message to Tree subscribers. {@link TreeInternal}
+ * satisfies it structurally.
+ */
+export interface AblyMessageEmitter {
+  /** Forward a raw Ably message event to tree subscribers. */
+  emitAblyMessage(msg: Ably.InboundMessage): void;
+}
+
+/**
+ * Fold one wire message into the Tree, then notify Tree subscribers: apply it
+ * through the bound {@link WireApplier}, then emit `ably-message`. This is the
+ * per-message live fold path shared by the agent session's channel listener and
+ * the agent view's history walk, so the two cannot drift on the apply→emit
+ * ordering — `emitAblyMessage` must run after the apply so a subscriber
+ * resolving the owning node sees the freshly-folded Tree, and it also populates
+ * the event-id index the input-event lookup reads.
+ * @param applier - The Tree's decode-and-apply engine.
+ * @param tree - The Tree to notify after the fold.
+ * @param wire - The inbound Ably wire message.
+ */
+export const foldAndEmit = (applier: WireApplier, tree: AblyMessageEmitter, wire: Ably.InboundMessage): void => {
+  applier.apply(wire);
+  tree.emitAblyMessage(wire);
+};

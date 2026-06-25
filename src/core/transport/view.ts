@@ -1029,11 +1029,10 @@ export class DefaultView<
     if (!options?.forkOf) return;
 
     // An edit inserts a NEW user input node optimistically; its codec-message-id
-    // is the (only) optimistic id and IS its node key. Edit forks are input-node
+    // is the triggering input's id and IS its node key. Edit forks are input-node
     // sibling groups, so the selection is keyed by the input group root and the
     // selected member is the new input node's key.
-    const editedInputKey = result.optimisticCodecMessageIds.at(0);
-    if (editedInputKey === undefined) return;
+    const editedInputKey = result.inputCodecMessageId;
     const groupRoot = this._tree.getGroupRoot(editedInputKey);
 
     this._branchSelections.set(groupRoot, { kind: 'auto', selectedKey: editedInputKey });

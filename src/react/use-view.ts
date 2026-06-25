@@ -91,7 +91,7 @@ export interface ViewHandle<TInput extends CodecInputEvent, TMessage> {
    */
   selectSibling: (codecMessageId: string, index: number) => void;
   /**
-   * Send one or more TInputs on the channel and fire a POST. See {@link View.send}.
+   * Send one input message on the channel and fire a POST. See {@link View.send}.
    * @throws Ably.ErrorInfo with code {@link ErrorCode.InvalidArgument} when no view is resolved (before the session is available, or when `skip` is `true`).
    */
   send: (events: TInput | TInput[], options?: SendOptions) => Promise<ActiveRun>;

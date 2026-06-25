@@ -56,6 +56,20 @@ import { createView, type DefaultView } from './view.js';
 // eslint-disable-next-line @typescript-eslint/no-empty-function -- intentional no-op
 const noopUnsubscribe = (): void => {};
 
+/**
+ * Whether an input references an existing codec-message rather than
+ * introducing fresh local content. Regenerate signals and inputs that pin an
+ * existing `codecMessageId` (tool resolutions, approval responses) are
+ * wire-only: they ride the channel without an optimistic projection fold. A
+ * fresh `user-message` is never wire-only — it is the one input kind that
+ * introduces a new message — even on the rare path where it pins its own
+ * `codecMessageId`.
+ * @param input - The input to classify.
+ * @returns True when the input is wire-only (references an existing message).
+ */
+const isWireOnlyInput = (input: CodecInputEvent): boolean =>
+  input.kind !== 'user-message' && (input.kind === 'regenerate' || input.codecMessageId !== undefined);
+
 // ---------------------------------------------------------------------------
 // Internal state machine
 // ---------------------------------------------------------------------------
@@ -390,22 +404,20 @@ class DefaultClientSession<
   /**
    * Tear down local state for a send whose channel publish failed.
    * Idempotent.
-   * @param codecMessageIds - The codec-message-ids of the failed send's
-   *   optimistic input nodes (the client mints no run-id, so the optimistic
-   *   inserts are keyed by their codec-message-ids).
+   * @param codecMessageId - The codec-message-id of the failed send's
+   *   optimistic input node (the client mints no run-id, so the optimistic
+   *   insert is keyed by its codec-message-id).
    */
-  private _cleanupFailedSend(codecMessageIds: string[]): void {
-    for (const codecMessageId of codecMessageIds) {
-      // Drop the optimistic input node only if the publish never produced a
-      // server-assigned serial (i.e. nothing live observed it). A server-acked
-      // node is part of the canonical channel state and must stay; the View /
-      // observers already see it. A fresh send's optimistic inserts are input
-      // nodes (keyed by codec-message-id).
-      const node = this._tree.getNodeByCodecMessageId(codecMessageId);
-      if (node?.kind === 'input' && node.serial === undefined) {
-        // An input node's key is its codec-message-id, so delete by it directly.
-        this._tree.delete(node.codecMessageId);
-      }
+  private _cleanupFailedSend(codecMessageId: string): void {
+    // Drop the optimistic input node only if the publish never produced a
+    // server-assigned serial (i.e. nothing live observed it). A server-acked
+    // node is part of the canonical channel state and must stay; the View /
+    // observers already see it. A fresh send's optimistic insert is an input
+    // node (keyed by codec-message-id).
+    const node = this._tree.getNodeByCodecMessageId(codecMessageId);
+    if (node?.kind === 'input' && node.serial === undefined) {
+      // An input node's key is its codec-message-id, so delete by it directly.
+      this._tree.delete(node.codecMessageId);
     }
   }
 
@@ -457,8 +469,6 @@ class DefaultClientSession<
 
     this._logger.trace('ClientSession._internalSend();');
 
-    const isContinuation = sendOptions?.runId !== undefined;
-
     // The agent mints run-ids, not the client. A fresh send carries no run-id
     // (the agent mints it and echoes it on run-start); only a continuation
     // reuses the existing run-id the caller passed.
@@ -473,27 +483,41 @@ class DefaultClientSession<
       autoParent = parentCodecMessageId;
     }
 
-    const codecMessageIds = new Set<string>();
+    // A send carries at most one new message: exactly one input may introduce
+    // fresh local content (a `user-message`). The remaining inputs are
+    // wire-only references to existing messages (a regenerate signal, or the
+    // tool resolutions of a single assistant turn). Reject a send that would
+    // introduce more than one new message before any optimistic fold or
+    // publish, so partial state never lands.
+    if (input.filter((entry) => !isWireOnlyInput(entry)).length > 1) {
+      throw new Ably.ErrorInfo(
+        'unable to send; a send may introduce at most one new message',
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+
+    // The codec-message-id of the send's one optimistic (non-wire-only) input,
+    // if any — the input node that needs removing if the publish fails. A
+    // continuation carries only wire-only inputs, so it stays undefined.
+    let optimisticCodecMessageId: string | undefined;
     interface ItemState {
       input: TInput;
       codecMessageId: string;
       inputEventId: string;
       headers: Record<string, string>;
-      /** Inputs that reference an existing codec-message without contributing fresh local content (regenerate, tool resolutions) are wire-only — no optimistic projection fold. Fresh user-messages always fold, even when they pin their own codecMessageId. */
-      isWireOnly: boolean;
     }
     const items: ItemState[] = [];
 
     // Per-input wire prep: read routing fields off the input directly, then
-    // mint per-event ids and build transport headers. Regenerate inputs are
-    // wire-only (no optimistic fold); other inputs fold into the projection
-    // optimistically.
+    // mint per-event ids and build transport headers. Wire-only inputs
+    // (regenerate, tool resolutions) skip the optimistic fold; the one
+    // non-wire-only input folds into the projection optimistically.
     for (const entry of input) {
       const inputEventId = crypto.randomUUID();
       // Use the input's `codecMessageId` when set (e.g. tool resolution
       // targeting the prior assistant); otherwise mint a fresh id.
       const codecMessageId = entry.codecMessageId ?? crypto.randomUUID();
-      codecMessageIds.add(codecMessageId);
 
       // Inputs that reference an existing message (regenerate, tool
       // resolutions targeting an assistant) are wire-only — no optimistic
@@ -508,8 +532,7 @@ class DefaultClientSession<
       // round-trip. (The session mints the codec-message-id for fresh user
       // messages; the caller's `message.id` is preserved but never used as
       // the correlation key.)
-      const isWireOnly =
-        entry.kind !== 'user-message' && (entry.kind === 'regenerate' || entry.codecMessageId !== undefined);
+      const isWireOnly = isWireOnlyInput(entry);
 
       // The input's own routing fields override the auto-parent /
       // sendOptions defaults. For regenerate inputs, `target` becomes the
@@ -531,18 +554,13 @@ class DefaultClientSession<
         inputEventId,
       });
 
-      // Spec: AIT-CT3c — optimistic fold for non-wire-only inputs.
+      // Spec: AIT-CT3c — optimistic fold for the one non-wire-only input.
       if (!isWireOnly) {
         this._tree.applyMessage({ inputs: [entry], outputs: [] }, headers);
+        optimisticCodecMessageId = codecMessageId;
       }
 
-      items.push({ input: entry, codecMessageId, inputEventId, headers, isWireOnly });
-
-      // Spec: AIT-CT3e — chain subsequent inputs off the previous one when
-      // auto-parenting is in effect.
-      if (!isWireOnly && sendOptions?.parent === undefined && !sendOptions?.forkOf && entry.parent === undefined) {
-        autoParent = codecMessageId;
-      }
+      items.push({ input: entry, codecMessageId, inputEventId, headers });
     }
 
     // The trigger event is the last input — the one the agent looks up on the
@@ -609,10 +627,10 @@ class DefaultClientSession<
         // The input never reached the channel — there is no run to wait on.
         // Drop the run-start tracker so close() doesn't later reject an orphan.
         this._pendingRunStarts.delete(startedKey);
-        // Continuations didn't insert optimistic nodes, so there is nothing to
-        // clear for them — only a fresh send's optimistic input nodes need
-        // removing, keyed by their codec-message-ids (the client mints no runId).
-        if (!isContinuation) this._cleanupFailedSend([...codecMessageIds]);
+        // Continuations didn't insert an optimistic node, so there is nothing
+        // to clear for them — only a fresh send's optimistic input node needs
+        // removing, keyed by its codec-message-id (the client mints no runId).
+        if (optimisticCodecMessageId !== undefined) this._cleanupFailedSend(optimisticCodecMessageId);
         throw err;
       }
     })();
@@ -640,7 +658,6 @@ class DefaultClientSession<
           ...(runId !== undefined && { runId }),
         });
       },
-      optimisticCodecMessageIds: [...codecMessageIds],
       toInvocation: () =>
         // The invocation body carries no run-id: run identity lives on the
         // channel (the agent mints a fresh run-id, or reads a continuation's

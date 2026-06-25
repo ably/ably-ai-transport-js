@@ -110,7 +110,6 @@ const createMockSendDelegate = (): SendDelegate<TestInput> =>
       invocationId: 'mock-inv',
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
       cancel: () => Promise.resolve(),
-      optimisticCodecMessageIds: [],
       toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
     }),
   );
@@ -1278,7 +1277,6 @@ describe('DefaultView', () => {
         runId: Promise.resolve('Rregen1'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
-        optimisticCodecMessageIds: [],
         inputEventId: '',
         toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       });
@@ -1345,7 +1343,6 @@ describe('DefaultView', () => {
         runId: Promise.resolve('Rregen2'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
-        optimisticCodecMessageIds: [],
         inputEventId: '',
         toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       });
@@ -1379,7 +1376,6 @@ describe('DefaultView', () => {
         runId: Promise.resolve('Rregen1'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
-        optimisticCodecMessageIds: [],
         inputEventId: '',
         toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       });
@@ -1410,7 +1406,6 @@ describe('DefaultView', () => {
         runId: Promise.resolve('Rregen2'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
-        optimisticCodecMessageIds: [],
         inputEventId: '',
         toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       });
@@ -1441,7 +1436,6 @@ describe('DefaultView', () => {
         runId: Promise.resolve('Rregen3'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
-        optimisticCodecMessageIds: [],
         inputEventId: '',
         toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       });
@@ -2235,7 +2229,6 @@ describe('DefaultView', () => {
         runId: Promise.resolve('R2new'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
-        optimisticCodecMessageIds: [],
         inputEventId: '',
         toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       });
@@ -2268,7 +2261,6 @@ describe('DefaultView', () => {
         runId: Promise.resolve('R2new'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
-        optimisticCodecMessageIds: [],
         inputEventId: '',
         toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       });
@@ -2373,13 +2365,12 @@ describe('DefaultView', () => {
       expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1']);
     });
 
-    it('edit auto-selects the new sibling Run from optimisticCodecMessageIds', async () => {
+    it('edit auto-selects the new sibling Run from the input codec-message-id', async () => {
       vi.mocked(sendDelegate).mockResolvedValueOnce({
         inputCodecMessageId: 'u-new',
         runId: Promise.resolve('R2edit'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
-        optimisticCodecMessageIds: ['u-new'],
         inputEventId: '',
         toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       });
@@ -3095,7 +3086,6 @@ describe('DefaultView', () => {
         runId: Promise.resolve('Rp'),
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
         cancel: () => Promise.resolve(),
-        optimisticCodecMessageIds: [],
         inputEventId: '',
         toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       });

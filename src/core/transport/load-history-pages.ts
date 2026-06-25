@@ -1,9 +1,9 @@
 /**
  * loadHistoryPages — shared low-level history pagination primitive.
  *
- * Consumed by both client (via `load-history.ts`, which layers a complete-
- * domain-message counter on top) and agent (directly, for input-event lookup
- * and conversation hydration). Returns raw Ably messages; does NOT decode.
+ * The cursor underneath `history-hydrator.ts`, which drives it for every history
+ * route (the client view's pagination, the agent's input-event lookup, and
+ * ancestor hydration). Returns raw Ably messages; does NOT decode.
  *
  * Behaviour:
  *  - Attaches the channel (idempotent) then pages via `channel.history()`,

@@ -3663,26 +3663,23 @@ describe('Run.loadConversation history failure + exhaustion', () => {
     await session.close();
   });
 
-  it('resumes the shared cursor past the lookback boundary instead of re-fetching', async () => {
-    // AgentView drives findInputEvent and loadConversation through ONE shared
-    // history cursor. findInputEvent passes a lookback bound and stops paging
-    // once it crosses the window — but that leaves the cursor PAUSED (not
-    // exhausted), not closed. A later loadConversation resumes the SAME cursor
-    // from that position and pages on to the conversation root, WITHOUT opening
-    // a second channel.history walk. (If the lookback stop had instead marked
-    // history exhausted, loadConversation would short-circuit and truncate the
-    // LLM context.)
+  it('resumes the shared cursor instead of re-fetching after the input scan pauses', async () => {
+    // The input-event lookup and loadConversation drive ONE shared history
+    // cursor (via the session hydrator). The lookup pages only until the trigger
+    // is found, then stops — leaving the cursor PAUSED (not exhausted), not
+    // closed. A later loadConversation resumes the SAME cursor from that
+    // position and pages on to the conversation root, WITHOUT opening a second
+    // channel.history walk. (If the pause had instead marked history exhausted,
+    // loadConversation would short-circuit and truncate the LLM context.)
     const ch = createMockChannel();
     const codec = codecWithFunctionalDecoder();
 
-    // Page 1 (newest) holds the trigger u1 (parent a0, in page 2). Its oldest
-    // item is timestamped well past a tiny lookback, so the input scan pages
-    // page 1 then gives up at the lookback boundary — pausing the cursor.
+    // Page 1 (newest) holds the trigger u1 (parent a0, in page 2). The input
+    // scan folds page 1, finds u1, and stops — pausing the cursor before page 2.
     const triggerWire = {
       name: 'text',
       serial: 's-01',
       version: { serial: 's-01' },
-      timestamp: Date.now() - 10 * 60 * 1000,
       extras: {
         ai: {
           transport: {
@@ -3704,22 +3701,20 @@ describe('Run.loadConversation history failure + exhaustion', () => {
 
     const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(ch),
-      channelName: 'lookback-not-exhaustion',
+      channelName: 'pause-not-exhaustion',
       codec,
       inputEventLookupTimeoutMs: 5000,
-      // Tiny lookback so page 1's old oldest-item trips the lookback boundary.
-      inputEventLookbackMs: 50,
     });
     await session.connect();
 
     const run = createRunFromOpts(session, { runId: 'run-lb', invocationId: 'inv-lb', inputEventId: 'p-u1' });
-    // History-only trigger: findInputEvent finds u1 in page 1, then gives up at
-    // the lookback boundary, leaving the shared cursor paused at page 1.
+    // History-only trigger: the input scan finds u1 in page 1 and stops there,
+    // leaving the shared cursor paused before page 2.
     await run.start();
     const callsAfterStart = ch.history.mock.calls.length;
 
-    // loadConversation resumes the SAME cursor past the boundary to the root
-    // (u0 → a0 → u1) — and issues NO new channel.history walk.
+    // loadConversation resumes the SAME cursor to the root (u0 → a0 → u1) — and
+    // issues NO new channel.history walk.
     const history = await run.loadConversation({ maxRuns: 10 });
     expect(history.map((m) => m.id)).toEqual(['u0', 'a0', 'u1']);
     expect(ch.history.mock.calls.length).toBe(callsAfterStart);

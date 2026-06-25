@@ -1,63 +1,38 @@
 /**
- * AgentView — internal, server-side message-loading + input-event lookup for
- * AgentSession.
+ * AgentView — internal, server-side conversation reader for AgentSession.
  *
- * Encapsulates everything the agent needs to read conversation state off the
- * channel: locating the triggering input event before `run-start`
- * ({@link AgentView.findInputEvent}), and reconstructing the ancestor chain for
- * an LLM prompt ({@link AgentView.loadConversation} / {@link AgentView.messages}).
+ * Reconstructs the ancestor chain an agent run needs for its LLM prompt: it
+ * hydrates the session Tree via the shared {@link HistoryHydrator} as far back
+ * as the walk requires ({@link AgentView.loadConversation}), then reads the
+ * already-folded projections off the Tree's nodes
+ * ({@link AgentView.messages} / `loadConversation`).
  *
- * It does NOT own the materialisation Tree — AgentSession owns the Tree and the
- * applier (and swaps them on channel continuity loss) and injects them here as
- * `readonly` fields, the same way ClientSession wires `DefaultView`. Because
- * AgentSession swaps the Tree, it RECREATES the AgentView on continuity loss
- * (a fresh instance bound to the fresh Tree/applier) rather than mutating it —
- * so this class never needs a tree accessor or a reset hook.
+ * It does NOT own the materialisation Tree or the hydrator — AgentSession owns
+ * the Tree, applier, and hydrator (and swaps all three on channel continuity
+ * loss) and injects the Tree, codec, and hydrator here as `readonly` fields.
+ * Because AgentSession swaps the Tree/hydrator, it RECREATES the AgentView on
+ * continuity loss (a fresh instance bound to the fresh Tree/hydrator) rather
+ * than mutating it — so this class never needs a tree accessor or a reset hook.
  *
  * This is deliberately internal: it is not exported from any entry point and
  * does NOT implement the public `View` interface (that is the client-side
  * `DefaultView`, unrelated to this class).
  *
- * Both `findInputEvent` and `loadConversation` drive ONE history-walk mechanism
- * — the single-flight chain in {@link AgentView._driveHistoryChain} — so a
- * `start()` input scan and a concurrent `loadConversation` share folded pages
- * instead of each scanning the channel.
+ * The pre-run-start input-event lookup lives separately in
+ * {@link locateInputEvent}; both it and `loadConversation` drive the SAME
+ * session hydrator, so a `start()` input scan and a concurrent `loadConversation`
+ * share folded pages instead of each scanning the channel.
  */
 
 import * as Ably from 'ably';
 
-import { HEADER_EVENT_ID } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
-import { errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
+import { errorMessage } from '../../utils.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
-import { foldAndEmit, type WireApplier } from './decode-fold.js';
-import { type HistoryPagesCursor, loadHistoryPages } from './load-history-pages.js';
+import type { HistoryHydrator } from './history-hydrator.js';
 import type { TreeInternal } from './tree.js';
 import type { ConversationNode, Tree } from './types.js';
-
-// ---------------------------------------------------------------------------
-// Input-event lookup result
-// ---------------------------------------------------------------------------
-
-/**
- * Result of {@link AgentView.findInputEvent}. The lookup races the session's
- * Tree (`findAblyMessageByEventId` pre-scan + `'ably-message'` event for live
- * arrivals) against a bounded history scan; resolves with the single matched
- * input event.
- *
- * Run.start reads `headers` / `clientId` from the matched message to derive
- * per-run metadata (run-id, parent, forkOf, continuation flag, publisher
- * clientId). The Tree has already folded the message by the time the lookup
- * resolves, so callers do NOT need to decode the raw matched message
- * themselves.
- */
-export interface InputEventLookupResult {
-  /** Transport headers of the matched input event (run metadata). */
-  headers?: Record<string, string>;
-  /** Publisher's Ably channel-level `clientId` from the matched input event. */
-  clientId?: string;
-}
 
 // ---------------------------------------------------------------------------
 // Ancestor-chain walk over the Tree
@@ -127,24 +102,6 @@ const countReplyRuns = <TProjection>(
   return count;
 };
 
-/**
- * Wrap an unknown history-walk failure as `Ably.ErrorInfo`, preserving the
- * original code/statusCode when the failure already carried them and
- * attaching the original as `cause`. Falls back to `HistoryFetchFailed`.
- * @param operation - The failed operation, phrased for an `unable to <operation>; <reason>` message.
- * @param error - The thrown value.
- * @returns The wrapped error.
- */
-const wrapHistoryError = (operation: string, error: unknown): Ably.ErrorInfo => {
-  const errInfo = errorCause(error);
-  return new Ably.ErrorInfo(
-    `unable to ${operation}; ${errorMessage(error)}`,
-    errInfo?.code ?? ErrorCode.HistoryFetchFailed,
-    errInfo?.statusCode ?? 500,
-    errInfo,
-  );
-};
-
 // ---------------------------------------------------------------------------
 // Options
 // ---------------------------------------------------------------------------
@@ -152,9 +109,9 @@ const wrapHistoryError = (operation: string, error: unknown): Ably.ErrorInfo => 
 /**
  * Constructor dependencies for {@link AgentView}, injected by AgentSession.
  *
- * AgentView holds `tree` + `applier` directly (like `DefaultView`). AgentSession
- * owns them and, because it SWAPS the Tree on continuity loss, recreates the
- * AgentView with the fresh Tree/applier rather than mutating them in place.
+ * AgentView reads the `tree` and drives the `hydrator`; AgentSession owns both
+ * and, because it SWAPS them on continuity loss, recreates the AgentView with
+ * the fresh pair rather than mutating them in place.
  */
 export interface AgentViewOptions<
   TInput extends CodecInputEvent,
@@ -162,22 +119,14 @@ export interface AgentViewOptions<
   TProjection,
   TMessage,
 > {
-  /** The session's materialisation Tree (read for walks; folded into by history). */
+  /** The session's materialisation Tree (read for ancestor walks). */
   tree: TreeInternal<TInput, TOutput, TProjection>;
-  /** The Ably channel to read history from. */
-  channel: Ably.RealtimeChannel;
   /** Codec used to project per-node messages. */
   codec: Codec<TInput, TOutput, TProjection, TMessage>;
-  /** The Tree's decode-and-apply engine; history pages fold through it. */
-  applier: WireApplier;
+  /** The session's shared history hydrator; ancestor hydration drives it. */
+  hydrator: HistoryHydrator;
   /** Logger for diagnostic output. */
   logger?: Logger;
-  /**
-   * Age bound for the input-event scan: the scan gives up paging once it
-   * crosses `Date.now() - inputEventLookbackMs`. Applied only to
-   * `findInputEvent`, never to the ancestor-hydration walk.
-   */
-  inputEventLookbackMs: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -185,223 +134,20 @@ export interface AgentViewOptions<
 // ---------------------------------------------------------------------------
 
 /**
- * Internal server-side view: input-event lookup + conversation loading over the
- * session Tree. See the file header for the ownership boundary.
+ * Internal server-side view: conversation loading over the session Tree. See
+ * the file header for the ownership boundary.
  */
 export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage> {
   private readonly _tree: TreeInternal<TInput, TOutput, TProjection>;
-  private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: Codec<TInput, TOutput, TProjection, TMessage>;
-  private readonly _applier: WireApplier;
+  private readonly _hydrator: HistoryHydrator;
   private readonly _logger?: Logger;
-  private readonly _inputEventLookbackMs: number;
-
-  /**
-   * Tail of the single-flight history-hydration chain. Each walk links behind
-   * the current tail and becomes the new tail, so concurrent calls serialise
-   * and share each other's folded pages instead of each scanning the channel.
-   * A link never rejects (it records its error locally), so a follower awaiting
-   * the tail is isolated from a prior link's failure.
-   */
-  private _hydrationMutex: Promise<void> | undefined;
-  /**
-   * Shared history-walk cursor for this AgentView's attach epoch — ONE backward
-   * `untilAttach` pagination that both `findInputEvent` and `loadConversation`
-   * advance. `findInputEvent` pages it until the trigger is found (or its
-   * lookback give-up point) and pauses; `loadConversation` resumes from that
-   * position instead of re-paging from newest, so the channel is walked once.
-   * Created lazily on first use (no per-caller signal, so it outlives any one
-   * caller; no lookback, so it can reach attach). The single-flight chain
-   * (`_hydrationMutex`) serialises access so it is never paged concurrently. A
-   * continuity-loss swap recreates the whole AgentView, so there is no in-place
-   * reset.
-   */
-  private _cursor: HistoryPagesCursor | undefined;
-  /**
-   * True once the shared cursor reached attach (channel exhausted). Because the
-   * cursor carries no lookback, its exhaustion is always genuine (never a
-   * lookback boundary), so either caller may record it; a lookback-bounded
-   * `findInputEvent` scan stops via an early `break` that leaves the cursor
-   * non-exhausted, so it never sets this.
-   */
-  private _historyExhausted = false;
 
   constructor(options: AgentViewOptions<TInput, TOutput, TProjection, TMessage>) {
     this._tree = options.tree;
-    this._channel = options.channel;
     this._codec = options.codec;
-    this._applier = options.applier;
-    this._inputEventLookbackMs = options.inputEventLookbackMs;
+    this._hydrator = options.hydrator;
     this._logger = options.logger?.withContext({ component: 'AgentView' });
-  }
-
-  /**
-   * Fold a single wire message into the Tree: decode-and-apply via the applier,
-   * then notify Tree subscribers and populate the event-id index. Mirrors
-   * AgentSession's live `_foldWire`; history pages fold through this.
-   * @param wire - The inbound Ably message to fold.
-   */
-  private _foldWire(wire: Ably.InboundMessage): void {
-    foldAndEmit(this._applier, this._tree, wire);
-  }
-
-  // -------------------------------------------------------------------------
-  // Input-event lookup
-  // -------------------------------------------------------------------------
-
-  /**
-   * Find the single message whose `event-id` matches `expectedEventId`,
-   * racing three sources:
-   *
-   *  1. A pre-scan of the Tree via `findAblyMessageByEventId` for a message
-   *     already folded into it from a prior live arrival.
-   *  2. A live listener on the Tree's `ably-message` event for new arrivals
-   *     during the call.
-   *  3. The shared history walk (lookback-bounded) — pages fold into the Tree
-   *     and surface through the same `ably-message` event.
-   *
-   * Resolves when the expected event-id is matched — whichever source
-   * surfaces it first wins. On timeout: cancels the in-flight history scan and
-   * rejects with `InputEventNotFound`, wrapping any history-scan failure as
-   * `cause` so a broken history fetch isn't masked behind the timeout. On
-   * signal abort: rejects with `InvalidArgument`.
-   *
-   * `headers` and `clientId` are read from the matched message for downstream
-   * run-level metadata (run-id, parent, forkOf, continuation flag, publisher
-   * clientId).
-   * @param opts - Lookup parameters.
-   * @param opts.invocationId - The invocation id this lookup is for (logging / error messages).
-   * @param opts.runId - The run id this lookup is for (logging / error messages).
-   * @param opts.expectedEventId - The `event-id` the lookup must observe before resolving.
-   * @param opts.timeoutMs - Maximum total wait across live + history sources.
-   * @param opts.signal - AbortSignal that aborts the lookup if the run is cancelled.
-   * @returns The matched message's transport headers and publisher clientId.
-   */
-  // eslint-disable-next-line @typescript-eslint/promise-function-async -- the body IS a Promise executor; async would double-wrap it
-  findInputEvent(opts: {
-    invocationId: string;
-    runId: string;
-    expectedEventId: string;
-    timeoutMs: number;
-    signal: AbortSignal;
-  }): Promise<InputEventLookupResult> {
-    const { invocationId, runId, expectedEventId, timeoutMs, signal } = opts;
-    const logger = this._logger;
-
-    // Bounded history fetch in parallel with the live wait; this controller
-    // lets the lookup cancel the in-flight fetch on timeout / abort,
-    // independently of the run signal.
-    const historyController = new AbortController();
-
-    return new Promise<InputEventLookupResult>((resolve, reject) => {
-      let settled = false;
-      // A genuine history-scan failure (not a cancel-induced abort) recorded
-      // so the timeout rejection can surface it as `cause` — the live path
-      // may still win the race, so the failure alone doesn't reject.
-      let historyError: Ably.ErrorInfo | undefined;
-      /* eslint-disable prefer-const -- forward-declared so cleanup() / onCancelled() can reference before the listener register or the timeout schedule has run. */
-      let unregisterLive: (() => void) | undefined;
-      let timer: ReturnType<typeof setTimeout> | number | undefined;
-      /* eslint-enable */
-
-      const cleanup = (): void => {
-        if (unregisterLive) unregisterLive();
-        if (timer !== undefined) clearTimeout(timer);
-        historyController.abort();
-        signal.removeEventListener('abort', onCancelled);
-      };
-
-      const onCancelled = (): void => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(
-          new Ably.ErrorInfo(
-            `unable to look up input event; run ${runId} was cancelled`,
-            ErrorCode.InvalidArgument,
-            400,
-          ),
-        );
-      };
-
-      const finishOk = (m: Ably.InboundMessage): void => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        logger?.debug('AgentView.findInputEvent(); matched input event', {
-          runId,
-          invocationId,
-        });
-        resolve({ headers: getTransportHeaders(m), clientId: m.clientId });
-      };
-
-      // Whether a message is the expected input event.
-      const matches = (m: Ably.InboundMessage): boolean => getTransportHeaders(m)[HEADER_EVENT_ID] === expectedEventId;
-
-      signal.addEventListener('abort', onCancelled, { once: true });
-      if (signal.aborted) {
-        onCancelled();
-        return;
-      }
-
-      // 1. Pre-scan the Tree's event-id index for an already-folded match.
-      //    Multi-run sessions where a prior run folded the message hit here
-      //    synchronously.
-      const preScanned = this._tree.findAblyMessageByEventId(expectedEventId);
-      if (preScanned) {
-        finishOk(preScanned);
-        return;
-      }
-
-      // 2. Subscribe to the Tree's `ably-message` event for live arrivals.
-      //    The applier folds first; `emitAblyMessage` notifies subscribers
-      //    AND populates the event-id index. Wires fed in by the parallel
-      //    history fetch flow through the same event so the listener picks
-      //    them up uniformly.
-      unregisterLive = this._tree.on('ably-message', (msg) => {
-        if (!settled && matches(msg)) finishOk(msg);
-      });
-
-      // 3. Drive the shared history walk in parallel, lookback-bounded so the
-      //    scan gives up (pausing the cursor) once it pages past the window
-      //    rather than walking the whole channel for a missing trigger. Each
-      //    page folds into the Tree, triggering the listener above. The cursor
-      //    stays paused at its position; a later loadConversation resumes it.
-      //    The resolution is discarded — findInputEvent never records exhaustion
-      //    (loadConversation does, if it drives the cursor to attach).
-      this._driveHistoryChain(
-        () => settled,
-        historyController.signal,
-        this._inputEventLookbackMs,
-        'scan history for input event',
-      ).catch((error: unknown) => {
-        if (settled) return;
-        historyError =
-          error instanceof Ably.ErrorInfo ? error : wrapHistoryError('scan history for input event', error);
-        logger?.warn('AgentView.findInputEvent(); history scan failed (continuing on live path)', {
-          error: errorMessage(error),
-        });
-      });
-
-      // 4. Overall timeout — cancels the in-flight history fetch and
-      //    rejects with InputEventNotFound.
-      timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(
-          new Ably.ErrorInfo(
-            `unable to look up input event; input event ${expectedEventId} for invocation ${invocationId} not found within ${String(timeoutMs)}ms`,
-            ErrorCode.InputEventNotFound,
-            504,
-            historyError,
-          ),
-        );
-      }, timeoutMs);
-      // Node returns an unref-able Timeout; browsers return a number. Unref
-      // so a parked lookup cannot keep a Node process alive by itself.
-      if (typeof timer === 'object') timer.unref();
-    });
   }
 
   // -------------------------------------------------------------------------
@@ -413,7 +159,7 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
    * input node back to the conversation root, reading already-folded
    * projections off the Tree's nodes.
    *
-   * Hydrates the Tree as needed via the shared history walk
+   * Hydrates the Tree as needed via the shared hydrator
    * ({@link AgentView._hydrateAncestors}), then concatenates
    * `codec.getMessages(node.projection)` per node (root first) and appends the
    * current run's projection at the tail.
@@ -512,111 +258,14 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
   }
 
   // -------------------------------------------------------------------------
-  // Shared history walk
+  // Ancestor hydration
   // -------------------------------------------------------------------------
 
   /**
-   * Single-flight chain entry shared by `findInputEvent` and `loadConversation`.
-   * Serialises behind any in-flight walk so the shared cursor is advanced by one
-   * caller at a time (never paged concurrently), then runs one
-   * {@link AgentView._walkSharedHistory}. A link never rejects (it records its
-   * error locally), so a follower awaiting the chain tail is isolated from a
-   * prior link's failure; this method rethrows the wrapped error from its own
-   * frame after awaiting.
-   *
-   * Returns `exhausted` but never records `_historyExhausted`; the caller records
-   * it (both callers may, since the shared cursor's exhaustion is always genuine
-   * — see {@link AgentView._historyExhausted}).
-   * @param shouldStop - Polled before each page; true pauses this walk.
-   * @param signal - Per-call abort signal (checked between pages).
-   * @param lookbackMs - Optional give-up bound for the input scan (early break).
-   * @param operationLabel - Verb for the wrapped error message.
-   * @returns `{ exhausted }` — true only when the shared cursor reached attach.
-   */
-  private async _driveHistoryChain(
-    shouldStop: () => boolean,
-    signal: AbortSignal,
-    lookbackMs: number | undefined,
-    operationLabel: string,
-  ): Promise<{ exhausted: boolean }> {
-    let exhausted = false;
-    let fetchError: Ably.ErrorInfo | undefined;
-    const prev = this._hydrationMutex ?? Promise.resolve();
-    const mine = (async (): Promise<void> => {
-      await prev.catch(() => {
-        /* a prior link's failure is its own to throw; this link fetches independently */
-      });
-      if (this._historyExhausted || signal.aborted || shouldStop()) return;
-      try {
-        exhausted = await this._walkSharedHistory(shouldStop, signal, lookbackMs);
-      } catch (error) {
-        fetchError = wrapHistoryError(operationLabel, error);
-      }
-    })();
-    this._hydrationMutex = mine;
-    await mine;
-    if (fetchError !== undefined) throw fetchError;
-    return { exhausted };
-  }
-
-  /**
-   * Advance the SHARED history cursor (lazily opening it once per attach epoch)
-   * and fold each page into the session Tree via the injected `fold`, stopping
-   * when `shouldStop()` returns true, the channel is exhausted, the signal
-   * aborts, a continuity-loss Tree swap abandons the walk, or — when `lookbackMs`
-   * is given — the walk pages past the lookback window. The cursor is NOT closed
-   * on stop: it stays paused at its current position so a later caller resumes
-   * from there rather than re-paging from newest. Throws (caller-wrapped) on a
-   * fetch failure after `loadHistoryPages`' per-page retries.
-   * @param shouldStop - Polled before each page; true pauses the walk.
-   * @param signal - Per-call abort signal (checked between pages; the shared cursor carries none).
-   * @param lookbackMs - Optional give-up bound: stop paging once a page's oldest
-   *   message predates `Date.now() - lookbackMs`. An early `break`, NOT a cursor
-   *   bound, so the cursor stays resumable and exhaustion is never reported here.
-   * @returns True only when the cursor genuinely reached attach — NOT when
-   *   paused by the predicate / lookback, a Tree swap, or signal abort.
-   */
-  private async _walkSharedHistory(
-    shouldStop: () => boolean,
-    signal: AbortSignal,
-    lookbackMs?: number,
-  ): Promise<boolean> {
-    if (this._cursor === undefined) {
-      this._cursor = await loadHistoryPages(this._channel, {
-        pageLimit: 200,
-        untilAttach: true,
-        logger: this._logger,
-      });
-    }
-    const cursor = this._cursor;
-    while (cursor.hasNext() && !shouldStop()) {
-      if (signal.aborted) return false;
-      const chunk = await cursor.next();
-      // `next()` returning undefined means the cursor is permanently spent
-      // (it has cleared its current page) — genuine exhaustion.
-      if (!chunk) break;
-      // Ably returns history pages newest-first; fold in chronological order so
-      // codec projections build oldest-to-newest (matches the live decode loop).
-      for (const wire of chunk.toReversed()) {
-        this._foldWire(wire);
-      }
-      // findInputEvent's give-up bound: once this page predates the lookback
-      // window, stop scanning. The cursor stays open (hasNext() still true), so
-      // loadConversation can resume past here and this never reports exhaustion.
-      if (lookbackMs !== undefined) {
-        const oldest = chunk.at(-1);
-        if (oldest?.timestamp !== undefined && oldest.timestamp < Date.now() - lookbackMs) break;
-      }
-    }
-    // Genuine exhaustion only: the cursor reached attach and the walk wasn't aborted.
-    return !cursor.hasNext() && !signal.aborted;
-  }
-
-  /**
    * Populate the Tree with enough ancestor coverage to walk from `anchor` to
-   * root (or `maxRuns` reply runs back) by driving the shared history walk.
-   * Records `_historyExhausted` only when a FULL (no-lookback) walk genuinely
-   * exhausts the channel.
+   * root (or `maxRuns` reply runs back) by driving the shared hydrator. The
+   * hydrator owns cursor exhaustion, so a walk that needs more than the channel
+   * holds pages to exhaustion and then returns with the partial chain folded.
    * @param runId - The current run's id (when adopted, its node must be present in the Tree before the walk is complete).
    * @param anchor - The input codec-message-id to walk from. Undefined means no walk is needed (current run only).
    * @param signal - AbortSignal.
@@ -624,8 +273,8 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
    * @param runIdAdopted - Whether the run-id came from outside (override or continuation) and so may name a run present in channel history.
    * @throws {Ably.ErrorInfo} `InvalidArgument` when `signal` aborts;
    *   `HistoryFetchFailed` — or the underlying Ably code when the failure
-   *   carried one — (original as `cause`) when this caller's own history
-   *   fetch fails after retries.
+   *   carried one — (original as `cause`) when the history fetch fails after
+   *   retries.
    */
   private async _hydrateAncestors(
     runId: string,
@@ -663,15 +312,13 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
       return !reachedRoot && !reachedLimit;
     };
 
-    // Already satisfied, or a prior full walk this epoch drove history to
-    // exhaustion (fetching again cannot reveal more) — nothing to do.
-    if (!needsFetch() || this._historyExhausted) return;
+    if (!needsFetch()) return;
 
-    let exhausted: boolean;
     try {
-      // Full walk — NO lookback — so an exhausted return is authoritative for
-      // the attach epoch and may be recorded.
-      ({ exhausted } = await this._driveHistoryChain(() => !needsFetch(), signal, undefined, 'hydrate ancestors'));
+      // The hydrator pages until `needsFetch()` is satisfied or the channel is
+      // exhausted (it owns and short-circuits on its own exhaustion), folding
+      // each page into the Tree.
+      await this._hydrator.foldUntil(() => !needsFetch(), signal);
     } catch (error) {
       this._logger?.error('AgentView._hydrateAncestors(); history fetch failed', {
         runId,
@@ -679,7 +326,7 @@ export class AgentView<TInput extends CodecInputEvent, TOutput extends CodecOutp
       });
       throw error;
     }
-    if (exhausted) this._historyExhausted = true;
+
     // A between-pages abort unwinds the fold cleanly (no throw); surface it as
     // the cancellation the caller expects rather than returning partial history.
     if (signal.aborted && needsFetch()) {

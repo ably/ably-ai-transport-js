@@ -39,7 +39,15 @@ import { createMaterialisation } from './materialisation.js';
 import { pipeStream } from './pipe-stream.js';
 import type { RunManager } from './run-manager.js';
 import { createRunManager } from './run-manager.js';
-import { bestEffortDetach, continuityLostError, isContinuityLost, requireConnected } from './session-support.js';
+import {
+  bestEffortDetach,
+  continuityLostError,
+  handleWireMessage,
+  isContinuityLost,
+  requireConnected,
+  SessionState,
+  subscribeAndAttach,
+} from './session-support.js';
 import type { DefaultTree } from './tree.js';
 import type {
   AgentSession,
@@ -81,11 +89,6 @@ interface RegisteredRun {
 // ---------------------------------------------------------------------------
 // Internal state machines
 // ---------------------------------------------------------------------------
-
-enum SessionState {
-  READY = 'ready',
-  CLOSED = 'closed',
-}
 
 enum RunState {
   INITIALIZED = 'initialized',
@@ -256,21 +259,12 @@ class DefaultAgentSession<
     // attaches the channel). Unfiltered so the Tree folds every post-attach
     // message regardless of name (cancel control messages are dispatched
     // separately by the channel listener after the Tree fold).
-    this._connectPromise = this._channel.subscribe(this._channelListener).then(
-      () => {
-        this._logger?.debug('DefaultAgentSession.connect(); subscribed and attached');
-      },
-      (error: unknown) => {
-        const errInfo = new Ably.ErrorInfo(
-          `unable to subscribe to channel; ${errorMessage(error)}`,
-          ErrorCode.SessionSubscriptionError,
-          500,
-          errorCause(error),
-        );
-        this._logger?.error('DefaultAgentSession.connect(); subscribe failed');
-        this._onError?.(errInfo);
-        throw errInfo;
-      },
+    this._connectPromise = subscribeAndAttach(
+      this._channel,
+      this._channelListener,
+      this._logger,
+      'DefaultAgentSession',
+      (error) => this._onError?.(error),
     );
     return this._connectPromise;
   }
@@ -516,36 +510,32 @@ class DefaultAgentSession<
   // -------------------------------------------------------------------------
 
   private _handleChannelMessage(msg: Ably.InboundMessage): void {
-    try {
-      // Fold first (re-delivered content is dropped by the shared decoder's
-      // version guard and the Tree's replay guard), then dispatch cancel
-      // control messages.
-      this._foldWire(msg);
+    handleWireMessage(
+      () => {
+        // Fold first (re-delivered content is dropped by the shared decoder's
+        // version guard and the Tree's replay guard), then dispatch cancel
+        // control messages.
+        this._foldWire(msg);
 
-      if (msg.name === EVENT_CANCEL) {
-        // Fire-and-forget async handler — errors are caught internally.
-        this._handleCancelMessage(msg).catch((error: unknown) => {
-          const errInfo = new Ably.ErrorInfo(
-            `unable to route cancel message; ${errorMessage(error)}`,
-            ErrorCode.CancelListenerError,
-            500,
-            errorCause(error),
-          );
-          this._logger?.error('DefaultAgentSession._handleChannelMessage(); cancel routing error');
-          this._onError?.(errInfo);
-        });
-        return;
-      }
-    } catch (error) {
-      const errInfo = new Ably.ErrorInfo(
-        `unable to process channel message; ${errorMessage(error)}`,
-        ErrorCode.SessionSubscriptionError,
-        500,
-        errorCause(error),
-      );
-      this._logger?.error('DefaultAgentSession._handleChannelMessage(); subscription error');
-      this._onError?.(errInfo);
-    }
+        if (msg.name === EVENT_CANCEL) {
+          // Fire-and-forget async handler — errors are caught internally.
+          this._handleCancelMessage(msg).catch((error: unknown) => {
+            const errInfo = new Ably.ErrorInfo(
+              `unable to route cancel message; ${errorMessage(error)}`,
+              ErrorCode.CancelListenerError,
+              500,
+              errorCause(error),
+            );
+            this._logger?.error('DefaultAgentSession._handleChannelMessage(); cancel routing error');
+            this._onError?.(errInfo);
+          });
+        }
+      },
+      (error) => {
+        this._logger?.error('DefaultAgentSession._handleChannelMessage(); subscription error');
+        this._onError?.(error);
+      },
+    );
   }
 
   // -------------------------------------------------------------------------

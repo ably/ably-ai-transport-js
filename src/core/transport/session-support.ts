@@ -15,6 +15,91 @@ import * as Ably from 'ably';
 
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
+import { errorCause, errorMessage } from '../../utils.js';
+
+/**
+ * Lifecycle state shared by both sessions: a session is `READY` from
+ * construction until `close()` flips it to `CLOSED`. There is no separate
+ * "connected" state — connection is tracked by the presence of a connect
+ * promise, not this enum.
+ */
+export enum SessionState {
+  /** The session is open; writes and message processing proceed. */
+  READY = 'ready',
+  /** `close()` has run; further operations are rejected or ignored. */
+  CLOSED = 'closed',
+}
+
+/**
+ * Subscribe a session's listener to its channel, which implicitly attaches the
+ * channel (RTL7g — subscribe before attach). On success logs at debug; on
+ * failure builds a `SessionSubscriptionError`, logs at error, hands it to
+ * `onError`, and rejects with it. Both sessions cache the returned promise as
+ * their connect guard, so this is the single place the subscribe-and-attach
+ * step — and its failure shape — is defined.
+ * @param channel - The session's channel.
+ * @param listener - The message listener to subscribe (also the unsubscribe handle on close).
+ * @param logger - Logger for the success/failure lines, or `undefined`.
+ * @param component - The owning class name, used as the log message prefix.
+ * @param onError - Called with the subscription error before it is thrown (the
+ *   client emits it, the agent forwards it to its session `onError`).
+ * @returns A promise that resolves once subscribed/attached, or rejects with
+ *   the `SessionSubscriptionError`.
+ */
+export const subscribeAndAttach = async (
+  channel: Ably.RealtimeChannel,
+  listener: (message: Ably.InboundMessage) => void,
+  logger: Logger | undefined,
+  component: string,
+  onError: (error: Ably.ErrorInfo) => void,
+): Promise<void> => {
+  try {
+    await channel.subscribe(listener);
+    logger?.debug(`${component}.connect(); subscribed and attached`);
+  } catch (error) {
+    const errInfo = new Ably.ErrorInfo(
+      `unable to subscribe to channel; ${errorMessage(error)}`,
+      ErrorCode.SessionSubscriptionError,
+      500,
+      errorCause(error),
+    );
+    logger?.error(`${component}.connect(); subscribe failed`);
+    onError(errInfo);
+    throw errInfo;
+  }
+};
+
+/**
+ * Wrap a failure thrown while processing an inbound channel message as a
+ * `SessionSubscriptionError`, preserving the original as `cause`. Single source
+ * of truth for the message-processing error shape both sessions surface.
+ * @param error - The thrown value.
+ * @returns The wrapped error.
+ */
+export const wrapMessageProcessingError = (error: unknown): Ably.ErrorInfo =>
+  new Ably.ErrorInfo(
+    `unable to process channel message; ${errorMessage(error)}`,
+    ErrorCode.SessionSubscriptionError,
+    500,
+    errorCause(error),
+  );
+
+/**
+ * Run a session's per-message processing inside the shared error bracket: a
+ * throw is wrapped via {@link wrapMessageProcessingError} and handed to
+ * `onError` so one bad message can't kill the subscription. Both sessions route
+ * their channel-message handler through this so the bracket and the surfaced
+ * error are identical.
+ * @param process - The message-processing body (fold, dispatch, side-effects).
+ * @param onError - Called with the wrapped error when `process` throws.
+ */
+export const handleWireMessage = (process: () => void, onError: (error: Ably.ErrorInfo) => void): void => {
+  try {
+    process();
+  } catch (error) {
+    onError(wrapMessageProcessingError(error));
+  }
+};
 
 /**
  * Resolve a session's connect guard: return the in-flight/settled connect

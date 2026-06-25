@@ -17,18 +17,20 @@ import {
 } from '../../../src/constants.js';
 import type { Codec, CodecEvent, CodecInputEvent, Decoder, ReducerMeta } from '../../../src/core/codec/types.js';
 import { createWireApplier } from '../../../src/core/transport/decode-fold.js';
+import { createHistoryHydrator, type HistoryHydrator } from '../../../src/core/transport/history-hydrator.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
 // Vitest hoists vi.mock above imports, so this static import gets the mock.
-import { loadHistory } from '../../../src/core/transport/load-history.js';
+import { type HistoryPagesCursor, loadHistoryPages } from '../../../src/core/transport/load-history-pages.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
-import type { ActiveRun, HistoryPage, RunLifecycleEvent } from '../../../src/core/transport/types.js';
+import type { ActiveRun, RunLifecycleEvent } from '../../../src/core/transport/types.js';
 import type { SendDelegate } from '../../../src/core/transport/view.js';
 import { DefaultView } from '../../../src/core/transport/view.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
+import { makeHistoryCursor } from '../../helper/history-cursor.js';
 
-vi.mock('../../../src/core/transport/load-history.js', () => ({
-  loadHistory: vi.fn(),
+vi.mock('../../../src/core/transport/load-history-pages.js', () => ({
+  loadHistoryPages: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -221,16 +223,16 @@ const landTTRegen = (
   });
 };
 
-const makePage = (
-  rawMessages: Ably.InboundMessage[] = [],
-  hasNextPage = false,
-  nextPageFn?: () => Promise<HistoryPage | undefined>,
-): HistoryPage => ({
-  rawMessages,
-  hasNext: () => hasNextPage,
-  // eslint-disable-next-line @typescript-eslint/promise-function-async, unicorn/no-useless-undefined -- mock needs explicit undefined return for HistoryPage shape
-  next: nextPageFn ?? (() => Promise.resolve(undefined)),
-});
+/**
+ * Build a fake {@link HistoryPagesCursor} the mocked `loadHistoryPages` returns.
+ * Pages are given oldest-first (human-natural); each is reversed to Ably's
+ * newest-first delivery order (via the shared {@link makeHistoryCursor}), so the
+ * hydrator reverses it back and folds in the written order.
+ * @param pagesOldestFirst - History pages, each oldest-first; the array is in cursor fetch order (newest page first).
+ * @returns A cursor over those pages.
+ */
+const makeCursor = (pagesOldestFirst: Ably.InboundMessage[][]): HistoryPagesCursor =>
+  makeHistoryCursor(pagesOldestFirst.map((page) => page.toReversed()));
 
 /**
  * Build a linear-chain run's transport headers for the pagination history
@@ -326,12 +328,29 @@ describe('DefaultView', () => {
   let codec: Codec<TestInput, TestOutput, TestProjection, TestMessage>;
 
   /**
-   * Build a View over the shared tree, binding an applier around `decoder`
-   * (defaults to the test codec's no-op decoder). Each call creates its own
-   * applier — sufficient here because no view test feeds the same stream
-   * through two routes; the session-level one-decoder-per-Tree wiring is
-   * covered in client-session.test.ts.
-   * @param decoder - Optional decoder to bind into the View's applier.
+   * Build a history hydrator over `t`, binding an applier around `decoder`
+   * (defaults to the test codec's no-op decoder). The hydrator drives the mocked
+   * `loadHistoryPages`, so the channel is a placeholder; the bound decoder
+   * determines how folded history wires become tree nodes.
+   * @param t - The tree the hydrator folds into.
+   * @param decoder - Optional decoder to bind into the hydrator's applier.
+   * @returns A hydrator over `t`.
+   */
+  const makeHydrator = (
+    t: DefaultTree<TestInput, TestOutput, TestProjection>,
+    decoder?: Decoder<TestInput, TestOutput>,
+  ): HistoryHydrator =>
+    createHistoryHydrator({
+      channel: createMockChannel(),
+      tree: t,
+      applier: createWireApplier(t, decoder ?? codec.createDecoder()),
+      logger: silentLogger,
+    });
+
+  /**
+   * Build a View over the shared tree with a hydrator bound around `decoder`
+   * (defaults to the test codec's no-op decoder).
+   * @param decoder - Optional decoder to bind into the View's hydrator.
    * @returns A new DefaultView over the shared tree.
    */
   const makeView = (
@@ -339,9 +358,8 @@ describe('DefaultView', () => {
   ): DefaultView<TestInput, TestOutput, TestProjection, TestMessage> =>
     new DefaultView({
       tree,
-      channel: createMockChannel(),
       codec,
-      applier: createWireApplier(tree, decoder ?? codec.createDecoder()),
+      hydrator: makeHydrator(tree, decoder),
       sendDelegate,
       logger: silentLogger,
     });
@@ -365,7 +383,7 @@ describe('DefaultView', () => {
   });
 
   beforeEach(() => {
-    vi.mocked(loadHistory).mockReset();
+    vi.mocked(loadHistoryPages).mockReset();
     codec = makeTestCodec();
     tree = createTree<TestInput, TestOutput, TestProjection>(codec, silentLogger);
     sendDelegate = createMockSendDelegate();
@@ -1687,9 +1705,8 @@ describe('DefaultView', () => {
       const noopTree = createTree<TestInput, TestOutput, TestProjection>(noopCodec, silentLogger);
       const noopView = new DefaultView({
         tree: noopTree,
-        channel: createMockChannel(),
         codec: noopCodec,
-        applier: createWireApplier(noopTree, noopCodec.createDecoder()),
+        hydrator: makeHydrator(noopTree, noopCodec.createDecoder()),
         sendDelegate,
         logger: silentLogger,
       });
@@ -1795,10 +1812,14 @@ describe('DefaultView', () => {
   // -------------------------------------------------------------------------
 
   describe('loadOlder / hasOlder', () => {
-    it('hasOlder is false initially with empty history', async () => {
-      vi.mocked(loadHistory).mockResolvedValueOnce(makePage([]));
-      expect(view.hasOlder()).toBe(false);
+    it('hasOlder is optimistically true until a loadOlder exhausts empty history', async () => {
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(makeCursor([]));
+      // Before any fetch the cursor is unopened, so exhaustion is unknown — the
+      // honest answer is "there may be older messages", which the documented
+      // `while (hasOlder()) loadOlder()` drain recipe relies on.
+      expect(view.hasOlder()).toBe(true);
       await view.loadOlder();
+      // The fetch reached attach with nothing older → now truthfully false.
       expect(view.hasOlder()).toBe(false);
     });
 
@@ -1811,47 +1832,60 @@ describe('DefaultView', () => {
         extras: { ai: { transport: { [HEADER_RUN_ID]: 'R0', [HEADER_CODEC_MESSAGE_ID]: 'mh1' } } },
       } as unknown as Ably.InboundMessage;
 
-      // _processHistoryPage feeds page.rawMessages through the View's
-      // applier (the Tree's shared decoder). The test codec's decoder
-      // returns no events, so bind a view to a decoder that produces one.
+      // The hydrator folds pages through the View's applier (its bound decoder).
+      // The test codec's decoder returns no events, so bind a view to a decoder
+      // that produces one.
       const v = makeView(headerDecoder());
 
-      vi.mocked(loadHistory).mockResolvedValueOnce(makePage([rawMsg]));
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(makeCursor([[rawMsg]]));
 
       await v.loadOlder(10);
       expect(v.runs().map((r) => r.runId)).toContain('R0');
     });
 
-    it('hasOlder becomes true when history page reports hasNext', async () => {
-      const rawMsg = {
-        name: 'fake',
-        serial: 's0',
-        version: { serial: 's0' },
-        extras: { ai: { transport: { [HEADER_RUN_ID]: 'R0', [HEADER_CODEC_MESSAGE_ID]: 'mh1' } } },
-      } as unknown as Ably.InboundMessage;
+    it('hasOlder stays true when the cursor has more pages after the target is met', async () => {
+      // Two independent runs across two cursor pages (newest first). loadOlder(1)
+      // reveals the newest and stops — the older page is unfetched, so the cursor
+      // is not exhausted and hasOlder stays true.
       const v = makeView(headerDecoder());
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(
+        makeCursor([[contentWire('R-new', 'a-new', 's02')], [contentWire('R-old', 'a-old', 's01')]]),
+      );
 
-      vi.mocked(loadHistory).mockResolvedValueOnce(makePage([rawMsg], true));
-
-      await v.loadOlder(10);
+      await v.loadOlder(1);
+      expect(v.runs().map((r) => r.runId)).toEqual(['R-new']);
       expect(v.hasOlder()).toBe(true);
     });
 
     it('is a no-op when called while already loading', async () => {
-      let resolveFirst: ((page: HistoryPage) => void) | undefined;
-      vi.mocked(loadHistory).mockReturnValueOnce(
-        new Promise<HistoryPage>((resolve) => {
-          resolveFirst = resolve;
-        }),
+      // Park the first fetch in flight: the mock signals when the cursor open is
+      // issued (a deterministic sync point) and returns a promise the test
+      // resolves at the end to let the first loadOlder finish.
+      let signalOpened: (() => void) | undefined;
+      const opened = new Promise<void>((resolve) => {
+        signalOpened = resolve;
+      });
+      let resolveOpen: ((cursor: HistoryPagesCursor) => void) | undefined;
+      vi.mocked(loadHistoryPages).mockImplementationOnce(
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock parks on a promise the test resolves
+        () => {
+          signalOpened?.();
+          return new Promise<HistoryPagesCursor>((resolve) => {
+            resolveOpen = resolve;
+          });
+        },
       );
 
       const p1 = view.loadOlder(10);
-      const p2 = view.loadOlder(10);
-      // Second call should immediately resolve as no-op.
-      await p2;
-      // loadHistory called only once.
-      expect(vi.mocked(loadHistory)).toHaveBeenCalledTimes(1);
-      resolveFirst?.(makePage([]));
+      await opened; // exactly when the first fetch is issued — no timing guesswork
+      expect(vi.mocked(loadHistoryPages)).toHaveBeenCalledTimes(1);
+
+      // A second call while the first is in flight is a no-op (synchronous
+      // _loadingOlder guard) — no extra fetch.
+      await view.loadOlder(10);
+      expect(vi.mocked(loadHistoryPages)).toHaveBeenCalledTimes(1);
+
+      resolveOpen?.(makeCursor([]));
       await p1;
     });
 
@@ -1872,7 +1906,7 @@ describe('DefaultView', () => {
       );
       const v = makeView(headerDecoder());
 
-      vi.mocked(loadHistory).mockResolvedValueOnce(makePage(rawMessages));
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(makeCursor([rawMessages]));
 
       await v.loadOlder(2);
       // The newest 2 by startSerial (R1, R2) are revealed; R0 is withheld.
@@ -1884,7 +1918,7 @@ describe('DefaultView', () => {
       ).toEqual(['R1', 'R2']);
       expect(v.hasOlder()).toBe(true);
 
-      // Second loadOlder drains the withheld buffer (R0). loadHistory is
+      // Second loadOlder drains the withheld buffer (R0). loadHistoryPages is
       // NOT called again — the buffer drain path returns without fetching.
       await v.loadOlder(2);
       expect(
@@ -1893,7 +1927,7 @@ describe('DefaultView', () => {
           .map((r) => r.runId)
           .toSorted(),
       ).toEqual(['R0', 'R1', 'R2']);
-      expect(vi.mocked(loadHistory)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(loadHistoryPages)).toHaveBeenCalledTimes(1);
     });
 
     it('counts codecMessages, not runs: a multi-message run fills the page limit alone', async () => {
@@ -1901,7 +1935,7 @@ describe('DefaultView', () => {
       // of 2, the newest run alone reaches the limit, so only R-multi is
       // revealed and R0 is withheld — run-counting would have revealed both.
       const v = makeView(headerDecoder());
-      vi.mocked(loadHistory).mockResolvedValueOnce(makePage(multiMessagePage()));
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(makeCursor([multiMessagePage()]));
 
       await v.loadOlder(2);
       expect(v.runs().map((r) => r.runId)).toEqual(['R-multi']);
@@ -1916,7 +1950,7 @@ describe('DefaultView', () => {
           .map((r) => r.runId)
           .toSorted(),
       ).toEqual(['R-multi', 'R0'].toSorted());
-      expect(vi.mocked(loadHistory)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(loadHistoryPages)).toHaveBeenCalledTimes(1);
     });
 
     it('partially reveals a node at the boundary so a page lands exactly on the message limit', async () => {
@@ -1924,7 +1958,7 @@ describe('DefaultView', () => {
       // node: loadOlder(1) shows only its newest message, the next reveals the
       // rest, then the older R0 — never overshooting the limit.
       const v = makeView(headerDecoder());
-      vi.mocked(loadHistory).mockResolvedValueOnce(makePage(multiMessagePage()));
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(makeCursor([multiMessagePage()]));
 
       // Exactly 1 message: R-multi's newest only. R-multi is partially revealed
       // (still a visible run), R0 stays hidden.
@@ -1943,7 +1977,7 @@ describe('DefaultView', () => {
       expect(v.getMessages().map((m) => m.message.id)).toEqual(['mh0', 'm-a', 'm-b']);
       expect(v.runs().map((r) => r.runId)).toEqual(['R0', 'R-multi']);
       expect(v.hasOlder()).toBe(false);
-      expect(vi.mocked(loadHistory)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(loadHistoryPages)).toHaveBeenCalledTimes(1);
     });
 
     it('suppresses ably-message events for withheld Runs', async () => {
@@ -1965,7 +1999,7 @@ describe('DefaultView', () => {
       );
       const v = makeView(headerDecoder());
 
-      vi.mocked(loadHistory).mockResolvedValueOnce(makePage(rawMessages));
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(makeCursor([rawMessages]));
       await v.loadOlder(2);
 
       // R0 is withheld at this point. An ably-message for R0 must be
@@ -1988,14 +2022,33 @@ describe('DefaultView', () => {
       expect(handler).toHaveBeenCalledWith(visibleMsg);
     });
 
+    it('does not emit ably-message for history folds (surfaces via update only)', async () => {
+      // The hydrator folds history pages through foldAndEmit (per-wire
+      // emitAblyMessage) during the drain, but the View must suppress those:
+      // the pagination window isn't set up yet and the event is scoped to
+      // visible runs. The revealed run surfaces via a single 'update' instead.
+      const v = makeView(headerDecoder());
+      const ablyMessage = vi.fn();
+      const update = vi.fn();
+      v.on('ably-message', ablyMessage);
+      v.on('update', update);
+
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(makeCursor([[contentWire('R0', 'a0', 's0')]]));
+      await v.loadOlder(10);
+
+      expect(v.runs().map((r) => r.runId)).toEqual(['R0']);
+      expect(ablyMessage).not.toHaveBeenCalled();
+      expect(update).toHaveBeenCalled();
+    });
+
     // ---------------------------------------------------------------------
     // Pagination edge cases (AIT-773 §7.6)
     // ---------------------------------------------------------------------
 
-    it('handles a Run that spans multiple channel pages by carrying state across loadHistory.next()', async () => {
-      // Simulate a Run R-multi whose messages appear across two channel
-      // pages: page1 has the first wire, page2 (via .next()) has the
-      // second wire. The Tree folds both into the same RunNode.
+    it('handles a Run that spans multiple channel pages by carrying state across cursor pages', async () => {
+      // Simulate a Run R-multi whose messages appear across two channel pages:
+      // the newest page holds m-multi-b, the older page holds m-multi-a. The
+      // hydrator folds both into the same RunNode.
       const headersA = { [HEADER_RUN_ID]: 'R-multi', [HEADER_CODEC_MESSAGE_ID]: 'm-multi-a' };
       const headersB = { [HEADER_RUN_ID]: 'R-multi', [HEADER_CODEC_MESSAGE_ID]: 'm-multi-b' };
       const rawA = {
@@ -2013,14 +2066,8 @@ describe('DefaultView', () => {
 
       const v = makeView(headerDecoder());
 
-      const page2 = makePage([rawB]);
-      const page1 = makePage(
-        [rawA],
-        true,
-        // eslint-disable-next-line @typescript-eslint/require-await -- mock
-        async () => page2,
-      );
-      vi.mocked(loadHistory).mockResolvedValueOnce(page1);
+      // Two cursor pages, newest first: [rawB] then [rawA].
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(makeCursor([[rawB], [rawA]]));
 
       await v.loadOlder(2);
 
@@ -2048,7 +2095,7 @@ describe('DefaultView', () => {
         },
       } as unknown as Ably.InboundMessage;
 
-      vi.mocked(loadHistory).mockResolvedValueOnce(makePage([runStartMsg]));
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(makeCursor([[runStartMsg]]));
 
       await view.loadOlder(1);
 
@@ -2068,12 +2115,14 @@ describe('DefaultView', () => {
       // Oldest run: run-start + run-end, no content → terminal contentless node.
       // Distinct dangling parents keep the runs from collapsing as siblings;
       // serials order them oldest → newest.
-      vi.mocked(loadHistory).mockResolvedValueOnce(
-        makePage([
-          lifecycleWire(EVENT_RUN_START, 'R-old', 's00'),
-          lifecycleWire(EVENT_RUN_END, 'R-old', 's00b', 'complete'),
-          contentWire('R-mid', 'a-mid', 's01'),
-          contentWire('R-new', 'a-new', 's02'),
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(
+        makeCursor([
+          [
+            lifecycleWire(EVENT_RUN_START, 'R-old', 's00'),
+            lifecycleWire(EVENT_RUN_END, 'R-old', 's00b', 'complete'),
+            contentWire('R-mid', 'a-mid', 's01'),
+            contentWire('R-new', 'a-new', 's02'),
+          ],
         ]),
       );
 
@@ -2101,7 +2150,7 @@ describe('DefaultView', () => {
         extras: { ai: { transport: { [HEADER_RUN_ID]: 'R-susp', 'run-client-id': '' } } },
       } as unknown as Ably.InboundMessage;
 
-      vi.mocked(loadHistory).mockResolvedValueOnce(makePage([runStartMsg, runSuspendMsg]));
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(makeCursor([[runStartMsg, runSuspendMsg]]));
 
       await view.loadOlder(1);
 
@@ -2117,11 +2166,9 @@ describe('DefaultView', () => {
       const lifecycle = (name: string, serial: string): Ably.InboundMessage =>
         ({ name, serial, extras: { ai: { transport } } }) as unknown as Ably.InboundMessage;
 
-      vi.mocked(loadHistory).mockResolvedValueOnce(
-        makePage([
-          lifecycle(EVENT_RUN_START, 's01'),
-          lifecycle(EVENT_RUN_SUSPEND, 's02'),
-          lifecycle(EVENT_RUN_RESUME, 's03'),
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(
+        makeCursor([
+          [lifecycle(EVENT_RUN_START, 's01'), lifecycle(EVENT_RUN_SUSPEND, 's02'), lifecycle(EVENT_RUN_RESUME, 's03')],
         ]),
       );
 
@@ -2149,9 +2196,8 @@ describe('DefaultView', () => {
       const onClose = vi.fn();
       const v = new DefaultView({
         tree,
-        channel: createMockChannel(),
         codec,
-        applier: createWireApplier(tree, codec.createDecoder()),
+        hydrator: makeHydrator(tree),
         sendDelegate,
         logger: silentLogger,
         onClose,
@@ -2183,9 +2229,8 @@ describe('DefaultView', () => {
       const onClose = vi.fn();
       const v = new DefaultView({
         tree,
-        channel: createMockChannel(),
         codec,
-        applier: createWireApplier(tree, codec.createDecoder()),
+        hydrator: makeHydrator(tree),
         sendDelegate,
         logger: silentLogger,
         onClose,
@@ -2197,10 +2242,10 @@ describe('DefaultView', () => {
       expect(onClose).toHaveBeenCalledTimes(1);
     });
 
-    it('loadOlder after close is a no-op (no loadHistory call)', async () => {
+    it('loadOlder after close is a no-op (no history fetch)', async () => {
       view.close();
       await view.loadOlder(10);
-      expect(vi.mocked(loadHistory)).not.toHaveBeenCalled();
+      expect(vi.mocked(loadHistoryPages)).not.toHaveBeenCalled();
     });
   });
 

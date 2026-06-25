@@ -27,14 +27,12 @@ import type { Logger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
 import type { Codec, CodecInputEvent, CodecMessage, CodecOutputEvent } from '../codec/types.js';
 import { collectMessages } from './collect-messages.js';
-import type { WireApplier } from './decode-fold.js';
-import { loadHistory } from './load-history.js';
+import type { HistoryHydrator } from './history-hydrator.js';
 import { nodeKey, type TreeInternal } from './tree.js';
 import type {
   ActiveRun,
   BranchSelection,
   ConversationNode,
-  HistoryPage,
   OutputEvent,
   RunInfo,
   RunLifecycleEvent,
@@ -86,16 +84,14 @@ export type SendDelegate<TInput extends CodecInputEvent> = (
 interface ViewOptions<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage> {
   /** The tree to project. */
   tree: TreeInternal<TInput, TOutput, TProjection>;
-  /** The Ably channel to load history from. */
-  channel: Ably.RealtimeChannel;
   /** The codec used to project messages and mint regenerate inputs. */
   codec: Codec<TInput, TOutput, TProjection, TMessage>;
   /**
-   * The Tree's single decode-and-apply engine, owned by the session and
-   * shared with the live decode loop. History replay feeds pages through it
-   * so the one decoder instance sees every route into the Tree.
+   * The session's shared history hydrator. `loadOlder` drives it to fold older
+   * channel pages into the Tree; it is owned by the session and shared by every
+   * view, so the channel is paged once across views.
    */
-  applier: WireApplier;
+  hydrator: HistoryHydrator;
   /** Delegate for executing sends through the session. */
   sendDelegate: SendDelegate<TInput>;
   /** Logger for diagnostic output. */
@@ -227,9 +223,8 @@ export class DefaultView<
   TMessage,
 > implements View<TInput, TMessage> {
   private readonly _tree: TreeInternal<TInput, TOutput, TProjection>;
-  private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: Codec<TInput, TOutput, TProjection, TMessage>;
-  private readonly _applier: WireApplier;
+  private readonly _hydrator: HistoryHydrator;
   private readonly _sendDelegate: SendDelegate<TInput>;
   private readonly _logger: Logger;
   private readonly _emitter: EventEmitter<ViewEventsMap>;
@@ -285,12 +280,6 @@ export class DefaultView<
   /** Cached visible node-key Set — for O(1) lookup in event scoping. */
   private _lastVisibleNodeKeySet = new Set<string>();
 
-  /** Whether there are more history pages to fetch from the channel. */
-  private _hasMoreHistory = false;
-
-  /** Internal state for continuing history pagination. */
-  private _lastHistoryPage: HistoryPage | undefined;
-
   /** Buffer of withheld nodes (input + reply), drained newest-first by successive loadOlder() calls. */
   private readonly _withheldBuffer: ConversationNode<TProjection>[] = [];
 
@@ -322,9 +311,8 @@ export class DefaultView<
 
   constructor(options: ViewOptions<TInput, TOutput, TProjection, TMessage>) {
     this._tree = options.tree;
-    this._channel = options.channel;
     this._codec = options.codec;
-    this._applier = options.applier;
+    this._hydrator = options.hydrator;
     this._sendDelegate = options.sendDelegate;
     this._onClose = options.onClose;
     this._logger = options.logger.withContext({ component: 'View' });
@@ -514,7 +502,7 @@ export class DefaultView<
   }
 
   hasOlder(): boolean {
-    return this._hiddenMessageCount > 0 || this._withheldBuffer.length > 0 || this._hasMoreHistory;
+    return this._hiddenMessageCount > 0 || this._withheldBuffer.length > 0 || this._hydrator.hasNext();
   }
 
   /**
@@ -584,35 +572,41 @@ export class DefaultView<
   }
 
   /**
-   * Fetch older channel history covering at least `target` more codecMessages,
-   * buffering the older nodes and revealing whole runs. The withheld buffer is
-   * assumed already drained by the caller. Loads the first page when no history
-   * has been fetched yet, otherwise advances to the next older page; the
-   * page-walk inside {@link _revealFromPage} loops until `target` messages are
-   * covered or history runs out. No-op (leaving `_hasMoreHistory` false) once
-   * channel history is exhausted.
+   * Fetch older channel history covering at least `target` more codecMessages by
+   * driving the shared hydrator, then reveal the newest whole runs it surfaced
+   * and withhold the rest. The withheld buffer is assumed already drained by the
+   * caller. The hydrator folds each page straight into the Tree and owns cursor
+   * exhaustion, so this stops at `target` new visible codecMessages or when the
+   * channel is exhausted. No-op once channel history is exhausted.
    * @param target - Minimum additional codecMessages this fetch aims to cover.
    */
   private async _fetchOlder(target: number): Promise<void> {
-    if (!this._hasMoreHistory && !this._lastHistoryPage) {
-      await this._loadFirstPage(target);
-      return;
+    if (!this._hydrator.hasNext()) return;
+
+    // Snapshot before folding: every node already in the tree stays visible, so
+    // only nodes the hydrator newly surfaces count toward `target`.
+    const beforeKeys = new Set(this._treeVisibleNodes().map((n) => nodeKey(n)));
+    const newVisibleCount = (): number => {
+      let count = 0;
+      for (const n of this._treeVisibleNodes()) {
+        if (!beforeKeys.has(nodeKey(n))) count += this._codec.getMessages(n.projection).length;
+      }
+      return count;
+    };
+
+    // Suppress per-message tree events while the hydrator folds: the withheld
+    // window isn't set up yet, so subscribers must not briefly see raw history.
+    // `_splitReveal` emits the single settled `update` afterwards.
+    this._processingHistory = true;
+    try {
+      await this._hydrator.foldUntil(() => newVisibleCount() >= target);
+    } finally {
+      this._processingHistory = false;
     }
+    if (this._closed) return;
 
-    if (!this._hasMoreHistory) return;
-
-    if (!this._lastHistoryPage?.hasNext()) {
-      this._hasMoreHistory = false;
-      return;
-    }
-
-    const nextPage = await this._lastHistoryPage.next();
-    if (this._closed || !nextPage) {
-      if (!nextPage) this._hasMoreHistory = false;
-      return;
-    }
-
-    await this._revealFromPage(nextPage, target);
+    const newVisible = this._treeVisibleNodes().filter((n) => !beforeKeys.has(nodeKey(n)));
+    this._splitReveal(newVisible, target);
   }
 
   /**
@@ -1224,40 +1218,12 @@ export class DefaultView<
   // Private: history loading
   // -------------------------------------------------------------------------
 
-  private async _loadFirstPage(target: number): Promise<void> {
-    // `loadHistory`'s limit and this view's reveal target both count complete
-    // domain messages (codecMessages), so the target passes straight through.
-    const firstPage = await loadHistory(this._channel, { limit: target }, this._logger);
-    if (this._closed) return;
-    await this._revealFromPage(firstPage, target);
-  }
-
-  /**
-   * Walk channel history from `page` until the newly-observed nodes hold at
-   * least `target` codecMessages (or the channel is exhausted), then reveal the
-   * newest whole runs covering `target` and withhold the rest. Snapshots the
-   * already-visible nodes up front so only newly-observed nodes count toward
-   * `target`. No-op if the view closed during the page walk.
-   * @param page - The decoded history page to start from.
-   * @param target - Minimum codecMessages to reveal in this batch.
-   */
-  private async _revealFromPage(page: HistoryPage, target: number): Promise<void> {
-    // Snapshot before loading: every node already in the tree stays visible.
-    const beforeRunIds = new Set(this._treeVisibleNodes().map((n) => nodeKey(n)));
-
-    const { newVisible, lastPage } = await this._loadUntilVisible(page, target, beforeRunIds);
-    if (this._closed) return;
-    this._lastHistoryPage = lastPage;
-    this._hasMoreHistory = lastPage.hasNext();
-    this._splitReveal(newVisible, target);
-  }
-
   /**
    * Reveal the newest whole runs covering `target` codecMessages from
    * `newVisible` and withhold the rest so subsequent `loadOlder` calls can
    * drain them. Reveal granularity is the whole run; the caller trims the flat
    * message list (via `_hiddenMessageCount`) to make the visible message count
-   * exact. Called by {@link _revealFromPage}.
+   * exact. Called by {@link _fetchOlder}.
    * @param newVisible - Newly observed nodes (inputs + reply runs) from the history fetch, chronological.
    * @param target - Minimum codecMessages the revealed batch must cover.
    */
@@ -1270,62 +1236,6 @@ export class DefaultView<
     }
     this._withheldBuffer.push(...withheld);
     this._releaseWithheld(batch);
-  }
-
-  /**
-   * Replay a history page's raw messages into the Tree through the Tree's
-   * single decode-and-apply engine — the same applier (and decoder instance)
-   * the client's live loop uses, so history replay can't drift from it. The
-   * shared decoder's version-guarded trackers make the overlap between the
-   * two routes safe: an in-flight stream that spans the attach boundary is
-   * continued rather than re-started, and content the live route already
-   * incorporated decodes to nothing.
-   * @param page - The history page returned by `loadHistory`.
-   */
-  private _processHistoryPage(page: HistoryPage): void {
-    this._processingHistory = true;
-    try {
-      for (const rawMsg of page.rawMessages) {
-        this._applier.apply(rawMsg);
-      }
-
-      // Emit ably-message in a batch AFTER the whole page is applied, so a
-      // subscriber resolving the owning Run sees the fully-rebuilt tree.
-      for (const msg of page.rawMessages) {
-        this._tree.emitAblyMessage(msg);
-      }
-    } finally {
-      this._processingHistory = false;
-    }
-  }
-
-  private async _loadUntilVisible(
-    firstPage: HistoryPage,
-    target: number,
-    beforeRunIds: Set<string>,
-  ): Promise<{ newVisible: ConversationNode<TProjection>[]; lastPage: HistoryPage }> {
-    this._processHistoryPage(firstPage);
-    let page = firstPage;
-
-    const newVisibleCount = (): number => {
-      let count = 0;
-      for (const n of this._treeVisibleNodes()) {
-        // Count newly-visible codecMessages toward the target (whole runs are
-        // revealed; the caller trims to the exact message count).
-        if (!beforeRunIds.has(nodeKey(n))) count += this._codec.getMessages(n.projection).length;
-      }
-      return count;
-    };
-
-    while (newVisibleCount() < target && page.hasNext()) {
-      const nextPage = await page.next();
-      if (!nextPage || this._closed) break;
-      this._processHistoryPage(nextPage);
-      page = nextPage;
-    }
-
-    const newVisible = this._treeVisibleNodes().filter((n) => !beforeRunIds.has(nodeKey(n)));
-    return { newVisible, lastPage: page };
   }
 
   // Spec: AIT-CT11a
@@ -1356,13 +1266,12 @@ export class DefaultView<
   }
 
   private _onTreeUpdate(): void {
-    // Suppress update forwarding while processing history pages. During
-    // _processHistoryPage, each tree.applyMessage() fires this handler
-    // synchronously — but _withheldRunIds hasn't been populated yet, so
-    // _computeFlatNodes() would return unfiltered history. Without this guard,
-    // subscribers briefly see all history Runs before the pagination window
-    // is applied. The final update is emitted by _releaseWithheld after
-    // withholding is set up.
+    // Suppress update forwarding while the hydrator folds history pages. Each
+    // fold fires this handler synchronously — but _withheldRunIds hasn't been
+    // populated yet, so _computeFlatNodes() would return unfiltered history.
+    // Without this guard, subscribers briefly see all history Runs before the
+    // pagination window is applied. The final update is emitted by
+    // _releaseWithheld after withholding is set up.
     if (this._processingHistory) return;
 
     // The Tree emits `update` only on structural change (new/removed Run,
@@ -1484,6 +1393,12 @@ export class DefaultView<
   }
 
   private _onTreeAblyMessage(msg: Ably.InboundMessage): void {
+    // Suppress while the hydrator folds history pages: those nodes aren't in the
+    // visible window yet, so a history fold must not surface as an `ably-message`
+    // (the contract scopes the event to visible runs). The settled `update`
+    // fires once via `_splitReveal` after the window is set up.
+    if (this._processingHistory) return;
+
     // Re-emit only if the message corresponds to a visible Run
     const headers = getTransportHeaders(msg);
     const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
@@ -1555,7 +1470,7 @@ export class DefaultView<
 
 /**
  * Create a View that projects a paginated window over a Tree.
- * @param options - The tree, channel, codec, and logger to use.
+ * @param options - The tree, codec, hydrator, and logger to use.
  * @returns A new {@link DefaultView} instance.
  */
 export const createView = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>(

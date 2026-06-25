@@ -1782,8 +1782,8 @@ describe('AgentSession', () => {
     });
   });
 
-  describe('input-event lookup (multi-message)', () => {
-    it('collects every expected event-id, dedupes by serial, and returns them sorted', async () => {
+  describe('input-event lookup (matching)', () => {
+    it('matches the triggering event-id and ignores re-delivery of the same event', async () => {
       const ch = createMockChannel();
       const c = codecWithFunctionalDecoder();
       const s = createAgentSession({
@@ -1809,7 +1809,7 @@ describe('AgentSession', () => {
       await s.close();
     });
 
-    it('rejects with InputEventNotFound including "received X of Y" on partial collection at timeout', async () => {
+    it('rejects with InputEventNotFound naming the event when the triggering event never arrives', async () => {
       const ch = createMockChannel();
       const c = codecWithFunctionalDecoder();
       const s = createAgentSession({
@@ -1828,7 +1828,8 @@ describe('AgentSession', () => {
       // Deliver nothing — timeout fires before the event arrives.
       const rejection = await startPromise.catch((error: unknown) => error);
       expect(rejection).toBeErrorInfoWithCode(ErrorCode.InputEventNotFound);
-      expect((rejection as Ably.ErrorInfo).message).toContain('received 0 of 1');
+      expect((rejection as Ably.ErrorInfo).message).toContain('input event p-a');
+      expect((rejection as Ably.ErrorInfo).message).toContain('not found within');
       await s.close();
     });
 
@@ -2315,7 +2316,7 @@ describe('Run.messages', () => {
     await session.close();
   });
 
-  it('detects continuation status from a tool-resolution-only lookup (firstHeaders fallback)', async () => {
+  it('detects continuation status from a tool-resolution-only lookup (matched-event headers)', async () => {
     // Simulates the production case: chat-transport's deriveContinuationEvents
     // publishes a `tool-output-available` wire message. The decoder produces
     // a chunk that folds into an empty per-message projection without an
@@ -2359,8 +2360,8 @@ describe('Run.messages', () => {
     });
     await startPromise;
 
-    // The wire run-id (read from the tool-resolution wire's headers via
-    // the firstHeaders fallback) makes the agent re-enter the run with
+    // The wire run-id (read from the matched tool-resolution event's
+    // headers) makes the agent re-enter the run with
     // ai-run-resume rather than open a new ai-run-start.
     expect(ch.publishCalls.find((m) => m.name === 'ai-run-resume')).toBeDefined();
     expect(ch.publishCalls.find((m) => m.name === 'ai-run-start')).toBeUndefined();
@@ -3163,7 +3164,6 @@ const viewMessageIds = (wiresOldestFirst: Ably.InboundMessage[]): string[] => {
         invocationId: 'inv',
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
         cancel: () => Promise.resolve(),
-        optimisticCodecMessageIds: [],
         toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       }),
     );

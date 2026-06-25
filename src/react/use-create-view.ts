@@ -16,7 +16,7 @@
 import { useEffect, useState } from 'react';
 
 import type { CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
-import type { View } from '../core/transport/types.js';
+import type { ClientView } from '../core/transport/types.js';
 import type { BaseSessionOption } from './internal/use-resolved-session.js';
 import { useResolvedSession } from './internal/use-resolved-session.js';
 import type { ViewHandle } from './use-view.js';
@@ -54,7 +54,7 @@ export const useCreateView = <TInput extends CodecInputEvent, TOutput extends Co
 }: UseCreateViewOptions<TInput, TOutput, TProjection, TMessage> = {}): ViewHandle<TInput, TMessage> => {
   const resolved = useResolvedSession({ session, skip });
 
-  const [view, setView] = useState<View<TInput, TMessage> | undefined>();
+  const [view, setView] = useState<ClientView<TInput, TMessage> | undefined>();
 
   useEffect(() => {
     if (!resolved) {

@@ -5,13 +5,17 @@
  * which Runs are visible to the UI. New live Runs appear immediately; older
  * Runs are revealed progressively via `loadOlder()`.
  *
- * `getMessages()` reads the Tree's visible node chain (input nodes + reply
- * runs, with sibling selection applied) and concatenates each node's
- * `codec.getMessages(node.projection)` to produce the flat
- * `CodecMessage<TMessage>[]` the UI renders.
+ * `getMessages()` reads the visible node chain (input nodes + reply runs, with
+ * sibling selection applied) the injected {@link NavigableBranchSource} resolves
+ * and concatenates each node's `codec.getMessages(node.projection)` to produce
+ * the flat `CodecMessage<TMessage>[]` the UI renders.
  *
- * Each View owns its own branch selection state and pagination window,
- * allowing multiple independent Views over the same Tree.
+ * The View owns the invariant machinery — the pagination window, the scoped
+ * event forwarding, and the read/write surface — while the branch strategy
+ * (which nodes are on the branch, how they flatten, sibling navigation) lives in
+ * the {@link NavigableBranchSource} it composes. Each View owns its own source
+ * (its own selection state and pagination window), allowing multiple independent
+ * Views over the same Tree.
  *
  * Events are scoped to the visible window — 'update' only fires when the
  * visible output changes, 'ably-message' only for messages corresponding to
@@ -26,19 +30,20 @@ import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
 import type { Codec, CodecInputEvent, CodecMessage, CodecOutputEvent } from '../codec/types.js';
-import { collectMessages, messageTailSplitIndex } from './conversation-projection.js';
+import { NavigableBranchSource } from './branch-source.js';
+import { messageTailSplitIndex } from './conversation-projection.js';
 import type { HistoryHydrator } from './history-hydrator.js';
 import { nodeKey, type TreeInternal } from './tree.js';
 import type {
   ActiveRun,
   BranchHandle,
+  ClientView,
   ConversationNode,
   OutputEvent,
   RunInfo,
   RunLifecycleEvent,
   RunNode,
   SendOptions,
-  View,
 } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -101,91 +106,6 @@ interface ViewOptions<TInput extends CodecInputEvent, TOutput extends CodecOutpu
 }
 
 // ---------------------------------------------------------------------------
-// Branch selection
-// ---------------------------------------------------------------------------
-
-/**
- * Internal tagged union representing why a branch was selected for an
- * edit-fork group. Stored per group-root runId in the View's
- * `_branchSelections` map. Not the public-facing {@link BranchHandle}
- * — that's a UI-facing handle returned by `view.branchSelection(id)`.
- */
-type BranchSelectionState =
-  /** Explicit navigation via `branchSelection().select()`. The selected input-node key. */
-  | { kind: 'user'; selectedKey: string }
-  /** This view initiated an edit fork — auto-selected the new input node. */
-  | { kind: 'auto'; selectedKey: string }
-  /** An external fork appeared — pinned to the currently-visible sibling to prevent drift. */
-  | { kind: 'pinned'; selectedKey: string };
-
-/**
- * Selection state for a regenerate group. Keyed by the anchor codec-message-id (the
- * assistant codec-message-id being regenerated). Distinct from {@link BranchSelectionState}
- * because regenerate groups are message-level (group members share an
- * anchor codec-message-id), not edit forks of the user prompt.
- *
- * Unlike fork-of groups, regenerate groups do not "pin to current visible"
- * when a new member appears externally — the default for a regenerate
- * slot is always the latest member, so an external regenerator auto-rolls
- * forward unless the user has explicitly selected an earlier member.
- */
-type RegenSelection =
-  /** Explicit navigation via `branchSelection().select()`. The selected reply-run id. */
-  | { kind: 'user'; selectedRunId: string }
-  /** This view initiated a regenerate — auto-selected the new reply run when it arrived. */
-  | { kind: 'auto'; selectedRunId: string }
-  /**
-   * This view's `regenerate()` is in flight. Keyed (in `_regenSelections`) by
-   * the regenerate group's root; `carrierCodecMessageId` is the regenerate
-   * carrier event's id, used to recognise the new reply run when it appears.
-   */
-  | { kind: 'pending'; carrierCodecMessageId: string };
-
-/**
- * One alternative inside a {@link MessageBranchPoint}. The representative is the
- * member's own head message for fork-of and whole-reply regen groups, but the
- * regenerate target (a non-head message) for a non-head regen group - so it is
- * tracked explicitly rather than re-derived from the node's head.
- */
-interface BranchMember {
-  /**
-   * The member node's `nodeKey` (tree.ts): a runId for a reply/regenerator run,
-   * a codecMessageId for an input node. Matched by `_resolveSelectedIndex`.
-   */
-  memberNodeKey: string;
-  /** The codec-message-id rendered in this member's branch-arrow slot. */
-  representativeCodecMessageId: string;
-}
-
-/**
- * A resolved branch point: the group `kind` plus the member alternatives.
- *
- * Terms: "regenerate target" = the message being replaced; "regenerator run" =
- * the run that replaces it; "non-head message" = any message after a run's
- * first (index > 0, includes the tail).
- *
- * The three kinds, by anchor:
- * - `fork-of` — edit-style branch anchored at the user input node; members are
- *   the alternate prompts (input-node sibling group).
- * - `regen` — whole-reply regenerate branch anchored at the assistant slot;
- *   members are the original reply + its regenerator runs (same-input-node
- *   sibling reply runs).
- * - `non-head-regen` — a regenerate that replaced a non-head message inside a
- *   multi-message reply run; members are the owner run (the regenerate target in
- *   place) plus each regenerator run. Not expressible as a same-parent
- *   sibling-run group, so the View resolves and renders it itself (see
- *   `_extractMessages`).
- *
- * `groupRoot` is the selection-map key: the input group root for fork-of, the
- * original reply's group root for regen, and the regenerate target's
- * codec-message-id for non-head-regen.
- */
-type MessageBranchPoint =
-  | { kind: 'fork-of'; groupRoot: string; members: BranchMember[] }
-  | { kind: 'regen'; groupRoot: string; members: BranchMember[] }
-  | { kind: 'non-head-regen'; groupRoot: string; members: BranchMember[] };
-
-// ---------------------------------------------------------------------------
 // Send-input normalisation
 // ---------------------------------------------------------------------------
 
@@ -221,7 +141,7 @@ export class DefaultView<
   TOutput extends CodecOutputEvent,
   TProjection,
   TMessage,
-> implements View<TInput, TMessage> {
+> implements ClientView<TInput, TMessage> {
   private readonly _tree: TreeInternal<TInput, TOutput, TProjection>;
   private readonly _codec: Codec<TInput, TOutput, TProjection, TMessage>;
   private readonly _hydrator: HistoryHydrator;
@@ -231,32 +151,12 @@ export class DefaultView<
   private readonly _onClose?: () => void;
 
   /**
-   * View-local branch selections: group-root runId → selection intent.
-   * Fork points not present here default to the latest sibling.
+   * The branch strategy: resolves the visible node chain from this view's
+   * sibling/regenerate selections, flattens it, and owns the navigation surface
+   * the write path drives. Each view has its own source so views navigate
+   * independently over the shared Tree.
    */
-  private readonly _branchSelections = new Map<string, BranchSelectionState>();
-
-  /**
-   * View-local regenerate-group selections: anchor codec-message-id (the assistant
-   * codec-message-id being regenerated) → selection intent. Distinct from
-   * {@link _branchSelections} because a regenerate group is a set of
-   * same-parent reply runs — message-level alternatives at a single
-   * conversation slot, not edit forks of the prompt. Groups not present here default to the latest
-   * member (the most recent regenerator, or the original if no regen has
-   * landed).
-   */
-  private readonly _regenSelections = new Map<string, RegenSelection>();
-
-  /**
-   * Non-head regenerate selections, keyed by the regenerate target's
-   * codec-message-id. Separate from {@link _regenSelections} because a non-head
-   * regenerator parents inside the owner run rather than as a same-parent
-   * sibling, so it lives outside the Tree's `visibleNodes` selection space and
-   * is resolved at extraction (see `_extractMessages`). Value is the selected
-   * member's nodeKey (the owner run id, or a regenerator run id); absent groups
-   * default to the newest regenerator.
-   */
-  private readonly _nonHeadRegenSelections = new Map<string, RegenSelection>();
+  private readonly _branchSource: NavigableBranchSource<TInput, TOutput, TProjection, TMessage>;
 
   /** Spec: AIT-CT11c — runIds loaded from history but not yet revealed to the UI. */
   private readonly _withheldRunIds = new Set<string>();
@@ -318,6 +218,11 @@ export class DefaultView<
     this._logger = options.logger.withContext({ component: 'View' });
     this._logger.trace('DefaultView();');
     this._emitter = new EventEmitter<ViewEventsMap>(this._logger);
+    this._branchSource = new NavigableBranchSource({
+      tree: this._tree,
+      codec: this._codec,
+      logger: this._logger,
+    });
 
     // Compute initial cache and snapshot visible state
     this._cachedNodes = this._computeFlatNodes();
@@ -366,7 +271,9 @@ export class DefaultView<
     // boundary already dedup by array reference, so a redundant emit is a
     // no-op for unchanged hook consumers.
     this._lastVisibleProjections = this._cachedNodes.map((n) => n.projection);
-    this._lastVisibleMessagePairs = this._extractMessages(this._cachedNodes).slice(this._hiddenMessageCount);
+    this._lastVisibleMessagePairs = this._branchSource
+      .extractMessages(this._cachedNodes)
+      .slice(this._hiddenMessageCount);
     this._emitter.emit('update');
   }
 
@@ -388,14 +295,14 @@ export class DefaultView<
   }
 
   /**
-   * Compute the fresh visible node chain. The Tree's `visibleNodes` already
-   * applies kind-blind reachability and sibling selection (edit versions /
-   * regenerate runs collapse to the selected member), so the View only layers
-   * its pagination window on top: drop nodes whose key is currently withheld.
+   * Compute the fresh visible node chain. The branch source already applies
+   * kind-blind reachability and sibling selection (edit versions / regenerate
+   * runs collapse to the selected member), so the View only layers its
+   * pagination window on top: drop nodes whose key is currently withheld.
    * @returns A fresh array of visible nodes (inputs + reply runs).
    */
   private _computeFlatNodes(): ConversationNode<TProjection>[] {
-    const treeNodes = this._treeVisibleNodes();
+    const treeNodes = this._branchSource.visibleNodes();
     if (this._withheldRunIds.size === 0) return treeNodes;
     return treeNodes.filter((node) => !this._withheldRunIds.has(nodeKey(node)));
   }
@@ -424,81 +331,6 @@ export class DefaultView<
       this._updateVisibleSnapshot(nodes);
       this._emitter.emit('update');
     }
-  }
-
-  /**
-   * Resolve the reply Run that owns a codec-message-id, narrowing the Tree's
-   * node union to a {@link RunNode}. A user-input codec-message-id resolves to
-   * an input node and yields `undefined` here — callers that must handle input
-   * nodes use {@link _tree.getNodeByCodecMessageId} directly.
-   * @param codecMessageId - The codec-message-id to resolve.
-   * @returns The owning RunNode, or undefined if absent or not a reply Run.
-   */
-  private _runByCodecMessageId(codecMessageId: string): RunNode<TProjection> | undefined {
-    const node = this._tree.getNodeByCodecMessageId(codecMessageId);
-    return node?.kind === 'run' ? node : undefined;
-  }
-
-  /**
-   * The regenerator runs that replaced a non-head message of a reply run. They
-   * file under the target's predecessor (not the owner run's input node), so the
-   * Tree's `visibleNodes` cannot collapse them into the owner's slot; this
-   * surfaces them for the View to resolve and render. Head-message (index 0)
-   * regenerates are excluded - those are whole-reply sibling runs the Tree
-   * already groups.
-   * @param targetCodecMessageId - The regenerate target's (non-head) message id.
-   * @param predecessorCodecMessageId - The codec-message-id immediately before it in the owner run.
-   * @returns The regenerator runs in startSerial order (oldest first).
-   */
-  private _nonHeadRegenerators(
-    targetCodecMessageId: string,
-    predecessorCodecMessageId: string,
-  ): RunNode<TProjection>[] {
-    return this._tree
-      .getReplyRuns(predecessorCodecMessageId)
-      .filter((r) => r.regeneratesCodecMessageId === targetCodecMessageId)
-      .toSorted((a, b) => (a.startSerial ?? '￿').localeCompare(b.startSerial ?? '￿'));
-  }
-
-  /**
-   * Resolve the selected member of a non-head regenerate group anchored at
-   * `targetCodecMessageId`. Members are the owner run `O` (memberNodeKey =
-   * `ownerRunId`, the regenerate target in place) followed by each regenerator
-   * run. Honours an explicit {@link _nonHeadRegenSelections} entry, else
-   * defaults to the latest member (newest regenerator), mirroring the
-   * whole-reply regenerate default.
-   * @param targetCodecMessageId - The regenerate target's message id (the group anchor).
-   * @param ownerRunId - The runId of the run that owns the regenerate target.
-   * @param regenerators - The regenerator runs (oldest first) from `_nonHeadRegenerators`.
-   * @returns The selected member's node key (`ownerRunId` or a regenerator runId).
-   */
-  private _selectedNonHeadMember(
-    targetCodecMessageId: string,
-    ownerRunId: string,
-    regenerators: RunNode<TProjection>[],
-  ): string {
-    const sel = this._nonHeadRegenSelections.get(targetCodecMessageId);
-    if (sel && sel.kind !== 'pending') {
-      const keys = [ownerRunId, ...regenerators.map((r) => r.runId)];
-      if (keys.includes(sel.selectedRunId)) return sel.selectedRunId;
-    }
-    // Default: latest member = newest regenerator (regenerators is oldest-first).
-    return regenerators.at(-1)?.runId ?? ownerRunId;
-  }
-
-  /**
-   * Flatten visible nodes to messages, collapsing each non-head regenerate into
-   * the slot it replaces, via the shared {@link collectMessages}. The View
-   * supplies the codec's `getMessages` and resolves a non-head group's
-   * regenerators and selected member from its own navigation state.
-   * @param nodes - Visible nodes (inputs + reply runs), chronological.
-   * @returns The flat message list, each paired with its codec-message-id.
-   */
-  private _extractMessages(nodes: ConversationNode<TProjection>[]): CodecMessage<TMessage>[] {
-    return collectMessages(nodes, (projection) => this._codec.getMessages(projection), {
-      regenerators: (target, predecessor) => this._nonHeadRegenerators(target, predecessor),
-      selected: (target, ownerRunId, regenerators) => this._selectedNonHeadMember(target, ownerRunId, regenerators),
-    });
   }
 
   hasOlder(): boolean {
@@ -537,8 +369,8 @@ export class DefaultView<
       // then re-trim so exactly `limit` new messages surface. Runs are revealed
       // whole (node granularity); the trim makes the message count exact.
       const need = limit - this._hiddenMessageCount;
-      const before = this._extractMessages(this._computeFlatNodes()).length;
-      const revealedSoFar = (): number => this._extractMessages(this._computeFlatNodes()).length - before;
+      const before = this._branchSource.extractMessages(this._computeFlatNodes()).length;
+      const revealedSoFar = (): number => this._branchSource.extractMessages(this._computeFlatNodes()).length - before;
 
       // Drain the withheld buffer toward `need` (whole older runs, newest-first).
       if (this._withheldBuffer.length > 0) {
@@ -557,7 +389,7 @@ export class DefaultView<
         if (this._closed) return;
       }
 
-      const after = this._extractMessages(this._computeFlatNodes()).length;
+      const after = this._branchSource.extractMessages(this._computeFlatNodes()).length;
       // `after - before` whole-run messages were added at the oldest end; show
       // `limit` of them (newest), hiding the overshoot plus what was already
       // trimmed. `<= 0` when history is exhausted before `limit` is reached.
@@ -585,10 +417,10 @@ export class DefaultView<
 
     // Snapshot before folding: every node already in the tree stays visible, so
     // only nodes the hydrator newly surfaces count toward `target`.
-    const beforeKeys = new Set(this._treeVisibleNodes().map((n) => nodeKey(n)));
+    const beforeKeys = new Set(this._branchSource.visibleNodes().map((n) => nodeKey(n)));
     const newVisibleCount = (): number => {
       let count = 0;
-      for (const n of this._treeVisibleNodes()) {
+      for (const n of this._branchSource.visibleNodes()) {
         if (!beforeKeys.has(nodeKey(n))) count += this._codec.getMessages(n.projection).length;
       }
       return count;
@@ -605,7 +437,7 @@ export class DefaultView<
     }
     if (this._closed) return;
 
-    const newVisible = this._treeVisibleNodes().filter((n) => !beforeKeys.has(nodeKey(n)));
+    const newVisible = this._branchSource.visibleNodes().filter((n) => !beforeKeys.has(nodeKey(n)));
     this._splitReveal(newVisible, target);
   }
 
@@ -619,32 +451,8 @@ export class DefaultView<
     if (!node) return undefined;
     if (node.kind === 'run') return _toRunInfo(node);
     // Input node: resolve to its selected reply run (undefined if none started).
-    const reply = this._selectedReplyRun(node.codecMessageId);
+    const reply = this._branchSource.selectedReplyRun(node.codecMessageId);
     return reply ? _toRunInfo(reply) : undefined;
-  }
-
-  /**
-   * Resolve the reply run currently selected for an input node, honouring the
-   * View's regenerate selection. Falls back to the latest reply run when no
-   * selection has been recorded; undefined when no reply run has started.
-   * @param inputCodecMessageId - The input node's codec-message-id.
-   * @returns The selected reply RunNode, or undefined.
-   */
-  private _selectedReplyRun(inputCodecMessageId: string): RunNode<TProjection> | undefined {
-    const replies = this._tree.getReplyRuns(inputCodecMessageId);
-    if (replies.length === 0) return undefined;
-    if (replies.length === 1) return replies[0];
-    // Multiple reply runs = a regenerate group. Honour the View's selection
-    // (keyed by group root) else default to the latest.
-    const groupRoot = this._tree.getGroupRoot(replies[0]?.runId ?? '');
-    const sel = this._regenSelections.get(groupRoot);
-    const selectedKey = sel && sel.kind !== 'pending' ? sel.selectedRunId : undefined;
-    if (selectedKey !== undefined) {
-      const chosen = replies.find((r) => r.runId === selectedKey);
-      if (chosen) return chosen;
-    }
-    // Latest by startSerial; getReplyRuns is set-ordered, so sort defensively.
-    return replies.toSorted((a, b) => (a.startSerial ?? '￿').localeCompare(b.startSerial ?? '￿')).at(-1);
   }
 
   run(runId: string): RunInfo | undefined {
@@ -657,265 +465,15 @@ export class DefaultView<
   // Branch navigation (msg-anchored)
   // -------------------------------------------------------------------------
 
-  // Spec: AIT-CT13c, AIT-CT13d — branch points are codec-message-id
-  // anchored. The View resolves the anchor (the user prompt for edits,
-  // the assistant slot for regens) and routes the selection to the
-  // appropriate internal selection map. Tree-level introspection
-  // (RunNode access, runId-keyed queries) remains on the {@link Tree}.
-
   branchSelection(codecMessageId: string): BranchHandle<TMessage> {
-    // Every handle carries the same `select` verb bound to this anchor; the
-    // underlying `_selectSibling` resolves the branch point itself and no-ops
-    // when the id anchors no group, so the non-anchor / unknown-id handles get
-    // a safe no-op select without special-casing here.
+    // The handle's `select` records the selection on the branch source and, when
+    // a selection was actually recorded (the id anchors a group), recomputes the
+    // visible window. Non-anchor / unknown-id handles get this same closure; the
+    // source no-ops and returns false, so the recompute is skipped.
     const select = (index: number): void => {
-      this._selectSibling(codecMessageId, index);
+      if (this._branchSource.recordSelection(codecMessageId, index)) this._recomputeAndEmit();
     };
-    const branch = this._resolveMessageBranchPoint(codecMessageId);
-    if (branch) {
-      // Each member contributes its representative message as the branch-arrow
-      // slot: for an edit fork that is the alternate user prompt; for a
-      // whole-reply regenerate group the variant's first message; for a non-head
-      // regenerate group the regenerate target (original) or the regenerator's
-      // first message.
-      const siblings = branch.members.flatMap((member) => {
-        const owner = this._tree.getNodeByCodecMessageId(member.representativeCodecMessageId);
-        if (!owner) return [];
-        const found = this._codec
-          .getMessages(owner.projection)
-          .find((m) => m.codecMessageId === member.representativeCodecMessageId);
-        return found ? [found.message] : [];
-      });
-
-      if (siblings.length > 0) {
-        const index = this._resolveSelectedIndex(branch);
-        const clamped = Math.max(0, Math.min(index, siblings.length - 1));
-        const selected = siblings[clamped];
-        return {
-          hasSiblings: siblings.length > 1,
-          siblings,
-          index: clamped,
-          selected,
-          select,
-        };
-      }
-    }
-
-    // Known non-anchor message: the handle's invariant is that
-    // `siblings` contains the rendered message itself for any known
-    // codec-message-id, so plain bubbles get `siblings.length === 1`
-    // (not `0`) and the indexing space matches between read and write.
-    // Resolve the owning node kind-blind — a plain user prompt is an input
-    // node, an assistant message lives in a reply run; both carry a projection.
-    const owner = this._tree.getNodeByCodecMessageId(codecMessageId);
-    if (owner) {
-      const found = this._codec.getMessages(owner.projection).find((m) => m.codecMessageId === codecMessageId);
-      if (found !== undefined) {
-        return { hasSiblings: false, siblings: [found.message], index: 0, selected: found.message, select };
-      }
-    }
-
-    // Unknown id, or the owner Run is known but the codec doesn't surface
-    // a message with this id from the projection (e.g. an event-only fold
-    // such as a tool result that mutates an assistant in-place without
-    // exposing its own TMessage). Treat both as "no rendered message",
-    // returning the safe empty handle.
-    return { hasSiblings: false, siblings: [], index: 0, selected: undefined, select };
-  }
-
-  // Spec: AIT-CT13c, AIT-CT13d
-  private _selectSibling(codecMessageId: string, index: number): void {
-    this._logger.trace('DefaultView._selectSibling();', { codecMessageId, index });
-    const branch = this._resolveMessageBranchPoint(codecMessageId);
-    if (!branch) return;
-    const clamped = Math.max(0, Math.min(index, branch.members.length - 1));
-    const selected = branch.members[clamped];
-    if (!selected) return; // unreachable: clamped is always in bounds
-    if (branch.kind === 'fork-of') {
-      this._branchSelections.set(branch.groupRoot, { kind: 'user', selectedKey: selected.memberNodeKey });
-      this._logger.debug('DefaultView._selectSibling(); fork-of', {
-        codecMessageId,
-        index: clamped,
-        selectedKey: selected.memberNodeKey,
-      });
-    } else if (branch.kind === 'non-head-regen') {
-      // Non-head groups live outside the visibleNodes sibling space — store in
-      // the dedicated map the message-extraction substitution reads.
-      this._nonHeadRegenSelections.set(branch.groupRoot, { kind: 'user', selectedRunId: selected.memberNodeKey });
-      this._logger.debug('DefaultView._selectSibling(); non-head-regen', {
-        codecMessageId,
-        index: clamped,
-        selectedRunId: selected.memberNodeKey,
-        anchor: branch.groupRoot,
-      });
-    } else {
-      this._regenSelections.set(branch.groupRoot, { kind: 'user', selectedRunId: selected.memberNodeKey });
-      this._logger.debug('DefaultView._selectSibling(); regenerate', {
-        codecMessageId,
-        index: clamped,
-        selectedRunId: selected.memberNodeKey,
-        groupRoot: branch.groupRoot,
-      });
-    }
-    this._recomputeAndEmit();
-  }
-
-  /**
-   * Resolve the currently selected sibling's index inside a branch group.
-   * Pending selections fall back to the latest sibling. The caller clamps
-   * the returned index against any post-extraction filtering.
-   * @param branch - Resolved branch-point descriptor from `_resolveMessageBranchPoint`.
-   * @returns The selected sibling's index within `branch.siblings`.
-   */
-  private _resolveSelectedIndex(branch: MessageBranchPoint): number {
-    if (branch.kind === 'fork-of') {
-      const sel = this._branchSelections.get(branch.groupRoot);
-      if (!sel) return branch.members.length - 1;
-      const idx = branch.members.findIndex((m) => m.memberNodeKey === sel.selectedKey);
-      return idx === -1 ? branch.members.length - 1 : idx;
-    }
-    const sel =
-      branch.kind === 'non-head-regen'
-        ? this._nonHeadRegenSelections.get(branch.groupRoot)
-        : this._regenSelections.get(branch.groupRoot);
-    if (!sel || sel.kind === 'pending') return branch.members.length - 1;
-    const idx = branch.members.findIndex((m) => m.memberNodeKey === sel.selectedRunId);
-    return idx === -1 ? branch.members.length - 1 : idx;
-  }
-
-  /**
-   * Resolve the branch point anchored at `codecMessageId`, if any, returning the
-   * group `kind` + members + groupRoot so the caller routes to the correct
-   * selection map directly (not via a runId dispatch that would mis-route when
-   * the owning Run is in both a fork-of and a regen group).
-   * @param codecMessageId - The codec-message-id to look up.
-   * @returns The resolved branch point, or undefined when `codecMessageId`
-   *   anchors no group.
-   */
-  private _resolveMessageBranchPoint(codecMessageId: string): MessageBranchPoint | undefined {
-    const node = this._tree.getNodeByCodecMessageId(codecMessageId);
-    if (!node) return undefined;
-
-    // Edit-fork branch point: `codecMessageId` is a user INPUT node that has
-    // sibling input nodes (alternate prompts via fork-of). The anchor is the
-    // input node's own codec-message-id.
-    if (node.kind === 'input') {
-      const siblings = this._tree.getSiblingNodes(node.codecMessageId);
-      if (siblings.length > 1) {
-        return {
-          kind: 'fork-of',
-          groupRoot: this._tree.getGroupRoot(node.codecMessageId),
-          members: this._nodeHeadMembers(siblings),
-        };
-      }
-      return undefined;
-    }
-
-    // Non-head regenerate branch point: `codecMessageId` is the rendered slot for
-    // a regenerate that replaced a non-head message inside a multi-message reply
-    // run. Resolved BEFORE the same-parent `regen` group below: several non-head
-    // regenerators of one anchor share a parent (the anchor's predecessor), so
-    // the Tree files them as their own sibling group excluding the owner run; the
-    // non-head resolver instead gathers the owner plus every regenerator into one
-    // anchor-keyed group.
-    const ownMessages = this._codec.getMessages(node.projection);
-    const nonHead = this._resolveNonHeadBranchPoint(node, ownMessages, codecMessageId);
-    if (nonHead) return nonHead;
-
-    // Regenerate branch point: `codecMessageId` is owned by a reply run that has
-    // sibling reply runs (the original reply + its regenerators, all parented at
-    // the same input node). Anchor on the head message of the run so arrows
-    // appear once per variant, not on every follow-up message.
-    const siblings = this._tree.getSiblingNodes(node.runId);
-    if (siblings.length > 1 && ownMessages.at(0)?.codecMessageId === codecMessageId) {
-      return {
-        kind: 'regen',
-        groupRoot: this._tree.getGroupRoot(node.runId),
-        members: this._nodeHeadMembers(siblings),
-      };
-    }
-
-    return undefined;
-  }
-
-  /**
-   * Resolve a non-head regenerate branch point from a reply-run message, if any.
-   * `codecMessageId` is either (a) a non-head message `M` of its owner run with
-   * regenerators, or (b) a regenerator run's head; both resolve to the same group
-   * anchored at `M` (key matching {@link _nonHeadRegenSelections}).
-   * @param node - The reply run owning `codecMessageId`.
-   * @param ownMessages - That run's projected messages (already extracted).
-   * @param codecMessageId - The slot's codec-message-id (an `M`, or a regenerator head).
-   * @returns The non-head branch point, or undefined when `codecMessageId` anchors none.
-   */
-  private _resolveNonHeadBranchPoint(
-    node: RunNode<TProjection>,
-    ownMessages: CodecMessage<TMessage>[],
-    codecMessageId: string,
-  ): MessageBranchPoint | undefined {
-    // Case (b): `codecMessageId` is a regenerator run's head. Re-anchor on the
-    // message it regenerates and resolve from the owner run's perspective.
-    const isHead = ownMessages.at(0)?.codecMessageId === codecMessageId;
-    if (isHead && node.regeneratesCodecMessageId !== undefined) {
-      const anchorId = node.regeneratesCodecMessageId;
-      const owner = this._runByCodecMessageId(anchorId);
-      if (owner) {
-        const ownerMsgs = this._codec.getMessages(owner.projection);
-        const idx = ownerMsgs.findIndex((mm) => mm.codecMessageId === anchorId);
-        const predecessor = idx > 0 ? ownerMsgs[idx - 1]?.codecMessageId : undefined;
-        if (predecessor !== undefined) {
-          return this._buildNonHeadGroup(anchorId, owner.runId, predecessor);
-        }
-      }
-      return undefined;
-    }
-
-    // Case (a): `codecMessageId` is a non-head message of its owner run.
-    const idx = ownMessages.findIndex((mm) => mm.codecMessageId === codecMessageId);
-    const predecessor = idx > 0 ? ownMessages[idx - 1]?.codecMessageId : undefined;
-    if (predecessor === undefined) return undefined;
-    return this._buildNonHeadGroup(codecMessageId, node.runId, predecessor);
-  }
-
-  /**
-   * Build the {@link MessageBranchPoint} for a non-head regenerate group, or
-   * undefined when the anchor has no regenerators. The owner member's
-   * representative is the anchor message (the regenerate target); each
-   * regenerator's is its head message.
-   * @param anchorCodecMessageId - The regenerate target's (non-head) message id.
-   * @param ownerRunId - The runId owning the regenerate target.
-   * @param predecessorCodecMessageId - The codec-message-id immediately before the anchor in the owner run.
-   * @returns The non-head branch point, or undefined when there are no regenerators.
-   */
-  private _buildNonHeadGroup(
-    anchorCodecMessageId: string,
-    ownerRunId: string,
-    predecessorCodecMessageId: string,
-  ): MessageBranchPoint | undefined {
-    const regenerators = this._nonHeadRegenerators(anchorCodecMessageId, predecessorCodecMessageId);
-    if (regenerators.length === 0) return undefined;
-    const members: BranchMember[] = [{ memberNodeKey: ownerRunId, representativeCodecMessageId: anchorCodecMessageId }];
-    for (const r of regenerators) {
-      const head = this._codec.getMessages(r.projection).at(0);
-      if (head) members.push({ memberNodeKey: r.runId, representativeCodecMessageId: head.codecMessageId });
-    }
-    return { kind: 'non-head-regen', groupRoot: anchorCodecMessageId, members };
-  }
-
-  /**
-   * Project nodes to {@link BranchMember}s for fork-of / whole-reply regen
-   * groups, where each member's branch-arrow representative is its own head
-   * message and its memberNodeKey is its node key.
-   * @param nodes - The sibling nodes.
-   * @returns One member per node that has a head message.
-   */
-  private _nodeHeadMembers(nodes: ConversationNode<TProjection>[]): BranchMember[] {
-    const members: BranchMember[] = [];
-    for (const n of nodes) {
-      const head = this._codec.getMessages(n.projection).at(0);
-      if (head) members.push({ memberNodeKey: nodeKey(n), representativeCodecMessageId: head.codecMessageId });
-    }
-    return members;
+    return this._branchSource.branchSelection(codecMessageId, select);
   }
 
   // -------------------------------------------------------------------------
@@ -936,88 +494,9 @@ export class DefaultView<
     const parentCodecMessageId = this._lastVisibleMessagePairs.at(-1)?.codecMessageId;
 
     const result = await this._sendDelegate(normalised, options, parentCodecMessageId);
-    this._applyForkAutoSelect(result, options);
+    // Auto-select the new fork branch; recompute only when a fork was set.
+    if (this._branchSource.applyForkAutoSelect(result, options)) this._recomputeAndEmit();
     return result;
-  }
-
-  /**
-   * Auto-select / pin branch selections after a forking send.
-   * @param result - The ActiveRun returned by the delegate.
-   * @param options - The SendOptions passed by the caller.
-   */
-  private _applyForkAutoSelect(result: ActiveRun, options: SendOptions | undefined): void {
-    // Spec: AIT-CT13e
-    if (!options?.forkOf) return;
-
-    // An edit inserts a NEW user input node optimistically; its codec-message-id
-    // is the triggering input's id and IS its node key. Edit forks are input-node
-    // sibling groups, so the selection is keyed by the input group root and the
-    // selected member is the new input node's key.
-    const editedInputKey = result.inputCodecMessageId;
-    const groupRoot = this._tree.getGroupRoot(editedInputKey);
-
-    this._branchSelections.set(groupRoot, { kind: 'auto', selectedKey: editedInputKey });
-    this._recomputeAndEmit();
-  }
-
-  /**
-   * Auto-select / pin the regenerate group anchored at `anchorCodecMessageId` so
-   * the new Run's content appears as soon as the agent's run-start lands.
-   *
-   * `View.regenerate()` calls this with the assistant codec-message-id being
-   * regenerated. The Run doesn't exist yet on the channel (the regenerate
-   * wire is wire-only); the selection is recorded as `pending` and
-   * promoted to `auto` by `_pinRegenSelections` once the corresponding
-   * Run is created in the tree.
-   * @param result - The ActiveRun returned by the delegate (run-id is the new regenerator's).
-   * @param anchorCodecMessageId - The codec-message-id of the assistant being regenerated.
-   */
-  private _applyRegenerateAutoSelect(result: ActiveRun, anchorCodecMessageId: string): void {
-    // A regenerate produces a new reply run parented at the SAME input node as
-    // the original reply (the regenerate group). The agent mints the run-id, so
-    // we cannot pin by it synchronously. Resolve the group root from the
-    // original reply run owning the anchor, and pin a pending selection keyed by
-    // that group root, carrying the regenerate carrier's codec-message-id
-    // (`result.inputCodecMessageId`) so we can promote when the new reply run lands.
-    const anchorRun = this._runByCodecMessageId(anchorCodecMessageId);
-    if (!anchorRun) return;
-
-    // Non-head regenerate: the anchor is a non-head message of its owner run, so
-    // the new run won't be a same-parent sibling — it parents at the anchor's
-    // predecessor. Defer in the dedicated non-head map (keyed by the anchor
-    // message), not the sibling-group regen map.
-    const anchorMsgs = this._codec.getMessages(anchorRun.projection);
-    if (anchorMsgs.at(0)?.codecMessageId !== anchorCodecMessageId) {
-      this._nonHeadRegenSelections.set(anchorCodecMessageId, {
-        kind: 'pending',
-        carrierCodecMessageId: result.inputCodecMessageId,
-      });
-      this._logger.debug('DefaultView._applyRegenerateAutoSelect(); deferring non-head regenerate selection', {
-        anchorCodecMessageId,
-        carrier: result.inputCodecMessageId,
-      });
-      this._resolvePendingNonHeadRegenSelections();
-      this._recomputeAndEmitIfChanged();
-      return;
-    }
-
-    const groupRoot = this._tree.getGroupRoot(anchorRun.runId);
-
-    this._regenSelections.set(groupRoot, {
-      kind: 'pending',
-      carrierCodecMessageId: result.inputCodecMessageId,
-    });
-    this._logger.debug('DefaultView._applyRegenerateAutoSelect(); deferring regenerate selection', {
-      anchorCodecMessageId,
-      groupRoot,
-      carrier: result.inputCodecMessageId,
-    });
-
-    // The new reply run may already be in the tree (run-start raced ahead of the
-    // sendDelegate resolution). Promote now and recompute so the visible set
-    // catches up without waiting for the next structural change.
-    this._resolvePendingRegenSelections();
-    this._recomputeAndEmitIfChanged();
   }
 
   // Spec: AIT-CT5, AIT-CT13d
@@ -1084,7 +563,9 @@ export class DefaultView<
     // no tree-upsert / projection fold runs locally.
     const regenerate = this._codec.createRegenerate(regenAnchorMsgId, parentCodecMessageId);
     const result = await this._sendDelegate([regenerate], sendOptions, parentCodecMessageId);
-    this._applyRegenerateAutoSelect(result, regenAnchorMsgId);
+    // Defer the regenerate group to the new run; promote/recompute if it changed
+    // the visible window (the run may have raced ahead into the tree already).
+    if (this._branchSource.applyRegenerateAutoSelect(result, regenAnchorMsgId)) this._recomputeAndEmitIfChanged();
     return result;
   }
 
@@ -1113,6 +594,18 @@ export class DefaultView<
       forkOf: messageId,
       parent: parentCodecMessageId,
     });
+  }
+
+  /**
+   * Resolve the reply Run that owns a codec-message-id, narrowing the Tree's
+   * node union to a {@link RunNode}. A user-input codec-message-id resolves to
+   * an input node and yields `undefined` here.
+   * @param codecMessageId - The codec-message-id to resolve.
+   * @returns The owning RunNode, or undefined if absent or not a reply Run.
+   */
+  private _runByCodecMessageId(codecMessageId: string): RunNode<TProjection> | undefined {
+    const node = this._tree.getNodeByCodecMessageId(codecMessageId);
+    return node?.kind === 'run' ? node : undefined;
   }
 
   /**
@@ -1187,9 +680,7 @@ export class DefaultView<
     for (const unsub of this._unsubs) unsub();
     this._unsubs.length = 0;
     this._emitter.off();
-    this._branchSelections.clear();
-    this._regenSelections.clear();
-    this._nonHeadRegenSelections.clear();
+    this._branchSource.clear();
     this._withheldRunIds.clear();
     this._withheldBuffer.length = 0;
     this._hiddenMessageCount = 0;
@@ -1244,7 +735,7 @@ export class DefaultView<
     // Run-level reveal, message-level trim: drop the oldest `_hiddenMessageCount`
     // messages so a `loadOlder` page lands on exactly `limit` messages even
     // though whole runs were revealed.
-    this._lastVisibleMessagePairs = this._extractMessages(resolved).slice(this._hiddenMessageCount);
+    this._lastVisibleMessagePairs = this._branchSource.extractMessages(resolved).slice(this._hiddenMessageCount);
   }
 
   private _onTreeUpdate(): void {
@@ -1261,117 +752,12 @@ export class DefaultView<
     // update reaching here warrants a full re-walk. Content-only folds flow
     // through `output` (_onTreeOutput) instead.
 
-    // Pin selections for previously-visible Runs that now have siblings.
-    // This prevents new forks (from other views' edits/regenerates) from
-    // shifting this view to a branch the user didn't navigate to.
-    this._pinBranchSelections();
-    this._resolvePendingRegenSelections();
-    this._resolvePendingNonHeadRegenSelections();
+    // Let the branch source reconcile its selection state against the new tree
+    // (pin previously-visible forks that gained siblings, roll pending
+    // regenerate selections forward) before the window is recomputed.
+    this._branchSource.onVisibleNodesChanged(this._lastVisibleNodeKeys);
 
     this._recomputeAndEmitIfChanged();
-  }
-
-  /**
-   * Build the unified selection map the Tree's `visibleNodes` consumes:
-   * `groupRootKey -> selectedKey`, covering both edit forks (input-node groups,
-   * keyed by the input group root) and regenerate groups (reply-run groups,
-   * keyed by the original reply's group root). Pending entries (no chosen
-   * member yet) are omitted so the Tree falls back to the latest sibling.
-   * @returns The merged group-root → selected-key map.
-   */
-  private _resolveSelections(): Map<string, string> {
-    const resolved = new Map<string, string>();
-    for (const [groupRoot, sel] of this._branchSelections) {
-      resolved.set(groupRoot, sel.selectedKey);
-    }
-    for (const [groupRoot, sel] of this._regenSelections) {
-      if (sel.kind === 'pending') continue;
-      resolved.set(groupRoot, sel.selectedRunId);
-    }
-    return resolved;
-  }
-
-  /**
-   * The Tree's visible node chain under this view's current selections — the
-   * reachable, sibling-resolved nodes before the View's pagination window is
-   * applied.
-   * @returns The selection-resolved visible node chain.
-   */
-  private _treeVisibleNodes(): ConversationNode<TProjection>[] {
-    return this._tree.visibleNodes(this._resolveSelections());
-  }
-
-  /**
-   * For each previously-visible Run that now has siblings but no explicit
-   * selection, pin the selection to that Run's runId. This preserves the
-   * current branch when new forks appear from other views or external
-   * sources.
-   *
-   * Exception: if the fork was initiated by this view (tracked as a
-   * `pending` branch selection), select the newest sibling (the awaited Run)
-   * instead of pinning the old one.
-   */
-  private _pinBranchSelections(): void {
-    for (const key of this._lastVisibleNodeKeys) {
-      const node = this._tree.getNode(key);
-      // Edit forks are INPUT-node sibling groups; only input nodes pin here.
-      // Regenerate (reply-run) groups roll forward via _resolvePendingRegenSelections.
-      if (node?.kind !== 'input') continue;
-      const siblings = this._tree.getSiblingNodes(key);
-      if (siblings.length <= 1) continue;
-      const groupRoot = this._tree.getGroupRoot(key);
-      const existing = this._branchSelections.get(groupRoot);
-
-      // Spec: AIT-CT13f — external edit fork: pin to the currently-visible
-      // sibling so a fork from another view doesn't drift this view's branch.
-      if (existing) continue;
-      this._branchSelections.set(groupRoot, { kind: 'pinned', selectedKey: key });
-    }
-  }
-
-  /**
-   * Roll `pending` and `auto` regenerate selections forward to the newest
-   * group member. A regenerate slot defaults to the latest member, so each
-   * new regenerator (this view's awaited run, or an external one) auto-rolls
-   * the slot forward — UNLESS the user explicitly selected an earlier member
-   * (`user`), which pins and is left untouched. The agent mints the run-id, so
-   * we can't match the awaited run by id — once the group grows we adopt the
-   * newest as the selected member.
-   */
-  private _resolvePendingRegenSelections(): void {
-    for (const [groupRoot, sel] of this._regenSelections) {
-      if (sel.kind === 'user') continue;
-      const group = this._tree.getSiblingNodes(groupRoot).filter((n): n is RunNode<TProjection> => n.kind === 'run');
-      if (group.length <= 1) continue;
-      const newest = group.at(-1);
-      if (!newest) continue;
-      this._regenSelections.set(groupRoot, { kind: 'auto', selectedRunId: newest.runId });
-    }
-  }
-
-  /**
-   * Roll `pending` and `auto` non-head regenerate selections forward to the
-   * newest regenerator of their anchor message. Mirrors
-   * {@link _resolvePendingRegenSelections} for the non-head group, which lives in
-   * a separate selection map (anchored by the regenerate target rather than a
-   * sibling-group root): a `user` selection pins and is left untouched; a
-   * `pending`/`auto` slot adopts the newest regenerator once one lands. The
-   * anchor's predecessor — the key the regenerators file under — is recovered
-   * from the owning run's projection.
-   */
-  private _resolvePendingNonHeadRegenSelections(): void {
-    for (const [anchorId, sel] of this._nonHeadRegenSelections) {
-      if (sel.kind === 'user') continue;
-      const owner = this._runByCodecMessageId(anchorId);
-      if (!owner) continue;
-      const ownerMsgs = this._codec.getMessages(owner.projection);
-      const idx = ownerMsgs.findIndex((m) => m.codecMessageId === anchorId);
-      const predecessor = idx > 0 ? ownerMsgs[idx - 1]?.codecMessageId : undefined;
-      if (predecessor === undefined) continue;
-      const newest = this._nonHeadRegenerators(anchorId, predecessor).at(-1);
-      if (!newest) continue;
-      this._nonHeadRegenSelections.set(anchorId, { kind: 'auto', selectedRunId: newest.runId });
-    }
   }
 
   private _onTreeAblyMessage(msg: Ably.InboundMessage): void {
@@ -1451,10 +837,15 @@ export class DefaultView<
 // ---------------------------------------------------------------------------
 
 /**
- * Create a View that projects a paginated window over a Tree.
- * @param options - The tree, codec, hydrator, and logger to use.
- * @returns A new {@link DefaultView} instance.
+ * Create a client View — a paginated, navigable, writable window over a Tree.
+ * @param options - The tree, codec, hydrator, send delegate, and logger to use.
+ * @returns A new {@link DefaultView} instance, typed as the public {@link ClientView}.
  */
-export const createView = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>(
+export const createClientView = <
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+>(
   options: ViewOptions<TInput, TOutput, TProjection, TMessage>,
-): DefaultView<TInput, TOutput, TProjection, TMessage> => new DefaultView(options);
+): ClientView<TInput, TMessage> => new DefaultView(options);

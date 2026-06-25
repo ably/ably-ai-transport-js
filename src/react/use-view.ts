@@ -12,7 +12,7 @@ import * as Ably from 'ably';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { CodecInputEvent, CodecMessage, CodecOutputEvent } from '../core/codec/types.js';
-import type { ActiveRun, BranchHandle, RunInfo, SendOptions, View } from '../core/transport/types.js';
+import type { ActiveRun, BranchHandle, ClientView, RunInfo, SendOptions } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
 import type { BaseSessionOption } from './internal/use-resolved-session.js';
 import { useResolvedSession } from './internal/use-resolved-session.js';
@@ -24,8 +24,8 @@ export interface UseViewOptions<
   TProjection,
   TMessage,
 > extends BaseSessionOption<TInput, TOutput, TProjection, TMessage> {
-  /** A specific {@link View} to subscribe to directly. Takes priority over `session`. */
-  view?: View<TInput, TMessage> | null;
+  /** A specific {@link ClientView} to subscribe to directly. Takes priority over `session`. */
+  view?: ClientView<TInput, TMessage> | null;
   /** Number of older codecMessages to reveal per page (exactly `limit`, fewer only at the end of history). When provided, auto-loads the first page on mount. */
   limit?: number;
   /** When `true`, skip all subscriptions and return an empty handle immediately. */
@@ -81,11 +81,11 @@ export interface ViewHandle<TInput extends CodecInputEvent, TMessage> {
   /**
    * Resolve the {@link BranchHandle} anchored at `codecMessageId`: the
    * sibling state plus a `select` verb to navigate it. Always returns a
-   * safe handle — see {@link BranchHandle}. See {@link View.branchSelection}.
+   * safe handle — see {@link BranchHandle}. See {@link ClientView.branchSelection}.
    */
   branchSelection: (codecMessageId: string) => BranchHandle<TMessage>;
   /**
-   * Send one input message on the channel and fire a POST. See {@link View.send}.
+   * Send one input message on the channel and fire a POST. See {@link ClientView.send}.
    * @throws Ably.ErrorInfo with code {@link ErrorCode.InvalidArgument} when no view is resolved (before the session is available, or when `skip` is `true`).
    */
   send: (events: TInput | TInput[], options?: SendOptions) => Promise<ActiveRun>;

@@ -7,6 +7,7 @@ export type {
   CancelRequest,
   ClientSession,
   ClientSessionOptions,
+  ClientView,
   ConversationNode,
   InputNode,
   InvocationData,

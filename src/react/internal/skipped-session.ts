@@ -10,7 +10,7 @@ import * as Ably from 'ably';
 import type * as AblyObjects from 'ably/liveobjects';
 
 import type { CodecInputEvent, CodecOutputEvent } from '../../core/codec/types.js';
-import type { ClientSession, Tree, View } from '../../core/transport/types.js';
+import type { ClientSession, ClientView, Tree } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 
 /**
@@ -35,7 +35,7 @@ export const makeSkippedClientSession = <
   get tree(): Tree<TOutput, TProjection> {
     throw skipped('access tree');
   },
-  get view(): View<TInput, TMessage> {
+  get view(): ClientView<TInput, TMessage> {
     throw skipped('access view');
   },
   get presence(): Ably.RealtimePresence {
@@ -47,7 +47,7 @@ export const makeSkippedClientSession = <
   connect: () => {
     throw skipped('connect');
   },
-  createView: (): View<TInput, TMessage> => {
+  createView: (): ClientView<TInput, TMessage> => {
     throw skipped('create view');
   },
   cancel: () => {

@@ -73,7 +73,7 @@ export type RunInfo =
     });
 
 /**
- * Handle returned by {@link View.branchSelection} for the sibling group
+ * Handle returned by {@link ClientView.branchSelection} for the sibling group
  * anchored at a given codec-message-id: the resolved sibling state plus the
  * `select` verb that navigates it.
  *
@@ -120,16 +120,22 @@ export interface BranchHandle<TMessage> {
 }
 
 /**
- * A paginated, branch-aware projection of the conversation tree.
+ * A read-only, paginated, branch-aware projection of the conversation tree.
  *
- * Returns only the visible portion of the selected branch. New live messages
- * appear immediately; older messages are revealed progressively via
- * `loadOlder()`. Events are scoped to the visible window — subscribers
- * are only notified when the visible output changes.
+ * Returns only the visible portion of one branch, ending at a leaf. New live
+ * messages appear immediately; older messages are revealed progressively via
+ * `loadOlder()`. Events are scoped to the visible window — subscribers are only
+ * notified when the visible output changes.
+ *
+ * This is the read base the client surfaces as `session.view`, extended with
+ * navigation and the write path by {@link ClientView}. It is also the shared
+ * read contract the agent's leaf-pinned `run.view` will expose, so both sides
+ * read the conversation through one surface — differing only in the branch the
+ * projection walks.
  */
-export interface View<TInput extends CodecInputEvent, TMessage> {
+export interface View<TMessage> {
   /**
-   * The visible messages along the selected branch, each paired with its
+   * The visible messages along the branch, each paired with its
    * codec-message-id (see {@link CodecMessage}). Computed by walking the
    * visible Run chain (newest to root) and concatenating each Run's
    * `codec.getMessages(projection)` in chronological order.
@@ -143,13 +149,11 @@ export interface View<TInput extends CodecInputEvent, TMessage> {
   getMessages(): CodecMessage<TMessage>[];
 
   /**
-   * Snapshot of the visible Runs along the selected branch, in
-   * chronological order — already filtered by this view's pagination
-   * window, branch selection, and regenerate substitution. The
-   * companion to {@link getMessages}: same scope, exposed as
-   * projection-free {@link RunInfo} so consumers can iterate Run
-   * identity (runId, clientId, status, invocationId) without touching
-   * the Tree.
+   * Snapshot of the visible Runs along the branch, in chronological order —
+   * already filtered by this view's pagination window, branch selection, and
+   * regenerate substitution. The companion to {@link getMessages}: same scope,
+   * exposed as projection-free {@link RunInfo} so consumers can iterate Run
+   * identity (runId, clientId, status, invocationId) without touching the Tree.
    */
   runs(): RunInfo[];
 
@@ -193,6 +197,29 @@ export interface View<TInput extends CodecInputEvent, TMessage> {
    */
   run(runId: string): RunInfo | undefined;
 
+  // --- Observation ---
+
+  /** The visible message list changed (new visible node, branch switch, window shift). */
+  on(event: 'update', handler: () => void): () => void;
+
+  /** A raw Ably message arrived that corresponds to a visible node. */
+  on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
+
+  /** A run event occurred for a run with visible messages in the window. */
+  on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
+
+  /** Tear down the view — unsubscribe from tree events and clear internal state. */
+  close(): void;
+}
+
+/**
+ * A {@link View} the client navigates and writes through. Extends the read base
+ * with whole-tree branch navigation ({@link ClientView.branchSelection}) and the
+ * write path ({@link ClientView.send} / {@link ClientView.regenerate} /
+ * {@link ClientView.edit}). This is the surface behind `session.view` and the
+ * `useView` hook.
+ */
+export interface ClientView<TInput extends CodecInputEvent, TMessage> extends View<TMessage> {
   // --- Branch navigation ---
 
   /**
@@ -251,22 +278,8 @@ export interface View<TInput extends CodecInputEvent, TMessage> {
    * Edit a user message. Creates a new run that forks the target message
    * with replacement content. Automatically computes `forkOf` (the edited
    * message) and `parent` from this view's branch. The replacement is a
-   * single new message — the same single-message rule as {@link View.send}
+   * single new message — the same single-message rule as {@link ClientView.send}
    * applies.
    */
   edit(messageId: string, inputs: TInput | TInput[], options?: SendOptions): Promise<ActiveRun>;
-
-  // --- Observation ---
-
-  /** The visible message list changed (new visible node, branch switch, window shift). */
-  on(event: 'update', handler: () => void): () => void;
-
-  /** A raw Ably message arrived that corresponds to a visible node. */
-  on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
-
-  /** A run event occurred for a run with visible messages in the window. */
-  on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
-
-  /** Tear down the view — unsubscribe from tree events and clear internal state. */
-  close(): void;
 }

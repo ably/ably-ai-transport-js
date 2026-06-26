@@ -26,7 +26,7 @@ separation is the most important invariant to preserve:
 
 - **Generic layer** (`src/core/`, `src/react/`) — defines the
   `Codec<TEvent, TMessage>` interface and the codec-parameterized transport
-  (`ClientSession`, `AgentSession`, `Tree`, conversation loading). It is
+  (`ClientSession`, `AgentSession`, `Tree`, View pagination). It is
   framework-agnostic: it must know nothing about Vercel's `UIMessageChunk` or
   `UIMessage`, and must read or write only transport-tier metadata — never
   codec-specific domain metadata (see header discipline below).

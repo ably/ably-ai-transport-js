@@ -12,7 +12,6 @@ export type {
   ClientView,
   ConversationNode,
   InputNode,
-  LoadConversationOptions,
   OutputEvent,
   PipeOptions,
   RunEndParams,

@@ -811,16 +811,16 @@ describe('AgentSession integration', () => {
   });
 
   /**
-   * Scenario: a multi-turn conversation reconstructed via `loadConversation()`.
+   * Scenario: a multi-turn conversation reconstructed by draining `run.view`.
    *
    * Each turn is a single user message — the SDK sends one input message per
    * send. Turn 1's assistant reply folds onto the channel; turn 2's run then
-   * walks the ancestor chain (turn-1 user input -> turn-1 assistant reply ->
-   * turn-2 user input), and `loadConversation()` reconstructs the full prompt
-   * in chronological order. Exercises the agent's single-event lookup and the
+   * pages `run.view` back over the ancestor chain (turn-1 user input -> turn-1
+   * assistant reply -> turn-2 user input), reconstructing the full prompt in
+   * chronological order. Exercises the agent's single-event locate and the
    * cross-turn ancestor walk end-to-end over real Ably.
    */
-  it('reconstructs a multi-turn conversation via loadConversation', async () => {
+  it('reconstructs a multi-turn conversation by draining run.view', async () => {
     // Lazy-import to keep the existing test imports above stable.
     const { createClientSession } = await import('../../../src/core/transport/client-session.js');
     const channelName = uniqueChannelName('st-multi-turn');
@@ -882,7 +882,7 @@ describe('AgentSession integration', () => {
       expect(turn1.runId).toBe(run1Id);
 
       // The first turn's prompt is the single user message.
-      await serverRun1.loadConversation();
+      while (serverRun1.view.hasOlder()) await serverRun1.view.loadOlder();
       expect(serverRun1.messages.map((m) => m.id)).toEqual(['user-turn-1']);
 
       // Subscribe to the run-end before piping so the terminal event can't be
@@ -907,11 +907,12 @@ describe('AgentSession integration', () => {
       await turn2.started;
       expect(turn2.runId).toBe(run2Id);
 
-      // loadConversation() returns the full multi-turn conversation in
+      // Draining run.view yields the full multi-turn conversation in
       // chronological order: the turn-1 user message, its assistant reply, then
       // the turn-2 user message. (run.messages, by contrast, is just this run's
       // own whole turn — the turn-2 user message — covered by unit tests.)
-      const messages = await serverRun2.loadConversation();
+      while (serverRun2.view.hasOlder()) await serverRun2.view.loadOlder();
+      const messages = serverRun2.view.getMessages().map((m) => m.message);
       expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
       expect(messages[0]?.id).toBe('user-turn-1');
       expect(messages[2]?.id).toBe('user-turn-2');

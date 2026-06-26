@@ -10,9 +10,9 @@
  * const data = (await req.json()) as InvocationData;
  * const invocation = Invocation.fromJSON(data);
  * const run = session.createRun(invocation, { signal: req.signal });
+ * while (run.view.hasOlder()) await run.view.loadOlder(); // page channel history for context
  * await run.start();
- * await run.loadConversation(); // walk channel history into the session tree
- * const messages = run.messages;
+ * const messages = run.view.getMessages().map((m) => m.message);
  * ```
  *
  * The body carries only what the agent needs out-of-band before the channel

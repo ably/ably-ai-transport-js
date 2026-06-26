@@ -52,12 +52,11 @@ export interface AgentSessionOptions<
   channelModes?: readonly Ably.ChannelMode[];
 
   /**
-   * Wire-message limit fetched per channel-history round trip, shared by the
-   * pre-run-start input-event lookup, ancestor hydration, and every `run.view`
-   * pagination on this session. Independent of `loadOlder`'s reveal `limit`:
-   * `loadOlder` reveals from the buffered page and only triggers a fresh fetch
-   * once the buffer empties, so this tunes fetch cost, not reveal granularity.
-   * Defaults to 100.
+   * Wire-message limit fetched per channel-history round trip, used by every
+   * `run.view` pagination on this session (the sole history-fetch consumer).
+   * Independent of `loadOlder`'s reveal `limit`: `loadOlder` reveals from the
+   * buffered page and only triggers a fresh fetch once the buffer empties, so
+   * this tunes fetch cost, not reveal granularity. Defaults to 100.
    */
   historyPageSize?: number;
 }
@@ -186,23 +185,6 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
 // Run interface
 // ---------------------------------------------------------------------------
 
-/** Options for {@link AgentRun.loadConversation}. */
-export interface LoadConversationOptions {
-  /**
-   * Maximum number of ANCESTOR reply RunNodes to walk back through the
-   * chain. Input nodes encountered alongside don't count toward the bound,
-   * and neither does the current run's own node (it is the conversation
-   * tail, not ancestor context). Default unbounded (walks to the
-   * conversation root).
-   *
-   * Set this to bound the LLM context window — `maxRuns: 5` returns the
-   * 5 most-recent prior reply runs and their associated input nodes
-   * (each bounded run's triggering input included, so the chain never
-   * starts assistant-first), in chronological order.
-   */
-  maxRuns?: number;
-}
-
 /**
  * How a run terminates, passed to {@link AgentRun.end}. Discriminated on `reason`:
  * an `'error'` end may carry a terminal `error`; any other reason carries none.
@@ -255,8 +237,9 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
    * client's `session.view` exposes, with no navigation or write path.
    *
    * Where {@link BaseRun.messages} is this run's own turn, `view` is a
-   * paginating projection of the full branch up to this run; the un-paginated
-   * conversation to feed the model comes from {@link AgentRun.loadConversation}.
+   * paginating projection of the full branch up to this run — the conversation
+   * to feed the model. Drain it with `loadOlder()` (the sole history driver) for
+   * as much ancestor context as you want, or page back to a database seam.
    */
   readonly view: View<TMessage>;
 
@@ -292,29 +275,6 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
    * Does NOT call end() — the caller must call end() after pipe returns.
    */
   pipe(stream: ReadableStream<TOutput>, options?: PipeOptions<TOutput>): Promise<StreamResult>;
-
-  /**
-   * Reconstruct the full multi-turn conversation by walking the ancestor
-   * run chain over the session's Tree, concatenating each ancestor's
-   * projection (oldest turn first) plus the current run's projection.
-   *
-   * Hydrates the Tree as needed from channel history if the chain from
-   * the run's structural-parent anchor isn't already fully present;
-   * subsequent reads of {@link AgentRun.view} re-walk the same Tree and
-   * reflect any further folds (e.g. live arrivals from concurrent runs).
-   * No cache: every call computes a fresh snapshot from the live Tree.
-   *
-   * Walks to the conversation root by default; bound the walk via the
-   * optional {@link LoadConversationOptions.maxRuns} cap. If channel
-   * retention has expired older turns, the walk stops at what is available.
-   * @param options - Optional walk bounds.
-   * @returns The conversation messages in chronological order, ready to pass to an LLM.
-   * @throws {Ably.ErrorInfo} `HistoryFetchFailed` — or the underlying Ably
-   *   code when the failure carried one — when the history fetch fails after
-   *   retries (the conversation is never silently truncated on fetch
-   *   failure); `InvalidArgument` when the run's signal aborts.
-   */
-  loadConversation(options?: LoadConversationOptions): Promise<TMessage[]>;
 
   /**
    * Publish a run-suspend event to the channel and clean up, pausing the run
@@ -385,9 +345,8 @@ export interface AgentSession<TOutput extends CodecOutputEvent, TProjection, TMe
    * `ably-message` event — the two sources each run's input-event watcher uses
    * to catch a trigger published before the agent attached. Idempotent —
    * subsequent calls return the same promise. All run methods (`start`, `pipe`,
-   * `loadConversation`, `suspend`, `end`) throw `InvalidArgument` until
-   * `connect()` has been *called*; once it has, they await the in-flight connect
-   * promise rather than throwing.
+   * `suspend`, `end`) throw `InvalidArgument` until `connect()` has been *called*;
+   * once it has, they await the in-flight connect promise rather than throwing.
    */
   connect(): Promise<void>;
 

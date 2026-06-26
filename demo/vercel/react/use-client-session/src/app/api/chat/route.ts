@@ -2,10 +2,10 @@
  * Chat API route — receives messages from the client session's HTTP POST,
  * streams the AI response back over Ably.
  *
- * Continuation handling is entirely inside the SDK: `run.loadConversation()`
- * returns the LLM-ready conversation history, with any client-published tool
- * resolutions (output / approval) already overlaid onto the assistant
- * messages they belong to. No `loadProjection` / overlay code here.
+ * Continuation handling is entirely inside the SDK: draining `run.view` with
+ * `loadOlder()` yields the LLM-ready conversation history, with any
+ * client-published tool resolutions (output / approval) already overlaid onto
+ * the assistant messages they belong to. No `loadProjection` / overlay code here.
  *
  * - Server-executed tools (getWeather): streamText handles execution inline.
  * - Client-executed tools (getLocation): client suspends after the tool call,
@@ -48,10 +48,12 @@ export async function POST(req: Request) {
   await session.connect();
   const run = session.createRun(invocation, { signal: req.signal });
 
+  // Drain run.view — the one history driver — for the full multi-turn
+  // conversation to feed the model, then start. run.messages is only this
+  // run's own turn (the unit to persist).
+  while (run.view.hasOlder()) await run.view.loadOlder();
   await run.start();
-  // loadConversation() returns the full multi-turn conversation to feed the
-  // model; run.messages is only this run's own turn (the unit to persist).
-  const conversation = await run.loadConversation();
+  const conversation = run.view.getMessages().map((m) => m.message);
 
   const result = streamText({
     model: createModel(),

@@ -60,7 +60,6 @@ import type {
   AgentSession,
   AgentSessionOptions,
   CancelRequest,
-  LoadConversationOptions,
   PipeOptions,
   RunEndParams,
   RunRuntime,
@@ -179,10 +178,10 @@ class DefaultAgentSession<
   private _applier: WireApplier;
   /**
    * The shared channel-history paging engine, bound to the current Tree/applier.
-   * Drives both the pre-run-start input-event lookup ({@link locateInputEvent})
-   * and the AgentView's ancestor hydration off ONE single-flight cursor.
-   * Recreated alongside the Tree/applier on continuity loss so the fresh Tree
-   * gets a fresh cursor and exhaustion state.
+   * Drives `run.view`'s `loadOlder()` pagination — the single history driver —
+   * across the session's runs off ONE single-flight cursor. Recreated alongside
+   * the Tree/applier on continuity loss so the fresh Tree gets a fresh cursor and
+   * exhaustion state.
    */
   private _hydrator: HistoryHydrator;
   private readonly _channelListener: (msg: Ably.InboundMessage) => void;
@@ -496,10 +495,10 @@ class DefaultAgentSession<
 
     const continuityErr = continuityLostError(stateChange, 'continue');
 
-    // Abort every active run's controller FIRST so in-flight
-    // `loadConversation` / `locateInputEvent` calls observe the abort before
-    // the Tree changes underneath them and reject (InvalidArgument from their
-    // signal checks; the session-level on('error') carries ChannelContinuityLost).
+    // Abort every active run's controller FIRST so an in-flight `located`
+    // watcher (and any `run.view.loadOlder()` paging) observes the abort before
+    // the Tree changes underneath it and rejects (InvalidArgument from its
+    // signal check; the session-level on('error') carries ChannelContinuityLost).
     for (const reg of this._registeredRuns.values()) {
       reg.controller.abort();
     }
@@ -512,9 +511,9 @@ class DefaultAgentSession<
     this._tree = tree;
     this._applier = applier;
     // Rebuild the hydrator against the fresh Tree/applier — this resets its
-    // cursor and exhaustion state. Each run's leaf source reads the Tree and
-    // hydrator through live `getTree()`/`getHydrator()` accessors, so it observes
-    // the swap without being recreated.
+    // cursor and exhaustion state. Each run's leaf source reads the Tree via the
+    // live `getTree()` accessor and its run.view reads the hydrator via
+    // `getHydrator()`, so both observe the swap without being recreated.
     this._hydrator = this._createHydrator();
 
     // Session-level notification: continuity loss is not scoped to any one
@@ -601,12 +600,6 @@ class DefaultAgentSession<
     // off the triggering input event's message headers (the run it re-enters).
     // Mirrors the invocationId mint below.
     let runId = runtime.runId ?? crypto.randomUUID();
-    // Whether the run-id was supplied via the runtime override. Together with
-    // `resolvedContinuation` (set in start() when the triggering input carries
-    // a wire run-id) this decides whether the id is "adopted" — an adopted id
-    // can name a run that already exists in channel history; a freshly-minted
-    // UUID cannot, so hydration must not demand its node from history.
-    const runIdOverridden = runtime.runId !== undefined;
     // The agent mints the invocation id — one per HTTP request that invokes
     // it. A per-run override (runtime.invocationId) supports deterministic ids
     // in tests and in-process drivers.
@@ -648,7 +641,7 @@ class DefaultAgentSession<
     const requireConnected = this._requireConnected.bind(this);
     // Live accessors (not captured refs): a continuity-loss swap replaces the
     // Tree and hydrator, and reads after the swap must observe the fresh
-    // instances. The per-run leaf source and run.view read through these.
+    // instances. The per-run leaf source reads the Tree; run.view reads both.
     const getTree = (): DefaultTree<TInput, TOutput, TProjection> => this._tree;
     const getHydrator = (): HistoryHydrator => this._hydrator;
     const pullDeferredCancel = this._pullDeferredCancel.bind(this);
@@ -671,16 +664,12 @@ class DefaultAgentSession<
     // The run's leaf-pinned branch strategy. It projects no branch until the
     // triggering input folds in and the watcher (armed below) calls
     // `leafSource.setPin(...)` — which may happen before `start()` when the
-    // caller pages `run.view` first. It reads the live Tree / hydrator above,
-    // observing a continuity-loss swap. It also backs `Run.messages` /
-    // `Run.loadConversation` — the full, un-paginated reconstruction the agent
-    // feeds the model.
+    // caller pages `run.view` first. It reads the live Tree above through
+    // `getTree`, observing a continuity-loss swap. It also backs `Run.messages`.
     const viewLogger = logger ?? makeLogger({ logLevel: LogLevel.Silent });
     const leafSource = createLeafBranchSource<TInput, TOutput, TProjection, TMessage>({
       getTree,
-      getHydrator,
       codec,
-      logger: viewLogger,
     });
     // run.view — the run's read-only, leaf-pinned, paginating View: the same read
     // base the client's `session.view` exposes, projecting the branch the leaf
@@ -971,7 +960,7 @@ class DefaultAgentSession<
         );
 
         // Optimistically insert the fresh run's node into the session Tree so
-        // reads that follow start() (loadConversation, Run.messages) see the
+        // reads that follow start() (run.view, Run.messages) see the
         // run immediately rather than depending on the channel echo of the
         // run-start just published. The echo (or a history fold) reconciles
         // through the Tree's run-start handling, promoting startSerial onto
@@ -992,24 +981,6 @@ class DefaultAgentSession<
         }
 
         logger?.debug('Run.start(); run started', { runId, inputEventId });
-      },
-
-      loadConversation: async (options?: LoadConversationOptions): Promise<TMessage[]> => {
-        logger?.trace('Run.loadConversation();', { runId });
-        await requireConnected('loadConversation');
-        // No cache. Drives Tree hydration via the leaf source's conversation
-        // walk and computes a fresh snapshot of the parent-chain messages at
-        // return time. After this call, `Run.messages` continues to work
-        // as a live Tree read.
-        const { messages } = await leafSource.loadConversation(
-          runId,
-          assistantParentFallback,
-          signal,
-          options?.maxRuns,
-          runIdOverridden || resolvedContinuation,
-          resolvedRegenerates,
-        );
-        return messages;
       },
 
       // Spec: AIT-ST6, AIT-ST6a, AIT-ST6b, AIT-ST6b1, AIT-ST6b2, AIT-ST6b3, AIT-ST6c

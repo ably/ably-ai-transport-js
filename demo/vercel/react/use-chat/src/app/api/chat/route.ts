@@ -48,10 +48,12 @@ export async function POST(req: Request) {
   await session.connect();
   const run = session.createRun(invocation, { signal: req.signal });
 
+  // Drain run.view — the one history driver — for the full multi-turn
+  // conversation to feed the model, then start. run.messages is only this
+  // run's own turn (the unit to persist).
+  while (run.view.hasOlder()) await run.view.loadOlder();
   await run.start();
-  // loadConversation() returns the full multi-turn conversation to feed the
-  // model; run.messages is only this run's own turn (the unit to persist).
-  const conversation = await run.loadConversation();
+  const conversation = run.view.getMessages().map((m) => m.message);
 
   const result = streamText({
     model: createModel(),

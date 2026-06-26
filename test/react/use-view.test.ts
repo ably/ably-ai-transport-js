@@ -63,7 +63,7 @@ describe('useView', () => {
 
     const { result } = renderHook(() => useView({ session: mock.session }));
 
-    let loadPromise: Promise<void>;
+    let loadPromise: Promise<unknown>;
     act(() => {
       loadPromise = result.current.loadOlder();
     });
@@ -76,6 +76,46 @@ describe('useView', () => {
     expect(result.current.loading).toBe(false);
     // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.fn mock, no `this` binding needed
     expect(mock.view.loadOlder).toHaveBeenCalledOnce();
+  });
+
+  it('resolves loadOlder to the page the view revealed', async () => {
+    const mock = createMockSession();
+    const revealed = [{ codecMessageId: 'cmid-old', message: 'old' }];
+    (mock.view.loadOlder as ReturnType<typeof vi.fn>).mockResolvedValue(revealed);
+
+    const { result } = renderHook(() => useView({ session: mock.session }));
+
+    let page: unknown;
+    await act(async () => {
+      page = await result.current.loadOlder();
+    });
+    expect(page).toEqual(revealed);
+  });
+
+  it('returns [] from loadOlder when no view is resolved (skip: true)', async () => {
+    const mock = createMockSession();
+    const { result } = renderHook(() => useView({ session: mock.session, skip: true }));
+
+    let page: unknown;
+    await act(async () => {
+      page = await result.current.loadOlder();
+    });
+    expect(page).toEqual([]);
+  });
+
+  it('returns [] from loadOlder when the view load fails', async () => {
+    const mock = createMockSession();
+    (mock.view.loadOlder as ReturnType<typeof vi.fn>).mockReturnValue(
+      Promise.reject(new Ably.ErrorInfo('unable to load older messages; network error', ErrorCode.BadRequest, 400)),
+    );
+
+    const { result } = renderHook(() => useView({ session: mock.session }));
+
+    let page: unknown;
+    await act(async () => {
+      page = await result.current.loadOlder();
+    });
+    expect(page).toEqual([]);
   });
 
   it('auto-loads on mount when limit is provided', () => {

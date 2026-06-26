@@ -1,8 +1,10 @@
 // Shared types
 export type {
   ActiveRun,
+  AgentRun,
   AgentSession,
   AgentSessionOptions,
+  BaseRun,
   BranchHandle,
   CancelRequest,
   ClientSession,
@@ -13,7 +15,6 @@ export type {
   LoadConversationOptions,
   OutputEvent,
   PipeOptions,
-  Run,
   RunEndParams,
   RunEndReason,
   RunInfo,
@@ -21,6 +22,7 @@ export type {
   RunNode,
   RunNodeState,
   RunRuntime,
+  RunStatus,
   SendOptions,
   StreamResult,
   Tree,

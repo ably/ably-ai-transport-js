@@ -105,12 +105,14 @@ export async function POST(req: Request) {
   const run = session.createRun(invocation, { signal: req.signal });
 
   await run.start();
-  await run.loadConversation();
+  // loadConversation() returns the full multi-turn conversation to feed the
+  // model; run.messages is only this run's own turn (the unit to persist).
+  const conversation = await run.loadConversation();
 
   const result = streamText({
     model: anthropic('claude-sonnet-4-6'),
     system: 'You are a helpful assistant.',
-    messages: await convertToModelMessages(run.messages),
+    messages: await convertToModelMessages(conversation),
     abortSignal: run.abortSignal,
   });
 

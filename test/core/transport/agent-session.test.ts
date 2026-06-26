@@ -2206,10 +2206,10 @@ describe('AgentSession input-event lookup', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Run.messages — projection-overlaid history + view contributions
+// AgentRun.messages — projection-overlaid history + view contributions
 // ---------------------------------------------------------------------------
 
-describe('Run.messages', () => {
+describe('AgentRun.messages', () => {
   it('is empty before start() resolves (no loadProjection yet)', async () => {
     const channel = createMockChannel();
     const codec = codecWithFunctionalDecoder();
@@ -2369,16 +2369,17 @@ describe('Run.messages', () => {
     await session.close();
   });
 
-  it('returns the full conversation after loadConversation() is called', async () => {
+  it('is this run’s whole turn (input + own output), decoupled from loadConversation()', async () => {
     // Two-node model. Turn 1: input node u1 (run-less user) → reply run-1
     // (assistant a1). Turn 2: input node u2 (run-less user, parent=a1) → the
     // current reply run-2 (assistant a2). The agent serves run-2; u2 is its
     // triggering input event, delivered via deliverInputEvent so start() sets
-    // assistantParentFallback=u2 and walkAncestorChain walks u2→a1→u1.
+    // assistantParentFallback=u2.
     //
-    // Before loadConversation: run.messages returns only the current run's
-    // view messages (the input node u2). After loadConversation: the full
-    // multi-turn conversation (ancestor input/reply nodes + current run).
+    // run.messages is this run's WHOLE TURN — its triggering input (u2) plus
+    // its own streamed output — never the ancestor chain. loadConversation()
+    // hydrates run-2's reply (a2) into the Tree, which grows the turn to
+    // [u2, a2]; it never pulls the prior turn (u1, a1) into run.messages.
     const ch = createMockChannel();
     const codec = codecWithFunctionalDecoder();
     // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
@@ -2412,32 +2413,65 @@ describe('Run.messages', () => {
     deliverInputEvent(ch, { invocationId, codecMessageId: 'u2', serial: 's-05', inputEventId, parent: 'a1' });
     await startPromise;
 
-    // Before loadConversation: only the current run's view messages (input u2).
+    // Before loadConversation: this run's triggering input only (run-2 has
+    // streamed no output yet).
     expect(run.messages).toEqual([{ id: 'u2', content: 'u2' }]);
 
     await run.loadConversation();
 
-    // After loadConversation: full conversation chain u1 → a1 → u2 → (run-2: a2).
+    // After loadConversation: still just this run's turn — its input u2 plus
+    // its own reply a2 (now folded) — NOT the ancestor turn u1/a1.
     expect(run.messages).toEqual([
-      { id: 'u1', content: 'u1' },
-      { id: 'a1', content: 'a1' },
       { id: 'u2', content: 'u2' },
       { id: 'a2', content: 'a2' },
     ]);
     // Each access returns a fresh array — mutations don't bleed back.
     run.messages.push({ id: 'leak', content: 'no' });
     expect(run.messages).toEqual([
-      { id: 'u1', content: 'u1' },
-      { id: 'a1', content: 'a1' },
       { id: 'u2', content: 'u2' },
       { id: 'a2', content: 'a2' },
     ]);
     await session.close();
   });
+
+  it('exposes status/error read off the Tree (active, no error, through createRun)', async () => {
+    // status/error are the shared BaseRun members the agent run gains. The full
+    // status matrix (suspended/complete/cancelled/error) is unit-tested in
+    // base-run.test.ts; here we assert the agent's createRun path wires them.
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'status',
+      codec,
+      inputEventLookupTimeoutMs: 5000,
+    });
+    await session.connect();
+    const run = createRunFromOpts(session, { runId: 'run-1', invocationId: 'inv-1', inputEventId: 'p1' });
+
+    // Before start: no run node folded yet → active by default, no error.
+    expect(run.status).toBe('active');
+    expect(run.error).toBeUndefined();
+
+    const startPromise = run.start();
+    deliverInputEvent(ch, {
+      invocationId: 'inv-1',
+      runId: 'run-1',
+      codecMessageId: 'u1',
+      serial: 's-1',
+      inputEventId: 'p1',
+    });
+    await startPromise;
+
+    // After start the optimistic run node is active and carries no error.
+    expect(run.status).toBe('active');
+    expect(run.error).toBeUndefined();
+    await session.close();
+  });
 });
 
 // ---------------------------------------------------------------------------
-// Helpers for Run.loadConversation tests
+// Helpers for AgentRun.loadConversation tests
 // ---------------------------------------------------------------------------
 
 /**
@@ -2528,10 +2562,10 @@ const makeInputMsg = (
 };
 
 // ---------------------------------------------------------------------------
-// Run.loadConversation
+// AgentRun.loadConversation
 // ---------------------------------------------------------------------------
 
-describe('Run.loadConversation', () => {
+describe('AgentRun.loadConversation', () => {
   it('returns current run messages for a root run with no ancestors', async () => {
     const ch = createMockChannel();
     const codec = codecWithFunctionalDecoder();
@@ -2556,8 +2590,9 @@ describe('Run.loadConversation', () => {
 
     const history = await run.loadConversation();
     expect(history).toEqual([{ id: 'msg-1', content: 'msg-1' }]);
-    // Side effect: run.messages now returns the full conversation.
-    expect(run.messages).toEqual(history);
+    // For a root run with no separate input node, the whole turn is just this
+    // run's own output — which here equals the whole (single-turn) conversation.
+    expect(run.messages).toEqual([{ id: 'msg-1', content: 'msg-1' }]);
     await session.close();
   });
 
@@ -2656,7 +2691,9 @@ describe('Run.loadConversation', () => {
       { id: 'a1', content: 'a1' },
       { id: 'u2', content: 'u2' },
     ]);
-    expect(run.messages).toEqual(history);
+    // run.messages is this run's whole turn only — its triggering input u2
+    // (run-2 has streamed no output yet) — not the ancestor chain loadConversation returns.
+    expect(run.messages).toEqual([{ id: 'u2', content: 'u2' }]);
     await session.close();
   });
 
@@ -2706,7 +2743,9 @@ describe('Run.loadConversation', () => {
       { id: 'a2', content: 'a2' },
       { id: 'u3', content: 'u3' },
     ]);
-    expect(run.messages).toEqual(history);
+    // run.messages is this run's whole turn only — its triggering input u3
+    // (run-3 has streamed no output yet) — not the ancestor chain.
+    expect(run.messages).toEqual([{ id: 'u3', content: 'u3' }]);
     await session.close();
   });
 
@@ -2809,7 +2848,10 @@ describe('Run.loadConversation', () => {
     // Chain is just the input node u1; the superseded reply a1 (sibling reply
     // run) is excluded; run-2 has streamed no content yet.
     expect(history).toEqual([{ id: 'u1', content: 'u1' }]);
-    expect(run.messages).toEqual(history);
+    // run-2 regenerates the head reply to u1, so its anchor is the input node
+    // u1: its whole turn opens with that prompt (run-2 is now the active reply
+    // to u1) plus its own output (none yet).
+    expect(run.messages).toEqual([{ id: 'u1', content: 'u1' }]);
     await session.close();
   });
 
@@ -2872,7 +2914,10 @@ describe('Run.loadConversation', () => {
       { id: 'u1', content: 'u1' },
       { id: 'tc1', content: 'tc1' },
     ]);
-    expect(run.messages).toEqual(history);
+    // run.messages is run-2's whole turn: empty here — a regenerate carrier
+    // introduces no input message of its own, and run-2 has streamed no output
+    // yet. (Once it streams, the turn is its output only.)
+    expect(run.messages).toEqual([]);
     await session.close();
   });
 
@@ -2936,7 +2981,9 @@ describe('Run.loadConversation', () => {
       { id: 'a1', content: 'a1' },
       { id: 'u2b', content: 'u2b' },
     ]);
-    expect(run.messages).toEqual(history);
+    // run.messages is run-3's whole turn only — the edited prompt u2b
+    // (run-3 has streamed no output yet) — not the ancestor chain.
+    expect(run.messages).toEqual([{ id: 'u2b', content: 'u2b' }]);
     await session.close();
   });
 
@@ -2989,7 +3036,9 @@ describe('Run.loadConversation', () => {
       { id: 'a1', content: 'a1' },
       { id: 'u2', content: 'u2' },
     ]);
-    expect(run.messages).toEqual(history);
+    // run.messages is run-2's whole turn only — its triggering input u2
+    // (run-2 has streamed no output yet) — not the ancestor chain.
+    expect(run.messages).toEqual([{ id: 'u2', content: 'u2' }]);
     await session.close();
   });
 
@@ -3400,7 +3449,7 @@ interface HistoryPage {
   next: () => Promise<HistoryPage>;
 }
 
-describe('Run.loadConversation concurrency + continuity-loss', () => {
+describe('AgentRun.loadConversation concurrency + continuity-loss', () => {
   it('two concurrent loadConversation calls each receive a chain that matches their maxRuns', async () => {
     // Forward-looking guard for the silent-truncation class of bug: when A
     // holds the hydration chain and stops early on its own `needsFetch`, B
@@ -3625,7 +3674,7 @@ describe('Run.loadConversation concurrency + continuity-loss', () => {
 // Hydration failure, exhaustion short-circuit, and mid-walk continuity loss
 // ---------------------------------------------------------------------------
 
-describe('Run.loadConversation history failure + exhaustion', () => {
+describe('AgentRun.loadConversation history failure + exhaustion', () => {
   it('rejects with HistoryFetchFailed when the history fetch persistently fails (no infinite retry)', async () => {
     // Regression: a persistent history failure (capability error, outage)
     // used to be swallowed inside the shared hydration fetch, sending the

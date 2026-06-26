@@ -7,7 +7,7 @@
  *
  * - `shared.ts` — cross-cutting (RunEndReason, RunStatus, CancelRequest).
  * - `run.ts` — the shared run read-model base (BaseRun).
- * - `agent.ts` — agent session, run runtime, Run / AgentSession.
+ * - `agent.ts` — agent session, run runtime, AgentRun / AgentSession.
  * - `tree.ts` — conversation-tree nodes, lifecycle events, Tree.
  * - `view.ts` — history pagination, branch selection, View.
  * - `client.ts` — client session options, ActiveRun, ClientSession.

@@ -1,5 +1,5 @@
 /**
- * Test helper that creates a {@link Run} from a flat options object,
+ * Test helper that creates an {@link AgentRun} from a flat options object,
  * keeping test bodies terse. Wraps the new
  * `session.createRun(invocation, runtime)` API behind a single-argument
  * shape that captures both invocation identity and per-request runtime.
@@ -7,7 +7,7 @@
 
 import type * as Ably from 'ably';
 
-import type { AgentSession, CancelRequest, CodecOutputEvent, Run } from '../../src/index.js';
+import type { AgentRun, AgentSession, CancelRequest, CodecOutputEvent } from '../../src/index.js';
 import { Invocation } from '../../src/index.js';
 
 interface RunOpts<TOutput extends CodecOutputEvent> {
@@ -23,7 +23,7 @@ interface RunOpts<TOutput extends CodecOutputEvent> {
 }
 
 /**
- * Build a {@link Run} from a flat options object.
+ * Build an {@link AgentRun} from a flat options object.
  *
  * Per-message metadata (clientId, parent, forkOf, continuation flag) is no
  * longer carried by the invocation body — the agent reads it from the
@@ -35,12 +35,12 @@ interface RunOpts<TOutput extends CodecOutputEvent> {
  * `deliverInputEvent({ publisherClientId })`).
  * @param session - The agent session to create the run on.
  * @param opts - Run identity (runId, invocationId, inputEventIds) plus runtime hooks.
- * @returns The created Run.
+ * @returns The created AgentRun.
  */
 export const createRunFromOpts = <TOutput extends CodecOutputEvent, TProjection, TMessage>(
   session: AgentSession<TOutput, TProjection, TMessage>,
   opts: RunOpts<TOutput>,
-): Run<TOutput, TProjection, TMessage> => {
+): AgentRun<TOutput, TProjection, TMessage> => {
   const invocation = Invocation.fromJSON({
     inputEventId: opts.inputEventId ?? '',
     sessionName: 'test',

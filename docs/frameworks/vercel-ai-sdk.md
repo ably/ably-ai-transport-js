@@ -111,11 +111,13 @@ const run = session.createRun(invocation, { signal: req.signal });
 await run.start();
 // Replay the conversation from the channel — the user messages were already
 // published by the client, so the agent reads them back rather than republishing.
-await run.loadConversation();
+// loadConversation() returns the full multi-turn conversation to feed the model;
+// run.messages is only this run's own turn (the unit to persist).
+const conversation = await run.loadConversation();
 
 const result = streamText({
   model: yourModel,
-  messages: await convertToModelMessages(run.messages),
+  messages: await convertToModelMessages(conversation),
   abortSignal: run.abortSignal,
 });
 

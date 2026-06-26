@@ -1,4 +1,4 @@
-/** Agent (server-side) session types: options, run runtime, and the Run / AgentSession contracts. */
+/** Agent (server-side) session types: options, run runtime, and the AgentRun / AgentSession contracts. */
 
 import type * as Ably from 'ably';
 // Also augments RealtimeChannel with `.object` (ably/liveobjects side-effect).
@@ -7,6 +7,7 @@ import type * as AblyObjects from 'ably/liveobjects';
 import type { Logger } from '../../../logger.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent, WriteOptions } from '../../codec/types.js';
 import type { Invocation } from '../invocation.js';
+import type { BaseRun } from './run.js';
 import type { CancelRequest, RunEndReason } from './shared.js';
 import type { Tree } from './tree.js';
 import type { View } from './view.js';
@@ -190,7 +191,7 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
 // Run interface
 // ---------------------------------------------------------------------------
 
-/** Options for {@link Run.loadConversation}. */
+/** Options for {@link AgentRun.loadConversation}. */
 export interface LoadConversationOptions {
   /**
    * Maximum number of ANCESTOR reply RunNodes to walk back through the
@@ -208,7 +209,7 @@ export interface LoadConversationOptions {
 }
 
 /**
- * How a run terminates, passed to {@link Run.end}. Discriminated on `reason`:
+ * How a run terminates, passed to {@link AgentRun.end}. Discriminated on `reason`:
  * an `'error'` end may carry a terminal `error`; any other reason carries none.
  */
 export type RunEndParams =
@@ -227,17 +228,18 @@ export type RunEndParams =
     };
 
 /**
- * A server-side run with explicit lifecycle methods. Generic over the codec's
- * output, projection, and message types. `TProjection` is retained for
- * parameter symmetry with {@link AgentSession.createRun}; it does not
- * appear in the Run's public surface today but keeps the type slot
- * available for future per-Run projection accessors.
+ * A server-side run with explicit lifecycle methods, extending the shared
+ * {@link BaseRun} read-model with the agent's lifecycle surface. Generic over
+ * the codec's output, projection, and message types. `TProjection` is retained
+ * for parameter symmetry with {@link AgentSession.createRun}; it does not
+ * appear in the run's public surface today but keeps the type slot available
+ * for future per-run projection accessors.
+ *
+ * `runId`, `status`, `error`, and the whole-turn `messages` come from
+ * {@link BaseRun}; the members below are the agent's own.
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- see JSDoc
-export interface Run<TOutput extends CodecOutputEvent, TProjection, TMessage> {
-  /** The run's unique identifier. */
-  readonly runId: string;
-
+export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessage> extends BaseRun<TMessage> {
   /**
    * The invocation's unique identifier, minted by the agent when the run is
    * created (one per HTTP request that invokes the agent). Readable
@@ -256,24 +258,12 @@ export interface Run<TOutput extends CodecOutputEvent, TProjection, TMessage> {
    * `createRun` to `invocation.inputEventId`; empty until that trigger folds into
    * the Tree (live or via `loadOlder`). The same paginating read base the
    * client's `session.view` exposes, with no navigation or write path.
+   *
+   * Where {@link BaseRun.messages} is this run's own turn, `view` is a
+   * paginating projection of the full branch up to this run; the un-paginated
+   * conversation to feed the model comes from {@link AgentRun.loadConversation}.
    */
   readonly view: View<TMessage>;
-
-  /**
-   * The conversation messages this run should feed to the model.
-   *
-   * - Before {@link start} resolves: empty (no view contribution yet).
-   * - After {@link start}: the user-prompt messages looked up on the
-   *   channel for this invocation.
-   * - After {@link loadConversation}: the full multi-turn conversation —
-   *   all ancestor run messages followed by the current run's messages,
-   *   oldest turn first. This is the value to pass to the LLM when the
-   *   agent handles a reply in an ongoing conversation.
-   *
-   * Each access returns a fresh array — safe to mutate without affecting
-   * internal Run state.
-   */
-  readonly messages: TMessage[];
 
   /**
    * Publish the run's opening lifecycle event to the channel (run-start, or
@@ -296,7 +286,7 @@ export interface Run<TOutput extends CodecOutputEvent, TProjection, TMessage> {
    *
    * Hydrates the Tree as needed from channel history if the chain from
    * the run's structural-parent anchor isn't already fully present;
-   * subsequent reads of {@link Run.messages} re-walk the same Tree and
+   * subsequent reads of {@link AgentRun.view} re-walk the same Tree and
    * reflect any further folds (e.g. live arrivals from concurrent runs).
    * No cache: every call computes a fresh snapshot from the live Tree.
    *
@@ -314,12 +304,12 @@ export interface Run<TOutput extends CodecOutputEvent, TProjection, TMessage> {
 
   /**
    * Publish a run-suspend event to the channel and clean up, pausing the run
-   * without ending it. Call this instead of {@link Run.end} when the run is
+   * without ending it. Call this instead of {@link AgentRun.end} when the run is
    * waiting on participant input (e.g. a client-side tool execution or a
    * server-side tool approval): the run stays live and a later invocation can
-   * resume it under the same `runId`. Like {@link Run.end}, it is terminal for
-   * this Run instance — the resuming invocation builds a fresh Run. Must be
-   * called after {@link Run.start}; a no-op if the run has already ended or
+   * resume it under the same `runId`. Like {@link AgentRun.end}, it is terminal
+   * for this run instance — the resuming invocation builds a fresh run. Must be
+   * called after {@link AgentRun.start}; a no-op if the run has already ended or
    * suspended.
    */
   suspend(): Promise<void>;
@@ -395,7 +385,7 @@ export interface AgentSession<TOutput extends CodecOutputEvent, TProjection, TMe
    * @param runtime - Optional runtime hooks and external AbortSignal
    *   (e.g. the HTTP request's `req.signal`).
    */
-  createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): Run<TOutput, TProjection, TMessage>;
+  createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): AgentRun<TOutput, TProjection, TMessage>;
 
   /**
    * Unsubscribe from cancel messages, cancel all active runs, detach the

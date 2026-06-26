@@ -190,6 +190,7 @@ class DefaultClientSession<
       channel: this._channel,
       tree: this._tree,
       applier: this._applier,
+      pageSize: options.historyPageSize,
       logger: this._logger,
     });
     this._view = createClientView<TInput, TOutput, TProjection, TMessage>({

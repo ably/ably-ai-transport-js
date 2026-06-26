@@ -60,6 +60,16 @@ export interface ClientSessionOptions<
    */
   channelModes?: readonly Ably.ChannelMode[];
 
+  /**
+   * Wire-message limit fetched per channel-history round trip when paging older
+   * conversation history (via `view.loadOlder()` and history hydration), shared
+   * by every view on this session. Independent of `loadOlder`'s reveal `limit`:
+   * `loadOlder` reveals from the buffered page and only triggers a fresh fetch
+   * once the buffer empties, so this tunes fetch cost, not reveal granularity.
+   * Defaults to 100.
+   */
+  historyPageSize?: number;
+
   /** Logger instance for diagnostic output. */
   logger?: Logger;
 }

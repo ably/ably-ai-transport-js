@@ -175,6 +175,8 @@ class DefaultAgentSession<
   private _hydrator: HistoryHydrator;
   private readonly _channelListener: (msg: Ably.InboundMessage) => void;
   private readonly _inputEventLookupTimeoutMs: number;
+  /** Wire-message page size for history fetches; reapplied when the hydrator is recreated on continuity loss. */
+  private readonly _historyPageSize: number | undefined;
 
   private _state = SessionState.READY;
   private _connectPromise: Promise<void> | undefined;
@@ -196,6 +198,7 @@ class DefaultAgentSession<
     this._emitter = new EventEmitter<AgentSessionEventsMap>(this._logger ?? makeLogger({ logLevel: LogLevel.Silent }));
     this._runManager = createRunManager(this._channel, this._logger);
     this._inputEventLookupTimeoutMs = options.inputEventLookupTimeoutMs ?? 30000;
+    this._historyPageSize = options.historyPageSize;
     const { tree, applier } = createMaterialisation(this._codec, this._logger);
     this._tree = tree;
     this._applier = applier;
@@ -232,6 +235,7 @@ class DefaultAgentSession<
       channel: this._channel,
       tree: this._tree,
       applier: this._applier,
+      pageSize: this._historyPageSize,
       logger: this._logger,
     });
   }

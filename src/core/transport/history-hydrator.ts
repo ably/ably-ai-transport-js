@@ -33,12 +33,12 @@ import { type AblyMessageEmitter, foldAndEmit, type WireApplier } from './decode
 import { type HistoryPagesCursor, loadHistoryPages } from './load-history-pages.js';
 
 /**
- * Wire-message limit per Ably page fetched by the shared cursor. Over-provisions
- * for the many-Ably-messages-per-domain-message ratio so a single round trip
- * usually covers several domain messages. A fixed engine constant; the page size
- * is not configurable per session.
+ * Default wire-message limit per Ably page fetched by the shared cursor, used
+ * when the session does not set `historyPageSize`. Over-provisions for the
+ * many-Ably-messages-per-domain-message ratio so a single round trip usually
+ * covers several domain messages.
  */
-const HISTORY_PAGE_LIMIT = 200;
+const DEFAULT_HISTORY_PAGE_SIZE = 100;
 
 /**
  * Wrap an unknown history-fetch failure as `Ably.ErrorInfo`, preserving the
@@ -111,6 +111,12 @@ export interface HistoryHydratorOptions {
   tree: AblyMessageEmitter;
   /** The Tree's decode-and-apply engine; each paged wire folds through it. */
   applier: WireApplier;
+  /**
+   * Wire-message limit per `channel.history()` round trip. Defaults to
+   * {@link DEFAULT_HISTORY_PAGE_SIZE} when unset; set from the session-level
+   * `historyPageSize` option.
+   */
+  pageSize?: number;
   /** Logger for diagnostic output. */
   logger?: Logger;
 }
@@ -123,6 +129,7 @@ class DefaultHistoryHydrator implements HistoryHydrator {
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _tree: AblyMessageEmitter;
   private readonly _applier: WireApplier;
+  private readonly _pageSize: number;
   private readonly _logger?: Logger;
 
   /**
@@ -152,6 +159,7 @@ class DefaultHistoryHydrator implements HistoryHydrator {
     this._channel = options.channel;
     this._tree = options.tree;
     this._applier = options.applier;
+    this._pageSize = options.pageSize ?? DEFAULT_HISTORY_PAGE_SIZE;
     this._logger = options.logger?.withContext({ component: 'HistoryHydrator' });
   }
 
@@ -239,7 +247,7 @@ class DefaultHistoryHydrator implements HistoryHydrator {
   private async _walk(shouldStop: () => boolean, signal: AbortSignal | undefined): Promise<void> {
     if (this._cursor === undefined) {
       this._cursor = await loadHistoryPages(this._channel, {
-        pageLimit: HISTORY_PAGE_LIMIT,
+        pageLimit: this._pageSize,
         untilAttach: true,
         logger: this._logger,
       });

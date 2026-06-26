@@ -2189,6 +2189,42 @@ describe('AgentSession input-event lookup', () => {
     await session.close();
   });
 
+  it('forwards historyPageSize to the channel-history fetch limit used by the input-event lookup', async () => {
+    const ch = createMockChannel();
+    const triggerWire = {
+      name: 'text',
+      serial: 's-hist-ps',
+      version: { serial: 's-hist-ps' },
+      extras: {
+        ai: {
+          transport: {
+            [HEADER_ROLE]: 'user',
+            [HEADER_CODEC_MESSAGE_ID]: 'u1',
+            [HEADER_EVENT_ID]: 'p-u1',
+            [HEADER_INVOCATION_ID]: 'inv-ps',
+          },
+        },
+      },
+    } as unknown as Ably.InboundMessage;
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises -- mock returns Promise directly
+    ch.history.mockImplementation(singlePageHistory([triggerWire]));
+
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'history-page-size',
+      codec: codecWithFunctionalDecoder(),
+      inputEventLookupTimeoutMs: 5000,
+      historyPageSize: 7,
+    });
+    await session.connect();
+
+    const run = createRunFromOpts(session, { runId: 'run-ps', invocationId: 'inv-ps', inputEventId: 'p-u1' });
+    await expect(run.start()).resolves.toBeUndefined();
+
+    expect(ch.history).toHaveBeenCalledWith(expect.objectContaining({ limit: 7 }));
+    await session.close();
+  });
+
   it('start() rejects promptly when channel continuity is lost mid-lookup (no timeout wait)', async () => {
     // Continuity loss aborts every registered run BEFORE swapping the Tree,
     // so an in-flight input-event lookup must reject via its run signal

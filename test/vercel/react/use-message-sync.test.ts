@@ -29,61 +29,8 @@ const makeNode = (m: AI.UIMessage) => ({
   serial: undefined,
 });
 
-interface MockSlot {
-  slot: ChatTransportSlot;
-  emitView: (event: string) => void;
-  viewFlattenNodes: ReturnType<typeof vi.fn>;
-  setStreaming: (value: boolean) => void;
-}
-
-const createMockSlot = (): MockSlot => {
-  // --- View ---
-  const viewHandlers = new Map<string, Set<Handler>>();
-
-  const viewOn = vi.fn((event: string, handler: Handler) => {
-    let set = viewHandlers.get(event);
-    if (!set) {
-      set = new Set();
-      viewHandlers.set(event, set);
-    }
-    set.add(handler);
-    return () => {
-      set.delete(handler);
-    };
-  });
-
-  // `flattenNodes` and `getMessages` are mocked together: tests stage
-  // `{ message }` entries via `viewFlattenNodes.mockReturnValue(...)` and
-  // `getMessages` projects them to the codec-message-id pairs the production
-  // code reads (then maps to the flat `UIMessage[]`).
-  const viewFlattenNodes = vi.fn(() => [] as { message: AI.UIMessage }[]);
-  const viewGetMessages = vi.fn(() =>
-    viewFlattenNodes().map((n) => ({ codecMessageId: n.message.id, message: n.message })),
-  );
-
-  const view = {
-    on: viewOn,
-    flattenNodes: viewFlattenNodes,
-    getMessages: viewGetMessages,
-    hasOlder: vi.fn(() => false),
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-    loadOlder: vi.fn(() => Promise.resolve([])),
-  } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>['view'];
-
-  const session = {
-    view,
-    // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
-    on: vi.fn(() => () => {}),
-    tree: {},
-    send: vi.fn(),
-    regenerate: vi.fn(),
-    edit: vi.fn(),
-    cancel: vi.fn(),
-    close: vi.fn(),
-    // CAST: mock object satisfies the subset of ClientSession methods used by useMessageSync
-  } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
-
-  // --- ChatTransport ---
+// A mock ChatTransport whose streaming gate can be toggled via `setStreaming`.
+const makeMockChatTransport = (): { chatTransport: ChatTransport; setStreaming: (value: boolean) => void } => {
   const streamingCallbacks = new Set<(s: boolean) => void>();
   let streaming = false;
 
@@ -109,16 +56,79 @@ const createMockSlot = (): MockSlot => {
     },
   } as unknown as ChatTransport;
 
-  const emitView = (event: string): void => {
-    const set = viewHandlers.get(event);
-    if (set) {
-      for (const handler of set) {
-        handler();
-      }
-    }
-  };
+  return { chatTransport, setStreaming };
+};
 
-  const slot: ChatTransportSlot = { session, chatTransport };
+// A mock view event subscription: `viewOn` registers handlers; `emitView` fires them.
+const makeViewSubscription = (): { viewOn: ReturnType<typeof vi.fn>; emitView: (event: string) => void } => {
+  const viewHandlers = new Map<string, Set<Handler>>();
+  const viewOn = vi.fn((event: string, handler: Handler) => {
+    let set = viewHandlers.get(event);
+    if (!set) {
+      set = new Set();
+      viewHandlers.set(event, set);
+    }
+    set.add(handler);
+    return () => {
+      set.delete(handler);
+    };
+  });
+  const emitView = (event: string): void => {
+    for (const handler of viewHandlers.get(event) ?? []) handler();
+  };
+  return { viewOn, emitView };
+};
+
+// A mock ClientSession wrapping the given view — only the subset useMessageSync uses.
+const makeMockSession = (
+  view: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>['view'],
+): ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> =>
+  ({
+    view,
+    // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
+    on: vi.fn(() => () => {}),
+    tree: {},
+    send: vi.fn(),
+    regenerate: vi.fn(),
+    edit: vi.fn(),
+    cancel: vi.fn(),
+    close: vi.fn(),
+    // CAST: mock object satisfies the subset of ClientSession methods used by useMessageSync
+  }) as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+
+interface MockSlot {
+  slot: ChatTransportSlot;
+  emitView: (event: string) => void;
+  viewFlattenNodes: ReturnType<typeof vi.fn>;
+  setStreaming: (value: boolean) => void;
+}
+
+const createMockSlot = (): MockSlot => {
+  // --- View ---
+  const { viewOn, emitView } = makeViewSubscription();
+
+  // `flattenNodes` and `getMessages` are mocked together: tests stage
+  // `{ message }` entries via `viewFlattenNodes.mockReturnValue(...)` and
+  // `getMessages` projects them to the codec-message-id pairs the production
+  // code reads (then maps to the flat `UIMessage[]`).
+  const viewFlattenNodes = vi.fn(() => [] as { message: AI.UIMessage }[]);
+  const viewGetMessages = vi.fn(() =>
+    viewFlattenNodes().map((n) => ({ codecMessageId: n.message.id, message: n.message })),
+  );
+
+  const view = {
+    on: viewOn,
+    flattenNodes: viewFlattenNodes,
+    getMessages: viewGetMessages,
+    hasOlder: vi.fn(() => false),
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+    loadOlder: vi.fn(() => Promise.resolve([])),
+  } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>['view'];
+
+  // --- ChatTransport ---
+  const { chatTransport, setStreaming } = makeMockChatTransport();
+
+  const slot: ChatTransportSlot = { session: makeMockSession(view), chatTransport };
 
   return { slot, emitView, viewFlattenNodes, setStreaming };
 };
@@ -128,6 +138,81 @@ const withContext =
   (nearest?: ChatTransportSlot, providers: Record<string, ChatTransportSlot> = {}) =>
   ({ children }: { children: ReactNode }) =>
     createElement(ChatTransportContext.Provider, { value: { nearest, providers } }, children);
+
+// ---------------------------------------------------------------------------
+// Paging harness — a view backed by a simulated channel the seam-walk pages.
+// ---------------------------------------------------------------------------
+//
+// `visible` is the initially-revealed window (the live tail). `older` is the
+// hidden channel history, chronological (oldest first); each loadOlder(limit)
+// reveals the newest hidden block, prepends it to the window, emits 'update',
+// and returns the revealed page oldest-first — mirroring View.loadOlder.
+
+interface PagingSlot {
+  slot: ChatTransportSlot;
+  emitView: (event: string) => void;
+  loadOlder: ReturnType<typeof vi.fn>;
+  setStreaming: (value: boolean) => void;
+  /** Append newer messages to the live window (a fresh turn) and emit 'update'. */
+  appendLive: (...msgs: AI.UIMessage[]) => void;
+  /** Replace a visible message by id (a streaming token) and emit 'update'. */
+  updateLive: (msg: AI.UIMessage) => void;
+}
+
+const createPagingSlot = ({ visible, older }: { visible: AI.UIMessage[]; older: AI.UIMessage[] }): PagingSlot => {
+  const { viewOn, emitView } = makeViewSubscription();
+
+  const revealed = [...visible];
+  const buffer = [...older];
+  const toCodec = (m: AI.UIMessage): { codecMessageId: string; message: AI.UIMessage } => ({
+    codecMessageId: m.id,
+    message: m,
+  });
+
+  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+  const loadOlder = vi.fn((limit?: number) => {
+    const count = Math.min(limit ?? 1, buffer.length);
+    const page = buffer.splice(buffer.length - count, count);
+    revealed.unshift(...page);
+    if (page.length > 0) emitView('update');
+    return Promise.resolve(page.map((m) => toCodec(m)));
+  });
+
+  const view = {
+    on: viewOn,
+    getMessages: vi.fn(() => revealed.map((m) => toCodec(m))),
+    hasOlder: vi.fn(() => buffer.length > 0),
+    loadOlder,
+  } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>['view'];
+
+  const appendLive = (...msgs: AI.UIMessage[]): void => {
+    revealed.push(...msgs);
+    emitView('update');
+  };
+  const updateLive = (msg: AI.UIMessage): void => {
+    const idx = revealed.findIndex((m) => m.id === msg.id);
+    if (idx !== -1) revealed[idx] = msg;
+    emitView('update');
+  };
+
+  const { chatTransport, setStreaming } = makeMockChatTransport();
+  const slot: ChatTransportSlot = { session: makeMockSession(view), chatTransport };
+
+  return { slot, emitView, loadOlder, setStreaming, appendLive, updateLive };
+};
+
+// The domain ids of a message list, for order/dedup assertions.
+const ids = (msgs: AI.UIMessage[]): string[] => msgs.map((m) => m.id);
+
+// Drain the async seam-walk: each loadOlder reveal settles on a microtask, so
+// flush a few turns under act() to let the walk page back to the seam.
+const flushWalk = async (): Promise<void> => {
+  for (let i = 0; i < 20; i++) {
+    await act(async () => {
+      await Promise.resolve();
+    });
+  }
+};
 
 describe('useMessageSync', () => {
   it('syncs immediately on mount and on view update events', () => {
@@ -487,5 +572,170 @@ describe('useMessageSync', () => {
     // No overlay-led transition, so the merge returns the tree messages
     // by reference equality.
     expect(result[1]).toBe(treeAsst);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Seed reconciliation — page the live view back to the seed and compose
+  // ---------------------------------------------------------------------------
+
+  describe('seed reconciliation', () => {
+    it('renders a seed linearly when nothing newer is live', async () => {
+      // Persisted [u1, a1]; the channel still carries the seam a1 (hidden) and
+      // nothing newer has streamed.
+      const seed = [makeMessage('u1'), makeMessage('a1', 'assistant')];
+      const { slot, loadOlder } = createPagingSlot({ visible: [], older: [makeMessage('a1', 'assistant')] });
+
+      const setMessages = vi.fn();
+      renderHook(
+        () => {
+          useMessageSync({ messages: seed, setMessages });
+        },
+        { wrapper: withContext(slot) },
+      );
+      await flushWalk();
+
+      // The walk pages back to the seam (the only hidden message).
+      expect(loadOlder).toHaveBeenCalled();
+      const updater = setMessages.mock.calls.at(-1)?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
+      expect(ids(updater(seed))).toEqual(['u1', 'a1']);
+    });
+
+    it('composes seed ⧺ live, dropping the single seam overlap', async () => {
+      // Persisted [u1, a1]; the channel carries the seam a1 (hidden) plus a
+      // newer live tail [u2, a2] already folded.
+      const seed = [makeMessage('u1'), makeMessage('a1', 'assistant')];
+      const { slot } = createPagingSlot({
+        visible: [makeMessage('u2'), makeMessage('a2', 'assistant')],
+        older: [makeMessage('a1', 'assistant')],
+      });
+
+      const setMessages = vi.fn();
+      renderHook(
+        () => {
+          useMessageSync({ messages: seed, setMessages });
+        },
+        { wrapper: withContext(slot) },
+      );
+      await flushWalk();
+
+      const updater = setMessages.mock.calls.at(-1)?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
+      const result = updater(seed);
+      // The persisted prefix joins the live tail with the seam shown once.
+      expect(ids(result)).toEqual(['u1', 'a1', 'u2', 'a2']);
+      expect(result.filter((m) => m.id === 'a1')).toHaveLength(1);
+    });
+
+    it('merges a mid-session run that completes after reconciliation', async () => {
+      // Warm start: the seam a1 is already visible, so no walk is needed.
+      const seed = [makeMessage('u1'), makeMessage('a1', 'assistant')];
+      const { slot, appendLive, updateLive } = createPagingSlot({
+        visible: [makeMessage('a1', 'assistant')],
+        older: [],
+      });
+
+      const setMessages = vi.fn();
+      renderHook(
+        () => {
+          useMessageSync({ messages: seed, setMessages });
+        },
+        { wrapper: withContext(slot) },
+      );
+      await flushWalk();
+
+      // A new turn streams: user prompt, then an assistant message that fills in.
+      const u2 = makeMessage('u2');
+      const a2Empty = makeMessage('a2', 'assistant');
+      act(() => {
+        appendLive(u2, a2Empty);
+      });
+      const a2Full = makeMessage('a2', 'assistant');
+      a2Full.parts = [{ type: 'text', text: 'done' }];
+      act(() => {
+        updateLive(a2Full);
+      });
+
+      const updater = setMessages.mock.calls.at(-1)?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
+      const result = updater(seed);
+      expect(ids(result)).toEqual(['u1', 'a1', 'u2', 'a2']);
+      // The completed assistant message carries its streamed content, once.
+      expect(result.filter((m) => m.id === 'a2')).toHaveLength(1);
+      expect(result.at(-1)?.parts).toEqual([{ type: 'text', text: 'done' }]);
+    });
+
+    it('reload convergence: seed + walked live reconstructs the whole conversation', async () => {
+      // The whole conversation up to a2 is persisted; the channel carries the
+      // seam a2 (hidden) plus a newer live turn [u3, a3].
+      const seed = [
+        makeMessage('u1'),
+        makeMessage('a1', 'assistant'),
+        makeMessage('u2'),
+        makeMessage('a2', 'assistant'),
+      ];
+      const { slot } = createPagingSlot({
+        visible: [makeMessage('u3'), makeMessage('a3', 'assistant')],
+        older: [makeMessage('a2', 'assistant')],
+      });
+
+      const setMessages = vi.fn();
+      renderHook(
+        () => {
+          useMessageSync({ messages: seed, setMessages });
+        },
+        { wrapper: withContext(slot) },
+      );
+      await flushWalk();
+
+      const updater = setMessages.mock.calls.at(-1)?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
+      const result = updater(seed);
+      expect(ids(result)).toEqual(['u1', 'a1', 'u2', 'a2', 'u3', 'a3']);
+      // The seam appears exactly once — no duplicate where seed meets live.
+      expect(result.filter((m) => m.id === 'a2')).toHaveLength(1);
+    });
+
+    it('stops at history exhaustion when the seam is absent from the channel', async () => {
+      // The seam x1 was never on this channel (e.g. history expired). The walk
+      // drains the buffer and stops at exhaustion rather than hanging.
+      const seed = [makeMessage('x1')];
+      const { slot, loadOlder } = createPagingSlot({
+        visible: [makeMessage('u1'), makeMessage('a1', 'assistant')],
+        older: [makeMessage('u0')],
+      });
+
+      const setMessages = vi.fn();
+      renderHook(
+        () => {
+          useMessageSync({ messages: seed, setMessages });
+        },
+        { wrapper: withContext(slot) },
+      );
+      await flushWalk();
+
+      // It paged the one hidden message, found no seam, and stopped.
+      expect(loadOlder).toHaveBeenCalledTimes(1);
+      const updater = setMessages.mock.calls.at(-1)?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
+      expect(ids(updater(seed))).toEqual(['x1', 'u0', 'u1', 'a1']);
+    });
+
+    it('no seed: surfaces the live window without paging', async () => {
+      // Without a seed the hook never walks — it surfaces only the live window,
+      // exactly as before (history paging stays the caller's job).
+      const { slot, loadOlder } = createPagingSlot({
+        visible: [makeMessage('u1'), makeMessage('a1', 'assistant')],
+        older: [makeMessage('u0')],
+      });
+
+      const setMessages = vi.fn();
+      renderHook(
+        () => {
+          useMessageSync({ setMessages });
+        },
+        { wrapper: withContext(slot) },
+      );
+      await flushWalk();
+
+      expect(loadOlder).not.toHaveBeenCalled();
+      const updater = setMessages.mock.calls.at(-1)?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
+      expect(ids(updater([]))).toEqual(['u1', 'a1']);
+    });
   });
 });

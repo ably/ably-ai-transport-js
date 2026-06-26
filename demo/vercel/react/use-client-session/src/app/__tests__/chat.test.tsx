@@ -25,7 +25,7 @@ let setMockViewMessages: ((messages: AI.UIMessage[]) => void) | null = null;
 let mockRunOf: (codecMessageId: string) => RunInfo | undefined = () => undefined;
 
 const mockSend = vi.fn(
-  (_input: VercelInput | VercelInput[], _opts?: SendOptions): Promise<ClientRun<AI.UIMessage>> =>
+  (_input: VercelInput | VercelInput[], _opts?: SendOptions): Promise<ClientRun<VercelInput, AI.UIMessage>> =>
     Promise.resolve({
       // The triggering input's codec-message-id — the synchronous routing
       // handle the client owns the moment it publishes.
@@ -40,6 +40,10 @@ const mockSend = vi.fn(
       started: Promise.resolve(),
       inputEventId: 'ev-1',
       cancel: async () => {},
+      steer: () => ({
+        published: Promise.resolve({ serial: undefined }),
+        outcome: Promise.resolve({ consumed: false }),
+      }),
       toInvocation: () => Invocation.fromJSON({ inputEventId: 'ev-1', sessionName: 'demo' }),
     }),
 );
@@ -151,7 +155,7 @@ describe('<Chat>', () => {
       />,
     );
 
-    const input = screen.getByPlaceholderText('Type a message...');
+    const input = screen.getByPlaceholderText(/Type a message/);
     const form = input.closest('form');
     if (!form) throw new Error('input is not nested in a <form>');
 
@@ -202,7 +206,7 @@ describe('<Chat>', () => {
     // Scope the button assertions to the input bar's <form> so descriptive
     // copy / suggestion chips elsewhere on the page (which also mention "Stop"
     // and "Send") can't satisfy the role query.
-    const inputForm = screen.getByPlaceholderText('Type a message...').closest('form');
+    const inputForm = screen.getByPlaceholderText(/Type a message/).closest('form');
     if (!inputForm) throw new Error('input is not nested in a <form>');
     const inputBar = within(inputForm);
 
@@ -228,7 +232,7 @@ describe('<Chat>', () => {
       setMockViewMessages?.([assistantText('streaming a reply...')]);
     });
 
-    const inputForm = screen.getByPlaceholderText('Type a message...').closest('form');
+    const inputForm = screen.getByPlaceholderText(/Type a message/).closest('form');
     if (!inputForm) throw new Error('input is not nested in a <form>');
     const inputBar = within(inputForm);
 

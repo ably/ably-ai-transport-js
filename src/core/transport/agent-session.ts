@@ -22,6 +22,7 @@ import {
   HEADER_PARENT,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
+  HEADER_STEER_CODEC_MESSAGE_IDS,
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
@@ -44,6 +45,7 @@ import { createMaterialisation } from './materialisation.js';
 import { pipeStream } from './pipe-stream.js';
 import type { RunManager } from './run-manager.js';
 import { createRunManager } from './run-manager.js';
+import { RunSteerTracker } from './run-steer-tracker.js';
 import {
   bestEffortDetach,
   continuityLostError,
@@ -61,6 +63,7 @@ import type {
   AgentSessionOptions,
   CancelRequest,
   LoadConversationOptions,
+  OutputEvent,
   PipeOptions,
   RunEndParams,
   RunRuntime,
@@ -597,7 +600,7 @@ class DefaultAgentSession<
     // in tests and in-process drivers.
     const invocationId = runtime.invocationId ?? crypto.randomUUID();
     const inputEventLookupTimeoutMs = this._inputEventLookupTimeoutMs;
-    const { onMessage, onCancelled, onCancel, onError: runOnError, signal: externalSignal } = runtime;
+    const { onMessage, onCancelled, onCancel, onError: runOnError, signal: externalSignal, onSteer } = runtime;
 
     const controller = new AbortController();
     let state = RunState.INITIALIZED;
@@ -677,6 +680,69 @@ class DefaultAgentSession<
       branchSource: leafSource,
       logger: viewLogger,
     });
+
+    // ---------------------------------------------------------------------
+    // Steering / endable tracking
+    // ---------------------------------------------------------------------
+
+    /**
+     * Per-Run steer state. Owns the pending/recently-processed sets the
+     * Tree-output listener, `endable()`, and `pipe()` share.
+     */
+    const steerTracker = new RunSteerTracker();
+    /**
+     * Has the agent published any output for this run yet? Flipped by any
+     * output-producing Run method (today: `pipe()`; any future discrete
+     * send would set it the same way). Gates `endable()` so it cannot
+     * return `true` until the trigger has been responded to at least once.
+     */
+    let hasProducedOutput = false;
+
+    /**
+     * Subscription to the Tree's `output` event. Detects input events
+     * folded into THIS run's projection (steering messages) and:
+     *   1. records each steer's codec-message-id so the next `endable()` call sees it,
+     *   2. fires the `onSteer` callback once per inbound steering message.
+     * Bound at construction so cancel routing / cleanup own a single
+     * unsubscribe handle (see `deregisterRun`).
+     */
+    let unsubscribeTreeOutput: (() => void) | undefined;
+    const onTreeOutput = (event: OutputEvent<TOutput>): void => {
+      if (event.runId !== runId) return;
+      if (event.inputs.length === 0) return;
+      // One Ably message carries one codec-message-id, even when it folds
+      // multiple inputs (e.g. a batched tool-resolution payload). Treat the
+      // wire message as one identity for outcome resolution; the client
+      // keys its outcome bucket by codec-message-id and never has more
+      // than one in-flight entry per wire message.
+      if (event.codecMessageId !== undefined) {
+        steerTracker.addPending(event.codecMessageId);
+      }
+      // Fire onSteer once per input. Wrap each invocation so one bad
+      // handler can't stop the others or kill the listener. The input
+      // payloads themselves aren't surfaced — only the per-input fire count
+      // is, so the loop iterates by length.
+      const fire = onSteer;
+      if (fire === undefined) return;
+      const count = event.inputs.length;
+      for (let i = 0; i < count; i += 1) {
+        try {
+          fire();
+        } catch (error) {
+          logger?.error('Run onSteer(); handler threw', { runId });
+          const errInfo = new Ably.ErrorInfo(
+            `unable to invoke onSteer for run ${runId}; ${errorMessage(error)}`,
+            ErrorCode.CancelListenerError,
+            500,
+            errorCause(error),
+          );
+          // Run-scoped error: prefer the run's own handler; fall back to the
+          // session emitter so it is never silently dropped.
+          if (runOnError) runOnError(errInfo);
+          else this._emitter.emit('error', errInfo);
+        }
+      }
+    };
     /**
      * The reply run's structural-parent fallback, computed once in
      * `Run.start()` once the input-event lookup resolves the triggering
@@ -686,13 +752,21 @@ class DefaultAgentSession<
      * parent from the run-start message's own `parent`.
      */
     let assistantParentFallback: string | undefined;
+
+    // Subscribe to the Tree's `output` event so we observe steering messages
+    // folded into this run's projection. Bound now (before start()) so a
+    // steer that races ahead of the run-start publish is captured. The
+    // closure's `runId` is read live: a continuation re-keys `runId` in
+    // `start()` and the listener follows the new id automatically.
+    unsubscribeTreeOutput = getTree().on('output', onTreeOutput);
+
     /**
      * Remove this run from the session's routing maps and close its `run.view`.
      * Drops the `_registeredRuns` entry plus the `input-codec-message-id → run-id`
      * reverse index (and any stale deferred cancel still buffered for that
-     * input), and tears down `run.view`'s Tree subscriptions so they don't
-     * accumulate across the runs of a long-lived session. Called when the run
-     * ends, suspends, or its start fails.
+     * input), tears down `run.view`'s Tree subscriptions, and unsubscribes the
+     * Tree-output listener so steering events stop firing after the run is
+     * terminal. Called when the run ends, suspends, or its start fails.
      */
     const deregisterRun = (): void => {
       registeredRuns.delete(runId);
@@ -701,6 +775,8 @@ class DefaultAgentSession<
         deferredCancels.delete(resolvedInputCodecMessageId);
       }
       view.close();
+      unsubscribeTreeOutput?.();
+      unsubscribeTreeOutput = undefined;
     };
 
     /**
@@ -764,6 +840,34 @@ class DefaultAgentSession<
       },
       get view() {
         return view;
+      },
+
+      endable: (): boolean => {
+        // Delta predicate driving the agent's iteration loop. Drains the
+        // pending-steer set on every call; the next `pipe()` stamps the
+        // drained ids on its responses as `steer-codec-message-ids`.
+        // Identity-based — no serial comparison.
+        if (state === RunState.INITIALIZED) return false;
+        // Cancel implies "ready to terminate". DO NOT drain pending here —
+        // a steer that folded after the abort began propagating must be
+        // reported as not-consumed. Leaving it in pending means it never
+        // lands on a response stamp, so the client sees it as not in any
+        // observed `steer-codec-message-ids` → not-consumed.
+        if (signal.aborted) return true;
+        // The trigger hasn't been responded to yet — no output-producing
+        // Run method (pipe, discrete send, ...) has run. A steer arriving
+        // before the first response stays in pending until the loop
+        // iterates at least once.
+        if (!hasProducedOutput) return false;
+        // Did anything fold since the last call? Drain pending → recently
+        // processed and signal the loop to iterate.
+        if (steerTracker.hasPending()) {
+          steerTracker.drainPending();
+          return false;
+        }
+        // Caught up. The next response (if any) will stamp the accumulated
+        // recently-processed set on its assistant messages.
+        return true;
       },
 
       // Spec: AIT-ST4, AIT-ST4a, AIT-ST4b
@@ -955,6 +1059,12 @@ class DefaultAgentSession<
           );
         }
 
+        // Record that the trigger has been responded to. `endable()`
+        // returns false until any output-producing Run method has run,
+        // gating the loop on actually having done something with the
+        // trigger input.
+        hasProducedOutput = true;
+
         const runOwnerClientId = runManager.getClientId(runId);
 
         // The assistant message's parent: an explicit per-stream
@@ -989,6 +1099,16 @@ class DefaultAgentSession<
           inputCodecMessageId: resolvedInputCodecMessageId,
           regenerates: assistantRegenerates,
         });
+        // Stamp the per-response delta of steers the agent's iteration loop
+        // has drained since the previous pipe. The tracker returns the ids
+        // and clears its internal set, so the next pipe only carries the
+        // next delta. Omitted (header absent) when empty — the first pipe
+        // of a run with no mid-pipe steers stamps nothing. Each steer's id
+        // appears on exactly one response.
+        const recentlyProcessedSteerIds = steerTracker.consumeRecentlyProcessed();
+        if (recentlyProcessedSteerIds.length > 0) {
+          defaultHeaders[HEADER_STEER_CODEC_MESSAGE_IDS] = JSON.stringify(recentlyProcessedSteerIds);
+        }
         const encoder = codec.createEncoder(channel, {
           extras: { headers: defaultHeaders },
           onMessage,

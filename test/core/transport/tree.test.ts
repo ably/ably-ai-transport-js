@@ -2034,6 +2034,7 @@ describe('Tree', () => {
         codecMessageId: 'm1',
         serial: 's1',
         events: [{ type: 'append-message', message: { id: 'a', content: 'hi' } }],
+        inputs: [],
       });
     });
 
@@ -2053,10 +2054,11 @@ describe('Tree', () => {
         codecMessageId: 'm1',
         serial: 's1',
         events: [{ type: 'append-message', message: { id: 'a', content: 'hi' } }],
+        inputs: [],
       });
     });
 
-    it('emits output with empty events for an inputs-only fold', () => {
+    it('emits output carrying input events for an inputs-only fold', () => {
       const handler = vi.fn();
       tree.on('output', handler);
       apply(tree, {
@@ -2071,6 +2073,7 @@ describe('Tree', () => {
         codecMessageId: 'm1',
         serial: 's1',
         events: [],
+        inputs: [{ kind: 'append-input', message: { id: 'a', content: 'hi' } }],
       });
     });
 
@@ -2084,6 +2087,7 @@ describe('Tree', () => {
         codecMessageId: 'm1',
         serial: undefined,
         events: [{ type: 'append-message', message: { id: 'a', content: 'hi' } }],
+        inputs: [],
       });
     });
 

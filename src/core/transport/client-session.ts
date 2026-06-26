@@ -55,6 +55,7 @@ import {
   SessionState,
   subscribeAndAttach,
 } from './session-support.js';
+import { SteerCoordinator } from './steer-coordinator.js';
 import type { DefaultTree } from './tree.js';
 import type {
   ClientRun,
@@ -63,6 +64,7 @@ import type {
   ClientView,
   RunEndReason,
   SendOptions,
+  SteerResult,
   Tree,
 } from './types.js';
 import { createClientView } from './view.js';
@@ -164,6 +166,13 @@ class DefaultClientSession<
     { resolve: (runId: string) => void; reject: (e: Ably.ErrorInfo) => void }
   >();
 
+  /**
+   * Steer state machine. Owns the publish→echo-match→outcome-resolution
+   * lifecycle for every `activeRun.steer(...)` call. See
+   * {@link SteerCoordinator} for the contract.
+   */
+  private readonly _steer: SteerCoordinator<TInput>;
+
   constructor(options: ClientSessionOptions<TInput, TOutput, TProjection, TMessage>) {
     // Spec: AIT-CT1a, AIT-CT1a2 — register this SDK on both the connection
     // (options.agents) and channel-attach (params.agent) paths. Idempotent
@@ -202,6 +211,13 @@ class DefaultClientSession<
       onClose: () => this._views.delete(this._view),
     });
     this._encoder = this._codec.createEncoder(this._channel);
+
+    this._steer = new SteerCoordinator<TInput>({
+      publish: async (input, opts) => this._encoder.publishInput(input, opts),
+      clientId: () => this._resolveClientId(),
+      isSessionClosed: () => this._state === SessionState.CLOSED,
+      logger: this._logger,
+    });
 
     this._views.add(this._view);
 
@@ -356,6 +372,10 @@ class DefaultClientSession<
           }
         }
 
+        // Delegate every steer-related observation to the coordinator: echo
+        // matching, response-stamp accumulation, and lifecycle resolution.
+        this._steer.observeMessage(ablyMessage);
+
         // Emit ably-message AFTER the apply so View subscribers can find the
         // owning node in `_lastVisibleNodeKeySet` (keyed by run-id for reply runs
         // and codec-message-id for inputs), which is refreshed by the tree
@@ -393,6 +413,11 @@ class DefaultClientSession<
     });
 
     const err = continuityLostError(stateChange, 'deliver events');
+
+    // Post-continuity-loss the channel will not deliver the steer echoes
+    // or lifecycle events that would have resolved any in-flight outcome,
+    // so the coordinator drains them eagerly.
+    this._steer.drainContinuityLost(err);
 
     // Surface the loss via the session `error` event. Consumers that expose a
     // per-run stream (e.g. the Vercel ChatTransport) error their stream off
@@ -452,7 +477,7 @@ class DefaultClientSession<
     input: TInput[],
     sendOptions: SendOptions | undefined,
     parentCodecMessageId: string | undefined,
-  ): Promise<ClientRun<TMessage>> {
+  ): Promise<ClientRun<TInput, TMessage>> {
     if (this._state === SessionState.CLOSED) {
       throw new Ably.ErrorInfo('unable to send; session is closed', ErrorCode.SessionClosed, 400);
     }
@@ -696,6 +721,14 @@ class DefaultClientSession<
           ...(runId !== undefined && { runId }),
         });
       },
+      // Bridge the handle's `started` latch (resolves when the agent mints the
+      // run-id) to the coordinator's `Promise<string>` contract by reading the
+      // populated `agentRunId` cell once `started` resolves.
+      steer: (input: TInput): SteerResult =>
+        this._steer.steer(
+          started.then(() => agentRunId),
+          input,
+        ),
       toInvocation: () =>
         // The invocation body carries no run-id: run identity lives on the
         // channel (the agent mints a fresh run-id, or reads a continuation's
@@ -781,6 +814,10 @@ class DefaultClientSession<
       }
       this._pendingRunStarts.clear();
     }
+
+    // Coordinator settles any in-flight steer outcomes and pending echoes
+    // so callers awaiting them resolve/reject rather than hang.
+    this._steer.drainClosed();
 
     // Best-effort encoder close — flushes any pending stream operations.
     // The client only uses the discrete input path (publishInput), so this is

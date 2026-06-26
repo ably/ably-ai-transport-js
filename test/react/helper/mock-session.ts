@@ -95,7 +95,7 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     on: makeTreeOn(treeHandlers),
   };
 
-  const mockRun: ClientRun<string> = {
+  const mockRun: ClientRun<CodecInputEvent, string> = {
     inputCodecMessageId: 'input-1',
     runId: 'run-1',
     status: 'active',
@@ -105,6 +105,10 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     inputEventId: '',
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     cancel: vi.fn(() => Promise.resolve()),
+    steer: vi.fn(() => ({
+      published: Promise.resolve({ serial: undefined }),
+      outcome: Promise.resolve({ consumed: false }),
+    })),
     toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'mock-session' }),
   };
 

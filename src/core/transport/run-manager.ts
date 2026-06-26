@@ -155,7 +155,11 @@ class DefaultRunManager implements RunManager {
     inputCodecMessageId?: string,
   ): Promise<void> {
     this._logger?.trace('DefaultRunManager.suspendRun();', { runId });
-    await this._publishTerminal(EVENT_RUN_SUSPEND, runId, { invocationId, inputClientId, inputCodecMessageId });
+    await this._publishTerminal(EVENT_RUN_SUSPEND, runId, {
+      invocationId,
+      inputClientId,
+      inputCodecMessageId,
+    });
     this._logger?.debug('DefaultRunManager.suspendRun(); run suspended', { runId });
   }
 

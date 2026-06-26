@@ -269,7 +269,7 @@ export interface ClientView<TInput extends CodecInputEvent, TMessage> extends Vi
    * available immediately. If the POST fails, the error is surfaced via
    * the session's `on("error")` and the stream is errored.
    */
-  send(events: TInput | TInput[], options?: SendOptions): Promise<ClientRun<TMessage>>;
+  send(events: TInput | TInput[], options?: SendOptions): Promise<ClientRun<TInput, TMessage>>;
 
   /**
    * Regenerate an assistant message. Mints a codec `Regenerate` input
@@ -281,7 +281,7 @@ export interface ClientView<TInput extends CodecInputEvent, TMessage> extends Vi
    * assistant superseding the original) happens at projection-extraction
    * time.
    */
-  regenerate(messageId: string, options?: SendOptions): Promise<ClientRun<TMessage>>;
+  regenerate(messageId: string, options?: SendOptions): Promise<ClientRun<TInput, TMessage>>;
 
   /**
    * Edit a user message. Creates a new run that forks the target message
@@ -290,5 +290,5 @@ export interface ClientView<TInput extends CodecInputEvent, TMessage> extends Vi
    * single new message — the same single-message rule as {@link ClientView.send}
    * applies.
    */
-  edit(messageId: string, inputs: TInput | TInput[], options?: SendOptions): Promise<ClientRun<TMessage>>;
+  edit(messageId: string, inputs: TInput | TInput[], options?: SendOptions): Promise<ClientRun<TInput, TMessage>>;
 }

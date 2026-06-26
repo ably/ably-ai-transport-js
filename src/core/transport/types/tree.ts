@@ -2,7 +2,7 @@
 
 import type * as Ably from 'ably';
 
-import type { CodecOutputEvent } from '../../codec/types.js';
+import type { CodecInputEvent, CodecOutputEvent } from '../../codec/types.js';
 import type { RunEndReason, RunStatus } from './shared.js';
 
 // ---------------------------------------------------------------------------
@@ -256,7 +256,8 @@ export interface InputNode<TProjection> {
 export type ConversationNode<TProjection> = InputNode<TProjection> | RunNode<TProjection>;
 
 /**
- * Payload of the Tree's `output` event: the decoded agent outputs folded
+ * Payload of the Tree's `output` event: the decoded agent outputs (and any
+ * client inputs that folded into the same node — see {@link inputs}) folded
  * for a Run from a single inbound message, carrying the routing metadata a
  * consumer needs to attribute or stream them.
  */
@@ -264,7 +265,7 @@ export interface OutputEvent<TOutput extends CodecOutputEvent> {
   /**
    * The runId the outputs were folded into, or `undefined` when the fold was
    * into a user input node (which carries no run-id — the agent mints run-ids).
-   * An input fold always has empty {@link events}; consumers route by
+   * An input-node fold always has empty {@link events}; consumers route by
    * {@link inputCodecMessageId}, not this.
    */
   runId: string | undefined;
@@ -295,6 +296,17 @@ export interface OutputEvent<TOutput extends CodecOutputEvent> {
    * projection changed.
    */
   events: TOutput[];
+  /**
+   * The decoded client inputs from this message, in wire order. Non-empty
+   * for two cases: (1) a run-less user input that created or grew an input
+   * node, and (2) a steering message tagged with a Run's `run-id` that
+   * folded into the Run's projection. Empty for pure agent output folds.
+   *
+   * Typed as the base {@link CodecInputEvent} union (codec-agnostic) so the
+   * Tree's interface stays free of `TInput`; consumers that need the codec's
+   * concrete `TInput` shape narrow on the discriminator at the call site.
+   */
+  inputs: CodecInputEvent[];
 }
 
 /**

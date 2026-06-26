@@ -568,7 +568,7 @@ export const createChatTransport = (
     //   through U1 inclusive via the body.
     // - Fresh send / edit: publish the new user-message input(s) via
     //   `view.send`.
-    let run: ClientRun<AI.UIMessage>;
+    let run: ClientRun<VercelInput, AI.UIMessage>;
     if (isContinuation) {
       const inputs = deriveContinuationInputs(codecMessages, messages);
       run = await session.view.send(inputs, sendOpts);

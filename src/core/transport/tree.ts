@@ -1038,15 +1038,17 @@ export class DefaultTree<
     // case, or by refolding the node if this wire arrived out of serial order.
     this._recordAndFold(entry, all, serial, codecMessageId, version, headers[HEADER_STREAM] === 'true');
 
-    // An input node owns no agent outputs; the event still fires (empty
-    // outputs) so consumers observe the projection change. It has no run-id —
-    // the causal routing key is the input's own codec-message-id.
+    // An input node owns no agent outputs; the event still fires so consumers
+    // observe the projection change. It has no run-id — the causal routing key
+    // is the input's own codec-message-id. The `inputs` field carries the
+    // decoded client input events that folded into this node, in wire order.
     this._emitter.emit('output', {
       runId: undefined,
       inputCodecMessageId: codecMessageId,
       codecMessageId,
       serial,
       events: [],
+      inputs: all.filter((e) => e.direction === 'input').map((e) => e.event),
     });
   }
 
@@ -1117,7 +1119,17 @@ export class DefaultTree<
     // owns the fold.
     this._recordAndFold(run, all, serial, codecMessageId, version, headers[HEADER_STREAM] === 'true');
 
-    this._emitter.emit('output', { runId: ownerKey, inputCodecMessageId, codecMessageId, serial, events: outputs });
+    // `inputs` carries any client input events folded into this Run's
+    // projection (a steering message tagged with the active run-id). Empty
+    // for pure agent output folds.
+    this._emitter.emit('output', {
+      runId: ownerKey,
+      inputCodecMessageId,
+      codecMessageId,
+      serial,
+      events: outputs,
+      inputs: events.inputs,
+    });
   }
 
   /**

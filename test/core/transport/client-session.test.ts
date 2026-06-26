@@ -30,6 +30,7 @@ import {
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_STEER_CODEC_MESSAGE_IDS,
 } from '../../../src/constants.js';
 import type {
   ChannelWriter,
@@ -1244,6 +1245,307 @@ describe('ClientSession', () => {
         Promise.resolve(pendingSentinel),
       ]);
       expect(outcome).toBe(pendingSentinel);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // activeRun.steer — publish a user message into a live Run; outcome derived
+  // by membership of the steer's codec-message-id in the union of
+  // `steer-codec-message-ids` stamps observed on the Run's response messages.
+  // -------------------------------------------------------------------------
+
+  describe('activeRun.steer', () => {
+    // Steer, wait for its publish to land on the mock encoder, and return
+    // the steer's codec-message-id (read off the publish headers). Tests
+    // use it to simulate the agent stamping that id on a subsequent
+    // response. Closes over `fix` from the outer describe.
+    const steerAndAwaitPublish = async (
+      run: Awaited<ReturnType<typeof fix.session.view.send>>,
+      runId: string,
+      id: string,
+      content: string,
+    ): Promise<{
+      published: ReturnType<typeof run.steer>['published'];
+      outcome: ReturnType<typeof run.steer>['outcome'];
+      steerCodecMessageId: string;
+      // eslint-disable-next-line unicorn/consistent-function-scoping -- closes over `fix` from the outer describe
+    }> => {
+      const enc = fix.codec.lastEncoder();
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- ackPendingSend already observed a publish, so an encoder exists
+      const publishesBefore = enc!.publishCalls.length;
+      const { published, outcome } = run.steer(fix.codec.createUserMessage({ id, content }));
+      let steerCodecMessageId: string | undefined;
+      for (let i = 0; i < 100; i++) {
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- encoder exists from prior publish
+        if (enc!.publishCalls.length > publishesBefore) {
+          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
+          const headers = enc!.publishCalls.at(-1)!.opts?.extras?.headers;
+          if (headers?.[HEADER_RUN_ID] === runId) {
+            steerCodecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
+            break;
+          }
+        }
+        await Promise.resolve();
+      }
+      if (steerCodecMessageId === undefined) throw new Error('steer publish never observed');
+      return { published, outcome, steerCodecMessageId };
+    };
+
+    it('publishes the steer with the resolved runId stamped as run-id', async () => {
+      const run = await fix.session.view.send({ kind: 'user-message', text: 'hi' });
+      const { runId } = await ackPendingSend(fix.channel, fix.codec);
+      await run.started;
+
+      const { published, steerCodecMessageId } = await steerAndAwaitPublish(run, runId, 'steer-msg', 'steer!');
+      expect(steerCodecMessageId).toBeDefined();
+
+      // Simulate the channel echo of the steer publish so `published` resolves.
+      simulateMessage(
+        fix.channel,
+        ablyMsg('ai-input', {
+          [HEADER_CODEC_MESSAGE_ID]: steerCodecMessageId,
+          [HEADER_RUN_ID]: runId,
+          [HEADER_ROLE]: 'user',
+        }),
+      );
+      const result = await published;
+      expect(typeof result.serial).toBe('string');
+    });
+
+    it('outcome resolves to "consumed" when the steer\'s codec-message-id is stamped on a response before run-end', async () => {
+      const run = await fix.session.view.send({ kind: 'user-message', text: 'hi' });
+      const { runId } = await ackPendingSend(fix.channel, fix.codec);
+      await run.started;
+
+      const { published, outcome, steerCodecMessageId } = await steerAndAwaitPublish(run, runId, 'steer-msg', 'steer!');
+
+      // Echo the steer so `published` resolves.
+      simulateMessage(
+        fix.channel,
+        ablyMsg('ai-input', {
+          [HEADER_CODEC_MESSAGE_ID]: steerCodecMessageId,
+          [HEADER_RUN_ID]: runId,
+          [HEADER_ROLE]: 'user',
+        }),
+      );
+      await published;
+
+      // Agent stamps the steer's codec-message-id on a response — the SDK
+      // accumulates it into the run's consumed set.
+      simulateMessage(
+        fix.channel,
+        ablyMsg('ai-output', {
+          [HEADER_RUN_ID]: runId,
+          [HEADER_ROLE]: 'assistant',
+          [HEADER_STEER_CODEC_MESSAGE_IDS]: JSON.stringify([steerCodecMessageId]),
+        }),
+      );
+
+      // run-end → outcome resolves consumed (the id is in the consumed set).
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: runId,
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+          [HEADER_RUN_REASON]: 'complete',
+        }),
+      );
+      await expect(outcome).resolves.toEqual({ consumed: true, runTerminalReason: 'complete' });
+    });
+
+    it('outcome resolves to "not-consumed" when the steer\'s codec-message-id is never stamped on a response', async () => {
+      const run = await fix.session.view.send({ kind: 'user-message', text: 'hi' });
+      const { runId } = await ackPendingSend(fix.channel, fix.codec);
+      await run.started;
+
+      const { outcome, steerCodecMessageId } = await steerAndAwaitPublish(run, runId, 'late-msg', 'late');
+
+      // Echo so the outcome is registered to _inflightSteers.
+      simulateMessage(
+        fix.channel,
+        ablyMsg('ai-input', {
+          [HEADER_CODEC_MESSAGE_ID]: steerCodecMessageId,
+          [HEADER_RUN_ID]: runId,
+          [HEADER_ROLE]: 'user',
+        }),
+      );
+
+      // The agent stamps a DIFFERENT codec-message-id on a response — the
+      // steer's own id is not in the consumed set.
+      simulateMessage(
+        fix.channel,
+        ablyMsg('ai-output', {
+          [HEADER_RUN_ID]: runId,
+          [HEADER_ROLE]: 'assistant',
+          [HEADER_STEER_CODEC_MESSAGE_IDS]: JSON.stringify(['some-other-id']),
+        }),
+      );
+
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: runId,
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+          [HEADER_RUN_REASON]: 'complete',
+        }),
+      );
+      await expect(outcome).resolves.toEqual({ consumed: false, runTerminalReason: 'complete' });
+    });
+
+    it('rejects synchronously after the SDK has observed run-end for the run (dead handle)', async () => {
+      const run = await fix.session.view.send({ kind: 'user-message', text: 'hi' });
+      const { runId } = await ackPendingSend(fix.channel, fix.codec);
+      await run.started;
+
+      // Fold a run-end so the SDK records the run as dead.
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: runId,
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+          [HEADER_RUN_REASON]: 'complete',
+        }),
+      );
+
+      const { published, outcome } = run.steer(fix.codec.createUserMessage({ id: 'too-late', content: 'too late' }));
+      await expect(published).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+    });
+
+    it("outcome stays pending across run-suspend when the steer's codec-message-id has not been stamped", async () => {
+      const run = await fix.session.view.send({ kind: 'user-message', text: 'hi' });
+      const { runId } = await ackPendingSend(fix.channel, fix.codec);
+      await run.started;
+
+      const { outcome, steerCodecMessageId } = await steerAndAwaitPublish(run, runId, 'after-suspend', 'after suspend');
+      simulateMessage(
+        fix.channel,
+        ablyMsg('ai-input', {
+          [HEADER_CODEC_MESSAGE_ID]: steerCodecMessageId,
+          [HEADER_RUN_ID]: runId,
+          [HEADER_ROLE]: 'user',
+        }),
+      );
+
+      // run-suspend without the steer ever being stamped → outcome stays
+      // pending (a later resume may stamp it on a response).
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_SUSPEND, {
+          [HEADER_RUN_ID]: runId,
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+        }),
+      );
+
+      const pendingSentinel = Symbol('pending');
+      const result = await Promise.race([outcome, Promise.resolve(pendingSentinel)]);
+      expect(result).toBe(pendingSentinel);
+    });
+
+    it('outcome resolves not-consumed when run-end arrives before the steer echo', async () => {
+      // Race regression: once the steer's publish lands and its pending-echo
+      // entry is registered, a run-end observed BEFORE the echo arrives must
+      // still settle the outcome — the drain on run-end sweeps
+      // `_pendingSteerEchoes` for the run, or the outcome promise would
+      // orphan indefinitely.
+      const run = await fix.session.view.send({ kind: 'user-message', text: 'hi' });
+      const { runId } = await ackPendingSend(fix.channel, fix.codec);
+      await run.started;
+
+      const { published, outcome } = await steerAndAwaitPublish(run, runId, 'race-msg', 'racey');
+
+      // run-end arrives before the steer's own echo. The drain must settle
+      // both promises rather than wait for an echo that's about to arrive
+      // into a now-dead run.
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: runId,
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+          [HEADER_RUN_REASON]: 'complete',
+        }),
+      );
+
+      // `published` resolves with undefined serial (the echo will not be
+      // observed); `outcome` resolves not-consumed with the terminal reason.
+      await expect(published).resolves.toEqual({ serial: undefined });
+      await expect(outcome).resolves.toEqual({ consumed: false, runTerminalReason: 'complete' });
+    });
+
+    it('accumulates the union across multiple response stamps for the run', async () => {
+      const run = await fix.session.view.send({ kind: 'user-message', text: 'hi' });
+      const { runId } = await ackPendingSend(fix.channel, fix.codec);
+      await run.started;
+
+      const a = await steerAndAwaitPublish(run, runId, 'steer-a', 'a');
+      simulateMessage(
+        fix.channel,
+        ablyMsg('ai-input', { [HEADER_CODEC_MESSAGE_ID]: a.steerCodecMessageId, [HEADER_RUN_ID]: runId }),
+      );
+      const b = await steerAndAwaitPublish(run, runId, 'steer-b', 'b');
+      simulateMessage(
+        fix.channel,
+        ablyMsg('ai-input', { [HEADER_CODEC_MESSAGE_ID]: b.steerCodecMessageId, [HEADER_RUN_ID]: runId }),
+      );
+
+      // Two responses, each stamping one steer id (per-pipe delta).
+      simulateMessage(
+        fix.channel,
+        ablyMsg('ai-output', {
+          [HEADER_RUN_ID]: runId,
+          [HEADER_STEER_CODEC_MESSAGE_IDS]: JSON.stringify([a.steerCodecMessageId]),
+        }),
+      );
+      simulateMessage(
+        fix.channel,
+        ablyMsg('ai-output', {
+          [HEADER_RUN_ID]: runId,
+          [HEADER_STEER_CODEC_MESSAGE_IDS]: JSON.stringify([b.steerCodecMessageId]),
+        }),
+      );
+
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: runId,
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+          [HEADER_RUN_REASON]: 'complete',
+        }),
+      );
+
+      // Both steers resolve consumed via the union of stamps.
+      await expect(a.outcome).resolves.toEqual({ consumed: true, runTerminalReason: 'complete' });
+      await expect(b.outcome).resolves.toEqual({ consumed: true, runTerminalReason: 'complete' });
+    });
+
+    it('ignores malformed steer-codec-message-ids on a response', async () => {
+      const run = await fix.session.view.send({ kind: 'user-message', text: 'hi' });
+      const { runId } = await ackPendingSend(fix.channel, fix.codec);
+      await run.started;
+
+      const { outcome, steerCodecMessageId } = await steerAndAwaitPublish(run, runId, 'steer-malformed', 'malformed');
+      simulateMessage(
+        fix.channel,
+        ablyMsg('ai-input', { [HEADER_CODEC_MESSAGE_ID]: steerCodecMessageId, [HEADER_RUN_ID]: runId }),
+      );
+
+      // Garbage header value — accumulator is unchanged.
+      simulateMessage(
+        fix.channel,
+        ablyMsg('ai-output', {
+          [HEADER_RUN_ID]: runId,
+          [HEADER_STEER_CODEC_MESSAGE_IDS]: 'not-json',
+        }),
+      );
+      simulateMessage(
+        fix.channel,
+        ablyMsg(EVENT_RUN_END, {
+          [HEADER_RUN_ID]: runId,
+          [HEADER_RUN_CLIENT_ID]: 'client-1',
+          [HEADER_RUN_REASON]: 'complete',
+        }),
+      );
+      await expect(outcome).resolves.toEqual({ consumed: false, runTerminalReason: 'complete' });
     });
   });
 

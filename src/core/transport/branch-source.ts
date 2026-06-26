@@ -409,7 +409,7 @@ export class NavigableBranchSource<
    * @param options - The SendOptions passed by the caller.
    * @returns True when a fork selection was set.
    */
-  applyForkAutoSelect(result: ClientRun<TMessage>, options: SendOptions | undefined): boolean {
+  applyForkAutoSelect(result: ClientRun<TInput, TMessage>, options: SendOptions | undefined): boolean {
     // Spec: AIT-CT13e
     if (!options?.forkOf) return false;
 
@@ -438,7 +438,7 @@ export class NavigableBranchSource<
    * @param anchorCodecMessageId - The codec-message-id of the assistant being regenerated.
    * @returns True when a pending selection was recorded.
    */
-  applyRegenerateAutoSelect(result: ClientRun<TMessage>, anchorCodecMessageId: string): boolean {
+  applyRegenerateAutoSelect(result: ClientRun<TInput, TMessage>, anchorCodecMessageId: string): boolean {
     // A regenerate produces a new reply run parented at the SAME input node as
     // the original reply (the regenerate group). The agent mints the run-id, so
     // we cannot pin by it synchronously. Resolve the group root from the

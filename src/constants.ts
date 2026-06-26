@@ -110,6 +110,22 @@ export const HEADER_RUN_REASON = 'run-reason';
  */
 export const HEADER_INPUT_CODEC_MESSAGE_ID = 'input-codec-message-id';
 
+/**
+ * Header: JSON-stringified array of codec-message-ids of steers that the
+ * agent's iteration loop drained from pending into "recently processed"
+ * since the previous response. Stamped on each pipe's assistant outputs
+ * via `defaultHeaders`; omitted when the set is empty. Each steer appears
+ * on exactly one response: the response from the pipe that ran after the
+ * steer was first observed by `endable()`.
+ *
+ * Used by clients to resolve `activeRun.steer(...)` outcomes by membership:
+ * accumulate the union across observed responses for the run, then on
+ * `run-suspend` / `run-end` check whether the steer's own codec-message-id
+ * is in the union. Order-insensitive — does not rely on channel-serial
+ * monotonicity, which is not guaranteed for cross-publisher delivery.
+ */
+export const HEADER_STEER_CODEC_MESSAGE_IDS = 'steer-codec-message-ids';
+
 // ---------------------------------------------------------------------------
 // Run-end error headers (set on `ai-run-end` when `run-reason: error`)
 // ---------------------------------------------------------------------------

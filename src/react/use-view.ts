@@ -91,17 +91,17 @@ export interface ViewHandle<TInput extends CodecInputEvent, TMessage> {
    * Send one input message on the channel and fire a POST. See {@link ClientView.send}.
    * @throws Ably.ErrorInfo with code {@link ErrorCode.InvalidArgument} when no view is resolved (before the session is available, or when `skip` is `true`).
    */
-  send: (events: TInput | TInput[], options?: SendOptions) => Promise<ClientRun<TMessage>>;
+  send: (events: TInput | TInput[], options?: SendOptions) => Promise<ClientRun<TInput, TMessage>>;
   /**
    * Regenerate an assistant message, using this view's branch for history.
    * @throws Ably.ErrorInfo with code {@link ErrorCode.InvalidArgument} when no view is resolved (before the session is available, or when `skip` is `true`).
    */
-  regenerate: (messageId: string, options?: SendOptions) => Promise<ClientRun<TMessage>>;
+  regenerate: (messageId: string, options?: SendOptions) => Promise<ClientRun<TInput, TMessage>>;
   /**
    * Edit a user message, forking from this view's branch.
    * Rejects with an `Ably.ErrorInfo` (code {@link ErrorCode.InvalidArgument}) if no view is resolved — e.g. before the session is available, or when `skip` is `true`.
    */
-  edit: (messageId: string, inputs: TInput | TInput[], options?: SendOptions) => Promise<ClientRun<TMessage>>;
+  edit: (messageId: string, inputs: TInput | TInput[], options?: SendOptions) => Promise<ClientRun<TInput, TMessage>>;
 }
 
 /**

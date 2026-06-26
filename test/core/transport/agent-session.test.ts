@@ -24,6 +24,7 @@ import {
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_ID,
+  HEADER_STEER_CODEC_MESSAGE_IDS,
 } from '../../../src/constants.js';
 import type {
   ChannelWriter,
@@ -896,6 +897,124 @@ describe('AgentSession', () => {
       // The run was suspended, not ended — no run-end is published.
       expect(channel.publishCalls.filter((m) => m.name === 'ai-run-suspend')).toHaveLength(1);
       expect(channel.publishCalls.find((m) => m.name === 'ai-run-end')).toBeUndefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // run.endable() — delta predicate for steering loop
+  // -------------------------------------------------------------------------
+
+  describe('endable()', () => {
+    it('returns false before start()', () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      expect(run.endable()).toBe(false);
+    });
+
+    it('returns false after start() until pipe() is called', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+      // start() resolves but no pipe() yet — the trigger has not been processed.
+      expect(run.endable()).toBe(false);
+    });
+
+    it('returns true after start() + pipe() with no steering arriving', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+      await run.pipe(streamOf({ type: 'text', text: 'hi' }));
+      expect(run.endable()).toBe(true);
+    });
+
+    it('returns true when the abortSignal has fired', async () => {
+      const controller = new AbortController();
+      const run = createRunFromOpts(session, { runId: 'run-1', signal: controller.signal });
+      await run.start();
+      controller.abort();
+      // Cancel implies "ready to terminate" — endable() returns true regardless
+      // of pending steering, so the loop exits and the agent calls
+      // run.end({ reason: 'cancelled' }).
+      expect(run.endable()).toBe(true);
+    });
+
+    it("stamps a steer's codec-message-id on the response that ran after endable() drained it", async () => {
+      // Headline test: trigger id-1 starts the run; pipe(1)'s responses
+      // carry no `steer-codec-message-ids` (no steers folded yet); a steer
+      // of id-2 lands; endable() returns false and drains it into
+      // recentlyProcessed; pipe(2)'s responses carry
+      // `steer-codec-message-ids = ["id-2"]`.
+      // Build a fresh session with a codec whose decoder produces real
+      // input events for delivered messages (the default mock decoder
+      // returns empty so the listener's `event.inputs` filter rejects).
+      const ch = createMockChannel();
+      const functionalCodec = createMockCodec();
+      functionalCodec.createDecoder = vi.fn(() => ({
+        decode: (m: Ably.InboundMessage) => {
+          const hdrs = (m.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport ?? {};
+          const id = hdrs[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
+          return {
+            inputs: [{ kind: 'user-message' as const, message: { id, content: id } }],
+            outputs: [],
+          };
+        },
+      }));
+      const lookupableSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: functionalCodec,
+      });
+      await lookupableSession.connect();
+
+      const runId = 'run-headline';
+      const invocationId = 'inv-headline';
+      const inputEventId = 'p-headline';
+      const triggerId = 'id-1';
+      const steerId = 'id-2';
+
+      const run = createRunFromOpts(lookupableSession, { runId, invocationId, inputEventId });
+      const startPromise = run.start();
+      // Trigger publishes — no run-id (the agent mints the run-id at
+      // start-time for a fresh run).
+      deliverInputEvent(ch, {
+        invocationId,
+        codecMessageId: triggerId,
+        serial: 'serial-1',
+        inputEventId,
+        publisherClientId: 'user-a',
+      });
+      await startPromise;
+
+      // pipe(1) — no steer has folded; the assistant encoder's defaults
+      // do not include `steer-codec-message-ids`.
+      await run.pipe(streamOf({ type: 'text', text: 'response-1' }));
+      const pipe1Encoder = functionalCodec.encoderCalls.at(-1);
+      const headers1 = pipe1Encoder?.opts?.extras?.headers ?? {};
+      expect(headers1[HEADER_STEER_CODEC_MESSAGE_IDS]).toBeUndefined();
+
+      // Steer folds: user-input tagged with the active run-id. Routes
+      // through the Tree's _applyRunMessage path; the listener's
+      // `event.runId === runId` filter accepts it and the functional
+      // decoder yields one user-message input.
+      deliverInputEvent(ch, {
+        invocationId,
+        runId,
+        codecMessageId: steerId,
+        serial: 'serial-2',
+        inputEventId: `p-${steerId}`,
+        publisherClientId: 'user-a',
+      });
+
+      // endable() drains the steer into recentlyProcessed; loop iterates.
+      expect(run.endable()).toBe(false);
+
+      // pipe(2)'s assistant encoder defaults include the steer's id.
+      await run.pipe(streamOf({ type: 'text', text: 'response-2' }));
+      const pipe2Encoder = functionalCodec.encoderCalls.at(-1);
+      const headers2 = pipe2Encoder?.opts?.extras?.headers ?? {};
+      expect(headers2[HEADER_STEER_CODEC_MESSAGE_IDS]).toBe(JSON.stringify([steerId]));
+
+      // endable() returns true now — nothing further to drain.
+      expect(run.endable()).toBe(true);
+
+      await lookupableSession.close();
     });
   });
 
@@ -3299,7 +3418,7 @@ const viewMessageIds = (wiresOldestFirst: Ably.InboundMessage[]): string[] => {
   const sendDelegate: SendDelegate<TestInput, TestMessage> =
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     vi.fn(() =>
-      Promise.resolve<ClientRun<TestMessage>>({
+      Promise.resolve<ClientRun<TestInput, TestMessage>>({
         inputCodecMessageId: 'k',
         runId: 'r',
         status: 'active',
@@ -3309,6 +3428,10 @@ const viewMessageIds = (wiresOldestFirst: Ably.InboundMessage[]): string[] => {
         inputEventId: '',
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
         cancel: () => Promise.resolve(),
+        steer: () => ({
+          published: Promise.resolve({ serial: undefined }),
+          outcome: Promise.resolve({ consumed: false }),
+        }),
         toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       }),
     );

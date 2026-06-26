@@ -191,6 +191,19 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
    * is always still available on {@link StreamResult.error}.
    */
   onError?: (error: Ably.ErrorInfo) => void;
+
+  /**
+   * Called when a steering message folds into this Run's projection — a
+   * client published a user-input event tagged with this Run's `run-id`
+   * while the Run was active. Fires once per inbound steering message
+   * (per-message, not coalesced).
+   *
+   * The handler is a hint: it lets the agent race the steering arrival
+   * against an in-flight model call to decide whether to cancel and
+   * restart. The SDK never interrupts a model call itself.
+   * Authoritative visibility of pending steering is via {@link Run.endable}.
+   */
+  onSteer?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -277,6 +290,44 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
    * (pipe, suspend, end).
    */
   start(): Promise<void>;
+
+  /**
+   * Delta-predicate the agent uses as its loop continuation. Returns `false`
+   * when there is pending input the Run has not iterated on — either the
+   * original triggering input (on the first call after {@link Run.start})
+   * or a new steering message that has folded into the Run's projection
+   * since the previous `endable()` call. Returns `true` only when the
+   * trigger has been processed at least once AND nothing new has arrived
+   * since the previous call.
+   *
+   * Each call sets the baseline for the next; it is NOT a state query.
+   * Once the run's `abortSignal` has fired, `endable()` returns `true`
+   * regardless of pending steering — cancel implies the loop should exit.
+   *
+   * Each call drains the set of steers folded since the previous call
+   * into a per-pipe "recently processed" set. The next `pipe()` stamps
+   * that set on its assistant outputs as `steer-codec-message-ids`,
+   * letting clients resolve `activeRun.steer(...)` outcomes by
+   * membership when the Run's terminal lifecycle event lands.
+   *
+   * The natural loop:
+   *
+   * ```ts
+   * while (!run.endable()) {
+   *   const messages = run.messages;
+   *   const stream = await model.stream({ messages });
+   *   await run.pipe(stream);
+   * }
+   * await run.end({ reason: 'complete' });
+   * ```
+   *
+   * Safe to call before {@link Run.start} resolves: returns `false` until
+   * `start()` completes and the trigger has been responded to (any
+   * output-producing Run method — `pipe()` today — has run at least once).
+   * @returns `true` when the Run has caught up on all pending input since
+   *   the previous call; `false` otherwise.
+   */
+  endable(): boolean;
 
   /**
    * Pipe a ReadableStream through the encoder to the channel.

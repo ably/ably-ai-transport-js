@@ -120,7 +120,7 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     runs: vi.fn(() => []),
     hasOlder: vi.fn(() => false),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-    loadOlder: vi.fn(() => Promise.resolve()),
+    loadOlder: vi.fn(() => Promise.resolve([])),
     // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires explicit undefined return for the contract
     runOf: vi.fn(() => undefined),
     // eslint-disable-next-line unicorn/no-useless-undefined -- vi.fn requires explicit undefined return for the contract

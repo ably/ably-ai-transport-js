@@ -166,6 +166,14 @@ export interface View<TMessage> {
    * `limit` hidden messages, then advances the pagination window. Emits 'update'
    * when the visible list changes.
    *
+   * Resolves to the page it revealed: the codecMessages newly prepended to the
+   * window, chronological (oldest-first), so the same array prefixes the next
+   * {@link View.getMessages} result. Returns `[]` when nothing older was
+   * revealed — channel history is exhausted, or the view is closed / a load is
+   * already in flight. This is the delta a caller inspects to drive a
+   * caller-owned stop criterion (e.g. page back until a known `message.id`
+   * reappears, then concatenate stored + live history).
+   *
    * The pagination unit is the **codecMessage**. A node (a user prompt, or a
    * reply Run) contributes 1..N messages to the flat list returned by
    * {@link View.getMessages}; the window counts those messages, so a node
@@ -174,8 +182,9 @@ export interface View<TMessage> {
    * node boundary. Such a partially-revealed run still appears in
    * {@link View.runs} and is event-scoped.
    * @param limit - Number of older codecMessages to reveal. Defaults to 10.
+   * @returns The revealed codecMessages, oldest-first; `[]` when nothing older was revealed.
    */
-  loadOlder(limit?: number): Promise<void>;
+  loadOlder(limit?: number): Promise<CodecMessage<TMessage>[]>;
 
   // --- Run lookup ---
 

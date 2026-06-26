@@ -2221,6 +2221,87 @@ describe('client view', () => {
       const node = view.runs().find((n) => n.runId === 'R-resumed');
       expect(node?.status).toBe('active');
     });
+
+    it('returns the revealed page oldest-first, prefixing the new window', async () => {
+      const v = makeView(headerDecoder());
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(makeCursor([multiMessagePage()]));
+
+      // First reveal: window was empty, so the whole new window is the page.
+      const page1 = await v.loadOlder(1);
+      expect(page1.map((m) => m.message.id)).toEqual(['m-b']);
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['m-b']);
+
+      // Each later reveal returns only the older slice newly prepended, and that
+      // slice prefixes the resulting window.
+      const page2 = await v.loadOlder(1);
+      expect(page2.map((m) => m.message.id)).toEqual(['m-a']);
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['m-a', 'm-b']);
+
+      const page3 = await v.loadOlder(1);
+      expect(page3.map((m) => m.message.id)).toEqual(['mh0']);
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['mh0', 'm-a', 'm-b']);
+    });
+
+    it('returns [] when channel history is exhausted', async () => {
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(makeCursor([]));
+      expect(await view.loadOlder()).toEqual([]);
+      expect(view.hasOlder()).toBe(false);
+    });
+
+    it('returns [] from a populated window once history is exhausted', async () => {
+      const v = makeView(headerDecoder());
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(makeCursor([multiMessagePage()]));
+
+      // Drain everything: the window is now non-empty and history is exhausted.
+      await v.loadOlder(10);
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['mh0', 'm-a', 'm-b']);
+      expect(v.hasOlder()).toBe(false);
+
+      // A further loadOlder over the populated-but-exhausted window (anchor
+      // defined, nothing older revealed) resolves to [] and leaves it unchanged.
+      expect(await v.loadOlder(1)).toEqual([]);
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['mh0', 'm-a', 'm-b']);
+    });
+
+    it('loadOlder(1) returns exactly one message and does not refetch until the buffered page drains', async () => {
+      const v = makeView(headerDecoder());
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(makeCursor([multiMessagePage()]));
+
+      const p1 = await v.loadOlder(1);
+      expect(p1.map((m) => m.message.id)).toEqual(['m-b']);
+      expect(vi.mocked(loadHistoryPages)).toHaveBeenCalledTimes(1);
+
+      // Drained from the buffer — still exactly one fetch, no new round-trip.
+      const p2 = await v.loadOlder(1);
+      expect(p2.map((m) => m.message.id)).toEqual(['m-a']);
+      expect(vi.mocked(loadHistoryPages)).toHaveBeenCalledTimes(1);
+    });
+
+    it('lets a caller walk back to a known message id and compose [...db, ...live] with no duplicate', async () => {
+      const v = makeView(headerDecoder());
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(makeCursor([multiMessagePage()]));
+
+      // The caller's own store already holds the oldest message; its newest row
+      // is the seam to stop the backward walk at.
+      const db = [{ id: 'mh0' }];
+      const seamId = db.at(-1)?.id;
+
+      let reachedSeam = false;
+      while (v.hasOlder()) {
+        const [older] = await v.loadOlder(1);
+        if (older?.message.id === seamId) {
+          reachedSeam = true;
+          break;
+        }
+      }
+      expect(reachedSeam).toBe(true);
+
+      // At most one overlap — the seam row just revealed; drop it, no set dedup.
+      const window = v.getMessages();
+      const live = window[0]?.message.id === seamId ? window.slice(1) : window;
+      const conversation = [...db, ...live.map((m) => m.message)];
+      expect(conversation.map((m) => m.id)).toEqual(['mh0', 'm-a', 'm-b']);
+    });
   });
 
   // -------------------------------------------------------------------------

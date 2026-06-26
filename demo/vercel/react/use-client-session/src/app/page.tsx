@@ -5,7 +5,7 @@ import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import { Chat } from './components/chat';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
-import { generateChannelSlug } from './lib/channel-name';
+import { generateChannelSlug, generateClientName } from './lib/channel-name';
 
 const { ClientSessionProvider } = SessionHooks;
 
@@ -41,7 +41,7 @@ function ChatPage() {
   const limit = Number(searchParams.get('limit')) || undefined;
 
   const [channelName] = useState(() => paramChannel ?? `${CHANNEL_NAMESPACE}${generateChannelSlug()}`);
-  const [clientId] = useState(() => paramClientId ?? `user-${crypto.randomUUID().slice(0, 8)}`);
+  const [clientId] = useState(() => paramClientId ?? generateClientName());
 
   useEffect(() => {
     if (paramChannel && paramClientId) return;

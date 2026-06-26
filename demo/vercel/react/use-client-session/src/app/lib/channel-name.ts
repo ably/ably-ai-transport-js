@@ -82,7 +82,14 @@ const WORDS = [
   'willow',
 ];
 
+function pickWord(): string {
+  return WORDS[Math.floor(Math.random() * WORDS.length)];
+}
+
 export function generateChannelSlug(): string {
-  const pick = () => WORDS[Math.floor(Math.random() * WORDS.length)];
-  return `${pick()}-${pick()}-${pick()}`;
+  return `${pickWord()}-${pickWord()}-${pickWord()}`;
+}
+
+export function generateClientName(): string {
+  return `${pickWord()}-${pickWord()}`;
 }

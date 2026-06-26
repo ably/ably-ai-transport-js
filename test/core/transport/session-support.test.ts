@@ -107,32 +107,58 @@ describe('continuityLostError', () => {
 });
 
 describe('subscribeAndAttach', () => {
-  it('subscribes the listener and resolves on success', async () => {
+  it('subscribes the listener, attaches the channel, and resolves on success', async () => {
     const subscribe = vi.fn<() => Promise<void>>().mockReturnValue(Promise.resolve());
-    const channel = { subscribe } as unknown as Ably.RealtimeChannel;
+    const attach = vi.fn<() => Promise<void>>().mockReturnValue(Promise.resolve());
+    const channel = { subscribe, attach } as unknown as Ably.RealtimeChannel;
     const onError = vi.fn();
 
     await expect(
       subscribeAndAttach(channel, noopListener, silentLogger, 'DefaultClientSession', onError),
     ).resolves.toBeUndefined();
     expect(subscribe).toHaveBeenCalledWith(noopListener);
+    // attach() is forced after subscribe: subscribe's implicit attach can resolve
+    // with the channel still INITIALIZED, so the explicit attach guarantees the
+    // write guard sees an ATTACHED/ATTACHING channel by the time connect() resolves.
+    expect(attach).toHaveBeenCalledOnce();
     expect(onError).not.toHaveBeenCalled();
   });
 
   it('wraps a subscribe failure, reports it via onError, and rejects with the same error', async () => {
     const cause = new Ably.ErrorInfo('attach refused', 40160, 401);
     const subscribe = vi.fn<() => Promise<void>>().mockRejectedValue(cause);
-    const channel = { subscribe } as unknown as Ably.RealtimeChannel;
+    const attach = vi.fn<() => Promise<void>>().mockReturnValue(Promise.resolve());
+    const channel = { subscribe, attach } as unknown as Ably.RealtimeChannel;
     const onError = vi.fn();
 
     const rejection = subscribeAndAttach(channel, noopListener, silentLogger, 'DefaultAgentSession', onError);
     await expect(rejection).rejects.toBeErrorInfo({
       code: ErrorCode.SessionSubscriptionError,
       statusCode: 500,
-      message: 'unable to subscribe to channel; attach refused',
+      message: 'unable to subscribe and attach channel; attach refused',
       cause,
     });
     // The same error instance is both surfaced and thrown — never two deliveries.
+    const surfaced = onError.mock.calls[0]?.[0] as Ably.ErrorInfo;
+    await expect(rejection.catch((error: unknown) => error)).resolves.toBe(surfaced);
+    // A subscribe failure short-circuits before the explicit attach.
+    expect(attach).not.toHaveBeenCalled();
+  });
+
+  it('wraps an attach failure, reports it via onError, and rejects with the same error', async () => {
+    const cause = new Ably.ErrorInfo('attach timed out', 90007, 500);
+    const subscribe = vi.fn<() => Promise<void>>().mockReturnValue(Promise.resolve());
+    const attach = vi.fn<() => Promise<void>>().mockRejectedValue(cause);
+    const channel = { subscribe, attach } as unknown as Ably.RealtimeChannel;
+    const onError = vi.fn();
+
+    const rejection = subscribeAndAttach(channel, noopListener, silentLogger, 'DefaultClientSession', onError);
+    await expect(rejection).rejects.toBeErrorInfo({
+      code: ErrorCode.SessionSubscriptionError,
+      statusCode: 500,
+      message: 'unable to subscribe and attach channel; attach timed out',
+      cause,
+    });
     const surfaced = onError.mock.calls[0]?.[0] as Ably.ErrorInfo;
     await expect(rejection.catch((error: unknown) => error)).resolves.toBe(surfaced);
   });

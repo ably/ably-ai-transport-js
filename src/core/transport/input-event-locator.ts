@@ -1,5 +1,5 @@
 /**
- * locateInputEvent — find the channel message that triggered an agent run.
+ * locateInputEvent — watch for the channel message that triggered an agent run.
  *
  * Before `Run.start()` publishes run-start, the agent must find the input event
  * (`invocation.inputEventId`) that invoked it, to read the user's message and
@@ -8,20 +8,17 @@
  * prior live arrival), may arrive live during the call, or may sit in channel
  * history (published just before the agent attached).
  *
- * The lookup races three sources and resolves with whichever surfaces the
- * expected event-id first:
+ * This is a passive watcher — it never pages history itself. It resolves with
+ * whichever of two sources surfaces the expected event-id first:
  *  1. A pre-scan of the Tree's event-id index (`findAblyMessageByEventId`).
  *  2. A live listener on the Tree's `ably-message` event.
- *  3. The shared {@link HistoryHydrator}, driven until the trigger is found —
- *     each page folds into the Tree and surfaces through the same
- *     `ably-message` event, so the live listener catches history arrivals too.
  *
- * The only bound is `timeoutMs`: on timeout the in-flight history scan is
- * cancelled and the lookup rejects with `InputEventNotFound` (wrapping any
- * history-scan failure as `cause` so a broken fetch isn't masked behind the
- * timeout). There is no transport-side "how far back" give-up — the channel's
- * own `untilAttach` exhaustion ends the scan otherwise, and the predicate
- * (`settled`) is the sole "found" signal.
+ * History is paged by the one history-pagination driver — `run.view.loadOlder()`
+ * — and every paged fold surfaces through the same `ably-message` event, so a
+ * trigger walked back from channel history is caught by the live listener too.
+ * The watcher has no deadline: it resolves on a match and otherwise rejects only
+ * when `signal` aborts (the run is cancelled or the session closes). Callers that
+ * want a deadline race the returned promise against their own timeout.
  */
 
 import * as Ably from 'ably';
@@ -29,8 +26,7 @@ import * as Ably from 'ably';
 import { HEADER_EVENT_ID } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
-import { errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
-import type { HistoryHydrator } from './history-hydrator.js';
+import { getTransportHeaders } from '../../utils.js';
 
 /**
  * The Tree capabilities {@link locateInputEvent} reads: the event-id index
@@ -48,7 +44,7 @@ export interface InputEventSource {
  * The matched triggering input event's metadata. `Run.start` reads `headers`
  * (run-id, parent, forkOf, continuation flag) and `clientId` (the publisher's
  * Ably channel-level id) to derive per-run metadata. The Tree has already
- * folded the message by the time the lookup resolves, so callers do not decode
+ * folded the message by the time the watcher resolves, so callers do not decode
  * the raw matched message themselves.
  */
 export interface InputEventLookupResult {
@@ -62,52 +58,45 @@ export interface InputEventLookupResult {
 export interface LocateInputEventOptions {
   /** The Tree to pre-scan and subscribe to for the triggering input event. */
   tree: InputEventSource;
-  /** The shared history hydrator, driven until the trigger is found. */
-  hydrator: HistoryHydrator;
   /** The invocation id this lookup is for (logging / error messages). */
   invocationId: string;
   /** The run id this lookup is for (logging / error messages). */
   runId: string;
-  /** The `event-id` the lookup must observe before resolving. */
+  /** The `event-id` the watcher must observe before resolving. */
   expectedEventId: string;
-  /** Maximum total wait across the live + history sources. */
-  timeoutMs: number;
-  /** AbortSignal that aborts the lookup if the run is cancelled. */
+  /** AbortSignal that aborts the watcher if the run is cancelled / session closes. */
   signal: AbortSignal;
+  /**
+   * Called synchronously the instant the trigger is matched — inside the fold
+   * that surfaced it, before the returned promise resolves. The agent uses this
+   * to pin `run.view` and resolve per-run metadata while the fold is still on the
+   * stack, so a concurrent `loadOlder` walk sees the pinned branch immediately
+   * (rather than a microtask later). Mutate nothing the watcher relies on.
+   */
+  onMatched?: (result: InputEventLookupResult) => void;
   /** Logger for diagnostic output. */
   logger?: Logger;
 }
 
 /**
- * Locate the triggering input event for a run. See the file header for the
- * race and the bound.
- * @param opts - Lookup parameters.
+ * Watch for the triggering input event for a run. See the file header for the
+ * two sources and the abort-only bound.
+ * @param opts - Watcher parameters.
  * @returns The matched message's transport headers and publisher clientId.
  */
 // eslint-disable-next-line @typescript-eslint/promise-function-async -- the body IS a Promise executor; async would double-wrap it
 export const locateInputEvent = (opts: LocateInputEventOptions): Promise<InputEventLookupResult> => {
-  const { tree, hydrator, invocationId, runId, expectedEventId, timeoutMs, signal, logger } = opts;
-
-  // Bounded history fetch in parallel with the live wait; this controller lets
-  // the lookup cancel the in-flight fetch on timeout / abort, independently of
-  // the run signal.
-  const historyController = new AbortController();
+  const { tree, invocationId, runId, expectedEventId, signal, onMatched, logger } = opts;
 
   return new Promise<InputEventLookupResult>((resolve, reject) => {
     let settled = false;
-    // A genuine history-scan failure (not a cancel-induced abort) recorded so
-    // the timeout rejection can surface it as `cause` — the live path may still
-    // win the race, so the failure alone doesn't reject.
-    let historyError: Ably.ErrorInfo | undefined;
-    /* eslint-disable prefer-const -- forward-declared so cleanup() / onCancelled() can reference before the listener register or the timeout schedule has run. */
+    // Forward-declared so cleanup() / onCancelled() can reference it before the
+    // listener is registered.
+    // eslint-disable-next-line prefer-const
     let unregisterLive: (() => void) | undefined;
-    let timer: ReturnType<typeof setTimeout> | number | undefined;
-    /* eslint-enable */
 
     const cleanup = (): void => {
       if (unregisterLive) unregisterLive();
-      if (timer !== undefined) clearTimeout(timer);
-      historyController.abort();
       signal.removeEventListener('abort', onCancelled);
     };
 
@@ -125,7 +114,11 @@ export const locateInputEvent = (opts: LocateInputEventOptions): Promise<InputEv
       settled = true;
       cleanup();
       logger?.debug('locateInputEvent(); matched input event', { runId, invocationId });
-      resolve({ headers: getTransportHeaders(m), clientId: m.clientId });
+      const result: InputEventLookupResult = { headers: getTransportHeaders(m), clientId: m.clientId };
+      // Synchronous hook (run inside the surfacing fold) before the promise
+      // resolves, so the agent can pin run.view while the fold is on the stack.
+      onMatched?.(result);
+      resolve(result);
     };
 
     // Whether a message is the expected input event.
@@ -146,55 +139,12 @@ export const locateInputEvent = (opts: LocateInputEventOptions): Promise<InputEv
       return;
     }
 
-    // 2. Subscribe to the Tree's `ably-message` event for live arrivals. The
-    //    hydrator folds first; `emitAblyMessage` notifies subscribers AND
-    //    populates the event-id index. Wires folded by the parallel history
-    //    scan flow through the same event, so the listener picks them up
-    //    uniformly.
+    // 2. Subscribe to the Tree's `ably-message` event for arrivals. The Tree
+    //    emits it for every fold — a post-attach live publish OR a page the
+    //    history-pagination driver (`run.view.loadOlder()`) walks back into the
+    //    Tree — so both paths surface the trigger here uniformly.
     unregisterLive = tree.on('ably-message', (msg) => {
       if (!settled && matches(msg)) finishOk(msg);
     });
-
-    // 3. Drive the shared history hydrator in parallel. Each page folds into the
-    //    Tree, triggering the listener above; the scan stops when the trigger is
-    //    found (`settled`) or the channel is exhausted, leaving the shared cursor
-    //    resumable for a later conversation hydration. A failure is recorded so
-    //    the timeout can surface it as `cause`; the live path may still win.
-    hydrator
-      .foldUntil(() => settled, historyController.signal)
-      .catch((error: unknown) => {
-        if (settled) return;
-        historyError =
-          error instanceof Ably.ErrorInfo
-            ? error
-            : new Ably.ErrorInfo(
-                `unable to scan history for input event; ${errorMessage(error)}`,
-                ErrorCode.HistoryFetchFailed,
-                500,
-                errorCause(error),
-              );
-        logger?.warn('locateInputEvent(); history scan failed (continuing on live path)', {
-          error: errorMessage(error),
-        });
-      });
-
-    // 4. Overall timeout — cancels the in-flight history fetch and rejects with
-    //    InputEventNotFound.
-    timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(
-        new Ably.ErrorInfo(
-          `unable to look up input event; input event ${expectedEventId} for invocation ${invocationId} not found within ${String(timeoutMs)}ms`,
-          ErrorCode.InputEventNotFound,
-          504,
-          historyError,
-        ),
-      );
-    }, timeoutMs);
-    // Node returns an unref-able Timeout; browsers return a number. Unref so a
-    // parked lookup cannot keep a Node process alive by itself.
-    if (typeof timer === 'object') timer.unref();
   });
 };

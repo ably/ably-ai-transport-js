@@ -109,7 +109,6 @@ describe('useChat error propagation', () => {
       // Tests use the runId-coordination pattern (invocationId from the
       // client doesn't reach the test-driven serverRun), so skip the
       // channel input-event lookup entirely.
-      inputEventLookupTimeoutMs: 0,
     });
     await agentSession.connect();
 

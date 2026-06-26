@@ -39,17 +39,6 @@ export interface AgentSessionOptions<
   logger?: Logger;
 
   /**
-   * How long `Run.start()` will wait for the triggering input event
-   * (`invocation.inputEventId`) to arrive on the channel — across both the
-   * post-attach live subscription and the bounded history scan — before
-   * rejecting with `InputEventNotFound`. The rejection bubbles up to the
-   * developer's HTTP handler, which should surface it as a non-2xx response
-   * so the client's pending send fails.
-   * Default: 30000 (30 seconds).
-   */
-  inputEventLookupTimeoutMs?: number;
-
-  /**
    * Extra Ably channel modes to request on the session's channel, on top of the
    * modes AI Transport always needs. Pass `OBJECT_MODES` (or
    * `['OBJECT_SUBSCRIBE', 'OBJECT_PUBLISH']`) to use Ably LiveObjects via
@@ -272,9 +261,28 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
   readonly view: View<TMessage>;
 
   /**
+   * Resolves when this run's triggering input (`invocation.inputEventId`) folds
+   * into the Tree — whether by a live arrival or a `run.view.loadOlder()` page
+   * the caller drove on a cold start — i.e. the moment `run.view`'s pinned leaf
+   * becomes present. Resolves immediately when the invocation carries no
+   * `inputEventId` (nothing to locate).
+   *
+   * There is no built-in deadline: it never rejects on a timeout. It rejects
+   * only if the run is cancelled or the session is closed before the trigger
+   * folds. Race it against your own timeout if you need one. {@link AgentRun.start}
+   * awaits this internally before reading the trigger's wire headers, so you
+   * only await it directly to read the trigger (or page extra ancestor context)
+   * before deciding how to start.
+   */
+  readonly located: Promise<void>;
+
+  /**
    * Publish the run's opening lifecycle event to the channel (run-start, or
-   * run-resume for a continuation). Must be called before any other run method
-   * (pipe, suspend, end).
+   * run-resume for a continuation). Awaits {@link AgentRun.located} first — so a
+   * cold-start caller pages `run.view` for context, then calls `start()` and
+   * locating is handled for them — then reads the trigger's wire headers and
+   * publishes. Must be called before any other run method (pipe, suspend, end).
+   * Propagates `located`'s rejection (cancel / session close).
    */
   start(): Promise<void>;
 
@@ -373,19 +381,22 @@ export interface AgentSession<TOutput extends CodecOutputEvent, TProjection, TMe
   /**
    * Subscribe (unfiltered) to the shared channel and (implicitly) attach. The
    * subscribe is deliberately unfiltered so channel-history-replayed input
-   * events reach the materialisation engine, which the input-event lookup
-   * queries via the Tree. Idempotent — subsequent calls return the same
-   * promise. All run methods (`start`, `pipe`, `loadConversation`,
-   * `suspend`, `end`) throw `InvalidArgument` until
-   * `connect()` has been *called*; once it has, they await the in-flight
-   * connect promise rather than throwing.
+   * events fold into the Tree and surface through its event-id index and
+   * `ably-message` event — the two sources each run's input-event watcher uses
+   * to catch a trigger published before the agent attached. Idempotent —
+   * subsequent calls return the same promise. All run methods (`start`, `pipe`,
+   * `loadConversation`, `suspend`, `end`) throw `InvalidArgument` until
+   * `connect()` has been *called*; once it has, they await the in-flight connect
+   * promise rather than throwing.
    */
   connect(): Promise<void>;
 
   /**
-   * Create a new run from an invocation. Synchronous — no channel activity
-   * until start() is called. The run is registered for cancel routing
-   * immediately so that early cancels fire the AbortSignal.
+   * Create a new run from an invocation. Returns synchronously, and arms the
+   * run's input-event watcher — a passive pre-scan of the Tree plus a listener
+   * for the trigger's arrival (it publishes nothing to the channel until
+   * start()). The run is registered for cancel routing immediately so that
+   * early cancels fire the AbortSignal.
    * @param invocation - The {@link Invocation} carrying run identity and
    *   conversation messages.
    * @param runtime - Optional runtime hooks and external AbortSignal

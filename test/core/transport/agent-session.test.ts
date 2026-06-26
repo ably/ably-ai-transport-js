@@ -419,7 +419,6 @@ const lookupSession = (): {
     client: createMockClient(ch),
     channelName: 'cancel-before-start',
     codec: codecWithFunctionalDecoder(),
-    inputEventLookupTimeoutMs: 5000,
   });
   return { session, ch };
 };
@@ -667,7 +666,6 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'continue',
         codec: c,
-        inputEventLookupTimeoutMs: 5000,
       });
       await s.connect();
 
@@ -709,7 +707,6 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'regen',
         codec: c,
-        inputEventLookupTimeoutMs: 5000,
       });
       await s.connect();
 
@@ -1027,7 +1024,6 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'pipe-regen-echo',
         codec: c,
-        inputEventLookupTimeoutMs: 5000,
       });
       await s.connect();
 
@@ -1077,7 +1073,6 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'pipe-parent-default',
         codec: c,
-        inputEventLookupTimeoutMs: 5000,
       });
       await s.connect();
 
@@ -1416,7 +1411,6 @@ describe('AgentSession', () => {
         channelName: 'cancel-evict',
         codec: codecWithFunctionalDecoder(),
         logger,
-        inputEventLookupTimeoutMs: 5000,
       });
       await s.connect();
 
@@ -1471,7 +1465,6 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'cancel-before-start',
         codec: codecWithFunctionalDecoder(),
-        inputEventLookupTimeoutMs: 5000,
       });
       await s2.connect();
       const run = createRunFromOpts(s2, { runId: 'run-fresh', invocationId: 'inv-fresh', inputEventId: 'p-fresh' });
@@ -1847,7 +1840,6 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'multi-msg',
         codec: c,
-        inputEventLookupTimeoutMs: 5000,
       });
       await s.connect();
 
@@ -1866,30 +1858,6 @@ describe('AgentSession', () => {
       await s.close();
     });
 
-    it('rejects with InputEventNotFound naming the event when the triggering event never arrives', async () => {
-      const ch = createMockChannel();
-      const c = codecWithFunctionalDecoder();
-      const s = createAgentSession({
-        client: createMockClient(ch),
-        channelName: 'partial',
-        codec: c,
-        inputEventLookupTimeoutMs: 5,
-      });
-      await s.connect();
-
-      const runId = 'r-partial';
-      const invocationId = 'inv-partial';
-      const run = createRunFromOpts(s, { runId, invocationId, inputEventId: 'p-a' });
-      const startPromise = run.start();
-
-      // Deliver nothing — timeout fires before the event arrives.
-      const rejection = await startPromise.catch((error: unknown) => error);
-      expect(rejection).toBeErrorInfoWithCode(ErrorCode.InputEventNotFound);
-      expect((rejection as Ably.ErrorInfo).message).toContain('input event p-a');
-      expect((rejection as Ably.ErrorInfo).message).toContain('not found within');
-      await s.close();
-    });
-
     it('drains buffered input events in insertion order and stays registered for the remainder', async () => {
       const ch = createMockChannel();
       const c = codecWithFunctionalDecoder();
@@ -1897,7 +1865,6 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'drain',
         codec: c,
-        inputEventLookupTimeoutMs: 5000,
       });
       await s.connect();
 
@@ -1927,7 +1894,6 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'continuation-wait',
         codec: c,
-        inputEventLookupTimeoutMs: 5000,
       });
       await s.connect();
 
@@ -1966,7 +1932,6 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'buffer-then-drain',
         codec: c,
-        inputEventLookupTimeoutMs: 5000,
       });
       await s.connect();
 
@@ -1992,7 +1957,6 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'route-by-event-id',
         codec: c,
-        inputEventLookupTimeoutMs: 5000,
       });
       await s.connect();
 
@@ -2013,45 +1977,6 @@ describe('AgentSession', () => {
       await s.close();
     });
 
-    it('times out with InputEventNotFound when wire decode fails (decode error → no Tree emit)', async () => {
-      const ch = createMockChannel();
-      // Decoder throws on any input. Tree-based lookup folds via the
-      // applier; a decode throw skips both the fold and the
-      // Tree's `ably-message` emit, so the lookup never sees the wire and
-      // eventually times out with `InputEventNotFound`. Session-level
-      // `onError` fires for the decode failure (not asserted here).
-      const codec: Codec<TestInput, TestOutput, TestProjection, TestMessage> = {
-        init: (): TestProjection => ({ messages: [] }),
-        fold: (state: TestProjection): TestProjection => state,
-        getMessages: (p: TestProjection) => p.messages.map((m) => ({ codecMessageId: m.id, message: m })),
-        createUserMessage: (m: TestMessage) => ({ kind: 'user-message' as const, message: m }),
-        createRegenerate: (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }),
-        createEncoder: vi.fn(() => createMockEncoder()),
-        createDecoder: vi.fn(() => ({
-          decode: () => {
-            throw new Error('boom');
-          },
-        })),
-      };
-      const s = createAgentSession({
-        client: createMockClient(ch),
-        channelName: 'decode-fail',
-        codec,
-        inputEventLookupTimeoutMs: 100,
-      });
-      await s.connect();
-
-      const runId = 'r-bad';
-      const invocationId = 'inv-bad';
-      const run = createRunFromOpts(s, { runId, invocationId, inputEventId: 'p-a' });
-      const startPromise = run.start();
-      deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'a', serial: '01', inputEventId: 'p-a' });
-
-      const rejection = await startPromise.catch((error: unknown) => error);
-      expect(rejection).toBeErrorInfoWithCode(ErrorCode.InputEventNotFound);
-      await s.close();
-    });
-
     it('cancels the lookup when the run signal aborts mid-collection', async () => {
       const ch = createMockChannel();
       const c = codecWithFunctionalDecoder();
@@ -2059,7 +1984,6 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'abort-mid',
         codec: c,
-        inputEventLookupTimeoutMs: 5000,
       });
       await s.connect();
 
@@ -2122,37 +2046,12 @@ describe('AgentSession input-event lookup', () => {
     await session.close();
   });
 
-  it('start() rejects with InputEventNotFound when timeout lapses', async () => {
-    const channel = createMockChannel();
-    const codec = createMockCodec();
-    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
-      client: createMockClient(channel),
-      channelName: 'test-channel',
-      codec,
-      inputEventLookupTimeoutMs: 10,
-    });
-    await session.connect();
-
-    const run = createRunFromOpts(session, {
-      runId: 'run-1',
-      invocationId: 'inv-needs-prompt',
-      inputEventId: 'p-1', // signal that an input event should be looked up
-    });
-
-    await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.InputEventNotFound);
-    // The failure surfaces purely as a `Run.start()` rejection; the agent
-    // must not publish a phantom `ai-run-end` (no `ai-run-start` was ever
-    // published, and `run-end` without `run-start` would break the
-    // lifecycle invariant for other channel observers).
-    expect(channel.publishCalls.find((m) => m.name === 'ai-run-end')).toBeUndefined();
-    expect(channel.publishCalls.find((m) => m.name === 'ai-run-start')).toBeUndefined();
-    await session.close();
-  });
-
   it('start() resolves from channel history when the trigger was published before the agent attached', async () => {
     // The agent may be spun up after the client's POST: the triggering input
-    // event is already in channel history and will never arrive live. The
-    // lookup's parallel history scan must surface it and resolve start().
+    // event is already in channel history and will never arrive live. The agent
+    // pages it in with the one history driver — `run.view.loadOlder()` — which
+    // folds the trigger into the Tree; `located` (which `start()` awaits)
+    // resolves on that fold.
     const ch = createMockChannel();
     const triggerWire = {
       name: 'text',
@@ -2176,12 +2075,13 @@ describe('AgentSession input-event lookup', () => {
       client: createMockClient(ch),
       channelName: 'history-only-trigger',
       codec: codecWithFunctionalDecoder(),
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
 
     const run = createRunFromOpts(session, { runId: 'run-h', invocationId: 'inv-hist', inputEventId: 'p-u1' });
-    // No deliverInputEvent — history is the only source for the trigger.
+    // No deliverInputEvent — history is the only source for the trigger. Page it
+    // in via the sole history driver, then start.
+    while (run.view.hasOlder()) await run.view.loadOlder();
     await expect(run.start()).resolves.toBeUndefined();
 
     expect(ch.history).toHaveBeenCalled();
@@ -2189,7 +2089,7 @@ describe('AgentSession input-event lookup', () => {
     await session.close();
   });
 
-  it('forwards historyPageSize to the channel-history fetch limit used by the input-event lookup', async () => {
+  it('forwards historyPageSize to the channel-history fetch limit used by run.view.loadOlder()', async () => {
     const ch = createMockChannel();
     const triggerWire = {
       name: 'text',
@@ -2213,31 +2113,28 @@ describe('AgentSession input-event lookup', () => {
       client: createMockClient(ch),
       channelName: 'history-page-size',
       codec: codecWithFunctionalDecoder(),
-      inputEventLookupTimeoutMs: 5000,
       historyPageSize: 7,
     });
     await session.connect();
 
     const run = createRunFromOpts(session, { runId: 'run-ps', invocationId: 'inv-ps', inputEventId: 'p-u1' });
+    while (run.view.hasOlder()) await run.view.loadOlder();
     await expect(run.start()).resolves.toBeUndefined();
 
     expect(ch.history).toHaveBeenCalledWith(expect.objectContaining({ limit: 7 }));
     await session.close();
   });
 
-  it('start() rejects promptly when channel continuity is lost mid-lookup (no timeout wait)', async () => {
-    // Continuity loss aborts every registered run BEFORE swapping the Tree,
-    // so an in-flight input-event lookup must reject via its run signal
-    // instead of idling on the abandoned Tree's listener until the lookup
-    // timeout. The deliberately huge timeout makes a regression hang the
-    // test past the suite's per-test timeout rather than pass slowly.
+  it('start() rejects promptly when channel continuity is lost while awaiting the trigger', async () => {
+    // Continuity loss aborts every registered run BEFORE swapping the Tree, so a
+    // run parked in start() awaiting `located` must reject via its run signal
+    // rather than hang (located has no deadline). The trigger never arrives.
     const ch = createMockChannel();
     const onError = vi.fn();
     const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(ch),
       channelName: 'continuity-mid-lookup',
       codec: codecWithFunctionalDecoder(),
-      inputEventLookupTimeoutMs: 600_000,
     });
     session.on('error', onError);
     await session.connect();
@@ -2251,49 +2148,154 @@ describe('AgentSession input-event lookup', () => {
     expect(onError).toHaveBeenCalledWith(expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost }));
     await session.close();
   });
+});
 
-  it('unrefs the lookup timeout timer so a parked lookup cannot hold a Node process open', async () => {
-    // The lookup timer must be unref'd: an abandoned lookup (caller gone,
-    // nothing else awaiting) must not keep the event loop alive for the
-    // full timeout on its own.
-    const unrefSpy = vi.fn();
-    const realSetTimeout = globalThis.setTimeout.bind(globalThis);
-    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((handler: () => void, ms?: number) => {
-      const timer = realSetTimeout(handler, ms);
-      const realUnref = timer.unref.bind(timer);
-      timer.unref = () => {
-        unrefSpy();
-        return realUnref();
-      };
-      return timer;
-    }) as typeof setTimeout);
+// ---------------------------------------------------------------------------
+// AgentRun.located — the no-deadline trigger watcher start() awaits
+// ---------------------------------------------------------------------------
 
-    try {
-      const ch = createMockChannel();
-      const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
-        client: createMockClient(ch),
-        channelName: 'unref-lookup',
-        codec: codecWithFunctionalDecoder(),
-        inputEventLookupTimeoutMs: 5000,
-      });
-      await session.connect();
+// A run-less user input wire carrying the given event-id / codec-message-id.
+const locatedHistoryInput = (eventId: string, codecMessageId: string, serial: string): Ably.InboundMessage =>
+  ({
+    name: 'text',
+    serial,
+    version: { serial },
+    extras: {
+      ai: {
+        transport: {
+          [HEADER_ROLE]: 'user',
+          [HEADER_CODEC_MESSAGE_ID]: codecMessageId,
+          [HEADER_EVENT_ID]: eventId,
+        },
+      },
+    },
+  }) as unknown as Ably.InboundMessage;
 
-      const run = createRunFromOpts(session, { runId: 'run-u', invocationId: 'inv-u', inputEventId: 'p-u1' });
-      const startPromise = run.start();
-      // Wait for the lookup to park (its history scan fires after the
-      // timeout timer is armed) — delivering the trigger any earlier
-      // resolves the lookup from the pre-scan before the timer exists.
-      await vi.waitFor(() => {
-        expect(ch.history).toHaveBeenCalled();
-      });
-      deliverInputEvent(ch, { invocationId: 'inv-u', codecMessageId: 'u1', serial: 's-01', inputEventId: 'p-u1' });
-      await startPromise;
+describe('AgentRun.located', () => {
+  it('resolves immediately when the invocation carries no inputEventId', async () => {
+    const ch = createMockChannel();
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'located-no-trigger',
+      codec: codecWithFunctionalDecoder(),
+    });
+    await session.connect();
 
-      expect(unrefSpy).toHaveBeenCalled();
-      await session.close();
-    } finally {
-      setTimeoutSpy.mockRestore();
-    }
+    const run = createRunFromOpts(session, { runId: 'run-1', invocationId: 'inv-1' });
+    await expect(run.located).resolves.toBeUndefined();
+    await session.close();
+  });
+
+  it('resolves when the triggering input arrives live', async () => {
+    const ch = createMockChannel();
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'located-live',
+      codec: codecWithFunctionalDecoder(),
+    });
+    await session.connect();
+
+    const run = createRunFromOpts(session, { runId: 'run-1', invocationId: 'inv-1', inputEventId: 'p-u1' });
+    let resolved = false;
+    void run.located.then(() => {
+      resolved = true;
+    });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+
+    deliverInputEvent(ch, { invocationId: 'inv-1', codecMessageId: 'u1', serial: 's-01', inputEventId: 'p-u1' });
+    await expect(run.located).resolves.toBeUndefined();
+    await session.close();
+  });
+
+  it('resolves when a run.view.loadOlder() page folds a history-only trigger (cold start)', async () => {
+    const ch = createMockChannel();
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises -- mock returns Promise directly
+    ch.history.mockImplementation(singlePageHistory([locatedHistoryInput('p-u1', 'u1', 's-hist-01')]));
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'located-cold-start',
+      codec: codecWithFunctionalDecoder(),
+    });
+    await session.connect();
+
+    const run = createRunFromOpts(session, { runId: 'run-1', invocationId: 'inv-1', inputEventId: 'p-u1' });
+    let resolved = false;
+    void run.located.then(() => {
+      resolved = true;
+    });
+    await Promise.resolve();
+    // Nothing has folded the trigger yet — located is still pending.
+    expect(resolved).toBe(false);
+
+    // The one history driver pages the trigger in; located resolves on that fold.
+    while (run.view.hasOlder()) await run.view.loadOlder();
+    await expect(run.located).resolves.toBeUndefined();
+    expect(run.view.getMessages().map((m) => m.codecMessageId)).toEqual(['u1']);
+    await session.close();
+  });
+
+  it('rejects with InvalidArgument when the run is cancelled before the trigger arrives', async () => {
+    const ch = createMockChannel();
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'located-cancel',
+      codec: codecWithFunctionalDecoder(),
+    });
+    await session.connect();
+
+    const controller = new AbortController();
+    const run = createRunFromOpts(session, {
+      runId: 'run-1',
+      invocationId: 'inv-1',
+      inputEventId: 'p-u1',
+      signal: controller.signal,
+    });
+    controller.abort();
+    await expect(run.located).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+    await session.close();
+  });
+
+  it('rejects with SessionClosed when the session closes before the trigger arrives', async () => {
+    const ch = createMockChannel();
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'located-close',
+      codec: codecWithFunctionalDecoder(),
+    });
+    await session.connect();
+
+    const run = createRunFromOpts(session, { runId: 'run-1', invocationId: 'inv-1', inputEventId: 'p-u1' });
+    const located = run.located;
+    await session.close();
+    await expect(located).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+  });
+
+  it('start() blocks until located resolves, then publishes run-start', async () => {
+    const ch = createMockChannel();
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'located-start-blocks',
+      codec: codecWithFunctionalDecoder(),
+    });
+    await session.connect();
+
+    const run = createRunFromOpts(session, { runId: 'run-1', invocationId: 'inv-1', inputEventId: 'p-u1' });
+    let started = false;
+    const startPromise = run.start().then(() => {
+      started = true;
+    });
+    // start() must not resolve while the trigger is unseen.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(started).toBe(false);
+    expect(ch.publishCalls.find((m) => m.name === 'ai-run-start')).toBeUndefined();
+
+    deliverInputEvent(ch, { invocationId: 'inv-1', codecMessageId: 'u1', serial: 's-01', inputEventId: 'p-u1' });
+    await startPromise;
+    expect(started).toBe(true);
+    expect(ch.publishCalls.find((m) => m.name === 'ai-run-start')).toBeDefined();
+    await session.close();
   });
 });
 
@@ -2325,7 +2327,6 @@ describe('AgentRun.messages', () => {
       client: createMockClient(ch),
       channelName: 'fresh',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
     const run = createRunFromOpts(session, {
@@ -2356,7 +2357,6 @@ describe('AgentRun.messages', () => {
       client: createMockClient(ch),
       channelName: 'cont-overlay',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
     const run = createRunFromOpts(session, {
@@ -2387,7 +2387,6 @@ describe('AgentRun.messages', () => {
       client: createMockClient(ch),
       channelName: 'cont-no-overlap',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
     const run = createRunFromOpts(session, {
@@ -2432,7 +2431,6 @@ describe('AgentRun.messages', () => {
       client: createMockClient(ch),
       channelName: 'cont-tool-only',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
     const run = createRunFromOpts(session, {
@@ -2496,7 +2494,6 @@ describe('AgentRun.messages', () => {
       client: createMockClient(ch),
       channelName: 'msg-after-conversation',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
@@ -2536,7 +2533,6 @@ describe('AgentRun.messages', () => {
       client: createMockClient(ch),
       channelName: 'status',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId: 'run-1', invocationId: 'inv-1', inputEventId: 'p1' });
@@ -2674,7 +2670,6 @@ describe('AgentRun.loadConversation', () => {
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
-      inputEventLookupTimeoutMs: 0,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId: 'run-1' });
@@ -2706,7 +2701,6 @@ describe('AgentRun.loadConversation', () => {
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
     // No runtime.runId override — the agent mints a fresh UUID.
@@ -2768,7 +2762,6 @@ describe('AgentRun.loadConversation', () => {
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
@@ -2818,7 +2811,6 @@ describe('AgentRun.loadConversation', () => {
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
@@ -2868,7 +2860,6 @@ describe('AgentRun.loadConversation', () => {
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
@@ -2917,7 +2908,6 @@ describe('AgentRun.loadConversation', () => {
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
@@ -2982,7 +2972,6 @@ describe('AgentRun.loadConversation', () => {
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
@@ -3049,7 +3038,6 @@ describe('AgentRun.loadConversation', () => {
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
@@ -3105,7 +3093,6 @@ describe('AgentRun.loadConversation', () => {
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
     // Deliver the run-less user input node before start() so it buffers and
@@ -3152,7 +3139,6 @@ describe('AgentRun.loadConversation', () => {
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
-      inputEventLookupTimeoutMs: 0,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId: 'run-1' });
@@ -3187,7 +3173,6 @@ describe('AgentRun.loadConversation', () => {
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
-      inputEventLookupTimeoutMs: 0,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId: 'run-1' });
@@ -3213,7 +3198,6 @@ describe('AgentRun.loadConversation', () => {
       client: createMockClient(ch),
       channelName: 'test-channel',
       codec,
-      inputEventLookupTimeoutMs: 0,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId: 'run-abort', signal: controller.signal });
@@ -3355,7 +3339,6 @@ describe('agent loadConversation ≡ client View.getMessages (cross-engine equiv
       client: createMockClient(ch),
       channelName: 'equiv-2turn',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
@@ -3399,7 +3382,6 @@ describe('agent loadConversation ≡ client View.getMessages (cross-engine equiv
       client: createMockClient(ch),
       channelName: 'equiv-3turn',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
@@ -3422,9 +3404,10 @@ describe('agent loadConversation ≡ client View.getMessages (cross-engine equiv
 // run.view: the agent's leaf-pinned read of the SHARED View base
 //
 // run.view is the same paginating View the client exposes, projecting the leaf
-// source's branch. These prove its lifecycle (empty until the run pins its
-// branch at start()) and that, drained, it reconstructs the identical branch
-// the client View does over the same wire history.
+// source's branch. These prove its lifecycle (empty until the input-event
+// watcher pins its branch when the trigger folds in) and that, drained, it
+// reconstructs the identical branch the client View does over the same wire
+// history.
 // ---------------------------------------------------------------------------
 
 describe('agent run.view (shared read base)', () => {
@@ -3438,19 +3421,19 @@ describe('agent run.view (shared read base)', () => {
       client: createMockClient(ch),
       channelName: 'run-view-lifecycle',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
 
     const run = createRunFromOpts(session, { runId: 'run-1', invocationId: 'inv-1', inputEventId: 'p-u1' });
-    // No branch is pinned until start() resolves the trigger, so run.view is empty here.
+    // No branch is pinned until the watcher matches the trigger, so run.view is empty here.
     expect(run.view.getMessages()).toEqual([]);
 
     const startPromise = run.start();
     deliverInputEvent(ch, { invocationId: 'inv-1', codecMessageId: 'u1', serial: 's-01', inputEventId: 'p-u1' });
     await startPromise;
 
-    // start() pinned the branch and nudged the view to recompute.
+    // The watcher pinned the branch when the trigger folded (here during start(),
+    // as it arrives live) and nudged the view to recompute.
     expect(run.view.getMessages().map((m) => m.codecMessageId)).toEqual(['u1']);
     await session.close();
   });
@@ -3475,7 +3458,6 @@ describe('agent run.view (shared read base)', () => {
       client: createMockClient(ch),
       channelName: 'run-view-parity',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId: 'run-2', invocationId: 'inv-2', inputEventId: 'p-u2' });
@@ -3580,7 +3562,6 @@ describe('AgentRun.loadConversation concurrency + continuity-loss', () => {
       client: createMockClient(ch),
       channelName: 'concurrency',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
 
@@ -3651,7 +3632,6 @@ describe('AgentRun.loadConversation concurrency + continuity-loss', () => {
       client: createMockClient(ch),
       channelName: 'error-isolation',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
 
@@ -3730,7 +3710,6 @@ describe('AgentRun.loadConversation concurrency + continuity-loss', () => {
       client: createMockClient(ch),
       channelName: 'continuity-swap',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     session.on('error', onError);
     await session.connect();
@@ -3784,7 +3763,6 @@ describe('AgentRun.loadConversation history failure + exhaustion', () => {
       client: createMockClient(ch),
       channelName: 'history-failure',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
 
@@ -3821,7 +3799,6 @@ describe('AgentRun.loadConversation history failure + exhaustion', () => {
       client: createMockClient(ch),
       channelName: 'history-exhaustion',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
 
@@ -3873,7 +3850,6 @@ describe('AgentRun.loadConversation history failure + exhaustion', () => {
       client: createMockClient(ch),
       channelName: 'spent-cursor',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
 
@@ -3896,94 +3872,6 @@ describe('AgentRun.loadConversation history failure + exhaustion', () => {
     const callsAfterFirst = ch.history.mock.calls.length;
     await run.loadConversation();
     expect(ch.history.mock.calls.length).toBe(callsAfterFirst);
-
-    await session.close();
-  });
-
-  it('resumes the shared cursor instead of re-fetching after the input scan pauses', async () => {
-    // The input-event lookup and loadConversation drive ONE shared history
-    // cursor (via the session hydrator). The lookup pages only until the trigger
-    // is found, then stops — leaving the cursor PAUSED (not exhausted), not
-    // closed. A later loadConversation resumes the SAME cursor from that
-    // position and pages on to the conversation root, WITHOUT opening a second
-    // channel.history walk. (If the pause had instead marked history exhausted,
-    // loadConversation would short-circuit and truncate the LLM context.)
-    const ch = createMockChannel();
-    const codec = codecWithFunctionalDecoder();
-
-    // Page 1 (newest) holds the trigger u1 (parent a0, in page 2). The input
-    // scan folds page 1, finds u1, and stops — pausing the cursor before page 2.
-    const triggerWire = {
-      name: 'text',
-      serial: 's-01',
-      version: { serial: 's-01' },
-      extras: {
-        ai: {
-          transport: {
-            [HEADER_ROLE]: 'user',
-            [HEADER_CODEC_MESSAGE_ID]: 'u1',
-            [HEADER_EVENT_ID]: 'p-u1',
-            [HEADER_INVOCATION_ID]: 'inv-lb',
-            [HEADER_PARENT]: 'a0',
-          },
-        },
-      },
-    } as unknown as Ably.InboundMessage;
-    const page1 = [triggerWire];
-    // Page 2 (older) holds the deeper ancestor turn u0 → a0 that the trigger
-    // chains onto; loadConversation must reach it to hit the conversation root.
-    const page2 = [makeContentMsg('run-0', 'a0', 's-002'), makeRunStartMsg('run-0', 'u0'), makeInputMsg('u0', 's-001')];
-    // eslint-disable-next-line @typescript-eslint/no-misused-promises -- mock returns Promise directly
-    ch.history.mockImplementation(multiPageHistory([page1, page2]));
-
-    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
-      client: createMockClient(ch),
-      channelName: 'pause-not-exhaustion',
-      codec,
-      inputEventLookupTimeoutMs: 5000,
-    });
-    await session.connect();
-
-    const run = createRunFromOpts(session, { runId: 'run-lb', invocationId: 'inv-lb', inputEventId: 'p-u1' });
-    // History-only trigger: the input scan finds u1 in page 1 and stops there,
-    // leaving the shared cursor paused before page 2.
-    await run.start();
-    const callsAfterStart = ch.history.mock.calls.length;
-
-    // loadConversation resumes the SAME cursor to the root (u0 → a0 → u1) — and
-    // issues NO new channel.history walk.
-    const history = await run.loadConversation({ maxRuns: 10 });
-    expect(history.map((m) => m.id)).toEqual(['u0', 'a0', 'u1']);
-    expect(ch.history.mock.calls.length).toBe(callsAfterStart);
-
-    await session.close();
-  });
-
-  it('input-event lookup timeout surfaces the history-scan failure as cause', async () => {
-    // Regression: a broken history fetch used to be masked behind the
-    // lookup timeout — the caller saw a bare InputEventNotFound with no clue
-    // that history (not a missing event) was the problem.
-    const ch = createMockChannel();
-    const codec = codecWithFunctionalDecoder();
-    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
-    ch.history.mockImplementation(() => Promise.reject(new Error('history offline')));
-
-    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
-      client: createMockClient(ch),
-      channelName: 'lookup-cause',
-      codec,
-      // Must exceed the history retry/backoff envelope (~700ms) so the scan
-      // failure is recorded before the timeout fires.
-      inputEventLookupTimeoutMs: 1500,
-    });
-    await session.connect();
-
-    // No matching input event is ever delivered; the lookup times out.
-    const run = createRunFromOpts(session, { runId: 'run-a', invocationId: 'inv-a', inputEventId: 'p-never' });
-    await expect(run.start()).rejects.toBeErrorInfo({
-      code: ErrorCode.InputEventNotFound,
-      cause: { code: ErrorCode.HistoryFetchFailed },
-    });
 
     await session.close();
   });
@@ -4037,7 +3925,6 @@ describe('AgentRun.loadConversation history failure + exhaustion', () => {
       client: createMockClient(ch),
       channelName: 'swap-mid-walk',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     session.on('error', onError);
     await session.connect();
@@ -4108,7 +3995,6 @@ describe('AgentRun.loadConversation history failure + exhaustion', () => {
       client: createMockClient(ch),
       channelName: 'abort-not-exhausted',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
 
@@ -4167,7 +4053,6 @@ describe('AgentRun.loadConversation history failure + exhaustion', () => {
       client: createMockClient(ch),
       channelName: 'follower-isolation',
       codec,
-      inputEventLookupTimeoutMs: 5000,
     });
     await session.connect();
 

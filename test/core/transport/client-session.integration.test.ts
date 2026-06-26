@@ -1406,7 +1406,6 @@ describe('ClientSession integration', () => {
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
-      inputEventLookupTimeoutMs: 0,
     });
     await agentSession.connect();
 
@@ -1516,8 +1515,8 @@ describe('ClientSession integration', () => {
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
-      // Use the default `inputEventLookupTimeoutMs` so the agent's real
-      // lookup path runs against the client's published user message.
+      // The client's published user message arrives live, so the agent's run
+      // locates its trigger and the real start() path runs.
     });
     await agentSession.connect();
 
@@ -1693,9 +1692,9 @@ describe('ClientSession integration', () => {
    *
    * Ordering is the crux: `activeRun.cancel()` publishes the cancel first (while
    * the agent has not yet created its run); only then does the agent run
-   * `start()`, whose real input-event lookup resolves the input-codec-message-id
-   * and pulls the buffered cancel. The default `inputEventLookupTimeoutMs` is
-   * used so the real lookup (and therefore the deferred-cancel pull) runs.
+   * `start()`, whose input-event watcher resolves the input-codec-message-id
+   * and `start()` pulls the buffered cancel. The triggering input arrives live,
+   * so the watcher resolves and the deferred-cancel pull runs.
    */
   it('honours a cancel published before the agent mints the run-id and sends run-start', async () => {
     const channelName = uniqueChannelName('ct-cancel-before-start');
@@ -1706,7 +1705,7 @@ describe('ClientSession integration', () => {
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
-      // Default inputEventLookupTimeoutMs so the real lookup runs and the
+      // The triggering input arrives live, so the watcher resolves and the
       // deferred-cancel pull fires at start().
     });
     await agentSession.connect();

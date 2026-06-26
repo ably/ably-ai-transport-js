@@ -91,6 +91,18 @@ interface RegisteredRun {
   signal: AbortSignal;
   onCancel?: (request: CancelRequest) => Promise<boolean>;
   onError?: (error: Ably.ErrorInfo) => void;
+  /**
+   * Resolve this run's `located` promise. Captured from the `located` executor
+   * (which runs synchronously) so the input-event watcher and the no-trigger
+   * branch can settle it without a forward-declared local.
+   */
+  resolveLocated?: () => void;
+  /**
+   * Reject this run's `located` promise. Called by `close()` so a run parked in
+   * `start()` awaiting its trigger fails with `SessionClosed` rather than hanging
+   * (the deadline-free counterpart to the client's `started` rejection on close).
+   */
+  rejectLocated?: (error: Ably.ErrorInfo) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -174,7 +186,6 @@ class DefaultAgentSession<
    */
   private _hydrator: HistoryHydrator;
   private readonly _channelListener: (msg: Ably.InboundMessage) => void;
-  private readonly _inputEventLookupTimeoutMs: number;
   /** Wire-message page size for history fetches; reapplied when the hydrator is recreated on continuity loss. */
   private readonly _historyPageSize: number | undefined;
 
@@ -197,7 +208,6 @@ class DefaultAgentSession<
     this._logger = options.logger?.withContext({ component: 'AgentSession' });
     this._emitter = new EventEmitter<AgentSessionEventsMap>(this._logger ?? makeLogger({ logLevel: LogLevel.Silent }));
     this._runManager = createRunManager(this._channel, this._logger);
-    this._inputEventLookupTimeoutMs = options.inputEventLookupTimeoutMs ?? 30000;
     this._historyPageSize = options.historyPageSize;
     const { tree, applier } = createMaterialisation(this._codec, this._logger);
     this._tree = tree;
@@ -315,7 +325,12 @@ class DefaultAgentSession<
       this._channel.unsubscribe(this._channelListener);
     }
     this._channel.off(this._onChannelStateChange);
+    const closedErr = new Ably.ErrorInfo('unable to locate input event; session closed', ErrorCode.SessionClosed, 400);
     for (const reg of this._registeredRuns.values()) {
+      // Reject a run parked in start() awaiting its trigger with SessionClosed
+      // (before the abort, so `located` settles on the closed error rather than
+      // the cancel error the abort would otherwise raise).
+      reg.rejectLocated?.(closedErr);
       reg.controller.abort();
     }
     this._registeredRuns.clear();
@@ -596,7 +611,6 @@ class DefaultAgentSession<
     // it. A per-run override (runtime.invocationId) supports deterministic ids
     // in tests and in-process drivers.
     const invocationId = runtime.invocationId ?? crypto.randomUUID();
-    const inputEventLookupTimeoutMs = this._inputEventLookupTimeoutMs;
     const { onMessage, onCancelled, onCancel, onError: runOnError, signal: externalSignal } = runtime;
 
     const controller = new AbortController();
@@ -609,8 +623,9 @@ class DefaultAgentSession<
 
     // Spec: AIT-ST3a — register immediately so `close()` aborts an in-flight
     // start() and a post-lookup cancel can fire the AbortSignal. Keyed by the
-    // provisional run-id; a continuation re-keys to the real id in start()
-    // once the triggering input reveals it.
+    // provisional run-id; a continuation re-keys to the real id in the
+    // input-event watcher (resolveTriggerMetadata) once the triggering input
+    // reveals it.
     const registration: RegisteredRun = {
       runId,
       invocationId,
@@ -652,12 +667,12 @@ class DefaultAgentSession<
     let resolvedRegenerates: string | undefined;
     let resolvedInputCodecMessageId: string | undefined;
     let resolvedContinuation = false;
-    let lookupHeaders: Record<string, string> | undefined;
 
-    // The run's leaf-pinned branch strategy. It projects no branch until
-    // `Run.start()` resolves the trigger and calls `leafSource.setPin(...)` (so
-    // run.view is empty until the run starts), and reads the live Tree / hydrator
-    // above, observing a continuity-loss swap. It also backs `Run.messages` /
+    // The run's leaf-pinned branch strategy. It projects no branch until the
+    // triggering input folds in and the watcher (armed below) calls
+    // `leafSource.setPin(...)` — which may happen before `start()` when the
+    // caller pages `run.view` first. It reads the live Tree / hydrator above,
+    // observing a continuity-loss swap. It also backs `Run.messages` /
     // `Run.loadConversation` — the full, un-paginated reconstruction the agent
     // feeds the model.
     const viewLogger = logger ?? makeLogger({ logLevel: LogLevel.Silent });
@@ -678,12 +693,12 @@ class DefaultAgentSession<
       logger: viewLogger,
     });
     /**
-     * The reply run's structural-parent fallback, computed once in
-     * `Run.start()` once the input-event lookup resolves the triggering
-     * input's codec-message-id, and consumed by every `Run.pipe()` publish.
-     * A per-stream `streamOpts.parent` still overrides it. Storing it here
-     * keeps it stable across pipes and decouples the assistant's structural
-     * parent from the run-start message's own `parent`.
+     * The reply run's structural-parent fallback, computed by the input-event
+     * watcher (`resolveTriggerMetadata`) when the triggering input folds in, and
+     * consumed by every `Run.pipe()` publish. A per-stream `streamOpts.parent`
+     * still overrides it. Storing it here keeps it stable across pipes and
+     * decouples the assistant's structural parent from the run-start message's
+     * own `parent`.
      */
     let assistantParentFallback: string | undefined;
     /**
@@ -702,6 +717,121 @@ class DefaultAgentSession<
       }
       view.close();
     };
+
+    /**
+     * Resolve per-run metadata from the matched triggering input event and pin
+     * run.view to its branch. Run synchronously by the input-event watcher the
+     * instant the trigger folds in (a live arrival or a `run.view.loadOlder()`
+     * page) — which may be before `start()` when the caller pages run.view
+     * first, so the pinned branch is visible immediately.
+     *
+     * The matched input event's headers carry the run's `clientId`, `parent`,
+     * and `forkOf`, and — for a continuation — the `run-id` it re-enters (a
+     * fresh input carries none; the client stamps a run-id only when re-entering
+     * a run it already knows). The Ably-level publisher `clientId` becomes the
+     * `inputClientId` re-stamped on the agent's own publishes.
+     * @param headers - Transport headers of the matched input event.
+     * @param publisherClientId - The matched input event's Ably publisher clientId.
+     */
+    const resolveTriggerMetadata = (
+      headers: Record<string, string> | undefined,
+      publisherClientId: string | undefined,
+    ): void => {
+      if (publisherClientId !== undefined) resolvedInputClientId = publisherClientId;
+      if (headers) {
+        resolvedClientId = headers[HEADER_RUN_CLIENT_ID];
+        resolvedParent = headers[HEADER_PARENT];
+        resolvedForkOf = headers[HEADER_FORK_OF];
+        resolvedRegenerates = headers[HEADER_MSG_REGENERATE];
+        resolvedInputCodecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
+
+        // The triggering input's run-id (if any) IS this run's identity. Present
+        // → a continuation re-entering that run: adopt the id, overriding the
+        // provisional one minted at construction, and re-key the registration so
+        // cancel routing / deregistration resolve to the real run. Absent → a
+        // fresh run: the provisional id stands and the run opens with run-start.
+        const wireRunId = headers[HEADER_RUN_ID];
+        resolvedContinuation = wireRunId !== undefined;
+        if (wireRunId !== undefined && wireRunId !== runId) {
+          registeredRuns.delete(runId);
+          runId = wireRunId;
+          registration.runId = runId;
+          registeredRuns.set(runId, registration);
+        }
+      }
+
+      // Compute the reply run's structural-parent fallback: the triggering user
+      // message's codec-message-id ONLY if that codec-message-id is backed by a
+      // real node in the Tree (the message decoded into at least one input
+      // event); otherwise — for regenerate carriers that are wire-only signals
+      // with no input events — fall back to the input message's own `parent`.
+      assistantParentFallback =
+        resolvedInputCodecMessageId !== undefined &&
+        getTree().getNodeByCodecMessageId(resolvedInputCodecMessageId) !== undefined
+          ? resolvedInputCodecMessageId
+          : resolvedParent;
+
+      // Pin run.view to this run's branch now the trigger is resolved — the same
+      // anchor / run-id / regenerate-target the conversation getters use.
+      leafSource.setPin(assistantParentFallback, runId, resolvedRegenerates);
+
+      // The `input-codec-message-id → run` linkage now exists: index it so live
+      // cancels keyed by the input route to this run. start() additionally pulls
+      // any cancel that arrived before the linkage existed.
+      if (resolvedInputCodecMessageId !== undefined) {
+        runIdByInputCodecMessageId.set(resolvedInputCodecMessageId, runId);
+      }
+    };
+
+    // Watch for the triggering input event, armed at createRun (not in start())
+    // so `run.located` resolves — and run.view pins — the moment the trigger
+    // folds in, whether by a live arrival or a caller `run.view.loadOlder()`
+    // page on a cold start. An empty inputEventId means there is nothing to
+    // locate (e.g. an in-process run with no channel trigger), so `located`
+    // resolves immediately. The watcher has no deadline: it rejects only when
+    // the run signal aborts (cancel) or `close()` rejects it (SessionClosed).
+    // The settlers are captured onto the registration inside the executor (which
+    // runs synchronously), mirroring the client's `_pendingRunStarts` latch.
+    const located = new Promise<void>((resolve, reject) => {
+      registration.resolveLocated = resolve;
+      registration.rejectLocated = reject;
+    });
+    // Suppress unhandled-rejection warnings for callers that never await
+    // `run.located`; the caller still observes the rejection via `run.located`
+    // or `start()` if it awaits either.
+    located.catch(() => {
+      /* observed via run.located / start(), if at all */
+    });
+
+    if (inputEventId) {
+      locateInputEvent({
+        tree: getTree(),
+        invocationId,
+        runId,
+        expectedEventId: inputEventId,
+        signal,
+        onMatched: (found) => {
+          resolveTriggerMetadata(found.headers, found.clientId);
+        },
+        logger,
+      })
+        .then(() => {
+          registration.resolveLocated?.();
+        })
+        .catch((error: unknown) => {
+          registration.rejectLocated?.(
+            error instanceof Ably.ErrorInfo
+              ? error
+              : new Ably.ErrorInfo(
+                  `unable to locate input event; ${errorMessage(error)}`,
+                  ErrorCode.InvalidArgument,
+                  400,
+                ),
+          );
+        });
+    } else {
+      registration.resolveLocated?.();
+    }
 
     /**
      * Run a run-lifecycle publish (run-start / run-suspend / run-end) and wrap
@@ -733,8 +863,9 @@ class DefaultAgentSession<
 
     // The shared run read-model (runId, status, error, whole-turn messages).
     // `getInputAnchor` is the run's structural-parent anchor
-    // (`assistantParentFallback`), resolved in start(); `getTree()` is read live
-    // so a continuity-loss swap is observed rather than a stale Tree captured.
+    // (`assistantParentFallback`), resolved by the input-event watcher;
+    // `getTree()` is read live so a continuity-loss swap is observed rather than
+    // a stale Tree captured.
     const base = createBaseRun<TInput, TOutput, TProjection, TMessage>({
       getRunId: () => runId,
       getInputAnchor: () => assistantParentFallback,
@@ -765,6 +896,9 @@ class DefaultAgentSession<
       get view() {
         return view;
       },
+      get located() {
+        return located;
+      },
 
       // Spec: AIT-ST4, AIT-ST4a, AIT-ST4b
       start: async (): Promise<void> => {
@@ -783,102 +917,39 @@ class DefaultAgentSession<
         if (state !== RunState.INITIALIZED) return;
         state = RunState.STARTED;
 
-        // Look up the triggering input event on the channel so the agent
-        // can read the user's message and per-run metadata (parent, forkOf,
-        // continuation flag) before publishing run-start. Skip when
-        // inputEventLookupTimeoutMs === 0 (tests and in-process drivers) or
-        // when no inputEventId is set (invocation requires no channel lookup).
-        if (inputEventId && inputEventLookupTimeoutMs > 0) {
-          try {
-            const found = await locateInputEvent({
-              tree: getTree(),
-              hydrator: getHydrator(),
-              invocationId,
-              runId,
-              expectedEventId: inputEventId,
-              timeoutMs: inputEventLookupTimeoutMs,
-              signal,
-              logger,
-            });
-            if (found.headers !== undefined) lookupHeaders = found.headers;
-            if (found.clientId !== undefined) resolvedInputClientId = found.clientId;
-          } catch (error) {
-            const errInfo =
-              error instanceof Ably.ErrorInfo
-                ? error
-                : new Ably.ErrorInfo(
-                    `unable to look up input event; ${errorMessage(error)}`,
-                    ErrorCode.InputEventNotFound,
-                    504,
-                  );
-            // The rejection bubbles up to the developer's HTTP handler,
-            // which surfaces the failure as a non-2xx response — that is
-            // the signal the client sees. No channel publish: an
-            // `ai-run-end` without a preceding `ai-run-start` would break
-            // the lifecycle invariant for other channel observers.
-            deregisterRun();
-            logger?.error('Run.start(); input-event lookup failed', { runId, invocationId });
-            throw errInfo;
-          }
+        // Wait until the triggering input event folds into the Tree — a live
+        // arrival, or a `run.view.loadOlder()` page the caller drove on a cold
+        // start. The watcher armed at createRun resolves `located` then, having
+        // already resolved this run's per-run metadata (parent, forkOf,
+        // continuation flag, run-id) and pinned run.view in its onMatched hook;
+        // an empty inputEventId resolved `located` immediately (nothing to
+        // locate). There is no deadline — a caller wanting one races
+        // `run.located` against its own timeout; `located` rejects only on
+        // cancel or session close.
+        try {
+          await located;
+        } catch (error) {
+          // `located` rejects only on cancel or session close — both routine
+          // run outcomes, so this is a debug-level event, not an error. The
+          // rejection bubbles up to the developer's HTTP handler, which surfaces
+          // the failure as a non-2xx response — the signal the client sees. No
+          // channel publish: an `ai-run-end` without a preceding `ai-run-start`
+          // would break the lifecycle invariant for other channel observers.
+          deregisterRun();
+          logger?.debug('Run.start(); located rejected before run-start', { runId, invocationId });
+          throw error instanceof Ably.ErrorInfo
+            ? error
+            : new Ably.ErrorInfo(`unable to start run; ${errorMessage(error)}`, ErrorCode.InvalidArgument, 400);
         }
 
-        // Resolve per-run metadata from the matched input event's
-        // headers — they carry `clientId`, `parent`, and `forkOf`.
-        // Continuations of a suspended run pick up the suspended assistant's
-        // parent in the same headers (the continuation message parents off
-        // the assistant). A `run-id` on the triggering input marks a
-        // continuation (re-entry via `ai-run-resume`); a fresh input carries
-        // none and opens the run with `ai-run-start`.
-        const sourceHeaders = lookupHeaders;
-        if (sourceHeaders) {
-          resolvedClientId = sourceHeaders[HEADER_RUN_CLIENT_ID];
-          resolvedParent = sourceHeaders[HEADER_PARENT];
-          resolvedForkOf = sourceHeaders[HEADER_FORK_OF];
-          resolvedRegenerates = sourceHeaders[HEADER_MSG_REGENERATE];
-          resolvedInputCodecMessageId = sourceHeaders[HEADER_CODEC_MESSAGE_ID];
-
-          // The triggering input's run-id (if any) IS this run's identity.
-          // Present → a continuation re-entering that run: adopt the id,
-          // overriding the provisional one minted at construction, and re-key
-          // the registration so cancel routing / deregistration resolve to the
-          // real run. Absent → a fresh run: the provisional id stands and the
-          // run opens with run-start.
-          const wireRunId = sourceHeaders[HEADER_RUN_ID];
-          resolvedContinuation = wireRunId !== undefined;
-          if (wireRunId !== undefined && wireRunId !== runId) {
-            registeredRuns.delete(runId);
-            runId = wireRunId;
-            registration.runId = runId;
-            registeredRuns.set(runId, registration);
-          }
-        }
-
-        // Compute the reply run's structural-parent fallback: the triggering
-        // user message's codec-message-id ONLY if that codec-message-id is
-        // backed by a real node in the Tree (i.e. the message decoded into at
-        // least one input event); otherwise — for regenerate carriers that
-        // are wire-only signals with no input events — fall back to the
-        // input message's own `parent` header.
-        assistantParentFallback =
-          resolvedInputCodecMessageId !== undefined &&
-          this._tree.getNodeByCodecMessageId(resolvedInputCodecMessageId) !== undefined
-            ? resolvedInputCodecMessageId
-            : resolvedParent;
-
-        // Pin run.view to this run's branch now the trigger is resolved — the
-        // same anchor / run-id / regenerate-target the conversation getters use.
-        // Until this, run.view is empty.
-        leafSource.setPin(assistantParentFallback, runId, resolvedRegenerates);
-
-        // The triggering input's codec-message-id is now resolved, so the
-        // `input-codec-message-id → run` linkage exists: index it for live
-        // cancels and pull any cancel that arrived before the run was known
-        // (a fresh-send cancel published before the agent minted this run-id).
+        // Per-run metadata and the run.view pin were resolved by the watcher's
+        // onMatched when the trigger folded (above). Now pull any cancel that
+        // arrived before the `input-codec-message-id → run` linkage existed (a
+        // fresh-send cancel published before the agent minted this run-id).
         // Honouring it here may abort the controller before run-start; that is
         // fine — the abort propagates through the same signal a normal cancel
         // would use.
         if (resolvedInputCodecMessageId !== undefined) {
-          runIdByInputCodecMessageId.set(resolvedInputCodecMessageId, runId);
           await pullDeferredCancel(registration, resolvedInputCodecMessageId);
         }
 

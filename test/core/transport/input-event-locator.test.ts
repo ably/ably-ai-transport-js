@@ -1,20 +1,17 @@
 /**
  * locateInputEvent unit tests.
  *
- * The lookup races three sources for the triggering input event: a Tree
- * event-id pre-scan, a live `ably-message` listener, and the shared history
- * hydrator (whose folds surface through the same listener). It resolves with
- * whichever finds the expected event-id first, and is bounded only by
- * `timeoutMs` — on timeout it rejects with InputEventNotFound, carrying any
- * history-scan failure as `cause`. These tests drive each source with a fake
- * Tree and a fake hydrator.
+ * The watcher resolves the triggering input event from one of two sources: a
+ * Tree event-id pre-scan, or a live `ably-message` listener (which also catches
+ * folds the history-pagination driver walks in). It is passive — it never pages
+ * history — and has no deadline, rejecting only when its signal aborts. These
+ * tests drive each source with a fake Tree.
  */
 
 import * as Ably from 'ably';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { HEADER_EVENT_ID, HEADER_RUN_ID } from '../../../src/constants.js';
-import type { HistoryHydrator } from '../../../src/core/transport/history-hydrator.js';
 import { type InputEventSource, locateInputEvent } from '../../../src/core/transport/input-event-locator.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
@@ -39,8 +36,8 @@ const msg = (eventId: string, opts: { clientId?: string; runId?: string } = {}):
     },
   }) as unknown as Ably.InboundMessage;
 
-// A fake Tree exposing the two capabilities the locator reads, plus an `emit`
-// hook so a test can simulate a live arrival / a hydrator fold.
+// A fake Tree exposing the two capabilities the watcher reads, plus an `emit`
+// hook so a test can simulate a live arrival / a paged fold.
 const makeTree = (): InputEventSource & {
   emit: (m: Ably.InboundMessage) => void;
   seed: (eventId: string, m: Ably.InboundMessage) => void;
@@ -60,27 +57,10 @@ const makeTree = (): InputEventSource & {
   };
 };
 
-type FoldUntilImpl = (shouldStop: () => boolean, signal?: AbortSignal) => Promise<{ exhausted: boolean }>;
-
-// A fake hydrator with a controllable foldUntil, returned alongside the spy so
-// tests can assert on its calls without an unbound-method reference.
-const makeHydrator = (impl: FoldUntilImpl): { hydrator: HistoryHydrator; foldUntil: ReturnType<typeof vi.fn> } => {
-  const foldUntil = vi.fn(impl);
-  return { hydrator: { foldUntil, hasNext: () => true, isFolding: () => false }, foldUntil };
-};
-
-// foldUntil that never settles (the live / pre-scan path wins instead).
-// eslint-disable-next-line @typescript-eslint/promise-function-async -- the body IS a Promise executor that never settles
-const neverFolds: FoldUntilImpl = () =>
-  new Promise<{ exhausted: boolean }>(() => {
-    /* never settles */
-  });
-
 const baseOpts = {
   invocationId: 'inv-1',
   runId: 'run-1',
   expectedEventId: 'p-1',
-  timeoutMs: 1000,
   logger: silentLogger,
 };
 
@@ -89,87 +69,78 @@ const baseOpts = {
 // ---------------------------------------------------------------------------
 
 describe('locateInputEvent', () => {
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it('resolves from the Tree pre-scan without driving the hydrator', async () => {
+  it('resolves from the Tree pre-scan', async () => {
     const tree = makeTree();
     tree.seed('p-1', msg('p-1', { clientId: 'client-A', runId: 'R9' }));
-    const { hydrator, foldUntil } = makeHydrator(neverFolds);
 
-    const result = await locateInputEvent({ ...baseOpts, tree, hydrator, signal: new AbortController().signal });
+    const result = await locateInputEvent({ ...baseOpts, tree, signal: new AbortController().signal });
 
     expect(result.clientId).toBe('client-A');
     expect(result.headers?.[HEADER_RUN_ID]).toBe('R9');
-    expect(foldUntil).not.toHaveBeenCalled();
   });
 
-  it('resolves from a live arrival while the history scan is still running', async () => {
+  it('resolves from a live arrival after the listener is registered', async () => {
     const tree = makeTree();
-    const { hydrator } = makeHydrator(neverFolds);
 
-    const p = locateInputEvent({ ...baseOpts, tree, hydrator, signal: new AbortController().signal });
-    // A matching message arrives live after the listener is registered.
+    const p = locateInputEvent({ ...baseOpts, tree, signal: new AbortController().signal });
+    // A matching message arrives live (or is walked in by a loadOlder page).
     tree.emit(msg('p-1', { clientId: 'client-B' }));
 
     await expect(p).resolves.toEqual({ headers: { [HEADER_EVENT_ID]: 'p-1' }, clientId: 'client-B' });
   });
 
-  it('resolves from a message the hydrator folds during its scan', async () => {
+  it('ignores non-matching arrivals and resolves only on the expected event-id', async () => {
     const tree = makeTree();
-    // Folding surfaces the match through the same `ably-message` listener.
-    const { hydrator, foldUntil } = makeHydrator(
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns a resolved promise
-      () => {
-        tree.emit(msg('p-1', { clientId: 'client-C' }));
-        return Promise.resolve({ exhausted: false });
-      },
-    );
 
-    const result = await locateInputEvent({ ...baseOpts, tree, hydrator, signal: new AbortController().signal });
+    const p = locateInputEvent({ ...baseOpts, tree, signal: new AbortController().signal });
+    tree.emit(msg('p-other', { clientId: 'nope' }));
+    tree.emit(msg('p-1', { clientId: 'client-C' }));
 
-    expect(result.clientId).toBe('client-C');
-    expect(foldUntil).toHaveBeenCalledTimes(1);
+    await expect(p).resolves.toEqual({ headers: { [HEADER_EVENT_ID]: 'p-1' }, clientId: 'client-C' });
   });
 
-  it('rejects with InputEventNotFound on timeout, carrying the history failure as cause', async () => {
-    vi.useFakeTimers();
+  it('fires onMatched synchronously, before the promise resolves', async () => {
     const tree = makeTree();
-    const historyErr = new Ably.ErrorInfo('history offline', ErrorCode.HistoryFetchFailed, 500);
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns a rejected promise
-    const { hydrator } = makeHydrator(() => Promise.reject(historyErr));
+    tree.seed('p-1', msg('p-1', { clientId: 'client-A' }));
+    const onMatched = vi.fn();
 
-    const p = locateInputEvent({ ...baseOpts, tree, hydrator, signal: new AbortController().signal });
-    // Attach the rejection handler before firing the timer so the rejection is
-    // never momentarily unhandled.
-    const expectation = expect(p).rejects.toBeErrorInfo({
-      code: ErrorCode.InputEventNotFound,
-      cause: { code: ErrorCode.HistoryFetchFailed },
-    });
-    // Flush the rejected foldUntil (records the cause), then fire the timeout.
-    await vi.advanceTimersByTimeAsync(1000);
-    await expectation;
+    const p = locateInputEvent({ ...baseOpts, tree, onMatched, signal: new AbortController().signal });
+    // The pre-scan match fires onMatched synchronously within the call, before
+    // the returned promise has a chance to settle on a later microtask.
+    expect(onMatched).toHaveBeenCalledWith(expect.objectContaining({ clientId: 'client-A' }));
+
+    await p;
+  });
+
+  it('fires onMatched inside the fold that surfaces a live match', async () => {
+    const tree = makeTree();
+    const onMatched = vi.fn();
+
+    const p = locateInputEvent({ ...baseOpts, tree, onMatched, signal: new AbortController().signal });
+    expect(onMatched).not.toHaveBeenCalled();
+    // emit() invokes the listener synchronously, mirroring a Tree fold; onMatched
+    // must run within that synchronous emit.
+    tree.emit(msg('p-1', { clientId: 'client-D' }));
+    expect(onMatched).toHaveBeenCalledTimes(1);
+
+    await p;
   });
 
   it('rejects with InvalidArgument when the signal is already aborted', async () => {
     const tree = makeTree();
-    const { hydrator, foldUntil } = makeHydrator(neverFolds);
     const controller = new AbortController();
     controller.abort();
 
-    await expect(
-      locateInputEvent({ ...baseOpts, tree, hydrator, signal: controller.signal }),
-    ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
-    expect(foldUntil).not.toHaveBeenCalled();
+    await expect(locateInputEvent({ ...baseOpts, tree, signal: controller.signal })).rejects.toBeErrorInfoWithCode(
+      ErrorCode.InvalidArgument,
+    );
   });
 
   it('rejects with InvalidArgument when the signal aborts mid-wait', async () => {
     const tree = makeTree();
-    const { hydrator } = makeHydrator(neverFolds);
     const controller = new AbortController();
 
-    const p = locateInputEvent({ ...baseOpts, tree, hydrator, signal: controller.signal });
+    const p = locateInputEvent({ ...baseOpts, tree, signal: controller.signal });
     controller.abort();
 
     await expect(p).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);

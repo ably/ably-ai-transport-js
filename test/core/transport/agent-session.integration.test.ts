@@ -764,8 +764,8 @@ describe('AgentSession integration', () => {
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
-      // Default `inputEventLookupTimeoutMs` — the live wait must succeed
-      // well before the 30s default.
+      // The triggering input arrives live, so the run's `located` watcher
+      // resolves from the live subscription and start() proceeds.
     });
     await session.connect();
 
@@ -831,7 +831,8 @@ describe('AgentSession integration', () => {
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
-      // Use the default inputEventLookupTimeoutMs so the real lookup path runs.
+      // The triggering input arrives live, so the run's `located` watcher
+      // resolves and the real start() path runs.
     });
     await session.connect();
 

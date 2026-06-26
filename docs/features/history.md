@@ -68,7 +68,7 @@ const { messages, hasOlder, loading, loadOlder } = useView({ session, limit: 30 
 
 History messages carry the same `parent` and `fork-of` headers as live messages. When loaded, they're inserted into the conversation tree with their full branch structure intact. A client loading history sees the same tree of branches and can navigate siblings just like a client that was present for the original conversation.
 
-Because the tree may contain multiple branches, the view renders only the nodes along the currently selected path — not every node ever published. To see alternative branches, use `useView()` or the view's `branchSelection(codecMessageId)` / `selectSibling(codecMessageId, index)` methods.
+Because the tree may contain multiple branches, the view renders only the nodes along the currently selected path — not every node ever published. To see alternative branches, use `useView()` or the view's `branchSelection(codecMessageId).select(index)` method.
 
 See [Conversation branching](branching.md) for the tree model.
 

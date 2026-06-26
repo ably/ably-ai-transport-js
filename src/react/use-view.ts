@@ -57,10 +57,13 @@ export interface ViewHandle<TInput extends CodecInputEvent, TMessage> {
    */
   loadError: Ably.ErrorInfo | undefined;
   /**
-   * Load older messages into the view. No-op if already loading.
-   * On failure, `loadError` is set; on success, `loadError` is cleared.
+   * Load older messages into the view, resolving to the revealed page
+   * (oldest-first — see {@link View.loadOlder}). Returns `[]` when nothing was
+   * revealed: already loading, no view resolved, channel history exhausted, or
+   * the load failed. On failure, `loadError` is set; on success, `loadError` is
+   * cleared.
    */
-  loadOlder: () => Promise<void>;
+  loadOlder: () => Promise<CodecMessage<TMessage>[]>;
   /**
    * Look up the {@link RunInfo} for the Run that owns `codecMessageId`.
    * Returns `undefined` when the codec-message-id hasn't been observed.
@@ -175,19 +178,21 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
     return unsub;
   }, [resolvedView]);
 
-  const loadOlder = useCallback(async () => {
-    if (!resolvedView || loadingRef.current) return;
+  const loadOlder = useCallback(async (): Promise<CodecMessage<TMessage>[]> => {
+    if (!resolvedView || loadingRef.current) return [];
     loadingRef.current = true;
     setLoading(true);
     try {
-      await resolvedView.loadOlder(limit);
+      const revealed = await resolvedView.loadOlder(limit);
       setLoadError(undefined);
+      return revealed;
     } catch (error) {
       if (error instanceof Ably.ErrorInfo) {
         setLoadError(error);
       } else {
         setLoadError(new Ably.ErrorInfo('Unknown error loading older messages', ErrorCode.BadRequest, 400));
       }
+      return [];
     } finally {
       loadingRef.current = false;
       setLoading(false);

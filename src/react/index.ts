@@ -1,14 +1,16 @@
 export { OBJECT_MODES } from '../core/channel-options.js';
 export type { CodecMessage } from '../core/codec/types.js';
 export type {
-  ActiveRun,
+  BaseRun,
   BranchHandle,
+  ClientRun,
   ClientSession,
   ConversationNode,
   InputNode,
   RunInfo,
   RunNode,
   RunNodeState,
+  RunStatus,
   SendOptions,
 } from '../core/transport/types.js';
 export type { ClientSessionSlot } from './contexts/client-session-context.js';

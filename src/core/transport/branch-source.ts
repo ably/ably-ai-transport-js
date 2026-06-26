@@ -27,7 +27,7 @@ import type { Logger } from '../../logger.js';
 import type { Codec, CodecInputEvent, CodecMessage, CodecOutputEvent } from '../codec/types.js';
 import { collectMessages } from './conversation-projection.js';
 import { nodeKey, type TreeInternal } from './tree.js';
-import type { ActiveRun, BranchHandle, ConversationNode, RunNode, SendOptions } from './types.js';
+import type { BranchHandle, ClientRun, ConversationNode, RunNode, SendOptions } from './types.js';
 
 // ---------------------------------------------------------------------------
 // BranchSource contract
@@ -405,11 +405,11 @@ export class NavigableBranchSource<
    * Auto-select branch selections after a forking send. Returns whether a
    * selection was set — `false` when the send was not a fork, so the view can
    * skip recomputing.
-   * @param result - The ActiveRun returned by the delegate.
+   * @param result - The ClientRun returned by the delegate.
    * @param options - The SendOptions passed by the caller.
    * @returns True when a fork selection was set.
    */
-  applyForkAutoSelect(result: ActiveRun, options: SendOptions | undefined): boolean {
+  applyForkAutoSelect(result: ClientRun<TMessage>, options: SendOptions | undefined): boolean {
     // Spec: AIT-CT13e
     if (!options?.forkOf) return false;
 
@@ -434,11 +434,11 @@ export class NavigableBranchSource<
    * being regenerated. The Run doesn't exist yet on the channel (the regenerate
    * wire is wire-only); the selection is recorded as `pending` and promoted to
    * `auto` by the resolve-pending pass once the corresponding Run is created.
-   * @param result - The ActiveRun returned by the delegate (run-id is the new regenerator's).
+   * @param result - The ClientRun returned by the delegate (run-id is the new regenerator's).
    * @param anchorCodecMessageId - The codec-message-id of the assistant being regenerated.
    * @returns True when a pending selection was recorded.
    */
-  applyRegenerateAutoSelect(result: ActiveRun, anchorCodecMessageId: string): boolean {
+  applyRegenerateAutoSelect(result: ClientRun<TMessage>, anchorCodecMessageId: string): boolean {
     // A regenerate produces a new reply run parented at the SAME input node as
     // the original reply (the regenerate group). The agent mints the run-id, so
     // we cannot pin by it synchronously. Resolve the group root from the

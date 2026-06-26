@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ActiveRun } from '@ably/ai-transport';
+import type { ClientRun } from '@ably/ai-transport';
+import type { UIMessage } from 'ai';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
 import { userMessage, wakeAgent } from '../helpers';
@@ -59,7 +60,7 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
   // The core session never sends HTTP — the app owns the trigger. Send sites
   // pass the `view.send*` promise; a POST failure is surfaced in the log.
   const wake = useCallback(
-    (runPromise: Promise<ActiveRun>) => {
+    (runPromise: Promise<ClientRun<UIMessage>>) => {
       void runPromise
         .then((run) => wakeAgent(api, run))
         .catch((error: unknown) => {

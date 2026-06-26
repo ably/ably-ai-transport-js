@@ -299,7 +299,7 @@ Two mechanisms cover different failure modes:
 // Client: cancel a specific run by id
 await session.cancel('run-abc');
 
-// Or via the ActiveRun returned by send / regenerate / edit
+// Or via the ClientRun returned by send / regenerate / edit
 const run = await view.send(codec.createUserMessage(userMsg));
 await run.cancel();
 

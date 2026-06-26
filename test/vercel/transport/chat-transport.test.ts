@@ -68,9 +68,9 @@ const makeEmitter = (): MockEmitter => {
 };
 
 interface MockRun {
-  stream: ReadableStream<AI.UIMessageChunk>;
   inputCodecMessageId: string;
-  runId: Promise<string>;
+  runId: string;
+  started: Promise<void>;
   inputEventId: string;
   cancel: ReturnType<typeof vi.fn>;
   toInvocation: () => Invocation;
@@ -102,14 +102,9 @@ const createMockSession = (): MockSession => {
   const inputCodecMessageId = 'input-1';
 
   const mockRun: MockRun = {
-    // The transport no longer reads this — it builds its own stream from Tree
-    // events. Kept only to satisfy the ActiveRun shape returned by send.
-    stream: new ReadableStream<AI.UIMessageChunk>({
-      // eslint-disable-next-line @typescript-eslint/no-empty-function -- inert placeholder stream
-      start: () => {},
-    }),
     inputCodecMessageId,
-    runId: Promise.resolve(runId),
+    runId,
+    started: Promise.resolve(),
     inputEventId: '',
     cancel: vi.fn(),
     toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'chat-1' }),
@@ -848,6 +843,11 @@ describe('createChatTransport', () => {
       const stream = await streamPromise;
       expect(chat.streaming).toBe(true);
 
+      // Let the run-id resolve (`run.started`) before run-end — mirrors
+      // production, where run-start is observed before run-end, so the
+      // run-end safety-net knows the run-id it must match.
+      await new Promise((r) => setTimeout(r, 0));
+
       // Close the stream and drain it
       mockRun.close();
       const reader = stream.getReader();
@@ -876,6 +876,11 @@ describe('createChatTransport', () => {
       });
 
       expect(log).toEqual([true]);
+
+      // Let the run-id resolve (`run.started`) before run-end — mirrors
+      // production, where run-start is observed before run-end, so the
+      // run-end safety-net knows the run-id it must match.
+      await new Promise((r) => setTimeout(r, 0));
 
       mockRun.close();
       const reader = stream.getReader();

@@ -3,7 +3,7 @@
 import type * as Ably from 'ably';
 
 import type { CodecInputEvent, CodecMessage } from '../../codec/types.js';
-import type { ActiveRun, SendOptions } from './client.js';
+import type { ClientRun, SendOptions } from './client.js';
 import type { RunEndReason } from './shared.js';
 import type { RunLifecycleEvent } from './tree.js';
 
@@ -260,7 +260,7 @@ export interface ClientView<TInput extends CodecInputEvent, TMessage> extends Vi
    * available immediately. If the POST fails, the error is surfaced via
    * the session's `on("error")` and the stream is errored.
    */
-  send(events: TInput | TInput[], options?: SendOptions): Promise<ActiveRun>;
+  send(events: TInput | TInput[], options?: SendOptions): Promise<ClientRun<TMessage>>;
 
   /**
    * Regenerate an assistant message. Mints a codec `Regenerate` input
@@ -272,7 +272,7 @@ export interface ClientView<TInput extends CodecInputEvent, TMessage> extends Vi
    * assistant superseding the original) happens at projection-extraction
    * time.
    */
-  regenerate(messageId: string, options?: SendOptions): Promise<ActiveRun>;
+  regenerate(messageId: string, options?: SendOptions): Promise<ClientRun<TMessage>>;
 
   /**
    * Edit a user message. Creates a new run that forks the target message
@@ -281,5 +281,5 @@ export interface ClientView<TInput extends CodecInputEvent, TMessage> extends Vi
    * single new message — the same single-message rule as {@link ClientView.send}
    * applies.
    */
-  edit(messageId: string, inputs: TInput | TInput[], options?: SendOptions): Promise<ActiveRun>;
+  edit(messageId: string, inputs: TInput | TInput[], options?: SendOptions): Promise<ClientRun<TMessage>>;
 }

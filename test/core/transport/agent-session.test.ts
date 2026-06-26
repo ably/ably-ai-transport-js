@@ -43,7 +43,7 @@ import { createHistoryHydrator } from '../../../src/core/transport/history-hydra
 import { Invocation } from '../../../src/core/transport/invocation.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
-import type { AgentSession } from '../../../src/core/transport/types.js';
+import type { AgentSession, ClientRun } from '../../../src/core/transport/types.js';
 import type { SendDelegate } from '../../../src/core/transport/view.js';
 import { createClientView } from '../../../src/core/transport/view.js';
 import { ErrorCode } from '../../../src/errors.js';
@@ -3204,14 +3204,17 @@ const viewMessageIds = (wiresOldestFirst: Ably.InboundMessage[]): string[] => {
     const decoded = decoder.decode(wire);
     tree.applyMessage(decoded, transportHeadersOf(wire), wire.serial);
   }
-  const sendDelegate: SendDelegate<TestInput> =
+  const sendDelegate: SendDelegate<TestInput, TestMessage> =
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     vi.fn(() =>
-      Promise.resolve({
+      Promise.resolve<ClientRun<TestMessage>>({
         inputCodecMessageId: 'k',
-        runId: Promise.resolve('r'),
+        runId: 'r',
+        status: 'active',
+        error: undefined,
+        messages: [],
+        started: Promise.resolve(),
         inputEventId: '',
-        invocationId: 'inv',
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
         cancel: () => Promise.resolve(),
         toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),

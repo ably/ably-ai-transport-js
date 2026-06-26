@@ -872,11 +872,13 @@ describe('AgentSession integration', () => {
       );
 
       // The agent mints the reply run-id and drives off the client's input
-      // event; `turn1.runId` resolves to it once run-start lands.
+      // event; `turn1.started` resolves once run-start lands, making
+      // `turn1.runId` readable.
       const run1Id = crypto.randomUUID();
       const serverRun1 = createRunFromOpts(session, { runId: run1Id, inputEventId: turn1.inputEventId });
       await serverRun1.start();
-      expect(await turn1.runId).toBe(run1Id);
+      await turn1.started;
+      expect(turn1.runId).toBe(run1Id);
 
       // The first turn's prompt is the single user message.
       await serverRun1.loadConversation();
@@ -901,7 +903,8 @@ describe('AgentSession integration', () => {
       const run2Id = crypto.randomUUID();
       const serverRun2 = createRunFromOpts(session, { runId: run2Id, inputEventId: turn2.inputEventId });
       await serverRun2.start();
-      expect(await turn2.runId).toBe(run2Id);
+      await turn2.started;
+      expect(turn2.runId).toBe(run2Id);
 
       // loadConversation() returns the full multi-turn conversation in
       // chronological order: the turn-1 user message, its assistant reply, then

@@ -1,12 +1,12 @@
 // Shared types
 export type {
-  ActiveRun,
   AgentRun,
   AgentSession,
   AgentSessionOptions,
   BaseRun,
   BranchHandle,
   CancelRequest,
+  ClientRun,
   ClientSession,
   ClientSessionOptions,
   ClientView,

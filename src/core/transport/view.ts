@@ -38,8 +38,8 @@ import type { HistoryHydrator } from './history-hydrator.js';
 import type { LeafBranchSource } from './leaf-branch-source.js';
 import { nodeKey, type TreeInternal } from './tree.js';
 import type {
-  ActiveRun,
   BranchHandle,
+  ClientRun,
   ClientView,
   ConversationNode,
   OutputEvent,
@@ -79,11 +79,11 @@ interface ViewEventsMap {
  * convention), or `undefined` for an empty conversation. The session
  * uses it as the auto-parent for fresh user messages.
  */
-export type SendDelegate<TInput extends CodecInputEvent> = (
+export type SendDelegate<TInput extends CodecInputEvent, TMessage> = (
   input: TInput[],
   options: SendOptions | undefined,
   parentCodecMessageId: string | undefined,
-) => Promise<ActiveRun>;
+) => Promise<ClientRun<TMessage>>;
 
 // ---------------------------------------------------------------------------
 // Options
@@ -123,7 +123,7 @@ interface ClientViewOptions<TInput extends CodecInputEvent, TOutput extends Code
   /** The session's shared history hydrator (see {@link ViewOptions.hydrator}). */
   hydrator: HistoryHydrator;
   /** Delegate for executing sends through the session. */
-  sendDelegate: SendDelegate<TInput>;
+  sendDelegate: SendDelegate<TInput, TMessage>;
   /** Logger for diagnostic output. */
   logger: Logger;
   /** Called when the view is closed, allowing the owner to clean up references. */
@@ -697,7 +697,7 @@ class DefaultClientView<
   private readonly _branchSource: NavigableBranchSource<TInput, TOutput, TProjection, TMessage>;
   private readonly _tree: TreeInternal<TInput, TOutput, TProjection>;
   private readonly _codec: Codec<TInput, TOutput, TProjection, TMessage>;
-  private readonly _sendDelegate: SendDelegate<TInput>;
+  private readonly _sendDelegate: SendDelegate<TInput, TMessage>;
   private readonly _logger: Logger;
   private _closed = false;
 
@@ -706,7 +706,7 @@ class DefaultClientView<
     branchSource: NavigableBranchSource<TInput, TOutput, TProjection, TMessage>;
     tree: TreeInternal<TInput, TOutput, TProjection>;
     codec: Codec<TInput, TOutput, TProjection, TMessage>;
-    sendDelegate: SendDelegate<TInput>;
+    sendDelegate: SendDelegate<TInput, TMessage>;
     logger: Logger;
   }) {
     this._base = options.base;
@@ -778,7 +778,7 @@ class DefaultClientView<
   // -------------------------------------------------------------------------
 
   // Spec: AIT-CT3, AIT-CT4
-  async send(input: TInput | TInput[], options?: SendOptions): Promise<ActiveRun> {
+  async send(input: TInput | TInput[], options?: SendOptions): Promise<ClientRun<TMessage>> {
     this._logger.trace('DefaultClientView.send();');
     if (this._closed) {
       throw new Ably.ErrorInfo('unable to send; view is closed', ErrorCode.InvalidArgument, 400);
@@ -797,7 +797,7 @@ class DefaultClientView<
   }
 
   // Spec: AIT-CT5, AIT-CT13d
-  async regenerate(messageId: string, options?: SendOptions): Promise<ActiveRun> {
+  async regenerate(messageId: string, options?: SendOptions): Promise<ClientRun<TMessage>> {
     this._logger.trace('DefaultClientView.regenerate();', { messageId });
 
     if (this._closed) {
@@ -867,7 +867,7 @@ class DefaultClientView<
   }
 
   // Spec: AIT-CT6
-  async edit(messageId: string, inputs: TInput | TInput[], options?: SendOptions): Promise<ActiveRun> {
+  async edit(messageId: string, inputs: TInput | TInput[], options?: SendOptions): Promise<ClientRun<TMessage>> {
     this._logger.trace('DefaultClientView.edit();', { messageId });
 
     if (this._closed) {

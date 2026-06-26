@@ -6,7 +6,7 @@ import { vi } from 'vitest';
 
 import type { CodecInputEvent, CodecOutputEvent } from '../../../src/core/codec/types.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
-import type { BranchHandle, ClientSession, ClientView, Tree } from '../../../src/core/transport/types.js';
+import type { BranchHandle, ClientRun, ClientSession, ClientView, Tree } from '../../../src/core/transport/types.js';
 
 type TreeEventType = 'update' | 'ably-message' | 'run' | 'output';
 type SessionEventType = 'error';
@@ -95,10 +95,13 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     on: makeTreeOn(treeHandlers),
   };
 
-  const mockRun = {
-    stream: new ReadableStream(),
+  const mockRun: ClientRun<string> = {
     inputCodecMessageId: 'input-1',
-    runId: Promise.resolve('run-1'),
+    runId: 'run-1',
+    status: 'active',
+    error: undefined,
+    messages: [],
+    started: Promise.resolve(),
     inputEventId: '',
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     cancel: vi.fn(() => Promise.resolve()),

@@ -10,7 +10,7 @@
  * - `agent.ts` — agent session, run runtime, AgentRun / AgentSession.
  * - `tree.ts` — conversation-tree nodes, lifecycle events, Tree.
  * - `view.ts` — history pagination, branch selection, View.
- * - `client.ts` — client session options, ActiveRun, ClientSession.
+ * - `client.ts` — client session options, ClientRun, ClientSession.
  */
 
 export type * from './types/agent.js';

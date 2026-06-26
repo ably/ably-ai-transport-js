@@ -44,9 +44,6 @@ export interface ClientSessionOptions<
   /** The codec to use for encoding/decoding. */
   codec: Codec<TInput, TOutput, TProjection, TMessage>;
 
-  /** Initial messages to seed the conversation tree with. Forms a linear chain. */
-  messages?: TMessage[];
-
   /**
    * Extra Ably channel modes to request on the session's channel, on top of the
    * modes AI Transport always needs. Pass `OBJECT_MODES` (or

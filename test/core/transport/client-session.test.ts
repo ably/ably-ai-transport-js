@@ -635,40 +635,6 @@ describe('ClientSession', () => {
       expect(ch.history).toHaveBeenCalledWith(expect.objectContaining({ limit: 100 }));
       await s.close();
     });
-
-    it('seeds initial messages into the tree', async () => {
-      const ch = createMockChannel();
-      const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
-        client: createMockClient(ch),
-        channelName: 'test-channel',
-        codec: createMockCodec(),
-        messages: [
-          { id: 'seed-1', content: 'first' },
-          { id: 'seed-2', content: 'second' },
-        ],
-      });
-      await s.connect();
-
-      const messages = s.view.getMessages();
-      expect(messages.map((m) => m.message.content)).toEqual(['first', 'second']);
-      // Seeds are run-less user INPUT nodes in the two-node model — they carry
-      // no run-id (the agent mints reply run-ids), so they surface as input
-      // nodes, not as reply runs in view.runs() (which is reply-run-shaped).
-      // The session assigns each seed a codec-message-id, which the mock codec
-      // stamps as the rendered message id.
-      expect(s.view.runs()).toHaveLength(0);
-      const id1 = messages[0]?.codecMessageId;
-      const id2 = messages[1]?.codecMessageId;
-      expect(id1).toBeDefined();
-      expect(id2).toBeDefined();
-      const seed1 = id1 === undefined ? undefined : s.tree.getNodeByCodecMessageId(id1);
-      const seed2 = id2 === undefined ? undefined : s.tree.getNodeByCodecMessageId(id2);
-      expect(seed1?.kind).toBe('input');
-      expect(seed2?.kind).toBe('input');
-      // Subsequent seeds chain off the prior one via the structural parent.
-      expect(seed2?.parentCodecMessageId).toBe(id1);
-      await s.close();
-    });
   });
 
   // -------------------------------------------------------------------------
@@ -846,28 +812,27 @@ describe('ClientSession', () => {
 
     it('auto-computes parent from the last visible message', async () => {
       const ch = createMockChannel();
-      const seeded = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
-        messages: [{ id: 'seed', content: 'first' }],
       });
-      await seeded.connect();
+      await s.connect();
 
-      // The seed's codec-message-id is the rendered message id (the mock codec
-      // stamps the session-assigned codec-message-id onto TMessage.id).
-      const seedCodecMessageId = seeded.view.getMessages()[0]?.codecMessageId;
-      expect(seedCodecMessageId).toBeDefined();
-      const run = await seeded.view.send({ kind: 'user-message', text: 'next' });
+      // Establish a prior visible message with a first send; its optimistic
+      // input node is the last visible message the next send auto-parents on.
+      const first = await s.view.send({ kind: 'user-message', text: 'first' });
+      const firstCodecMessageId = first.inputCodecMessageId;
+      const run = await s.view.send({ kind: 'user-message', text: 'next' });
 
-      // The seed and the fresh send are both run-less user INPUT nodes; the new
-      // send's optimistic input node must be parented at the seed's
-      // codec-message-id (auto-computed from the last visible message).
+      // Both sends are run-less user INPUT nodes; the second send's optimistic
+      // input node must be parented at the first's codec-message-id
+      // (auto-computed from the last visible message).
       const newCodecMessageId = run.inputCodecMessageId;
-      const newNode = seeded.tree.getNodeByCodecMessageId(newCodecMessageId);
+      const newNode = s.tree.getNodeByCodecMessageId(newCodecMessageId);
       expect(newNode?.kind).toBe('input');
-      expect(newNode?.parentCodecMessageId).toBe(seedCodecMessageId);
-      await seeded.close();
+      expect(newNode?.parentCodecMessageId).toBe(firstCodecMessageId);
+      await s.close();
     });
 
     it('stamps forkOf on the publish headers when set', async () => {

@@ -22,11 +22,8 @@ import type * as AblyObjects from 'ably/liveobjects';
 
 import {
   EVENT_RUN_END,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
-  HEADER_PARENT,
-  HEADER_ROLE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
 } from '../../constants.js';
@@ -208,24 +205,6 @@ class DefaultClientSession<
     // Public accessors (typed as narrow interfaces)
     this.tree = this._tree;
     this.view = this._view;
-
-    // Seed tree with initial messages — the session assigns a codecMessageId
-    // per seed message. Each seed becomes a run-less input node (no run-id —
-    // the client never mints one); the parent chain mirrors the original seed
-    // sequence (a user→user input chain the Tree threads kind-blind).
-    if (options.messages) {
-      let prevMsgId: string | undefined;
-      for (const msg of options.messages) {
-        const codecMessageId = crypto.randomUUID();
-        const seedHeaders: Record<string, string> = {
-          [HEADER_CODEC_MESSAGE_ID]: codecMessageId,
-          [HEADER_ROLE]: 'user',
-        };
-        if (prevMsgId) seedHeaders[HEADER_PARENT] = prevMsgId;
-        this._tree.applyMessage({ inputs: [this._codec.createUserMessage(msg)], outputs: [] }, seedHeaders);
-        prevMsgId = codecMessageId;
-      }
-    }
 
     // Spec: AIT-CT2
     // Listener function reference — bound now so it can be unsubscribed on close.

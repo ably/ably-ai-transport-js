@@ -62,13 +62,13 @@ import type * as AI from 'ai';
 
 // Inside ChatInner:
 const { session } = useClientSession<VercelInput, AI.UIMessageChunk, VercelProjection, AI.UIMessage>();
-const { messages, hasOlder, loading, loadOlder, send, regenerate, edit, branchSelection, selectSibling } = useView({
+const { messages, hasOlder, loading, loadOlder, send, regenerate, edit, branchSelection } = useView({
   session,
   limit: 30,
 });
 ```
 
-This path gives you conversation branching UI (sibling navigation via `branchSelection`/`selectSibling`), write operations, and direct access to the view state. Unlike the `useChat` path, `ClientSessionProvider` does not POST anything — the session only publishes on the channel. Wake the agent yourself by POSTing `run.toInvocation().toJSON()` to your endpoint from the `ActiveRun` that `send`/`regenerate`/`edit` returns.
+This path gives you conversation branching UI (sibling navigation via `branchSelection(id).select(index)`), write operations, and direct access to the view state. Unlike the `useChat` path, `ClientSessionProvider` does not POST anything — the session only publishes on the channel. Wake the agent yourself by POSTing `run.toInvocation().toJSON()` to your endpoint from the `ActiveRun` that `send`/`regenerate`/`edit` returns.
 
 ### When to use which
 
@@ -76,7 +76,7 @@ This path gives you conversation branching UI (sibling navigation via `branchSel
 | -------------------------------------------------------- | --------------------------------------------- |
 | You want the simplest integration                        | You need conversation branching UI            |
 | `useChat()`'s message state management is sufficient     | You need custom message construction          |
-| You don't need edit or branch navigation                 | You need `edit()` or `selectSibling()`        |
+| You don't need edit or branch navigation                 | You need `edit()` or branch navigation        |
 | You're already using `useChat()` and adding AI Transport | You're building a custom chat UI from scratch |
 
 ## Entry points

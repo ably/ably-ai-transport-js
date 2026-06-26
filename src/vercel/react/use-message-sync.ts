@@ -155,7 +155,10 @@ export const useMessageSync = ({ messages, setMessages, channelName, skip }: Use
 
   // Capture the seed once per view: the newest seed message's domain id is the
   // seam where the live channel rejoins the persisted prefix. Reset on view
-  // change so a new channel re-captures (or drops into no-seed mode).
+  // change so a new channel re-captures (or drops into no-seed mode). When a
+  // seed is captured, page the view back until the seam reappears so the live
+  // window joins the seed with no gap; each reveal emits 'update', which the
+  // sync effect recomposes.
   useEffect(() => {
     seedRef.current = undefined;
     if (!view) return;
@@ -166,6 +169,27 @@ export const useMessageSync = ({ messages, setMessages, channelName, skip }: Use
     if (seamId === undefined) return;
 
     seedRef.current = { prefix: seed, seamId };
+
+    const controller = new AbortController();
+    const { signal } = controller;
+    const walkToSeam = async (): Promise<void> => {
+      // The `signal.aborted` guard stops the walk after unmount / view change:
+      // the in-flight `loadOlder` settles, then the loop exits before paging on.
+      while (!signal.aborted && view.hasOlder()) {
+        const revealed = await view.loadOlder(1);
+        // An empty page means history is exhausted, the view is closed, or a
+        // load is already in flight — stop rather than spin.
+        if (revealed.length === 0) return;
+        if (revealed.some((m) => m.message.id === seamId)) return;
+      }
+    };
+    // Fire-and-forget: the walk drives itself off `loadOlder` and is stopped via
+    // the abort signal on cleanup; awaiting it would block the effect.
+    void walkToSeam();
+
+    return () => {
+      controller.abort();
+    };
   }, [view]);
 
   // Subscribe to view updates and sync, unless gated.

@@ -67,7 +67,7 @@ const createMockSlot = (): MockSlot => {
     getMessages: viewGetMessages,
     hasOlder: vi.fn(() => false),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-    loadOlder: vi.fn(() => Promise.resolve()),
+    loadOlder: vi.fn(() => Promise.resolve([])),
   } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>['view'];
 
   const session = {

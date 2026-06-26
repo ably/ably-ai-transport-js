@@ -152,7 +152,7 @@ const createMockSession = (): MockSession => {
     runs: vi.fn(() => []),
     hasOlder: vi.fn(() => false),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-    loadOlder: vi.fn(() => Promise.resolve()),
+    loadOlder: vi.fn(() => Promise.resolve([])),
     runOf: vi.fn(),
     run: vi.fn(),
     branchSelection: vi.fn(() => ({

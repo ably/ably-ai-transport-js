@@ -368,11 +368,21 @@ class DefaultView<
    * `getMessages`. Live messages append at the newest end and are never
    * trimmed.
    * @param limit - Number of older codecMessages to reveal. Defaults to 10.
+   * @returns The revealed codecMessages, oldest-first; `[]` when nothing older was revealed.
    */
-  async loadOlder(limit = 10): Promise<void> {
-    if (this._closed || this._loadingOlder) return;
+  async loadOlder(limit = 10): Promise<CodecMessage<TMessage>[]> {
+    if (this._closed || this._loadingOlder) return [];
     this._loadingOlder = true;
     this._logger.trace('DefaultView.loadOlder();', { limit });
+
+    // Anchor the revealed page on the current oldest visible codec-message-id:
+    // the page is "everything now above the previous oldest message". For a
+    // non-empty window this is robust to a live message folding in at the tail
+    // during the await below — live arrivals append at the newest end, so they
+    // fall after the anchor and are excluded from the older page returned here.
+    // (On a first load over an empty window there is no anchor, so the whole
+    // revealed window is returned — see `_revealedSince`.)
+    const prevOldestId = this._lastVisibleMessagePairs[0]?.codecMessageId;
 
     try {
       // Phase A: the boundary run is already revealed (a previous loadOlder
@@ -381,7 +391,7 @@ class DefaultView<
       if (this._hiddenMessageCount >= limit) {
         this._hiddenMessageCount -= limit;
         this.recomputeAndEmit();
-        return;
+        return this._revealedSince(prevOldestId);
       }
 
       // Phase B: reveal whole older runs covering the remaining message budget,
@@ -405,7 +415,7 @@ class DefaultView<
       if (revealedSoFar() < need) {
         await this._fetchOlder(need - revealedSoFar());
         // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- close() may be set during the await above
-        if (this._closed) return;
+        if (this._closed) return [];
       }
 
       const after = this._branchSource.extractMessages(this._computeFlatNodes()).length;
@@ -414,12 +424,36 @@ class DefaultView<
       // trimmed. `<= 0` when history is exhausted before `limit` is reached.
       this._hiddenMessageCount = Math.max(0, this._hiddenMessageCount + (after - before) - limit);
       this.recomputeAndEmit();
+      return this._revealedSince(prevOldestId);
     } catch (error) {
       this._logger.error('DefaultView.loadOlder(); failed', { error });
       throw error;
     } finally {
       this._loadingOlder = false;
     }
+  }
+
+  /**
+   * The slice of the current visible window that sits above `prevOldestId` — the
+   * codecMessages this `loadOlder` revealed at the oldest end, oldest-first.
+   * Older messages are prepended, so `prevOldestId`'s new index is the count of
+   * what was revealed; everything before it is the page. Returns the whole
+   * window when there was no anchor (it was empty before the reveal), and `[]`
+   * when nothing was revealed. A fresh array (its `CodecMessage` elements are
+   * shared with `getMessages()`, as that accessor also returns them by
+   * reference).
+   * @param prevOldestId - codec-message-id of the oldest visible message before this reveal.
+   * @returns The revealed page, oldest-first.
+   */
+  private _revealedSince(prevOldestId: string | undefined): CodecMessage<TMessage>[] {
+    const visible = this._lastVisibleMessagePairs;
+    if (prevOldestId === undefined) return [...visible];
+    // `loadOlder` only ever prepends, so the previous oldest message is still
+    // present: `findIndex` is its count of newly-revealed predecessors. `idx`
+    // of 0 (still oldest → nothing revealed) and the unreachable -1 both fold
+    // to the empty page.
+    const idx = visible.findIndex((m) => m.codecMessageId === prevOldestId);
+    return idx > 0 ? visible.slice(0, idx) : [];
   }
 
   /**
@@ -734,7 +768,7 @@ class DefaultClientView<
     return this._base.hasOlder();
   }
 
-  async loadOlder(limit?: number): Promise<void> {
+  async loadOlder(limit?: number): Promise<CodecMessage<TMessage>[]> {
     return this._base.loadOlder(limit);
   }
 

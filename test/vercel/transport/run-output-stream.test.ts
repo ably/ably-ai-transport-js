@@ -5,7 +5,12 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ClientSession } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
-import { createRunOutputStream } from '../../../src/vercel/transport/run-output-stream.js';
+import {
+  createDeferredContinuationStream,
+  createRunOutputStream,
+  DEFERRED_CONTINUATION_TIMEOUT_MS,
+} from '../../../src/vercel/transport/run-output-stream.js';
+import { drain, flushMicrotasks } from '../../helper/streams.js';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -57,11 +62,20 @@ interface MockSession {
   error: (reason: Ably.ErrorInfo) => void;
 }
 
-const createMockSession = (): MockSession => {
+// `opts.runStatus` is the lifecycle status `tree.getRunNode` reports for any
+// queried run; omit it so `getRunNode` returns undefined (no such run).
+const createMockSession = (opts?: {
+  runStatus?: 'active' | 'suspended' | 'complete' | 'cancelled' | 'error';
+}): MockSession => {
   const treeEmitter = makeEmitter();
   const sessionEmitter = makeEmitter();
 
-  const tree = { on: vi.fn(treeEmitter.on) } as unknown as VercelSession['tree'];
+  // CAST: the test only exercises `state.status`, so a minimal RunNode stand-in
+  // suffices for the snapshot pre-check in createDeferredContinuationStream.
+  const getRunNode = vi.fn((runId: string) =>
+    opts?.runStatus === undefined ? undefined : { runId, state: { status: opts.runStatus } },
+  );
+  const tree = { on: vi.fn(treeEmitter.on), getRunNode } as unknown as VercelSession['tree'];
   const session = {
     tree,
     on: vi.fn(sessionEmitter.on),
@@ -99,17 +113,6 @@ const createMockSession = (): MockSession => {
 
 const textDelta = (delta: string): VercelOutput => ({ type: 'text-delta', id: 't1', delta });
 const finish = (): VercelOutput => ({ type: 'finish' });
-
-const drain = async (stream: ReadableStream<VercelOutput>): Promise<VercelOutput[]> => {
-  const reader = stream.getReader();
-  const results: VercelOutput[] = [];
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    results.push(value);
-  }
-  return results;
-};
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -230,5 +233,108 @@ describe('createRunOutputStream', () => {
 
     const events = await drain(stream);
     expect(events).toEqual([]);
+  });
+});
+
+describe('createDeferredContinuationStream', () => {
+  it('closes immediately when there is no run to observe', async () => {
+    const mock = createMockSession();
+    const noRunId: string | undefined = undefined;
+    const { stream } = createDeferredContinuationStream(mock.session, noRunId);
+
+    // Nothing to wait for — the stream closes (on a microtask) without events.
+    await expect(drain(stream)).resolves.toEqual([]);
+  });
+
+  it('closes immediately when the run is already terminal', async () => {
+    // The run ended before this stream subscribed (snapshot pre-check): the Tree
+    // is at rest, so there is no future event to wait for.
+    const mock = createMockSession({ runStatus: 'complete' });
+    const { stream } = createDeferredContinuationStream(mock.session, 'run-1');
+
+    await expect(drain(stream)).resolves.toEqual([]);
+  });
+
+  it('stays open while the run is suspended, then closes on run-end', async () => {
+    const mock = createMockSession({ runStatus: 'suspended' });
+    const { stream } = createDeferredContinuationStream(mock.session, 'run-1');
+
+    let closed = false;
+    const drained = drain(stream).then((events) => {
+      closed = true;
+      return events;
+    });
+
+    await flushMicrotasks();
+    expect(closed).toBe(false);
+
+    mock.runEnd('run-1', 'complete');
+    // Chunk-less: it forwards no outputs, only closes.
+    await expect(drained).resolves.toEqual([]);
+    expect(closed).toBe(true);
+  });
+
+  it('closes on the first output for the run (the agent resumed)', async () => {
+    const mock = createMockSession({ runStatus: 'active' });
+    const { stream } = createDeferredContinuationStream(mock.session, 'run-1');
+
+    // A new output for the run signals the continuation is producing its turn;
+    // the stream closes (without forwarding the chunk) so useMessageSync repaints.
+    mock.output('run-1', [textDelta('hi')], 'some-input');
+    await expect(drain(stream)).resolves.toEqual([]);
+  });
+
+  it('ignores output and run-end for other runs', async () => {
+    const mock = createMockSession({ runStatus: 'suspended' });
+    const { stream } = createDeferredContinuationStream(mock.session, 'run-1');
+
+    let closed = false;
+    const drained = drain(stream).then(() => {
+      closed = true;
+    });
+
+    mock.output('run-2', [textDelta('x')], 'i');
+    mock.runEnd('run-2', 'complete');
+    await flushMicrotasks();
+    expect(closed).toBe(false);
+
+    mock.runEnd('run-1', 'complete');
+    await drained;
+    expect(closed).toBe(true);
+  });
+
+  it('errors the stream when the session emits an error', async () => {
+    const mock = createMockSession({ runStatus: 'suspended' });
+    const { stream } = createDeferredContinuationStream(mock.session, 'run-1');
+
+    const reason = new Ably.ErrorInfo('channel continuity lost', ErrorCode.SessionSubscriptionError, 500);
+    mock.error(reason);
+
+    await expect(drain(stream)).rejects.toBe(reason);
+  });
+
+  it('closes on timeout when the run never produces its next turn', async () => {
+    vi.useFakeTimers();
+    try {
+      const mock = createMockSession({ runStatus: 'suspended' });
+      const { stream } = createDeferredContinuationStream(mock.session, 'run-1');
+
+      const drained = drain(stream);
+      vi.advanceTimersByTime(DEFERRED_CONTINUATION_TIMEOUT_MS);
+
+      await expect(drained).resolves.toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('close() is idempotent and ends the stream', async () => {
+    const mock = createMockSession({ runStatus: 'suspended' });
+    const { stream, close } = createDeferredContinuationStream(mock.session, 'run-1');
+
+    close();
+    close();
+
+    await expect(drain(stream)).resolves.toEqual([]);
   });
 });

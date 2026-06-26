@@ -2,6 +2,56 @@
 
 This contains only the most important and/or user-facing changes; for a full changelog, see the commit history.
 
+## [0.4.0](https://github.com/ably/ably-ai-transport-js/tree/0.4.0) (2026-07-01)
+
+[Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.3.0...0.4.0)
+
+This release introduces external data hydration: an app that owns its message store can seed a conversation from it and reconcile only the unstored tail off the Ably channel, instead of replaying the whole history. The new `View.loadUntil()` pages back to the newest message you already hold and returns just the missing tail, so you compose `[...stored, ...tail]` with no duplicates. See the [external hydration demo](https://github.com/ably/ably-ai-transport-js/tree/main/demo/vercel/react/use-chat-db). The release also includes a number of other improvements; see the full details below.
+
+### Breaking Changes
+
+- **The agent's `run.messages` now returns only the messages belonging to the run, rather than all messages for the full conversation.** In order to obtain the full set of messages for the conversation (for example, in order to pass it as input to the LLM) drain the `run.view` and access `run.view.getMessages()`:
+
+  ```ts
+  // before (0.3.0): run.messages held the whole conversation after loadConversation()
+  await run.loadConversation();
+  const messages = run.messages;
+
+  // after (0.4.0): drain run.view, then read it
+  while (run.view.hasOlder()) await run.view.loadOlder();
+  const messages = run.view.getMessages().map((m) => m.message);
+  ```
+
+  [#223](https://github.com/ably/ably-ai-transport-js/pull/223) [#227](https://github.com/ably/ably-ai-transport-js/pull/227) [#243](https://github.com/ably/ably-ai-transport-js/pull/243)
+
+- Renamed the run types onto a shared read-model: client `ActiveRun` → `ClientRun<TMessage>`, agent `Run` → `AgentRun` (both expose `runId`, `status`, `error`, `messages`). [#223](https://github.com/ably/ably-ai-transport-js/pull/223)
+- `ClientRun.runId` is now a synchronous `string` (was `Promise<string>`); `await run.started` before reading it. The agent's `runId` is unchanged. [#223](https://github.com/ably/ably-ai-transport-js/pull/223)
+- `ClientView.send` / `regenerate` / `edit` now resolve to `Promise<ClientRun<TMessage>>`. [#223](https://github.com/ably/ably-ai-transport-js/pull/223)
+- Removed the agent's `loadConversation()` (with `LoadConversationOptions` / `maxRuns`); drain `run.view` instead, and `run.start()` now awaits the new `run.located`. [#227](https://github.com/ably/ably-ai-transport-js/pull/227)
+- `View<TMessage>` is now read-only; sibling navigation and the write path move to `ClientView<TInput, TMessage>` (extends `View`). `session.view` / `createClientView()` already return `ClientView`, so only code naming the old `View<TInput, TMessage>` needs updating. [#220](https://github.com/ably/ably-ai-transport-js/pull/220)
+- Renamed `BranchSelection` → `BranchHandle` and removed `selectSibling`; select via `branchSelection(codecMessageId).select(index)`. [#219](https://github.com/ably/ably-ai-transport-js/pull/219)
+- Removed the agent's `RunView`; `run.view` is now a read-only `View<TMessage>` (read `run.view.getMessages()`), and `MessageNode` is no longer exported. [#221](https://github.com/ably/ably-ai-transport-js/pull/221)
+- `ClientView.send` / `edit` now reject a send with more than one new message (`InvalidArgument`); the array form stays for the wire-only inputs that resolve one turn (e.g. parallel tool results). [#213](https://github.com/ably/ably-ai-transport-js/pull/213)
+- Removed `ClientRun.optimisticCodecMessageIds`; read `ClientRun.inputCodecMessageId`. [#213](https://github.com/ably/ably-ai-transport-js/pull/213)
+- Removed the `ClientSessionOptions.messages` seed; compose `[...stored, ...live]` yourself over the `loadOlder()` walk. [#227](https://github.com/ably/ably-ai-transport-js/pull/227)
+- Removed `AgentSessionOptions.inputEventLookupTimeoutMs` and the `InputEventNotFound` error code; `run.located` has no deadline, so race your own timeout. [#227](https://github.com/ably/ably-ai-transport-js/pull/227)
+- Removed `AgentSessionOptions.onError`; subscribe via `session.on('error', ...)`. [#223](https://github.com/ably/ably-ai-transport-js/pull/223)
+
+### New Features
+
+- `View.loadUntil(predicate)` pages history back to the first message your store already holds (the seam) and returns only the messages newer than it, so you hydrate from your own store and reconcile just the unstored tail. [#234](https://github.com/ably/ably-ai-transport-js/pull/234)
+- React seed hooks for that recipe: `useMessagesWithSeed` (generic and Vercel) and a `messages` seed option on `useMessageSync`, which compose your stored prefix with the live channel and run the seam walk for you. [#229](https://github.com/ably/ably-ai-transport-js/pull/229)
+- `View.loadOlder()` returns the page it revealed (`CodecMessage[]`, oldest-first; `[]` when exhausted), the building block for the seam walk. [#226](https://github.com/ably/ably-ai-transport-js/pull/226)
+- Added `historyPageSize` (`ClientSessionOptions` / `AgentSessionOptions`, default 100) to tune the history fetch size per round trip. [#226](https://github.com/ably/ably-ai-transport-js/pull/226)
+- The agent gains a real paginating, read-only `run.view` over the same `View` base as the client, replacing its old messages-only read. [#221](https://github.com/ably/ably-ai-transport-js/pull/221)
+
+### Bug Fixes
+
+- The agent no longer feeds incomplete ancestor runs (still streaming, suspended, cancelled, or errored) into the model prompt, so a dangling tool call from a concurrent or interrupted turn no longer makes the provider reject the request. [#237](https://github.com/ably/ably-ai-transport-js/pull/237)
+- Fixed a stale message left at the end of the conversation after regenerating a non-head message in a multi-message reply. [#215](https://github.com/ably/ably-ai-transport-js/pull/215)
+- Vercel: two tabs sharing a `clientId` no longer error with "inputs array is empty"; a tab with no new inputs waits for the other tab's run and repaints when it completes. [#224](https://github.com/ably/ably-ai-transport-js/pull/224)
+- Fixed sends intermittently failing with `unable to send; channel is initialized` after a rapid subscribe/unsubscribe cycle (e.g. React StrictMode in development); `connect()` now attaches the channel explicitly. [#229](https://github.com/ably/ably-ai-transport-js/pull/229)
+
 ## [0.3.0](https://github.com/ably/ably-ai-transport-js/tree/0.3.0) (2026-06-19)
 
 [Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.2.0...0.3.0)

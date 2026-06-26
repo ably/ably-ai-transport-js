@@ -40,7 +40,7 @@ import { errorCause, errorMessage } from '../../utils.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
 import { UIMessageCodec } from '../codec/index.js';
 import { isToolPart, type ToolPart } from '../tool-part.js';
-import { createRunOutputStream } from './run-output-stream.js';
+import { createDeferredContinuationStream, createRunOutputStream } from './run-output-stream.js';
 
 // ---------------------------------------------------------------------------
 // ChatTransport options
@@ -455,6 +455,57 @@ export const createChatTransport = (
     const lastMessageInTree = !!lastMessage && codecIdByDomainId.has(lastMessage.id);
     const isContinuation = trigger === 'submit-message' && lastMessage?.role === 'assistant' && lastMessageInTree;
 
+    // For a continuation, derive the tool-resolution inputs up front so we can
+    // detect the "nothing to send" case before any send/POST work (and reuse
+    // them at dispatch below).
+    const continuationInputs = isContinuation ? deriveContinuationInputs(codecMessages, messages) : [];
+
+    // The runId a continuation reuses — the suspended assistant's run, looked up
+    // by its codec-message-id. Resolved once; reused by the empty-continuation
+    // observe path and the `sendOpts.runId` dispatch below. `isContinuation`
+    // implies `lastMessage` is defined (it gates on `lastMessage?.role`, which
+    // TypeScript narrows here).
+    let continuationRunId: string | undefined;
+    if (isContinuation) {
+      const codecId = codecIdOf(lastMessage.id);
+      continuationRunId = codecId === undefined ? undefined : session.view.runOf(codecId)?.runId;
+    }
+
+    // Empty continuation: every overlay tool resolution is already reflected in
+    // the Tree — typically because another tab (same clientId) published its
+    // result first and we folded it. There is nothing to send: view.send([])
+    // would throw, and returning an immediately-closing stream would make
+    // useChat's sendAutomaticallyWhen resubmit in a loop. Instead, observe the
+    // run that the other tab is driving and keep useChat in `streaming` until
+    // that run produces its next turn; closing then lets useMessageSync repaint
+    // the overlay from the Tree (the other tab's result plus the agent's reply),
+    // at which point sendAutomaticallyWhen is satisfied. We do NOT wake the
+    // agent — the other tab owns that.
+    if (isContinuation && continuationInputs.length === 0) {
+      const observe = createDeferredContinuationStream(session, continuationRunId);
+
+      if (abortSignal) {
+        // We don't own this run, so there's nothing to cancel — just close the
+        // consumer stream. useChat may abort before we reach here, and
+        // addEventListener does not fire for an already-aborted signal.
+        const onAbort = (): void => {
+          observe.close();
+        };
+        if (abortSignal.aborted) {
+          onAbort();
+        } else {
+          abortSignal.addEventListener('abort', onAbort, { once: true });
+        }
+      }
+
+      const { stream, done } = wrapStreamWithDone(observe.stream);
+      setStreaming(true);
+      void done.then(() => {
+        setStreaming(false);
+      });
+      return stream;
+    }
+
     // Fork-on-unresolved-tool: user sent a new message while the preceding
     // assistant has an unresolved tool call (approval-requested, input-*).
     // Fork the new message off the preceding assistant so the unresolved
@@ -543,16 +594,10 @@ export const createChatTransport = (
     const sendOpts: SendOptions = {};
     if (forkOf !== undefined) sendOpts.forkOf = forkOf;
     if (parent !== undefined) sendOpts.parent = parent;
-    // Continuations reuse the suspended assistant's runId so the agent's
-    // existing run resumes under a fresh invocation rather than spinning
-    // up a brand-new run. `isContinuation` implies `lastMessage` is defined.
-    if (isContinuation) {
-      // `isContinuation` implies `lastMessage` is defined (it gates on
-      // `lastMessage?.role`). Route the runId lookup by codec-message-id.
-      const codecId = codecIdOf(lastMessage.id);
-      const run = codecId === undefined ? undefined : session.view.runOf(codecId);
-      if (run) sendOpts.runId = run.runId;
-    }
+    // Continuations reuse the suspended assistant's runId (resolved once as
+    // `continuationRunId`) so the agent's existing run resumes under a fresh
+    // invocation rather than spinning up a brand-new run.
+    if (continuationRunId !== undefined) sendOpts.runId = continuationRunId;
 
     // Dispatch by mode:
     //
@@ -570,8 +615,8 @@ export const createChatTransport = (
     //   `view.send`.
     let run: ClientRun<AI.UIMessage>;
     if (isContinuation) {
-      const inputs = deriveContinuationInputs(codecMessages, messages);
-      run = await session.view.send(inputs, sendOpts);
+      // Non-empty here: the empty case returned the deferred-observe stream above.
+      run = await session.view.send(continuationInputs, sendOpts);
     } else if (trigger === 'regenerate-message') {
       if (messageId === undefined) {
         throw new Ably.ErrorInfo(

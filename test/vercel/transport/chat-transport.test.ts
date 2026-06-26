@@ -9,6 +9,7 @@ import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/v
 import type { ChatTransportOptions } from '../../../src/vercel/transport/chat-transport.js';
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 import { toBeErrorInfo } from '../../helper/expectations.js';
+import { drain, flushMicrotasks } from '../../helper/streams.js';
 
 expect.extend({ toBeErrorInfo });
 
@@ -33,6 +34,43 @@ const makeAssistantWithToolPart = (id: string, part: AI.DynamicToolUIPart): AI.U
   role: 'assistant',
   parts: [{ type: 'text', text: 'intro' }, part],
 });
+
+// Tree + overlay where the only tool call is ALREADY resolved on both sides, so
+// deriveContinuationInputs returns []. runOf reports the run suspended, awaiting
+// the continuation the other tab drives. Used by the defer-and-observe tests.
+const setupResolvedContinuation = (mock: ReturnType<typeof createMockSession>): { messages: AI.UIMessage[] } => {
+  const user1 = makeMessage('u1');
+  const treeAssistant = makeAssistantWithToolPart('a1', {
+    type: 'dynamic-tool',
+    toolName: 'getLocation',
+    toolCallId: 'tc1',
+    state: 'output-available',
+    input: {},
+    output: { latitude: 51, longitude: 0 },
+  });
+  const overlayAssistant: AI.UIMessage = {
+    id: 'a1',
+    role: 'assistant',
+    parts: [
+      {
+        type: 'dynamic-tool',
+        toolName: 'getLocation',
+        toolCallId: 'tc1',
+        state: 'output-available',
+        input: {},
+        output: { latitude: 99, longitude: 9 },
+      },
+    ],
+  };
+  (mock.view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue(asPairs([user1, treeAssistant]));
+  (mock.view.runOf as ReturnType<typeof vi.fn>).mockReturnValue({
+    runId: 'run-1',
+    clientId: '',
+    status: 'suspended',
+    invocationId: '',
+  });
+  return { messages: [user1, overlayAssistant] };
+};
 
 /**
  * Minimal event registry mirroring the Tree/session `on(event, handler)`
@@ -1371,5 +1409,170 @@ describe('createChatTransport', () => {
         });
       },
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // sendMessages — empty continuation (defer-and-observe)
+  // -------------------------------------------------------------------------
+  //
+  // Regression for AIT-843: a continuation whose tool resolutions are already
+  // reflected in the Tree (another tab published the result first and we folded
+  // it) derives no inputs. The transport must NOT call view.send([]) (which the
+  // core rejects with "inputs array is empty") nor wake the agent; it returns a
+  // chunk-less stream that observes the run the other tab is driving and stays
+  // open (keeping useChat in `streaming`) until that run produces its next
+  // assistant turn — signalled by its first output, with run-end as a safety
+  // net — so useChat doesn't resubmit the empty continuation in a loop.
+  describe('sendMessages — empty continuation (defer-and-observe)', () => {
+    it('does not send, does not POST, and stays open until the observed run ends', async () => {
+      const mock = createMockSession();
+      // The observed run is suspended (awaiting the continuation the other tab drives).
+      (mock.tree.getRunNode as ReturnType<typeof vi.fn>).mockReturnValue({ state: { status: 'suspended' } });
+      const { messages } = setupResolvedContinuation(mock);
+
+      const chat = createChatTransport(mock.session);
+      const stream = await chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages,
+        abortSignal: undefined,
+      });
+
+      // The empty input set is never sent (the bug: this path threw), and the
+      // agent is not woken — the other tab owns the continuation.
+      expect(mock.send).not.toHaveBeenCalled();
+      expect(postCalls).toHaveLength(0);
+      // Streaming is held so useChat neither resubmits nor opens the sync gate.
+      expect(chat.streaming).toBe(true);
+
+      let closed = false;
+      const drained = drain(stream).then((chunks) => {
+        closed = true;
+        return chunks;
+      });
+      await flushMicrotasks();
+      expect(closed).toBe(false);
+
+      // The other tab's continuation runs and the run ends; the stream closes
+      // (forwarding no chunks) and streaming clears so useMessageSync repaints.
+      mock.mockRun.close();
+      await expect(drained).resolves.toEqual([]);
+      await flushMicrotasks();
+      expect(chat.streaming).toBe(false);
+    });
+
+    it('stays open, then closes when the observed run produces its next output', async () => {
+      const mock = createMockSession();
+      (mock.tree.getRunNode as ReturnType<typeof vi.fn>).mockReturnValue({ state: { status: 'suspended' } });
+      const { messages } = setupResolvedContinuation(mock);
+
+      const chat = createChatTransport(mock.session);
+      const stream = await chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages,
+        abortSignal: undefined,
+      });
+
+      let closed = false;
+      const drained = drain(stream).then((chunks) => {
+        closed = true;
+        return chunks;
+      });
+      await flushMicrotasks();
+      expect(closed).toBe(false);
+
+      // The other tab's continuation begins producing the next assistant turn.
+      // Its first output for the run closes the observe stream (which forwards
+      // no chunks) — we don't wait for run-end, since the new turn appearing is
+      // what makes useChat stop resubmitting.
+      mock.mockRun.enqueue({ type: 'text-start', id: 't1' });
+      await expect(drained).resolves.toEqual([]);
+      await flushMicrotasks();
+      expect(chat.streaming).toBe(false);
+    });
+
+    it('closes immediately when the observed run already ended', async () => {
+      const mock = createMockSession();
+      // The agent already responded before sendMessages ran (snapshot pre-check):
+      // the run is terminal, so there is nothing to wait for.
+      (mock.tree.getRunNode as ReturnType<typeof vi.fn>).mockReturnValue({ state: { status: 'complete' } });
+      const { messages } = setupResolvedContinuation(mock);
+
+      const chat = createChatTransport(mock.session);
+      const stream = await chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages,
+        abortSignal: undefined,
+      });
+
+      expect(mock.send).not.toHaveBeenCalled();
+      expect(postCalls).toHaveLength(0);
+      await expect(drain(stream)).resolves.toEqual([]);
+      await flushMicrotasks();
+      expect(chat.streaming).toBe(false);
+    });
+
+    it('aborting after resolve closes the observe stream without sending or cancelling', async () => {
+      const mock = createMockSession();
+      (mock.tree.getRunNode as ReturnType<typeof vi.fn>).mockReturnValue({ state: { status: 'suspended' } });
+      const { messages } = setupResolvedContinuation(mock);
+
+      const controller = new AbortController();
+      const chat = createChatTransport(mock.session);
+      const stream = await chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages,
+        abortSignal: controller.signal,
+      });
+
+      expect(chat.streaming).toBe(true);
+
+      let closed = false;
+      const drained = drain(stream).then((chunks) => {
+        closed = true;
+        return chunks;
+      });
+      await flushMicrotasks();
+      expect(closed).toBe(false);
+
+      // useChat aborts (e.g. the user hit Stop). We don't own this run, so
+      // nothing is sent or cancelled — the observe stream simply closes.
+      controller.abort();
+      await expect(drained).resolves.toEqual([]);
+      await flushMicrotasks();
+      expect(chat.streaming).toBe(false);
+      expect(mock.send).not.toHaveBeenCalled();
+      expect(mock.cancel).not.toHaveBeenCalled();
+    });
+
+    it('an already-aborted signal closes the observe stream immediately', async () => {
+      const mock = createMockSession();
+      (mock.tree.getRunNode as ReturnType<typeof vi.fn>).mockReturnValue({ state: { status: 'suspended' } });
+      const { messages } = setupResolvedContinuation(mock);
+
+      // useChat can abort before sendMessages runs; addEventListener would not
+      // fire for an already-aborted signal, so the explicit `aborted` branch
+      // must close the stream without waiting for a run event.
+      const controller = new AbortController();
+      controller.abort();
+      const chat = createChatTransport(mock.session);
+      const stream = await chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages,
+        abortSignal: controller.signal,
+      });
+
+      await expect(drain(stream)).resolves.toEqual([]);
+      expect(mock.send).not.toHaveBeenCalled();
+    });
   });
 });

@@ -49,6 +49,89 @@ interface RunOutputStream {
   close: () => void;
 }
 
+/** The shared scaffold behind a settle-once consumer stream. */
+interface SettlingStream {
+  /** The stream the consumer reads. */
+  stream: ReadableStream<VercelOutput>;
+  /** The stream's controller (enqueue outputs / inspect desiredSize). */
+  controller: ReadableStreamDefaultController<VercelOutput>;
+  /** Close the stream once, then run registered cleanup. Idempotent. */
+  close: () => void;
+  /** Error the stream once with `reason`, then run cleanup. Idempotent. */
+  error: (reason: Ably.ErrorInfo) => void;
+  /** Register a teardown callback run when the stream settles or is cancelled. */
+  registerCleanup: (fn: () => void) => void;
+}
+
+/**
+ * Build a consumer stream that settles at most once. Both run-output stream
+ * factories share this: a `ReadableStream` whose controller is captured
+ * synchronously, a `close`/`error` pair that fires the controller action once
+ * (swallowing the throw if the consumer already cancelled) and then runs
+ * registered cleanup, and consumer-cancel wired to the same cleanup. Each
+ * factory layers its own event subscriptions on top via {@link
+ * SettlingStream.registerCleanup}.
+ * @returns The stream, its controller, settle helpers, and a cleanup registrar.
+ */
+const createSettlingStream = (): SettlingStream => {
+  const holder: { controller?: ReadableStreamDefaultController<VercelOutput> } = {};
+  const cleanups: (() => void)[] = [];
+  const teardown = (): void => {
+    for (const fn of cleanups) fn();
+    cleanups.length = 0;
+  };
+  // ReadableStream's start() runs synchronously, so the controller is captured
+  // before the constructor returns.
+  const stream = new ReadableStream<VercelOutput>({
+    start: (controller) => {
+      holder.controller = controller;
+    },
+    cancel: () => {
+      teardown();
+    },
+  });
+  const { controller } = holder;
+  if (!controller) {
+    throw new Ably.ErrorInfo(
+      'unable to create run stream; ReadableStream start() was not called synchronously',
+      ErrorCode.SessionSubscriptionError,
+      500,
+    );
+  }
+
+  let settled = false;
+  // Settle the stream at most once: run the controller action (close/error),
+  // swallow the throw if the consumer already cancelled, then tear down.
+  const settle = (action: () => void): void => {
+    if (settled) return;
+    settled = true;
+    try {
+      action();
+    } catch {
+      /* consumer already cancelled the stream */
+    }
+    teardown();
+  };
+
+  return {
+    stream,
+    controller,
+    close: () => {
+      settle(() => {
+        controller.close();
+      });
+    },
+    error: (reason: Ably.ErrorInfo) => {
+      settle(() => {
+        controller.error(reason);
+      });
+    },
+    registerCleanup: (fn) => {
+      cleanups.push(fn);
+    },
+  };
+};
+
 /**
  * Create a consumer-facing output stream for a send, sourced from the session
  * Tree's events. See the module docs for close/error semantics. The returned
@@ -72,26 +155,7 @@ export const createRunOutputStream = (
   runId: Promise<string>,
   inputCodecMessageId: string,
 ): RunOutputStream => {
-  const holder: { controller?: ReadableStreamDefaultController<VercelOutput> } = {};
-  // ReadableStream's start() runs synchronously, so the controller is captured
-  // before the constructor returns.
-  const unsubscribe: (() => void)[] = [];
-  const stream = new ReadableStream<VercelOutput>({
-    start: (controller) => {
-      holder.controller = controller;
-    },
-    cancel: () => {
-      teardown();
-    },
-  });
-  const { controller } = holder;
-  if (!controller) {
-    throw new Ably.ErrorInfo(
-      'unable to create run stream; ReadableStream start() was not called synchronously',
-      ErrorCode.SessionSubscriptionError,
-      500,
-    );
-  }
+  const { stream, controller, close, error, registerCleanup } = createSettlingStream();
 
   // The agent mints the runId; learn it (for the run-end safety-net) when the
   // promise resolves. Fire-and-forget: the stream opens on the input key, so a
@@ -108,35 +172,7 @@ export const createRunOutputStream = (
     },
   );
 
-  let settled = false;
-  const teardown = (): void => {
-    for (const unsub of unsubscribe) unsub();
-    unsubscribe.length = 0;
-  };
-  // Settle the stream at most once: run the controller action (close/error),
-  // swallow the throw if the consumer already cancelled, then tear down.
-  const settle = (action: () => void): void => {
-    if (settled) return;
-    settled = true;
-    try {
-      action();
-    } catch {
-      /* consumer already cancelled the stream */
-    }
-    teardown();
-  };
-  const close = (): void => {
-    settle(() => {
-      controller.close();
-    });
-  };
-  const error = (reason: Ably.ErrorInfo): void => {
-    settle(() => {
-      controller.error(reason);
-    });
-  };
-
-  unsubscribe.push(
+  const unsubscribe = [
     session.tree.on('output', (event) => {
       if (event.inputCodecMessageId !== inputCodecMessageId) return;
       for (const output of event.events) {
@@ -163,7 +199,94 @@ export const createRunOutputStream = (
     session.on('error', (reason) => {
       error(reason);
     }),
-  );
+  ];
+  registerCleanup(() => {
+    for (const unsub of unsubscribe) unsub();
+  });
+
+  return { stream, close };
+};
+
+/**
+ * How long {@link createDeferredContinuationStream} waits for the observed run
+ * to produce its next turn before closing best-effort. Bounds two situations
+ * the close signals can't otherwise catch: the tab that published the tool
+ * resolution never wakes the agent, or the run advanced and suspended again
+ * before this stream subscribed (so neither a fresh `output` nor a `run-end`
+ * will fire).
+ *
+ * On timeout the stream `close()`s — it does NOT error, so the user sees no
+ * failure. If the run genuinely never advances, that clean close reopens the
+ * `useMessageSync` gate with no new assistant turn in the Tree, so `useChat`
+ * re-evaluates `sendAutomaticallyWhen` and resubmits: the wait becomes a slow
+ * re-poll, one cycle per timeout, rather than a one-shot give-up. This is
+ * deliberate — erroring would surface a spurious failure when the agent is
+ * merely slow, and the next cycle picks up the reply once it lands.
+ */
+export const DEFERRED_CONTINUATION_TIMEOUT_MS = 30_000;
+
+/**
+ * Create a chunk-less stream that observes an already-running run rather than
+ * sending anything. Used when a continuation derives no inputs because another
+ * client already folded the tool resolution into the Tree: there is nothing to
+ * send, but useChat must stay in `streaming` (so it neither resubmits in a loop
+ * nor opens the `useMessageSync` gate prematurely) until that run produces its
+ * next turn.
+ *
+ * It forwards no outputs — its only job is to close at the right moment, after
+ * which `useMessageSync` repaints the overlay from the Tree. It closes on the
+ * first of:
+ * - a synchronous snapshot showing the run is missing or already terminal (the
+ *   Tree is at rest; close on a microtask so the consumer attaches first);
+ * - a new `output` for the run (the agent resumed and is producing the turn);
+ * - `run-end` for the run (clean finish, or a finish with no further output);
+ * - {@link DEFERRED_CONTINUATION_TIMEOUT_MS} elapsing (best-effort floor).
+ *
+ * It errors when the session emits an `error`, mirroring
+ * {@link createRunOutputStream}.
+ * @param session - The Vercel client session whose Tree to observe.
+ * @param runId - The run to observe (the continuation's reused runId), or
+ *   `undefined` when none is known — in which case the stream closes immediately.
+ * @returns The stream and its external close handle.
+ */
+export const createDeferredContinuationStream = (
+  session: VercelSession,
+  runId: string | undefined,
+): RunOutputStream => {
+  const { stream, close, error, registerCleanup } = createSettlingStream();
+
+  // Snapshot pre-check (closes the subscribe-after-the-fact race): the run's
+  // resume/turn/run-end can arrive over the channel before this stream
+  // subscribes. If there is no run to observe, or it has already left its live
+  // states, the Tree is at rest and holds whatever the other tab drove, so
+  // close — on a microtask, so the consumer's reader is attached first.
+  const runNode = runId === undefined ? undefined : session.tree.getRunNode(runId);
+  const status = runNode?.state.status;
+  const isLive = status === 'active' || status === 'suspended';
+  if (!isLive) {
+    queueMicrotask(close);
+    return { stream, close };
+  }
+
+  const unsubscribe = [
+    session.tree.on('output', (event) => {
+      // `runId` is defined here (the pre-check returned otherwise); compare
+      // explicitly so this does not rely on the pre-check to exclude input
+      // folds, which carry `event.runId === undefined`.
+      if (runId !== undefined && event.runId === runId) close();
+    }),
+    session.tree.on('run', (event) => {
+      if (event.type === 'end' && event.runId === runId) close();
+    }),
+    session.on('error', (reason) => {
+      error(reason);
+    }),
+  ];
+  const timer = setTimeout(close, DEFERRED_CONTINUATION_TIMEOUT_MS);
+  registerCleanup(() => {
+    clearTimeout(timer);
+    for (const unsub of unsubscribe) unsub();
+  });
 
   return { stream, close };
 };

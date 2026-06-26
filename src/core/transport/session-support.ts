@@ -40,19 +40,28 @@ export enum SessionState {
 export const noopUnsubscribe = (): void => {};
 
 /**
- * Subscribe a session's listener to its channel, which implicitly attaches the
- * channel (RTL7g — subscribe before attach). On success logs at debug; on
- * failure builds a `SessionSubscriptionError`, logs at error, hands it to
- * `onError`, and rejects with it. Both sessions cache the returned promise as
- * their connect guard, so this is the single place the subscribe-and-attach
- * step — and its failure shape — is defined.
+ * Subscribe a session's listener to its channel and attach the channel. Both
+ * sessions cache the returned promise as their connect guard, so this is the
+ * single place the subscribe-and-attach step — and its failure shape — is
+ * defined.
+ *
+ * `subscribe()` is followed by an explicit `attach()`: `subscribe()` initiates
+ * the implicit attach-on-subscribe (RTL7g — subscribe before attach), but its
+ * promise does not reliably resolve only once the channel reaches ATTACHED
+ * (e.g. when the implicit attach is interrupted by a rapid mount/unmount/remount
+ * cycle, it can resolve with the channel still INITIALIZED). The session's write
+ * guard requires the channel to be ATTACHED/ATTACHING by the time `connect()`
+ * resolves, so `attach()` (idempotent — a no-op when already attaching/attached)
+ * makes that guarantee hold. On success logs at debug; on failure builds a
+ * `SessionSubscriptionError`, logs at error, hands it to `onError`, and rejects
+ * with it.
  * @param channel - The session's channel.
  * @param listener - The message listener to subscribe (also the unsubscribe handle on close).
  * @param logger - Logger for the success/failure lines, or `undefined`.
  * @param component - The owning class name, used as the log message prefix.
  * @param onError - Called with the subscription error before it is thrown
  *   (both sessions emit it on their session `on('error')`).
- * @returns A promise that resolves once subscribed/attached, or rejects with
+ * @returns A promise that resolves once subscribed and attached, or rejects with
  *   the `SessionSubscriptionError`.
  */
 export const subscribeAndAttach = async (
@@ -64,15 +73,21 @@ export const subscribeAndAttach = async (
 ): Promise<void> => {
   try {
     await channel.subscribe(listener);
+    // Force the attach: subscribe's implicit attach can resolve with the channel
+    // still INITIALIZED, but the write guard needs it ATTACHED/ATTACHING. attach()
+    // is idempotent, so this is a no-op once the implicit attach has completed.
+    await channel.attach();
     logger?.debug(`${component}.connect(); subscribed and attached`);
   } catch (error) {
+    // One bracket covers both steps; name both so an attach failure isn't
+    // mislabelled as a subscribe failure.
     const errInfo = new Ably.ErrorInfo(
-      `unable to subscribe to channel; ${errorMessage(error)}`,
+      `unable to subscribe and attach channel; ${errorMessage(error)}`,
       ErrorCode.SessionSubscriptionError,
       500,
       errorCause(error),
     );
-    logger?.error(`${component}.connect(); subscribe failed`);
+    logger?.error(`${component}.connect(); subscribe or attach failed`);
     onError(errInfo);
     throw errInfo;
   }

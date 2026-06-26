@@ -87,13 +87,13 @@ A single shared decoder instance is reused across a page's messages so a stream'
 
 The View caches the visible node chain in a `_cachedNodes` field and the derived flat message snapshot in `_lastVisibleMessages`. The public `getMessages()` returns that snapshot in O(1). The cache is refreshed by `_computeFlatNodes()` - a private method that performs the actual tree walk and pagination filter - whenever the visible output may have changed:
 
-| Trigger                                                       | What refreshes the cache                                  |
-| ------------------------------------------------------------- | --------------------------------------------------------- |
-| Tree structural change (new node, deletion, serial promotion) | `_onTreeUpdate()` calls `_recomputeAndEmitIfChanged()`    |
-| Content-only update (streaming token)                         | `_onTreeOutput()` recomputes the visible message snapshot |
-| Branch selection change                                       | `selectSibling()` calls `_recomputeAndEmit()`             |
-| Fork / regenerate auto-selection after a write                | `_applyForkAutoSelect()` / `_applyRegenerateAutoSelect()` |
-| History page revealed                                         | `_releaseWithheld()` calls `_recomputeAndEmit()`          |
+| Trigger                                                       | What refreshes the cache                                                          |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Tree structural change (new node, deletion, serial promotion) | `_onTreeUpdate()` calls `_recomputeAndEmitIfChanged()`                            |
+| Content-only update (streaming token)                         | `_onTreeOutput()` recomputes the visible message snapshot                         |
+| Branch selection change                                       | `branchSelection().select()` records the selection and calls `recomputeAndEmit()` |
+| Fork / regenerate auto-selection after a write                | `_applyForkAutoSelect()` / `_applyRegenerateAutoSelect()`                         |
+| History page revealed                                         | `_releaseWithheld()` calls `_recomputeAndEmit()`                                  |
 
 ### Content-only fast path
 

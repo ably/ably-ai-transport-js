@@ -55,7 +55,6 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
     regenerate,
     runOf,
     branchSelection,
-    selectSibling,
   } = useView({ session, limit: 30 });
 
   // Read streaming state and the runId-to-cancel off the Run that owns the
@@ -101,16 +100,16 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
             part.type === 'text' ? <span key={i}>{part.text}</span> : null
           ))}
 
-          {/* Branch navigation: branchSelection() returns the sibling bundle
-              anchored at this message's codec-message-id. */}
+          {/* Branch navigation: branchSelection() returns the branch handle
+              anchored at this message's codec-message-id. Call select() on it. */}
           {(() => {
             const branch = branchSelection(codecMessageId);
             if (!branch.hasSiblings) return null;
             return (
               <span>
                 {branch.index + 1} / {branch.siblings.length}
-                <button onClick={() => selectSibling(codecMessageId, branch.index - 1)}>prev</button>
-                <button onClick={() => selectSibling(codecMessageId, branch.index + 1)}>next</button>
+                <button onClick={() => branch.select(branch.index - 1)}>prev</button>
+                <button onClick={() => branch.select(branch.index + 1)}>next</button>
               </span>
             );
           })()}
@@ -171,7 +170,7 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
 | **Send**              | `sendMessage({ text })`                   | `send(codec.createUserMessage(uiMessage))` - you construct the `UIMessage`      |
 | **Regenerate**        | `regenerate({ messageId })`               | `regenerate(messageId)`                                                         |
 | **Edit**              | Not built into `useChat()`                | `edit(messageId, codec.createUserMessage(newMessage))`                          |
-| **Branch navigation** | Not available                             | `view.branchSelection()`, `view.selectSibling()` via `useView()`                |
+| **Branch navigation** | Not available                             | `view.branchSelection(id).select(index)` via `useView()`                        |
 | **Stop**              | `stop()` from `useChat()`                 | `session.cancel(runId)` — resolve the runId via `runOf()` on the latest message |
 | **Observer sync**     | Requires `useMessageSync()`               | Built-in - `useView()` includes all clients                                     |
 | **Hooks needed**      | `useChatTransport()` + `useMessageSync()` | Individual hooks per operation                                                  |

@@ -70,15 +70,14 @@ import { useView } from '@ably/ai-transport/react';
 
 const view = useView();
 
-// view.branchSelection(codecMessageId) returns a total BranchSelection bundle:
-//   { hasSiblings, siblings, index, selected }
+// view.branchSelection(codecMessageId) returns a total BranchHandle:
+//   { hasSiblings, siblings, index, selected, select }
 // - hasSiblings - is this codec-message-id a branch anchor with > 1 sibling?
 // - siblings    - the alternatives (TMessage[]); use .length for the count
 // - index       - the currently selected sibling's index
 // - selected    - siblings[index] (the rendered message itself for plain bubbles)
-//
-// view.selectSibling(codecMessageId, index) switches to a different sibling
-// (index is clamped; silent no-op when the id is not a branch anchor).
+// - select(index) - switch to a different sibling (index is clamped; silent
+//                   no-op when the id is not a branch anchor)
 //
 // view.runOf(codecMessageId) returns the owning Run's RunInfo
 //   ({ runId, clientId, status, invocationId }) for rendering.
@@ -92,14 +91,14 @@ const branch = view.branchSelection(codecMessageId);
 {branch.hasSiblings && (
   <div>
     <button
-      onClick={() => view.selectSibling(codecMessageId, branch.index - 1)}
+      onClick={() => branch.select(branch.index - 1)}
       disabled={branch.index === 0}
     >
       ←
     </button>
     <span>{branch.index + 1} / {branch.siblings.length}</span>
     <button
-      onClick={() => view.selectSibling(codecMessageId, branch.index + 1)}
+      onClick={() => branch.select(branch.index + 1)}
       disabled={branch.index === branch.siblings.length - 1}
     >
       →
@@ -112,7 +111,7 @@ In the Vercel codec the domain `message.id` is the codec-message-id, so you pass
 
 For direct structural access (for example navigating an explicit node tree), `session.tree.getNodeByCodecMessageId(id)` resolves the owning node (an `InputNode` or a `RunNode` — narrow on `kind`), `session.tree.getSiblingNodes(key)` returns its sibling group (edit versions for an input node, regenerate runs for a reply run), and `session.tree.getRunNode(runId)` looks up a reply run by its agent-minted run id.
 
-Calling `selectSibling` updates the view's active branch and re-renders with the selected path.
+Calling `branch.select()` updates the view's active branch and re-renders with the selected path.
 
 ## Server handling
 
@@ -154,7 +153,7 @@ const left = useView({ limit: 50 });
 const right = useCreateView({ skip: !split, limit: 50 });
 
 // Selecting a sibling in the left pane does not affect the right pane
-left.selectSibling(codecMessageId, 1);
+left.branchSelection(codecMessageId).select(1);
 ```
 
 Both views share the same underlying tree - new messages from the server appear in both. But branch selections, pagination windows, and write operations are scoped to each view.

@@ -1,6 +1,6 @@
 # Conversation tree
 
-The conversation tree (`src/core/transport/tree.ts`) materializes a branching conversation as a forest of **nodes**. Each turn is two nodes: a client-owned **input node** (the user prompt, keyed by its `codec-message-id`, with no run id) and an agent-owned **reply run** (the streamed response, keyed by the agent-minted `run-id`, parented to the input node via `parentCodecMessageId`). The tree handles node ordering and sibling grouping for edit/regenerate forks. It is a data structure with codec wiring - it owns the per-node [TProjection](glossary.md#tprojection) and folds inbound events into it, but selection state and navigation (`branchSelection()`, `selectSibling()`) live on the View.
+The conversation tree (`src/core/transport/tree.ts`) materializes a branching conversation as a forest of **nodes**. Each turn is two nodes: a client-owned **input node** (the user prompt, keyed by its `codec-message-id`, with no run id) and an agent-owned **reply run** (the streamed response, keyed by the agent-minted `run-id`, parented to the input node via `parentCodecMessageId`). The tree handles node ordering and sibling grouping for edit/regenerate forks. It is a data structure with codec wiring - it owns the per-node [TProjection](glossary.md#tprojection) and folds inbound events into it, but selection state and navigation (`branchSelection(id).select(index)`) live on the `ClientView`.
 
 Reachability is kind-blind: it walks `parentCodecMessageId` edges (input node → prior reply run, reply run → its input node, seed input → prior input), so the client no longer needs the `run-id` to thread a turn. A reply run's `run-id` is minted by the agent and observed off `ai-run-start`; the input node's id is owned by the client at send time.
 
@@ -123,7 +123,7 @@ Cycle detection guards against malformed `forkOf` chains. The result is cached i
 
 ### Selection
 
-Each sibling group has a selected node (default: the latest sibling). Selection state is managed by the View - `view.selectSibling(codecMessageId, index)` changes which sibling is active. The selection is stored by the group root's key (`getGroupRoot(key)`): for an input node the earliest fork-of ancestor, for a reply run the oldest same-parent run (the original reply).
+Each sibling group has a selected node (default: the latest sibling). Selection state is managed by the `ClientView` - `view.branchSelection(codecMessageId).select(index)` changes which sibling is active. The selection is stored by the group root's key (`getGroupRoot(key)`): for an input node the earliest fork-of ancestor, for a reply run the oldest same-parent run (the original reply).
 
 ## Visible nodes: producing the visible chain
 
@@ -158,13 +158,13 @@ The public `Tree` interface exposes:
 
 `TreeInternal` (consumed by the View / session, not public) additionally exposes `visibleNodes(selections)`, `getGroupRoot(key)`, `getReplyRuns(inputCodecMessageId)`, `getNode(key)`, `applyMessage`, `applyRunLifecycle`, `delete(key)`, and `emitAblyMessage`.
 
-The following are on the `View`, not the `Tree`:
+The following are on the view, not the `Tree`. `getMessages()` is on the read-only `View` base (the surface the agent's `run.view` also exposes); branch navigation is on the client's `ClientView`:
 
-| Method                             | Returns                                                           |
-| ---------------------------------- | ----------------------------------------------------------------- |
-| `getMessages()`                    | Flat `CodecMessage<TMessage>[]` concatenated across visible nodes |
-| `branchSelection(codecMessageId)`  | The branch bundle (siblings, index, selected) for a message       |
-| `selectSibling(codecMessageId, i)` | Switch to a different sibling at a fork point                     |
+| Method                                      | Surface      | Returns                                                                |
+| ------------------------------------------- | ------------ | ---------------------------------------------------------------------- |
+| `getMessages()`                             | `View`       | Flat `CodecMessage<TMessage>[]` concatenated across visible nodes      |
+| `branchSelection(codecMessageId)`           | `ClientView` | The `BranchHandle` (siblings, index, selected, `select`) for a message |
+| `branchSelection(codecMessageId).select(i)` | `ClientView` | Switch to a different sibling at a fork point                          |
 
 ## Delete
 
@@ -212,7 +212,7 @@ Sibling group at R1's input children: [M2, M2']   selection default: M2' (latest
 M4 and M4' are NOT siblings — different parents, no forkOf link.
 
 view.getMessages()   (default selection)           → M1, R1, M2', R2', M4', R4'
-view.selectSibling(M2's id, 0) (pick the original)
+view.branchSelection(M2's id).select(0)  (pick the original)
 view.getMessages()                                 → M1, R1, M2,  R2,  M4,  R4
 ```
 

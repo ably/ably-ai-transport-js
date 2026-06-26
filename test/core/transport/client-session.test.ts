@@ -609,6 +609,33 @@ describe('ClientSession', () => {
       v.close();
     });
 
+    it('forwards historyPageSize to the channel-history fetch limit', async () => {
+      const ch = createMockChannel();
+      const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: createMockCodec(),
+        historyPageSize: 7,
+      });
+      await s.connect();
+      await s.view.loadOlder(1);
+      expect(ch.history).toHaveBeenCalledWith(expect.objectContaining({ limit: 7 }));
+      await s.close();
+    });
+
+    it('defaults the channel-history fetch limit to 100 when historyPageSize is unset', async () => {
+      const ch = createMockChannel();
+      const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: createMockCodec(),
+      });
+      await s.connect();
+      await s.view.loadOlder(1);
+      expect(ch.history).toHaveBeenCalledWith(expect.objectContaining({ limit: 100 }));
+      await s.close();
+    });
+
     it('seeds initial messages into the tree', async () => {
       const ch = createMockChannel();
       const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({

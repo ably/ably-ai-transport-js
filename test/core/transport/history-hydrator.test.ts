@@ -300,6 +300,37 @@ describe('HistoryHydrator', () => {
     });
   });
 
+  describe('page size', () => {
+    it('passes the configured pageSize to loadHistoryPages as the per-page wire limit', async () => {
+      vi.mocked(loadHistoryPages).mockResolvedValue(makeCursor([[wire()]]));
+      const hydrator = createHistoryHydrator({
+        channel: {} as unknown as Ably.RealtimeChannel,
+        tree: { emitAblyMessage: vi.fn() },
+        applier: makeApplier(),
+        pageSize: 7,
+        logger: silentLogger,
+      });
+
+      await hydrator.foldUntil(() => false);
+
+      expect(loadHistoryPages).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ pageLimit: 7 }));
+    });
+
+    it('defaults the per-page wire limit to 100 when pageSize is unset', async () => {
+      vi.mocked(loadHistoryPages).mockResolvedValue(makeCursor([[wire()]]));
+      const hydrator = createHistoryHydrator({
+        channel: {} as unknown as Ably.RealtimeChannel,
+        tree: { emitAblyMessage: vi.fn() },
+        applier: makeApplier(),
+        logger: silentLogger,
+      });
+
+      await hydrator.foldUntil(() => false);
+
+      expect(loadHistoryPages).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ pageLimit: 100 }));
+    });
+  });
+
   describe('fetch errors', () => {
     it('wraps a page-fetch failure as HistoryFetchFailed', async () => {
       const cursor: HistoryPagesCursor = {

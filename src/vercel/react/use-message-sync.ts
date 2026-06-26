@@ -14,7 +14,7 @@
  */
 
 import type * as AI from 'ai';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { isToolPart, type ToolPart } from '../tool-part.js';
 import { useChatTransport } from './use-chat-transport.js';
@@ -26,6 +26,29 @@ export interface UseMessageSyncOptions {
    * updater that returns the next overlay.
    */
   setMessages: (updater: (prev: AI.UIMessage[]) => AI.UIMessage[]) => void;
+  /**
+   * The application's own seeded conversation — typically `useChat()`'s
+   * `messages`, where persisted history was supplied via
+   * `useChat({ messages })`. When non-empty, the hook reconciles it with the
+   * live channel: it takes the newest entry's `id` as the **seam** (keyed on
+   * the domain `message.id`, the only id shared between the application's store
+   * and the channel — the transport's internal `codecMessageId` is never
+   * persisted), pages the view back until that id reappears, and composes
+   * `seed ⧺ live` with no duplicate at the seam.
+   *
+   * Read **once per channel**, on the first render the view resolves — so pass
+   * your loaded seed by then (as `useChat({ messages })` does synchronously).
+   * Omit it, or pass an empty array, for the unchanged behaviour of surfacing
+   * the full live channel history.
+   *
+   * Reconciliation assumes this hook's backward walk is the only thing paging
+   * the underlying view: it drops the single overlapping message where the
+   * walk stops at the seam. Pointing another paginator (e.g. {@link useView})
+   * at the same session view and paging it past the seam can reintroduce a
+   * duplicate; render the seeded conversation from the composed messages
+   * instead.
+   */
+  messages?: AI.UIMessage[];
   /**
    * Channel name of the {@link ChatTransportProvider} to observe.
    * Omit to use the nearest provider.
@@ -80,14 +103,29 @@ const mergeMessages = (tree: AI.UIMessage[], overlay: AI.UIMessage[]): AI.UIMess
 // Hook
 // ---------------------------------------------------------------------------
 
+/** The seed captured for the current view: the persisted prefix and its seam id. */
+interface CapturedSeed {
+  /** The application's seeded messages — the persisted prefix to prepend. */
+  prefix: AI.UIMessage[];
+  /** The newest seed message's domain id — where the live channel rejoins the seed. */
+  seamId: string;
+}
+
 /**
  * Subscribe to view updates and sync them into `useChat()`'s overlay.
+ *
+ * When a seed is supplied via `messages`, the live view is reconciled with it:
+ * the persisted prefix is prepended and the single overlapping message at the
+ * seam is dropped, so a reloaded conversation shows its stored history plus the
+ * live tail exactly once. With no seed, the full live channel history is
+ * surfaced unchanged.
  * @param options - Hook options.
  * @param options.setMessages - The `setMessages` function from `useChat()`.
+ * @param options.messages - The application's seeded conversation to reconcile with the live channel; omit for full channel history.
  * @param options.channelName - Channel name of the provider to observe; defaults to the nearest.
  * @param options.skip - When `true`, skip all subscriptions.
  */
-export const useMessageSync = ({ setMessages, channelName, skip }: UseMessageSyncOptions): void => {
+export const useMessageSync = ({ messages, setMessages, channelName, skip }: UseMessageSyncOptions): void => {
   const { session, chatTransport, chatTransportError } = useChatTransport({ channelName, skip });
 
   const resolved = !skip && !chatTransportError;
@@ -95,6 +133,14 @@ export const useMessageSync = ({ setMessages, channelName, skip }: UseMessageSyn
   const resolvedChatTransport = resolved ? chatTransport : undefined;
 
   const [gated, setGated] = useState(false);
+
+  // Latest seed, read in effects without re-subscribing as the array grows
+  // (useChat's `messages` grows over the session; the seam is captured once).
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+
+  // The seed captured for the current view; `undefined` is no-seed mode.
+  const seedRef = useRef<CapturedSeed | undefined>(undefined);
 
   // Subscribe to the ChatTransport's streaming state. Reset on transport
   // change so a stale `true` doesn't permanently suppress syncs.
@@ -107,17 +153,45 @@ export const useMessageSync = ({ setMessages, channelName, skip }: UseMessageSyn
     return resolvedChatTransport.onStreamingChange(setGated);
   }, [resolvedChatTransport]);
 
+  // Capture the seed once per view: the newest seed message's domain id is the
+  // seam where the live channel rejoins the persisted prefix. Reset on view
+  // change so a new channel re-captures (or drops into no-seed mode).
+  useEffect(() => {
+    seedRef.current = undefined;
+    if (!view) return;
+
+    const seed = messagesRef.current;
+    if (!seed || seed.length === 0) return;
+    const seamId = seed.at(-1)?.id;
+    if (seamId === undefined) return;
+
+    seedRef.current = { prefix: seed, seamId };
+  }, [view]);
+
   // Subscribe to view updates and sync, unless gated.
   useEffect(() => {
     if (!view || gated) return;
 
     const sync = (): void => {
-      setMessages((overlay) =>
-        mergeMessages(
-          view.getMessages().map((m) => m.message),
-          overlay,
-        ),
-      );
+      // Read the view inside the updater so the freshest visible window is
+      // composed when React applies the state, not when `sync` was scheduled.
+      setMessages((overlay) => {
+        const visible = view.getMessages();
+        const seed = seedRef.current;
+        if (!seed)
+          return mergeMessages(
+            visible.map((m) => m.message),
+            overlay,
+          );
+
+        // Compose seed ⧺ live: drop the single seam overlap — the seam row sits
+        // at the front of the visible window once the walk has revealed it (the
+        // walk pages one message at a time and stops on the seam, so it is the
+        // oldest, i.e. first, visible message).
+        const live = visible[0]?.message.id === seed.seamId ? visible.slice(1) : visible;
+        const composed = [...seed.prefix, ...live.map((m) => m.message)];
+        return mergeMessages(composed, overlay);
+      });
     };
 
     // Sync immediately to cover gate-open and initial mount.

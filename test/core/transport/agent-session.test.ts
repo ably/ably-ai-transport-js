@@ -312,6 +312,12 @@ const codecWithFunctionalDecoder = (): Codec<TestInput, TestOutput, TestProjecti
     return state;
   },
   getMessages: (p: TestProjection) => p.messages.map((m) => ({ codecMessageId: m.id, message: m })),
+  // A projection is treated as prompt-UNSAFE (stands in for "holds an
+  // unresolved tool call") when any message id starts with `dangling-`. Lets
+  // the loadConversation tests drive AgentView's prompt-unsafe-run filter
+  // (AIT-878) codec-agnostically; real codecs inspect tool-part state (see the
+  // Vercel reducer's isPromptSafe).
+  isPromptSafe: (p: TestProjection) => !p.messages.some((m) => m.id.startsWith('dangling-')),
   createUserMessage: (m: TestMessage) => ({ kind: 'user-message' as const, message: m }),
   createRegenerate: (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }),
   createEncoder: vi.fn(() => createMockEncoder()),
@@ -2527,6 +2533,56 @@ const makeInputMsg = (
   } as unknown as Ably.InboundMessage;
 };
 
+/**
+ * AIT-878 fixture: reconstruct run-2's prompt for the two-turn conversation
+ * u1 -> run-1 (assistant `run1ContentId`) -> u2 -> run-2 (current). The test
+ * codec flags any message whose id starts with `dangling-` as prompt-unsafe
+ * (see codecWithFunctionalDecoder.isPromptSafe), so a `dangling-` content id
+ * makes run-1 prompt-unsafe and exercises AgentView's prompt-unsafe-run filter.
+ * Note run-1 carries no run-end here, so it is `active` — the filter keys on
+ * projection content, not run state.
+ * @param run1ContentId - The codec-message-id of run-1's assistant message.
+ * @returns The messages from run-2.loadConversation().
+ */
+const loadRun2WithAncestorContent = async (run1ContentId: string): Promise<TestMessage[]> => {
+  const ch = createMockChannel();
+  const codec = codecWithFunctionalDecoder();
+  // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
+  ch.history.mockImplementation(() => {
+    const items = [
+      makeRunStartMsg('run-2', 'u2'),
+      makeInputMsg('u2', 's-05', { parent: run1ContentId }),
+      makeContentMsg('run-1', run1ContentId, 's-04'),
+      makeRunStartMsg('run-1', 'u1'),
+      makeInputMsg('u1', 's-02'),
+    ];
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
+    const page = { items, hasNext: () => false, next: () => Promise.resolve(page) };
+    return Promise.resolve(page);
+  });
+
+  const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+    client: createMockClient(ch),
+    channelName: 'test-channel',
+    codec,
+    inputEventLookupTimeoutMs: 5000,
+  });
+  await session.connect();
+  const run = createRunFromOpts(session, { runId: 'run-2', invocationId: 'inv-2', inputEventId: 'p-u2' });
+  const startPromise = run.start();
+  deliverInputEvent(ch, {
+    invocationId: 'inv-2',
+    codecMessageId: 'u2',
+    serial: 's-05',
+    inputEventId: 'p-u2',
+    parent: run1ContentId,
+  });
+  await startPromise;
+  const history = await run.loadConversation();
+  await session.close();
+  return history;
+};
+
 // ---------------------------------------------------------------------------
 // Run.loadConversation
 // ---------------------------------------------------------------------------
@@ -2707,6 +2763,110 @@ describe('Run.loadConversation', () => {
       { id: 'u3', content: 'u3' },
     ]);
     expect(run.messages).toEqual(history);
+    await session.close();
+  });
+
+  it('drops a prompt-unsafe ancestor run (e.g. a dangling tool call), keeping the surrounding inputs', async () => {
+    // run-1 is `active` (no run-end) but prompt-unsafe (dangling- content), so
+    // it is dropped — this is the server-tool-still-executing case that a
+    // run-state filter would miss.
+    expect(await loadRun2WithAncestorContent('dangling-a1')).toEqual([
+      { id: 'u1', content: 'u1' },
+      { id: 'u2', content: 'u2' },
+    ]);
+  });
+
+  it('keeps a prompt-safe ancestor run regardless of run state', async () => {
+    // Same shape, but run-1's content is safe. run-1 is still `active`, yet it
+    // is retained — the filter keys on projection content, not run state, so it
+    // never over-drops a healthy in-flight ancestor.
+    expect(await loadRun2WithAncestorContent('a1')).toEqual([
+      { id: 'u1', content: 'u1' },
+      { id: 'a1', content: 'a1' },
+      { id: 'u2', content: 'u2' },
+    ]);
+  });
+
+  it('keeps the current run even when its own projection is prompt-unsafe', async () => {
+    // The run being served owns the pending tool call it is about to resolve,
+    // so it must never be dropped. u1 -> run-1 (current), run-1's own assistant
+    // content is prompt-unsafe; it still appears in run-1's prompt.
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
+    ch.history.mockImplementation(() => {
+      const items = [
+        makeContentMsg('run-1', 'dangling-a1', 's-03'),
+        makeRunStartMsg('run-1', 'u1'),
+        makeInputMsg('u1', 's-02'),
+      ];
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
+      const page = { items, hasNext: () => false, next: () => Promise.resolve(page) };
+      return Promise.resolve(page);
+    });
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'test-channel',
+      codec,
+      inputEventLookupTimeoutMs: 5000,
+    });
+    await session.connect();
+    const run = createRunFromOpts(session, { runId: 'run-1', invocationId: 'inv-1', inputEventId: 'p-u1' });
+    const startPromise = run.start();
+    deliverInputEvent(ch, { invocationId: 'inv-1', codecMessageId: 'u1', serial: 's-02', inputEventId: 'p-u1' });
+    await startPromise;
+    expect(await run.loadConversation()).toEqual([
+      { id: 'u1', content: 'u1' },
+      { id: 'dangling-a1', content: 'dangling-a1' },
+    ]);
+    await session.close();
+  });
+
+  it('drops only the prompt-unsafe run when one is sandwiched between healthy turns', async () => {
+    // u1 -> run-1 (a1, safe) -> u2 -> run-2 (dangling-a2, unsafe) -> u3 ->
+    // run-3 (current). Only run-2's content is dropped; run-1's a1 and every
+    // input node survive — the walk continues past the dropped run.
+    const ch = createMockChannel();
+    const codec = codecWithFunctionalDecoder();
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
+    ch.history.mockImplementation(() => {
+      const items = [
+        makeRunStartMsg('run-3', 'u3'),
+        makeInputMsg('u3', 's-07', { parent: 'dangling-a2' }),
+        makeContentMsg('run-2', 'dangling-a2', 's-06'),
+        makeRunStartMsg('run-2', 'u2'),
+        makeInputMsg('u2', 's-05', { parent: 'a1' }),
+        makeContentMsg('run-1', 'a1', 's-04'),
+        makeRunStartMsg('run-1', 'u1'),
+        makeInputMsg('u1', 's-02'),
+      ];
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock pagination
+      const page = { items, hasNext: () => false, next: () => Promise.resolve(page) };
+      return Promise.resolve(page);
+    });
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'test-channel',
+      codec,
+      inputEventLookupTimeoutMs: 5000,
+    });
+    await session.connect();
+    const run = createRunFromOpts(session, { runId: 'run-3', invocationId: 'inv-3', inputEventId: 'p-u3' });
+    const startPromise = run.start();
+    deliverInputEvent(ch, {
+      invocationId: 'inv-3',
+      codecMessageId: 'u3',
+      serial: 's-07',
+      inputEventId: 'p-u3',
+      parent: 'dangling-a2',
+    });
+    await startPromise;
+    expect(await run.loadConversation()).toEqual([
+      { id: 'u1', content: 'u1' },
+      { id: 'a1', content: 'a1' },
+      { id: 'u2', content: 'u2' },
+      { id: 'u3', content: 'u3' },
+    ]);
     await session.close();
   });
 

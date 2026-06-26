@@ -51,10 +51,14 @@ export async function POST(req: Request) {
   await run.start();
   await run.loadConversation();
 
+  const runMessages = run.messages;
+  console.dir(runMessages, { depth: null });
+  const modelMessages = await convertToModelMessages(runMessages);
+
   const result = streamText({
     model: createModel(),
     system: `You are a helpful assistant. When the user asks about weather, use the getWeather tool. If they don't specify a location, call getLocation first to get their coordinates, then call getWeather with a description of that location. When the user asks about a weather forecast or upcoming weather, use getWeatherForecast.`,
-    messages: await convertToModelMessages(run.messages),
+    messages: modelMessages,
     tools,
     abortSignal: run.abortSignal,
     // Multi-step: streamText loops inference + server-tool execution within

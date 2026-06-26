@@ -104,6 +104,12 @@ export interface CodecReducer<TInput, TOutput, TProjection, TMessage> {
   fold: (state: TProjection, event: CodecEvent<TInput, TOutput>, meta: ReducerMeta) => TProjection;
   /** Extract the per-message list (each paired with its codec-message-id). */
   getMessages: (projection: TProjection) => CodecMessage<TMessage>[];
+  /**
+   * Optionally report whether a projection is safe to flatten into an LLM
+   * prompt — see {@link Codec.isPromptSafe}. Omit it to treat every projection
+   * as prompt-safe (no run is omitted from the prompt).
+   */
+  isPromptSafe?: (projection: TProjection) => boolean;
 }
 
 /**
@@ -418,6 +424,9 @@ export const defineCodec =
       init: reducer.init,
       fold: reducer.fold,
       getMessages: reducer.getMessages,
+      // Only attach isPromptSafe when the codec supplies it; absent means the
+      // transport treats every projection as prompt-safe.
+      ...(reducer.isPromptSafe === undefined ? {} : { isPromptSafe: reducer.isPromptSafe }),
       createEncoder: (writer, options = {}) => new DefaultCodecEncoder(writer, options, outputEncoder, inputEncoder),
       createDecoder: () =>
         new DefaultCodecDecoder<TInput, TOutput>(

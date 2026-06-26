@@ -39,7 +39,7 @@ import { LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
 import { UIMessageCodec } from '../codec/index.js';
-import { isToolPart, type ToolPart } from '../tool-part.js';
+import { isToolPart, isUnresolvedToolPart, type ToolPart, UNRESOLVED_TOOL_STATES } from '../tool-part.js';
 import { createRunOutputStream } from './run-output-stream.js';
 
 // ---------------------------------------------------------------------------
@@ -241,19 +241,7 @@ const wrapStreamWithDone = <T>(
  *   dangling tool call to the LLM.
  */
 const hasUnresolvedToolCall = (msg: AI.UIMessage): boolean =>
-  msg.role === 'assistant' &&
-  msg.parts.some(
-    (p) =>
-      isToolPart(p) &&
-      (p.state === 'input-streaming' || p.state === 'input-available' || p.state === 'approval-requested'),
-  );
-
-/**
- * `dynamic-tool` part states that mean "the LLM produced a tool call and
- * is waiting on it". Used to detect new client-side resolutions in the
- * useChat overlay relative to the tree.
- */
-const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'approval-requested']);
+  msg.role === 'assistant' && msg.parts.some((p) => isUnresolvedToolPart(p));
 
 /**
  * Walk the useChat message overlay against the session tree and synthesize
@@ -518,6 +506,47 @@ export const createChatTransport = (
       // sibling of the unresolved tool call assistant, rooted at its parent.
       forkOf = codecIdOf(forkSourceDomainId);
       parent = findPredecessorCodecId(codecMessages, forkSourceDomainId);
+    }
+
+    // TEMPORARY (AIT-878 debug): snapshot what the fork gate saw at send time,
+    // alongside the live view tail, to distinguish the three hypotheses for why
+    // a follow-up parents onto a dangling assistant without forking:
+    //   - at(-2) is the assistant but TEXT-ONLY  → preamble-window race
+    //     (the tool call had not streamed yet anywhere).
+    //   - at(-2) is the assistant WITH an input-available tool part, yet no
+    //     fork fired                              → gate bug, look closer.
+    //   - at(-2) is a user message / the assistant is absent, while the view
+    //     tail IS the assistant                   → useChat sync-lag skew.
+    // Remove before committing.
+    {
+      const summariseToolParts = (m: AI.UIMessage | undefined): { toolName: string; state: string }[] =>
+        m?.parts.filter(isToolPart).map((p) => ({ toolName: 'toolName' in p ? p.toolName : p.type, state: p.state })) ??
+        [];
+      const viewTail = codecMessages.at(-1);
+      console.dir(
+        {
+          tag: 'AIT-878 fork-gate',
+          trigger,
+          messageId,
+          isContinuation,
+          forkFired: forkSourceDomainId !== undefined,
+          forkOf,
+          parent,
+          optsMessagesRoles: messages.map((m) => m.role),
+          precedingMessageAtMinus2: precedingMessage
+            ? { id: precedingMessage.id, role: precedingMessage.role, toolParts: summariseToolParts(precedingMessage) }
+            : undefined,
+          viewTail: viewTail
+            ? {
+                codecMessageId: viewTail.codecMessageId,
+                id: viewTail.message.id,
+                role: viewTail.message.role,
+                toolParts: summariseToolParts(viewTail.message),
+              }
+            : undefined,
+        },
+        { depth: Infinity },
+      );
     }
 
     let sendBody: Record<string, unknown>;

@@ -589,6 +589,23 @@ export interface Codec<
    */
   getMessages(projection: TProjection): CodecMessage<TMessage>[];
   /**
+   * Whether `projection` is safe to flatten into an LLM prompt — i.e. it holds
+   * no unresolved work that would make the request invalid. For an LLM codec
+   * that means an assistant tool call with no matching tool result: a dangling
+   * `tool_use` the model provider rejects. The transport consults this while
+   * reconstructing the prompt and OMITS an ancestor run whose projection is not
+   * prompt-safe, so such a dangling call never reaches the provider. It is read
+   * only for ancestor runs — the current run is always included (its own
+   * resolutions are applied before the prompt is built) — and runs on every
+   * prompt build, so a late re-walk cannot reintroduce an omitted run.
+   *
+   * Optional: a codec that does not implement it has every projection treated
+   * as prompt-safe, and no run is omitted (the behaviour before this existed).
+   * @param projection - The per-node projection to inspect.
+   * @returns True if the projection may be included in a prompt; false to omit its run.
+   */
+  isPromptSafe?(projection: TProjection): boolean;
+  /**
    * Wrap a TMessage as the codec's well-known {@link UserMessage} variant,
    * returned as a `TInput` ready to publish on the `ai-input` wire. This is
    * the public way to turn a caller-provided TMessage into an input for

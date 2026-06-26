@@ -55,7 +55,8 @@ export const tools: Record<string, Tool> = {
     inputSchema: weatherInput,
     execute: async ({ location }: { location: string }) => {
       // Simulate a weather API call
-      await new Promise((r) => setTimeout(r, 500));
+      console.log('getWeather sleeping for a day');
+      await new Promise((r) => setTimeout(r, 1000 /* ms */ * 60 /* s */ * 60 /* min */ * 24 /* hr */));
       const conditions = ['Sunny', 'Partly Cloudy', 'Cloudy', 'Rainy', 'Thunderstorms', 'Snowy'] as const;
       return {
         location,

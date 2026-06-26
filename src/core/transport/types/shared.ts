@@ -6,7 +6,7 @@ import type * as Ably from 'ably';
  * Why a run ended.
  *
  * A run-end is terminal — a run that merely pauses awaiting input publishes
- * `ai-run-suspend` instead (see {@link Run.suspend}).
+ * `ai-run-suspend` instead (see {@link AgentRun.suspend}).
  *
  * - `complete` — the run finished naturally.
  * - `cancelled` — the run was cancelled by a client.

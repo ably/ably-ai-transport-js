@@ -7,11 +7,11 @@
  * - Client-executed tools (getLocation): the client suspends the run after
  *   the tool call, executes the tool, then sends a continuation invocation
  *   under the same runId. The SDK overlays the client-published tool output
- *   onto the suspended assistant before `run.messages` is read.
+ *   onto the suspended assistant before the conversation is read.
  * - Server-executed gated on approval (getWeatherForecast): suspends at
  *   `approval-requested`. The user approves → the client publishes a
  *   `tool-approval-response` TEvent on the channel → continuation POST →
- *   `run.messages` reflects the approval. The tool's `needsApproval`
+ *   the conversation reflects the approval. The tool's `needsApproval`
  *   returns `false` once the matching `toolCallId` has an
  *   `approval-responded` part in the messages, so `streamText` executes
  *   it without re-pausing. The codec reducer folds the resulting tool
@@ -49,12 +49,14 @@ export async function POST(req: Request) {
   const run = session.createRun(invocation, { signal: req.signal });
 
   await run.start();
-  await run.loadConversation();
+  // loadConversation() returns the full multi-turn conversation to feed the
+  // model; run.messages is only this run's own turn (the unit to persist).
+  const conversation = await run.loadConversation();
 
   const result = streamText({
     model: createModel(),
     system: `You are a helpful assistant. When the user asks about weather, use the getWeather tool. If they don't specify a location, call getLocation first to get their coordinates, then call getWeather with a description of that location. When the user asks about a weather forecast or upcoming weather, use getWeatherForecast.`,
-    messages: await convertToModelMessages(run.messages),
+    messages: await convertToModelMessages(conversation),
     tools,
     abortSignal: run.abortSignal,
     stopWhen: stepCountIs(10),

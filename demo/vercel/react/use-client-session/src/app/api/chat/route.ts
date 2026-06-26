@@ -2,8 +2,8 @@
  * Chat API route — receives messages from the client session's HTTP POST,
  * streams the AI response back over Ably.
  *
- * Continuation handling is entirely inside the SDK: `run.messages` returns
- * the LLM-ready conversation history, with any client-published tool
+ * Continuation handling is entirely inside the SDK: `run.loadConversation()`
+ * returns the LLM-ready conversation history, with any client-published tool
  * resolutions (output / approval) already overlaid onto the assistant
  * messages they belong to. No `loadProjection` / overlay code here.
  *
@@ -11,7 +11,7 @@
  * - Client-executed tools (getLocation): client suspends after the tool call,
  *   publishes a `tool-output-available` chunk on the channel, then sends
  *   a continuation POST. The SDK overlays the tool result onto the suspended
- *   assistant before `run.messages` is read.
+ *   assistant before the conversation is read.
  * - Approval-required tools (getWeatherForecast): client publishes a
  *   `tool-approval-response` TEvent on Approve. The SDK overlays the
  *   `approval-responded` state. The tool's `needsApproval` returns false
@@ -49,12 +49,14 @@ export async function POST(req: Request) {
   const run = session.createRun(invocation, { signal: req.signal });
 
   await run.start();
-  await run.loadConversation();
+  // loadConversation() returns the full multi-turn conversation to feed the
+  // model; run.messages is only this run's own turn (the unit to persist).
+  const conversation = await run.loadConversation();
 
   const result = streamText({
     model: createModel(),
     system: `You are a helpful assistant. When the user asks about weather, use the getWeather tool. If they don't specify a location, call getLocation first to get their coordinates, then call getWeather with a description of that location. When the user asks about a weather forecast or upcoming weather, use getWeatherForecast.`,
-    messages: await convertToModelMessages(run.messages),
+    messages: await convertToModelMessages(conversation),
     tools,
     abortSignal: run.abortSignal,
     // Multi-step: streamText loops inference + server-tool execution within

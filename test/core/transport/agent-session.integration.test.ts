@@ -903,11 +903,11 @@ describe('AgentSession integration', () => {
       await serverRun2.start();
       expect(await turn2.runId).toBe(run2Id);
 
-      // loadConversation walks the ancestor chain across both turns and
-      // reconstructs the full prompt in chronological order: the turn-1 user
-      // message, its assistant reply, then the turn-2 user message.
-      await serverRun2.loadConversation();
-      const messages = serverRun2.messages;
+      // loadConversation() returns the full multi-turn conversation in
+      // chronological order: the turn-1 user message, its assistant reply, then
+      // the turn-2 user message. (run.messages, by contrast, is just this run's
+      // own whole turn — the turn-2 user message — covered by unit tests.)
+      const messages = await serverRun2.loadConversation();
       expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
       expect(messages[0]?.id).toBe('user-turn-1');
       expect(messages[2]?.id).toBe('user-turn-2');

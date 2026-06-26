@@ -6,7 +6,7 @@
  * single channel subscription — no separate cancel manager needed.
  *
  * The session exposes a single factory method — `createRun()` — which returns
- * a Run object with explicit lifecycle methods: start(), pipe(), suspend(),
+ * an AgentRun with explicit lifecycle methods: start(), pipe(), suspend(),
  * and end() (suspend() and end() are both terminal).
  */
 
@@ -30,6 +30,7 @@ import { errorCause, errorMessage } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import { resolveChannelModes } from '../channel-options.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
+import { createBaseRun } from './base-run.js';
 import { readCancelTarget } from './cancel-envelope.js';
 import { foldAndEmit, type WireApplier } from './decode-fold.js';
 import { buildTransportHeaders } from './headers.js';
@@ -53,12 +54,12 @@ import {
 } from './session-support.js';
 import type { DefaultTree } from './tree.js';
 import type {
+  AgentRun,
   AgentSession,
   AgentSessionOptions,
   CancelRequest,
   LoadConversationOptions,
   PipeOptions,
-  Run,
   RunEndParams,
   RunRuntime,
   StreamResult,
@@ -278,7 +279,7 @@ class DefaultAgentSession<
   }
 
   // Spec: AIT-ST3
-  createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): Run<TOutput, TProjection, TMessage> {
+  createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): AgentRun<TOutput, TProjection, TMessage> {
     this._logger?.trace('DefaultAgentSession.createRun();', { inputEventId: invocation.inputEventId });
     return this._createRun(invocation, runtime ?? {});
   }
@@ -551,7 +552,7 @@ class DefaultAgentSession<
   // Run creation
   // -------------------------------------------------------------------------
 
-  private _createRun(invocation: Invocation, runtime: RunRuntime<TOutput>): Run<TOutput, TProjection, TMessage> {
+  private _createRun(invocation: Invocation, runtime: RunRuntime<TOutput>): AgentRun<TOutput, TProjection, TMessage> {
     // The run-id is not carried in the invocation body — the agent mints it.
     // Mint a provisional id now (or take the `runtime.runId` override for
     // tests / in-process drivers) — this IS the id for a fresh run. A
@@ -704,9 +705,30 @@ class DefaultAgentSession<
       }
     };
 
-    const run: Run<TOutput, TProjection, TMessage> = {
+    // The shared run read-model (runId, status, error, whole-turn messages).
+    // `getInputAnchor` is the run's structural-parent anchor
+    // (`assistantParentFallback`), resolved in start(); `getTree()` is read live
+    // so a continuity-loss swap is observed rather than a stale Tree captured.
+    const base = createBaseRun<TInput, TOutput, TProjection, TMessage>({
+      getRunId: () => runId,
+      getInputAnchor: () => assistantParentFallback,
+      getTree,
+      codec,
+    });
+
+    const run: AgentRun<TOutput, TProjection, TMessage> = {
+      // Shared read members delegate to `base` (live getters, not snapshots).
       get runId() {
-        return runId;
+        return base.runId;
+      },
+      get status() {
+        return base.status;
+      },
+      get error() {
+        return base.error;
+      },
+      get messages() {
+        return base.messages;
       },
       get invocationId() {
         return invocationId;
@@ -716,20 +738,6 @@ class DefaultAgentSession<
       },
       get view() {
         return view;
-      },
-      get messages() {
-        // Always derive live from the Tree via the leaf source. Walks the parent
-        // chain from the run's structural-parent anchor and concatenates each
-        // ancestor's projection, then appends the current reply run's messages
-        // at the tail. Uses `assistantParentFallback` (which falls back to the
-        // input message's `parent` for regenerate carriers whose own
-        // codec-message-id has no Tree node) — same anchor `loadConversation`
-        // uses, and passes `resolvedRegenerates` so a regenerate's history
-        // stops before the message being replaced. No cache: every read
-        // reflects the latest folded state. The leaf source reads the live Tree
-        // (via `getTree()`), so a continuity-loss swap is observed instead of
-        // returning stale data from the abandoned tree.
-        return leafSource.messages(runId, assistantParentFallback, resolvedRegenerates);
       },
 
       // Spec: AIT-ST4, AIT-ST4a, AIT-ST4b

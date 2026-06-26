@@ -7,15 +7,13 @@
  *
  *  - As a {@link BranchSource} for the run's paginating `run.view` — a read-only
  *    {@link View} over the same base the client uses. The session calls
- *    {@link LeafBranchSource.setPin} from `Run.start()` once it has resolved the
- *    trigger's headers, fixing the branch `run.view` projects; before that
+ *    {@link LeafBranchSource.setPin} from `AgentRun.start()` once it has resolved
+ *    the trigger's headers, fixing the branch `run.view` projects; before that
  *    `run.view` is empty. It then pages history like the client.
- *  - Via the direct {@link LeafBranchSource.messages} /
- *    {@link LeafBranchSource.loadConversation} methods that back `Run.messages`
- *    and `Run.loadConversation` — the full (un-paginated) conversation the agent
+ *  - Via the direct {@link LeafBranchSource.loadConversation} method that backs
+ *    `AgentRun.loadConversation` — the full (un-paginated) conversation the agent
  *    feeds the model, taking the anchor/run-id/regenerate-target the session
- *    resolved at `start()`. (`loadConversation` additionally hydrates ancestors
- *    and honours `maxRuns`.)
+ *    resolved at `start()`, hydrating ancestors and honouring `maxRuns`.
  *
  * It does NOT own the Tree or hydrator — the session owns them and swaps both on
  * channel continuity loss, so this reads them through `getTree()` / `getHydrator()`
@@ -310,25 +308,10 @@ export class LeafBranchSource<
   }
 
   /**
-   * Synchronous live read of the conversation messages for `Run.messages`:
-   * walk the parent chain from `anchor` (no `maxRuns` bound), concatenate each
-   * ancestor's projection, then append the current run's messages if its node
-   * isn't already on the chain. No I/O — reflects whatever is currently folded.
-   * @param runId - The current run's id (for the tail run's projection lookup).
-   * @param anchor - The current run's input node codec-message-id (assistantParentFallback).
-   * @param regenerateTarget - The codec-message-id being regenerated; when set,
-   *   the walk stops before it (see {@link LeafBranchSource._collectConversation}).
-   * @returns The conversation messages, root-first.
-   */
-  messages(runId: string, anchor: string | undefined, regenerateTarget?: string): TMessage[] {
-    return this._collectConversation(runId, anchor, undefined, regenerateTarget).messages;
-  }
-
-  /**
    * Walk the parent chain from `anchor` over the current Tree and concatenate
    * each node's projected messages (root-first), then append the current run's
-   * own messages when its RunNode isn't already on the chain. Shared by
-   * {@link LeafBranchSource.loadConversation} and {@link LeafBranchSource.messages}.
+   * own messages when its RunNode isn't already on the chain. Backs
+   * {@link LeafBranchSource.loadConversation}'s return value.
    * Pure read over whatever is currently folded — no fetching.
    * @param runId - The current run's id (for the tail run's projection lookup).
    * @param anchor - The current run's input node codec-message-id.

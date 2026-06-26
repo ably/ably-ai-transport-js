@@ -1,4 +1,4 @@
-/** Client session types: options, send options, the ActiveRun handle, and the ClientSession contract. */
+/** Client session types: options, send options, the ClientRun handle, and the ClientSession contract. */
 
 import type * as Ably from 'ably';
 // Also augments RealtimeChannel with `.object` (ably/liveobjects side-effect).
@@ -7,6 +7,7 @@ import type * as AblyObjects from 'ably/liveobjects';
 import type { Logger } from '../../../logger.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../../codec/types.js';
 import type { Invocation } from '../invocation.js';
+import type { BaseRun } from './run.js';
 import type { Tree } from './tree.js';
 import type { ClientView } from './view.js';
 
@@ -92,39 +93,37 @@ export interface SendOptions {
 }
 
 // ---------------------------------------------------------------------------
-// Active run handle
+// Client run handle
 // ---------------------------------------------------------------------------
 
 /**
  * A handle to an active client-side run, returned by `send()`,
- * `regenerate()`, and `edit()`.
+ * `regenerate()`, and `edit()`. Extends the shared {@link BaseRun} read-model
+ * (`runId`, `status`, `error`, whole-turn `messages`) with the client's
+ * routing/control surface.
  *
  * The core does not expose a per-run output stream — streaming is a
  * consumer-layer concern (e.g. the Vercel ChatTransport builds a stream from
- * the Tree's `output` events). The handle carries only run identity and
- * control, so it is not parameterized by the codec output type.
+ * the Tree's `output` events).
  */
-export interface ActiveRun {
+export interface ClientRun<TMessage> extends BaseRun<TMessage> {
   /**
    * The synchronous routing handle for this send: the triggering input's
    * codec-message-id, which the client owns the moment it publishes and the
    * agent echoes back as `input-codec-message-id`. Stream routing and cancel
-   * key on this — it is known immediately, unlike {@link runId}, which the
-   * agent mints.
+   * key on this — it is known immediately, unlike {@link BaseRun.runId}, which
+   * the agent mints.
    */
   inputCodecMessageId: string;
   /**
-   * The run's unique identifier, resolved when the agent's `ai-run-start` for
-   * this send is observed on the channel. The agent mints the run-id, so it is
-   * not known synchronously: `await run.runId`
-   * to learn it (this also tells you the agent has picked up the run). There is
-   * no built-in deadline — race it against your own timeout if you need one.
-   * Rejects only if the session is closed before run-start arrives. A
-   * continuation does not resolve any sooner: its run-id promise resolves when
-   * the agent's run-resume (`event.type === 'resume'`) for this send is observed
-   * on the channel, not synchronously from the run-id the caller passed in.
+   * Resolves when the agent's `ai-run-start` for this send (or `ai-run-resume`
+   * for a continuation) is observed on the channel — the point at which
+   * {@link BaseRun.runId} becomes populated. The agent mints the run-id, so it
+   * is not known synchronously: `await run.started`, then read `run.runId`.
+   * There is no built-in deadline — race it against your own timeout if you
+   * need one. Rejects only if the session is closed before run-start arrives.
    */
-  runId: Promise<string>;
+  readonly started: Promise<void>;
   /**
    * The input event's unique identifier. Stamped on the primary input event
    * published to the channel and forwarded in the HTTP POST body so the
@@ -138,7 +137,7 @@ export interface ActiveRun {
    * the agent mints the run-id is still honoured (the agent buffers it and
    * fires it once its input-event lookup resolves the input to the run). A
    * continuation also carries its known run-id. Resolves once the cancel is
-   * published; it does not wait for {@link runId}.
+   * published; it does not wait for {@link started}.
    */
   cancel(): Promise<void>;
   /**

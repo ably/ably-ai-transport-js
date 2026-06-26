@@ -3,7 +3,7 @@ import { act, cleanup, render, screen, fireEvent, waitFor, within } from '@testi
 import { useEffect, useState, type ReactNode } from 'react';
 import type * as AI from 'ai';
 import { Invocation } from '@ably/ai-transport';
-import type { ActiveRun, BranchHandle, ClientSession, RunInfo, SendOptions } from '@ably/ai-transport';
+import type { BranchHandle, ClientRun, ClientSession, RunInfo, SendOptions } from '@ably/ai-transport';
 import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
 
 // jsdom doesn't implement Element.prototype.scrollIntoView; MessageList's
@@ -25,15 +25,19 @@ let setMockViewMessages: ((messages: AI.UIMessage[]) => void) | null = null;
 let mockRunOf: (codecMessageId: string) => RunInfo | undefined = () => undefined;
 
 const mockSend = vi.fn(
-  (_input: VercelInput | VercelInput[], _opts?: SendOptions): Promise<ActiveRun> =>
+  (_input: VercelInput | VercelInput[], _opts?: SendOptions): Promise<ClientRun<AI.UIMessage>> =>
     Promise.resolve({
       // The triggering input's codec-message-id — the synchronous routing
       // handle the client owns the moment it publishes.
       inputCodecMessageId: 'input-1',
-      // The agent mints the run-id now, so it resolves asynchronously once
-      // `ai-run-start` is observed. A fresh send omits run-id from the
-      // invocation pointer, leaving the agent to mint it.
-      runId: Promise.resolve('run-1'),
+      // The agent mints the run-id now, so `runId` is empty until `started`
+      // resolves (once `ai-run-start` is observed). A fresh send omits run-id
+      // from the invocation pointer, leaving the agent to mint it.
+      runId: '',
+      status: 'active',
+      error: undefined,
+      messages: [],
+      started: Promise.resolve(),
       inputEventId: 'ev-1',
       cancel: async () => {},
       toInvocation: () => Invocation.fromJSON({ inputEventId: 'ev-1', sessionName: 'demo' }),

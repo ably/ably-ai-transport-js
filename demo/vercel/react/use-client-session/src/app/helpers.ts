@@ -1,4 +1,4 @@
-import type { ActiveRun } from '@ably/ai-transport';
+import type { ClientRun } from '@ably/ai-transport';
 import type { UIMessage } from 'ai';
 
 /**
@@ -28,13 +28,14 @@ interface WakeAgentResult {
  * with `Invocation.fromJSON`, reads the conversation from the channel, mints
  * the run-id (for a fresh run) and the invocation-id, and returns them on the
  * HTTP response. The same ids also arrive on the channel as `ai-run-start`,
- * which is how the client resolves `run.runId` without reading this response.
+ * which is how the client resolves `run.started` (populating `run.runId`)
+ * without reading this response.
  * @param api - The agent endpoint URL.
  * @param run - The run returned by `view.send` / `regenerate` / `edit`.
  * @returns The agent-minted run-id and invocation-id read back from the response.
  * @throws If the endpoint responds with a non-JSON body (e.g. an error page).
  */
-export async function wakeAgent(api: string, run: ActiveRun): Promise<WakeAgentResult> {
+export async function wakeAgent(api: string, run: ClientRun<UIMessage>): Promise<WakeAgentResult> {
   const response = await fetch(api, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

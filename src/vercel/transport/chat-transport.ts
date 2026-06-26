@@ -32,7 +32,7 @@ import * as Ably from 'ably';
 import type * as AI from 'ai';
 
 import type { CodecMessage } from '../../core/codec/index.js';
-import type { ActiveRun, ClientSession, SendOptions } from '../../core/transport/types.js';
+import type { ClientRun, ClientSession, SendOptions } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import { LogLevel, makeLogger } from '../../logger.js';
@@ -568,7 +568,7 @@ export const createChatTransport = (
     //   through U1 inclusive via the body.
     // - Fresh send / edit: publish the new user-message input(s) via
     //   `view.send`.
-    let run: ActiveRun;
+    let run: ClientRun<AI.UIMessage>;
     if (isContinuation) {
       const inputs = deriveContinuationInputs(codecMessages, messages);
       run = await session.view.send(inputs, sendOpts);
@@ -600,9 +600,11 @@ export const createChatTransport = (
     // session exposes no per-run stream. Key it on
     // `run.inputCodecMessageId` — the triggering input's codec-message-id, which
     // the client owns from send time and the agent echoes as
-    // `input-codec-message-id`. The agent mints the runId, supplied as
-    // `run.runId` (a promise) for the run-end safety-net.
-    const runStream = createRunOutputStream(session, run.runId, run.inputCodecMessageId);
+    // `input-codec-message-id`. The agent mints the runId; the run-end
+    // safety-net needs it as a promise, so resolve it from `run.started`
+    // (`.then(() => value)` adapts the void latch into the awaited run-id).
+    const runIdPromise = run.started.then(() => run.runId);
+    const runStream = createRunOutputStream(session, runIdPromise, run.inputCodecMessageId);
 
     if (abortSignal) {
       const onAbort = (): void => {

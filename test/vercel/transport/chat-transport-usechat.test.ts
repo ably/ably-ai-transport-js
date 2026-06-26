@@ -11,12 +11,13 @@
  * Ably ChatTransport and verifying that all useChat features function.
  */
 
+import type * as Ably from 'ably';
 import type * as AI from 'ai';
 import { AbstractChat } from 'ai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Invocation } from '../../../src/core/transport/invocation.js';
-import type { ClientSession, Tree } from '../../../src/core/transport/types.js';
+import type { ClientSession, RunStatus, Tree } from '../../../src/core/transport/types.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 
@@ -103,10 +104,13 @@ const makeEmitter = (): MockEmitter => {
 };
 
 interface MockRun {
-  stream: ReadableStream<AI.UIMessageChunk>;
   /** The triggering input's codec-message-id — the synchronous stream routing key. */
   inputCodecMessageId: string;
-  runId: Promise<string>;
+  runId: string;
+  status: RunStatus;
+  error: Ably.ErrorInfo | undefined;
+  messages: AI.UIMessage[];
+  started: Promise<void>;
   inputEventId: string;
   cancel: ReturnType<typeof vi.fn>;
   /** Build the run's invocation pointer (the transport POSTs this to wake the agent). */
@@ -122,11 +126,12 @@ const createMockRun = (runId: string, treeEmit: MockEmitter['emit']): MockRun =>
   // (the agent mints the run-id separately); key it per run.
   const inputCodecMessageId = `${runId}-input`;
   return {
-    // Inert placeholder — the transport builds its own stream from Tree events.
-    // eslint-disable-next-line @typescript-eslint/no-empty-function -- inert placeholder stream
-    stream: new ReadableStream<AI.UIMessageChunk>({ start: () => {} }),
     inputCodecMessageId,
-    runId: Promise.resolve(runId),
+    runId,
+    status: 'active',
+    error: undefined,
+    messages: [],
+    started: Promise.resolve(),
     inputEventId: '',
     cancel: vi.fn(),
     toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'chat-1' }),

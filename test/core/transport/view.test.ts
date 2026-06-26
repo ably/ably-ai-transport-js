@@ -23,7 +23,7 @@ import { Invocation } from '../../../src/core/transport/invocation.js';
 import { type HistoryPagesCursor, loadHistoryPages } from '../../../src/core/transport/load-history-pages.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
-import type { ActiveRun, ClientView, RunLifecycleEvent } from '../../../src/core/transport/types.js';
+import type { ClientRun, ClientView, RunLifecycleEvent } from '../../../src/core/transport/types.js';
 import type { SendDelegate } from '../../../src/core/transport/view.js';
 import { createClientView } from '../../../src/core/transport/view.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
@@ -102,19 +102,24 @@ const createMockChannel = (): Ably.RealtimeChannel =>
     attach: vi.fn(() => Promise.resolve()),
   }) as unknown as Ably.RealtimeChannel;
 
-const createMockSendDelegate = (): SendDelegate<TestInput> =>
+// Build a ClientRun<TestMessage> mock; override inputCodecMessageId / runId per case.
+const makeClientRun = (overrides: Partial<ClientRun<TestMessage>> = {}): ClientRun<TestMessage> => ({
+  inputCodecMessageId: 'mock-input',
+  runId: 'mock-run',
+  status: 'active',
+  error: undefined,
+  messages: [],
+  started: Promise.resolve(),
+  inputEventId: '',
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-  vi.fn(() =>
-    Promise.resolve({
-      inputCodecMessageId: 'mock-input',
-      runId: Promise.resolve('mock-run'),
-      inputEventId: '',
-      invocationId: 'mock-inv',
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-      cancel: () => Promise.resolve(),
-      toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
-    }),
-  );
+  cancel: () => Promise.resolve(),
+  toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
+  ...overrides,
+});
+
+const createMockSendDelegate = (): SendDelegate<TestInput, TestMessage> =>
+  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+  vi.fn(() => Promise.resolve(makeClientRun()));
 
 interface ApplyOpts {
   runId: string;
@@ -324,7 +329,7 @@ const lifecycleWire = (name: string, runId: string, serial: string, reason?: str
 describe('client view', () => {
   let tree: DefaultTree<TestInput, TestOutput, TestProjection>;
   let view: ClientView<TestInput, TestMessage>;
-  let sendDelegate: SendDelegate<TestInput>;
+  let sendDelegate: SendDelegate<TestInput, TestMessage>;
   let codec: Codec<TestInput, TestOutput, TestProjection, TestMessage>;
 
   /**
@@ -1287,15 +1292,8 @@ describe('client view', () => {
       });
 
       // First regen completes — promoted to auto.
-      let deferredResolve: ((value: ActiveRun) => void) | undefined;
-      vi.mocked(sendDelegate).mockResolvedValueOnce({
-        inputCodecMessageId: 'a1',
-        runId: Promise.resolve('Rregen1'),
-        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-        cancel: () => Promise.resolve(),
-        inputEventId: '',
-        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
-      });
+      let deferredResolve: ((value: ClientRun<TestMessage>) => void) | undefined;
+      vi.mocked(sendDelegate).mockResolvedValueOnce(makeClientRun({ inputCodecMessageId: 'a1', runId: 'Rregen1' }));
       await view.regenerate('a1');
       tree.applyRunLifecycle({
         type: 'start',
@@ -1323,7 +1321,7 @@ describe('client view', () => {
       vi.mocked(sendDelegate).mockImplementationOnce(
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- need to capture the resolver
         () =>
-          new Promise<ActiveRun>((resolve) => {
+          new Promise<ClientRun<TestMessage>>((resolve) => {
             deferredResolve = resolve;
           }),
       );
@@ -1354,14 +1352,7 @@ describe('client view', () => {
 
       // The publish ACK resolves later: _applyRegenerateAutoSelect runs and the
       // selection stays on the latest (regen-2).
-      deferredResolve?.({
-        inputCodecMessageId: 'a1_new1',
-        runId: Promise.resolve('Rregen2'),
-        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-        cancel: () => Promise.resolve(),
-        inputEventId: '',
-        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
-      });
+      deferredResolve?.(makeClientRun({ inputCodecMessageId: 'a1_new1', runId: 'Rregen2' }));
       await regenPromise;
 
       // Visible state must now reflect regen-2 — without the recompute
@@ -1387,14 +1378,7 @@ describe('client view', () => {
       expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1']);
 
       // First regenerate.
-      vi.mocked(sendDelegate).mockResolvedValueOnce({
-        inputCodecMessageId: 'a1',
-        runId: Promise.resolve('Rregen1'),
-        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-        cancel: () => Promise.resolve(),
-        inputEventId: '',
-        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
-      });
+      vi.mocked(sendDelegate).mockResolvedValueOnce(makeClientRun({ inputCodecMessageId: 'a1', runId: 'Rregen1' }));
       await view.regenerate('a1');
       tree.applyRunLifecycle({
         type: 'start',
@@ -1417,14 +1401,9 @@ describe('client view', () => {
       expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1_new1']);
 
       // Second regenerate (clicking the displayed regen-1 message).
-      vi.mocked(sendDelegate).mockResolvedValueOnce({
-        inputCodecMessageId: 'a1_new1',
-        runId: Promise.resolve('Rregen2'),
-        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-        cancel: () => Promise.resolve(),
-        inputEventId: '',
-        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
-      });
+      vi.mocked(sendDelegate).mockResolvedValueOnce(
+        makeClientRun({ inputCodecMessageId: 'a1_new1', runId: 'Rregen2' }),
+      );
       await view.regenerate('a1_new1');
       tree.applyRunLifecycle({
         type: 'start',
@@ -1447,14 +1426,9 @@ describe('client view', () => {
       expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1_new2']);
 
       // Third regenerate.
-      vi.mocked(sendDelegate).mockResolvedValueOnce({
-        inputCodecMessageId: 'a1_new2',
-        runId: Promise.resolve('Rregen3'),
-        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-        cancel: () => Promise.resolve(),
-        inputEventId: '',
-        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
-      });
+      vi.mocked(sendDelegate).mockResolvedValueOnce(
+        makeClientRun({ inputCodecMessageId: 'a1_new2', runId: 'Rregen3' }),
+      );
       await view.regenerate('a1_new2');
       tree.applyRunLifecycle({
         type: 'start',
@@ -2339,14 +2313,7 @@ describe('client view', () => {
     });
 
     it('regenerate sets a pending regenerate selection that resolves when the new Run arrives', async () => {
-      vi.mocked(sendDelegate).mockResolvedValueOnce({
-        inputCodecMessageId: 'a1',
-        runId: Promise.resolve('R2new'),
-        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-        cancel: () => Promise.resolve(),
-        inputEventId: '',
-        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
-      });
+      vi.mocked(sendDelegate).mockResolvedValueOnce(makeClientRun({ inputCodecMessageId: 'a1', runId: 'R2new' }));
 
       await view.regenerate('a1');
       // Pending selection is recorded but the new Run hasn't arrived yet;
@@ -2371,14 +2338,7 @@ describe('client view', () => {
     });
 
     it('pending selection is cleared on run-end when the server never creates the sibling Run', async () => {
-      vi.mocked(sendDelegate).mockResolvedValueOnce({
-        inputCodecMessageId: 'a1',
-        runId: Promise.resolve('R2new'),
-        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-        cancel: () => Promise.resolve(),
-        inputEventId: '',
-        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
-      });
+      vi.mocked(sendDelegate).mockResolvedValueOnce(makeClientRun({ inputCodecMessageId: 'a1', runId: 'R2new' }));
 
       await view.regenerate('a1');
       // Pending selection is in place; visible chain still shows R2 (only sibling).
@@ -2481,14 +2441,7 @@ describe('client view', () => {
     });
 
     it('edit auto-selects the new sibling Run from the input codec-message-id', async () => {
-      vi.mocked(sendDelegate).mockResolvedValueOnce({
-        inputCodecMessageId: 'u-new',
-        runId: Promise.resolve('R2edit'),
-        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-        cancel: () => Promise.resolve(),
-        inputEventId: '',
-        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
-      });
+      vi.mocked(sendDelegate).mockResolvedValueOnce(makeClientRun({ inputCodecMessageId: 'u-new', runId: 'R2edit' }));
       // For the auto-select to land, the new Run needs to exist in the tree.
       // role omitted so the new user-content wire routes at wire-runId.
       apply(tree, {
@@ -2734,7 +2687,7 @@ describe('client view', () => {
     // of the trailing text: a new Run anchored at a2p, contributing a
     // single new text bubble while a1p stays put with its 2/2 counter.
     describe('regenerate target inside a regenerator Run', () => {
-      let regen2: ActiveRun;
+      let regen2: ClientRun<TestMessage>;
       beforeEach(async () => {
         apply(tree, {
           runId: 'R1',
@@ -2778,7 +2731,7 @@ describe('client view', () => {
 
       it('mints a regenerate event anchored at the trailing msg-id (not at the group root)', () => {
         // CAST: vi.fn returns a MockInstance that the codebase types via `SendDelegate`.
-        const mocked = sendDelegate as unknown as Mock<SendDelegate<TestInput>>;
+        const mocked = sendDelegate as unknown as Mock<SendDelegate<TestInput, TestMessage>>;
         const lastCall = mocked.mock.calls.at(-1);
         const events = lastCall?.[0];
         const event = events?.[0];
@@ -3196,14 +3149,7 @@ describe('client view', () => {
     it('drives the regenerate write path: non-head anchor and parent are resolved from the visible chain', async () => {
       seedToolCallTurn(tree);
 
-      vi.mocked(sendDelegate).mockResolvedValueOnce({
-        inputCodecMessageId: 'TT',
-        runId: Promise.resolve('Rp'),
-        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-        cancel: () => Promise.resolve(),
-        inputEventId: '',
-        toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
-      });
+      vi.mocked(sendDelegate).mockResolvedValueOnce(makeClientRun({ inputCodecMessageId: 'TT', runId: 'Rp' }));
 
       await view.regenerate('TT');
 

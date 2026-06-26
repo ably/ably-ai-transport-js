@@ -38,6 +38,7 @@ import { errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import { resolveChannelModes } from '../channel-options.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent, Encoder } from '../codec/types.js';
+import { createBaseRun } from './base-run.js';
 import { buildCancelMessage, type CancelTarget } from './cancel-envelope.js';
 import type { WireApplier } from './decode-fold.js';
 import { buildRunEndError, buildTransportHeaders } from './headers.js';
@@ -55,7 +56,7 @@ import {
 } from './session-support.js';
 import type { DefaultTree } from './tree.js';
 import type {
-  ActiveRun,
+  ClientRun,
   ClientSession,
   ClientSessionOptions,
   ClientView,
@@ -150,11 +151,12 @@ class DefaultClientSession<
   private readonly _onChannelStateChange: Ably.channelEventCallback;
 
   /**
-   * Backing settlers for each in-flight run's `ActiveRun.runId` promise.
-   * Resolved with the agent-minted run-id when the matching `ai-run-start`
-   * (fresh send) or `ai-run-resume` (continuation) is observed; rejected if
-   * the session closes first. There is no deadline —
-   * `send()` resolves on publish and does not block on run-start.
+   * Backing settlers for each in-flight run's `started` latch. `resolve(runId)`
+   * fills the run's synchronous `runId` cell and resolves its `ClientRun.started`
+   * promise when the matching `ai-run-start` (fresh send) or `ai-run-resume`
+   * (continuation) is observed; `reject` rejects `started` if the session closes
+   * first. There is no deadline — `send()` resolves on publish and does not
+   * block on run-start.
    *
    * Keyed by the triggering input's codec-message-id — the handle the client
    * owns at send time, which the agent echoes back on run-start as
@@ -455,7 +457,7 @@ class DefaultClientSession<
     input: TInput[],
     sendOptions: SendOptions | undefined,
     parentCodecMessageId: string | undefined,
-  ): Promise<ActiveRun> {
+  ): Promise<ClientRun<TMessage>> {
     if (this._state === SessionState.CLOSED) {
       throw new Ably.ErrorInfo('unable to send; session is closed', ErrorCode.SessionClosed, 400);
     }
@@ -570,7 +572,7 @@ class DefaultClientSession<
     }
 
     // The trigger event is the last input — the one the agent looks up on the
-    // channel via `event-id`, surfaced on `ActiveRun` (and via `toInvocation()`)
+    // channel via `event-id`, surfaced on `ClientRun` (and via `toInvocation()`)
     // so the application can point an invocation at it. Its codec-message-id is
     // the handle the client owns at send time; the agent echoes it back on
     // run-start as `input-codec-message-id`, and it keys the run-start tracker.
@@ -588,22 +590,30 @@ class DefaultClientSession<
     const triggerInputEventId = triggerItem.inputEventId;
     const startedKey = triggerItem.codecMessageId;
 
-    // Arm the run-start tracker backing the returned `ActiveRun.runId` promise.
-    // The run-start handler resolves it with the agent-minted run-id when this
-    // send's `ai-run-start` is observed; close() rejects it on teardown. No
-    // deadline — `send()` resolves on publish; callers bound the wait by racing
-    // `run.runId` against their own timeout.
+    // Arm the run-start tracker backing the returned run's synchronous `runId`
+    // cell and its `started` latch. The run-start handler fills the cell with
+    // the agent-minted run-id and resolves `started` when this send's
+    // `ai-run-start` (or a continuation's `ai-run-resume`) is observed; close()
+    // rejects `started` on teardown. No deadline — `send()` resolves on publish;
+    // callers bound the wait by racing `run.started` against their own timeout.
     //
     // Key on the arming side mirrors the resolve side — see `_pendingRunStarts`
     // for the full keying invariant. The executor runs synchronously, so the
     // tracker entry is registered before `new Promise` returns.
-    const runIdPromise = new Promise<string>((resolve, reject) => {
-      this._pendingRunStarts.set(startedKey, { resolve, reject });
+    let agentRunId = '';
+    const started = new Promise<void>((resolve, reject) => {
+      this._pendingRunStarts.set(startedKey, {
+        resolve: (id: string) => {
+          agentRunId = id;
+          resolve();
+        },
+        reject,
+      });
     });
     // Suppress unhandled-rejection warnings for callers that never await
-    // `run.runId`; the caller still observes the rejection if it does await.
-    runIdPromise.catch(() => {
-      /* observed via run.runId, if at all */
+    // `run.started`; the caller still observes the rejection if it does await.
+    started.catch(() => {
+      /* observed via run.started, if at all */
     });
 
     // Publish each input in original order via the shared encoder. The
@@ -647,9 +657,34 @@ class DefaultClientSession<
     // and await `run.runId` if they need to know it was picked up.
     await publishPromise;
 
+    // The shared run read-model (runId, status, error, whole-turn messages),
+    // derived live off the Tree. `getRunId` reads the cell the run-start
+    // handler fills; `getInputAnchor` is this send's optimistic input
+    // codec-message-id, so `messages` is this run's own turn (its input plus
+    // its streamed output as it folds).
+    const base = createBaseRun<TInput, TOutput, TProjection, TMessage>({
+      getRunId: () => agentRunId,
+      getInputAnchor: () => startedKey,
+      getTree: () => this._tree,
+      codec: this._codec,
+    });
+
     return {
+      // Shared read members delegate to `base` (live getters, not snapshots).
+      get runId() {
+        return base.runId;
+      },
+      get status() {
+        return base.status;
+      },
+      get error() {
+        return base.error;
+      },
+      get messages() {
+        return base.messages;
+      },
       inputCodecMessageId: startedKey,
-      runId: runIdPromise,
+      started,
       inputEventId: triggerInputEventId,
       // The agent mints the run-id, so a fresh run has none until run-start.
       // Cancel synchronously by the triggering input's codec-message-id (the
@@ -687,7 +722,7 @@ class DefaultClientSession<
    * - `runId` — a continuation, whose run-id the caller already knows.
    * - `inputCodecMessageId` — a fresh send, whose run-id the agent mints at
    *   run-start. The client can only key the cancel by the triggering input's
-   *   codec-message-id (the `ActiveRun.inputCodecMessageId`) it owns at send
+   *   codec-message-id (the `ClientRun.inputCodecMessageId`) it owns at send
    *   time; the agent resolves it to the run once its input-event lookup
    *   completes, buffering a cancel that arrives before then.
    *

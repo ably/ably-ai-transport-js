@@ -72,7 +72,7 @@ const getHeaders = (msg: Ably.InboundMessage): Record<string, string> => ({
  * Collect a run's decoded output events from the Tree's `output` event,
  * resolving once the run's terminal run-end is observed. Streaming was
  * hoisted out of the core, so own-run outputs are now observed on the Tree
- * rather than drained from an ActiveRun stream. Must be called before the
+ * rather than drained from a per-run stream. Must be called before the
  * agent begins streaming so no events are missed.
  * @param session - The client session to observe.
  * @param runId - The run whose outputs to collect.
@@ -447,7 +447,8 @@ describe('ClientSession integration', () => {
     await serverRun.start();
 
     // run.runId resolves once the agent's run-start lands.
-    const runId = await activeRun.runId;
+    await activeRun.started;
+    const runId = activeRun.runId;
     const outputsPromise = collectRunOutputs(clientSession, runId);
 
     const stream = textResponseStream('asst-msg-rt-1', 'text-rt-1', 'Hello, how can I help?');
@@ -508,7 +509,9 @@ describe('ClientSession integration', () => {
     });
     await serverRun.start();
 
-    const runId = await activeRun.runId;
+    await activeRun.started;
+
+    const runId = activeRun.runId;
     const outputsPromise = collectRunOutputs(clientSession, runId);
 
     const stream = textResponseStream('asst-msg-stream-1', 'text-stream-1', 'Server response');
@@ -558,7 +561,8 @@ describe('ClientSession integration', () => {
 
     // run.runId resolves on run-start; with it in hand we can scope the
     // end-event wait to the agent-minted run-id.
-    const runId = await activeRun.runId;
+    await activeRun.started;
+    const runId = activeRun.runId;
     const endPromise = waitForRunEvent(clientSession, runId, 'end');
 
     const stream = textResponseStream('msg-lc-1', 'text-lc-1', 'test');
@@ -602,7 +606,9 @@ describe('ClientSession integration', () => {
     });
     await run.start();
 
-    const runId = await activeRun.runId;
+    await activeRun.started;
+
+    const runId = activeRun.runId;
     const endPromise = waitForRunEvent(clientSession, runId, 'end');
 
     // End the run in error, carrying a terminal error for the client to
@@ -667,7 +673,9 @@ describe('ClientSession integration', () => {
     });
     await serverRun.start();
 
-    const runId = await clientRun.runId;
+    await clientRun.started;
+
+    const runId = clientRun.runId;
     await clientSession.cancel(runId);
     await new Promise((r) => setTimeout(r, 100));
     expect(serverRun.abortSignal.aborted).toBe(true);
@@ -940,7 +948,7 @@ describe('ClientSession integration', () => {
       await serverRun.start();
       await serverRun.pipe(textResponseStream('a-concurrent-1', 'text-concurrent-1', 'hi from agent'));
       await serverRun.end({ reason: 'complete' });
-      await activeRun.runId;
+      await activeRun.started;
 
       // Both views should now see the same conversation.
       await waitForMessages(clientSession, 2);
@@ -1155,7 +1163,7 @@ describe('ClientSession integration', () => {
     });
     await serverRun.pipe(stream);
     await serverRun.end({ reason: 'complete' });
-    await activeRun.runId;
+    await activeRun.started;
 
     const toolPart = await toolPartAvailable;
     expect(toolPart.toolName).toBe('getLocation');
@@ -1199,7 +1207,9 @@ describe('ClientSession integration', () => {
     });
     await run.start();
 
-    const runId = await activeRun.runId;
+    await activeRun.started;
+
+    const runId = activeRun.runId;
     const endPromise = waitForRunEvent(clientSession, runId, 'end');
 
     await run.pipe(textResponseStream('asst-raw-1', 'text-raw-1', 'test'));
@@ -1244,7 +1254,9 @@ describe('ClientSession integration', () => {
     });
     await run.start();
 
-    const runId = await activeRun.runId;
+    await activeRun.started;
+
+    const runId = activeRun.runId;
 
     await run.pipe(textResponseStream('asst-hdr-1', 'text-hdr-1', 'Answer'));
     await run.end({ reason: 'complete' });
@@ -1361,7 +1373,7 @@ describe('ClientSession integration', () => {
     // against a short timer to prove it neither resolves nor rejects.
     const pendingMarker = Symbol('pending');
     const outcome = await Promise.race([
-      activeRun.runId.then(
+      activeRun.started.then(
         () => 'resolved',
         () => 'rejected',
       ),
@@ -1534,9 +1546,12 @@ describe('ClientSession integration', () => {
     await serverRun.start();
 
     // run-start has now landed — `runId` must resolve to the agent-minted id.
-    await expect(activeRun.runId).resolves.toBe(mintedRunId);
+    await activeRun.started;
+    expect(activeRun.runId).toBe(mintedRunId);
 
-    const runId = await activeRun.runId;
+    await activeRun.started;
+
+    const runId = activeRun.runId;
     const outputsPromise = collectRunOutputs(clientSession, runId);
 
     const responseStream = textResponseStream('asst-rs-happy-1', 'text-rs-happy-1', 'Started');
@@ -1672,7 +1687,7 @@ describe('ClientSession integration', () => {
    * Scenario: the client cancels a fresh send BEFORE the agent has minted the
    * reply run-id and published run-start. In the two-node model a fresh run has
    * no run-id at send time, so the client keys the cancel by the triggering
-   * input's codec-message-id (the `ActiveRun.inputCodecMessageId`). The agent must buffer that
+   * input's codec-message-id (the `ClientRun.inputCodecMessageId`). The agent must buffer that
    * early cancel and honour it once its input-event lookup resolves the input
    * to a run — aborting the run as `start()` completes, not dropping the cancel.
    *
@@ -1731,7 +1746,8 @@ describe('ClientSession integration', () => {
 
     // run-start landed (the abort took the controller, not the publish), so the
     // client's run-id resolves to the agent-minted id.
-    await expect(activeRun.runId).resolves.toBe(mintedRunId);
+    await activeRun.started;
+    expect(activeRun.runId).toBe(mintedRunId);
 
     // Arm the run-end listener BEFORE the agent ends the run so the terminal
     // event can't be missed between publish and subscribe.
@@ -1814,7 +1830,8 @@ describe('ClientSession integration', () => {
     });
     await Promise.all([serverRunA.start(), serverRunB.start()]);
 
-    const [runIdA, runIdB] = await Promise.all([runA.runId, runB.runId]);
+    await Promise.all([runA.started, runB.started]);
+    const [runIdA, runIdB] = [runA.runId, runB.runId];
     expect(runIdA).toBe(mintedA);
     expect(runIdB).toBe(mintedB);
     // The two runs are distinct — no collapse onto a single run-id.

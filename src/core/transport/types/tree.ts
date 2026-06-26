@@ -3,7 +3,7 @@
 import type * as Ably from 'ably';
 
 import type { CodecOutputEvent } from '../../codec/types.js';
-import type { RunEndReason } from './shared.js';
+import type { RunEndReason, RunStatus } from './shared.js';
 
 // ---------------------------------------------------------------------------
 // Run lifecycle events
@@ -121,7 +121,7 @@ export type RunLifecycleEvent =
 export type RunNodeState =
   | {
       /** `'active'` (streaming), `'suspended'` (paused), or a non-error terminal reason. */
-      status: 'active' | 'suspended' | Exclude<RunEndReason, 'error'>;
+      status: Exclude<RunStatus, 'error'>;
     }
   | {
       /** Terminal error status. */

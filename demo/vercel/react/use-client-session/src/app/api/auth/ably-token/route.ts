@@ -10,6 +10,8 @@
 import jwt from 'jsonwebtoken';
 import { NextResponse } from 'next/server';
 
+import { generateClientName } from '../../../lib/channel-name';
+
 export async function GET(req: Request) {
   const apiKey = process.env.ABLY_API_KEY;
   if (!apiKey) {
@@ -20,7 +22,7 @@ export async function GET(req: Request) {
 
   // Use clientId from query param, or generate a random one.
   const url = new URL(req.url);
-  const clientId = url.searchParams.get('clientId') ?? `user-${crypto.randomUUID().slice(0, 8)}`;
+  const clientId = url.searchParams.get('clientId') ?? generateClientName();
 
   // Scope the token to the configured channel namespace (default `ai:`) rather
   // than every channel in the app. The browser only ever opens `<namespace><slug>`

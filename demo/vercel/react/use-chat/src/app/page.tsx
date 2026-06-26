@@ -5,7 +5,7 @@ import { Chat } from './chat';
 import { Providers, useAblyReady } from './providers';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
-import { generateChannelSlug } from './lib/channel-name';
+import { generateChannelSlug, generateClientName } from './lib/channel-name';
 
 const CHANNEL_NAMESPACE = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ai:';
 
@@ -35,7 +35,7 @@ function ChatPage() {
   const limit = Number(searchParams.get('limit')) || undefined;
 
   const [channelName] = useState(() => paramChannel ?? `${CHANNEL_NAMESPACE}${generateChannelSlug()}`);
-  const [clientId] = useState(() => paramClientId ?? `user-${crypto.randomUUID().slice(0, 8)}`);
+  const [clientId] = useState(() => paramClientId ?? generateClientName());
 
   useEffect(() => {
     if (paramChannel && paramClientId) return;

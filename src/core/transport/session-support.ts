@@ -31,6 +31,15 @@ export enum SessionState {
 }
 
 /**
+ * The unsubscribe function both sessions' `on('error', …)` return when the
+ * session is already CLOSED — a no-op, since no further events will fire so
+ * the handler is never registered. Shared so the two sessions don't each
+ * carry their own copy.
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-function -- intentional no-op
+export const noopUnsubscribe = (): void => {};
+
+/**
  * Subscribe a session's listener to its channel, which implicitly attaches the
  * channel (RTL7g — subscribe before attach). On success logs at debug; on
  * failure builds a `SessionSubscriptionError`, logs at error, hands it to
@@ -41,8 +50,8 @@ export enum SessionState {
  * @param listener - The message listener to subscribe (also the unsubscribe handle on close).
  * @param logger - Logger for the success/failure lines, or `undefined`.
  * @param component - The owning class name, used as the log message prefix.
- * @param onError - Called with the subscription error before it is thrown (the
- *   client emits it, the agent forwards it to its session `onError`).
+ * @param onError - Called with the subscription error before it is thrown
+ *   (both sessions emit it on their session `on('error')`).
  * @returns A promise that resolves once subscribed/attached, or rejects with
  *   the `SessionSubscriptionError`.
  */

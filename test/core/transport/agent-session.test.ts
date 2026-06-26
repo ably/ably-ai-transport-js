@@ -622,8 +622,8 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
-        onError,
       });
+      s.on('error', onError);
       await expect(s.connect()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSubscriptionError);
       expect(onError).toHaveBeenCalled();
       await s.close();
@@ -1582,8 +1582,8 @@ describe('AgentSession', () => {
         client: createMockClient(failChannel),
         channelName: 'test-channel',
         codec,
-        onError,
       });
+      failSession.on('error', onError);
       await failSession.connect();
       const run = createRunFromOpts(failSession, { runId: 'run-1', onError });
       await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.RunLifecycleError);
@@ -1637,6 +1637,26 @@ describe('AgentSession', () => {
       await new Promise((r) => setTimeout(r, 5));
 
       expect(onError).toHaveBeenCalled();
+    });
+
+    it('onCancel throws with no run onError → falls back to the session on(error)', async () => {
+      // A run-scoped error with no per-run `onError` must still surface — it
+      // falls back to the session emitter rather than being silently dropped.
+      const sessionOnError = vi.fn();
+      session.on('error', sessionOnError);
+      const run = createRunFromOpts(session, {
+        runId: 'run-1',
+        // eslint-disable-next-line @typescript-eslint/require-await -- mock
+        onCancel: async () => {
+          throw new Error('handler boom');
+        },
+      });
+      await run.start();
+
+      simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
+      await new Promise((r) => setTimeout(r, 5));
+
+      expect(sessionOnError).toHaveBeenCalledWith(expect.toBeErrorInfo({ code: ErrorCode.CancelListenerError }));
     });
   });
 
@@ -1744,8 +1764,8 @@ describe('AgentSession', () => {
           client: createMockClient(ch),
           channelName: 'test-channel',
           codec: createMockCodec(),
-          onError,
         });
+        s.on('error', onError);
         simulateInitialAttach(ch);
         simulateStateChange(ch, {
           current: state,
@@ -1767,8 +1787,8 @@ describe('AgentSession', () => {
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
-        onError,
       });
+      s.on('error', onError);
       simulateInitialAttach(ch);
       simulateStateChange(ch, {
         current: 'attached',
@@ -1780,6 +1800,42 @@ describe('AgentSession', () => {
         expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost, statusCode: 500 }),
       );
       await s.close();
+    });
+
+    it('on(error) unsubscribe stops further delivery', async () => {
+      const onError = vi.fn();
+      const ch = createMockChannel();
+      ch.state = 'initialized';
+      const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: createMockCodec(),
+      });
+      const unsub = s.on('error', onError);
+      simulateInitialAttach(ch);
+      unsub();
+      simulateStateChange(ch, { current: 'failed', previous: 'attached' } as Ably.ChannelStateChange);
+
+      expect(onError).not.toHaveBeenCalled();
+      await s.close();
+    });
+
+    it('on(error) is a no-op once the session is closed', async () => {
+      const onError = vi.fn();
+      const ch = createMockChannel();
+      const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: createMockCodec(),
+      });
+      await s.close();
+      // Registering after close does nothing and the returned unsubscribe is a
+      // safe no-op (the handler was never registered).
+      const unsub = s.on('error', onError);
+      expect(() => {
+        unsub();
+      }).not.toThrow();
+      expect(onError).not.toHaveBeenCalled();
     });
   });
 
@@ -2146,8 +2202,8 @@ describe('AgentSession input-event lookup', () => {
       channelName: 'continuity-mid-lookup',
       codec: codecWithFunctionalDecoder(),
       inputEventLookupTimeoutMs: 600_000,
-      onError,
     });
+    session.on('error', onError);
     await session.connect();
 
     const run = createRunFromOpts(session, { runId: 'run-c5', invocationId: 'inv-c5', inputEventId: 'p-never' });
@@ -3639,8 +3695,8 @@ describe('AgentRun.loadConversation concurrency + continuity-loss', () => {
       channelName: 'continuity-swap',
       codec,
       inputEventLookupTimeoutMs: 5000,
-      onError,
     });
+    session.on('error', onError);
     await session.connect();
 
     const run = createRunFromOpts(session, { runId: 'run-a', invocationId: 'inv-1', inputEventId: 'p-u1' });
@@ -3946,8 +4002,8 @@ describe('AgentRun.loadConversation history failure + exhaustion', () => {
       channelName: 'swap-mid-walk',
       codec,
       inputEventLookupTimeoutMs: 5000,
-      onError,
     });
+    session.on('error', onError);
     await session.connect();
 
     // loadConversation without start(): run-a never appears on the channel,

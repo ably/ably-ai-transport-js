@@ -37,13 +37,6 @@ export interface AgentSessionOptions<
   codec: Codec<TInput, TOutput, TProjection, TMessage>;
   /** Logger instance for diagnostic output. */
   logger?: Logger;
-  /**
-   * Called with non-fatal session-level errors not scoped to any run.
-   * Examples: cancel listener subscription failure, channel attach errors,
-   * channel continuity loss (FAILED/SUSPENDED/DETACHED or re-attach with
-   * `resumed: false`).
-   */
-  onError?: (error: Ably.ErrorInfo) => void;
 
   /**
    * How long `Run.start()` will wait for the triggering input event
@@ -182,7 +175,10 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
    * with reason `'error'`.
    *
    * Channel-wide events (e.g. continuity loss) are delivered via the
-   * session-level `onError` on {@link AgentSessionOptions}, not here.
+   * session-level {@link AgentSession.on}('error'), not here. A failure in the
+   * `onCancel` handler with no `onError` set falls back to that session emitter
+   * so it is never silently dropped; a `pipe` stream failure with no `onError`
+   * is always still available on {@link StreamResult.error}.
    */
   onError?: (error: Ably.ErrorInfo) => void;
 }
@@ -386,6 +382,16 @@ export interface AgentSession<TOutput extends CodecOutputEvent, TProjection, TMe
    *   (e.g. the HTTP request's `req.signal`).
    */
   createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): AgentRun<TOutput, TProjection, TMessage>;
+
+  /**
+   * Subscribe to non-fatal session-level errors not scoped to any run —
+   * channel continuity loss (FAILED/SUSPENDED/DETACHED or re-attach with
+   * `resumed: false`), cancel-listener/attach failures, and any run-scoped
+   * error whose run supplied no `onError`. Returns an unsubscribe function.
+   * Once the session is closed this is a no-op: the handler is not registered
+   * and the returned function does nothing.
+   */
+  on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void;
 
   /**
    * Unsubscribe from cancel messages, cancel all active runs, detach the

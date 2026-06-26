@@ -653,8 +653,8 @@ describe('AgentSession integration', () => {
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
-      onError: (err) => errors.push(err),
     });
+    session.on('error', (err) => errors.push(err));
     await session.connect();
 
     const run = createRunFromOpts(session, { runId: 'run-1' });

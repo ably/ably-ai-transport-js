@@ -1035,7 +1035,9 @@ describe('ClientSession', () => {
       await expect(s.view.send({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
         ErrorCode.SessionSendFailed,
       );
-      expect(errors.length).toBeGreaterThanOrEqual(1);
+      // Single delivery: the publish failure rejects send() and is NOT also
+      // emitted on on('error') (one mechanism per error, ERRORS.md).
+      expect(errors).toEqual([]);
       await s.close();
     });
 

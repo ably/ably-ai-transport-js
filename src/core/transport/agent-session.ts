@@ -24,6 +24,7 @@ import {
   HEADER_RUN_ID,
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
+import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
@@ -48,6 +49,7 @@ import {
   continuityLostError,
   handleWireMessage,
   isContinuityLost,
+  noopUnsubscribe,
   requireConnected,
   SessionState,
   subscribeAndAttach,
@@ -101,6 +103,11 @@ enum RunState {
   ENDED = 'ended',
 }
 
+// Event map for the session's typed EventEmitter.
+interface AgentSessionEventsMap {
+  error: Ably.ErrorInfo;
+}
+
 // ---------------------------------------------------------------------------
 // Implementation
 // ---------------------------------------------------------------------------
@@ -115,7 +122,8 @@ class DefaultAgentSession<
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: Codec<TInput, TOutput, TProjection, TMessage>;
   private readonly _logger: Logger | undefined;
-  private readonly _onError: ((error: Ably.ErrorInfo) => void) | undefined;
+  // Typed event emitter — the session emits only 'error'; all data events live on the Tree.
+  private readonly _emitter: EventEmitter<AgentSessionEventsMap>;
   private readonly _runManager: RunManager;
   private readonly _registeredRuns = new Map<string, RegisteredRun>();
   /**
@@ -185,7 +193,7 @@ class DefaultAgentSession<
     if (modes) channelOptions.modes = modes;
     this._channel = options.client.channels.get(options.channelName, channelOptions);
     this._logger = options.logger?.withContext({ component: 'AgentSession' });
-    this._onError = options.onError;
+    this._emitter = new EventEmitter<AgentSessionEventsMap>(this._logger ?? makeLogger({ logLevel: LogLevel.Silent }));
     this._runManager = createRunManager(this._channel, this._logger);
     this._inputEventLookupTimeoutMs = options.inputEventLookupTimeoutMs ?? 30000;
     const { tree, applier } = createMaterialisation(this._codec, this._logger);
@@ -264,7 +272,9 @@ class DefaultAgentSession<
       this._channelListener,
       this._logger,
       'DefaultAgentSession',
-      (error) => this._onError?.(error),
+      (error) => {
+        this._emitter.emit('error', error);
+      },
     );
     return this._connectPromise;
   }
@@ -284,6 +294,14 @@ class DefaultAgentSession<
     return this._createRun(invocation, runtime ?? {});
   }
 
+  on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void {
+    if (this._state === SessionState.CLOSED) return noopUnsubscribe;
+    this._emitter.on(event, handler);
+    return () => {
+      this._emitter.off(event, handler);
+    };
+  }
+
   // Spec: AIT-ST11
   async close(): Promise<void> {
     if (this._state === SessionState.CLOSED) return;
@@ -299,6 +317,7 @@ class DefaultAgentSession<
     this._registeredRuns.clear();
     this._runIdByInputCodecMessageId.clear();
     this._deferredCancels.clear();
+    this._emitter.off();
     this._runManager.close();
 
     await bestEffortDetach(this._channel, this._connectPromise, this._logger, 'DefaultAgentSession');
@@ -425,7 +444,10 @@ class DefaultAgentSession<
         errorCause(error),
       );
       this._logger?.error('DefaultAgentSession._cancelRegistration(); onCancel threw', { runId });
-      (reg.onError ?? this._onError)?.(errInfo);
+      // Run-scoped error: prefer the run's own handler; fall back to the
+      // session emitter so it is never silently dropped.
+      if (reg.onError) reg.onError(errInfo);
+      else this._emitter.emit('error', errInfo);
     }
   }
 
@@ -458,7 +480,7 @@ class DefaultAgentSession<
     // Abort every active run's controller FIRST so in-flight
     // `loadConversation` / `locateInputEvent` calls observe the abort before
     // the Tree changes underneath them and reject (InvalidArgument from their
-    // signal checks; the session-level onError carries ChannelContinuityLost).
+    // signal checks; the session-level on('error') carries ChannelContinuityLost).
     for (const reg of this._registeredRuns.values()) {
       reg.controller.abort();
     }
@@ -479,7 +501,7 @@ class DefaultAgentSession<
     // Session-level notification: continuity loss is not scoped to any one
     // run. Per-run onError handlers are reserved for errors from that run's
     // own operations (publish failures, encoder errors).
-    this._onError?.(continuityErr);
+    this._emitter.emit('error', continuityErr);
   }
 
   // -------------------------------------------------------------------------
@@ -529,13 +551,13 @@ class DefaultAgentSession<
               errorCause(error),
             );
             this._logger?.error('DefaultAgentSession._handleChannelMessage(); cancel routing error');
-            this._onError?.(errInfo);
+            this._emitter.emit('error', errInfo);
           });
         }
       },
       (error) => {
         this._logger?.error('DefaultAgentSession._handleChannelMessage(); subscription error');
-        this._onError?.(error);
+        this._emitter.emit('error', error);
       },
     );
   }

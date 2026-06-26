@@ -124,8 +124,7 @@ describe('Vercel createAgentSession', () => {
 
   it('passes through options to the core factory', async () => {
     const channel = createMockChannel();
-    const onError = vi.fn();
-    const session = createAgentSession({ client: createMockClient(channel), channelName: 'test-channel', onError });
+    const session = createAgentSession({ client: createMockClient(channel), channelName: 'test-channel' });
     await session.connect();
 
     // Session was created without error — proves options were forwarded

@@ -50,6 +50,7 @@ import {
   continuityLostError,
   handleWireMessage,
   isContinuityLost,
+  noopUnsubscribe,
   requireConnected,
   SessionState,
   subscribeAndAttach,
@@ -65,13 +66,6 @@ import type {
   Tree,
 } from './types.js';
 import { createClientView } from './view.js';
-
-/**
- * Returned from `on()` when the session is already closed — the subscription
- * is silently ignored since no further events will fire.
- */
-// eslint-disable-next-line @typescript-eslint/no-empty-function -- intentional no-op
-const noopUnsubscribe = (): void => {};
 
 /**
  * Whether an input references an existing codec-message rather than
@@ -639,7 +633,9 @@ class DefaultClientSession<
           isPermission ? 401 : 500,
           cause,
         );
-        this._emitter.emit('error', err);
+        // Single delivery: a publish failure rejects `send()` (below) and is
+        // NOT also emitted on `on('error')` — the caller is awaiting `send()`,
+        // so one mechanism per error (ERRORS.md).
         // The input never reached the channel — there is no run to wait on.
         // Drop the run-start tracker so close() doesn't later reject an orphan.
         this._pendingRunStarts.delete(startedKey);
@@ -755,11 +751,9 @@ class DefaultClientSession<
   // Spec: AIT-CT8, AIT-CT8c, AIT-CT8d
   on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void {
     if (this._state === SessionState.CLOSED) return noopUnsubscribe;
-    // CAST: the overload signature enforces the correct handler type.
-    const cb = handler;
-    this._emitter.on(event, cb);
+    this._emitter.on(event, handler);
     return () => {
-      this._emitter.off(event, cb);
+      this._emitter.off(event, handler);
     };
   }
 

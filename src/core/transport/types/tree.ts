@@ -123,6 +123,13 @@ export type RunLifecycleEvent =
  * the attempt-id (distinct per attempt). The canonical attempt for a step-id
  * is the one whose `step-start` has the latest `serial`; the Tree folds only
  * the canonical attempt's output into the run's projection.
+ *
+ * Both arms also carry the invocation correlation (`invocationId`) and the
+ * three concentric client-identity scopes (`runClientId` ⊃ `invocationClientId`
+ * ⊃ `stepClientId`), each an empty string when the wire didn't carry it. The
+ * Tree reads `stepClientId` off the canonical step-start into the
+ * {@link StepInfo} read-model; the others are carried for consumers correlating
+ * step events to a run / invocation / participant.
  */
 export type StepLifecycleEvent =
   | {
@@ -134,6 +141,31 @@ export type StepLifecycleEvent =
       stepId: string;
       /** This attempt's id — distinct on every retry of the same step. */
       attemptId: string;
+      /**
+       * The invocation-id this step was published under (wire `invocation-id`).
+       * Correlates the step to the invocation that drove it. Empty string if the
+       * wire didn't carry one.
+       */
+      invocationId: string;
+      /**
+       * The run owner's clientId (wire `run-client-id`) — the outermost
+       * client-identity scope, constant for the run's lifetime. Empty string if
+       * the wire didn't carry one.
+       */
+      runClientId: string;
+      /**
+       * The clientId of the input that drove the current invocation (wire
+       * `input-client-id`) — the middle client-identity scope. Empty string if
+       * the wire didn't carry one.
+       */
+      invocationClientId: string;
+      /**
+       * The clientId of the participant whose most-recently-incorporated input
+       * shapes this step (wire `step-client-id`) — the innermost client-identity
+       * scope. Sticky across steps that incorporate no fresh input. Empty string
+       * if the wire didn't carry one.
+       */
+      stepClientId: string;
       /**
        * Ably channel serial of the step-start message, or `undefined` for an
        * optimistic local event. Determines the canonical attempt: the latest
@@ -153,6 +185,28 @@ export type StepLifecycleEvent =
       stepId: string;
       /** The attempt's id, matching the corresponding `step-start`. */
       attemptId: string;
+      /**
+       * The invocation-id this step was published under (wire `invocation-id`).
+       * Matches the corresponding `step-start`. Empty string if the wire didn't
+       * carry one.
+       */
+      invocationId: string;
+      /**
+       * The run owner's clientId (wire `run-client-id`). Matches the
+       * corresponding `step-start`. Empty string if the wire didn't carry one.
+       */
+      runClientId: string;
+      /**
+       * The clientId of the input that drove the current invocation (wire
+       * `input-client-id`). Matches the corresponding `step-start`. Empty string
+       * if the wire didn't carry one.
+       */
+      invocationClientId: string;
+      /**
+       * The step's client (wire `step-client-id`), matching the corresponding
+       * `step-start`. Empty string if the wire didn't carry one.
+       */
+      stepClientId: string;
       /**
        * Ably channel serial of the step-end message, or `undefined` for an
        * optimistic local event.
@@ -181,6 +235,16 @@ export interface StepInfo {
   status: 'active' | StepEndReason;
   /** How many distinct attempts of this step have been observed (deduped by attempt-id). */
   attemptCount: number;
+  /**
+   * The clientId of the participant whose most-recently-incorporated input
+   * shapes this step, read from the canonical attempt's `ai-step-start`
+   * `step-client-id` header (the innermost of the three concentric
+   * client-identity scopes). Empty string when the canonical step-start carried
+   * none, or `undefined` until a step-start has been observed (a step seen only
+   * via an out-of-order step-end). Sticky across steps that incorporate no fresh
+   * input, so consecutive steps of a single-input turn share one value.
+   */
+  stepClientId: string | undefined;
 }
 
 // ---------------------------------------------------------------------------

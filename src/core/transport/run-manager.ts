@@ -43,6 +43,25 @@ interface StartRunMetadata {
   continuation?: boolean;
 }
 
+/**
+ * The invocation correlation and the three concentric client-identity scopes
+ * (`run-client-id` ⊃ `invocationClientId` ⊃ `stepClientId`) stamped on a step's
+ * `ai-step-start` / `ai-step-end`. Carried verbatim onto the wire by
+ * {@link RunManager.startStep} / {@link RunManager.endStep}; the publisher
+ * (the agent run) owns resolving them. Each field is optional and omitted from
+ * the wire when unset.
+ */
+export interface StepClientScopes {
+  /** The invocation-id the step is published under (correlation). */
+  invocationId?: string;
+  /** The run owner's clientId (the outermost client scope). */
+  runClientId?: string;
+  /** The current invocation's input publisher (stamped as `input-client-id`, the middle scope). */
+  invocationClientId?: string;
+  /** The step's client (the innermost scope; the participant whose incorporated input shapes the step). */
+  stepClientId?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Interface
 // ---------------------------------------------------------------------------
@@ -102,15 +121,33 @@ export interface RunManager {
   ): Promise<void>;
   /**
    * Publish `ai-step-start` to open a step attempt within a run. Carries
-   * `step-id` and `attempt-id`. A retry of a step publishes a fresh start with
-   * the same `stepId` and a new `attemptId`; the latest-serial start is the
-   * canonical attempt.
+   * `step-id` and `attempt-id` plus the step's invocation correlation and the
+   * three concentric client-identity scopes ({@link StepClientScopes}). A retry
+   * of a step publishes a fresh start with the same `stepId` and a new
+   * `attemptId`; the latest-serial start is the canonical attempt.
+   * @param runId - The run the step belongs to.
+   * @param stepId - The step's id (stable across retry attempts).
+   * @param attemptId - This attempt's id (distinct per retry).
+   * @param scopes - The step's invocation + client-identity scopes, stamped on the wire.
    */
-  startStep(runId: string, stepId: string, attemptId: string): Promise<void>;
+  startStep(runId: string, stepId: string, attemptId: string, scopes?: StepClientScopes): Promise<void>;
   /**
-   * Publish `ai-step-end` to close a step attempt, stamping `step-reason`.
+   * Publish `ai-step-end` to close a step attempt, stamping `step-reason` plus
+   * the same invocation correlation and client-identity scopes
+   * ({@link StepClientScopes}) as the matching `ai-step-start`.
+   * @param runId - The run the step belongs to.
+   * @param stepId - The step's id.
+   * @param attemptId - This attempt's id.
+   * @param reason - Why the step attempt ended.
+   * @param scopes - The step's invocation + client-identity scopes, stamped on the wire.
    */
-  endStep(runId: string, stepId: string, attemptId: string, reason: StepEndReason): Promise<void>;
+  endStep(
+    runId: string,
+    stepId: string,
+    attemptId: string,
+    reason: StepEndReason,
+    scopes?: StepClientScopes,
+  ): Promise<void>;
   /** Get the clientId that owns a run. */
   getClientId(runId: string): string | undefined;
   /** Cancel all active runs and clear state. */
@@ -256,16 +293,22 @@ class DefaultRunManager implements RunManager {
     this._activeRuns.delete(runId);
   }
 
-  async startStep(runId: string, stepId: string, attemptId: string): Promise<void> {
+  async startStep(runId: string, stepId: string, attemptId: string, scopes?: StepClientScopes): Promise<void> {
     this._logger?.trace('DefaultRunManager.startStep();', { runId, stepId, attemptId });
-    const headers = buildStepHeaders({ runId, stepId, attemptId });
+    const headers = buildStepHeaders({ runId, stepId, attemptId, ...scopes });
     await this._channel.publish({ name: EVENT_STEP_START, extras: { ai: { transport: headers } } });
     this._logger?.debug('DefaultRunManager.startStep(); step started', { runId, stepId, attemptId });
   }
 
-  async endStep(runId: string, stepId: string, attemptId: string, reason: StepEndReason): Promise<void> {
+  async endStep(
+    runId: string,
+    stepId: string,
+    attemptId: string,
+    reason: StepEndReason,
+    scopes?: StepClientScopes,
+  ): Promise<void> {
     this._logger?.trace('DefaultRunManager.endStep();', { runId, stepId, attemptId, reason });
-    const headers = buildStepHeaders({ runId, stepId, attemptId, reason });
+    const headers = buildStepHeaders({ runId, stepId, attemptId, reason, ...scopes });
     await this._channel.publish({ name: EVENT_STEP_END, extras: { ai: { transport: headers } } });
     this._logger?.debug('DefaultRunManager.endStep(); step ended', { runId, stepId, attemptId, reason });
   }

@@ -20,6 +20,7 @@ import {
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_STEP_CLIENT_ID,
   HEADER_STEP_ID,
   HEADER_STEP_REASON,
 } from '../../../src/constants.js';
@@ -434,6 +435,22 @@ describe('RunManager', () => {
       expect(headers[HEADER_ATTEMPT_ID]).toBe('att-1');
       expect(headers[HEADER_STEP_REASON]).toBeUndefined();
     });
+
+    it('forwards the invocation correlation and the three client-identity scopes onto the wire', async () => {
+      await manager.startStep('run-1', 'step-0', 'att-1', {
+        invocationId: 'inv-1',
+        runClientId: 'owner',
+        invocationClientId: 'invoker',
+        stepClientId: 'stepper',
+      });
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- single publish
+      const headers = headersOf(channel.publishCalls.at(0)!);
+      expect(headers[HEADER_INVOCATION_ID]).toBe('inv-1');
+      expect(headers[HEADER_RUN_CLIENT_ID]).toBe('owner');
+      expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('invoker');
+      expect(headers[HEADER_STEP_CLIENT_ID]).toBe('stepper');
+    });
   });
 
   describe('endStep', () => {
@@ -449,6 +466,23 @@ describe('RunManager', () => {
       expect(headers[HEADER_STEP_ID]).toBe('step-0');
       expect(headers[HEADER_ATTEMPT_ID]).toBe('att-1');
       expect(headers[HEADER_STEP_REASON]).toBe('failed');
+    });
+
+    it('forwards the client-identity scopes alongside the step-reason', async () => {
+      await manager.endStep('run-1', 'step-0', 'att-1', 'complete', {
+        invocationId: 'inv-1',
+        runClientId: 'owner',
+        invocationClientId: 'invoker',
+        stepClientId: 'stepper',
+      });
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- single publish
+      const headers = headersOf(channel.publishCalls.at(0)!);
+      expect(headers[HEADER_STEP_REASON]).toBe('complete');
+      expect(headers[HEADER_INVOCATION_ID]).toBe('inv-1');
+      expect(headers[HEADER_RUN_CLIENT_ID]).toBe('owner');
+      expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('invoker');
+      expect(headers[HEADER_STEP_CLIENT_ID]).toBe('stepper');
     });
   });
 });

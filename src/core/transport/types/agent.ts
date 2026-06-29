@@ -171,6 +171,21 @@ export interface StepOptions {
    * construction so the durable developer cannot get either wrong.
    */
   attemptId?: string;
+
+  /**
+   * The clientId to attribute this step to — the participant whose
+   * most-recently-incorporated input shapes it (the innermost of the three
+   * concentric client-identity scopes; stamped as `step-client-id`).
+   *
+   * Omit it for the common case. The SDK then resolves the step's client by
+   * inheriting the prior step's value (sticky), or, for the run's first step,
+   * defaulting to the triggering input's publisher (`input-client-id`). Supply
+   * an explicit value when a steer incorporates a fresh input mid-run so the
+   * step attributes to that input's publisher rather than inheriting the prior
+   * step's client — the seam a steering signal populates. A run with no steering
+   * never sets it and the sticky default suffices.
+   */
+  stepClientId?: string;
 }
 
 /** The result of streaming a response through the encoder. */

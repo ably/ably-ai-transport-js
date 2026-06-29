@@ -22,6 +22,7 @@ import {
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_STEP_CLIENT_ID,
   HEADER_STEP_ID,
   HEADER_STEP_REASON,
 } from '../../../src/constants.js';
@@ -129,17 +130,19 @@ describe('buildTransportHeaders', () => {
     expect(headers[HEADER_MSG_REGENERATE]).toBe('asst-original');
   });
 
-  it('includes step-id and attempt-id when provided (step output)', () => {
+  it('includes step-id, attempt-id, and step-client-id when provided (step output)', () => {
     const headers = buildTransportHeaders({
       role: 'assistant',
       runId: 'run-1',
       codecMessageId: 'msg-1',
       stepId: 'step-0',
       attemptId: 'att-1',
+      stepClientId: 'stepper',
     });
 
     expect(headers[HEADER_STEP_ID]).toBe('step-0');
     expect(headers[HEADER_ATTEMPT_ID]).toBe('att-1');
+    expect(headers[HEADER_STEP_CLIENT_ID]).toBe('stepper');
   });
 
   it('omits optional headers when undefined', () => {
@@ -157,6 +160,7 @@ describe('buildTransportHeaders', () => {
     expect(headers).not.toHaveProperty(HEADER_MSG_REGENERATE);
     expect(headers).not.toHaveProperty(HEADER_STEP_ID);
     expect(headers).not.toHaveProperty(HEADER_ATTEMPT_ID);
+    expect(headers).not.toHaveProperty(HEADER_STEP_CLIENT_ID);
   });
 });
 
@@ -480,6 +484,44 @@ describe('buildStepHeaders', () => {
 
     expect(headers[HEADER_STEP_REASON]).toBe('failed');
   });
+
+  it('stamps the invocation correlation and the three client-identity scopes', () => {
+    const headers = buildStepHeaders({
+      runId: 'run-1',
+      stepId: 'step-0',
+      attemptId: 'att-1',
+      invocationId: 'inv-1',
+      runClientId: 'owner',
+      invocationClientId: 'invoker',
+      stepClientId: 'stepper',
+    });
+
+    expect(headers[HEADER_INVOCATION_ID]).toBe('inv-1');
+    expect(headers[HEADER_RUN_CLIENT_ID]).toBe('owner');
+    // invocationClientId rides the existing input-client-id wire name.
+    expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('invoker');
+    expect(headers[HEADER_STEP_CLIENT_ID]).toBe('stepper');
+  });
+
+  it('omits the client scopes entirely when undefined, but stamps an empty-string value', () => {
+    const omitted = buildStepHeaders({ runId: 'run-1', stepId: 'step-0', attemptId: 'att-1' });
+    expect(omitted).not.toHaveProperty(HEADER_INVOCATION_ID);
+    expect(omitted).not.toHaveProperty(HEADER_RUN_CLIENT_ID);
+    expect(omitted).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
+    expect(omitted).not.toHaveProperty(HEADER_STEP_CLIENT_ID);
+
+    // An empty string is a real value (an unknown owner), so it still stamps —
+    // mirroring buildLifecycleHeaders' always-present run-client-id.
+    const empty = buildStepHeaders({
+      runId: 'run-1',
+      stepId: 'step-0',
+      attemptId: 'att-1',
+      runClientId: '',
+      stepClientId: '',
+    });
+    expect(empty[HEADER_RUN_CLIENT_ID]).toBe('');
+    expect(empty[HEADER_STEP_CLIENT_ID]).toBe('');
+  });
 });
 
 describe('isStepLifecycleName', () => {
@@ -494,10 +536,18 @@ describe('isStepLifecycleName', () => {
 });
 
 describe('parseStepLifecycle', () => {
-  it('parses a step-start carrying runId, stepId, attemptId, and serial', () => {
+  it('parses a step-start carrying runId, stepId, attemptId, the client scopes, and serial', () => {
     const event = parseStepLifecycle(
       EVENT_STEP_START,
-      { [HEADER_RUN_ID]: 'run-1', [HEADER_STEP_ID]: 'step-0', [HEADER_ATTEMPT_ID]: 'att-1' },
+      {
+        [HEADER_RUN_ID]: 'run-1',
+        [HEADER_STEP_ID]: 'step-0',
+        [HEADER_ATTEMPT_ID]: 'att-1',
+        [HEADER_INVOCATION_ID]: 'inv-1',
+        [HEADER_RUN_CLIENT_ID]: 'owner',
+        [HEADER_INPUT_CLIENT_ID]: 'invoker',
+        [HEADER_STEP_CLIENT_ID]: 'stepper',
+      },
       's1',
       1000,
     );
@@ -507,15 +557,28 @@ describe('parseStepLifecycle', () => {
       runId: 'run-1',
       stepId: 'step-0',
       attemptId: 'att-1',
+      invocationId: 'inv-1',
+      runClientId: 'owner',
+      invocationClientId: 'invoker',
+      stepClientId: 'stepper',
       serial: 's1',
       timestamp: 1000,
     });
   });
 
-  it('parses a step-end with an explicit reason', () => {
+  it('parses a step-end with an explicit reason and the client scopes', () => {
     const event = parseStepLifecycle(
       EVENT_STEP_END,
-      { [HEADER_RUN_ID]: 'run-1', [HEADER_STEP_ID]: 'step-0', [HEADER_ATTEMPT_ID]: 'att-1', [HEADER_STEP_REASON]: 'failed' },
+      {
+        [HEADER_RUN_ID]: 'run-1',
+        [HEADER_STEP_ID]: 'step-0',
+        [HEADER_ATTEMPT_ID]: 'att-1',
+        [HEADER_INVOCATION_ID]: 'inv-1',
+        [HEADER_RUN_CLIENT_ID]: 'owner',
+        [HEADER_INPUT_CLIENT_ID]: 'invoker',
+        [HEADER_STEP_CLIENT_ID]: 'stepper',
+        [HEADER_STEP_REASON]: 'failed',
+      },
       's2',
       2000,
     );
@@ -525,13 +588,17 @@ describe('parseStepLifecycle', () => {
       runId: 'run-1',
       stepId: 'step-0',
       attemptId: 'att-1',
+      invocationId: 'inv-1',
+      runClientId: 'owner',
+      invocationClientId: 'invoker',
+      stepClientId: 'stepper',
       serial: 's2',
       timestamp: 2000,
       reason: 'failed',
     });
   });
 
-  it('defaults a missing step-end reason to "complete" and stamps an undefined serial/timestamp', () => {
+  it('defaults a missing step-end reason to "complete", empty client scopes, and undefined serial/timestamp', () => {
     const noSerial: string | undefined = undefined;
     const noTimestamp: number | undefined = undefined;
     const event = parseStepLifecycle(
@@ -546,15 +613,27 @@ describe('parseStepLifecycle', () => {
       runId: 'run-1',
       stepId: 'step-0',
       attemptId: 'att-1',
+      // Absent client-scope headers parse to the empty string (mirrors the
+      // run-lifecycle parser's clientId/invocationId default).
+      invocationId: '',
+      runClientId: '',
+      invocationClientId: '',
+      stepClientId: '',
       serial: undefined,
       reason: 'complete',
     });
   });
 
   it('returns undefined when run-id, step-id, or attempt-id is missing', () => {
-    expect(parseStepLifecycle(EVENT_STEP_START, { [HEADER_STEP_ID]: 's', [HEADER_ATTEMPT_ID]: 'a' }, 's1', 1)).toBeUndefined();
-    expect(parseStepLifecycle(EVENT_STEP_START, { [HEADER_RUN_ID]: 'r', [HEADER_ATTEMPT_ID]: 'a' }, 's1', 1)).toBeUndefined();
-    expect(parseStepLifecycle(EVENT_STEP_START, { [HEADER_RUN_ID]: 'r', [HEADER_STEP_ID]: 's' }, 's1', 1)).toBeUndefined();
+    expect(
+      parseStepLifecycle(EVENT_STEP_START, { [HEADER_STEP_ID]: 's', [HEADER_ATTEMPT_ID]: 'a' }, 's1', 1),
+    ).toBeUndefined();
+    expect(
+      parseStepLifecycle(EVENT_STEP_START, { [HEADER_RUN_ID]: 'r', [HEADER_ATTEMPT_ID]: 'a' }, 's1', 1),
+    ).toBeUndefined();
+    expect(
+      parseStepLifecycle(EVENT_STEP_START, { [HEADER_RUN_ID]: 'r', [HEADER_STEP_ID]: 's' }, 's1', 1),
+    ).toBeUndefined();
   });
 
   it('returns undefined for a non-step message name', () => {

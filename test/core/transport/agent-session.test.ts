@@ -17,9 +17,12 @@ import {
   EVENT_RUN_END,
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
+  EVENT_STEP_START,
+  HEADER_ATTEMPT_ID,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
+  HEADER_INPUT_CLIENT_ID,
   HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
@@ -28,6 +31,8 @@ import {
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_STEP_CLIENT_ID,
+  HEADER_STEP_ID,
 } from '../../../src/constants.js';
 import type {
   ChannelWriter,
@@ -1764,6 +1769,200 @@ describe('AgentSession', () => {
       expect(starts.map((h) => h['step-id'])).toEqual(['turn-1', 'turn-1']);
       // Distinct attempt-ids: the latest-serial start is the canonical attempt.
       expect(starts[0]?.['attempt-id']).not.toBe(starts[1]?.['attempt-id']);
+    });
+
+    // -----------------------------------------------------------------------
+    // step client-id scopes (the client-identity scopes on step events)
+    // -----------------------------------------------------------------------
+
+    describe('step client-id scopes', () => {
+      it('stamps invocation-id + run-client-id + input-client-id + step-client-id on ai-step-start AND ai-step-end', async () => {
+        // The run owner is 'owner' (run-client-id on the input), the triggering
+        // input's publisher is 'user-b' (input-client-id). With no steer the
+        // first step's client defaults to the publisher.
+        const run = createRunFromOpts(session, {
+          runId: 'run-scopes',
+          invocationId: 'inv-scopes',
+          inputEventId: 'p-scopes',
+        });
+        const startPromise = run.start();
+        deliverInputEvent(channel, {
+          invocationId: 'inv-scopes',
+          runId: 'run-scopes',
+          codecMessageId: 'm-scopes',
+          serial: 's-scopes',
+          inputEventId: 'p-scopes',
+          runClientId: 'owner',
+          publisherClientId: 'user-b',
+        });
+        await startPromise;
+
+        await run.step(async (step) => step.pipe(streamOf({ type: 'text', text: 'a' })), { stepId: 'S1' });
+
+        const starts = stepHeadersOf(channel, 'ai-step-start');
+        const ends = stepHeadersOf(channel, 'ai-step-end');
+        expect(starts).toHaveLength(1);
+        expect(ends).toHaveLength(1);
+        for (const h of [starts[0], ends[0]]) {
+          expect(h?.[HEADER_INVOCATION_ID]).toBe('inv-scopes');
+          expect(h?.[HEADER_RUN_CLIENT_ID]).toBe('owner');
+          // invocationClientId rides input-client-id (the publisher lineage).
+          expect(h?.[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
+          // First step, no steer -> step client defaults to the input publisher.
+          expect(h?.[HEADER_STEP_CLIENT_ID]).toBe('user-b');
+        }
+      });
+
+      it('stamps step-client-id (and still run-client-id / input-client-id) on every output of the step', async () => {
+        const run = createRunFromOpts(session, {
+          runId: 'run-out',
+          invocationId: 'inv-out',
+          inputEventId: 'p-out',
+        });
+        const startPromise = run.start();
+        deliverInputEvent(channel, {
+          invocationId: 'inv-out',
+          runId: 'run-out',
+          codecMessageId: 'm-out',
+          serial: 's-out',
+          inputEventId: 'p-out',
+          runClientId: 'owner',
+          publisherClientId: 'user-b',
+        });
+        await startPromise;
+
+        await run.step(async (step) => step.pipe(streamOf({ type: 'text', text: 'a' })), { stepId: 'S1' });
+
+        const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
+        expect(headers[HEADER_STEP_CLIENT_ID]).toBe('user-b');
+        expect(headers[HEADER_RUN_CLIENT_ID]).toBe('owner');
+        expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
+      });
+
+      it('an implicit run.pipe step also stamps step-client-id on its output and bracket', async () => {
+        const run = createRunFromOpts(session, {
+          runId: 'run-pipe-sc',
+          invocationId: 'inv-pipe-sc',
+          inputEventId: 'p-pipe-sc',
+        });
+        const startPromise = run.start();
+        deliverInputEvent(channel, {
+          invocationId: 'inv-pipe-sc',
+          runId: 'run-pipe-sc',
+          codecMessageId: 'm-pipe-sc',
+          serial: 's-pipe-sc',
+          inputEventId: 'p-pipe-sc',
+          runClientId: 'owner',
+          publisherClientId: 'user-b',
+        });
+        await startPromise;
+
+        await run.pipe(streamOf({ type: 'text', text: 'hi' }));
+
+        const starts = stepHeadersOf(channel, 'ai-step-start');
+        expect(starts[0]?.[HEADER_STEP_CLIENT_ID]).toBe('user-b');
+        const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
+        expect(headers[HEADER_STEP_CLIENT_ID]).toBe('user-b');
+      });
+
+      it('defaults the first step client to the input PUBLISHER, which differs from the run owner on a non-owner continuation', async () => {
+        // A non-owner continuation: the run is owned by 'owner' (run-client-id),
+        // but the triggering input was published by a DIFFERENT client
+        // ('user-b'). The step client is the publisher lineage, NOT the owner —
+        // the two diverge here even though they coincide on a fresh owner turn.
+        const run = createRunFromOpts(session, {
+          runId: 'run-nonowner',
+          invocationId: 'inv-nonowner',
+          inputEventId: 'p-nonowner',
+        });
+        const startPromise = run.start();
+        deliverInputEvent(channel, {
+          invocationId: 'inv-nonowner',
+          runId: 'run-nonowner',
+          codecMessageId: 'm-nonowner',
+          serial: 's-nonowner',
+          inputEventId: 'p-nonowner',
+          runClientId: 'owner',
+          publisherClientId: 'user-b',
+        });
+        await startPromise;
+
+        await run.step(async (step) => step.pipe(streamOf({ type: 'text', text: 'a' })), { stepId: 'S1' });
+
+        const starts = stepHeadersOf(channel, 'ai-step-start');
+        // invocationClientId (input-client-id) is the resuming publisher; the
+        // step client defaults to it; run-client-id stays the run owner. The
+        // documented publisher-vs-issuer reconciliation: the SDK stamps the
+        // triggering input's PUBLISHER as input-client-id.
+        expect(starts[0]?.[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
+        expect(starts[0]?.[HEADER_STEP_CLIENT_ID]).toBe('user-b');
+        expect(starts[0]?.[HEADER_RUN_CLIENT_ID]).toBe('owner');
+        expect(starts[0]?.[HEADER_STEP_CLIENT_ID]).not.toBe(starts[0]?.[HEADER_RUN_CLIENT_ID]);
+      });
+
+      it('is sticky across steps of a single-input turn (every step inherits the first step client)', async () => {
+        const run = createRunFromOpts(session, {
+          runId: 'run-sticky',
+          invocationId: 'inv-sticky',
+          inputEventId: 'p-sticky',
+        });
+        const startPromise = run.start();
+        deliverInputEvent(channel, {
+          invocationId: 'inv-sticky',
+          runId: 'run-sticky',
+          codecMessageId: 'm-sticky',
+          serial: 's-sticky',
+          inputEventId: 'p-sticky',
+          runClientId: 'owner',
+          publisherClientId: 'user-b',
+        });
+        await startPromise;
+
+        await run.step(async (step) => step.pipe(streamOf({ type: 'text', text: 'a' })), { stepId: 'S1' });
+        await run.step(async (step) => step.pipe(streamOf({ type: 'text', text: 'b' })), { stepId: 'S2' });
+
+        const starts = stepHeadersOf(channel, 'ai-step-start');
+        expect(starts).toHaveLength(2);
+        // Both steps carry the SAME client (sticky): the second inherits the
+        // first via the in-process cursor, not a re-default.
+        expect(starts[0]?.[HEADER_STEP_CLIENT_ID]).toBe('user-b');
+        expect(starts[1]?.[HEADER_STEP_CLIENT_ID]).toBe('user-b');
+      });
+
+      it('an explicit StepOptions.stepClientId wins over the default and the sticky inheritance (the steer seam)', async () => {
+        const run = createRunFromOpts(session, {
+          runId: 'run-explicit',
+          invocationId: 'inv-explicit',
+          inputEventId: 'p-explicit',
+        });
+        const startPromise = run.start();
+        deliverInputEvent(channel, {
+          invocationId: 'inv-explicit',
+          runId: 'run-explicit',
+          codecMessageId: 'm-explicit',
+          serial: 's-explicit',
+          inputEventId: 'p-explicit',
+          runClientId: 'owner',
+          publisherClientId: 'user-b',
+        });
+        await startPromise;
+
+        // First step: default (publisher). Second step: a steer incorporates a
+        // fresh input from 'user-c', supplied explicitly — it overrides the
+        // sticky 'user-b' AND becomes the new sticky value.
+        await run.step(async (step) => step.pipe(streamOf({ type: 'text', text: 'a' })), { stepId: 'S1' });
+        await run.step(async (step) => step.pipe(streamOf({ type: 'text', text: 'b' })), {
+          stepId: 'S2',
+          stepClientId: 'user-c',
+        });
+        await run.step(async (step) => step.pipe(streamOf({ type: 'text', text: 'c' })), { stepId: 'S3' });
+
+        const starts = stepHeadersOf(channel, 'ai-step-start');
+        expect(starts[0]?.[HEADER_STEP_CLIENT_ID]).toBe('user-b');
+        expect(starts[1]?.[HEADER_STEP_CLIENT_ID]).toBe('user-c');
+        // The explicit value is now sticky: the third step inherits 'user-c'.
+        expect(starts[2]?.[HEADER_STEP_CLIENT_ID]).toBe('user-c');
+      });
     });
   });
 
@@ -4874,6 +5073,40 @@ const deliverRunStart = (ch: MockChannel, runId: string, opts: { serial: string;
 };
 
 /**
+ * Deliver a foreign-process `ai-step-start` wire to the session's channel
+ * listener, folding it so the run node carries a prior step (with its
+ * `step-client-id`) in the read-model — the channel-as-truth source a fresh
+ * adopting process re-derives sticky `stepClientId` from. Carries a real serial
+ * so the step-start is canonical.
+ * @param ch - The mock channel hosting the session's listener.
+ * @param runId - The run the step belongs to.
+ * @param opts - The step ids, serial, and client scopes.
+ * @param opts.stepId - The prior step's id.
+ * @param opts.attemptId - The prior step's attempt id.
+ * @param opts.serial - The Ably serial (makes the step-start canonical).
+ * @param opts.stepClientId - The prior step's `step-client-id`.
+ */
+const deliverStepStart = (
+  ch: MockChannel,
+  runId: string,
+  opts: { stepId: string; attemptId: string; serial: string; stepClientId: string },
+): void => {
+  const headers: Record<string, string> = {
+    [HEADER_RUN_ID]: runId,
+    [HEADER_STEP_ID]: opts.stepId,
+    [HEADER_ATTEMPT_ID]: opts.attemptId,
+    [HEADER_STEP_CLIENT_ID]: opts.stepClientId,
+  };
+  const msg = {
+    name: EVENT_STEP_START,
+    serial: opts.serial,
+    extras: { ai: { transport: headers } },
+    version: { serial: opts.serial },
+  } as unknown as Ably.InboundMessage;
+  if (ch.listener) ch.listener(msg);
+};
+
+/**
  * Deliver a foreign-process terminal run-lifecycle wire (run-end or run-suspend)
  * to the session's channel listener, folding it so the run's status advances.
  * @param ch - The mock channel hosting the session's listener.
@@ -5090,6 +5323,47 @@ describe('adoptRun / load()', () => {
     expect(ch.publishCalls.find((m) => m.name === EVENT_RUN_END)).toBeDefined();
     // Adopt never publishes an opening event.
     expect(ch.publishCalls.find((m) => m.name === EVENT_RUN_START)).toBeUndefined();
+
+    await session.close();
+  });
+
+  it('a fresh-process step re-derives the prior step client from the hydrated channel (cross-process stickiness)', async () => {
+    // The cross-process headline: a fresh adopting process has NO in-memory
+    // step cursor and (with no trigger lookup) NO resolved input publisher — so
+    // the ONLY source for the new step's client is the channel. A prior step of
+    // this run (published by another process, client 'user-prior') is hydrated
+    // off the channel into the Tree; the new step must INHERIT 'user-prior'
+    // from it rather than reset to the empty default.
+    const { session, ch } = adoptSession();
+    await session.connect();
+    deliverRunStart(ch, 'run-xproc', { serial: 's-start-xproc', runClientId: 'owner-xproc' });
+    // A prior step from another process, carrying its step-client-id.
+    deliverStepStart(ch, 'run-xproc', {
+      stepId: 'prior-step',
+      attemptId: 'prior-att',
+      serial: 's-prior-step',
+      stepClientId: 'user-prior',
+    });
+
+    const run = session.adoptRun(identityFor('run-xproc'));
+    await run.load();
+
+    // A NEW step with no explicit client and no fresh input: stickiness is
+    // re-derived from the channel, NOT reset to the default.
+    await run.step(async (step) => step.pipe(streamOf({ type: 'text', text: 'a' })), { stepId: 'next-step' });
+
+    const starts = stepHeadersOf(ch, 'ai-step-start');
+    const newStart = starts.find((h) => h[HEADER_STEP_ID] === 'next-step');
+    expect(newStart?.[HEADER_STEP_CLIENT_ID]).toBe('user-prior');
+    // run-client-id is the adopt-seeded owner, read LIVE from the run manager
+    // (seeded from the hydrated run-start), distinct from the re-derived step
+    // client — proving a fresh process stamps the channel owner, not a local.
+    expect(newStart?.[HEADER_RUN_CLIENT_ID]).toBe('owner-xproc');
+    // The new step's end also carries the re-derived client (sticky from the
+    // cursor the resolution just set).
+    const ends = stepHeadersOf(ch, 'ai-step-end');
+    const newEnd = ends.find((h) => h[HEADER_STEP_ID] === 'next-step');
+    expect(newEnd?.[HEADER_STEP_CLIENT_ID]).toBe('user-prior');
 
     await session.close();
   });

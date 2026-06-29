@@ -30,6 +30,7 @@ import {
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_STEP_CLIENT_ID,
   HEADER_STEP_ID,
   HEADER_STEP_REASON,
 } from '../../constants.js';
@@ -67,6 +68,12 @@ import type { RunEndReason, RunLifecycleEvent, StepEndReason, StepLifecycleEvent
  * @param opts.stepId - The owning step's id, when the output is published within
  *   a `Run.step`. See {@link HEADER_STEP_ID}.
  * @param opts.attemptId - The publishing attempt's id, paired with `stepId`.
+ * @param opts.stepClientId - The owning step's client (the innermost of the
+ *   three concentric client-identity scopes; stamped as `step-client-id`).
+ *   Stamped on every output of the step (initial + appends + close) so an
+ *   output self-attributes to its step's participant even if that attempt's
+ *   `ai-step-start` never arrived — mirroring the `step-id` / `attempt-id`
+ *   invariant.
  * @returns A headers record with the transport headers set.
  */
 export const buildTransportHeaders = (opts: {
@@ -83,6 +90,7 @@ export const buildTransportHeaders = (opts: {
   inputEventId?: string;
   stepId?: string;
   attemptId?: string;
+  stepClientId?: string;
 }): Record<string, string> => {
   const h: Record<string, string> = {
     [HEADER_ROLE]: opts.role,
@@ -99,6 +107,7 @@ export const buildTransportHeaders = (opts: {
   if (opts.inputEventId) h[HEADER_EVENT_ID] = opts.inputEventId;
   if (opts.stepId !== undefined) h[HEADER_STEP_ID] = opts.stepId;
   if (opts.attemptId !== undefined) h[HEADER_ATTEMPT_ID] = opts.attemptId;
+  if (opts.stepClientId !== undefined) h[HEADER_STEP_CLIENT_ID] = opts.stepClientId;
   return h;
 };
 
@@ -278,10 +287,23 @@ export const parseRunLifecycle = (
  * step-end). Mirrors {@link buildLifecycleHeaders} for the step layer.
  * `run-id`, `step-id`, and `attempt-id` are always present; `step-reason` is
  * stamped on step-end only.
+ *
+ * The invocation correlation (`invocation-id`) and the three concentric
+ * client-identity scopes (`run-client-id` ⊃ `input-client-id` ⊃
+ * `step-client-id`) are stamped on BOTH step-start and step-end whenever
+ * supplied, so a consumer can attribute either step event to its run,
+ * invocation, and step participant. An empty-string value still stamps the
+ * header (an unknown owner is conveyed as the empty string, mirroring
+ * `buildLifecycleHeaders`'s `run-client-id`); an omitted (`undefined`) value
+ * is left off entirely.
  * @param opts - The step header values to include.
  * @param opts.runId - The run the step belongs to.
  * @param opts.stepId - The step's id (stable across retry attempts).
  * @param opts.attemptId - This attempt's id (distinct per retry).
+ * @param opts.invocationId - The invocation-id the step is published under (correlation).
+ * @param opts.runClientId - The run owner's clientId (the outermost client scope).
+ * @param opts.invocationClientId - The current invocation's input publisher (stamped as `input-client-id`, the middle scope).
+ * @param opts.stepClientId - The step's client (the innermost scope; the participant whose incorporated input shapes the step).
  * @param opts.reason - Terminal reason; stamped on step-end only.
  * @returns A headers record with the step headers set.
  */
@@ -289,6 +311,10 @@ export const buildStepHeaders = (opts: {
   runId: string;
   stepId: string;
   attemptId: string;
+  invocationId?: string;
+  runClientId?: string;
+  invocationClientId?: string;
+  stepClientId?: string;
   reason?: StepEndReason;
 }): Record<string, string> => {
   const h: Record<string, string> = {
@@ -296,6 +322,14 @@ export const buildStepHeaders = (opts: {
     [HEADER_STEP_ID]: opts.stepId,
     [HEADER_ATTEMPT_ID]: opts.attemptId,
   };
+  if (opts.invocationId !== undefined) h[HEADER_INVOCATION_ID] = opts.invocationId;
+  if (opts.runClientId !== undefined) h[HEADER_RUN_CLIENT_ID] = opts.runClientId;
+  // `invocationClientId` rides the existing `input-client-id` wire name: it is
+  // the publisher of the triggering input, which equals the POST issuer's id
+  // only when that issuer published the input event it points at — the common
+  // case. See HEADER_INPUT_CLIENT_ID.
+  if (opts.invocationClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.invocationClientId;
+  if (opts.stepClientId !== undefined) h[HEADER_STEP_CLIENT_ID] = opts.stepClientId;
   if (opts.reason !== undefined) h[HEADER_STEP_REASON] = opts.reason;
   return h;
 };
@@ -344,15 +378,25 @@ export const parseStepLifecycle = (
   if (!runId || !stepId || !attemptId) return undefined;
 
   const stamped = timestamp === undefined ? {} : { timestamp };
+  // The invocation correlation + the three concentric client-identity scopes,
+  // each defaulting to the empty string when the wire didn't carry it (mirrors
+  // `parseRunLifecycle`'s clientId/invocationId handling). `invocationClientId`
+  // is read from the `input-client-id` wire name it shares.
+  const clientScopes = {
+    invocationId: headers[HEADER_INVOCATION_ID] ?? '',
+    runClientId: headers[HEADER_RUN_CLIENT_ID] ?? '',
+    invocationClientId: headers[HEADER_INPUT_CLIENT_ID] ?? '',
+    stepClientId: headers[HEADER_STEP_CLIENT_ID] ?? '',
+  };
 
   if (name === EVENT_STEP_START) {
-    return { type: 'step-start', runId, stepId, attemptId, serial, ...stamped };
+    return { type: 'step-start', runId, stepId, attemptId, ...clientScopes, serial, ...stamped };
   }
 
   if (name === EVENT_STEP_END) {
     // CAST: agent always writes a valid StepEndReason; default to 'complete' for robustness.
     const reason = (headers[HEADER_STEP_REASON] ?? 'complete') as StepEndReason;
-    return { type: 'step-end', runId, stepId, attemptId, serial, reason, ...stamped };
+    return { type: 'step-end', runId, stepId, attemptId, ...clientScopes, serial, reason, ...stamped };
   }
 
   return undefined;

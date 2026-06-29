@@ -84,6 +84,13 @@ interface StepRecord {
    * lowest, so any concrete-serial start promotes/supersedes it.
    */
   canonicalStartSerial: string | undefined;
+  /**
+   * The canonical attempt's `step-client-id` (the step's participant), surfaced
+   * on {@link StepInfo.stepClientId}. Set from the canonical `ai-step-start`, so
+   * it tracks the canonical attempt across supersedes. `undefined` until a
+   * `step-start` is seen (a step seen only via an out-of-order step-end).
+   */
+  stepClientId: string | undefined;
   /** Every attempt id seen for this step (from step-starts and step-ends); its size is the read-model attempt count. */
   attemptIds: Set<string>;
   /** Terminal reason per attempt id, from `ai-step-end`. The read-model status reads the canonical attempt's entry. */
@@ -1378,6 +1385,7 @@ export class DefaultTree<
       rec = {
         canonicalAttemptId: undefined,
         canonicalStartSerial: undefined,
+        stepClientId: undefined,
         attemptIds: new Set(),
         endReasonByAttempt: new Map(),
       };
@@ -1387,7 +1395,7 @@ export class DefaultTree<
     rec.attemptIds.add(event.attemptId);
 
     if (event.type === 'step-start') {
-      this._applyStepStart(entry, ss, rec, event.stepId, event.attemptId, event.serial);
+      this._applyStepStart(entry, ss, rec, event.stepId, event.attemptId, event.serial, event.stepClientId);
     } else {
       rec.endReasonByAttempt.set(event.attemptId, event.reason);
     }
@@ -1431,6 +1439,9 @@ export class DefaultTree<
    * @param stepId - The step id.
    * @param attemptId - This attempt's id.
    * @param serial - This `step-start`'s serial (undefined for an optimistic seed).
+   * @param stepClientId - This `step-start`'s `step-client-id` (the step's
+   *   participant), recorded on the record when the attempt becomes canonical so
+   *   the read-model tracks the canonical attempt's client across supersedes.
    */
   private _applyStepStart(
     entry: InternalNode<TInput, TOutput, TProjection>,
@@ -1439,6 +1450,7 @@ export class DefaultTree<
     stepId: string,
     attemptId: string,
     serial: string | undefined,
+    stepClientId: string,
   ): void {
     // Latest-serial wins. An undefined serial sorts lowest (optimistic seed),
     // so any concrete serial promotes (same attempt's echo) or supersedes
@@ -1451,6 +1463,7 @@ export class DefaultTree<
 
     rec.canonicalAttemptId = attemptId;
     rec.canonicalStartSerial = serial;
+    rec.stepClientId = stepClientId;
 
     // Refold only when a different attempt's output is already folded (avoids a
     // refold on the common first-start-then-stream case, where the only
@@ -1556,7 +1569,7 @@ export class DefaultTree<
         rec.canonicalAttemptId === undefined
           ? 'active'
           : (rec.endReasonByAttempt.get(rec.canonicalAttemptId) ?? 'active');
-      steps.push({ stepId, status, attemptCount: rec.attemptIds.size });
+      steps.push({ stepId, status, attemptCount: rec.attemptIds.size, stepClientId: rec.stepClientId });
     }
     node.steps = steps;
   }

@@ -191,7 +191,9 @@ const lifecycle = (
   }
 };
 
-// Apply a step-lifecycle event (step-start / step-end).
+// Apply a step-lifecycle event (step-start / step-end). The invocation + client
+// scopes default to empty strings (the common stepless-history shape); a test
+// asserting stepClientId surfacing supplies it via `opts.stepClientId`.
 const applyStep = (
   tree: TreeInternal<TestInput, TestOutput, TestProjection>,
   opts: {
@@ -202,15 +204,26 @@ const applyStep = (
     serial?: string;
     timestamp?: number;
     reason?: StepEndReason;
+    invocationId?: string;
+    runClientId?: string;
+    invocationClientId?: string;
+    stepClientId?: string;
   },
 ): void => {
   const stamped = opts.timestamp === undefined ? {} : { timestamp: opts.timestamp };
+  const scopes = {
+    invocationId: opts.invocationId ?? '',
+    runClientId: opts.runClientId ?? '',
+    invocationClientId: opts.invocationClientId ?? '',
+    stepClientId: opts.stepClientId ?? '',
+  };
   if (opts.type === 'step-start') {
     tree.applyStepLifecycle({
       type: 'step-start',
       runId: opts.runId,
       stepId: opts.stepId,
       attemptId: opts.attemptId,
+      ...scopes,
       serial: opts.serial,
       ...stamped,
     });
@@ -220,6 +233,7 @@ const applyStep = (
       runId: opts.runId,
       stepId: opts.stepId,
       attemptId: opts.attemptId,
+      ...scopes,
       serial: opts.serial,
       reason: opts.reason ?? 'complete',
       ...stamped,
@@ -2748,7 +2762,10 @@ describe('Tree', () => {
 
       let steps = tree.getRunNode('R1')?.steps ?? [];
       expect(steps).toHaveLength(1);
-      expect(steps[0]).toEqual({ stepId: 'S', status: 'active', attemptCount: 2 });
+      // stepClientId is the empty string here (applyStep defaults it); a
+      // dedicated test below asserts a non-empty value surfaces and tracks the
+      // canonical attempt.
+      expect(steps[0]).toEqual({ stepId: 'S', status: 'active', attemptCount: 2, stepClientId: '' });
 
       applyStep(tree, {
         type: 'step-end',
@@ -2760,7 +2777,52 @@ describe('Tree', () => {
       });
       steps = tree.getRunNode('R1')?.steps ?? [];
       // Status reflects the CANONICAL attempt (A2), which completed.
-      expect(steps[0]).toEqual({ stepId: 'S', status: 'complete', attemptCount: 2 });
+      expect(steps[0]).toEqual({ stepId: 'S', status: 'complete', attemptCount: 2, stepClientId: '' });
+    });
+
+    it('surfaces stepClientId from the canonical attempt and tracks it across a supersede', () => {
+      // The canonical attempt's step-client-id is the one surfaced. A1 is
+      // canonical first (client user-a); a later-serial A2 (client user-b)
+      // supersedes it, so the read-model tracks A2's client.
+      applyStep(tree, {
+        type: 'step-start',
+        runId: 'R1',
+        stepId: 'S',
+        attemptId: 'A1',
+        serial: 's1',
+        stepClientId: 'user-a',
+      });
+      expect(tree.getRunNode('R1')?.steps[0]?.stepClientId).toBe('user-a');
+
+      applyStep(tree, {
+        type: 'step-start',
+        runId: 'R1',
+        stepId: 'S',
+        attemptId: 'A2',
+        serial: 's3',
+        stepClientId: 'user-b',
+      });
+      // The later-serial step-start is canonical, so its client is surfaced.
+      expect(tree.getRunNode('R1')?.steps[0]?.stepClientId).toBe('user-b');
+    });
+
+    it('leaves stepClientId undefined for a step seen only via an out-of-order step-end', () => {
+      // The run node must already exist for a step-end to record (a step-end for
+      // an unknown run is a no-op, like run-end). Seed it via an output wire,
+      // then deliver an out-of-order step-end: the attempt is recorded but there
+      // is no canonical step-start, so there is no client to surface yet.
+      apply(tree, { runId: 'R1', message: { id: 'a1', content: '1' }, serial: 's1' });
+      applyStep(tree, {
+        type: 'step-end',
+        runId: 'R1',
+        stepId: 'S',
+        attemptId: 'A1',
+        serial: 's2',
+        reason: 'complete',
+      });
+      const step = tree.getRunNode('R1')?.steps[0];
+      expect(step?.stepId).toBe('S');
+      expect(step?.stepClientId).toBeUndefined();
     });
 
     it('leaves stepless run output and input-node folds unchanged (gate is the identity)', () => {

@@ -46,7 +46,7 @@ import { Invocation } from './invocation.js';
 import { createLeafBranchSource } from './leaf-branch-source.js';
 import { createMaterialisation } from './materialisation.js';
 import { pipeStream } from './pipe-stream.js';
-import type { RunManager } from './run-manager.js';
+import type { RunManager, StepClientScopes } from './run-manager.js';
 import { createRunManager } from './run-manager.js';
 import {
   bestEffortDetach,
@@ -827,6 +827,12 @@ class DefaultAgentSession<
     let stepIndex = 0;
     let lastStepId: string | undefined;
     let lastStepReason: StepEndReason | undefined;
+    // The previous step's resolved `stepClientId`, the in-process fast-path for
+    // the sticky-inheritance rung of the resolution ladder (see
+    // resolveStepClientId). A CACHE only — undefined in a fresh adopting process
+    // whose steps ran elsewhere, where stickiness is re-derived from the channel
+    // (the Tree). Set each time a step resolves its client.
+    let lastStepClientId: string | undefined;
 
     /**
      * Mint the next default in-process step id and advance the index. Scoped to
@@ -844,34 +850,138 @@ class DefaultAgentSession<
     };
 
     /**
+     * Re-derive the sticky `stepClientId` from the channel: the
+     * `step-client-id` of the run's latest preceding step, read off the
+     * hydrated Tree (the same channel-as-truth source `load()`/`adoptRun` use).
+     * The fast-path {@link lastStepClientId} cursor is gone in a fresh adopting
+     * process whose prior steps ran elsewhere, but that process's
+     * `load()`-hydrated Tree carries those steps — so the sticky inheritance is
+     * authoritative from the channel, not the (empty) cursor. Reads
+     * {@link StepInfo.stepClientId} of the most-recent step that carries one
+     * (walking the read-model's first-observed order from the tail).
+     * @returns The latest preceding step's client, or `undefined` when the run
+     *   has no prior step on the channel yet (its first step).
+     */
+    const stepClientIdFromChannel = (): string | undefined => {
+      const steps = getTree().getRunNode(runId)?.steps;
+      if (!steps) return undefined;
+      for (let i = steps.length - 1; i >= 0; i--) {
+        const sc = steps[i]?.stepClientId;
+        if (sc !== undefined && sc !== '') return sc;
+      }
+      return undefined;
+    };
+
+    /**
+     * Resolve a step's `stepClientId` at `ai-step-start` (the precedence ladder,
+     * parallel to the `stepId` ladder), and update the {@link lastStepClientId}
+     * cursor:
+     *   1. an explicit {@link StepOptions.stepClientId} (the steer seam
+     *      populates) wins;
+     *   2. else inherit the prior step's client — STICKY — from the in-process
+     *      cursor (the provisioned/serverless fast-path), falling back to
+     *      re-deriving it from the channel ({@link stepClientIdFromChannel}) so a
+     *      fresh-process step with no cursor still inherits the run's prior step's
+     *      client rather than resetting to the default;
+     *   3. else (no prior step at all — the run's FIRST step) default to
+     *      `resolvedInputClientId`, the triggering input's publisher: NOT
+     *      `resolvedClientId` (the run owner). The two coincide on a fresh turn
+     *      but diverge on a non-owner continuation, and the input's publisher is
+     *      the correct lineage for the step that incorporates it.
+     * @param explicit - The caller's explicit {@link StepOptions.stepClientId}, if any.
+     * @returns The resolved step client (empty string when nothing resolves a value).
+     */
+    const resolveStepClientId = (explicit?: string): string => {
+      const resolved = explicit ?? lastStepClientId ?? stepClientIdFromChannel() ?? resolvedInputClientId ?? '';
+      lastStepClientId = resolved;
+      return resolved;
+    };
+
+    /**
+     * The invocation correlation + the three concentric client-identity scopes
+     * a step's `ai-step-start` / `ai-step-end` carry. The outer two
+     * (`invocationId`, `runClientId`, `invocationClientId`) match the run's
+     * publishes; `stepClientId` is the step's resolved client. `runClientId` is
+     * the run owner read live from the run manager (the real owner once
+     * `start()` / `load()` seeded it), and `invocationClientId` rides the
+     * `input-client-id` wire name (the triggering input's publisher).
+     * @param stepClientId - The step's resolved client.
+     * @returns The scopes object passed to the run manager's step publishes.
+     */
+    const stepScopes = (stepClientId: string): StepClientScopes => ({
+      invocationId,
+      runClientId: runManager.getClientId(runId),
+      invocationClientId: resolvedInputClientId,
+      stepClientId,
+    });
+
+    /**
      * Open a step attempt on the wire and seed the optimistic step-start into
      * the Tree (serial-less; the wire echo promotes its serial). Shared by the
      * eager open in {@link AgentRun.step} and the lazy first-output open in
-     * {@link AgentRun.pipe}.
+     * {@link AgentRun.pipe}. Stamps the step's invocation + client-identity
+     * scopes (including the resolved `stepClientId`) on both the wire event and
+     * the optimistic seed.
      * @param stepId - The step's id.
      * @param attemptId - This attempt's id.
+     * @param stepClientId - This step's resolved client (see resolveStepClientId).
      */
-    const openStep = async (stepId: string, attemptId: string): Promise<void> => {
-      await runManager.startStep(runId, stepId, attemptId);
+    const openStep = async (stepId: string, attemptId: string, stepClientId: string): Promise<void> => {
+      const scopes = stepScopes(stepClientId);
+      await runManager.startStep(runId, stepId, attemptId, scopes);
       // Optimistic step-start seed (serial-less) so reads before the wire echo
       // see the step; the echo promotes its serial. Mirrors the run-start seed.
-      getTree().applyStepLifecycle({ type: 'step-start', runId, stepId, attemptId, serial: undefined });
+      // Carries the same scopes so the local read-model's stepClientId matches
+      // the wire before the echo lands.
+      getTree().applyStepLifecycle({
+        type: 'step-start',
+        runId,
+        stepId,
+        attemptId,
+        invocationId,
+        runClientId: scopes.runClientId ?? '',
+        invocationClientId: resolvedInputClientId ?? '',
+        stepClientId,
+        serial: undefined,
+      });
     };
 
     /**
      * Close a step attempt on the wire, seed the optimistic step-end into the
      * Tree, and record it as the previous step so a following no-`stepId`
      * retry can coalesce. Shared by {@link AgentRun.step} and the implicit
-     * step in {@link AgentRun.pipe}.
+     * step in {@link AgentRun.pipe}. Stamps the SAME `stepClientId` the matching
+     * `ai-step-start` carried — passed in by the caller, not re-read off the
+     * shared cursor, so a step-end stays provably symmetric with its step-start
+     * even if another step's resolution advanced the cursor in between.
      * @param stepId - The step's id.
      * @param attemptId - This attempt's id.
      * @param reason - The step-end reason.
+     * @param stepClientId - The step's resolved client (the value its matching
+     *   `ai-step-start` was stamped with).
      */
-    const closeStep = async (stepId: string, attemptId: string, reason: StepEndReason): Promise<void> => {
+    const closeStep = async (
+      stepId: string,
+      attemptId: string,
+      reason: StepEndReason,
+      stepClientId: string,
+    ): Promise<void> => {
       lastStepId = stepId;
       lastStepReason = reason;
-      await runManager.endStep(runId, stepId, attemptId, reason);
-      getTree().applyStepLifecycle({ type: 'step-end', runId, stepId, attemptId, serial: undefined, reason });
+      const scopes = stepScopes(stepClientId);
+      await runManager.endStep(runId, stepId, attemptId, reason, scopes);
+      getTree().applyStepLifecycle({
+        type: 'step-end',
+        runId,
+        stepId,
+        attemptId,
+        invocationId,
+        runClientId: scopes.runClientId ?? '',
+        invocationClientId: resolvedInputClientId ?? '',
+        stepClientId,
+        serial: undefined,
+        reason,
+      });
     };
 
     /**
@@ -894,13 +1004,18 @@ class DefaultAgentSession<
      * @param step - The step to stamp output under.
      * @param step.stepId - The step's id, stamped on every output.
      * @param step.attemptId - This attempt's id, stamped on every output.
+     * @param step.stepClientId - The step's resolved client, stamped as
+     *   `step-client-id` on every output (initial + appends + close) so an
+     *   output self-attributes to its step's participant even if that attempt's
+     *   `ai-step-start` never arrived — mirroring the `step-id` / `attempt-id`
+     *   invariant.
      * @param step.onFirstOutput - Optional hook fired once before the first output (the lazy implicit-step open); omitted when the step is already open.
      * @returns The {@link StreamResult}.
      */
     const doPipe = async (
       stream: ReadableStream<TOutput>,
       streamOpts: PipeOptions<TOutput> | undefined,
-      step: { stepId: string; attemptId: string; onFirstOutput?: () => Promise<void> },
+      step: { stepId: string; attemptId: string; stepClientId: string; onFirstOutput?: () => Promise<void> },
     ): Promise<StreamResult> => {
       await requireConnected('pipe');
 
@@ -951,6 +1066,7 @@ class DefaultAgentSession<
         regenerates: assistantRegenerates,
         stepId: step.stepId,
         attemptId: step.attemptId,
+        stepClientId: step.stepClientId,
       });
       const encoder = codec.createEncoder(channel, {
         extras: { headers: defaultHeaders },
@@ -1287,6 +1403,12 @@ class DefaultAgentSession<
         // steps. Track whether it opened so the bracket is closed iff opened.
         const stepId = mintNextStepId();
         const attemptId = crypto.randomUUID();
+        // The implicit step has no explicit client; resolve it via the ladder
+        // (sticky from the cursor / channel, else the triggering input's
+        // publisher on the run's first step). Resolved eagerly — even though the
+        // step opens lazily — so the cursor advances consistently for a following
+        // step, and the resolved value stamps the step bracket + every output.
+        const stepClientId = resolveStepClientId();
         // Object wrapper, not a bare `let`: TS flow-narrows a `let` assigned only
         // inside the `onFirstOutput` callback to `false` at the close check
         // below, hiding the mutation (mirrors `pipeState` in Run.step).
@@ -1295,9 +1417,10 @@ class DefaultAgentSession<
         const result = await doPipe(stream, streamOpts, {
           stepId,
           attemptId,
+          stepClientId,
           onFirstOutput: async () => {
             stepState.opened = true;
-            await openStep(stepId, attemptId);
+            await openStep(stepId, attemptId, stepClientId);
           },
         });
 
@@ -1318,7 +1441,7 @@ class DefaultAgentSession<
           // publish. The run-level terminal is the authority for run completion;
           // a missing step-end on a dying connection is non-impactful.
           try {
-            await closeStep(stepId, attemptId, stepReason);
+            await closeStep(stepId, attemptId, stepReason, stepClientId);
           } catch {
             logger?.error('Run.pipe(); failed to close implicit step', { runId, stepId });
           }
@@ -1401,12 +1524,17 @@ class DefaultAgentSession<
         // `${stepId}#${attempt}`, idempotent under ack-loss replay) or a fresh
         // mint per call (the in-process default — each call is a new attempt).
         const attemptId = options?.attemptId ?? crypto.randomUUID();
+        // Step client: an explicit `options.stepClientId` (the steer seam)
+        // wins; else sticky from the cursor / re-derived from the channel; else
+        // the triggering input's publisher on the run's first step (see
+        // resolveStepClientId). Stamped on the step bracket + every output.
+        const stepClientId = resolveStepClientId(options?.stepClientId);
 
         // Open the step eagerly: Run.step brackets the whole closure, so the
         // step exists for its full duration even if no output is piped. (The
         // lazy first-output open is Run.pipe's path; Run.step is the explicit
         // unit a caller chose to open.)
-        await openStep(stepId, attemptId);
+        await openStep(stepId, attemptId, stepClientId);
 
         // Object wrapper, not a bare `let`: TS flow-narrows a `let` to `false`
         // past the `fn` call, hiding the mutation that happens inside it. Track
@@ -1425,8 +1553,8 @@ class DefaultAgentSession<
           },
           pipe: async (stream: ReadableStream<TOutput>, streamOpts?: PipeOptions<TOutput>): Promise<StreamResult> => {
             // The step is already open, so no `onFirstOutput` hook — output is
-            // stamped with its id/attempt-id directly.
-            const result = await doPipe(stream, streamOpts, { stepId, attemptId });
+            // stamped with its id/attempt-id/step-client-id directly.
+            const result = await doPipe(stream, streamOpts, { stepId, attemptId, stepClientId });
             // A piped stream error marks the step failed without throwing — so
             // the common `vercelRunOutcome(...) -> run.end(outcome)` flow needs
             // no try/catch, while the step status still reflects the failure. A
@@ -1450,7 +1578,7 @@ class DefaultAgentSession<
             : pipeState.errored
               ? 'failed'
               : 'complete';
-          await closeStep(stepId, attemptId, stepReason);
+          await closeStep(stepId, attemptId, stepReason, stepClientId);
           if (pipeState.cancelled) {
             // Run cancellation is transport-tier: guarantee the run-end terminal
             // so every observer's stream closes even when the closure omits
@@ -1481,7 +1609,7 @@ class DefaultAgentSession<
           // best-effort — they must not mask the original error.
           const stepReason: StepEndReason = pipeState.cancelled ? 'cancelled' : 'failed';
           try {
-            await closeStep(stepId, attemptId, stepReason);
+            await closeStep(stepId, attemptId, stepReason, stepClientId);
           } catch {
             logger?.error('Run.step(); failed to close step after error', { runId, stepId });
           }

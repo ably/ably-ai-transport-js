@@ -127,6 +127,22 @@ export const HEADER_ATTEMPT_ID = 'attempt-id';
 export const HEADER_STEP_REASON = 'step-reason';
 
 /**
+ * Header: clientId of the participant whose most-recently-incorporated input
+ * shapes the step — the innermost of the three concentric client-identity
+ * scopes (`run-client-id` ⊃ `input-client-id` ⊃ `step-client-id`). Set at
+ * `ai-step-start`, **sticky** across steps that incorporate no fresh input, and
+ * re-derivable from the channel (the latest preceding `ai-step-start`) so the
+ * stickiness survives a fresh-process step under durable execution. Stamped on
+ * `ai-step-start` / `ai-step-end` and on every agent output of the step, so an
+ * output self-attributes to its step's client even when that attempt's
+ * `ai-step-start` never arrived — mirroring the `step-id` / `attempt-id`
+ * invariant. The run's FIRST step (no prior step, no explicit value) defaults to
+ * the triggering input's publisher (`input-client-id`); a steer later populates
+ * it with the incorporated input's publisher.
+ */
+export const HEADER_STEP_CLIENT_ID = 'step-client-id';
+
+/**
  * Header: the `codec-message-id` of the input event that triggered the run.
  * The triggering input is the one whose `event-id` matches the invocation's
  * `inputEventId` (the last input of the originating send). The agent

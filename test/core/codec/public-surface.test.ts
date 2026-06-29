@@ -69,5 +69,9 @@ describe('public codec-authoring surface', () => {
     expectTypeOf<StepOptions>().not.toBeNever();
     expectTypeOf<StepInfo>().not.toBeNever();
     expectTypeOf<StepEndReason>().toEqualTypeOf<'complete' | 'failed' | 'cancelled'>();
+    // The client-identity scope is part of the read-model and the step-options
+    // seam, so both must carry it on the public surface.
+    expectTypeOf<StepInfo>().toHaveProperty('stepClientId').toEqualTypeOf<string | undefined>();
+    expectTypeOf<StepOptions>().toHaveProperty('stepClientId').toEqualTypeOf<string | undefined>();
   });
 });

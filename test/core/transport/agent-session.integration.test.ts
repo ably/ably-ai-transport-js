@@ -36,6 +36,7 @@ import {
   HEADER_ROLE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_STEP_CLIENT_ID,
   HEADER_STEP_ID,
   HEADER_STEP_REASON,
 } from '../../../src/constants.js';
@@ -450,9 +451,13 @@ describe('AgentSession integration', () => {
     }
   });
 
-  it('run.pipe brackets its output in an implicit step on the wire (step-start -> output -> step-end)', async () => {
+  it('run.pipe brackets its output in an implicit step on the wire (step-start -> output -> step-end), stamping the client-identity scopes', async () => {
     const channelName = uniqueChannelName('st-pipe-step');
     const serverClient = ablyRealtimeClient();
+    // The triggering input is published by 'user-b' so the step-client-id (the
+    // publisher lineage) is a meaningful, non-empty value surviving the real
+    // round-trip — distinct from a fresh-process empty default.
+    const publisherB = ablyRealtimeClient({ clientId: 'user-b' });
     const subClient = ablyRealtimeClient();
     const subChannel = subClient.channels.get(channelName);
 
@@ -473,7 +478,21 @@ describe('AgentSession integration', () => {
       if (msg.name === EVENT_RUN_END) resolveEnd();
     });
 
-    const run = createRunFromOpts(session, { runId: 'run-pipe-step-1' });
+    // Publish a real triggering input event from user-b, then run a turn whose
+    // lookup resolves against it.
+    const inputEventId = crypto.randomUUID();
+    const publisherChannel = publisherB.channels.get(channelName);
+    const inputHeaders = buildTransportHeaders({
+      role: 'user',
+      codecMessageId: 'm-pipe-step-user',
+      inputEventId,
+    });
+    const inputEncoder = UIMessageCodec.createEncoder(publisherChannel, { extras: { headers: inputHeaders } });
+    await inputEncoder.publishInput(
+      UIMessageCodec.createUserMessage({ id: 'm-pipe-step-user', role: 'user', parts: [{ type: 'text', text: 'hi' }] }),
+    );
+
+    const run = createRunFromOpts(session, { runId: 'run-pipe-step-1', invocationId: 'inv-pipe-step', inputEventId });
     await run.start();
     await run.pipe(textResponseStream('msg-pipe-step-1', 'text-pipe-step-1', 'hello'));
     await run.end({ reason: 'complete' });
@@ -506,6 +525,19 @@ describe('AgentSession integration', () => {
       expect(endHeaders[HEADER_STEP_REASON]).toBe('complete');
       expect(outputHeaders[HEADER_STEP_ID]).toBe(stepId);
       expect(outputHeaders[HEADER_ATTEMPT_ID]).toBe(attemptId);
+
+      // wire completeness: the client-identity scopes — invocation-id + the
+      // step's client-identity scopes survive the real round-trip on both step
+      // events AND the output. The
+      // first step's client defaults to the triggering input's publisher
+      // (user-b), stamped identically on step-start, step-end, and output.
+      for (const h of [startHeaders, endHeaders]) {
+        expect(h[HEADER_INVOCATION_ID]).toBe('inv-pipe-step');
+        expect(h[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
+        expect(h[HEADER_STEP_CLIENT_ID]).toBe('user-b');
+      }
+      expect(outputHeaders[HEADER_STEP_CLIENT_ID]).toBe('user-b');
+      expect(outputHeaders[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
     }
   });
 

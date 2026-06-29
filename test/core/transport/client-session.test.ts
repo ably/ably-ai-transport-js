@@ -2141,7 +2141,7 @@ describe('ClientSession', () => {
 
   describe('channel continuity', () => {
     it.each([['failed' as const], ['suspended' as const], ['detached' as const]])(
-      'emits ChannelContinuityLost when channel transitions to %s',
+      'emits ChannelContinuityLost when channel transitions to %s after the first attach',
       (state) => {
         // Mark initial attach observed
         simulateStateChange(fix.channel, {
@@ -2157,10 +2157,57 @@ describe('ClientSession', () => {
           previous: 'attached',
           resumed: false,
         });
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison -- compare against enum value
-        expect(errors.some((e) => e.code === ErrorCode.ChannelContinuityLost)).toBe(true);
+        expect(errors).toContainEqual(expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost }));
       },
     );
+
+    it.each([['failed' as const], ['suspended' as const], ['detached' as const]])(
+      'does not emit ChannelContinuityLost on a pre-first-attach transition to %s',
+      async (state) => {
+        // Channel never attaches: there is no continuity to lose, so a
+        // transition out of ATTACHING must not be reported as a discontinuity.
+        const ch = createMockChannel();
+        ch.state = 'initialized';
+        const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
+          client: createMockClient(ch),
+          channelName: 'test-channel',
+          codec: createMockCodec(),
+        });
+        await s.connect();
+        const errors: Ably.ErrorInfo[] = [];
+        s.on('error', (e) => errors.push(e));
+        simulateStateChange(ch, {
+          current: state,
+          previous: 'attaching',
+          resumed: false,
+        });
+        expect(errors).toHaveLength(0);
+        await s.close();
+      },
+    );
+
+    it('records the initial attach even after a pre-first-attach failure, so a later discontinuity emits', async () => {
+      const ch = createMockChannel();
+      ch.state = 'initialized';
+      const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: createMockCodec(),
+      });
+      await s.connect();
+      const errors: Ably.ErrorInfo[] = [];
+      s.on('error', (e) => errors.push(e));
+
+      // A pre-first-attach SUSPENDED is ignored, then the channel attaches.
+      simulateStateChange(ch, { current: 'suspended', previous: 'attaching', resumed: false });
+      simulateStateChange(ch, { current: 'attached', previous: 'suspended', resumed: false });
+      expect(errors).toHaveLength(0);
+
+      // A genuine post-attach discontinuity must now emit.
+      simulateStateChange(ch, { current: 'failed', previous: 'attached', resumed: false });
+      expect(errors).toContainEqual(expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost }));
+      await s.close();
+    });
 
     it('emits ChannelContinuityLost on re-attach with resumed: false', () => {
       simulateStateChange(fix.channel, {
@@ -2176,8 +2223,7 @@ describe('ClientSession', () => {
         previous: 'attaching',
         resumed: false,
       });
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison -- compare against enum value
-      expect(errors.some((e) => e.code === ErrorCode.ChannelContinuityLost)).toBe(true);
+      expect(errors).toContainEqual(expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost }));
     });
 
     it('does not emit on the initial attach when channel started detached', async () => {

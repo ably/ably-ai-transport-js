@@ -54,9 +54,10 @@ export enum ErrorCode {
   SessionSendFailed = 104005,
 
   /**
-   * The Ably channel lost message continuity — the channel entered FAILED,
-   * SUSPENDED, or DETACHED, or re-attached with `resumed: false`. Active
-   * streams can no longer be guaranteed to receive all events.
+   * The Ably channel lost message continuity — after its initial attach, the
+   * channel entered FAILED, SUSPENDED, or DETACHED, or re-attached with
+   * `resumed: false`. Active streams can no longer be guaranteed to receive
+   * all events.
    */
   ChannelContinuityLost = 104006,
 

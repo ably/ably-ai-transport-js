@@ -357,9 +357,12 @@ class DefaultClientSession<
 
     const { current, resumed } = stateChange;
 
-    // Track the initial attach so we don't treat it as a discontinuity
-    if (current === 'attached' && !this._hasAttachedOnce) {
-      this._hasAttachedOnce = true;
+    // Before the first attach there is no continuity to lose — the transport
+    // has never received messages, so no transition (FAILED, SUSPENDED, etc.)
+    // is a discontinuity. Ignore every state change until the initial attach,
+    // recording it when it arrives.
+    if (!this._hasAttachedOnce) {
+      if (current === 'attached') this._hasAttachedOnce = true;
       return;
     }
 

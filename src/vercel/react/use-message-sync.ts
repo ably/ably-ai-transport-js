@@ -14,10 +14,11 @@
  */
 
 import type * as AI from 'ai';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { isToolPart, type ToolPart } from '../tool-part.js';
 import { useChatTransport } from './use-chat-transport.js';
+import { useMessagesWithSeed } from './use-messages-with-seed.js';
 
 /** Options for {@link useMessageSync}. */
 export interface UseMessageSyncOptions {
@@ -103,22 +104,18 @@ const mergeMessages = (tree: AI.UIMessage[], overlay: AI.UIMessage[]): AI.UIMess
 // Hook
 // ---------------------------------------------------------------------------
 
-/** The seed captured for the current view: the persisted prefix and its seam id. */
-interface CapturedSeed {
-  /** The application's seeded messages — the persisted prefix to prepend. */
-  prefix: AI.UIMessage[];
-  /** The newest seed message's domain id — where the live channel rejoins the seed. */
-  seamId: string;
-}
-
 /**
- * Subscribe to view updates and sync them into `useChat()`'s overlay.
+ * Sync the reconciled conversation into `useChat()`'s overlay.
  *
- * When a seed is supplied via `messages`, the live view is reconciled with it:
- * the persisted prefix is prepended and the single overlapping message at the
- * seam is dropped, so a reloaded conversation shows its stored history plus the
- * live tail exactly once. With no seed, the full live channel history is
- * surfaced unchanged.
+ * The seam reconciliation itself — paging the live view back to the seed's seam
+ * and composing `seed ⧺ live` — is delegated to {@link useMessagesWithSeed}, so
+ * the resilient backward walk has a single implementation shared with the
+ * generic React layer. This hook adds the `useChat`-specific concerns on top:
+ * the streaming gate and the tool-resolution merge.
+ *
+ * When a seed is supplied via `messages`, a reloaded conversation shows its
+ * stored history plus the live tail exactly once. With no seed, the full live
+ * channel history is surfaced unchanged.
  * @param options - Hook options.
  * @param options.setMessages - The `setMessages` function from `useChat()`.
  * @param options.messages - The application's seeded conversation to reconcile with the live channel; omit for full channel history.
@@ -132,15 +129,12 @@ export const useMessageSync = ({ messages, setMessages, channelName, skip }: Use
   const view = resolved ? session.view : undefined;
   const resolvedChatTransport = resolved ? chatTransport : undefined;
 
+  // Delegate seam reconciliation (backward walk + `seed ⧺ live` compose) to the
+  // shared hook; `reconciled` advances as the view pages back and live messages
+  // arrive.
+  const reconciled = useMessagesWithSeed({ view, seed: messages ?? [] });
+
   const [gated, setGated] = useState(false);
-
-  // Latest seed, read in effects without re-subscribing as the array grows
-  // (useChat's `messages` grows over the session; the seam is captured once).
-  const messagesRef = useRef(messages);
-  messagesRef.current = messages;
-
-  // The seed captured for the current view; `undefined` is no-seed mode.
-  const seedRef = useRef<CapturedSeed | undefined>(undefined);
 
   // Subscribe to the ChatTransport's streaming state. Reset on transport
   // change so a stale `true` doesn't permanently suppress syncs.
@@ -153,74 +147,14 @@ export const useMessageSync = ({ messages, setMessages, channelName, skip }: Use
     return resolvedChatTransport.onStreamingChange(setGated);
   }, [resolvedChatTransport]);
 
-  // Capture the seed once per view: the newest seed message's domain id is the
-  // seam where the live channel rejoins the persisted prefix. Reset on view
-  // change so a new channel re-captures (or drops into no-seed mode). When a
-  // seed is captured, page the view back until the seam reappears so the live
-  // window joins the seed with no gap; each reveal emits 'update', which the
-  // sync effect recomposes.
-  useEffect(() => {
-    seedRef.current = undefined;
-    if (!view) return;
-
-    const seed = messagesRef.current;
-    if (!seed || seed.length === 0) return;
-    const seamId = seed.at(-1)?.id;
-    if (seamId === undefined) return;
-
-    seedRef.current = { prefix: seed, seamId };
-
-    const controller = new AbortController();
-    const { signal } = controller;
-    const walkToSeam = async (): Promise<void> => {
-      // The `signal.aborted` guard stops the walk after unmount / view change:
-      // the in-flight `loadOlder` settles, then the loop exits before paging on.
-      while (!signal.aborted && view.hasOlder()) {
-        const revealed = await view.loadOlder(1);
-        // An empty page means history is exhausted, the view is closed, or a
-        // load is already in flight — stop rather than spin.
-        if (revealed.length === 0) return;
-        if (revealed.some((m) => m.message.id === seamId)) return;
-      }
-    };
-    // Fire-and-forget: the walk drives itself off `loadOlder` and is stopped via
-    // the abort signal on cleanup; awaiting it would block the effect.
-    void walkToSeam();
-
-    return () => {
-      controller.abort();
-    };
-  }, [view]);
-
-  // Subscribe to view updates and sync, unless gated.
+  // Push the reconciled conversation into useChat's overlay, unless gated during
+  // an own-run stream (which would clash with useChat's own write). Merge rather
+  // than replace so a locally-resolved tool (via addToolResult) isn't clobbered
+  // before the tree's echo lands. Re-runs as `reconciled` advances and when the
+  // gate opens. The `view` guard/dep gives the gate-open re-sync a live view
+  // even when `reconciled` is reference-stable (an unchanged window).
   useEffect(() => {
     if (!view || gated) return;
-
-    const sync = (): void => {
-      // Read the view inside the updater so the freshest visible window is
-      // composed when React applies the state, not when `sync` was scheduled.
-      setMessages((overlay) => {
-        const visible = view.getMessages();
-        const seed = seedRef.current;
-        if (!seed)
-          return mergeMessages(
-            visible.map((m) => m.message),
-            overlay,
-          );
-
-        // Compose seed ⧺ live: drop the single seam overlap — the seam row sits
-        // at the front of the visible window once the walk has revealed it (the
-        // walk pages one message at a time and stops on the seam, so it is the
-        // oldest, i.e. first, visible message).
-        const live = visible[0]?.message.id === seed.seamId ? visible.slice(1) : visible;
-        const composed = [...seed.prefix, ...live.map((m) => m.message)];
-        return mergeMessages(composed, overlay);
-      });
-    };
-
-    // Sync immediately to cover gate-open and initial mount.
-    sync();
-
-    return view.on('update', sync);
-  }, [view, setMessages, gated]);
+    setMessages((overlay) => mergeMessages(reconciled, overlay));
+  }, [view, reconciled, gated, setMessages]);
 };

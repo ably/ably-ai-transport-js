@@ -233,11 +233,15 @@ describe('useMessageSync', () => {
     const updater = setMessages.mock.calls[0]?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
     expect(updater([])).toEqual(msgs);
 
-    // Called again on view update
+    // A view update that changes the window re-syncs.
+    const msgs2 = [makeMessage('1'), makeMessage('2', 'assistant')];
+    viewFlattenNodes.mockReturnValue(msgs2.map((m) => makeNode(m)));
     act(() => {
       emitView('update');
     });
     expect(setMessages).toHaveBeenCalledTimes(2);
+    const updater2 = setMessages.mock.calls[1]?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
+    expect(updater2([])).toEqual(msgs2);
   });
 
   it('does not subscribe when no ChatTransportProvider is present', () => {
@@ -482,7 +486,7 @@ describe('useMessageSync', () => {
     });
 
     // CAST: setMessages receives an updater function from useMessageSync.
-    const updater = setMessages.mock.calls[1]?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
+    const updater = setMessages.mock.calls.at(-1)?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
     // Overlay carries the AI SDK's static-tool representation
     // (`tool-${name}`) — the codec normalises everything to
     // `dynamic-tool`, but `addToolResult` stamps the static prefix when
@@ -552,7 +556,7 @@ describe('useMessageSync', () => {
     });
 
     // CAST: setMessages updater shape from useMessageSync.
-    const updater = setMessages.mock.calls[1]?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
+    const updater = setMessages.mock.calls.at(-1)?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
     // Overlay still shows the pre-resolution state — the tree is the
     // source of truth here.
     const overlayAsst: AI.UIMessage = {

@@ -12,6 +12,7 @@ export type {
   RunNodeState,
   RunStatus,
   SendOptions,
+  View,
 } from '../core/transport/types.js';
 export type { ClientSessionSlot } from './contexts/client-session-context.js';
 export type { ClientSessionProviderProps } from './contexts/client-session-provider.js';
@@ -24,6 +25,8 @@ export type { ClientSessionHandle } from './use-client-session.js';
 export { useClientSession } from './use-client-session.js';
 export type { UseCreateViewOptions } from './use-create-view.js';
 export { useCreateView } from './use-create-view.js';
+export type { UseMessagesWithSeedOptions } from './use-messages-with-seed.js';
+export { useMessagesWithSeed } from './use-messages-with-seed.js';
 export type { TreeHandle, UseTreeOptions } from './use-tree.js';
 export { useTree } from './use-tree.js';
 export type { UseViewOptions, ViewHandle } from './use-view.js';

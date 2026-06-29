@@ -14,3 +14,5 @@ export type { ChatTransportHandle, UseChatTransportOptions } from './use-chat-tr
 export { useChatTransport } from './use-chat-transport.js';
 export type { UseMessageSyncOptions } from './use-message-sync.js';
 export { useMessageSync } from './use-message-sync.js';
+export type { UseMessagesWithSeedOptions } from './use-messages-with-seed.js';
+export { useMessagesWithSeed } from './use-messages-with-seed.js';

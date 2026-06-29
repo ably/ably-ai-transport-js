@@ -1158,21 +1158,24 @@ test.describe('use-chat demo - chat behaviour', () => {
     const url = page.url();
     await page.goto(url);
 
-    // PAGE2 is always visible (most recent run).
-    await expect.poll(async () => userBubbles(page).count(), { timeout: 30_000 }).toBeGreaterThanOrEqual(1);
+    // The auto-loaded first page is exactly `limit` codecMessages from the
+    // newest end — with `limit=1` that's PAGE2's assistant reply, not its
+    // user prompt — so we wait for any bubble to land (not specifically a
+    // user one), then assert the most recent reply (PAGE2) is in the DOM.
+    await expect.poll(async () => allBubbles(page).count(), { timeout: 30_000 }).toBeGreaterThanOrEqual(1);
     const bodyTextBeforeLoad = await page.evaluate(() => document.body.innerText);
     expect(bodyTextBeforeLoad).toMatch(/PAGE2/);
 
-    // Make older history reachable: keep clicking Load older until
-    // both prompts are visible (or the button disappears).
-    const startCount = await userBubbles(page).count();
+    // Make older history reachable: keep clicking Load older until both
+    // prompts are visible (or the button disappears). Each click reveals
+    // `limit` more codecMessages from the older end.
     for (let i = 0; i < 5 && (await userBubbles(page).count()) < 2; i++) {
       const loadOlder = page.getByRole('button', { name: /Load older messages/i });
       if ((await loadOlder.count()) === 0) break;
       await loadOlder.click();
       await page.waitForTimeout(1000);
     }
-    expect(await userBubbles(page).count()).toBeGreaterThan(startCount === 2 ? 1 : 1);
+    expect(await userBubbles(page).count()).toBeGreaterThanOrEqual(2);
 
     const bodyTextAfter = await page.evaluate(() => document.body.innerText);
     expect(bodyTextAfter).toMatch(/PAGE1/);

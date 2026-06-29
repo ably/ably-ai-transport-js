@@ -9,14 +9,21 @@ const setup = async () => {
     return;
   }
 
+  // The shared test-app-setup carries ably-js presence-fixture `channels` we
+  // don't use here, and the sandbox no longer accepts the `channels` field —
+  // strip it before POSTing.
+  const { channels: _unusedChannels, ...postBody } = testAppSetup.post_apps;
+  void _unusedChannels;
+
   const response = await fetch('https://sandbox-rest.ably.io/apps', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(testAppSetup.post_apps),
+    body: JSON.stringify(postBody),
   });
 
   if (!response.ok) {
-    throw new Error(`Response not OK (${String(response.status)})`);
+    const text = await response.text().catch(() => '<no body>');
+    throw new Error(`Response not OK (${String(response.status)}): ${text}`);
   }
 
   // CAST: Trust boundary — sandbox API response shape.

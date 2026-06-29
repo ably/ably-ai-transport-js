@@ -51,7 +51,11 @@ async function provisionSandboxKey() {
   // plus persistence so refresh/history-reconstruction tests can replay it. The
   // shared test-app-setup.json only ships a `mutable` namespace (used by the
   // SDK's own integration tests), so we add `ai` here rather than editing it.
-  const body = setup.post_apps;
+  // The shared test-app-setup carries ably-js presence-fixture `channels` we
+  // don't use here, and the sandbox no longer accepts the `channels` field —
+  // strip it before POSTing.
+  const { channels: _unusedChannels, ...body } = setup.post_apps;
+  void _unusedChannels;
   const namespaces = Array.isArray(body.namespaces) ? body.namespaces : [];
   if (!namespaces.some((ns) => ns.id === 'ai')) {
     namespaces.push({ id: 'ai', mutableMessages: true, persisted: true });
@@ -64,7 +68,8 @@ async function provisionSandboxKey() {
     body: JSON.stringify(body),
   });
   if (!response.ok) {
-    throw new Error(`sandbox app provisioning failed (HTTP ${response.status})`);
+    const text = await response.text().catch(() => '<no body>');
+    throw new Error(`sandbox app provisioning failed (HTTP ${response.status}): ${text}`);
   }
   const app = await response.json();
   // Index 5 is the key with permissions across all channel qualifiers and
@@ -96,6 +101,11 @@ async function main() {
     ABLY_API_KEY: key,
     ABLY_ENDPOINT: 'nonprod:sandbox',
     NEXT_PUBLIC_ABLY_ENDPOINT: 'nonprod:sandbox',
+    // Pin the channel namespace so the e2e spec's hardcoded `ai:` channel
+    // names match the token capability the demo's auth route issues. A
+    // developer's `.env.local` may override this to `ait:` or similar for
+    // local hacking, which would otherwise deny the test's channel attach.
+    NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE: 'ai:',
     MOCK_LLM: '1',
   };
 

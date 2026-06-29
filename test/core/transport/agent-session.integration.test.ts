@@ -25,6 +25,7 @@ import {
   EVENT_RUN_END,
   EVENT_RUN_RESUME,
   EVENT_RUN_START,
+  EVENT_RUN_SUSPEND,
   EVENT_STEP_END,
   EVENT_STEP_START,
   HEADER_ATTEMPT_ID,
@@ -213,18 +214,33 @@ describe('AgentSession integration', () => {
 
     const lifecycleMessages: Ably.InboundMessage[] = [];
     const assistantMessages: Ably.InboundMessage[] = [];
+    // The continuation flow is inv-a SUSPEND (a real continuation point) then
+    // inv-b RESUME + END. The completion gate resolves once one suspend AND one
+    // end have been observed.
+    let runSuspendCount = 0;
     let runEndCount = 0;
-    let resolveTwoEnds: () => void;
-    const twoEnds = new Promise<void>((r) => {
-      resolveTwoEnds = r;
+    let resolveDone: () => void;
+    const suspendThenEnd = new Promise<void>((r) => {
+      resolveDone = r;
     });
+    const maybeResolveDone = (): void => {
+      if (runSuspendCount >= 1 && runEndCount >= 1) resolveDone();
+    };
 
     await subChannel.subscribe((msg) => {
-      if (msg.name === EVENT_RUN_START || msg.name === EVENT_RUN_RESUME || msg.name === EVENT_RUN_END) {
+      if (
+        msg.name === EVENT_RUN_START ||
+        msg.name === EVENT_RUN_RESUME ||
+        msg.name === EVENT_RUN_SUSPEND ||
+        msg.name === EVENT_RUN_END
+      ) {
         lifecycleMessages.push(msg);
-        if (msg.name === EVENT_RUN_END) {
+        if (msg.name === EVENT_RUN_SUSPEND) {
+          runSuspendCount++;
+          maybeResolveDone();
+        } else if (msg.name === EVENT_RUN_END) {
           runEndCount++;
-          if (runEndCount === 2) resolveTwoEnds();
+          maybeResolveDone();
         }
       } else if (getHeaders(msg)[HEADER_ROLE] === 'assistant') {
         assistantMessages.push(msg);
@@ -250,6 +266,9 @@ describe('AgentSession integration', () => {
      * @param opts.continuation - When true, stamps the run-id on the input wire so the
      *   agent re-enters the run and publishes `ai-run-resume` rather than `ai-run-start`.
      *   A fresh send carries no wire run-id (the agent mints it on run-start).
+     * @param opts.terminal - How this invocation closes the run: `'suspend'` pauses it
+     *   (a real continuation point — the run stays live for the next invocation to
+     *   resume under the same `runId`); `'end'` (default) ends it complete.
      */
     const runWithInput = async (opts: {
       publisher: Ably.Realtime;
@@ -258,6 +277,7 @@ describe('AgentSession integration', () => {
       codecMessageId: string;
       streamArgs: [string, string, string];
       continuation?: boolean;
+      terminal?: 'end' | 'suspend';
     }): Promise<void> => {
       const inputEventId = crypto.randomUUID();
       const publisherChannel = opts.publisher.channels.get(channelName);
@@ -284,24 +304,27 @@ describe('AgentSession integration', () => {
       });
       await run.start();
       await run.pipe(textResponseStream(...opts.streamArgs));
-      await run.end({ reason: 'complete' });
+      await (opts.terminal === 'suspend' ? run.suspend() : run.end({ reason: 'complete' }));
     };
 
     const runId = 'run-input-client-id';
 
-    // First invocation: triggered by an input event from user-a.
+    // First invocation: triggered by an input event from user-a. It SUSPENDS
+    // rather than ends — a real continuation point that leaves the run live for
+    // inv-b to resume under the same runId.
     await runWithInput({
       publisher: publisherA,
       runId,
       invocationId: 'inv-a',
       codecMessageId: 'm-user-a',
       streamArgs: ['msg-a', 'text-a', 'first reply'],
+      terminal: 'suspend',
     });
 
     // Second invocation: same runId, input event from user-b — emulates
     // a non-owner-driven continuation (e.g. a tool-result publish from
-    // 'user-b'). The agent stamps inputClientId: user-b on every event
-    // of this invocation.
+    // 'user-b') resuming the suspended run. The agent stamps
+    // inputClientId: user-b on every event of this invocation.
     await runWithInput({
       publisher: publisherB,
       runId,
@@ -311,17 +334,21 @@ describe('AgentSession integration', () => {
       continuation: true,
     });
 
-    await twoEnds;
+    await suspendThenEnd;
 
-    // The fresh first invocation opens the run with ai-run-start; the
-    // continuation (inv-b, input carries the wire run-id) re-enters it with
-    // ai-run-resume.
+    // The wire is ai-run-start(inv-a) -> output -> ai-run-suspend(inv-a) ->
+    // ai-run-resume(inv-b) -> output -> ai-run-end(inv-b). The fresh first
+    // invocation opens the run with ai-run-start and SUSPENDS it (a real
+    // continuation point); the continuation (inv-b, input carries the wire
+    // run-id) re-enters it with ai-run-resume and ends it.
     const startMsgs = lifecycleMessages.filter((m) => m.name === EVENT_RUN_START);
     const resumeMsgs = lifecycleMessages.filter((m) => m.name === EVENT_RUN_RESUME);
+    const suspendMsgs = lifecycleMessages.filter((m) => m.name === EVENT_RUN_SUSPEND);
     const endMsgs = lifecycleMessages.filter((m) => m.name === EVENT_RUN_END);
     expect(startMsgs).toHaveLength(1);
     expect(resumeMsgs).toHaveLength(1);
-    expect(endMsgs).toHaveLength(2);
+    expect(suspendMsgs).toHaveLength(1);
+    expect(endMsgs).toHaveLength(1);
 
     const startA = startMsgs.find((m) => getHeaders(m)[HEADER_INVOCATION_ID] === 'inv-a');
     const resumeB = resumeMsgs.find((m) => getHeaders(m)[HEADER_INVOCATION_ID] === 'inv-b');
@@ -332,20 +359,22 @@ describe('AgentSession integration', () => {
     expect(getHeaders(resumeB)[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
 
     // The triggering input's codec-message-id is threaded through every event
-    // of the invocation (run-start / run-resume, run-end, assistant outputs),
-    // mirroring input-client-id, so the client can correlate any of them back
-    // to the originating input by the id it owns at send time.
+    // of the invocation (run-start / run-resume, run-suspend / run-end, assistant
+    // outputs), mirroring input-client-id, so the client can correlate any of
+    // them back to the originating input by the id it owns at send time.
     expect(getHeaders(startA)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('m-user-a');
     expect(getHeaders(resumeB)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('m-user-b');
 
-    const endA = endMsgs.find((m) => getHeaders(m)[HEADER_INVOCATION_ID] === 'inv-a');
+    // inv-a's terminal is a suspend; inv-b's is an end. Each carries its own
+    // invocation's input-client-id / input-codec-message-id.
+    const suspendA = suspendMsgs.find((m) => getHeaders(m)[HEADER_INVOCATION_ID] === 'inv-a');
     const endB = endMsgs.find((m) => getHeaders(m)[HEADER_INVOCATION_ID] === 'inv-b');
-    expect(endA).toBeDefined();
+    expect(suspendA).toBeDefined();
     expect(endB).toBeDefined();
-    if (!endA || !endB) return;
-    expect(getHeaders(endA)[HEADER_INPUT_CLIENT_ID]).toBe('user-a');
+    if (!suspendA || !endB) return;
+    expect(getHeaders(suspendA)[HEADER_INPUT_CLIENT_ID]).toBe('user-a');
     expect(getHeaders(endB)[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
-    expect(getHeaders(endA)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('m-user-a');
+    expect(getHeaders(suspendA)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('m-user-a');
     expect(getHeaders(endB)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('m-user-b');
 
     // Assistant outputs of each invocation also carry the input event's

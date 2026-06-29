@@ -379,6 +379,7 @@ Working demo applications live in the [`demo/`](./demo/) directory:
 - **[`demo/vercel/react/use-chat/`](./demo/vercel/react/use-chat/)** - Vercel AI SDK with `useChat` integration
 - **[`demo/vercel/react/use-client-session/`](./demo/vercel/react/use-client-session/)** - Vercel AI SDK with direct `useClientSession` hooks
 - **[`demo/vercel/react/use-chat-db/`](./demo/vercel/react/use-chat-db/)** - database hydration with `useChat` (seed from a store, reconcile with the live channel)
+- **[`demo/vercel/react/use-client-session-db/`](./demo/vercel/react/use-client-session-db/)** - database hydration with `useClientSession` (the core seam-walk recipe)
 
 ---
 

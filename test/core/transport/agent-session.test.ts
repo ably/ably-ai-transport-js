@@ -3068,7 +3068,7 @@ describe('AgentSession', () => {
 
   describe('channel continuity', () => {
     it.each([['failed' as const], ['suspended' as const], ['detached' as const]])(
-      'emits onError with ChannelContinuityLost when channel enters %s',
+      'emits onError with ChannelContinuityLost when channel enters %s after the first attach',
       async (state) => {
         const onError = vi.fn();
         const ch = createMockChannel();
@@ -3091,6 +3091,58 @@ describe('AgentSession', () => {
         await s.detach();
       },
     );
+
+    it.each([['failed' as const], ['suspended' as const], ['detached' as const]])(
+      'does not emit onError on a pre-first-attach transition to %s',
+      async (state) => {
+        // Channel never attaches: there is no continuity to lose, so a
+        // transition out of ATTACHING must not be reported as a discontinuity.
+        const onError = vi.fn();
+        const ch = createMockChannel();
+        ch.state = 'initialized';
+        const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+          client: createMockClient(ch),
+          channelName: 'test-channel',
+          codec: createMockCodec(),
+        });
+        s.on('error', onError);
+        simulateStateChange(ch, {
+          current: state,
+          previous: 'attaching',
+          resumed: false,
+        });
+
+        expect(onError).not.toHaveBeenCalled();
+        await s.detach();
+      },
+    );
+
+    it('records the initial attach even after a pre-first-attach failure, so a later discontinuity emits', async () => {
+      const onError = vi.fn();
+      const ch = createMockChannel();
+      ch.state = 'initialized';
+      const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: createMockCodec(),
+      });
+      s.on('error', onError);
+
+      // A pre-first-attach SUSPENDED is ignored, then the channel attaches.
+      simulateStateChange(ch, { current: 'suspended', previous: 'attaching', resumed: false });
+      simulateInitialAttach(ch);
+      expect(onError).not.toHaveBeenCalled();
+
+      // A genuine post-attach discontinuity must now emit.
+      simulateStateChange(ch, {
+        current: 'failed',
+        previous: 'attached',
+      } as Ably.ChannelStateChange);
+      expect(onError).toHaveBeenCalledWith(
+        expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost, statusCode: 500 }),
+      );
+      await s.detach();
+    });
 
     it('emits onError on UPDATE (attached → attached, resumed: false)', async () => {
       const onError = vi.fn();

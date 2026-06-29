@@ -36,6 +36,10 @@ These are settled in the recommendations doc; the spike assumes them:
 - **Stateless usage** — full conversation per `/responses` call (§1).
 - **Codec-message-id is the message boundary** (one per run; `suspend`/`resume`
   reuses the same `runId`).
+- **Run lifecycle is agent-driven** (`run.start`/`end`), separate from the codec
+  stream: `response.created`/`completed` feed an `openaiRunOutcome`, not run
+  events. The `stream(...)` vs `event(...)` descriptor split and the coarse wire
+  `status` (`streaming`/`complete`/`cancelled`) follow §2 of the recommendations.
 
 ## What to build (minimal scratch)
 
@@ -47,6 +51,10 @@ These are settled in the recommendations doc; the spike assumes them:
 - `fold` accumulating into a projection of OpenAI items (mirror/import
   `accumulateResponse`).
 - A tiny `toResponsesInput(messages): ResponseInputItem[]`.
+- An `openaiRunOutcome` mapper (the `vercelRunOutcome` analogue): `completed`
+  with no pending tool → `complete`; pending client tool/approval → `suspend`;
+  `response.failed` / stream-`error` / throw → `error`; abort → `cancelled` —
+  feeding `run.end` / `run.suspend`.
 - A harness feeding a **fixture Responses event stream** (no live API key, no LLM
   calls) through the decode path; assert `getMessages()` yields the expected items.
 - A second fixture exercising a **multi-`/responses`-call run** (call → tool →
@@ -68,6 +76,14 @@ These are settled in the recommendations doc; the spike assumes them:
 6. **A client-side `ToolResult` appends to the suspended run on resume** (same
    `runId`), landing in the same message as the call. _(Can be a thin simulation —
    publish a `ToolResult` input and assert it folds onto the right turn.)_
+7. **The descriptor split holds.** The nested `output_item` > `content_part` >
+   delta boundaries map cleanly onto `stream(...)` families (carrying the coarse
+   `streaming`/`complete` status) vs `event(...)` discrete descriptors, and the
+   wire status behaves sensibly across a run's multiple `/responses` calls.
+8. **Errors land on run-end.** A simulated `response.failed` / stream-`error`
+   routes via `openaiRunOutcome` → `run.end({ reason: 'error' })` (the
+   codec-agnostic baseline); the reducer stays out of error handling; a `refusal`
+   folds as content, not an error.
 
 ## Out of scope (defer to later phases)
 

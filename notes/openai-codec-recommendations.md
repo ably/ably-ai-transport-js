@@ -186,12 +186,29 @@ hierarchy:
 - **Hosted tools** (file/web search, code interpreter, image gen, remote MCP):
   each has its own `…in_progress`/`…completed` lifecycle family.
 
-**Why this matters for us:** our declarative codec API already models exactly
-this shape. `stream(kind, { start, delta, end })` descriptors map onto
-`output_text.delta`/`.done` and `function_call_arguments.delta`/`.done`; `event(type, …)`
-descriptors map onto the discrete lifecycle and `output_item`/`content_part`
-events. The deltas are **strings**, which is the one hard constraint our stream
-model imposes (`StreamPayload.data: string`) — so the fit is natural, not forced.
+**Why this matters for us:** our declarative codec API already models this shape,
+and the events split cleanly into the two descriptor kinds:
+
+- **`stream(kind, { start, delta, end })`** — families that carry a string delta
+  stream, so they ride the transport's stream lifecycle (a `stream-id` and a
+  `status` header that is `streaming` / `complete` / `cancelled`, `constants.ts`):
+  text (`content_part.added` → `output_text.delta` → `output_text.done`),
+  function-call args (`output_item.added` for a `function_call` →
+  `function_call_arguments.delta` → `.done`), reasoning text.
+- **`event(type, …)`** — discrete structural/lifecycle events with no string
+  stream, hence no `status`: the message-item envelope `output_item.added`/`.done`,
+  non-streamed `content_part` boundaries, and the top-level lifecycle
+  (`response.created`/`completed`/…).
+
+The same added/done boundaries the reducer uses to open/close items also drive the
+`status` for the streamed families — but the wire `status` is **coarse**
+(in-flight vs done vs cancelled), not a rich per-item state. Anything richer (e.g.
+"this tool call is awaiting its result") is **derived in the reducer** from the
+items (is there a `function_call` with no matching `function_call_output` yet?),
+not read off the wire — exactly as Vercel's `dynamic-tool` part states are a
+projection concern, not the `status` header. The deltas are **strings**, the one
+hard constraint our stream model imposes (`StreamPayload.data: string`) — so the
+fit is natural, not forced.
 
 ### There is a canonical reduced form (which settles the `TMessage` question)
 
@@ -448,13 +465,46 @@ carries framed tool calls/outputs and handoffs directly.
 Two codec-specific, **outside-core** pieces the demo needs (Vercel has analogues,
 both deliberately outside core):
 
-- A **run-outcome mapping** (when does a run `suspend` vs `end`) — Vercel's is
-  explicitly Vercel-shaped (`run-end-reason.ts`); OpenAI defines its own (likely
-  simpler: end when the loop completes; suspend only if/when we add HITL).
+- An **`openaiRunOutcome`** — the `vercelRunOutcome` analogue (`run-end-reason.ts`)
+  that interprets the loop's response lifecycle into `suspend` / `end` / `error` /
+  `cancelled`. See _Run lifecycle & error mapping_ below.
 - A **per-run consumer stream builder** _if_ we want a `useChat`-style surface.
   My recommendation: **skip the adapter**, consume the generic React hooks
   directly like the use-client-session demo. OpenAI has no `useChat` to satisfy,
   and this keeps the demo proving the generic surface.
+
+### Run lifecycle & error mapping
+
+The run lifecycle is **agent-driven and separate from the codec stream**, exactly
+as in Vercel. The backend calls `run.start()` once, runs the loop (possibly many
+`/responses` calls), and calls `run.end()` / `run.suspend()` once — it does **not**
+derive run boundaries from the stream's `response.created`/`completed`. Those
+top-level events are read by `openaiRunOutcome` (the `finishReason` analogue) and
+mapped to a terminal action: `completed` with no pending tool → `complete`; a
+pending client-side tool / approval → `suspend`; `response.failed` / stream
+`error` / network throw → `error`; abort → `cancelled`. So `response.created`/
+`completed` per `/responses` call are **consumed by the agent**, optionally also
+folded as step boundaries within the run's one message — never turned 1:1 into run
+events.
+
+**Errors travel on two channels** (mirroring Vercel):
+
+1. **Transport-tier run-end error — the codec-agnostic baseline (must-have).** The
+   agent maps any failure to `run.end({ reason: 'error', error })`, stamping
+   `error-code`/`error-message` on `ai-run-end`; consumers read it via run-end →
+   `buildRunEndError` → `Ably.ErrorInfo`, surfaced on `session.on('error')` and
+   `RunInfo.error`. The **reducer does not mutate the projection on errors** — run
+   termination is observed via the run-end event, not the stream (Vercel's
+   `fold-lifecycle` treats `error`/`abort` as no-ops for the same reason).
+2. **Optional in-band renderable error.** We may also surface `response.failed` /
+   stream `error` as a discrete codec output so a failure can render inline (Vercel
+   carries an `error` `UIMessageChunk`). Nice-to-have; the baseline is channel 1.
+
+What can fail: `response.failed`, the stream-level `error` event,
+`response.incomplete` (stopped early — not strictly an error), server-side tool
+throws and client-side `ToolResultError`, and network/SDK failures or aborts. A
+**`refusal`** is _not_ an error — it's a renderable content part that folds like
+any other.
 
 ---
 

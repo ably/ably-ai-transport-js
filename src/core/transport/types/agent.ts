@@ -127,9 +127,36 @@ export interface StepOptions {
    * {@link RunRuntime.runId} so the retry re-attempts the same run. **Omit it
    * on a cross-process retry and the SDK mints a fresh id, so the retry's
    * output is appended beside the failed attempt's instead of superseding it —
-   * a silent double-output.**
+   * a silent double-output.** Set {@link RunRuntime.durable} to make the
+   * omission throw at the API boundary rather than corrupt the conversation.
    */
   stepId?: string;
+
+  /**
+   * A stable identifier for THIS attempt of the step, distinguishing one
+   * physical attempt from the next under a shared {@link StepOptions.stepId}.
+   * Omit it for the common case: the SDK mints a fresh id per call, which is
+   * correct for the in-process default (each call is a genuinely new attempt).
+   *
+   * Pass an explicit id ONLY under durable execution, DERIVED from the
+   * framework's stable attempt NUMBER — the idempotent form is
+   * `attemptId = `${stepId}#${attempt}`` (Vercel Workflow DevKit
+   * `getStepMetadata().attempt`, Temporal `ActivityInfo.attempt`). The contract
+   * is idempotency of an at-least-once redelivery: if the framework re-executes
+   * an activity whose publish already landed (an ack loss), re-publishing the
+   * IDENTICAL attempt under the same `stepId` + `attemptId` is a no-op — the
+   * receiver's version guard drops the duplicate, so there is no repaint and no
+   * read-model double-count. A freshly-MINTED `attemptId` for that same logical
+   * attempt is NOT idempotent: its `ai-step-start` supersedes the already-shown
+   * complete step, triggering a refold that blanks then repaints the projection
+   * AND increments the attempt count — a silent double-count.
+   *
+   * Asymmetry to keep in mind: an unstable `stepId` causes double-OUTPUT; an
+   * unstable `attemptId` (under a stable `stepId`) causes a repaint +
+   * double-count. Both are silent. The durable helper derives both by
+   * construction so the durable developer cannot get either wrong.
+   */
+  attemptId?: string;
 }
 
 /** The result of streaming a response through the encoder. */
@@ -184,6 +211,28 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
    * repeat idempotently (it never re-opens a terminal run).
    */
   runId?: string;
+
+  /**
+   * Marks this run as part of a durable-execution workflow (set by the durable
+   * helper, never by an integrator directly). Default `false`/`undefined` — the
+   * provisioned / serverless single-process path is unaffected.
+   *
+   * Two effects, both about the cross-process retry safety a workflow needs:
+   * - A {@link Run.step} called with no {@link StepOptions.stepId} THROWS
+   *   (`InvalidArgument`) rather than minting the process-local default id. The
+   *   default is unsafe across processes — a fresh-process retry would mint a
+   *   different id and silently double-output instead of superseding — so under
+   *   durable execution the omission is a fail-fast at the API boundary, not a
+   *   silent corruption on the rarest (crash-recovery) path.
+   * - It opts the in-flight arm OUT of publishing the cancel terminal: under
+   *   durable execution a separate workflow cleanup activity publishes
+   *   `ai-run-end{cancelled}`, so the in-flight step process must not also
+   *   publish it (a dual-writer double-terminal). The cancel-mid-step
+   *   `ai-step-end{cancelled}` bracket still fires; only the run terminal is
+   *   suppressed on this arm. (This suppression is wired in a later step; the
+   *   flag is read here only for the no-`stepId` fail-fast above.)
+   */
+  durable?: boolean;
 
   /**
    * An external AbortSignal (typically the HTTP request's `req.signal`) that,
@@ -257,7 +306,11 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
 export interface RunStep<TOutput extends CodecOutputEvent> {
   /** This step's id — stable across retry attempts of the same step. */
   readonly stepId: string;
-  /** This attempt's id — distinct on every retry of the step. */
+  /**
+   * This attempt's id. Minted fresh per attempt by default (distinct on every
+   * retry); equals the caller's {@link StepOptions.attemptId} when supplied
+   * (the durable derived `${stepId}#${attempt}`).
+   */
   readonly attemptId: string;
   /**
    * The run's AbortSignal (the same one as {@link Run.abortSignal}); there is
@@ -448,13 +501,23 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
    * `stepId` resolution (see {@link StepOptions.stepId}): an explicit
    * `options.stepId` always wins; otherwise a per-run index is used, except a
    * call with no `stepId` made after the previous step ended `failed` reuses
-   * that step's id (in-process retry coalescing). A fresh `attemptId` is minted
-   * on every call.
+   * that step's id (in-process retry coalescing). `attemptId` resolution (see
+   * {@link StepOptions.attemptId}): an explicit `options.attemptId` is stamped
+   * verbatim (the durable derived-id path); otherwise a fresh id is minted per
+   * call (the in-process default).
+   *
+   * Under {@link RunRuntime.durable}, a call with no `stepId` THROWS
+   * `InvalidArgument` instead of minting the process-local default — the
+   * process-local id is unsafe across processes, so the omission is a fail-fast
+   * at the API boundary rather than a silent cross-process double-output.
    * @template T - The closure's return type.
    * @param fn - The step body; receives a {@link RunStep}.
    * @param options - Optional {@link StepOptions}.
    * @returns The value returned by `fn`.
-   * @throws Whatever `fn` throws (re-thrown after the step is closed `failed`).
+   * @throws {Ably.ErrorInfo} `InvalidArgument` when the run is not open / has
+   *   ended or suspended, or when {@link RunRuntime.durable} is set and no
+   *   `stepId` is supplied. Also re-throws whatever `fn` throws (after the step
+   *   is closed `failed`).
    */
   step<T>(fn: (step: RunStep<TOutput>) => Promise<T>, options?: StepOptions): Promise<T>;
 

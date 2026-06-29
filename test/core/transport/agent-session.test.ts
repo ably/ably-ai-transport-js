@@ -285,6 +285,22 @@ const stepHeadersOf = (channel: { publishCalls: Ably.Message[] }, name: string):
     .filter((m) => m.name === name)
     .map((m) => (m.extras as { ai?: { transport?: Record<string, string> } }).ai?.transport ?? {});
 
+// vitest's global invocation order of the first channel.publish whose message
+// name matches, or undefined if none matched.
+const firstPublishOrder = (channel: MockChannel, name: string): number | undefined => {
+  const publishMock = vi.mocked(channel.publish);
+  const idx = publishMock.mock.calls.findIndex(([msg]) => (msg as Ably.Message).name === name);
+  return idx === -1 ? undefined : publishMock.mock.invocationCallOrder[idx];
+};
+
+// True iff an `ai-step-end` was published BEFORE the `ai-run-end` on the cancel
+// path (the step-end-before-terminal wire invariant). Both must be present.
+const stepEndBeforeRunEnd = (channel: MockChannel): boolean => {
+  const stepEndOrder = firstPublishOrder(channel, 'ai-step-end');
+  const runEndOrder = firstPublishOrder(channel, 'ai-run-end');
+  return stepEndOrder !== undefined && runEndOrder !== undefined && stepEndOrder < runEndOrder;
+};
+
 // eslint-disable-next-line @typescript-eslint/no-empty-function -- shared no-op for logger fakes
 const loggerNoop = (): void => {};
 
@@ -1298,10 +1314,54 @@ describe('AgentSession', () => {
         const result = await run.pipe(paused);
 
         expect(result.reason).toBe('cancelled');
-        // No output ever flowed, so no step opened — but the run still ends.
+        // No output ever flowed, so no step opened — but the run still ends,
+        // exactly once.
         expect(stepHeadersOf(channel, 'ai-step-start')).toHaveLength(0);
         expect(stepHeadersOf(channel, 'ai-step-end')).toHaveLength(0);
-        expect(channel.publishCalls.find((m) => m.name === 'ai-run-end')).toBeDefined();
+        expect(channel.publishCalls.filter((m) => m.name === 'ai-run-end')).toHaveLength(1);
+      });
+
+      it('closes the implicit step cancelled (step-end before run-end) when cancelled mid-output', async () => {
+        const run = createRunFromOpts(session, { runId: 'run-1' });
+        await run.start();
+
+        // Pull #1 enqueues a chunk so the implicit step OPENS (the
+        // before-first-write hook fires); pull #2 fires the cancel while the
+        // next read is pending, so pipeStream returns 'cancelled' with the step
+        // already open. (Mirrors the "errors AFTER output" pull pattern.)
+        let pulls = 0;
+        const cancelAfterOutput = new ReadableStream<TestOutput>({
+          pull: async (controller) => {
+            pulls++;
+            if (pulls === 1) {
+              controller.enqueue({ type: 'text', text: 'partial' });
+              return;
+            }
+            simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
+            // Never enqueue/close: the abort wins the read race.
+            await new Promise<void>(() => {
+              /* pending forever */
+            });
+          },
+        });
+        const result = await run.pipe(cancelAfterOutput);
+
+        expect(result.reason).toBe('cancelled');
+        const starts = stepHeadersOf(channel, 'ai-step-start');
+        const ends = stepHeadersOf(channel, 'ai-step-end');
+        expect(starts).toHaveLength(1);
+        expect(ends).toHaveLength(1);
+        // The open step closes 'cancelled' (a run-level terminal), not
+        // 'complete'/'failed'.
+        expect(ends[0]?.['step-reason']).toBe('cancelled');
+        // Exactly one run terminal (no double-publish from the safety-net).
+        const runEnds = channel.publishCalls.filter((m) => m.name === 'ai-run-end');
+        expect(runEnds).toHaveLength(1);
+        const runEndHeaders = (runEnds[0]?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai
+          ?.transport;
+        expect(runEndHeaders?.['run-reason']).toBe('cancelled');
+        // Wire ORDER: ai-step-end{cancelled} precedes ai-run-end{cancelled}.
+        expect(stepEndBeforeRunEnd(channel)).toBe(true);
       });
 
       it('two pipe calls open TWO independent steps (monotonic ids, distinct attempts) — no supersede', async () => {
@@ -1415,6 +1475,41 @@ describe('AgentSession', () => {
       expect(ends[0]?.['step-reason']).toBe('failed');
     });
 
+    it('closes the step cancelled and still ends the run when a cancelled pipe is followed by a closure throw', async () => {
+      // The catch-path cancel safety-net: a cancelled step.pipe whose closure
+      // THEN throws (e.g. post-abort cleanup fails) is still a run-level
+      // terminal. The step must close 'cancelled' (not 'failed'), the run-end
+      // must still fire (step-end before run-end), and the closure error must
+      // still propagate so a durable retry policy observes it.
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
+      await new Promise((r) => setTimeout(r, 5));
+
+      const paused = new ReadableStream<TestOutput>({
+        start: () => {
+          /* never enqueues or closes */
+        },
+      });
+      await expect(
+        run.step(async (step) => {
+          await step.pipe(paused); // returns 'cancelled'
+          throw new Error('boom'); // post-cancel cleanup fails
+        }),
+      ).rejects.toThrow('boom');
+
+      const ends = stepHeadersOf(channel, 'ai-step-end');
+      expect(ends).toHaveLength(1);
+      expect(ends[0]?.['step-reason']).toBe('cancelled');
+      const runEnds = channel.publishCalls.filter((m) => m.name === 'ai-run-end');
+      expect(runEnds).toHaveLength(1);
+      const runEndHeaders = (runEnds[0]?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai
+        ?.transport;
+      expect(runEndHeaders?.['run-reason']).toBe('cancelled');
+      expect(stepEndBeforeRunEnd(channel)).toBe(true);
+    });
+
     it('reuses the previous step id on a no-id retry after a failure (coalescing)', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
@@ -1490,6 +1585,101 @@ describe('AgentSession', () => {
       expect(starts[0]?.['step-id']).toBe('answer');
     });
 
+    it('stamps an explicit attemptId on the step bracket and output (vs the minted default)', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      await run.step(async (step) => step.pipe(streamOf({ type: 'text', text: 'a' })), {
+        stepId: 'turn-1',
+        // The durable derived form `${stepId}#${attempt}`.
+        attemptId: 'turn-1#2',
+      });
+
+      const starts = stepHeadersOf(channel, 'ai-step-start');
+      const ends = stepHeadersOf(channel, 'ai-step-end');
+      // The override is stamped verbatim on start, end, and the output — not a
+      // fresh UUID.
+      expect(starts[0]?.['attempt-id']).toBe('turn-1#2');
+      expect(ends[0]?.['attempt-id']).toBe('turn-1#2');
+      const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
+      expect(headers['attempt-id']).toBe('turn-1#2');
+    });
+
+    it('mints a fresh attemptId when none is supplied (the in-process default)', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      let seen: string | undefined;
+      await run.step(async (step) => {
+        seen = step.attemptId;
+        await step.pipe(streamOf({ type: 'text', text: 'a' }));
+      });
+      // A second default-mint step mints a DISTINCT id (each call is a genuinely
+      // new attempt), so a no-attemptId caller never accidentally coalesces.
+      await run.step(async (step) => {
+        await step.pipe(streamOf({ type: 'text', text: 'b' }));
+      });
+
+      // A minted UUID, not an empty/placeholder value; and it is what gets
+      // stamped on the wire.
+      expect(seen).toBeTruthy();
+      const starts = stepHeadersOf(channel, 'ai-step-start');
+      expect(starts[0]?.['attempt-id']).toBe(seen);
+      expect(starts[0]?.['attempt-id']).not.toBe(starts[1]?.['attempt-id']);
+    });
+
+    it('throws InvalidArgument under durable:true when no stepId is supplied (fail-fast)', async () => {
+      const run = session.createRun(Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }), {
+        runId: 'run-1',
+        invocationId: 'run-1-inv',
+        durable: true,
+      });
+      await run.start();
+
+      await expect(
+        run.step(async (step) => {
+          await step.pipe(streamOf({ type: 'text', text: 'a' }));
+        }),
+      ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+
+      // Fail-fast at the API boundary: nothing was published for the step.
+      expect(stepHeadersOf(channel, 'ai-step-start')).toHaveLength(0);
+      expect(stepHeadersOf(channel, 'ai-step-end')).toHaveLength(0);
+    });
+
+    it('runs a durable:true step when an explicit stepId is supplied', async () => {
+      const run = session.createRun(Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }), {
+        runId: 'run-1',
+        invocationId: 'run-1-inv',
+        durable: true,
+      });
+      await run.start();
+
+      const value = await run.step(async (step) => step.pipe(streamOf({ type: 'text', text: 'a' })), {
+        stepId: 'durable-step',
+      });
+
+      expect(value.reason).toBe('complete');
+      const starts = stepHeadersOf(channel, 'ai-step-start');
+      expect(starts).toHaveLength(1);
+      expect(starts[0]?.['step-id']).toBe('durable-step');
+    });
+
+    it('runs a non-durable no-stepId step (the default mints a process-local id)', async () => {
+      // The durable fail-fast does NOT fire without the flag: a plain run.step
+      // with no stepId works exactly as before, minting the invocation-scoped id.
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      await run.step(async (step) => {
+        await step.pipe(streamOf({ type: 'text', text: 'a' }));
+      });
+
+      const starts = stepHeadersOf(channel, 'ai-step-start');
+      expect(starts).toHaveLength(1);
+      expect(starts[0]?.['step-id']).toBe('run-1-inv-step-0');
+    });
+
     it('throws when called before start()', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await expect(
@@ -1521,13 +1711,13 @@ describe('AgentSession', () => {
       expect(seen).toBe(run.abortSignal);
     });
 
-    it('runs the cancel safety-net (run-end) when a step pipe is cancelled', async () => {
+    it('closes the step cancelled and ends the run cancelled when a step pipe is cancelled', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
 
       // Cancel the run, then pipe a never-completing stream inside the step:
       // pipeStream observes the abort and returns reason:'cancelled', which the
-      // shared doPipe turns into a run-end terminal.
+      // step turns into a cancelled step-end + the run-end safety-net.
       simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
       await new Promise((r) => setTimeout(r, 5));
 
@@ -1540,14 +1730,21 @@ describe('AgentSession', () => {
 
       expect(result.reason).toBe('cancelled');
       const ends = stepHeadersOf(channel, 'ai-step-end');
-      // A cancel is a run-level terminal, not a step failure: the step closes
-      // 'complete' (its output is final, not retried) and the run-end carries
-      // the cancellation.
-      expect(ends[0]?.['step-reason']).toBe('complete');
-      const runEnd = channel.publishCalls.find((m) => m.name === 'ai-run-end');
-      const runEndHeaders = (runEnd?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai
+      // A cancel ends the run while the step was open: the step closes
+      // 'cancelled' (neither completed its output nor failed retryably) and the
+      // run-end carries the cancellation.
+      expect(ends[0]?.['step-reason']).toBe('cancelled');
+      // Exactly one run terminal (the safety-net does not double-publish).
+      const runEnds = channel.publishCalls.filter((m) => m.name === 'ai-run-end');
+      expect(runEnds).toHaveLength(1);
+      const runEndHeaders = (runEnds[0]?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai
         ?.transport;
       expect(runEndHeaders?.['run-reason']).toBe('cancelled');
+
+      // Wire ORDER: ai-step-end{cancelled} must precede ai-run-end{cancelled}
+      // (the step-end-before-terminal invariant). Compare the two publishes'
+      // global invocation order.
+      expect(stepEndBeforeRunEnd(channel)).toBe(true);
     });
 
     it('coalesces a cross-process retry that supplies the same explicit stepId', async () => {

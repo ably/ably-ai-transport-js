@@ -68,6 +68,6 @@ describe('public codec-authoring surface', () => {
     expectTypeOf<RunStep<Output>>().not.toBeNever();
     expectTypeOf<StepOptions>().not.toBeNever();
     expectTypeOf<StepInfo>().not.toBeNever();
-    expectTypeOf<StepEndReason>().toEqualTypeOf<'complete' | 'failed'>();
+    expectTypeOf<StepEndReason>().toEqualTypeOf<'complete' | 'failed' | 'cancelled'>();
   });
 });

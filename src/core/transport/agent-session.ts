@@ -877,23 +877,26 @@ class DefaultAgentSession<
      * explicit step the caller already opened eagerly, so it omits
      * `onFirstOutput`). Stamps the step's `step-id` / `attempt-id` on every
      * output, builds the assistant message's default headers from the run's
-     * resolved structural anchors, pipes, surfaces a stream error via `onError`,
-     * and runs the cancel safety-net (`endOnCancel`) so every observer's stream
-     * closes even if the caller omits `run.end()`.
+     * resolved structural anchors, pipes, and surfaces a stream error via
+     * `onError`.
+     *
+     * Does NOT end the run on cancel: the cancel safety-net is the CALLER's, so
+     * the step is closed `cancelled` BEFORE the run terminal is published
+     * (`ai-step-end{cancelled}` precedes `ai-run-end{cancelled}`). `doPipe` only
+     * pipes and reports the {@link StreamResult.reason}; the caller (pipe / step)
+     * sequences the close-then-end bracket off it.
      * @param stream - The output stream to pipe.
      * @param streamOpts - Per-stream overrides.
      * @param step - The step to stamp output under.
      * @param step.stepId - The step's id, stamped on every output.
      * @param step.attemptId - This attempt's id, stamped on every output.
      * @param step.onFirstOutput - Optional hook fired once before the first output (the lazy implicit-step open); omitted when the step is already open.
-     * @param endOnCancel - Called to end the run when the pipe is cancelled.
      * @returns The {@link StreamResult}.
      */
     const doPipe = async (
       stream: ReadableStream<TOutput>,
       streamOpts: PipeOptions<TOutput> | undefined,
       step: { stepId: string; attemptId: string; onFirstOutput?: () => Promise<void> },
-      endOnCancel: () => Promise<void>,
     ): Promise<StreamResult> => {
       await requireConnected('pipe');
 
@@ -970,17 +973,6 @@ class DefaultAgentSession<
         );
         logger?.error('Run.pipe(); stream error', { runId });
         runOnError?.(errInfo);
-      }
-
-      // Run cancellation is transport-tier: guarantee the run-end terminal so
-      // every observer's stream closes even if the caller's handler omits
-      // run.end(). Best-effort — pipe must still return the StreamResult.
-      if (result.reason === 'cancelled') {
-        try {
-          await endOnCancel();
-        } catch {
-          logger?.error('Run.pipe(); run-end on cancel failed', { runId });
-        }
       }
 
       logger?.debug('Run.pipe(); stream finished', { runId, reason: result.reason });
@@ -1296,34 +1288,47 @@ class DefaultAgentSession<
         // below, hiding the mutation (mirrors `pipeState` in Run.step).
         const stepState = { opened: false };
 
-        const result = await doPipe(
-          stream,
-          streamOpts,
-          {
-            stepId,
-            attemptId,
-            onFirstOutput: async () => {
-              stepState.opened = true;
-              await openStep(stepId, attemptId);
-            },
+        const result = await doPipe(stream, streamOpts, {
+          stepId,
+          attemptId,
+          onFirstOutput: async () => {
+            stepState.opened = true;
+            await openStep(stepId, attemptId);
           },
-          async () => run.end({ reason: 'cancelled' }),
-        );
+        });
 
-        // Close the implicit step iff it opened. A piped stream error closes it
-        // `failed` (mirroring Run.step); otherwise `complete`. A cancel is a
-        // run-level terminal handled by the safety-net above, not a step
-        // failure, so a cancelled pipe whose step opened still closes
-        // `complete`. (The cancel-mid-step `cancelled` reason is deferred.)
+        // Close the implicit step iff it opened, then run the cancel safety-net.
+        // Order matters on cancel: the step closes `cancelled` BEFORE the run
+        // terminal so the wire is `ai-step-end{cancelled}` then
+        // `ai-run-end{cancelled}` (the step-end-before-terminal invariant).
+        // Reasons: a cancel closes the step `cancelled` (a run-level terminal,
+        // not a step failure or completion); a piped stream error closes it
+        // `failed` (mirroring Run.step); otherwise `complete`. A pipe that
+        // produced no output opened no step, so a cancel before any output
+        // brackets ZERO steps — just the run terminal.
         if (stepState.opened) {
-          // Best-effort, like Run.step's close: a fire-and-forget run.pipe whose
-          // connection closed mid-stream must not escape an unhandled rejection from
-          // the step-end publish. The run-level terminal is the authority for
-          // run completion; a missing step-end on a dying connection is non-impactful.
+          const stepReason: StepEndReason =
+            result.reason === 'cancelled' ? 'cancelled' : result.reason === 'error' ? 'failed' : 'complete';
+          // Best-effort: a fire-and-forget run.pipe whose connection closed
+          // mid-stream must not escape an unhandled rejection from the step-end
+          // publish. The run-level terminal is the authority for run completion;
+          // a missing step-end on a dying connection is non-impactful.
           try {
-            await closeStep(stepId, attemptId, result.reason === 'error' ? 'failed' : 'complete');
+            await closeStep(stepId, attemptId, stepReason);
           } catch {
             logger?.error('Run.pipe(); failed to close implicit step', { runId, stepId });
+          }
+        }
+        // Run cancellation is transport-tier: guarantee the run-end terminal so
+        // every observer's stream closes even when the caller's handler omits
+        // run.end(). Best-effort — pipe must still return the StreamResult; a
+        // later developer run.end() no-ops via the publish-time terminal
+        // re-check. Runs AFTER closeStep so step-end precedes the run terminal.
+        if (result.reason === 'cancelled') {
+          try {
+            await run.end({ reason: 'cancelled' });
+          } catch {
+            logger?.error('Run.pipe(); run-end on cancel failed', { runId });
           }
         }
         return result;
@@ -1359,14 +1364,27 @@ class DefaultAgentSession<
           );
         }
 
+        // Durable fail-fast (A's "SDK help, not docs-only"): under durable
+        // execution a no-`stepId` step is a SILENT cross-process corruption — a
+        // fresh-process retry would mint a different process-local id and
+        // double-output instead of superseding. Throw at the API boundary rather
+        // than mint the unsafe default. The durable helper sets this flag; the
+        // integrator never does.
+        if (runtime.durable === true && options?.stepId === undefined) {
+          throw new Ably.ErrorInfo(
+            'unable to run step; a durable run requires an explicit stepId (the process-local default is unsafe across processes)',
+            ErrorCode.InvalidArgument,
+            400,
+          );
+        }
+
         // Resolve the step id (see StepOptions.stepId / the Run.step contract):
         // an explicit id wins; else reuse the previous step's id if it failed
         // (in-process retry coalescing); else mint the next index. The default
         // is scoped to THIS invocation's id so steps from different invocations
         // of the same run (e.g. the original turn and a suspend/resume
         // continuation) never collide and supersede each other — only an
-        // explicit, stable `stepId` coalesces across invocations. A fresh
-        // attempt id is always minted.
+        // explicit, stable `stepId` coalesces across invocations.
         let stepId: string;
         if (options?.stepId !== undefined) {
           stepId = options.stepId;
@@ -1375,7 +1393,10 @@ class DefaultAgentSession<
         } else {
           stepId = mintNextStepId();
         }
-        const attemptId = crypto.randomUUID();
+        // Attempt id: the caller's explicit override (the durable derived
+        // `${stepId}#${attempt}`, idempotent under ack-loss replay) or a fresh
+        // mint per call (the in-process default — each call is a new attempt).
+        const attemptId = options?.attemptId ?? crypto.randomUUID();
 
         // Open the step eagerly: Run.step brackets the whole closure, so the
         // step exists for its full duration even if no output is piped. (The
@@ -1384,8 +1405,10 @@ class DefaultAgentSession<
         await openStep(stepId, attemptId);
 
         // Object wrapper, not a bare `let`: TS flow-narrows a `let` to `false`
-        // past the `fn` call, hiding the mutation that happens inside it.
-        const pipeState = { errored: false };
+        // past the `fn` call, hiding the mutation that happens inside it. Track
+        // both a stream error (closes the step `failed`) and a cancel (closes it
+        // `cancelled`, a run-level terminal); `cancelled` takes precedence.
+        const pipeState = { errored: false, cancelled: false };
         const stepObj: RunStep<TOutput> = {
           get stepId() {
             return stepId;
@@ -1399,32 +1422,73 @@ class DefaultAgentSession<
           pipe: async (stream: ReadableStream<TOutput>, streamOpts?: PipeOptions<TOutput>): Promise<StreamResult> => {
             // The step is already open, so no `onFirstOutput` hook — output is
             // stamped with its id/attempt-id directly.
-            const result = await doPipe(stream, streamOpts, { stepId, attemptId }, async () =>
-              run.end({ reason: 'cancelled' }),
-            );
+            const result = await doPipe(stream, streamOpts, { stepId, attemptId });
             // A piped stream error marks the step failed without throwing — so
             // the common `vercelRunOutcome(...) -> run.end(outcome)` flow needs
-            // no try/catch, while the step status still reflects the failure.
+            // no try/catch, while the step status still reflects the failure. A
+            // cancel marks it cancelled (the close + run-end safety-net run after
+            // the closure returns, so step-end precedes the run terminal).
             if (result.reason === 'error') pipeState.errored = true;
+            if (result.reason === 'cancelled') pipeState.cancelled = true;
             return result;
           },
         };
 
         try {
           const value = await fn(stepObj);
-          await closeStep(stepId, attemptId, pipeState.errored ? 'failed' : 'complete');
-          logger?.debug('Run.step(); step finished', { runId, stepId, attemptId, failed: pipeState.errored });
+          // Close the step, then run the cancel safety-net. Order matters on
+          // cancel: the step closes `cancelled` BEFORE the run terminal so the
+          // wire is `ai-step-end{cancelled}` then `ai-run-end{cancelled}`.
+          // `cancelled` wins over `failed` (a cancel ends the run), and both
+          // over `complete`.
+          const stepReason: StepEndReason = pipeState.cancelled
+            ? 'cancelled'
+            : pipeState.errored
+              ? 'failed'
+              : 'complete';
+          await closeStep(stepId, attemptId, stepReason);
+          if (pipeState.cancelled) {
+            // Run cancellation is transport-tier: guarantee the run-end terminal
+            // so every observer's stream closes even when the closure omits
+            // run.end(). Best-effort — a later developer run.end() no-ops via the
+            // publish-time terminal re-check. Runs AFTER closeStep.
+            try {
+              await run.end({ reason: 'cancelled' });
+            } catch {
+              logger?.error('Run.step(); run-end on cancel failed', { runId });
+            }
+          }
+          logger?.debug('Run.step(); step finished', {
+            runId,
+            stepId,
+            attemptId,
+            failed: pipeState.errored,
+            cancelled: pipeState.cancelled,
+          });
           return value;
         } catch (error) {
-          // The closure threw: close the step failed (best-effort — a close
-          // failure must not mask the original error) and re-throw so a durable
-          // framework's retry policy observes it.
+          // The closure threw. If a cancel was already in flight (a cancelled
+          // pipe whose closure then threw — e.g. post-abort cleanup that fails),
+          // it is still a run-level terminal: close the step `cancelled` and fire
+          // the run-end safety-net AFTER the close (so step-end precedes the run
+          // terminal), exactly as the success path does. Otherwise the closure
+          // simply failed: close `failed`. Re-throw either way so a durable
+          // framework's retry policy observes the error. Closes/ends are
+          // best-effort — they must not mask the original error.
+          const stepReason: StepEndReason = pipeState.cancelled ? 'cancelled' : 'failed';
           try {
-            await closeStep(stepId, attemptId, 'failed');
+            await closeStep(stepId, attemptId, stepReason);
           } catch {
             logger?.error('Run.step(); failed to close step after error', { runId, stepId });
           }
-          logger?.debug('Run.step(); step threw', { runId, stepId, attemptId });
+          if (pipeState.cancelled) {
+            try {
+              await run.end({ reason: 'cancelled' });
+            } catch {
+              logger?.error('Run.step(); run-end on cancel failed', { runId });
+            }
+          }
+          logger?.debug('Run.step(); step threw', { runId, stepId, attemptId, cancelled: pipeState.cancelled });
           throw error;
         }
       },

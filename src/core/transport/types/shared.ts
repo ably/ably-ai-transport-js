@@ -33,9 +33,14 @@ export type RunStatus = 'active' | 'suspended' | 'complete' | 'cancelled' | 'err
 /**
  * Why a step attempt ended (the `step-reason` on `ai-step-end`).
  *
- * Deliberately narrower than {@link RunEndReason}: a step has no `cancelled`
- * or `error` arm. A cancel is a run-level concern (it ends the run, not a
- * single step), and a step that hits a stream/model/tool error ends `failed`.
+ * Narrower than {@link RunEndReason}: a step has no `error` arm (a step that
+ * hits a stream/model/tool error ends `failed`, since a retry under the same
+ * `step-id` may follow). It DOES have a `cancelled` arm, but `cancelled`
+ * reflects a run-level event, not a step-level one: cancel ends the RUN, and
+ * the step that was open when the cancel landed closes `cancelled` so the
+ * bracket is balanced. The step-end always precedes the run terminal on the
+ * wire (`ai-step-end{cancelled}` before `ai-run-end{cancelled}`).
+ *
  * Supersession is not a step-end reason — it is implicit: a later
  * higher-serial `ai-step-start` for the same `step-id` makes the prior
  * attempt's output non-canonical without any terminal event.
@@ -43,8 +48,12 @@ export type RunStatus = 'active' | 'suspended' | 'complete' | 'cancelled' | 'err
  * - `complete` — the step attempt finished its work.
  * - `failed` — the step attempt failed (the closure threw, or its piped
  *   stream errored). A retry under the same `step-id` may follow.
+ * - `cancelled` — the run was cancelled while this step was open. Distinct
+ *   from `complete` (the step did not finish its output) and from `failed`
+ *   (the step did not fail retryably; the run is ending). The run then
+ *   terminates with `ai-run-end{cancelled}`.
  */
-export type StepEndReason = 'complete' | 'failed';
+export type StepEndReason = 'complete' | 'failed' | 'cancelled';
 
 /**
  * Passed to a run's `onCancel` hook for authorization decisions.

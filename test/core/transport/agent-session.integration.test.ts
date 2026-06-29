@@ -509,11 +509,13 @@ describe('AgentSession integration', () => {
     }
   });
 
-  it('cancels a run via channel cancel message', async () => {
+  it('cancels a run via channel cancel message, closing the step cancelled before the run terminal', async () => {
     const channelName = uniqueChannelName('st-cancel');
     const serverClient = ablyRealtimeClient();
     const cancelClient = ablyRealtimeClient();
     const cancelChannel = cancelClient.channels.get(channelName);
+    const subClient = ablyRealtimeClient();
+    const subChannel = subClient.channels.get(channelName);
 
     session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
@@ -521,6 +523,18 @@ describe('AgentSession integration', () => {
       codec: UIMessageCodec,
     });
     await session.connect();
+
+    // Observe the wire so the cancel-mid-step bracket ORDER can be asserted over
+    // real Ably (ai-step-end{cancelled} before ai-run-end{cancelled}).
+    const wireMessages: Ably.InboundMessage[] = [];
+    let resolveEnd: () => void;
+    const gotEnd = new Promise<void>((r) => {
+      resolveEnd = r;
+    });
+    await subChannel.subscribe((msg) => {
+      wireMessages.push(msg);
+      if (msg.name === EVENT_RUN_END) resolveEnd();
+    });
 
     const run = createRunFromOpts(session, { runId: 'run-cancel-1' });
     await run.start();
@@ -545,7 +559,26 @@ describe('AgentSession integration', () => {
     const result = await streamPromise;
     expect(result.reason).toBe('cancelled');
     expect(run.abortSignal.aborted).toBe(true);
+    // The pipe's safety-net already ended the run cancelled; a developer end()
+    // here no-ops via the publish-time terminal re-check (no second run-end).
     await run.end({ reason: 'cancelled' });
+
+    await gotEnd;
+
+    // The implicit step opened (output flowed) and closed `cancelled`, and the
+    // run ended `cancelled` — published in that order on the wire.
+    const stepEndIdx = wireMessages.findIndex((m) => m.name === EVENT_STEP_END);
+    const runEndIdx = wireMessages.findIndex((m) => m.name === EVENT_RUN_END);
+    expect(stepEndIdx).not.toBe(-1);
+    expect(runEndIdx).not.toBe(-1);
+    expect(stepEndIdx).toBeLessThan(runEndIdx);
+    expect(wireMessages.filter((m) => m.name === EVENT_RUN_END)).toHaveLength(1);
+    const stepEnd = wireMessages[stepEndIdx];
+    const runEnd = wireMessages[runEndIdx];
+    if (stepEnd && runEnd) {
+      expect(getHeaders(stepEnd)[HEADER_STEP_REASON]).toBe('cancelled');
+      expect(getHeaders(runEnd)[HEADER_RUN_REASON]).toBe('cancelled');
+    }
   });
 
   it('handles sequential runs', async () => {

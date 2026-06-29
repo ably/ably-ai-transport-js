@@ -108,6 +108,7 @@ jobs:
         demo:
           - demo/vercel/react/use-chat
           - demo/vercel/react/use-client-session
+          - demo/vercel/react/use-chat-db
     name: demo ${{ matrix.demo }}
     steps:
       - uses: actions/checkout@v6
@@ -146,6 +147,8 @@ jobs:
             name: use-chat
           - demo: demo/vercel/react/use-client-session
             name: use-client-session
+          - demo: demo/vercel/react/use-chat-db
+            name: use-chat-db
     name: demo-e2e ${{ matrix.name }}
     steps:
       - uses: actions/checkout@v6

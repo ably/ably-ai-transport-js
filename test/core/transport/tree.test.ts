@@ -16,7 +16,13 @@ import {
 import type { Codec, CodecEvent, CodecInputEvent, Regenerate, UserMessage } from '../../../src/core/codec/types.js';
 import type { TreeInternal } from '../../../src/core/transport/tree.js';
 import { createTree, REORDER_WINDOW_MS } from '../../../src/core/transport/tree.js';
-import type { ConversationNode, InputNode, OutputEvent, RunNode, StepEndReason } from '../../../src/core/transport/types.js';
+import type {
+  ConversationNode,
+  InputNode,
+  OutputEvent,
+  RunNode,
+  StepEndReason,
+} from '../../../src/core/transport/types.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 
 // ---------------------------------------------------------------------------
@@ -220,6 +226,24 @@ const applyStep = (
     });
   }
 };
+
+// Build a Tree with an explicit `reorderWindowMs`, pushing every warn-level log
+// into the given collector so a degraded arrival-order fold / swept-supersede is
+// observable. Used by the injection-seam and sweep-gate retention tests.
+const treeWithWindow = (
+  reorderWindowMs: number,
+  warns: string[],
+): TreeInternal<TestInput, TestOutput, TestProjection> =>
+  createTree<TestInput, TestOutput, TestProjection>(
+    testCodec,
+    makeLogger({
+      logLevel: LogLevel.Warn,
+      logHandler: (message, level) => {
+        if (level === LogLevel.Warn) warns.push(message);
+      },
+    }),
+    reorderWindowMs,
+  );
 
 // The visible node keys (runId for runs, codec-message-id for inputs), in order.
 const visibleKeys = (
@@ -1094,6 +1118,334 @@ describe('Tree', () => {
         { id: 'a', content: 'earlier' },
       ]);
       expect(warns).toHaveLength(1);
+    });
+
+    // -----------------------------------------------------------------------
+    // reorderWindowMs injection seam
+    // -----------------------------------------------------------------------
+
+    describe('reorderWindowMs injection seam', () => {
+      it('sweeps a terminal, fully-settled run once a small injected window lapses', () => {
+        const t = treeWithWindow(500, warns);
+        // A fully-settled terminal run (run-start + run-end, no open step).
+        apply(t, {
+          runId: 'R1',
+          codecMessageId: 'm14',
+          message: { id: 'b', content: 'later' },
+          serial: 's14',
+          timestamp: 1000,
+        });
+        lifecycle(t, 'end', 'R1', 's16', 1100);
+        lifecycle(t, 'start', 'R1', 's10', 800);
+
+        // Advance the clock just past the 500ms window via unrelated traffic.
+        apply(t, {
+          runId: 'R9',
+          codecMessageId: 'x1',
+          message: { id: 'x', content: 'live' },
+          serial: 's99',
+          timestamp: 1100 + 501,
+        });
+
+        // The log is gone: a late earlier-serial wire degrades to arrival order.
+        apply(t, {
+          runId: 'R1',
+          codecMessageId: 'm12',
+          message: { id: 'a', content: 'earlier' },
+          serial: 's12',
+          timestamp: 900,
+        });
+        expect(messagesOf(t, 'R1')).toEqual([
+          { id: 'b', content: 'later' },
+          { id: 'a', content: 'earlier' },
+        ]);
+        expect(warns).toHaveLength(1);
+        expect(warns[0]).toContain('retention window');
+      });
+
+      it('does NOT sweep at that same small advance under the default window (default unchanged)', () => {
+        // The describe-level `tree` uses the DEFAULT window (REORDER_WINDOW_MS).
+        // The identical small clock advance the 500ms tree swept at is far
+        // inside the default, so the log is retained and the late wire refolds.
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'm14',
+          message: { id: 'b', content: 'later' },
+          serial: 's14',
+          timestamp: 1000,
+        });
+        lifecycle(tree, 'end', 'R1', 's16', 1100);
+        lifecycle(tree, 'start', 'R1', 's10', 800);
+
+        apply(tree, {
+          runId: 'R9',
+          codecMessageId: 'x1',
+          message: { id: 'x', content: 'live' },
+          serial: 's99',
+          timestamp: 1100 + 501,
+        });
+
+        apply(tree, {
+          runId: 'R1',
+          codecMessageId: 'm12',
+          message: { id: 'a', content: 'earlier' },
+          serial: 's12',
+          timestamp: 900,
+        });
+        expect(messagesOf(tree, 'R1')).toEqual([
+          { id: 'a', content: 'earlier' },
+          { id: 'b', content: 'later' },
+        ]);
+        expect(warns).toEqual([]);
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // Sweep-gate on step settlement
+    // -----------------------------------------------------------------------
+
+    describe('sweep-gate on step settlement', () => {
+      // The gate is what a finite window alone cannot do — these tests shrink the
+      // window so the clock can lapse it deterministically.
+      it('does not sweep a terminal run with an OPEN step, so a late crash-reschedule supersedes (a finite window would have over-retained)', () => {
+        const t = treeWithWindow(500, warns);
+        // A terminal run whose only step's canonical attempt NEVER settled — the
+        // worker died after ai-step-start, before ai-step-end. The run-end lands
+        // (cleanup), but the step is unsettled.
+        lifecycle(t, 'start', 'R1', 's1', 1000);
+        applyStep(t, { type: 'step-start', runId: 'R1', stepId: 'S', attemptId: 'A1', serial: 's2', timestamp: 1000 });
+        apply(t, {
+          runId: 'R1',
+          stepId: 'S',
+          attemptId: 'A1',
+          message: { id: 'm1', content: 'partial' },
+          serial: 's3',
+          timestamp: 1000,
+        });
+        lifecycle(t, 'end', 'R1', 's4', 1100);
+
+        // Advance the clock far past the 500ms window via unrelated traffic. A
+        // bare finite window would have swept R1 here; the unsettled-step floor
+        // keeps the log so the dead attempt can still be superseded.
+        apply(t, {
+          runId: 'R9',
+          codecMessageId: 'x1',
+          message: { id: 'x', content: 'live' },
+          serial: 's99',
+          timestamp: 1100 + 500 * 4,
+        });
+        // The log is retained — the dead attempt's partial output is still shown
+        // (not yet superseded) and nothing degraded to arrival order.
+        expect(idsOf(t, 'R1')).toEqual(['m1']);
+        expect(warns).toEqual([]);
+
+        // The rescheduled attempt arrives much later (higher serial, same
+        // stepId): its step-start supersedes A1 and its output replaces the dead
+        // partial — because the log was retained, the refold drops m1 cleanly.
+        // Serials s8/s9 sort above A1's s2/s3 (single-digit, so lexicographic
+        // order matches numeric order — `s100` would sort BELOW `s2`).
+        applyStep(t, {
+          type: 'step-start',
+          runId: 'R1',
+          stepId: 'S',
+          attemptId: 'A2',
+          serial: 's8',
+          timestamp: 1100 + 500 * 4 + 1,
+        });
+        apply(t, {
+          runId: 'R1',
+          stepId: 'S',
+          attemptId: 'A2',
+          message: { id: 'm2', content: 'rescheduled' },
+          serial: 's9',
+          timestamp: 1100 + 500 * 4 + 2,
+        });
+        // Canonical advanced to A2: only the rescheduled output is retained, the
+        // dead attempt's partial is dropped (NOT over-retained), no warn.
+        expect(idsOf(t, 'R1')).toEqual(['m2']);
+        expect(warns).toEqual([]);
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // Re-queue on step settlement
+    // -----------------------------------------------------------------------
+
+    describe('re-queue on step settlement', () => {
+      it('sweeps a held terminal-run-with-open-step once the step settles and the window lapses', () => {
+        const t = treeWithWindow(500, warns);
+        // Terminal run held un-swept by an open step (as above).
+        lifecycle(t, 'start', 'R1', 's1', 1000);
+        applyStep(t, { type: 'step-start', runId: 'R1', stepId: 'S', attemptId: 'A1', serial: 's2', timestamp: 1000 });
+        apply(t, {
+          runId: 'R1',
+          stepId: 'S',
+          attemptId: 'A1',
+          message: { id: 'm1', content: 'x' },
+          serial: 's3',
+          timestamp: 1000,
+        });
+        lifecycle(t, 'end', 'R1', 's4', 1100);
+
+        // Clock lapses the window while the step is still open: NOT swept (the
+        // floor holds), so a late earlier-serial wire still refolds canonically.
+        apply(t, {
+          runId: 'R9',
+          codecMessageId: 'x1',
+          message: { id: 'x', content: 'live' },
+          serial: 's99',
+          timestamp: 1100 + 501,
+        });
+        apply(t, {
+          runId: 'R1',
+          stepId: 'S',
+          attemptId: 'A1',
+          message: { id: 'm0', content: 'earlier' },
+          serial: 's0',
+          timestamp: 1000,
+        });
+        expect(idsOf(t, 'R1')).toEqual(['m0', 'm1']);
+        expect(warns).toEqual([]);
+
+        // The step now settles — this re-queues the now-fully-settled run.
+        applyStep(t, { type: 'step-end', runId: 'R1', stepId: 'S', attemptId: 'A1', serial: 's5', timestamp: 1100 });
+
+        // A further clock advance past the window drains the queue and sweeps R1
+        // (proving the step-end re-queued it): a very late wire degrades to
+        // arrival order with the retention-window warn. R9's serial sorts above
+        // its prior s99 (lexicographic) so R9's own log stays in order.
+        apply(t, {
+          runId: 'R9',
+          codecMessageId: 'x2',
+          message: { id: 'x2', content: 'live' },
+          serial: 't0',
+          timestamp: 1100 + 501 + 600,
+        });
+        apply(t, {
+          runId: 'R1',
+          stepId: 'S',
+          attemptId: 'A1',
+          message: { id: 'm-1', content: 'earliest' },
+          serial: 'r0',
+          timestamp: 1000,
+        });
+        expect(idsOf(t, 'R1')).toEqual(['m0', 'm1', 'm-1']);
+        expect(warns).toHaveLength(1);
+        expect(warns[0]).toContain('retention window');
+      });
+
+      it('re-queues when a reordered step-start (end-before-start) settles the canonical on a held terminal run', () => {
+        const t = treeWithWindow(500, warns);
+        // Terminal run held by an OPEN canonical step A1 (worker died before its
+        // ai-step-end), exactly as the crash-reschedule case.
+        lifecycle(t, 'start', 'R1', 's1', 1000);
+        applyStep(t, { type: 'step-start', runId: 'R1', stepId: 'S', attemptId: 'A1', serial: 's2', timestamp: 1000 });
+        apply(t, {
+          runId: 'R1',
+          stepId: 'S',
+          attemptId: 'A1',
+          message: { id: 'm1', content: 'partial' },
+          serial: 's3',
+          timestamp: 1000,
+        });
+        lifecycle(t, 'end', 'R1', 's4', 1100);
+
+        // Window lapses while A1 is open: held, not swept.
+        apply(t, {
+          runId: 'R9',
+          codecMessageId: 'x1',
+          message: { id: 'x', content: 'live' },
+          serial: 's90',
+          timestamp: 1100 + 501,
+        });
+        expect(idsOf(t, 'R1')).toEqual(['m1']);
+        expect(warns).toEqual([]);
+
+        // The rescheduled attempt A2 arrives REORDERED: its step-END and output
+        // land before its step-START (cross-publisher arrival). The step-end
+        // alone leaves the canonical on the still-open A1, so the run stays held.
+        applyStep(t, { type: 'step-end', runId: 'R1', stepId: 'S', attemptId: 'A2', serial: 's7', timestamp: 1100 });
+        apply(t, {
+          runId: 'R1',
+          stepId: 'S',
+          attemptId: 'A2',
+          message: { id: 'm2', content: 'rescheduled' },
+          serial: 's8',
+          timestamp: 1100,
+        });
+        // A2's step-START lands last: it advances the canonical to A2, whose end
+        // was already observed, so the run becomes fully settled via a STEP-START.
+        // The re-queue must fire on the step-start (not only step-end) or the run
+        // would never be queued — a fully-settled step retained forever.
+        applyStep(t, { type: 'step-start', runId: 'R1', stepId: 'S', attemptId: 'A2', serial: 's9', timestamp: 1100 });
+        expect(idsOf(t, 'R1')).toEqual(['m2']);
+        expect(warns).toEqual([]);
+
+        // A further clock advance drains the queue and sweeps R1, proving the
+        // step-start re-queued it: a very late earlier-serial wire then degrades
+        // to arrival order with the retention warn (it would refold canonically,
+        // no warn, if the node had never been queued).
+        apply(t, {
+          runId: 'R9',
+          codecMessageId: 'x2',
+          message: { id: 'x2', content: 'live' },
+          serial: 't0',
+          timestamp: 1100 + 501 + 600,
+        });
+        apply(t, {
+          runId: 'R1',
+          stepId: 'S',
+          attemptId: 'A2',
+          message: { id: 'm-late', content: 'earliest' },
+          serial: 'r0',
+          timestamp: 1100,
+        });
+        expect(warns).toHaveLength(1);
+        expect(warns[0]).toContain('retention window');
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // arrival-order resilience under a shrunk window
+    // -----------------------------------------------------------------------
+
+    describe('arrival-order resilience under a shrunk window', () => {
+      it('folds canonically when ai-run-end precedes a lower-serial late ai-output, clock advanced inside the window', () => {
+        const t = treeWithWindow(500, warns);
+        // The terminal arrives before a lower-serial stepless output (live
+        // cross-publisher reorder). Both land inside the window, so the log
+        // refolds the late output into canonical position.
+        lifecycle(t, 'start', 'R1', 's1', 1000);
+        apply(t, {
+          runId: 'R1',
+          codecMessageId: 'm2',
+          message: { id: 'b', content: 'later' },
+          serial: 's3',
+          timestamp: 1100,
+        });
+        lifecycle(t, 'end', 'R1', 's4', 1150);
+
+        // Clock advances by unrelated traffic but stays INSIDE the window
+        // (1150 + 400 < 1150 + 500): R1 is not yet sweepable.
+        apply(t, {
+          runId: 'R9',
+          codecMessageId: 'x1',
+          message: { id: 'x', content: 'live' },
+          serial: 's99',
+          timestamp: 1150 + 400,
+        });
+
+        // The lower-serial late output refolds ahead of the higher-serial one.
+        apply(t, {
+          runId: 'R1',
+          codecMessageId: 'm1',
+          message: { id: 'a', content: 'earlier' },
+          serial: 's2',
+          timestamp: 1050,
+        });
+        expect(idsOf(t, 'R1')).toEqual(['a', 'b']);
+        expect(warns).toEqual([]);
+      });
     });
   });
 
@@ -2274,7 +2626,13 @@ describe('Tree', () => {
 
     it('supersedes an earlier attempt when a later-serial step-start arrives (retry)', () => {
       applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', attemptId: 'A1', serial: 's1' });
-      apply(tree, { runId: 'R1', stepId: 'S', attemptId: 'A1', message: { id: 'm1', content: 'partial' }, serial: 's2' });
+      apply(tree, {
+        runId: 'R1',
+        stepId: 'S',
+        attemptId: 'A1',
+        message: { id: 'm1', content: 'partial' },
+        serial: 's2',
+      });
       expect(idsOf(tree, 'R1')).toEqual(['m1']);
 
       // Retry: same stepId, fresh attempt, higher-serial start supersedes A1.
@@ -2372,7 +2730,14 @@ describe('Tree', () => {
 
       // A late superseding step-start cannot refold a swept log — over-retain
       // m1 rather than blank the projection.
-      applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', attemptId: 'A2', serial: 's7', timestamp: 1000 + T + 2 });
+      applyStep(tree, {
+        type: 'step-start',
+        runId: 'R1',
+        stepId: 'S',
+        attemptId: 'A2',
+        serial: 's7',
+        timestamp: 1000 + T + 2,
+      });
       expect(idsOf(tree, 'R1')).toEqual(['m1']);
     });
 
@@ -2385,7 +2750,14 @@ describe('Tree', () => {
       expect(steps).toHaveLength(1);
       expect(steps[0]).toEqual({ stepId: 'S', status: 'active', attemptCount: 2 });
 
-      applyStep(tree, { type: 'step-end', runId: 'R1', stepId: 'S', attemptId: 'A2', serial: 's4', reason: 'complete' });
+      applyStep(tree, {
+        type: 'step-end',
+        runId: 'R1',
+        stepId: 'S',
+        attemptId: 'A2',
+        serial: 's4',
+        reason: 'complete',
+      });
       steps = tree.getRunNode('R1')?.steps ?? [];
       // Status reflects the CANONICAL attempt (A2), which completed.
       expect(steps[0]).toEqual({ stepId: 'S', status: 'complete', attemptCount: 2 });

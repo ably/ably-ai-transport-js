@@ -435,9 +435,23 @@ export class DefaultTree<
    */
   private readonly _sweepQueue: string[] = [];
 
-  constructor(codec: Reducer<CodecEvent<TInput, TOutput>, TProjection>, logger: Logger) {
+  /**
+   * Window (ms, on the Ably message-timestamp timeline) a structurally complete
+   * run's event log is retained after the node's last activity, before the
+   * sweep may drop it. Defaults to {@link REORDER_WINDOW_MS}; an injected value
+   * raises it for a long-backoff durable agent or lowers it for deterministic
+   * tests (see {@link createTree}).
+   */
+  private readonly _reorderWindowMs: number;
+
+  constructor(
+    codec: Reducer<CodecEvent<TInput, TOutput>, TProjection>,
+    logger: Logger,
+    reorderWindowMs: number = REORDER_WINDOW_MS,
+  ) {
     this._codec = codec;
     this._logger = logger;
+    this._reorderWindowMs = reorderWindowMs;
     this._emitter = new EventEmitter<TreeEventsMap<TOutput>>(logger);
   }
 
@@ -745,6 +759,18 @@ export class DefaultTree<
    * reorder window has also lapsed. No-op for input nodes (never swept — no
    * floor marker, and their logs are bounded by one user message), for nodes
    * already queued or swept, and while either marker is missing.
+   *
+   * An UNSETTLED step is a second floor alongside `runStartSeen`: a step whose
+   * canonical attempt's `ai-step-start` was observed but whose matching
+   * `ai-step-end` was not (its read-model status is `'active'`). A finite
+   * window cannot cover a durable retry whose backoff exceeds it — if the
+   * structurally-complete run were swept while a step is still open, a
+   * much-later rescheduled `ai-step-start` (same stepId, higher serial) would
+   * hit the swept-log path and the dead attempt's partial output would
+   * over-retain. So refusing to queue while any step is unsettled keeps the log
+   * superseder-ready until {@link applyStepLifecycle} re-queues the node when
+   * that last open step settles. Called from the run-end / run-start lifecycle
+   * paths AND from a step-end (the re-queue trigger).
    * @param entry - The node to consider for sweeping.
    */
   private _maybeQueueSweep(entry: InternalNode<TInput, TOutput, TProjection>): void {
@@ -753,13 +779,46 @@ export class DefaultTree<
     if (entry.log.swept || entry.sweepQueued) return;
     if (!entry.runStartSeen) return;
     if (node.state.status === 'active' || node.state.status === 'suspended') return;
+    if (this._hasUnsettledStep(entry)) return;
     entry.sweepQueued = true;
     this._sweepQueue.push(node.runId);
   }
 
   /**
+   * Whether the node has any step whose canonical attempt has not settled — its
+   * `ai-step-start` is recorded (`canonicalAttemptId` is set) but no matching
+   * `ai-step-end` reason is, so its read-model status is `'active'`. The same
+   * predicate {@link _updateStepsReadModel} derives a step's `'active'` status
+   * from, read here as the sweep floor. A node with no step state has no step
+   * to be unsettled, so this is `false` for stepless runs (behaviour-preserving).
+   *
+   * A canonical attempt with ANY observed end reason — including `failed` —
+   * counts as settled here, deliberately. A retry after a clean `failed` end is
+   * scheduled while the run is still `active`/`suspended`, so it is the
+   * run-status floor (not this one) that holds the sweep across that retry; once
+   * the workflow drives the run terminal it no longer retries that step, so the
+   * canonical end is final and the run (e.g. a terminal `error`) is free to
+   * sweep. This floor exists for the case the status floor cannot cover: a
+   * canonical attempt with NO observed end whose run was driven terminal by a
+   * separate cleanup, where a much-later rescheduled `ai-step-start` must still
+   * find the dead attempt's log to supersede it.
+   * @param entry - The run node to inspect.
+   * @returns True when at least one observed step is still open.
+   */
+  private _hasUnsettledStep(entry: InternalNode<TInput, TOutput, TProjection>): boolean {
+    const ss = entry.stepState;
+    if (!ss) return false;
+    for (const rec of ss.steps.values()) {
+      if (rec.canonicalAttemptId !== undefined && rec.endReasonByAttempt.get(rec.canonicalAttemptId) === undefined) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Drop the event logs of queued nodes whose retention window has lapsed:
-   * `lastActivityTs + REORDER_WINDOW_MS < _clock`. Drains from the front and
+   * `lastActivityTs + _reorderWindowMs < _clock`. Drains from the front and
    * stops at the first node still inside the window — completion order is
    * time-ordered for live traffic, so this is amortised O(1) per apply, and
    * stopping early only ever over-retains (memory, never correctness). Called
@@ -774,7 +833,7 @@ export class DefaultTree<
         this._sweepQueue.shift();
         continue;
       }
-      if (entry.lastActivityTs + REORDER_WINDOW_MS >= this._clock) return;
+      if (entry.lastActivityTs + this._reorderWindowMs >= this._clock) return;
       this._sweepQueue.shift();
       entry.sweepQueued = false;
       // Drop the decoded payloads (the unbounded cost) but keep each entry's
@@ -1316,7 +1375,12 @@ export class DefaultTree<
     const ss = (entry.stepState ??= this._newStepState());
     let rec = ss.steps.get(event.stepId);
     if (!rec) {
-      rec = { canonicalAttemptId: undefined, canonicalStartSerial: undefined, attemptIds: new Set(), endReasonByAttempt: new Map() };
+      rec = {
+        canonicalAttemptId: undefined,
+        canonicalStartSerial: undefined,
+        attemptIds: new Set(),
+        endReasonByAttempt: new Map(),
+      };
       ss.steps.set(event.stepId, rec);
       ss.order.push(event.stepId);
     }
@@ -1329,6 +1393,18 @@ export class DefaultTree<
     }
 
     this._updateStepsReadModel(runNode, ss);
+
+    // A step lifecycle event may have settled the node's last open step: a
+    // step-end records the canonical attempt's reason, and a reordered
+    // step-start can advance the canonical to an attempt whose step-end was
+    // already observed (end-before-start arrival across publishers). The sweep
+    // floor in `_maybeQueueSweep` refuses to queue a run with any unsettled
+    // step, so a run that went terminal while a step was still open was never
+    // queued; this is the re-queue trigger that makes a now-fully-settled
+    // terminal run sweep-eligible. Idempotent (guarded by `sweepQueued`/`swept`
+    // and the terminal/run-start floors), so it no-ops on a non-terminal or
+    // still-unsettled run regardless of which lifecycle event fired it.
+    this._maybeQueueSweep(entry);
 
     // Only a freshly-created node bumps the structural version; the common
     // case (node already exists) changes step content only, repainted via the
@@ -1847,6 +1923,10 @@ export class DefaultTree<
  * oplog of Ably messages as a two-node-per-turn forest (input node + reply run).
  * @param codec - Codec used to fold inbound events into per-Run projections.
  * @param logger - Logger for diagnostic output.
+ * @param reorderWindowMs - Event-log retention window in ms; defaults to
+ *   {@link REORDER_WINDOW_MS}. Raise it for a long-backoff durable agent (so a
+ *   late superseding step-start still finds the dead attempt's log), lower it
+ *   for deterministic tests.
  * @returns A new {@link DefaultTree} instance. The session uses DefaultTree
  *   directly for internal methods (applyMessage, applyRunLifecycle,
  *   emitAblyMessage). Public consumers see the narrower {@link Tree} interface.
@@ -1854,4 +1934,6 @@ export class DefaultTree<
 export const createTree = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection>(
   codec: Reducer<CodecEvent<TInput, TOutput>, TProjection>,
   logger: Logger,
-): DefaultTree<TInput, TOutput, TProjection> => new DefaultTree<TInput, TOutput, TProjection>(codec, logger);
+  reorderWindowMs?: number,
+): DefaultTree<TInput, TOutput, TProjection> =>
+  new DefaultTree<TInput, TOutput, TProjection>(codec, logger, reorderWindowMs);

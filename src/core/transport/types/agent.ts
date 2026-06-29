@@ -71,6 +71,20 @@ export interface AgentSessionOptions<
    * Defaults to 100.
    */
   historyPageSize?: number;
+
+  /**
+   * Advanced. How long (ms, on the Ably message-timestamp timeline) a
+   * structurally complete run's event log is retained after its last activity
+   * before the Tree may drop it. The log is what lets a late, out-of-order wire
+   * refold into canonical position and a superseding step retry drop a dead
+   * attempt's output; once dropped, such a wire degrades to arrival order.
+   *
+   * Raise it for a durable agent whose step retries back off longer than the
+   * default, so a much-later rescheduled `ai-step-start` still finds the dead
+   * attempt's log to supersede; lower it in tests for deterministic, fast
+   * sweeps. Defaults to 120000 (2 minutes).
+   */
+  reorderWindowMs?: number;
 }
 
 // ---------------------------------------------------------------------------

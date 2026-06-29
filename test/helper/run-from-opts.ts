@@ -7,7 +7,7 @@
 
 import type * as Ably from 'ably';
 
-import type { AgentRun, AgentSession, CancelRequest, CodecOutputEvent } from '../../src/index.js';
+import type { AgentSession, CancelRequest, CodecOutputEvent, OpenableRun } from '../../src/index.js';
 import { Invocation } from '../../src/index.js';
 
 interface RunOpts<TOutput extends CodecOutputEvent> {
@@ -35,12 +35,12 @@ interface RunOpts<TOutput extends CodecOutputEvent> {
  * `deliverInputEvent({ publisherClientId })`).
  * @param session - The agent session to create the run on.
  * @param opts - Run identity (runId, invocationId, inputEventIds) plus runtime hooks.
- * @returns The created AgentRun.
+ * @returns The created OpenableRun (its `start()` opens the run).
  */
 export const createRunFromOpts = <TOutput extends CodecOutputEvent, TProjection, TMessage>(
   session: AgentSession<TOutput, TProjection, TMessage>,
   opts: RunOpts<TOutput>,
-): AgentRun<TOutput, TProjection, TMessage> => {
+): OpenableRun<TOutput, TProjection, TMessage> => {
   const invocation = Invocation.fromJSON({
     inputEventId: opts.inputEventId ?? '',
     sessionName: 'test',

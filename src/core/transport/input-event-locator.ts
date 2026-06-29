@@ -1,12 +1,15 @@
 /**
- * locateInputEvent — find the channel message that triggered an agent run.
+ * findTriggerEvent — find the channel message that triggered an agent run.
  *
- * Before `Run.start()` publishes run-start, the agent must find the input event
- * (`invocation.inputEventId`) that invoked it, to read the user's message and
- * the per-run metadata (run-id, parent, forkOf, continuation flag, publisher
- * clientId) off its wire headers. The trigger may already be in the Tree (a
- * prior live arrival), may arrive live during the call, or may sit in channel
- * history (published just before the agent attached).
+ * Before a run is opened, the agent must find the event that invoked it
+ * (`AdoptIdentity.triggerEventId` / `invocation.inputEventId`), to read the
+ * user's message and the per-run metadata (run-id, parent, forkOf, continuation
+ * flag, publisher clientId) off its wire headers. Today the trigger is always an
+ * `ai-input` event; resolving the anchor is the same regardless of which side
+ * opens the run (the created `start()` path or the adopted `load()` path). The
+ * trigger may already be in the Tree (a prior live arrival), may arrive live
+ * during the call, or may sit in channel history (published just before the
+ * agent attached).
  *
  * The lookup races three sources and resolves with whichever surfaces the
  * expected event-id first:
@@ -33,7 +36,7 @@ import { errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
 import type { HistoryHydrator } from './history-hydrator.js';
 
 /**
- * The Tree capabilities {@link locateInputEvent} reads: the event-id index
+ * The Tree capabilities {@link findTriggerEvent} reads: the event-id index
  * pre-scan and the `ably-message` subscription. {@link TreeInternal} satisfies
  * it structurally.
  */
@@ -45,22 +48,22 @@ export interface InputEventSource {
 }
 
 /**
- * The matched triggering input event's metadata. `Run.start` reads `headers`
- * (run-id, parent, forkOf, continuation flag) and `clientId` (the publisher's
- * Ably channel-level id) to derive per-run metadata. The Tree has already
- * folded the message by the time the lookup resolves, so callers do not decode
- * the raw matched message themselves.
+ * The matched triggering event's metadata. The opening verb (`start()` /
+ * `load()`) reads `headers` (run-id, parent, forkOf, continuation flag) and
+ * `clientId` (the publisher's Ably channel-level id) to derive per-run metadata.
+ * The Tree has already folded the message by the time the lookup resolves, so
+ * callers do not decode the raw matched message themselves.
  */
-export interface InputEventLookupResult {
-  /** Transport headers of the matched input event (run metadata). */
+export interface TriggerEventLookupResult {
+  /** Transport headers of the matched trigger event (run metadata). */
   headers?: Record<string, string>;
-  /** Publisher's Ably channel-level `clientId` from the matched input event. */
+  /** Publisher's Ably channel-level `clientId` from the matched trigger event. */
   clientId?: string;
 }
 
-/** Parameters for {@link locateInputEvent}. */
-export interface LocateInputEventOptions {
-  /** The Tree to pre-scan and subscribe to for the triggering input event. */
+/** Parameters for {@link findTriggerEvent}. */
+export interface FindTriggerEventOptions {
+  /** The Tree to pre-scan and subscribe to for the triggering event. */
   tree: InputEventSource;
   /** The shared history hydrator, driven until the trigger is found. */
   hydrator: HistoryHydrator;
@@ -79,13 +82,13 @@ export interface LocateInputEventOptions {
 }
 
 /**
- * Locate the triggering input event for a run. See the file header for the
- * race and the bound.
+ * Locate the triggering event for a run. See the file header for the race and
+ * the bound.
  * @param opts - Lookup parameters.
  * @returns The matched message's transport headers and publisher clientId.
  */
 // eslint-disable-next-line @typescript-eslint/promise-function-async -- the body IS a Promise executor; async would double-wrap it
-export const locateInputEvent = (opts: LocateInputEventOptions): Promise<InputEventLookupResult> => {
+export const findTriggerEvent = (opts: FindTriggerEventOptions): Promise<TriggerEventLookupResult> => {
   const { tree, hydrator, invocationId, runId, expectedEventId, timeoutMs, signal, logger } = opts;
 
   // Bounded history fetch in parallel with the live wait; this controller lets
@@ -93,7 +96,7 @@ export const locateInputEvent = (opts: LocateInputEventOptions): Promise<InputEv
   // the run signal.
   const historyController = new AbortController();
 
-  return new Promise<InputEventLookupResult>((resolve, reject) => {
+  return new Promise<TriggerEventLookupResult>((resolve, reject) => {
     let settled = false;
     // A genuine history-scan failure (not a cancel-induced abort) recorded so
     // the timeout rejection can surface it as `cause` — the live path may still
@@ -124,7 +127,7 @@ export const locateInputEvent = (opts: LocateInputEventOptions): Promise<InputEv
       if (settled) return;
       settled = true;
       cleanup();
-      logger?.debug('locateInputEvent(); matched input event', { runId, invocationId });
+      logger?.debug('findTriggerEvent(); matched trigger event', { runId, invocationId });
       resolve({ headers: getTransportHeaders(m), clientId: m.clientId });
     };
 
@@ -173,7 +176,7 @@ export const locateInputEvent = (opts: LocateInputEventOptions): Promise<InputEv
                 500,
                 errorCause(error),
               );
-        logger?.warn('locateInputEvent(); history scan failed (continuing on live path)', {
+        logger?.warn('findTriggerEvent(); history scan failed (continuing on live path)', {
           error: errorMessage(error),
         });
       });

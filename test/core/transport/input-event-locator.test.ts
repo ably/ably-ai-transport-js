@@ -1,5 +1,5 @@
 /**
- * locateInputEvent unit tests.
+ * findTriggerEvent unit tests.
  *
  * The lookup races three sources for the triggering input event: a Tree
  * event-id pre-scan, a live `ably-message` listener, and the shared history
@@ -15,7 +15,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { HEADER_EVENT_ID, HEADER_RUN_ID } from '../../../src/constants.js';
 import type { HistoryHydrator } from '../../../src/core/transport/history-hydrator.js';
-import { type InputEventSource, locateInputEvent } from '../../../src/core/transport/input-event-locator.js';
+import { findTriggerEvent, type InputEventSource } from '../../../src/core/transport/input-event-locator.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 
@@ -88,7 +88,7 @@ const baseOpts = {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('locateInputEvent', () => {
+describe('findTriggerEvent', () => {
   afterEach(() => {
     vi.useRealTimers();
   });
@@ -98,7 +98,7 @@ describe('locateInputEvent', () => {
     tree.seed('p-1', msg('p-1', { clientId: 'client-A', runId: 'R9' }));
     const { hydrator, foldUntil } = makeHydrator(neverFolds);
 
-    const result = await locateInputEvent({ ...baseOpts, tree, hydrator, signal: new AbortController().signal });
+    const result = await findTriggerEvent({ ...baseOpts, tree, hydrator, signal: new AbortController().signal });
 
     expect(result.clientId).toBe('client-A');
     expect(result.headers?.[HEADER_RUN_ID]).toBe('R9');
@@ -109,7 +109,7 @@ describe('locateInputEvent', () => {
     const tree = makeTree();
     const { hydrator } = makeHydrator(neverFolds);
 
-    const p = locateInputEvent({ ...baseOpts, tree, hydrator, signal: new AbortController().signal });
+    const p = findTriggerEvent({ ...baseOpts, tree, hydrator, signal: new AbortController().signal });
     // A matching message arrives live after the listener is registered.
     tree.emit(msg('p-1', { clientId: 'client-B' }));
 
@@ -127,7 +127,7 @@ describe('locateInputEvent', () => {
       },
     );
 
-    const result = await locateInputEvent({ ...baseOpts, tree, hydrator, signal: new AbortController().signal });
+    const result = await findTriggerEvent({ ...baseOpts, tree, hydrator, signal: new AbortController().signal });
 
     expect(result.clientId).toBe('client-C');
     expect(foldUntil).toHaveBeenCalledTimes(1);
@@ -140,7 +140,7 @@ describe('locateInputEvent', () => {
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns a rejected promise
     const { hydrator } = makeHydrator(() => Promise.reject(historyErr));
 
-    const p = locateInputEvent({ ...baseOpts, tree, hydrator, signal: new AbortController().signal });
+    const p = findTriggerEvent({ ...baseOpts, tree, hydrator, signal: new AbortController().signal });
     // Attach the rejection handler before firing the timer so the rejection is
     // never momentarily unhandled.
     const expectation = expect(p).rejects.toBeErrorInfo({
@@ -159,7 +159,7 @@ describe('locateInputEvent', () => {
     controller.abort();
 
     await expect(
-      locateInputEvent({ ...baseOpts, tree, hydrator, signal: controller.signal }),
+      findTriggerEvent({ ...baseOpts, tree, hydrator, signal: controller.signal }),
     ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     expect(foldUntil).not.toHaveBeenCalled();
   });
@@ -169,7 +169,7 @@ describe('locateInputEvent', () => {
     const { hydrator } = makeHydrator(neverFolds);
     const controller = new AbortController();
 
-    const p = locateInputEvent({ ...baseOpts, tree, hydrator, signal: controller.signal });
+    const p = findTriggerEvent({ ...baseOpts, tree, hydrator, signal: controller.signal });
     controller.abort();
 
     await expect(p).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);

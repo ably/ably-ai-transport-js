@@ -14,7 +14,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   EVENT_CANCEL,
+  EVENT_RUN_END,
   EVENT_RUN_START,
+  EVENT_RUN_SUSPEND,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
@@ -23,7 +25,9 @@ import {
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_ROLE,
+  HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
+  HEADER_RUN_REASON,
 } from '../../../src/constants.js';
 import type {
   ChannelWriter,
@@ -41,6 +45,8 @@ import { createAgentSession } from '../../../src/core/transport/agent-session.js
 import { createWireApplier } from '../../../src/core/transport/decode-fold.js';
 import { createHistoryHydrator } from '../../../src/core/transport/history-hydrator.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
+import type { RunManager } from '../../../src/core/transport/run-manager.js';
+import * as runManagerModule from '../../../src/core/transport/run-manager.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
 import type { AgentSession, ClientRun } from '../../../src/core/transport/types.js';
@@ -274,10 +280,7 @@ const erroringStream = (): ReadableStream<TestOutput> =>
   });
 
 // The `extras.ai.transport` headers of every published message with a given name.
-const stepHeadersOf = (
-  channel: { publishCalls: Ably.Message[] },
-  name: string,
-): Record<string, string>[] =>
+const stepHeadersOf = (channel: { publishCalls: Ably.Message[] }, name: string): Record<string, string>[] =>
   channel.publishCalls
     .filter((m) => m.name === name)
     .map((m) => (m.extras as { ai?: { transport?: Record<string, string> } }).ai?.transport ?? {});
@@ -4441,6 +4444,486 @@ describe('AgentRun.loadConversation history failure + exhaustion', () => {
     await bPromise;
     expect(session.tree.getNodeByCodecMessageId('u1')).toBeDefined();
     expect(calls).toBe(5);
+
+    await session.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// adoptRun / load() — the durable-adopt mechanism
+//
+// adoptRun() returns an AdoptedRun whose load() resolves the run's write context
+// off the channel and adopts an ALREADY-OPEN run for publishing in this process
+// WITHOUT publishing an opening event. These drive load()'s steps with a mock
+// channel: a foreign process's ai-run-start is simulated by delivering a
+// run-start wire (carrying a serial + run-client-id) through the session's
+// channel listener, which folds it so the run's startSerial / status / owner are
+// observable. inputEventLookupTimeoutMs: 0 skips the trigger lookup (covered by
+// the resolve tests) so these isolate the adopt half.
+// ---------------------------------------------------------------------------
+
+/**
+ * Deliver a foreign-process `ai-run-start` wire to the session's channel
+ * listener. Carries a real serial (so the run's `startSerial` is confirmed —
+ * the visibility-wait's adopt signal) and an optional `run-client-id` (the
+ * owner the adopt seeds for output / terminal stamping).
+ * @param ch - The mock channel hosting the session's listener.
+ * @param runId - The run the run-start opens.
+ * @param opts - Serial and owner `run-client-id`.
+ * @param opts.serial - The Ably serial that confirms the run's `startSerial`.
+ * @param opts.runClientId - The owner `run-client-id` the adopt seeds, if any.
+ */
+const deliverRunStart = (ch: MockChannel, runId: string, opts: { serial: string; runClientId?: string }): void => {
+  const headers: Record<string, string> = { [HEADER_RUN_ID]: runId };
+  if (opts.runClientId !== undefined) headers[HEADER_RUN_CLIENT_ID] = opts.runClientId;
+  const msg = {
+    name: EVENT_RUN_START,
+    serial: opts.serial,
+    extras: { ai: { transport: headers } },
+    version: { serial: opts.serial },
+  } as unknown as Ably.InboundMessage;
+  if (ch.listener) ch.listener(msg);
+};
+
+/**
+ * Deliver a foreign-process terminal run-lifecycle wire (run-end or run-suspend)
+ * to the session's channel listener, folding it so the run's status advances.
+ * @param ch - The mock channel hosting the session's listener.
+ * @param name - The lifecycle event name (run-end / run-suspend).
+ * @param runId - The run being ended or suspended.
+ * @param opts - Serial and, for run-end, the run-reason.
+ * @param opts.serial - The Ably serial of the terminal lifecycle event.
+ * @param opts.reason - The run-reason header (run-end only).
+ */
+const deliverRunTerminal = (
+  ch: MockChannel,
+  name: string,
+  runId: string,
+  opts: { serial: string; reason?: string },
+): void => {
+  const headers: Record<string, string> = { [HEADER_RUN_ID]: runId };
+  if (opts.reason !== undefined) headers[HEADER_RUN_REASON] = opts.reason;
+  const msg = {
+    name,
+    serial: opts.serial,
+    extras: { ai: { transport: headers } },
+    version: { serial: opts.serial },
+  } as unknown as Ably.InboundMessage;
+  if (ch.listener) ch.listener(msg);
+};
+
+/**
+ * Stand up a connected agent session over a mock channel, skipping the trigger
+ * lookup (inputEventLookupTimeoutMs: 0) so adopt tests isolate load()'s
+ * visibility-wait + status-gate + owner-seed.
+ * @returns The session and its mock channel.
+ */
+const adoptSession = (): {
+  session: AgentSession<TestOutput, TestProjection, TestMessage>;
+  ch: MockChannel & Ably.RealtimeChannel;
+} => {
+  const ch = createMockChannel();
+  // eslint-disable-next-line @typescript-eslint/no-misused-promises -- mock returns Promise directly
+  ch.history.mockImplementation(singlePageHistory([]));
+  const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+    client: createMockClient(ch),
+    channelName: 'adopt',
+    codec: codecWithFunctionalDecoder(),
+    inputEventLookupTimeoutMs: 0,
+  });
+  return { session, ch };
+};
+
+const identityFor = (runId: string): { runId: string; invocationId: string; triggerEventId: string } => ({
+  runId,
+  invocationId: `${runId}-icancel`,
+  triggerEventId: `p-${runId}`,
+});
+
+/**
+ * Assert a promise rejects with an `Ably.ErrorInfo` of the given code whose
+ * message CONTAINS `substr` (the matcher's `message` field is exact-match only,
+ * so a substring assertion goes through the caught error).
+ * @param promise - The promise expected to reject.
+ * @param code - The expected error code.
+ * @param substr - A substring the error message must contain.
+ */
+const expectRejectsWithMessage = async (promise: Promise<unknown>, code: number, substr: string): Promise<void> => {
+  try {
+    await promise;
+  } catch (error) {
+    expect(error).toBeErrorInfoWithCode(code);
+    expect((error as Ably.ErrorInfo).message).toContain(substr);
+    return;
+  }
+  throw new Error(`expected rejection containing "${substr}"`);
+};
+
+describe('adoptRun / load()', () => {
+  it('adopts an ACTIVE run: seeds the owner, publishes NO opening event, opens for publishing', async () => {
+    const { session, ch } = adoptSession();
+    await session.connect();
+    // A foreign process already opened run-1 (run-start on the channel).
+    deliverRunStart(ch, 'run-1', { serial: 's-start-1', runClientId: 'owner-x' });
+
+    const run = session.adoptRun(identityFor('run-1'));
+    await run.load();
+
+    // load() published nothing — adopt never re-opens the run.
+    expect(ch.publishCalls.find((m) => m.name === EVENT_RUN_START)).toBeUndefined();
+    expect(ch.publishCalls.find((m) => m.name === EVENT_RUN_END)).toBeUndefined();
+
+    // The owner was seeded from the run-start's run-client-id: the terminal then
+    // stamps it (P3 — the run-end run-client-id read site, empty in a fresh
+    // process without the seed).
+    await run.end({ reason: 'complete' });
+    const endMsg = ch.publishCalls.find((m) => m.name === EVENT_RUN_END);
+    const headers = (endMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+    expect(headers?.[HEADER_RUN_CLIENT_ID]).toBe('owner-x');
+
+    await session.close();
+  });
+
+  it('rejects loading a SUSPENDED run (resume via createRun().start())', async () => {
+    const { session, ch } = adoptSession();
+    await session.connect();
+    deliverRunStart(ch, 'run-s', { serial: 's-start-s' });
+    deliverRunTerminal(ch, EVENT_RUN_SUSPEND, 'run-s', { serial: 's-suspend-s' });
+
+    const run = session.adoptRun(identityFor('run-s'));
+    await expectRejectsWithMessage(run.load(), ErrorCode.InvalidArgument, 'suspended');
+
+    await session.close();
+  });
+
+  it('rejects loading a TERMINAL run (read-only)', async () => {
+    const { session, ch } = adoptSession();
+    await session.connect();
+    deliverRunStart(ch, 'run-t', { serial: 's-start-t' });
+    deliverRunTerminal(ch, EVENT_RUN_END, 'run-t', { serial: 's-end-t', reason: 'complete' });
+
+    const run = session.adoptRun(identityFor('run-t'));
+    await expectRejectsWithMessage(run.load(), ErrorCode.InvalidArgument, 'terminal');
+
+    await session.close();
+  });
+
+  it('visibility-waits for a late run-start, then adopts', async () => {
+    const { session, ch } = adoptSession();
+    await session.connect();
+
+    // The run-start has NOT arrived yet — load() must wait for it.
+    const run = session.adoptRun(identityFor('run-late'));
+    const loadPromise = run.load({ timeoutMs: 5000 });
+
+    // The foreign run-start folds in after load() began waiting.
+    deliverRunStart(ch, 'run-late', { serial: 's-start-late', runClientId: 'owner-late' });
+
+    await loadPromise;
+    expect(ch.publishCalls.find((m) => m.name === EVENT_RUN_START)).toBeUndefined();
+
+    // Adopted and open: end() publishes the terminal stamped with the seeded owner.
+    await run.end({ reason: 'complete' });
+    const endMsg = ch.publishCalls.find((m) => m.name === EVENT_RUN_END);
+    expect(endMsg).toBeDefined();
+    const headers = (endMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+    expect(headers?.[HEADER_RUN_CLIENT_ID]).toBe('owner-late');
+
+    await session.close();
+  });
+
+  it('times out when the run-start is never observed (retryable InputEventNotFound)', async () => {
+    vi.useFakeTimers();
+    const { session, ch } = adoptSession();
+    await session.connect();
+
+    const run = session.adoptRun(identityFor('run-missing'));
+    const loadPromise = run.load({ timeoutMs: 1000 });
+    // Attach the rejection expectation before advancing the timer so the
+    // rejection is never momentarily unhandled.
+    const expectation = expect(loadPromise).rejects.toBeErrorInfoWithCode(ErrorCode.InputEventNotFound);
+    // Flush the empty history scan, then fire the visibility-wait timeout.
+    await vi.advanceTimersByTimeAsync(1000);
+    await expectation;
+    // Nothing published — load() that never adopts publishes nothing.
+    expect(ch.publishCalls).toHaveLength(0);
+
+    await session.close();
+    vi.useRealTimers();
+  });
+
+  it('carries a failing history scan as the timeout rejection cause', async () => {
+    vi.useFakeTimers();
+    const ch = createMockChannel();
+    // The visibility-wait's history scan fails; the run-start never arrives, so
+    // the live path can't win and the timeout must surface the fetch error.
+    ch.history.mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns a rejected promise
+      () => Promise.reject(new Ably.ErrorInfo('history offline', ErrorCode.HistoryFetchFailed, 500)),
+    );
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'adopt-cause',
+      codec: codecWithFunctionalDecoder(),
+      inputEventLookupTimeoutMs: 0,
+    });
+    await session.connect();
+
+    const run = session.adoptRun(identityFor('run-cause'));
+    const loadPromise = run.load({ timeoutMs: 1000 });
+    const expectation = expect(loadPromise).rejects.toBeErrorInfo({
+      code: ErrorCode.InputEventNotFound,
+      cause: { code: ErrorCode.HistoryFetchFailed },
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    await expectation;
+
+    await session.close();
+    vi.useRealTimers();
+  });
+
+  it('an adopted run can step, pipe, and end WITHOUT start()', async () => {
+    const { session, ch } = adoptSession();
+    await session.connect();
+    deliverRunStart(ch, 'run-step', { serial: 's-start-step', runClientId: 'owner-step' });
+
+    const run = session.adoptRun(identityFor('run-step'));
+    await run.load();
+
+    // step() brackets output; pipe() inside the step publishes assistant output;
+    // end() publishes the terminal — all without ever calling start().
+    await run.step(async (step) => {
+      await step.pipe(streamOf({ type: 'text', text: 'a' }));
+    });
+    await run.end({ reason: 'complete' });
+
+    expect(stepHeadersOf(ch, 'ai-step-start')).toHaveLength(1);
+    expect(stepHeadersOf(ch, 'ai-step-end')).toHaveLength(1);
+    expect(ch.publishCalls.find((m) => m.name === EVENT_RUN_END)).toBeDefined();
+    // Adopt never publishes an opening event.
+    expect(ch.publishCalls.find((m) => m.name === EVENT_RUN_START)).toBeUndefined();
+
+    await session.close();
+  });
+
+  it('rejects load() on a run cancelled before load()', async () => {
+    const { session, ch } = adoptSession();
+    await session.connect();
+    deliverRunStart(ch, 'run-cx', { serial: 's-start-cx' });
+
+    const controller = new AbortController();
+    controller.abort();
+    const run = session.adoptRun(identityFor('run-cx'), { signal: controller.signal });
+    await expect(run.load()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+
+    await session.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Opening latch — synchronous re-entrancy guard on start() / load()
+//
+// The opening verb sets `open = true` only AFTER its awaits (resolve + publish /
+// adopt). A synchronous `opening` latch, set before the first await, closes the
+// window where two overlapping calls would otherwise both fall through and
+// double-publish run-start (start) or double-seed the owner (load).
+// ---------------------------------------------------------------------------
+
+/**
+ * Spy on `createRunManager` so the next session built captures its run manager
+ * and a `registerRun` spy on it. Installed BEFORE `createAgentSession` so the
+ * session's own manager is the spied instance.
+ * @returns The captured-manager accessor and the registerRun spy holder.
+ */
+const spyRunManager = (): {
+  registerRunSpy: () => ReturnType<typeof vi.fn> | undefined;
+  restore: () => void;
+} => {
+  let spy: ReturnType<typeof vi.fn> | undefined;
+  const orig = runManagerModule.createRunManager;
+  const createSpy = vi.spyOn(runManagerModule, 'createRunManager').mockImplementation((channel, logger): RunManager => {
+    const manager = orig(channel, logger);
+    spy = vi.fn(manager.registerRun.bind(manager));
+    manager.registerRun = spy as unknown as RunManager['registerRun'];
+    return manager;
+  });
+  return {
+    registerRunSpy: () => spy,
+    restore: (): void => {
+      createSpy.mockRestore();
+    },
+  };
+};
+
+describe('opening latch (concurrent re-entrancy)', () => {
+  it('two overlapping start() calls publish EXACTLY ONE ai-run-start', async () => {
+    const { session, ch } = adoptSession();
+    await session.connect();
+    const run = createRunFromOpts(session, { runId: 'run-conc-start' });
+
+    // Fire both without awaiting the first: the second must observe the latch
+    // (set synchronously before resolve) and no-op rather than re-publish.
+    const a = run.start();
+    const b = run.start();
+    await Promise.all([a, b]);
+
+    expect(ch.publishCalls.filter((m) => m.name === EVENT_RUN_START)).toHaveLength(1);
+
+    await session.close();
+  });
+
+  it('two overlapping load() calls seed the owner EXACTLY ONCE', async () => {
+    const { registerRunSpy, restore } = spyRunManager();
+    const ch = createMockChannel();
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises -- mock returns Promise directly
+    ch.history.mockImplementation(singlePageHistory([]));
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'adopt-conc',
+      codec: codecWithFunctionalDecoder(),
+      inputEventLookupTimeoutMs: 0,
+    });
+    await session.connect();
+    deliverRunStart(ch, 'run-conc-load', { serial: 's-start-conc', runClientId: 'owner-conc' });
+
+    const run = session.adoptRun(identityFor('run-conc-load'));
+    const a = run.load();
+    const b = run.load();
+    await Promise.all([a, b]);
+
+    // The latch let exactly one call run the adopt body: one owner seed.
+    expect(registerRunSpy()).toHaveBeenCalledTimes(1);
+    expect(registerRunSpy()).toHaveBeenCalledWith('run-conc-load', 'owner-conc', expect.anything());
+
+    // Adopted and open: end() publishes one terminal stamped with the owner.
+    await run.end({ reason: 'complete' });
+    const endMsg = ch.publishCalls.find((m) => m.name === EVENT_RUN_END);
+    const headers = (endMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+    expect(headers?.[HEADER_RUN_CLIENT_ID]).toBe('owner-conc');
+
+    await session.close();
+    restore();
+  });
+
+  it('sequential load() is idempotent: the second call is a no-op', async () => {
+    const { registerRunSpy, restore } = spyRunManager();
+    const ch = createMockChannel();
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises -- mock returns Promise directly
+    ch.history.mockImplementation(singlePageHistory([]));
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'adopt-idem',
+      codec: codecWithFunctionalDecoder(),
+      inputEventLookupTimeoutMs: 0,
+    });
+    await session.connect();
+    deliverRunStart(ch, 'run-idem', { serial: 's-start-idem', runClientId: 'owner-idem' });
+
+    const run = session.adoptRun(identityFor('run-idem'));
+    await run.load();
+    await run.load();
+
+    // The second load() did not re-seed the owner; status is unchanged (active).
+    expect(registerRunSpy()).toHaveBeenCalledTimes(1);
+    expect(run.status).toBe('active');
+
+    await session.close();
+    restore();
+  });
+});
+
+describe('open guard + publish-time terminal re-check', () => {
+  it('an adopted run rejects step() before load() with the open-guard message', async () => {
+    const { session, ch } = adoptSession();
+    await session.connect();
+    deliverRunStart(ch, 'run-g', { serial: 's-start-g' });
+
+    const run = session.adoptRun(identityFor('run-g'));
+    // No load() yet — the run is not open.
+    await expectRejectsWithMessage(
+      run.step(async () => {
+        await Promise.resolve();
+      }),
+      ErrorCode.InvalidArgument,
+      'load() or start() must be called before step()',
+    );
+
+    await session.close();
+  });
+
+  it('an adopted run rejects pipe() before load() with the open-guard message', async () => {
+    const { session, ch } = adoptSession();
+    await session.connect();
+    deliverRunStart(ch, 'run-gp', { serial: 's-start-gp' });
+
+    const run = session.adoptRun(identityFor('run-gp'));
+    await expectRejectsWithMessage(
+      run.pipe(streamOf({ type: 'text' })),
+      ErrorCode.InvalidArgument,
+      'load() or start() must be called before pipe()',
+    );
+
+    await session.close();
+  });
+
+  it('end() no-ops when the run went terminal since it opened (concurrent cancel cleanup)', async () => {
+    const { session, ch } = adoptSession();
+    await session.connect();
+    deliverRunStart(ch, 'run-toctou', { serial: 's-start-toctou', runClientId: 'owner-tt' });
+
+    const run = session.adoptRun(identityFor('run-toctou'));
+    await run.load();
+
+    // A concurrent cleanup arm ends the run on the channel AFTER this process
+    // adopted it — the dual-writer cancel window.
+    deliverRunTerminal(ch, EVENT_RUN_END, 'run-toctou', { serial: 's-end-toctou', reason: 'cancelled' });
+    expect(run.status).toBe('cancelled');
+
+    // This in-flight arm's end() must NOT publish a second run-end.
+    await run.end({ reason: 'complete' });
+    expect(ch.publishCalls.filter((m) => m.name === EVENT_RUN_END)).toHaveLength(0);
+
+    await session.close();
+  });
+
+  it('step() rejects when the run went terminal since it opened', async () => {
+    const { session, ch } = adoptSession();
+    await session.connect();
+    deliverRunStart(ch, 'run-toctou2', { serial: 's-start-toctou2', runClientId: 'owner-tt2' });
+
+    const run = session.adoptRun(identityFor('run-toctou2'));
+    await run.load();
+
+    deliverRunTerminal(ch, EVENT_RUN_END, 'run-toctou2', { serial: 's-end-toctou2', reason: 'cancelled' });
+
+    await expectRejectsWithMessage(
+      run.step(async () => {
+        await Promise.resolve();
+      }),
+      ErrorCode.InvalidArgument,
+      'read-only',
+    );
+    // The step published no bracket.
+    expect(stepHeadersOf(ch, 'ai-step-start')).toHaveLength(0);
+
+    await session.close();
+  });
+
+  it('a created run end() no-ops after a concurrent terminal (start path re-check)', async () => {
+    const { session, ch } = adoptSession();
+    await session.connect();
+    const run = createRunFromOpts(session, { runId: 'run-1' });
+    await run.start();
+
+    // run-1 is opened by THIS process; a concurrent cleanup terminal folds in
+    // (the optimistic run-node's status advances to cancelled).
+    deliverRunTerminal(ch, EVENT_RUN_END, 'run-1', { serial: 's-end-1', reason: 'cancelled' });
+    expect(run.status).toBe('cancelled');
+
+    const endsBefore = ch.publishCalls.filter((m) => m.name === EVENT_RUN_END).length;
+    await run.end({ reason: 'complete' });
+    // No additional run-end published by this arm.
+    expect(ch.publishCalls.filter((m) => m.name === EVENT_RUN_END).length).toBe(endsBefore);
 
     await session.close();
   });

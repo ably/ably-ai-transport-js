@@ -323,12 +323,44 @@ export type RunEndParams =
     };
 
 /**
+ * The identity of an existing run, passed to {@link AgentSession.adoptRun} so a
+ * fresh process can resolve that run's write context off the channel and adopt
+ * it for publishing. The three fields are plain data threaded across the process
+ * boundary by the orchestration that opened the run — the run object itself does
+ * not cross processes (its read-model is reconstructible from the channel).
+ */
+export interface AdoptIdentity {
+  /**
+   * The existing run's id. Authoritative: unlike {@link AgentRun.start}'s
+   * continuation path, {@link AdoptedRun.load} does NOT re-key the run from the
+   * trigger event's `run-id` header (for a delegation trigger that header names
+   * the PARENT run, not this one).
+   */
+  runId: string;
+  /**
+   * This activity's invocation id — e.g. the step/end activity's id, or a
+   * distinct cancel-cleanup id. Stamped on every event this process publishes
+   * for the run. Independent of the run's owner identity.
+   */
+  invocationId: string;
+  /**
+   * The id of the event whose headers resolve the run's write-time anchors (an
+   * `ai-input` for a normal turn). The same trigger every activity of an
+   * invocation resolves against — a step carries no input event of its own.
+   */
+  triggerEventId: string;
+}
+
+/**
  * A server-side run with explicit lifecycle methods, extending the shared
- * {@link BaseRun} read-model with the agent's lifecycle surface. Generic over
- * the codec's output, projection, and message types. `TProjection` is retained
- * for parameter symmetry with {@link AgentSession.createRun}; it does not
- * appear in the run's public surface today but keeps the type slot available
- * for future per-run projection accessors.
+ * {@link BaseRun} read-model with the agent's lifecycle surface. The COMMON
+ * publishable surface shared by {@link OpenableRun} (which adds `start()`) and
+ * {@link AdoptedRun} (which adds `load()`) — the opening verb is factory-specific
+ * so opening a created run with `load()`, or an adopted run with `start()`, is a
+ * compile error. Generic over the codec's output, projection, and message types.
+ * `TProjection` is retained for parameter symmetry with
+ * {@link AgentSession.createRun}; it does not appear in the run's public surface
+ * today but keeps the type slot available for future per-run projection accessors.
  *
  * `runId`, `status`, `error`, and the whole-turn `messages` come from
  * {@link BaseRun}; the members below are the agent's own.
@@ -349,9 +381,9 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
 
   /**
    * Read-only, leaf-pinned {@link View} of this run's branch — the parent chain
-   * from the run's triggering input back to the conversation root. Pinned at
-   * `createRun` to `invocation.inputEventId`; empty until that trigger folds into
-   * the Tree (live or via `loadOlder`). The same paginating read base the
+   * from the run's triggering input back to the conversation root. Pinned once
+   * the run's opening verb ({@link OpenableRun.start} / {@link AdoptedRun.load})
+   * resolves the trigger; empty until then. The same paginating read base the
    * client's `session.view` exposes, with no navigation or write path.
    *
    * Where {@link BaseRun.messages} is this run's own turn, `view` is a
@@ -359,13 +391,6 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
    * conversation to feed the model comes from {@link AgentRun.loadConversation}.
    */
   readonly view: View<TMessage>;
-
-  /**
-   * Publish the run's opening lifecycle event to the channel (run-start, or
-   * run-resume for a continuation). Must be called before any other run method
-   * (pipe, suspend, end).
-   */
-  start(): Promise<void>;
 
   /**
    * Pipe a ReadableStream through the encoder to the channel.
@@ -404,9 +429,10 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
    * never publishes `ai-run-end` and every observer's UI stays stuck on
    * `streaming`.
    *
-   * A step terminal is NOT a run terminal: call {@link Run.suspend} /
-   * {@link Run.end} afterwards exactly as for {@link Run.pipe}. Must be called
-   * after {@link Run.start}; throws `InvalidArgument` if the run has already
+   * A step terminal is NOT a run terminal: call {@link AgentRun.suspend} /
+   * {@link AgentRun.end} afterwards exactly as for {@link AgentRun.pipe}. The run
+   * must be open ({@link OpenableRun.start} or an adopting {@link AdoptedRun.load}
+   * called first); throws `InvalidArgument` if the run is not open or has already
    * ended or suspended.
    *
    * `stepId` resolution (see {@link StepOptions.stepId}): an explicit
@@ -451,17 +477,83 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
    * waiting on participant input (e.g. a client-side tool execution or a
    * server-side tool approval): the run stays live and a later invocation can
    * resume it under the same `runId`. Like {@link AgentRun.end}, it is terminal
-   * for this run instance — the resuming invocation builds a fresh run. Must be
-   * called after {@link AgentRun.start}; a no-op if the run has already ended or
-   * suspended.
+   * for this run instance — the resuming invocation builds a fresh run. The run
+   * must be open ({@link OpenableRun.start} or an adopting {@link AdoptedRun.load}
+   * called first); a no-op if the run has already ended or suspended.
    */
   suspend(): Promise<void>;
 
   /**
-   * Publish run-end event to the channel and clean up. Terminal.
+   * Publish run-end event to the channel and clean up. Terminal. The run must be
+   * open ({@link OpenableRun.start} or an adopting {@link AdoptedRun.load} called
+   * first); a no-op if the run has already ended or suspended.
    * @param params - How the run ended; see {@link RunEndParams}.
    */
   end(params: RunEndParams): Promise<void>;
+}
+
+/**
+ * A created run: the OPENING role. {@link OpenableRun.start} publishes the run's
+ * opening lifecycle event (`ai-run-start`, or `ai-run-resume` for a continuation
+ * whose trigger carries a run-id) and opens the run for publishing. Returned by
+ * {@link AgentSession.createRun}. `load()` is not available — a created run is
+ * opened by publishing, never adopted.
+ */
+export interface OpenableRun<TOutput extends CodecOutputEvent, TProjection, TMessage> extends AgentRun<
+  TOutput,
+  TProjection,
+  TMessage
+> {
+  /**
+   * Resolve the run's write-time anchors from the channel, publish its opening
+   * lifecycle event (run-start, or run-resume for a continuation), and open it
+   * for publishing. Must be called before any other run method (pipe, step,
+   * suspend, end). Idempotent — a second call is a no-op.
+   * @throws {Ably.ErrorInfo} `InputEventNotFound` when the triggering input event
+   *   is not observed within the session's `inputEventLookupTimeoutMs`;
+   *   `InvalidArgument` when the run was cancelled before `start()`;
+   *   `RunLifecycleError` when the opening publish fails.
+   */
+  start(): Promise<void>;
+}
+
+/**
+ * An adopted run: the CONTINUE role. {@link AdoptedRun.load} resolves the run's
+ * write context off the channel and adopts an already-open run for publishing in
+ * THIS process WITHOUT publishing an opening event. Returned by
+ * {@link AgentSession.adoptRun} for a step / end / cancel-cleanup activity that
+ * an orchestrator runs in a fresh process. `start()` is not available — an
+ * adopted run was opened elsewhere; publishing another opening event would
+ * corrupt its lifecycle.
+ */
+export interface AdoptedRun<TOutput extends CodecOutputEvent, TProjection, TMessage> extends AgentRun<
+  TOutput,
+  TProjection,
+  TMessage
+> {
+  /**
+   * Resolve this run's write context from the channel and adopt it for publishing
+   * in this process, WITHOUT publishing an opening event. Locates the trigger
+   * event ({@link AdoptIdentity.triggerEventId}) and resolves the run's anchors
+   * from its headers; waits (bounded by `timeoutMs`) for the run's `ai-run-start`
+   * to hydrate so its `startSerial` is confirmed; then status-gates: an `active`
+   * run is adopted; a `suspended` or terminal run is rejected. Idempotent — a
+   * second call is a no-op.
+   *
+   * Side effects on success: pins {@link AgentRun.view} to the triggering branch;
+   * seeds the run's owner into the run manager so output AND the terminal stamp
+   * the real `run-client-id`; and MAY fire {@link AgentRun.abortSignal} before
+   * returning if a cancel for this run already arrived (it pulls a deferred
+   * cancel, as `start()`'s resolve does).
+   * @param options - Adopt options.
+   * @param options.timeoutMs - How long to wait for the run's `ai-run-start` to
+   *   be observed on the channel before rejecting. Defaults to 30000.
+   * @throws {Ably.ErrorInfo} `InvalidArgument` when the run is suspended
+   *   ("resume via `createRun().start()`") or terminal (read-only);
+   *   `InputEventNotFound` when the trigger event or the run's `ai-run-start` is
+   *   not observed within `timeoutMs` (a workflow-ordering error; retryable).
+   */
+  load(options?: { timeoutMs?: number }): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -512,23 +604,40 @@ export interface AgentSession<TOutput extends CodecOutputEvent, TProjection, TMe
    * subscribe is deliberately unfiltered so channel-history-replayed input
    * events reach the materialisation engine, which the input-event lookup
    * queries via the Tree. Idempotent — subsequent calls return the same
-   * promise. All run methods (`start`, `pipe`, `loadConversation`,
-   * `suspend`, `end`) throw `InvalidArgument` until
+   * promise. All run methods (`start` / `load`, `pipe`, `step`,
+   * `loadConversation`, `suspend`, `end`) throw `InvalidArgument` until
    * `connect()` has been *called*; once it has, they await the in-flight
    * connect promise rather than throwing.
    */
   connect(): Promise<void>;
 
   /**
-   * Create a new run from an invocation. Synchronous — no channel activity
-   * until start() is called. The run is registered for cancel routing
-   * immediately so that early cancels fire the AbortSignal.
+   * Create a new run from an invocation — the OPENING role. Returns an
+   * {@link OpenableRun} whose `start()` publishes the run's opening event.
+   * Synchronous — no channel activity until `start()` is called. The run is
+   * registered for cancel routing immediately so that early cancels fire the
+   * AbortSignal.
    * @param invocation - The {@link Invocation} carrying run identity and
    *   conversation messages.
    * @param runtime - Optional runtime hooks and external AbortSignal
    *   (e.g. the HTTP request's `req.signal`).
    */
-  createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): AgentRun<TOutput, TProjection, TMessage>;
+  createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): OpenableRun<TOutput, TProjection, TMessage>;
+
+  /**
+   * Adopt an existing run by its {@link AdoptIdentity} — the CONTINUE role for a
+   * step / end / cancel-cleanup activity running in a fresh process. Returns an
+   * {@link AdoptedRun} whose `load()` resolves the run's write context off the
+   * channel and adopts it WITHOUT publishing an opening event. Synchronous — no
+   * channel activity until `load()` is called. The run is registered for cancel
+   * routing immediately so that early cancels fire the AbortSignal.
+   * @param identity - The existing run's {@link AdoptIdentity} (runId,
+   *   invocationId, triggerEventId).
+   * @param runtime - Optional runtime hooks and external AbortSignal. The
+   *   `runtime.runId` / `runtime.invocationId` overrides do not apply — identity
+   *   comes from `identity`.
+   */
+  adoptRun(identity: AdoptIdentity, runtime?: RunRuntime<TOutput>): AdoptedRun<TOutput, TProjection, TMessage>;
 
   /**
    * Subscribe to non-fatal session-level errors not scoped to any run —

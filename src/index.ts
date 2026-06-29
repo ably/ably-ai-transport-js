@@ -1,5 +1,7 @@
 // Core transport
 export type {
+  AdoptedRun,
+  AdoptIdentity,
   AgentRun,
   AgentSession,
   AgentSessionOptions,
@@ -14,6 +16,7 @@ export type {
   InputNode,
   InvocationData,
   LoadConversationOptions,
+  OpenableRun,
   OutputEvent,
   PipeOptions,
   RunEndParams,

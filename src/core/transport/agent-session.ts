@@ -5,9 +5,13 @@
  * lifecycle. Cancel message routing is handled directly by the session's
  * single channel subscription — no separate cancel manager needed.
  *
- * The session exposes a single factory method — `createRun()` — which returns
- * an AgentRun with explicit lifecycle methods: start(), pipe(), suspend(),
- * and end() (suspend() and end() are both terminal).
+ * The session exposes two run-construction factories with different return
+ * types: `createRun()` returns an OpenableRun (its `start()` opens a new run by
+ * publishing) and `adoptRun()` returns an AdoptedRun (its `load()` adopts an
+ * already-open run for publishing in a fresh process, without publishing an
+ * opening event). Both share the common publishable surface — pipe(), step(),
+ * suspend(), and end() (suspend() and end() are both terminal) — built by one
+ * internal run-object builder parameterised by an opening strategy.
  */
 
 import * as Ably from 'ably';
@@ -36,7 +40,7 @@ import { readCancelTarget } from './cancel-envelope.js';
 import { foldAndEmit, type WireApplier } from './decode-fold.js';
 import { buildTransportHeaders } from './headers.js';
 import { createHistoryHydrator, type HistoryHydrator } from './history-hydrator.js';
-import { locateInputEvent } from './input-event-locator.js';
+import { findTriggerEvent } from './input-event-locator.js';
 import { evictOldestIfFull } from './internal/bounded-map.js';
 import { Invocation } from './invocation.js';
 import { createLeafBranchSource } from './leaf-branch-source.js';
@@ -56,14 +60,18 @@ import {
 } from './session-support.js';
 import type { DefaultTree } from './tree.js';
 import type {
+  AdoptedRun,
+  AdoptIdentity,
   AgentRun,
   AgentSession,
   AgentSessionOptions,
   CancelRequest,
   LoadConversationOptions,
+  OpenableRun,
   PipeOptions,
   RunEndParams,
   RunRuntime,
+  RunStatus,
   RunStep,
   StepEndReason,
   StepOptions,
@@ -105,6 +113,27 @@ enum RunState {
   STARTED = 'started',
   ENDED = 'ended',
 }
+
+/**
+ * How a run is opened, chosen by the construction factory and threaded into the
+ * one internal run-object builder. `start` (from `createRun`) publishes the
+ * opening event and may re-key the run-id from a continuation's trigger header;
+ * `adopt` (from `adoptRun`) resolves anchors only, waits for the run-start to
+ * hydrate, status-gates, seeds the owner, and opens WITHOUT publishing — its
+ * identity is authoritative, so the trigger's run-id header never re-keys it.
+ */
+type OpenStrategy = { open: 'start' } | { open: 'adopt'; identity: AdoptIdentity };
+
+/**
+ * Whether a run status is terminal (no further publishing is valid). The
+ * publish methods re-read {@link AgentRun.status} at entry and no-op / reject on
+ * a terminal — the backstop for a run that went terminal since it was opened
+ * (e.g. a concurrent cancel cleanup).
+ * @param status - The run's current status.
+ * @returns True when the run has reached a terminal status.
+ */
+const isTerminalStatus = (status: RunStatus): boolean =>
+  status === 'complete' || status === 'cancelled' || status === 'error';
 
 // Event map for the session's typed EventEmitter.
 interface AgentSessionEventsMap {
@@ -170,7 +199,7 @@ class DefaultAgentSession<
   private _applier: WireApplier;
   /**
    * The shared channel-history paging engine, bound to the current Tree/applier.
-   * Drives both the pre-run-start input-event lookup ({@link locateInputEvent})
+   * Drives both the pre-open trigger-event lookup ({@link findTriggerEvent})
    * and the AgentView's ancestor hydration off ONE single-flight cursor.
    * Recreated alongside the Tree/applier on continuity loss so the fresh Tree
    * gets a fresh cursor and exhaustion state.
@@ -296,9 +325,22 @@ class DefaultAgentSession<
   }
 
   // Spec: AIT-ST3
-  createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): AgentRun<TOutput, TProjection, TMessage> {
+  createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): OpenableRun<TOutput, TProjection, TMessage> {
     this._logger?.trace('DefaultAgentSession.createRun();', { inputEventId: invocation.inputEventId });
-    return this._createRun(invocation, runtime ?? {});
+    return this._createRun(invocation, runtime ?? {}, { open: 'start' });
+  }
+
+  adoptRun(identity: AdoptIdentity, runtime?: RunRuntime<TOutput>): AdoptedRun<TOutput, TProjection, TMessage> {
+    this._logger?.trace('DefaultAgentSession.adoptRun();', {
+      runId: identity.runId,
+      triggerEventId: identity.triggerEventId,
+    });
+    // The adopt path takes identity from `identity` (authoritative), not the
+    // runtime overrides — its run-id, invocation-id, and trigger come from the
+    // orchestration that opened the run. Build an Invocation pinned to the
+    // trigger event so the shared resolve core looks it up.
+    const invocation = Invocation.fromJSON({ inputEventId: identity.triggerEventId, sessionName: '' });
+    return this._createRun(invocation, runtime ?? {}, { open: 'adopt', identity });
   }
 
   on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void {
@@ -485,7 +527,7 @@ class DefaultAgentSession<
     const continuityErr = continuityLostError(stateChange, 'continue');
 
     // Abort every active run's controller FIRST so in-flight
-    // `loadConversation` / `locateInputEvent` calls observe the abort before
+    // `loadConversation` / `findTriggerEvent` calls observe the abort before
     // the Tree changes underneath them and reject (InvalidArgument from their
     // signal checks; the session-level on('error') carries ChannelContinuityLost).
     for (const reg of this._registeredRuns.values()) {
@@ -521,7 +563,7 @@ class DefaultAgentSession<
    * applier decodes the message and applies the result to the Tree (or
    * routes lifecycle messages through `applyRunLifecycle`);
    * `emitAblyMessage` notifies Tree subscribers AND populates the event-id
-   * index the input-event lookup ({@link locateInputEvent}) reads.
+   * index the trigger-event lookup ({@link findTriggerEvent}) reads.
    *
    * A message that surfaces via more than one path (the live listener and
    * the hydrator's history walk) does not
@@ -581,33 +623,57 @@ class DefaultAgentSession<
   // Run creation
   // -------------------------------------------------------------------------
 
-  private _createRun(invocation: Invocation, runtime: RunRuntime<TOutput>): AgentRun<TOutput, TProjection, TMessage> {
-    // The run-id is not carried in the invocation body — the agent mints it.
-    // Mint a provisional id now (or take the `runtime.runId` override for
-    // tests / in-process drivers) — this IS the id for a fresh run. A
-    // continuation overrides it in `Run.start()` with the existing run-id read
-    // off the triggering input event's message headers (the run it re-enters).
-    // Mirrors the invocationId mint below.
-    let runId = runtime.runId ?? crypto.randomUUID();
-    // Whether the run-id was supplied via the runtime override. Together with
-    // `resolvedContinuation` (set in start() when the triggering input carries
-    // a wire run-id) this decides whether the id is "adopted" — an adopted id
-    // can name a run that already exists in channel history; a freshly-minted
-    // UUID cannot, so hydration must not demand its node from history.
-    const runIdOverridden = runtime.runId !== undefined;
-    // The agent mints the invocation id — one per HTTP request that invokes
-    // it. A per-run override (runtime.invocationId) supports deterministic ids
-    // in tests and in-process drivers.
-    const invocationId = runtime.invocationId ?? crypto.randomUUID();
+  private _createRun(
+    invocation: Invocation,
+    runtime: RunRuntime<TOutput>,
+    strategy: { open: 'start' },
+  ): OpenableRun<TOutput, TProjection, TMessage>;
+  private _createRun(
+    invocation: Invocation,
+    runtime: RunRuntime<TOutput>,
+    strategy: { open: 'adopt'; identity: AdoptIdentity },
+  ): AdoptedRun<TOutput, TProjection, TMessage>;
+  private _createRun(
+    invocation: Invocation,
+    runtime: RunRuntime<TOutput>,
+    strategy: OpenStrategy,
+  ): OpenableRun<TOutput, TProjection, TMessage> | AdoptedRun<TOutput, TProjection, TMessage> {
+    const adopting = strategy.open === 'adopt';
+    // Identity. For a created run the agent mints a provisional run-id (or takes
+    // the `runtime.runId` override) — a continuation re-keys it in `start()` from
+    // the trigger's `run-id` header. For an adopted run the identity is
+    // AUTHORITATIVE: its run-id / invocation-id come from `AdoptIdentity` and the
+    // trigger's run-id header NEVER re-keys it.
+    let runId = strategy.open === 'adopt' ? strategy.identity.runId : (runtime.runId ?? crypto.randomUUID());
+    // Whether the run-id may name a run that already exists in channel history
+    // (so hydration must demand its node from history): true for a runtime
+    // override, a continuation, or an adopted run; false for a freshly-minted UUID.
+    const runIdOverridden = adopting || runtime.runId !== undefined;
+    // The invocation id is the agent's mint (one per HTTP request) for a created
+    // run, or the authoritative `AdoptIdentity.invocationId` for an adopted one.
+    const invocationId =
+      strategy.open === 'adopt' ? strategy.identity.invocationId : (runtime.invocationId ?? crypto.randomUUID());
     const inputEventLookupTimeoutMs = this._inputEventLookupTimeoutMs;
     const { onMessage, onCancelled, onCancel, onError: runOnError, signal: externalSignal } = runtime;
 
     const controller = new AbortController();
     let state = RunState.INITIALIZED;
-    // Whether the anchor resolve (the input-event lookup + anchor assignment +
-    // continuation identity adoption) has run. Independent of `state` so the
-    // resolve is idempotent on its own: a second call is a no-op, and the
-    // opening publish stays the responsibility of the lifecycle state machine.
+    // Whether the run is open for publishing — set by `start()` (created) or an
+    // adopting `load()` (adopted, active). The publish methods (pipe / step /
+    // suspend / end) guard on this instead of a process-local "started here"
+    // state, so a fresh process that adopted the run can publish.
+    let open = false;
+    // Synchronous re-entrancy latch for the opening verb (start / load). Set
+    // BEFORE the verb's first await so two overlapping calls can't both fall
+    // through and double-publish run-start / double-seed the owner — `open` only
+    // flips AFTER the publish/adopt completes, leaving a window the latch closes.
+    // Never reset on a throw: a failed open does not re-open (mirrors the prior
+    // synchronous `state = STARTED` guard).
+    let opening = false;
+    // Whether the anchor resolve (the trigger-event lookup + anchor assignment +
+    // continuation identity adoption) has run. Independent of `state` / `open` so
+    // the resolve is idempotent on its own: a second call is a no-op, and the
+    // opening verb stays the responsibility of start() / load().
     let resolved = false;
 
     // Compose the internal controller signal with the external signal (e.g.
@@ -780,9 +846,20 @@ class DefaultAgentSession<
     ): Promise<StreamResult> => {
       await requireConnected('pipe');
 
-      if (state === RunState.INITIALIZED) {
+      if (!open) {
         throw new Ably.ErrorInfo(
-          `unable to pipe stream; start() must be called before pipe() (run ${runId})`,
+          `unable to pipe stream; load() or start() must be called before pipe() (run ${runId})`,
+          ErrorCode.InvalidArgument,
+          400,
+        );
+      }
+      // Publish-time terminal re-check (the TOCTOU / dual-writer backstop): the
+      // run can go terminal between open and now — notably the cancel dual-path,
+      // where a workflow cleanup arm publishes run-end while this in-flight arm is
+      // still live. Reject rather than publish output onto an already-ended run.
+      if (isTerminalStatus(base.status)) {
+        throw new Ably.ErrorInfo(
+          `unable to pipe stream; run ${runId} is already ${base.status} (read-only)`,
           ErrorCode.InvalidArgument,
           400,
         );
@@ -853,31 +930,39 @@ class DefaultAgentSession<
 
     /**
      * Resolve the run's write-time anchors from the channel, WITHOUT publishing.
-     * Looks up the triggering input event, assigns the closure anchors read off
-     * its headers (`resolvedClientId` / `resolvedParent` / `resolvedForkOf` /
+     * Looks up the triggering event, assigns the closure anchors read off its
+     * headers (`resolvedClientId` / `resolvedParent` / `resolvedForkOf` /
      * `resolvedRegenerates` / `resolvedInputCodecMessageId` /
-     * `resolvedInputClientId` / `assistantParentFallback`), adopts a
-     * continuation's wire run-id as this run's identity (re-keying the
-     * registration so cancel routing / deregistration resolve to the real run),
-     * pins `run.view` to the resolved branch, and pulls any cancel buffered
-     * before the run was known. Idempotent: a second call is a no-op so a
-     * `start()` after a standalone resolve does not re-look-up.
+     * `resolvedInputClientId` / `assistantParentFallback`), pins `run.view` to
+     * the resolved branch, and pulls any cancel buffered before the run was
+     * known. Idempotent: a second call is a no-op so the opening verb after a
+     * standalone resolve does not re-look-up.
      *
-     * Throws (and deregisters the run) if the input-event lookup fails, having
+     * Identity is anchor-only here: a CREATED run (`start()`) may adopt a
+     * continuation's wire run-id as its identity (re-keying the registration so
+     * cancel routing / deregistration resolve to the real run); an ADOPTED run
+     * (`load()`) takes `identity.runId` as authoritative and the trigger's run-id
+     * header NEVER re-keys it (for a delegation trigger that header names the
+     * PARENT run). The `identityAuthoritative` flag (true for adopt) gates the
+     * re-key.
+     *
+     * Throws (and deregisters the run) if the trigger-event lookup fails, having
      * published nothing, so the lifecycle invariant holds for other observers. A
      * deferred cancel pulled here may abort `signal` before this returns.
+     * @param identityAuthoritative - When true (adopt), the trigger's run-id
+     *   header does not re-key the run; the run-id is authoritative from identity.
      */
-    const resolve = async (): Promise<void> => {
+    const resolve = async (identityAuthoritative: boolean): Promise<void> => {
       if (resolved) return;
 
-      // Look up the triggering input event on the channel so the agent
-      // can read the user's message and per-run metadata (parent, forkOf,
-      // continuation flag) before publishing run-start. Skip when
-      // inputEventLookupTimeoutMs === 0 (tests and in-process drivers) or
-      // when no inputEventId is set (invocation requires no channel lookup).
+      // Look up the triggering event on the channel so the agent can read the
+      // user's message and per-run metadata (parent, forkOf, continuation flag)
+      // before opening. Skip when inputEventLookupTimeoutMs === 0 (tests and
+      // in-process drivers) or when no inputEventId is set (invocation requires
+      // no channel lookup).
       if (inputEventId && inputEventLookupTimeoutMs > 0) {
         try {
-          const found = await locateInputEvent({
+          const found = await findTriggerEvent({
             tree: getTree(),
             hydrator: getHydrator(),
             invocationId,
@@ -894,7 +979,7 @@ class DefaultAgentSession<
             error instanceof Ably.ErrorInfo
               ? error
               : new Ably.ErrorInfo(
-                  `unable to look up input event; ${errorMessage(error)}`,
+                  `unable to look up trigger event; ${errorMessage(error)}`,
                   ErrorCode.InputEventNotFound,
                   504,
                 );
@@ -904,7 +989,7 @@ class DefaultAgentSession<
           // `ai-run-end` without a preceding `ai-run-start` would break
           // the lifecycle invariant for other channel observers.
           deregisterRun();
-          logger?.error('Run.start(); input-event lookup failed', { runId, invocationId });
+          logger?.error('Run.resolve(); trigger-event lookup failed', { runId, invocationId });
           throw errInfo;
         }
       }
@@ -924,15 +1009,17 @@ class DefaultAgentSession<
         resolvedRegenerates = sourceHeaders[HEADER_MSG_REGENERATE];
         resolvedInputCodecMessageId = sourceHeaders[HEADER_CODEC_MESSAGE_ID];
 
-        // The triggering input's run-id (if any) IS this run's identity.
-        // Present → a continuation re-entering that run: adopt the id,
-        // overriding the provisional one minted at construction, and re-key
-        // the registration so cancel routing / deregistration resolve to the
-        // real run. Absent → a fresh run: the provisional id stands and the
-        // run opens with run-start.
+        // The triggering input's run-id (if any). For a CREATED run it IS this
+        // run's identity: present → a continuation re-entering that run, so adopt
+        // the id, overriding the provisional one minted at construction, and
+        // re-key the registration so cancel routing / deregistration resolve to
+        // the real run; absent → a fresh run, the provisional id stands and the
+        // run opens with run-start. For an ADOPTED run (identityAuthoritative)
+        // the run-id is fixed from `AdoptIdentity` and the trigger's run-id
+        // header NEVER re-keys it (a delegation trigger carries the PARENT's id).
         const wireRunId = sourceHeaders[HEADER_RUN_ID];
         resolvedContinuation = wireRunId !== undefined;
-        if (wireRunId !== undefined && wireRunId !== runId) {
+        if (!identityAuthoritative && wireRunId !== undefined && wireRunId !== runId) {
           registeredRuns.delete(runId);
           runId = wireRunId;
           registration.runId = runId;
@@ -972,6 +1059,125 @@ class DefaultAgentSession<
       resolved = true;
     };
 
+    /**
+     * Visibility-wait for an adopted run's `ai-run-start` to hydrate so its
+     * `startSerial` is confirmed on the Tree, bounded by `timeoutMs`. The
+     * opener's optimistic run-node insert is LOCAL to its process, so a fresh
+     * adopting process's Tree has no run node until it hydrates the run-start
+     * off the channel. Races the same three sources the trigger lookup does — a
+     * pre-scan of the Tree, live `ably-message` arrivals, and the shared
+     * serial-confirmed history hydrate (the same one the read path gates adopted
+     * ids on) — and resolves when `getRunNode(runId)?.startSerial` is set.
+     *
+     * On timeout it rejects with `InputEventNotFound` (retryable — a
+     * workflow-ordering error: the run-start has not arrived yet); on signal
+     * abort with `InvalidArgument`.
+     * @param waitRunId - The run-id whose run-start to wait for.
+     * @param timeoutMs - Maximum wait before rejecting.
+     */
+    const waitForRunStart = async (waitRunId: string, timeoutMs: number): Promise<void> => {
+      const confirmed = (): boolean => getTree().getRunNode(waitRunId)?.startSerial !== undefined;
+      if (confirmed()) return;
+
+      // Bounded history fetch in parallel with the live wait; its own controller
+      // cancels the in-flight fetch on timeout / abort independently of the run.
+      const historyController = new AbortController();
+
+      // Executor params named settle/fail so they do not shadow the outer
+      // anchor-resolver `resolve` closure.
+      await new Promise<void>((settle, fail) => {
+        let settled = false;
+        // A genuine history-scan failure (not a cancel-induced abort), recorded
+        // so the timeout rejection can surface it as `cause` — the live path may
+        // still win the race, so the failure alone does not reject.
+        let historyError: Ably.ErrorInfo | undefined;
+        /* eslint-disable prefer-const -- forward-declared so cleanup() can reference onAbort before its assignment, mirroring findTriggerEvent. */
+        let unregisterLive: (() => void) | undefined;
+        let timer: ReturnType<typeof setTimeout> | number | undefined;
+        /* eslint-enable */
+
+        const cleanup = (): void => {
+          if (unregisterLive) unregisterLive();
+          if (timer !== undefined) clearTimeout(timer);
+          historyController.abort();
+          signal.removeEventListener('abort', onAbort);
+        };
+
+        const finishOk = (): void => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          logger?.debug('Run.load(); run-start observed', { runId: waitRunId, invocationId });
+          settle();
+        };
+
+        const onAbort = (): void => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          fail(
+            new Ably.ErrorInfo(`unable to load run; run ${waitRunId} was cancelled`, ErrorCode.InvalidArgument, 400),
+          );
+        };
+
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+
+        // Live arrivals (and hydrator folds, which surface through the same
+        // event) re-check the predicate.
+        unregisterLive = getTree().on('ably-message', () => {
+          if (!settled && confirmed()) finishOk();
+        });
+        // A live arrival may have landed between the pre-check and the subscribe.
+        if (confirmed()) {
+          finishOk();
+          return;
+        }
+
+        // Drive the shared serial-confirmed history hydrate until the run-start
+        // is confirmed or the channel is exhausted. A failure is recorded so the
+        // timeout can surface it as `cause`; the live path may still win.
+        getHydrator()
+          .foldUntil(() => settled || confirmed(), historyController.signal)
+          .catch((error: unknown) => {
+            if (settled) return;
+            historyError =
+              error instanceof Ably.ErrorInfo
+                ? error
+                : new Ably.ErrorInfo(
+                    `unable to scan history for run-start; ${errorMessage(error)}`,
+                    ErrorCode.HistoryFetchFailed,
+                    500,
+                    errorCause(error),
+                  );
+            logger?.warn('Run.load(); history scan failed (continuing on live path)', {
+              runId: waitRunId,
+              error: errorMessage(error),
+            });
+          });
+
+        timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          fail(
+            new Ably.ErrorInfo(
+              `unable to load run; run-start for run ${waitRunId} not observed within ${String(timeoutMs)}ms`,
+              ErrorCode.InputEventNotFound,
+              504,
+              historyError,
+            ),
+          );
+        }, timeoutMs);
+        if (typeof timer === 'object') timer.unref();
+      });
+    };
+
+    // The common publishable surface, shared by the OpenableRun and AdoptedRun
+    // returns. The opening verb (start / load) is attached per-strategy below.
     const run: AgentRun<TOutput, TProjection, TMessage> = {
       // Shared read members delegate to `base` (live getters, not snapshots).
       get runId() {
@@ -994,70 +1200,6 @@ class DefaultAgentSession<
       },
       get view() {
         return view;
-      },
-
-      // Spec: AIT-ST4, AIT-ST4a, AIT-ST4b
-      start: async (): Promise<void> => {
-        logger?.trace('Run.start();', { runId, inputEventId });
-
-        await requireConnected('start');
-
-        // Spec: AIT-ST4a
-        if (signal.aborted) {
-          throw new Ably.ErrorInfo(
-            `unable to start run; run ${runId} was cancelled before start()`,
-            ErrorCode.InvalidArgument,
-            400,
-          );
-        }
-        if (state !== RunState.INITIALIZED) return;
-        state = RunState.STARTED;
-
-        // Resolve the run's write-time anchors from the channel (input-event
-        // lookup + anchor assignment + continuation identity adoption) before
-        // publishing run-start. A lookup failure throws here, having already
-        // deregistered the run — start() publishes nothing in that case.
-        await resolve();
-
-        await publishLifecycle('run-start', 'start', async () =>
-          runManager.startRun(runId, resolvedClientId, controller, {
-            // Stamp the reply run's STRUCTURAL parent (its input node, M_user) —
-            // the same value the output path stamps — not the input message's own
-            // parent. Makes `parent` structural on every message so the Tree's two
-            // creation paths agree regardless of arrival order. Valid only now
-            // that M_user is a separate input node (the two-node flip).
-            parent: assistantParentFallback,
-            forkOf: resolvedForkOf,
-            regenerates: resolvedRegenerates,
-            invocationId,
-            inputClientId: resolvedInputClientId,
-            inputCodecMessageId: resolvedInputCodecMessageId,
-            continuation: resolvedContinuation,
-          }),
-        );
-
-        // Optimistically insert the fresh run's node into the session Tree so
-        // reads that follow start() (loadConversation, Run.messages) see the
-        // run immediately rather than depending on the channel echo of the
-        // run-start just published. The echo (or a history fold) reconciles
-        // through the Tree's run-start handling, promoting startSerial onto
-        // this serial-less node. Continuations re-enter an existing run via
-        // run-resume, which creates no structure — their node comes from
-        // history hydration instead.
-        if (!resolvedContinuation) {
-          getTree().applyRunLifecycle({
-            type: 'start',
-            runId,
-            clientId: resolvedClientId ?? '',
-            serial: undefined,
-            invocationId,
-            ...(assistantParentFallback !== undefined && { parent: assistantParentFallback }),
-            ...(resolvedForkOf !== undefined && { forkOf: resolvedForkOf }),
-            ...(resolvedRegenerates !== undefined && { regenerates: resolvedRegenerates }),
-          });
-        }
-
-        logger?.debug('Run.start(); run started', { runId, inputEventId });
       },
 
       loadConversation: async (options?: LoadConversationOptions): Promise<TMessage[]> => {
@@ -1090,9 +1232,9 @@ class DefaultAgentSession<
 
         await requireConnected('step');
 
-        if (state === RunState.INITIALIZED) {
+        if (!open) {
           throw new Ably.ErrorInfo(
-            `unable to run step; start() must be called before step() (run ${runId})`,
+            `unable to run step; load() or start() must be called before step() (run ${runId})`,
             ErrorCode.InvalidArgument,
             400,
           );
@@ -1100,6 +1242,16 @@ class DefaultAgentSession<
         if (state === RunState.ENDED) {
           throw new Ably.ErrorInfo(
             `unable to run step; run ${runId} has already ended`,
+            ErrorCode.InvalidArgument,
+            400,
+          );
+        }
+        // Publish-time terminal re-check (TOCTOU / dual-writer backstop): a
+        // concurrent cleanup can end the run between open and now; reject rather
+        // than bracket a step onto an already-terminal run.
+        if (isTerminalStatus(base.status)) {
+          throw new Ably.ErrorInfo(
+            `unable to run step; run ${runId} is already ${base.status} (read-only)`,
             ErrorCode.InvalidArgument,
             400,
           );
@@ -1185,9 +1337,9 @@ class DefaultAgentSession<
 
         await requireConnected('suspend');
 
-        if (state === RunState.INITIALIZED) {
+        if (!open) {
           throw new Ably.ErrorInfo(
-            `unable to suspend run; start() must be called before suspend() (run ${runId})`,
+            `unable to suspend run; load() or start() must be called before suspend() (run ${runId})`,
             ErrorCode.InvalidArgument,
             400,
           );
@@ -1195,6 +1347,16 @@ class DefaultAgentSession<
         // ENDED is the terminal state for either an end or a suspend on this
         // Run instance; a second terminal call is a no-op.
         if (state === RunState.ENDED) return;
+        // Publish-time terminal re-check (TOCTOU / dual-writer backstop): the run
+        // went terminal since open (e.g. a concurrent cancel cleanup published
+        // run-end). No-op rather than publish a suspend onto an ended run; still
+        // settle this instance and clean up.
+        if (isTerminalStatus(base.status)) {
+          state = RunState.ENDED;
+          deregisterRun();
+          logger?.debug('Run.suspend(); run already terminal, skipping publish', { runId, status: base.status });
+          return;
+        }
         state = RunState.ENDED;
 
         try {
@@ -1216,14 +1378,24 @@ class DefaultAgentSession<
 
         await requireConnected('end');
 
-        if (state === RunState.INITIALIZED) {
+        if (!open) {
           throw new Ably.ErrorInfo(
-            `unable to end run; start() must be called before end() (run ${runId})`,
+            `unable to end run; load() or start() must be called before end() (run ${runId})`,
             ErrorCode.InvalidArgument,
             400,
           );
         }
         if (state === RunState.ENDED) return;
+        // Publish-time terminal re-check (TOCTOU / dual-writer backstop): the run
+        // went terminal since open (e.g. a concurrent cancel cleanup published
+        // run-end). No-op rather than publish a second terminal; still settle
+        // this instance and clean up.
+        if (isTerminalStatus(base.status)) {
+          state = RunState.ENDED;
+          deregisterRun();
+          logger?.debug('Run.end(); run already terminal, skipping publish', { runId, status: base.status });
+          return;
+        }
         state = RunState.ENDED;
 
         try {
@@ -1238,7 +1410,183 @@ class DefaultAgentSession<
       },
     };
 
-    return run;
+    // -----------------------------------------------------------------------
+    // The opening verb — factory-specific, attached to the common run.
+    // -----------------------------------------------------------------------
+
+    /**
+     * Open a created run: resolve anchors, publish the opening lifecycle event
+     * (run-start, or run-resume for a continuation), and open for publishing.
+     * Idempotent; a lookup failure throws having published nothing.
+     */
+    // Spec: AIT-ST4, AIT-ST4a, AIT-ST4b
+    const start = async (): Promise<void> => {
+      logger?.trace('Run.start();', { runId, inputEventId });
+
+      await requireConnected('start');
+
+      // Spec: AIT-ST4a — the cancelled-before-start check precedes the latch so
+      // a retry of a run cancelled before start() re-throws rather than no-oping.
+      if (signal.aborted) {
+        throw new Ably.ErrorInfo(
+          `unable to start run; run ${runId} was cancelled before start()`,
+          ErrorCode.InvalidArgument,
+          400,
+        );
+      }
+      // Synchronous re-entrancy latch (no await between here and the resolve
+      // below): a second overlapping start() returns without double-publishing.
+      if (opening) return;
+      opening = true;
+
+      // Resolve the run's write-time anchors from the channel (trigger-event
+      // lookup + anchor assignment + continuation identity adoption) before
+      // publishing run-start. A lookup failure throws here, having already
+      // deregistered the run — start() publishes nothing in that case. Identity
+      // is NOT authoritative on the created path: a continuation re-keys the
+      // run-id from the trigger's run-id header.
+      await resolve(false);
+
+      await publishLifecycle('run-start', 'start', async () =>
+        runManager.startRun(runId, resolvedClientId, controller, {
+          // Stamp the reply run's STRUCTURAL parent (its input node, M_user) —
+          // the same value the output path stamps — not the input message's own
+          // parent. Makes `parent` structural on every message so the Tree's two
+          // creation paths agree regardless of arrival order. Valid only now
+          // that M_user is a separate input node (the two-node flip).
+          parent: assistantParentFallback,
+          forkOf: resolvedForkOf,
+          regenerates: resolvedRegenerates,
+          invocationId,
+          inputClientId: resolvedInputClientId,
+          inputCodecMessageId: resolvedInputCodecMessageId,
+          continuation: resolvedContinuation,
+        }),
+      );
+
+      // Open for publishing only after the opening event is on the wire.
+      open = true;
+      state = RunState.STARTED;
+
+      // Optimistically insert the fresh run's node into the session Tree so
+      // reads that follow start() (loadConversation, Run.messages) see the
+      // run immediately rather than depending on the channel echo of the
+      // run-start just published. The echo (or a history fold) reconciles
+      // through the Tree's run-start handling, promoting startSerial onto
+      // this serial-less node. Continuations re-enter an existing run via
+      // run-resume, which creates no structure — their node comes from
+      // history hydration instead.
+      if (!resolvedContinuation) {
+        getTree().applyRunLifecycle({
+          type: 'start',
+          runId,
+          clientId: resolvedClientId ?? '',
+          serial: undefined,
+          invocationId,
+          ...(assistantParentFallback !== undefined && { parent: assistantParentFallback }),
+          ...(resolvedForkOf !== undefined && { forkOf: resolvedForkOf }),
+          ...(resolvedRegenerates !== undefined && { regenerates: resolvedRegenerates }),
+        });
+      }
+
+      logger?.debug('Run.start(); run started', { runId, inputEventId });
+    };
+
+    /**
+     * Adopt an already-open run for publishing in this process WITHOUT
+     * publishing an opening event. See {@link AdoptedRun.load} for the contract
+     * and side effects. Resolves anchors, waits for the run's start to hydrate,
+     * status-gates, seeds the owner, and opens without publishing — six steps:
+     * (1+2) resolve anchors off the trigger (identity authoritative — no re-key);
+     * (3) visibility-wait for the run-start to hydrate (`startSerial` confirmed);
+     * (4) status-gate; (5) seed the owner; (6) open. Idempotent.
+     * @param options - Adopt options ({@link AdoptedRun.load}).
+     * @param options.timeoutMs - Visibility-wait bound for the run-start; default 30000.
+     */
+    const load = async (options?: { timeoutMs?: number }): Promise<void> => {
+      logger?.trace('Run.load();', { runId, inputEventId });
+
+      await requireConnected('load');
+
+      // The cancelled-before-load check precedes the latch so a retry of a run
+      // cancelled before load() re-throws rather than no-oping.
+      if (signal.aborted) {
+        throw new Ably.ErrorInfo(
+          `unable to load run; run ${runId} was cancelled before load()`,
+          ErrorCode.InvalidArgument,
+          400,
+        );
+      }
+      // Synchronous re-entrancy latch (no await between here and the resolve
+      // below): a second overlapping load() returns without a double owner-seed
+      // or a double visibility-wait.
+      if (opening) return;
+      opening = true;
+
+      const timeoutMs = options?.timeoutMs ?? 30000;
+
+      // (1+2) Resolve the run's write-time anchors off the trigger event.
+      // Identity is authoritative on the adopt path: `runId` is fixed from
+      // `AdoptIdentity` and the trigger's run-id header does not re-key it. A
+      // lookup failure throws here (deregistered, nothing published).
+      await resolve(true);
+
+      // (3) Visibility-wait: drive the hydrator until the run's `ai-run-start`
+      // is hydrated so its `startSerial` is confirmed. The opener's optimistic
+      // run-node insert is LOCAL to its own process, so a fresh process's Tree
+      // is empty until it hydrates the run-start; this closes that race. Reuses
+      // the same serial-confirmed hydrate the read path gates adopted ids on. On
+      // timeout / abort, deregister before re-throwing — symmetric with the
+      // status-gate rejections below.
+      try {
+        await waitForRunStart(runId, timeoutMs);
+      } catch (error) {
+        deregisterRun();
+        throw error;
+      }
+
+      // (4) Status-gate the adopt. A suspended or terminal run must not be
+      // adopted: suspended needs a resume (a publishing re-entry), terminal is
+      // read-only. Only an active run is adoptable.
+      const status = base.status;
+      if (status === 'suspended') {
+        deregisterRun();
+        throw new Ably.ErrorInfo(
+          `unable to load run; run ${runId} is suspended, resume via createRun().start()`,
+          ErrorCode.InvalidArgument,
+          400,
+        );
+      }
+      if (isTerminalStatus(status)) {
+        deregisterRun();
+        throw new Ably.ErrorInfo(
+          `unable to load run; run ${runId} is terminal (read-only)`,
+          ErrorCode.InvalidArgument,
+          400,
+        );
+      }
+
+      // (5) Seed the owner into the run manager from the run-start's
+      // `run-client-id` (the trigger event's may be empty — read the RunNode).
+      // This feeds BOTH the per-output `run-client-id` and the terminal stamp.
+      // (6) Open for publishing — WITHOUT publishing an opening event.
+      const ownerClientId = getTree().getRunNode(runId)?.clientId;
+      runManager.registerRun(runId, ownerClientId, controller);
+      open = true;
+      state = RunState.STARTED;
+
+      logger?.debug('Run.load(); run adopted', { runId, inputEventId });
+    };
+
+    // Attach the opening verb by mutation (Object.assign), NOT a spread: `run`'s
+    // members are live getters (status / messages / view delegate to `base`), and
+    // spreading would snapshot them to their construction-time (empty) values.
+    if (strategy.open === 'adopt') {
+      const adoptedRun: AdoptedRun<TOutput, TProjection, TMessage> = Object.assign(run, { load });
+      return adoptedRun;
+    }
+    const openableRun: OpenableRun<TOutput, TProjection, TMessage> = Object.assign(run, { start });
+    return openableRun;
   }
 }
 

@@ -186,6 +186,41 @@ describe('createRunOutputStream', () => {
     expect(events.map((e) => e.type)).toEqual(['text-delta', 'text-delta']);
   });
 
+  it('closes on an output-less run-end that lands in the same frame as run-start (microtask gap)', async () => {
+    const mock = createMockSession();
+    // Promise.resolve mints the runId, but its `.then` runs on the next
+    // microtask — a run-end folded synchronously in the same frame finds the
+    // resolved runId still unset. The safety-net awaits it, so it still closes.
+    const { stream } = createRunOutputStream(mock.session, Promise.resolve('run-1'), 'u-1');
+
+    // No output at all (the dead attempt's output was superseded away), then an
+    // immediate run-end while the runId promise is still pending.
+    mock.runEnd('run-1', 'complete');
+
+    const events = await drain(stream);
+    expect(events).toEqual([]);
+  });
+
+  it('closes when run-end races ahead of run-start (deferred runId), once the runId resolves', async () => {
+    const mock = createMockSession();
+    let resolveRunId: ((id: string) => void) | undefined;
+    const runId = new Promise<string>((resolve) => {
+      resolveRunId = resolve;
+    });
+    const { stream } = createRunOutputStream(mock.session, runId, 'u-1');
+
+    // Multi-publisher reorder: run-end arrives BEFORE run-start, so the runId
+    // promise is still pending and the synchronous resolved runId is undefined.
+    mock.output('run-1', [textDelta('partial')], 'u-1');
+    mock.runEnd('run-1', 'complete');
+    // run-start is observed later, resolving the runId for this input — the
+    // awaited safety-net then closes the stream.
+    resolveRunId?.('run-1');
+
+    const events = await drain(stream);
+    expect(events.map((e) => e.type)).toEqual(['text-delta']);
+  });
+
   it('errors the stream when the session emits an error', async () => {
     const mock = createMockSession();
     const { stream } = createRunOutputStream(mock.session, Promise.resolve('run-1'), 'u-1');

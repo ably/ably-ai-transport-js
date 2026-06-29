@@ -157,10 +157,10 @@ describe('useMessagesWithSeed', () => {
       expect(ids(result.current)).toEqual(['u1', 'a1', 'u2', 'a2']);
     });
 
-    rerender({ seed: [m('z1'), m('a1')] });
+    rerender({ seed: [m('z1'), m('u1'), m('a1')] });
 
     await waitFor(() => {
-      expect(ids(result.current)).toEqual(['z1', 'a1', 'u2', 'a2']);
+      expect(ids(result.current)).toEqual(['z1', 'u1', 'a1', 'u2', 'a2']);
     });
   });
 });

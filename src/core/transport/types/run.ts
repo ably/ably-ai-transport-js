@@ -43,8 +43,13 @@ export interface BaseRun<TMessage> {
    * codec-message-id. This is the unit to persist — because every send
    * introduces at most one new message and triggers exactly one run, the union
    * of all runs' `messages` reconstructs the conversation with no gaps or
-   * duplicates. Empty until the run is observed on the Tree. Each access
-   * returns a fresh array, safe to mutate without affecting run state.
+   * duplicates. Persist it once the run is TERMINAL (`status` is one of
+   * `complete` / `error` / `cancelled`): only then is the projection canonical.
+   * Reading mid-run — or mid-supersede, when a crash-recovered attempt is
+   * replacing a dead one — can capture a not-yet-superseded attempt's output;
+   * the terminal is the signal that the fold has settled. Empty until the run is
+   * observed on the Tree. Each access returns a fresh array, safe to mutate
+   * without affecting run state.
    */
   readonly messages: TMessage[];
 }

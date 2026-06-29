@@ -231,13 +231,17 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
    * note a continuation needs no override at all (its run id comes from the
    * channel).
    *
-   * A run is driven by one in-memory instance: {@link Run.step},
-   * {@link Run.suspend}, and {@link Run.end} require {@link Run.start} on that
-   * SAME instance (they read the anchors it resolves), so a turn's
-   * start/step/end belong in one durable activity — a single run cannot be
-   * split across several. A fresh-process retry re-runs `start()` and
-   * re-publishes `ai-run-start` under the stable id; receivers absorb the
-   * repeat idempotently (it never re-opens a terminal run).
+   * A run's lifecycle CAN span several processes under this stable id. `start()`
+   * opens the run in one activity (publishing `ai-run-start` ONCE); a fresh
+   * process then continues it via {@link AgentSession.adoptRun} + `load()`, which
+   * resolves the run's anchors from the channel and adopts it for publishing
+   * WITHOUT republishing `ai-run-start`, before calling {@link Run.step} /
+   * {@link Run.suspend} / {@link Run.end}. The publish methods gate on whether
+   * the run is open — set by `start()` OR an adopting `load()` — not on "was
+   * `start()` called on this instance", so a durable turn's open / step / end
+   * may each be a separate retryable activity. (A fresh-process step retry
+   * adopts and re-emits its `ai-step-start` under the same {@link StepOptions.stepId}
+   * to supersede the dead attempt; it does NOT re-open the run.)
    */
   runId?: string;
 

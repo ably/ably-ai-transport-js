@@ -1970,6 +1970,78 @@ describe('AgentSession', () => {
   // cancel routing
   // -------------------------------------------------------------------------
 
+  describe('durable lifecycle composition', () => {
+    it('threads one constant invocationId across run-start, step-start, step-end, and run-end of a turn', async () => {
+      // Durable execution stamps ONE invocationId per turn on every lifecycle event, so a
+      // receiver correlates a turn's open / step / end whether it ran as one
+      // process or three adopting activities. One process with a fixed id proves
+      // the thread end to end.
+      const run = session.createRun(Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }), {
+        runId: 'run-1',
+        invocationId: 'inv-C',
+      });
+      await run.start();
+      await run.step(async (step) => step.pipe(streamOf({ type: 'text', text: 'a' })), { stepId: 's-0' });
+      await run.end({ reason: 'complete' });
+
+      const runStart = channel.publishCalls.find((m) => m.name === 'ai-run-start');
+      const runEnd = channel.publishCalls.find((m) => m.name === 'ai-run-end');
+      const tStart = (runStart?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+      const tEnd = (runEnd?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+      expect(tStart?.[HEADER_INVOCATION_ID]).toBe('inv-C');
+      expect(tEnd?.[HEADER_INVOCATION_ID]).toBe('inv-C');
+      expect(stepHeadersOf(channel, 'ai-step-start')[0]?.[HEADER_INVOCATION_ID]).toBe('inv-C');
+      expect(stepHeadersOf(channel, 'ai-step-end')[0]?.[HEADER_INVOCATION_ID]).toBe('inv-C');
+    });
+
+    it('the error-handler arm lands ai-run-end{error} after the thrown step closes ai-step-end{failed}', async () => {
+      // The workflow's catch arm still lands a terminal when a step throws: the
+      // step closes `failed`, then the caller publishes ai-run-end{error}, so the
+      // step-end precedes the run terminal on the wire.
+      const run = session.createRun(Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }), {
+        runId: 'run-1',
+        invocationId: 'inv-C',
+      });
+      await run.start();
+      await expect(
+        run.step(
+          async () => {
+            await Promise.resolve();
+            throw new Error('boom');
+          },
+          { stepId: 's-0' },
+        ),
+      ).rejects.toThrow('boom');
+      // The caller's error-handler arm publishes the run terminal.
+      await run.end({ reason: 'error' });
+
+      expect(stepHeadersOf(channel, 'ai-step-end')[0]?.['step-reason']).toBe('failed');
+      const stepEndIdx = channel.publishCalls.findIndex((m) => m.name === 'ai-step-end');
+      const runEndIdx = channel.publishCalls.findIndex((m) => m.name === 'ai-run-end');
+      expect(runEndIdx).toBeGreaterThan(stepEndIdx);
+      const runEnd = channel.publishCalls.find((m) => m.name === 'ai-run-end');
+      const tEnd = (runEnd?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+      expect(tEnd?.['run-reason']).toBe('error');
+    });
+
+    it('an error before any step ends the run with just the terminal (zero step events)', async () => {
+      // A turn that errors before opening a step ends with just the run terminal,
+      // not an empty step bracket.
+      const run = session.createRun(Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }), {
+        runId: 'run-1',
+        invocationId: 'inv-C',
+      });
+      await run.start();
+      await run.end({ reason: 'error' });
+
+      expect(stepHeadersOf(channel, 'ai-step-start')).toHaveLength(0);
+      expect(stepHeadersOf(channel, 'ai-step-end')).toHaveLength(0);
+      const runEnd = channel.publishCalls.find((m) => m.name === 'ai-run-end');
+      const tEnd = (runEnd?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+      expect(tEnd?.['run-reason']).toBe('error');
+    });
+  });
+
   describe('cancel routing', () => {
     it('cancels run when cancel by runId arrives', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
@@ -5201,6 +5273,11 @@ describe('adoptRun / load()', () => {
     const endMsg = ch.publishCalls.find((m) => m.name === EVENT_RUN_END);
     const headers = (endMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
     expect(headers?.[HEADER_RUN_CLIENT_ID]).toBe('owner-x');
+    // The terminal also carries the adopt-SUPPLIED invocationId (a cleanup
+    // activity's distinct id, e.g. I_cancel), threaded by the adopt identity
+    // through the runtime.invocationId override — the fresh-process
+    // terminal needs no endRun signature change, only the existing override.
+    expect(headers?.[HEADER_INVOCATION_ID]).toBe('run-1-icancel');
 
     await session.close();
   });

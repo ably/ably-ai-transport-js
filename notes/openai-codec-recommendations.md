@@ -193,6 +193,34 @@ descriptors map onto the discrete lifecycle and `output_item`/`content_part`
 events. The deltas are **strings**, which is the one hard constraint our stream
 model imposes (`StreamPayload.data: string`) — so the fit is natural, not forced.
 
+### There is a canonical reduced form (which settles the `TMessage` question)
+
+Going looking for whether OpenAI offers a _canonical reduction_ of the stream —
+the thing a render model could be built on — it does. A turn is modelled as
+**items**, and the stream reduces to a `Response` whose `output` is
+`ResponseOutputItem[]`. This is developer-facing two ways: non-streaming
+`responses.create()` returns the `Response` directly, and the streaming helper
+`responses.stream()` exposes `.finalResponse()` (public example:
+`examples/responses/stream.ts`). Streaming and non-streaming therefore **converge
+on the same `Response.output` items**.
+
+The reducer behind this — `accumulateResponse(event, snapshot): Response`
+(`src/lib/responses/ResponseAccumulator.ts`) — was originally a private method
+(`#accumulateResponse`); following a community request [1] it is now an **exported
+function**, importable via the deep path `openai/lib/responses/ResponseAccumulator`
+(the package's wildcard `exports` exposes all subpaths). _We found it by digging
+for the reduction, not from a usage example — but it is genuinely public, not
+internal-only._ So our codec's `fold` can **mirror or directly call** it to
+maintain the projection — i.e. the reduction can be OpenAI's own code, not ours.
+Mild caveat: a deep `lib/` import has weaker semver guarantees than a top-level
+export.
+
+This is what makes the **items-based `TMessage`** the judicious choice (§5): the
+items are simultaneously the canonical renderable form _and_ losslessly
+model-input (see §5).
+
+[1] https://github.com/openai/openai-node/issues/1736
+
 ---
 
 ## 3. The Agents SDK, and the superset relationship
@@ -333,18 +361,50 @@ I propose for OpenAI:
 | --- | --- | --- | --- |
 | `TInput` | what the **UI sends** on the `ai-input` wire (union, `kind`-discriminated) | all SDK well-known variants, zero codec-local | the same well-known variants, parameterised with OpenAI payloads (see below) |
 | `TOutput` | what the **agent publishes** on the `ai-output` wire (union, `type`-discriminated) | `AI.UIMessageChunk` (pass-through) | OpenAI's `ResponseStreamEvent` union (pass-through), handling a subset initially |
-| `TProjection` | opaque **per-node accumulator** the reducer folds into | `VercelProjection` (messages + trackers) | codec-local accumulator: text buffers keyed by `item_id`/`content_index`, in-flight `function_call`s keyed by `call_id`, reasoning buffers |
-| `TMessage` | the **per-message shape the UI renders** | `AI.UIMessage` | **a codec-defined normalised message** (see below) |
+| `TProjection` | opaque **per-node accumulator** the reducer folds into | `VercelProjection` (messages + trackers) | the run's OpenAI items, accumulated — mirroring or directly calling the SDK's `accumulateResponse`; one turn's `ResponseOutputItem`s plus tool-result items added as tools run |
+| `TMessage` | the **per-turn shape the UI renders** | `AI.UIMessage` | **a turn's worth of OpenAI items** (`ResponseOutputItem`-grounded; see below) |
 
-**`TMessage` — the most consequential choice.** Unlike Vercel (where
-`AI.UIMessage` is _the_ thing `useChat` renders), OpenAI has **no single
-canonical "UI message" type** — the Responses API has input items and output
-items, not a render model. So I recommend a **codec-defined message**: a
-`{ role, parts: [...] }` shape where `parts` is a discriminated union of
-`text` / `tool-call` / `tool-result` / `reasoning` / `refusal` (mirroring the
-Responses content-part kinds), reusing OpenAI SDK part types where they're clean.
-This keeps `TMessage` a rendering model we own, decoupled from the wire union
-`TOutput`.
+**`TMessage` — grounded in OpenAI's items, not a bespoke shape.** We first
+assumed OpenAI had "no canonical render type" and leaned toward a hand-rolled
+`{ role, parts[] }`. Digging (§2) showed otherwise: a turn is modelled as
+**items**, the stream reduces to `Response.output: ResponseOutputItem[]`, and —
+critically — **those output items are valid model-input items** (`ResponseInputItem`
+includes `ResponseOutputMessage` / `ResponseFunctionToolCall` / `ResponseReasoningItem`
+/ `ResponseFunctionToolCallOutputItem`). So an items-based `TMessage` uniquely
+satisfies both constraints at once: it is the canonical **renderable** form _and_
+it is losslessly **model-input**. Concretely:
+
+- **`TMessage` = one turn's OpenAI items**, roles `user` / `assistant`.
+  System/developer instructions are server-side config, not part of the rendered
+  tree.
+- **Per-turn = one message** (one run → one message), matching Vercel (verified in
+  `fold-lifecycle.ts`: `start` makes one message; `start-step` adds boundaries
+  _within_ it). A run's multiple `/responses` calls accumulate into the one
+  message; `suspend`/`resume` reuses the same `runId` → same node → same message,
+  so a client-tool round-trip stays in one message too. The **codec-message-id is
+  the message boundary**.
+- **The `fold` _is_ the reduction** — mirror or directly call `accumulateResponse`
+  (§2) to accumulate items into the projection; `getMessages` returns the turn's
+  items.
+- **Tool call and result are two separate items** (`function_call` +
+  `function_call_output`) linked by `call_id`. The result is **input-only** (the
+  model never emits it), so it is appended to the turn when the tool runs —
+  server-side in the loop, or client-side via the browser's `ToolResult`. To draw
+  the call and its result together, the UI uses a small **render-time pairing
+  helper** keyed on `call_id`. We do **not** invent a merged "tool" type, so
+  `TMessage` stays a faithful item list.
+
+**Two boundaries, to keep "input/output" straight** (this tripped us up
+repeatedly):
+
+- _Ably wire_ — `TOutput` is the agent's OpenAI event stream; `TInput` is the
+  client's discrete actions (user message, tool result, regenerate, approval).
+- _OpenAI model API_ — model input (`ResponseInputItem[]`) and model output (the
+  event stream / reduced `Response`). Because output items are valid input items,
+  **the conversation (`TMessage[]`) is essentially the model input already**:
+  `toResponsesInput` is **near-identity** — concatenate each turn's items, no real
+  translation, and nothing to "split" (the call and its result are already
+  separate items).
 
 **`TInput`.** The well-known variants already cover OpenAI's needs and were
 _explicitly_ designed for non-Vercel domains (`types.ts:411-456`):
@@ -543,7 +603,7 @@ now resolved.
 | # | Decision | My recommendation | Why it's yours |
 | --- | --- | --- | --- |
 | 1 | **Primary target**: Chat Completions (breadth) vs Responses (OpenAI-rich) vs Agents SDK | **Responses first**, growing into Agents SDK | Product-priority call resting on the corrected premise — breadth vs richness is a business trade-off, not a technical one |
-| 2 | `TMessage`: reuse an OpenAI SDK type vs codec-defined normalised message | **Codec-defined** `{role, parts[]}` | OpenAI has no canonical UI-message type; affects the public render model |
+| 2 | `TMessage` shape | **A turn's OpenAI items** (`ResponseOutputItem`-grounded), per-turn; a render-time helper pairs tool call+result by `call_id` | It is the canonical renderable form _and_ losslessly model-input; affects the public render model and makes `toResponsesInput` near-identity |
 | 3 | Where the agentic loop lives in Phase 1 | **Hand-rolled backend loop** with server-side tools | Sets demo scope/ambition |
 | 4 | Phase-1 feature scope | **De-scope** client tools, approvals, reasoning, hosted tools, multi-agent | Sets time-to-first-ship |
 | 5 | Build a `useChat`-style adapter for OpenAI? | **No** — consume generic React hooks directly | — |
@@ -564,9 +624,13 @@ server route + generic-hooks frontend).
 
 **OpenAI Responses / Chat Completions** (cloned, read directly):
 `openai/openai-node` v6.45.0 `src/resources/responses/responses.ts`
-(`ResponseStreamEvent` :6198) and `src/resources/chat/completions/completions.ts`
+(`ResponseStreamEvent` :6198, `Response.output: ResponseOutputItem[]` :279/1018,
+`ResponseInputItem` :3718) and `src/resources/chat/completions/completions.ts`
 (`ChatCompletionChunk` :732); `openai/openai-python` v2.44.0
-`src/openai/types/responses/response_stream_event.py`.
+`src/openai/types/responses/response_stream_event.py`. Stream reduction:
+`src/lib/responses/ResponseAccumulator.ts` (`accumulateResponse`), `ResponseStream.ts`
+(`finalResponse`), example `examples/responses/stream.ts`; "make it public" request
+https://github.com/openai/openai-node/issues/1736.
 Docs: https://developers.openai.com/api/docs/guides/streaming-responses,
 https://developers.openai.com/api/docs/guides/migrate-to-responses,
 https://developers.openai.com/blog/responses-api. **Provider survey** (~25

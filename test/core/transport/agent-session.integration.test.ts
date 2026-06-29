@@ -613,6 +613,73 @@ describe('AgentSession integration', () => {
     }
   });
 
+  it('under durable, a cancelled in-flight step closes ai-step-end{cancelled} but publishes NO ai-run-end', async () => {
+    // The durable opt-out over real Ably: the cancel-mid-step bracket still
+    // fires, but the in-flight arm does NOT publish the run terminal (a workflow
+    // cleanup activity would, stamped I_cancel). Mirrors the non-durable cancel
+    // test, asserting the inverted terminal behaviour.
+    const channelName = uniqueChannelName('st-cancel-durable');
+    const serverClient = ablyRealtimeClient();
+    const cancelClient = ablyRealtimeClient();
+    const cancelChannel = cancelClient.channels.get(channelName);
+    const subClient = ablyRealtimeClient();
+    const subChannel = subClient.channels.get(channelName);
+
+    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+      client: serverClient,
+      channelName,
+      codec: UIMessageCodec,
+    });
+    await session.connect();
+
+    const wireMessages: Ably.InboundMessage[] = [];
+    let resolveStepEnd: () => void;
+    const gotStepEnd = new Promise<void>((r) => {
+      resolveStepEnd = r;
+    });
+    await subChannel.subscribe((msg) => {
+      wireMessages.push(msg);
+      if (msg.name === EVENT_STEP_END) resolveStepEnd();
+    });
+
+    const run = createRunFromOpts(session, { runId: 'run-cancel-durable', durable: true });
+    await run.start();
+
+    const stream = new ReadableStream<VercelOutput>({
+      start: (ctrl) => {
+        ctrl.enqueue({ type: 'start', messageId: 'msg-cancel-d-1' });
+        ctrl.enqueue({ type: 'start-step' });
+        ctrl.enqueue({ type: 'text-start', id: 'text-cancel-d-1' });
+        ctrl.enqueue({ type: 'text-delta', id: 'text-cancel-d-1', delta: 'Partial...' });
+      },
+    });
+
+    // Durable runs require an explicit stepId.
+    const streamPromise = run.step(async (step) => step.pipe(stream), { stepId: 'durable-step-1' });
+    await new Promise((r) => setTimeout(r, 500));
+
+    await cancelChannel.publish({
+      name: EVENT_CANCEL,
+      extras: { ai: { transport: { [HEADER_RUN_ID]: 'run-cancel-durable' } } },
+    });
+
+    const result = await streamPromise;
+    expect(result.reason).toBe('cancelled');
+    expect(run.abortSignal.aborted).toBe(true);
+
+    // The step-end{cancelled} bracket fires in both models.
+    await gotStepEnd;
+    // Give a real-Ably settle window for any (erroneous) run-end to arrive.
+    await new Promise((r) => setTimeout(r, 700));
+
+    const stepEnd = wireMessages.find((m) => m.name === EVENT_STEP_END);
+    expect(stepEnd).toBeDefined();
+    if (stepEnd) expect(getHeaders(stepEnd)[HEADER_STEP_REASON]).toBe('cancelled');
+    // The run TERMINAL is suppressed on the in-flight arm under durable — the
+    // workflow cleanup is the sole publisher, so this process publishes none.
+    expect(wireMessages.filter((m) => m.name === EVENT_RUN_END)).toHaveLength(0);
+  });
+
   it('handles sequential runs', async () => {
     const channelName = uniqueChannelName('st-multi-run');
     const serverClient = ablyRealtimeClient();

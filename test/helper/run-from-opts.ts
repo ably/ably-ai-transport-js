@@ -15,6 +15,12 @@ interface RunOpts<TOutput extends CodecOutputEvent> {
   invocationId?: string;
   /** Input-event id the agent uses to locate the primary trigger event on the channel. */
   inputEventId?: string;
+  /**
+   * Marks the run as part of a durable-execution workflow. Forwarded to
+   * `RunRuntime.durable`: under it a no-`stepId` `run.step` throws, and the
+   * in-flight cancel arm opts OUT of publishing the run terminal.
+   */
+  durable?: boolean;
   signal?: AbortSignal;
   onMessage?: (message: Ably.Message) => void;
   onCancelled?: (write: (event: TOutput) => Promise<void>) => void | Promise<void>;
@@ -53,6 +59,7 @@ export const createRunFromOpts = <TOutput extends CodecOutputEvent, TProjection,
   return session.createRun(invocation, {
     runId: opts.runId,
     invocationId: opts.invocationId ?? `${opts.runId}-inv`,
+    ...(opts.durable !== undefined && { durable: opts.durable }),
     signal: opts.signal,
     onMessage: opts.onMessage,
     onCancelled: opts.onCancelled,

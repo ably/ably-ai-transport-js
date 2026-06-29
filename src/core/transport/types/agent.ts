@@ -262,8 +262,8 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
    *   `ai-run-end{cancelled}`, so the in-flight step process must not also
    *   publish it (a dual-writer double-terminal). The cancel-mid-step
    *   `ai-step-end{cancelled}` bracket still fires; only the run terminal is
-   *   suppressed on this arm. (This suppression is wired in a later step; the
-   *   flag is read here only for the no-`stepId` fail-fast above.)
+   *   suppressed on this arm. The publish-time `status` re-check backstops the
+   *   brief window where the in-flight arm and the cleanup arm are both live.
    */
   durable?: boolean;
 

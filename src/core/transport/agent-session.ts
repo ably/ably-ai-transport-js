@@ -1451,7 +1451,17 @@ class DefaultAgentSession<
         // run.end(). Best-effort — pipe must still return the StreamResult; a
         // later developer run.end() no-ops via the publish-time terminal
         // re-check. Runs AFTER closeStep so step-end precedes the run terminal.
-        if (result.reason === 'cancelled') {
+        //
+        // DURABLE opt-out: under durable execution this in-flight arm does NOT
+        // publish the terminal — a separate workflow cleanup activity publishes
+        // `ai-run-end{cancelled}` stamped `I_cancel`, so a second terminal here
+        // would be a dual-writer double-`ai-run-end`. Only the run TERMINAL is
+        // suppressed; the cancel-mid-step `ai-step-end{cancelled}` bracket above
+        // still fires in both models. A non-durable run keeps the safety-net: it
+        // has no cleanup arm, so the in-flight process is the run's SOLE terminal
+        // publisher. (The publish-time `status` re-check backstops the brief
+        // window where both arms are live.)
+        if (result.reason === 'cancelled' && runtime.durable !== true) {
           try {
             await run.end({ reason: 'cancelled' });
           } catch {
@@ -1579,11 +1589,17 @@ class DefaultAgentSession<
               ? 'failed'
               : 'complete';
           await closeStep(stepId, attemptId, stepReason, stepClientId);
-          if (pipeState.cancelled) {
+          if (pipeState.cancelled && runtime.durable !== true) {
             // Run cancellation is transport-tier: guarantee the run-end terminal
             // so every observer's stream closes even when the closure omits
             // run.end(). Best-effort — a later developer run.end() no-ops via the
             // publish-time terminal re-check. Runs AFTER closeStep.
+            //
+            // DURABLE opt-out (same as Run.pipe): under durable execution the
+            // workflow cleanup activity is the sole terminal publisher
+            // (`ai-run-end{cancelled}` stamped `I_cancel`), so this in-flight arm
+            // suppresses the run terminal to avoid a double-`ai-run-end`. The
+            // `ai-step-end{cancelled}` bracket still fired above in both models.
             try {
               await run.end({ reason: 'cancelled' });
             } catch {
@@ -1613,7 +1629,11 @@ class DefaultAgentSession<
           } catch {
             logger?.error('Run.step(); failed to close step after error', { runId, stepId });
           }
-          if (pipeState.cancelled) {
+          // DURABLE opt-out (same as the try arm): the in-flight arm suppresses
+          // the run terminal under durable execution — the workflow cleanup
+          // publishes it (`I_cancel`). The `ai-step-end{cancelled}` bracket above
+          // still fired in both models; the closure error still propagates below.
+          if (pipeState.cancelled && runtime.durable !== true) {
             try {
               await run.end({ reason: 'cancelled' });
             } catch {

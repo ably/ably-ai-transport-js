@@ -284,6 +284,36 @@ const erroringStream = (): ReadableStream<TestOutput> =>
     },
   });
 
+// A never-completing stream — a cancel mid-pipe wins the read race so the pipe
+// returns reason:'cancelled' WITHOUT any output (so no step opens).
+const pausedStream = (): ReadableStream<TestOutput> =>
+  new ReadableStream<TestOutput>({
+    start: () => {
+      /* never enqueues or closes */
+    },
+  });
+
+// A stream that enqueues one chunk (opening the step) then fires a cancel on the
+// next pull and blocks forever, so pipeStream returns 'cancelled' with the step
+// already open — the step then closes 'cancelled' and (non-durable) the run-end
+// safety-net fires after it.
+const cancelAfterFirstOutput = (ch: MockChannel, runId: string): ReadableStream<TestOutput> => {
+  let pulls = 0;
+  return new ReadableStream<TestOutput>({
+    pull: async (controller) => {
+      pulls++;
+      if (pulls === 1) {
+        controller.enqueue({ type: 'text', text: 'partial' });
+        return;
+      }
+      simulateCancel(ch, { [HEADER_RUN_ID]: runId });
+      await new Promise<void>(() => {
+        /* pending forever — the abort wins the read race */
+      });
+    },
+  });
+};
+
 // The `extras.ai.transport` headers of every published message with a given name.
 const stepHeadersOf = (channel: { publishCalls: Ably.Message[] }, name: string): Record<string, string>[] =>
   channel.publishCalls
@@ -1963,6 +1993,142 @@ describe('AgentSession', () => {
         // The explicit value is now sticky: the third step inherits 'user-c'.
         expect(starts[2]?.[HEADER_STEP_CLIENT_ID]).toBe('user-c');
       });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // cancel terminal — durable suppression
+  // -------------------------------------------------------------------------
+
+  describe('cancel terminal — durable suppression', () => {
+    it('run.pipe: a durable cancelled pipe closes ai-step-end{cancelled} but the in-flight arm publishes NO ai-run-end', async () => {
+      // The durable opt-out: the cancel-mid-step bracket STILL fires (the
+      // workflow cleanup activity, not the SDK, publishes the run terminal under
+      // I_cancel), so this in-flight arm must NOT publish ai-run-end.
+      const run = createRunFromOpts(session, { runId: 'run-1', durable: true });
+      await run.start();
+
+      const result = await run.pipe(cancelAfterFirstOutput(channel, 'run-1'));
+
+      expect(result.reason).toBe('cancelled');
+      // The bracket fires in BOTH models: the step closes 'cancelled'.
+      const ends = stepHeadersOf(channel, 'ai-step-end');
+      expect(ends).toHaveLength(1);
+      expect(ends[0]?.['step-reason']).toBe('cancelled');
+      // The run TERMINAL is suppressed on the in-flight arm under durable.
+      expect(channel.publishCalls.filter((m) => m.name === 'ai-run-end')).toHaveLength(0);
+    });
+
+    it('run.step (try): a durable cancelled step closes ai-step-end{cancelled} but publishes NO ai-run-end', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1', durable: true });
+      await run.start();
+
+      simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
+      await new Promise((r) => setTimeout(r, 5));
+
+      // A durable run requires an explicit stepId (fail-fast).
+      const result = await run.step(async (step) => step.pipe(pausedStream()), { stepId: 'S1' });
+
+      expect(result.reason).toBe('cancelled');
+      const ends = stepHeadersOf(channel, 'ai-step-end');
+      expect(ends).toHaveLength(1);
+      expect(ends[0]?.['step-reason']).toBe('cancelled');
+      // Suppressed: the in-flight step arm does not end the run under durable.
+      expect(channel.publishCalls.filter((m) => m.name === 'ai-run-end')).toHaveLength(0);
+    });
+
+    it('run.step (catch): a durable cancel-then-throw closes ai-step-end{cancelled}, publishes NO ai-run-end, still re-throws', async () => {
+      // The catch-arm cancel safety-net is gated too: a cancelled step.pipe whose
+      // closure then throws still closes 'cancelled' and propagates the error,
+      // but the run terminal stays suppressed under durable.
+      const run = createRunFromOpts(session, { runId: 'run-1', durable: true });
+      await run.start();
+
+      simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
+      await new Promise((r) => setTimeout(r, 5));
+
+      await expect(
+        run.step(
+          async (step) => {
+            await step.pipe(pausedStream()); // returns 'cancelled'
+            throw new Error('boom'); // post-cancel cleanup fails
+          },
+          { stepId: 'S1' }, // a durable run requires an explicit stepId
+        ),
+      ).rejects.toThrow('boom');
+
+      const ends = stepHeadersOf(channel, 'ai-step-end');
+      expect(ends).toHaveLength(1);
+      expect(ends[0]?.['step-reason']).toBe('cancelled');
+      expect(channel.publishCalls.filter((m) => m.name === 'ai-run-end')).toHaveLength(0);
+    });
+
+    it('NON-durable regression guard: a cancelled in-flight run STILL publishes exactly one ai-run-end{cancelled}', async () => {
+      // The inversion (the regression D must not break): a non-durable run has
+      // NO workflow cleanup arm, so the in-flight process is the run's SOLE
+      // terminal publisher — the safety-net must keep firing. Run.pipe and
+      // Run.step are both exercised so the gating is proven not to leak into the
+      // default path.
+      for (const useStep of [false, true]) {
+        const ch = createMockChannel();
+        const c = createMockCodec();
+        const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+          client: createMockClient(ch),
+          channelName: 'non-durable-cancel',
+          codec: c,
+        });
+        await s.connect();
+        // No `durable` flag — the default provisioned/serverless path.
+        const run = createRunFromOpts(s, { runId: 'run-nd' });
+        await run.start();
+
+        // Enqueue one chunk so the step OPENS, then cancel on the next pull so
+        // the step closes 'cancelled' AND the terminal must follow it (proving
+        // step-end-before-run-end is preserved on the non-durable path).
+        const result = useStep
+          ? await run.step(async (step) => step.pipe(cancelAfterFirstOutput(ch, 'run-nd')))
+          : await run.pipe(cancelAfterFirstOutput(ch, 'run-nd'));
+
+        expect(result.reason).toBe('cancelled');
+        // The in-flight arm IS the terminal publisher when non-durable: exactly
+        // one ai-run-end{cancelled}, after the step-end.
+        const runEnds = ch.publishCalls.filter((m) => m.name === 'ai-run-end');
+        expect(runEnds).toHaveLength(1);
+        const runEndHeaders = (runEnds[0]?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai
+          ?.transport;
+        expect(runEndHeaders?.['run-reason']).toBe('cancelled');
+        expect(stepEndBeforeRunEnd(ch)).toBe(true);
+        await s.close();
+      }
+    });
+
+    it('dual-writer backstop: under durable, a step after a cleanup ai-run-end{cancelled} folded no-ops (no second terminal)', async () => {
+      // The publish-time status re-check backstops the brief
+      // window where the in-flight arm and the workflow cleanup arm are both
+      // live: once the cleanup's terminal has folded into the Tree, the in-flight
+      // arm's step/pipe/end sees a terminal status and refuses to publish. The
+      // start-path end() re-check is already covered by the open-guard suite;
+      // this adds the DURABLE + step-path angle (suppression + re-check together
+      // yield exactly the cleanup's single terminal, none from the in-flight
+      // arm). Reuses `deliverRunTerminal` (the suite's folding-wire helper).
+      const run = createRunFromOpts(session, { runId: 'run-dw', durable: true });
+      await run.start();
+
+      // The workflow cleanup arm's terminal folds in (the optimistic run-node's
+      // status advances to cancelled).
+      deliverRunTerminal(channel, EVENT_RUN_END, 'run-dw', { serial: 's-dw-end', reason: 'cancelled' });
+      expect(run.status).toBe('cancelled');
+
+      // The in-flight arm now tries a step — the publish-time re-check sees the
+      // run is already terminal and rejects rather than bracketing onto it.
+      await expect(
+        run.step(async (step) => step.pipe(streamOf({ type: 'text', text: 'late' }))),
+      ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+
+      // The in-flight arm published NO ai-run-end (suppressed under durable) and
+      // its late step no-op'd — the cleanup's terminal (delivered, not published
+      // by this process) is the sole one.
+      expect(channel.publishCalls.filter((m) => m.name === 'ai-run-end')).toHaveLength(0);
     });
   });
 

@@ -10,12 +10,22 @@ Source list at the end._
 
 ## 0. TL;DR
 
-1. **The ticket's premise needs correcting.** "OpenAI-compatible" (OpenRouter et
-   al.) overwhelmingly means the **Chat Completions** API, **not** the Responses
-   API. Targeting Responses does **not** buy broad third-party compatibility.
-2. **This is therefore a three-way decision, not two**, and it rests on a
-   product priority only you can set: _broadest provider reach_ (Chat
-   Completions) vs _richest OpenAI-native experience_ (Responses → Agents SDK).
+1. **The ticket's premise needs refining, not discarding.** A verified survey of
+   ~25 targets (§1) shows **~18 expose a Responses API** — all the major inference
+   providers (OpenAI, Azure GA; OpenRouter, Groq, Fireworks beta; SambaNova, xAI,
+   Perplexity), every serious OSS runtime (vLLM, SGLang, Ollama, llama.cpp, LM
+   Studio, LocalAI, KoboldCpp; only TGI lacks it), and the big clouds/gateways
+   (Bedrock, Cloudflare, Vercel, LiteLLM, HF). The real holdouts are some
+   aggregators (Together, Cerebras, DeepInfra…) and, notably, **the model labs'
+   OpenAI-compat layers** (Mistral, Gemini, Anthropic, Cohere). Two caveats shape
+   the codec: implementations **diverge in event detail** (OpenRouter notably), so
+   "Responses" is not one stable wire format; and **statefulness is uneven**, so
+   the codec should use Responses statelessly (§1).
+2. **This is a three-way decision** (Chat Completions vs Responses vs Agents SDK)
+   resting on a product priority only you can set. But the trade-off is softer
+   than first thought: Responses now offers **both** broad-and-growing reach
+   _and_ rich semantics, while Chat Completions remains the only **universal**
+   target (it also reaches the Responses holdouts).
 3. **The Agents SDK event stream is a genuine strict superset of the Responses
    API stream** — so a codec built on the Responses raw-event layer grows into
    the Agents SDK additively, not by rewrite. But the Agents SDK is client-side
@@ -55,35 +65,93 @@ superset, target that and solve both._ The first hop is the one that breaks.
 
 A consumer written for one cannot parse the other.
 
-**Who implements which** (survey of 12 "OpenAI-compatible" providers):
+OpenAI explicitly positions Responses as the forward path **for OpenAI's own
+models**, while keeping Chat Completions supported (verbatim, first-party —
+`developers.openai.com` pages fetch fine; only `platform.openai.com` /
+`openai.com` 403 automated fetch):
 
-| Provider | Chat Completions | Responses (`/v1/responses`) |
-| --- | --- | --- |
-| OpenRouter, Together, Groq, Fireworks, Ollama, Mistral, Gemini-compat, Anthropic-compat | ✅ | ❌ |
-| vLLM | ✅ | ⚠️ experimental / version-dependent |
-| **Azure OpenAI** | ✅ | ✅ |
-| **LM Studio** | ✅ | ✅ |
+- "While Chat Completions remains supported, Responses is recommended for all
+  new projects." / "The Responses API represents the future direction for
+  building agents on OpenAI." — migrate-to-responses guide.
+- "we expect Responses to become the default way developers build with OpenAI
+  models" / "This is the API we'll be building on for the years ahead." /
+  "Chat Completions isn't going away. If it works for you, keep using it." —
+  responses-api blog.
 
-**Only Azure and LM Studio expose Responses.** Everyone else is Chat Completions
-only. OpenAI itself calls Chat Completions "an industry standard" it will
-"support indefinitely", while positioning Responses as the forward path **on
-OpenAI**. The "Responses is a superset of Chat Completions" line from the launch
-refers to _capability_, not _wire compatibility_.
+Note the scoping: "on OpenAI" / "with OpenAI models". This is a forward path for
+_OpenAI_, not a statement about the wider "OpenAI-compatible" ecosystem.
 
-**Consequence:** breadth and richness pull in opposite directions.
+**Who actually implements Responses** (rigorously redone survey of ~25 targets;
+quotes and per-claim confidence live in the source notes — VERIFIED = primary/SDK
+source, ⚠️ = beta/partial/uncertain):
 
-- Want the widest set of providers to work? → **Chat Completions** (flat stream:
-  `delta.content`, `tool_calls[].index`, `[DONE]`).
-- Want the richest OpenAI-native semantics? → **Responses** (and then the Agents
-  SDK on top).
+_Has a Responses endpoint (~18 of 25):_
 
-> _Confidence note:_ the event taxonomy (§2–3) is high-confidence — read directly
-> from two official SDKs at pinned versions that agree exactly. The
-> compatibility/positioning claims rely on web retrieval because
-> `platform.openai.com` / `openai.com` return 403 to automated fetch; provider
-> endpoints and OpenAI's "industry standard / indefinitely" wording are cited
-> individually (the latter via a contemporaneous secondary quotation). Treat
-> Fireworks `/responses` as unconfirmed and vLLM as version-dependent.
+- **Inference providers:** OpenAI (defines it), Azure OpenAI (GA), OpenRouter
+  (⚠️ beta), Groq (⚠️ beta), Fireworks (⚠️ beta), SambaNova, xAI/Grok, Perplexity
+  (a `/v1/responses` alias of its `/v1/agent`).
+- **OSS / self-host runtimes (verified in cloned source):** vLLM, SGLang, Ollama
+  (≥ 0.13.3), llama.cpp (⚠️ maintainer-labelled "partial"), LM Studio, LocalAI,
+  KoboldCpp. Only **TGI** lacks it.
+- **Clouds & gateways:** AWS Bedrock (native, on `bedrock-mantle`), Cloudflare
+  (Workers AI `/ai/v1/responses` + AI Gateway), Vercel AI Gateway, LiteLLM (native
+  for ~13 providers, else translates down), Portkey (hosted), Kong (enterprise
+  plugin), Hugging Face Router (⚠️ beta), Helicone (legacy proxy, pass-through).
+
+_Chat-Completions-only (source-confirmed negatives):_
+
+- **Aggregators/providers:** Together, Cerebras, DeepInfra, Novita, Hyperbolic,
+  Baseten (managed), Anyscale (defunct).
+- **The model labs' OpenAI-compat layers:** Mistral, Google Gemini, Anthropic,
+  Cohere, AI21. **This is the notable gap** — the big labs expose only
+  Chat-Completions-shaped compatibility, not Responses.
+- **Runtimes/gateways:** TGI; Helicone's newer Rust gateway; Kong's OSS-CE plugin.
+
+So the ticket's instinct ("maybe everyone uses responses") is **substantially
+right for inference providers and OSS runtimes, but wrong for the model labs'
+compat layers and a chunk of aggregators**. Responses is no longer niche — but
+"every OpenAI-compatible endpoint speaks Responses" is still false. Breadth and
+richness therefore no longer strictly oppose: Responses now offers _both_ rich
+semantics _and_ broad-and-growing reach, while Chat Completions remains the only
+truly universal target (it reaches the holdouts above too).
+
+### Two design inputs that matter more than the headcount
+
+**1. "Responses" is not one stable wire format — dispatch on `type`, tolerate
+variation.** Providers that document events mostly use OpenAI-canonical
+`response.*` names (the OSS runtimes, Groq, Perplexity, Vercel, HF Router).
+**OpenRouter diverges** (confirmed against its docs twice): `response.content_part.delta`
+(not `response.output_text.delta`), `response.done` (not `response.completed`),
+and a trailing `data: [DONE]` that OpenAI's Responses stream never emits. Several
+others (Azure, Fireworks, SambaNova, xAI, Cloudflare, Bedrock, Kong) don't
+enumerate event names at all. _Aside, correcting an earlier draft error:
+`response.done` and `response.content_part.delta` are **not** OpenAI Responses
+events — `response.done` is OpenAI's **Realtime** API; the canonical Responses
+text-delta is `response.output_text.delta`._ **Implication:** the codec must
+dispatch on the JSON `type`, treat both `response.completed` and `response.done`
+as terminal, alias divergent delta names, and tolerate a stray `[DONE]`.
+
+**2. Statefulness is uneven — so use Responses _statelessly_, which fits our
+architecture.** Server-side chaining (`previous_response_id` / `store`) exists on
+OpenAI, Azure, Bedrock, Fireworks, LM Studio and xAI — but **OpenRouter, Groq,
+Ollama, llama.cpp and vLLM (by default) are non-stateful, and Perplexity's
+`previous_response_id` is a no-op**. A codec that relied on server-side chaining
+would break across providers. The lowest-common-denominator — **send the full
+conversation each request** — is exactly how our transport already works (the
+Tree + `loadConversation` own conversation state). The most broadly compatible
+design is therefore also the one that fits us best.
+
+> _Confidence note:_ the OpenAI event taxonomy (§2–3) is high-confidence — read
+> from two official SDKs at pinned versions that agree exactly (52 event types,
+> a clean zero-diff between `openai-node` and `openai-python`). The provider
+> survey was redone rigorously: OSS positives verified in cloned source;
+> commercial/gateway claims cross-checked across ≥ 2 sources and tagged
+> VERIFIED / CLAIMED / UNCERTAIN in the source notes. Known gaps: exact streaming
+> event names for Azure / Fireworks / SambaNova / xAI / Cloudflare / Bedrock / Kong
+> are not byte-confirmed; the Kong version and a few provider statuses are
+> unresolved; `platform.openai.com` / `openai.com` 403 automated fetch (worked
+> around via SDK source and `developers.openai.com`). OpenAI's positioning quotes
+> above are first-party verified from `developers.openai.com`.
 
 ---
 
@@ -169,6 +237,45 @@ So "target the superset to solve both" is correct **only within the OpenAI
 family** (Agents ⊇ Responses). It does **not** extend to Chat-Completions-only
 providers.
 
+### Does the Agents SDK save us the Phase 2 layering? (HITL & client-side tools)
+
+A natural question: the two parity items we'd otherwise build on top of raw
+Responses — **tool approvals** and **client-side tool calls** (§8 Phase 2) — does
+adopting the Agents SDK hand them to us for free instead? Verified against
+`openai-agents-js` source, the answer splits, and it turns on the word "client":
+the SDK's tools run **in the backend process** (function tools) or on
+OpenAI/MCP servers — it has **no concept of a tool executed on the end-user's
+device**. Ably's "client-side tool" is inherently distributed and made durable by
+suspend/resume; that is squarely transport territory, not an SDK feature.
+
+**The resume/HITL API (verified):**
+
+- Resolution is **`RunState.approve(item)` / `reject(item)` only** (`runState.ts:844,871`)
+  — a boolean gate. **Neither injects a tool result.** You resume by re-running
+  the agent with the same `RunState` (serializable via `toJSON`).
+- An **approved tool is executed in-process** via its `invoke` function
+  (`tool.ts:313`; `runner/toolExecution.ts` gates then calls `invoke`). There is
+  no remote/client execution path and no "defer this call back to the caller"
+  mechanism (`deferLoading` exists but is about lazy *MCP tool loading*).
+- `run()` does accept `string | AgentInputItem[] | RunState` (`run.ts:433`), and
+  the item unions include `FunctionCallResultItem` (`function_call_result`,
+  `protocol.ts:538`). So you **can** re-run an agent from a full history that
+  already contains a tool result you computed elsewhere.
+
+**What this means per capability:**
+
+| Phase 2 capability | Does the Agents SDK save the layering? |
+| --- | --- |
+| **Tool approvals (HITL)** | **Partially.** The SDK gives the gating state machine — `needsApproval` → interruption → `approve`/`reject` → resume — so we don't hand-build "pause before this tool, wait for a decision". But after approval the SDK executes the tool **in its own process**, and the actual approver is in a **browser**, so we still ferry the request/response over Ably and bridge it to the SDK's `approve`/`reject`. Our transport already models this (`ToolApprovalResponse` + suspend/resume). |
+| **Client-side (browser) tools** | **Essentially not at all.** No native remote-tool concept; `approve`/`reject` can't inject a browser-produced result. The only durable fit is "suspend → browser computes → re-run with `function_call_result` in history" — **identical to the raw-Responses path** (`function_call_output` in the next request). Worse, the SDK's in-process `invoke` model assumes the run stays alive in one process, which **rubs against** Ably's suspend/resume (serverless backends, disconnect survival). For client-side tools you'd bypass the SDK's tool execution entirely — at which point, for that path, the SDK is just calling the model. |
+
+**Conclusion:** the Agents SDK meaningfully reduces Phase 2 work for **approvals**
+(the gating primitive), but **not for client-side tools** — those are Ably-transport
+work either way, and we already have the machinery. This is itself a mild argument
+for the thin, provider-agnostic raw-Responses codec: the gating we'd "lose" by not
+using the SDK is small and provider-neutral, while the client-side-tool plumbing is
+ours regardless.
+
 ---
 
 ## 4. Recommendation on which target
@@ -190,6 +297,12 @@ Reasoning:
 - **It grows into the Agents SDK without a rewrite** (the superset relationship),
   so we don't foreclose the richest agentic demo.
 - **It maps onto the existing declarative API with no core changes** (see §7).
+- **Breadth is no longer a strong argument against Responses.** ~18 of 25
+  surveyed targets expose it (§1), including every major inference provider and
+  OSS runtime. Betting on Responses is well-aligned with where the ecosystem is
+  heading — provided the codec dispatches on `type`, tolerates per-provider
+  event-name variation, and uses the API statelessly (the lowest common
+  denominator, and the way our transport already works).
 
 **Choose Chat Completions first instead if** the priority is genuinely "as many
 OpenAI-compatible providers as possible work with `@ably/ai-transport`". That is
@@ -201,7 +314,11 @@ value is lower.
 
 I do **not** recommend leading with the Agents SDK: it adds the most dependencies
 and OpenAI-specific orchestration surface, and its richest features (handoffs,
-multi-agent) are a "phase 3 wow", not a first shippable increment.
+multi-agent) are a "Phase 4 wow", not a first shippable increment. And adopting it
+early doesn't even remove the Phase 2 work: per §3, the Agents SDK hands you the
+*approval* gating primitive but **not** client-side tools (those stay
+Ably-transport work regardless), so "switch to the SDK to get HITL for free" only
+trims half of Phase 2 — at the cost of OpenAI-coupling the backend.
 
 ---
 
@@ -302,9 +419,9 @@ constraint. **What I'd watch** (report-if-it-strains, don't pre-emptively change
 - Whether multiple concurrent `function_call` output items (each its own
   `item_id` + arg-delta stream) compose cleanly under the single-`deltaField`
   stream model. Expected fine; first real multi-stream-per-message test.
-- The Agents SDK phase (later) is where strain is more plausible — the nested
+- The Agents SDK phase (Phase 4) is where strain is more plausible — the nested
   JS raw-event envelope and the run-item/agent-updated layers may want richer
-  expression. That's a phase-3 question, not now.
+  expression. That's a Phase 4 question, not now.
 
 If anything _does_ need to change, I'll surface it explicitly with the cost
 rather than just doing it — and the author of the codec API is the right person
@@ -312,42 +429,90 @@ to sanity-check any such proposal.
 
 ---
 
-## 8. Phased plan (shippable increment at each phase)
+## 8. Phased plan (two axes, shippable increment at each phase)
+
+Each phase is described along **two independent axes**, because they are the two
+things "progress" can mean here and they don't move in lockstep:
+
+- **Axis A — OpenAI SDK domain functionality**: which underlying OpenAI
+  capability the codec/backend consumes at this phase.
+- **Axis B — use-client-session parity**: which feature of the existing demo the
+  OpenAI demo reaches at this phase.
+
+The structural fact that shapes the split: most of use-client-session's behaviour
+— **branching, regenerate, edit, cancel, history hydration, multi-client sync,
+run-status UI** — is **transport-level and codec-agnostic** (node/fork structure
+lives in transport headers, not codec types), so it arrives as soon as the codec
+can decode a basic stream and the demo uses the generic React hooks. The only
+parity work that is genuinely codec-and-backend-specific is **client-side tool
+calls** and **tool approvals**, because on the Responses path both require the
+backend loop to suspend → await a client-published input → resume.
+
+**Full use-client-session parity is reached at the end of Phase 2.**
+
+---
 
 **Phase 0 — spike (½–1 day).** Stand up the Responses event types in a scratch
 reducer; confirm the item/content-part/delta model folds into messages cleanly
-and the string-append + codec-message-id assumptions hold. _Output: a go/no-go on
-"no core API change", de-risking §7._
+and that the string-append + codec-message-id assumptions hold. _Output: a go/no-go
+on "no core API change", de-risking §7._
 
-**Phase 1 — Responses text + server-side tools (the first shippable codec).**
-Codec handling: response lifecycle, `output_text` streaming, single+multiple
-`function_call`s with arg deltas, `function_call_output` as `ToolResult` input.
-Demo: a copy of use-client-session whose backend runs the simple
-Responses agentic loop with a server-side tool (weather), frontend on the generic
-React hooks. _Shippable: a working OpenAI-backed streaming chat with server-side
-tool calls, proving the codec abstraction generalises beyond Vercel._
+**Phase 1 — first OpenAI chat (server-side tools).**
 
-**Phase 2 — richer Responses semantics.** Reasoning summaries, refusals, text
-annotations/citations; branching/regenerate (transport already supports it);
-optionally tool approval (HITL) layered via the well-known `ToolApprovalResponse`
-variant. _Shippable: a feature-comparable OpenAI chat demo (reasoning + citations
-+ regenerate), still single-agent._
+- _Axis A (OpenAI domain):_ response lifecycle + streaming text
+  (`output_text.delta/.done`); single and multiple `function_call`s with argument
+  deltas; `function_call_output` fed back as the well-known `ToolResult` input —
+  driven by a hand-rolled **server-side** agentic loop (the "weather in London"
+  example), called **statelessly** (full history per request; see §1).
+- _Axis B (parity):_ text rendering, server-side tool rendering, **branching /
+  regenerate / edit**, cancel/stop, history hydration, multi-client sync,
+  run-status UI — all transport-provided, so they come along once the codec
+  decodes the stream and the demo (a copy of use-client-session) uses the generic
+  React hooks. (Excluding branching would mean *deleting* the demo's existing
+  navigator UI — strictly more work than keeping it.)
+- _Shippable:_ a working OpenAI-backed streaming chat with server-side tools and
+  full branch navigation — proving the codec abstraction generalises beyond Vercel.
+- _Parity:_ **partial** — everything except client-side tools and approvals.
 
-**Phase 3 (optional, OpenAI-rich) — Agents SDK.** Consume the Agents SDK stream;
-add framed tool calls/outputs, native HITL approvals, handoffs and multi-agent
-(`agent_updated_stream_event`). Reconcile the JS/Python raw-layer difference if
-both are in scope. _Shippable: a multi-agent, handoff-capable demo — the
-"wow"._
+**Phase 2 — full use-client-session parity.**
 
-**Phase 3′ (optional, broad-reach alternative) — Chat Completions codec.** Only
-if broad provider compatibility is prioritised. A second, flatter codec
-(`chat.completion.chunk`, `tool_calls[].index`, `[DONE]`). _Shippable: works
-against OpenRouter/Groq/Together/etc._ Note 3 and 3′ are different goals; you'd
-rarely do both first.
+- _Axis A (OpenAI domain):_ extend the backend loop with **suspend/resume** so a
+  tool call can be delegated out of the backend and awaited; **layer approval
+  gating** on top of Responses (which has no native HITL) using the well-known
+  input variants.
+- _Axis B (parity):_ **client-side tool calls** (browser executes → publishes
+  `ToolResult` → continuation run) and **tool approval / HITL**
+  (`ToolApprovalResponse`).
+- _Shippable:_ ✅ **feature parity with use-client-session.**
+- _Parity:_ **complete.**
 
-De-scope from Phase 1 to reduce complexity: client-side tools, tool approvals,
-reasoning, hosted tools, multi-agent. All are additive later via mechanisms that
-already exist (well-known input variants) or later phases.
+**Phase 3 — beyond parity: richer OpenAI domain (single-agent).**
+
+- _Axis A (OpenAI domain):_ reasoning summaries + reasoning text; refusals; text
+  annotations/citations; optionally hosted tools (web/file search, code
+  interpreter, image generation, MCP) — each a renderable signal the Vercel demo
+  doesn't surface. (The Vercel codec *decodes* reasoning, but use-client-session's
+  UI drops it — see the reasoning finding — so this is genuinely net-new on screen.)
+- _Axis B (parity):_ already complete; these are net-new capabilities, not parity.
+- _Shippable:_ an OpenAI chat that **exceeds** use-client-session (reasoning +
+  citations), still single-agent.
+
+**Phase 4 — beyond parity: Agents SDK (multi-agent).**
+
+- _Axis A (OpenAI domain):_ adopt the Agents SDK stream (strict superset, §3):
+  framed tool calls/outputs, native HITL & sessions, **handoffs + multi-agent**
+  (`agent_updated_stream_event`). Reconcile the JS/Python raw-layer difference if
+  both SDKs are in scope.
+- _Axis B (parity):_ already complete; additive.
+- _Shippable:_ a multi-agent, handoff-capable demo — the "wow".
+
+**Alternative track — Chat Completions codec (broad-reach).** Pursue only if the
+universal long tail is a priority: the providers that lack Responses (Together,
+Cerebras, DeepInfra…) and especially **the model labs' OpenAI-compat layers**
+(Mistral, Gemini, Anthropic, Cohere), which speak only `chat.completion.chunk`
+(`delta.content`, `tool_calls[].index`, `[DONE]`). This is a *different goal* from
+Phases 3–4, not a continuation. Note **OpenRouter and Groq are not in the holdout
+set** — they expose Responses (beta), so the Responses codec already reaches them.
 
 ---
 
@@ -365,7 +530,7 @@ already exist (well-known input variants) or later phases.
 - **Demo frontend: low.** Reuse the generic React hooks; the use-client-session
   demo is a direct template.
 - **Risk areas:** the multi-stream-per-message question (§7), and — only if Phase
-  3 is taken — the Agents SDK JS/Python raw-layer divergence and the richer
+  4 is taken — the Agents SDK JS/Python raw-layer divergence and the richer
   event layers.
 
 The biggest _conceptual_ cost was the compatibility correction in §1, which is
@@ -382,7 +547,8 @@ now resolved.
 | 3 | Where the agentic loop lives in Phase 1 | **Hand-rolled backend loop** with server-side tools | Sets demo scope/ambition |
 | 4 | Phase-1 feature scope | **De-scope** client tools, approvals, reasoning, hosted tools, multi-agent | Sets time-to-first-ship |
 | 5 | Build a `useChat`-style adapter for OpenAI? | **No** — consume generic React hooks directly | — |
-| 6 | If Phase 3: support both Agents SDK JS _and_ Python raw-layer shapes? | Defer; decide at Phase 3 | Scope of the agentic phase |
+| 6 | If Phase 4: support both Agents SDK JS _and_ Python raw-layer shapes? | Defer; decide at Phase 4 | Scope of the agentic phase |
+| 7 | **Codec stream target**: raw Responses events vs the Agents SDK superset stream | **Raw Responses**; defer Agents SDK to Phase 4 | Determines backend coupling (OpenAI-specific vs provider-agnostic) and whether Phase 2 gating is ours or the SDK's |
 
 ---
 
@@ -403,15 +569,20 @@ server route + generic-hooks frontend).
 `src/openai/types/responses/response_stream_event.py`.
 Docs: https://developers.openai.com/api/docs/guides/streaming-responses,
 https://developers.openai.com/api/docs/guides/migrate-to-responses,
-https://developers.openai.com/blog/responses-api. Provider compat:
-OpenRouter, Groq, Gemini, Anthropic, Azure, LM Studio, Ollama OpenAI-compat docs
-(URLs in research notes). "Industry standard / support indefinitely" quote via
-https://simonwillison.net/2025/Mar/11/responses-vs-chat-completions/ (original
-openai.com page 403-gated).
+https://developers.openai.com/blog/responses-api. **Provider survey** (~25
+targets, redone rigorously; OSS positives verified in cloned source, others
+cross-checked across ≥ 2 sources with per-claim VERIFIED/CLAIMED/UNCERTAIN tags):
+full per-provider notes and citation URLs under the scratchpad at
+`scratchpad/responses-api-research/`. "Industry standard / support indefinitely"
+quote via https://simonwillison.net/2025/Mar/11/responses-vs-chat-completions/
+(original openai.com page 403-gated).
 
 **OpenAI Agents SDK** (cloned, read directly): `openai/openai-agents-js`
-`packages/agents-core/src/events.ts`, `types/protocol.ts`, `types/helpers.ts:16`,
-`runner/streaming.ts`, `run.ts`; `packages/agents-openai/src/rawModelEvents.ts`,
+`packages/agents-core/src/events.ts`, `types/protocol.ts` (`FunctionCallResultItem`
+:538, item unions), `types/helpers.ts:16`, `runner/streaming.ts`, `run.ts`
+(`run()` input types :433), `runState.ts` (`approve` :844 / `reject` :871),
+`tool.ts` (`invoke` :313, `needsApproval`), `runner/toolExecution.ts` (approval
+gate → in-process execute); `packages/agents-openai/src/rawModelEvents.ts`,
 `openaiResponsesModel.ts`. `openai/openai-agents-python`
 `src/agents/stream_events.py`, `src/agents/items.py`.
 

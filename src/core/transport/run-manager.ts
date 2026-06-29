@@ -50,11 +50,26 @@ interface StartRunMetadata {
 /** Manages active runs and publishes run lifecycle events on the channel. */
 export interface RunManager {
   /**
-   * Register a run and publish its opening lifecycle event. Publishes
-   * `ai-run-start` for a fresh run, or `ai-run-resume` when `metadata.continuation`
-   * is set (a subsequent invocation re-entering an existing run). A resume omits
-   * the structural `parent` / `forkOf` / `regenerates` headers — the original
-   * run-start owns the run's structure.
+   * Seed a run's owner entry WITHOUT publishing any lifecycle event. Records the
+   * run's `clientId` and `AbortController` in the active-run set so the
+   * per-output `run-client-id` ({@link getClientId}) and the terminal
+   * ({@link endRun} / {@link suspendRun}) stamp the real owner, and so
+   * {@link close} aborts the run's controller. The `clientId` defaults to the
+   * empty string when omitted; the controller defaults to a fresh one.
+   *
+   * This is the seed-only half of {@link startRun}: a process that adopts an
+   * already-open run for publishing needs the owner entry but must NOT re-emit
+   * the opening event. {@link startRun} is `registerRun` followed by the opening
+   * publish. Calling it again for the same run replaces the existing entry.
+   */
+  registerRun(runId: string, clientId?: string, controller?: AbortController): void;
+  /**
+   * Register a run and publish its opening lifecycle event. Seeds the owner
+   * entry (via {@link registerRun}) then publishes `ai-run-start` for a fresh
+   * run, or `ai-run-resume` when `metadata.continuation` is set (a subsequent
+   * invocation re-entering an existing run). A resume omits the structural
+   * `parent` / `forkOf` / `regenerates` headers — the original run-start owns
+   * the run's structure.
    */
   startRun(runId: string, clientId?: string, controller?: AbortController, metadata?: StartRunMetadata): Promise<void>;
   /**
@@ -125,6 +140,13 @@ class DefaultRunManager implements RunManager {
     this._logger = logger?.withContext({ component: 'RunManager' });
   }
 
+  registerRun(runId: string, clientId?: string, externalController?: AbortController): void {
+    this._logger?.trace('DefaultRunManager.registerRun();', { runId, clientId });
+    const controller = externalController ?? new AbortController();
+    const resolvedClientId = clientId ?? '';
+    this._activeRuns.set(runId, { controller, clientId: resolvedClientId });
+  }
+
   async startRun(
     runId: string,
     clientId?: string,
@@ -133,9 +155,9 @@ class DefaultRunManager implements RunManager {
   ): Promise<void> {
     this._logger?.trace('DefaultRunManager.startRun();', { runId, clientId });
 
-    const controller = externalController ?? new AbortController();
+    // Seed the owner entry first; the publish below opens the run on the wire.
+    this.registerRun(runId, clientId, externalController);
     const resolvedClientId = clientId ?? '';
-    this._activeRuns.set(runId, { controller, clientId: resolvedClientId });
 
     // A continuation re-enters an already-started run: publish `ai-run-resume`
     // rather than `ai-run-start`. Resume is a pure re-entry signal — the

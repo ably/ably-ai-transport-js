@@ -604,6 +604,11 @@ class DefaultAgentSession<
 
     const controller = new AbortController();
     let state = RunState.INITIALIZED;
+    // Whether the anchor resolve (the input-event lookup + anchor assignment +
+    // continuation identity adoption) has run. Independent of `state` so the
+    // resolve is idempotent on its own: a second call is a no-op, and the
+    // opening publish stays the responsibility of the lifecycle state machine.
+    let resolved = false;
 
     // Compose the internal controller signal with the external signal (e.g.
     // req.signal) so platform-level cancellation (request cancellation, function
@@ -846,6 +851,127 @@ class DefaultAgentSession<
       return result;
     };
 
+    /**
+     * Resolve the run's write-time anchors from the channel, WITHOUT publishing.
+     * Looks up the triggering input event, assigns the closure anchors read off
+     * its headers (`resolvedClientId` / `resolvedParent` / `resolvedForkOf` /
+     * `resolvedRegenerates` / `resolvedInputCodecMessageId` /
+     * `resolvedInputClientId` / `assistantParentFallback`), adopts a
+     * continuation's wire run-id as this run's identity (re-keying the
+     * registration so cancel routing / deregistration resolve to the real run),
+     * pins `run.view` to the resolved branch, and pulls any cancel buffered
+     * before the run was known. Idempotent: a second call is a no-op so a
+     * `start()` after a standalone resolve does not re-look-up.
+     *
+     * Throws (and deregisters the run) if the input-event lookup fails, having
+     * published nothing, so the lifecycle invariant holds for other observers. A
+     * deferred cancel pulled here may abort `signal` before this returns.
+     */
+    const resolve = async (): Promise<void> => {
+      if (resolved) return;
+
+      // Look up the triggering input event on the channel so the agent
+      // can read the user's message and per-run metadata (parent, forkOf,
+      // continuation flag) before publishing run-start. Skip when
+      // inputEventLookupTimeoutMs === 0 (tests and in-process drivers) or
+      // when no inputEventId is set (invocation requires no channel lookup).
+      if (inputEventId && inputEventLookupTimeoutMs > 0) {
+        try {
+          const found = await locateInputEvent({
+            tree: getTree(),
+            hydrator: getHydrator(),
+            invocationId,
+            runId,
+            expectedEventId: inputEventId,
+            timeoutMs: inputEventLookupTimeoutMs,
+            signal,
+            logger,
+          });
+          if (found.headers !== undefined) lookupHeaders = found.headers;
+          if (found.clientId !== undefined) resolvedInputClientId = found.clientId;
+        } catch (error) {
+          const errInfo =
+            error instanceof Ably.ErrorInfo
+              ? error
+              : new Ably.ErrorInfo(
+                  `unable to look up input event; ${errorMessage(error)}`,
+                  ErrorCode.InputEventNotFound,
+                  504,
+                );
+          // The rejection bubbles up to the developer's HTTP handler,
+          // which surfaces the failure as a non-2xx response — that is
+          // the signal the client sees. No channel publish: an
+          // `ai-run-end` without a preceding `ai-run-start` would break
+          // the lifecycle invariant for other channel observers.
+          deregisterRun();
+          logger?.error('Run.start(); input-event lookup failed', { runId, invocationId });
+          throw errInfo;
+        }
+      }
+
+      // Resolve per-run metadata from the matched input event's
+      // headers — they carry `clientId`, `parent`, and `forkOf`.
+      // Continuations of a suspended run pick up the suspended assistant's
+      // parent in the same headers (the continuation message parents off
+      // the assistant). A `run-id` on the triggering input marks a
+      // continuation (re-entry via `ai-run-resume`); a fresh input carries
+      // none and opens the run with `ai-run-start`.
+      const sourceHeaders = lookupHeaders;
+      if (sourceHeaders) {
+        resolvedClientId = sourceHeaders[HEADER_RUN_CLIENT_ID];
+        resolvedParent = sourceHeaders[HEADER_PARENT];
+        resolvedForkOf = sourceHeaders[HEADER_FORK_OF];
+        resolvedRegenerates = sourceHeaders[HEADER_MSG_REGENERATE];
+        resolvedInputCodecMessageId = sourceHeaders[HEADER_CODEC_MESSAGE_ID];
+
+        // The triggering input's run-id (if any) IS this run's identity.
+        // Present → a continuation re-entering that run: adopt the id,
+        // overriding the provisional one minted at construction, and re-key
+        // the registration so cancel routing / deregistration resolve to the
+        // real run. Absent → a fresh run: the provisional id stands and the
+        // run opens with run-start.
+        const wireRunId = sourceHeaders[HEADER_RUN_ID];
+        resolvedContinuation = wireRunId !== undefined;
+        if (wireRunId !== undefined && wireRunId !== runId) {
+          registeredRuns.delete(runId);
+          runId = wireRunId;
+          registration.runId = runId;
+          registeredRuns.set(runId, registration);
+        }
+      }
+
+      // Compute the reply run's structural-parent fallback: the triggering
+      // user message's codec-message-id ONLY if that codec-message-id is
+      // backed by a real node in the Tree (i.e. the message decoded into at
+      // least one input event); otherwise — for regenerate carriers that
+      // are wire-only signals with no input events — fall back to the
+      // input message's own `parent` header.
+      assistantParentFallback =
+        resolvedInputCodecMessageId !== undefined &&
+        this._tree.getNodeByCodecMessageId(resolvedInputCodecMessageId) !== undefined
+          ? resolvedInputCodecMessageId
+          : resolvedParent;
+
+      // Pin run.view to this run's branch now the trigger is resolved — the
+      // same anchor / run-id / regenerate-target the conversation getters use.
+      // Until this, run.view is empty.
+      leafSource.setPin(assistantParentFallback, runId, resolvedRegenerates);
+
+      // The triggering input's codec-message-id is now resolved, so the
+      // `input-codec-message-id → run` linkage exists: index it for live
+      // cancels and pull any cancel that arrived before the run was known
+      // (a fresh-send cancel published before the agent minted this run-id).
+      // Honouring it here may abort the controller before run-start; that is
+      // fine — the abort propagates through the same signal a normal cancel
+      // would use.
+      if (resolvedInputCodecMessageId !== undefined) {
+        runIdByInputCodecMessageId.set(resolvedInputCodecMessageId, runId);
+        await pullDeferredCancel(registration, resolvedInputCodecMessageId);
+      }
+
+      resolved = true;
+    };
+
     const run: AgentRun<TOutput, TProjection, TMessage> = {
       // Shared read members delegate to `base` (live getters, not snapshots).
       get runId() {
@@ -887,104 +1013,11 @@ class DefaultAgentSession<
         if (state !== RunState.INITIALIZED) return;
         state = RunState.STARTED;
 
-        // Look up the triggering input event on the channel so the agent
-        // can read the user's message and per-run metadata (parent, forkOf,
-        // continuation flag) before publishing run-start. Skip when
-        // inputEventLookupTimeoutMs === 0 (tests and in-process drivers) or
-        // when no inputEventId is set (invocation requires no channel lookup).
-        if (inputEventId && inputEventLookupTimeoutMs > 0) {
-          try {
-            const found = await locateInputEvent({
-              tree: getTree(),
-              hydrator: getHydrator(),
-              invocationId,
-              runId,
-              expectedEventId: inputEventId,
-              timeoutMs: inputEventLookupTimeoutMs,
-              signal,
-              logger,
-            });
-            if (found.headers !== undefined) lookupHeaders = found.headers;
-            if (found.clientId !== undefined) resolvedInputClientId = found.clientId;
-          } catch (error) {
-            const errInfo =
-              error instanceof Ably.ErrorInfo
-                ? error
-                : new Ably.ErrorInfo(
-                    `unable to look up input event; ${errorMessage(error)}`,
-                    ErrorCode.InputEventNotFound,
-                    504,
-                  );
-            // The rejection bubbles up to the developer's HTTP handler,
-            // which surfaces the failure as a non-2xx response — that is
-            // the signal the client sees. No channel publish: an
-            // `ai-run-end` without a preceding `ai-run-start` would break
-            // the lifecycle invariant for other channel observers.
-            deregisterRun();
-            logger?.error('Run.start(); input-event lookup failed', { runId, invocationId });
-            throw errInfo;
-          }
-        }
-
-        // Resolve per-run metadata from the matched input event's
-        // headers — they carry `clientId`, `parent`, and `forkOf`.
-        // Continuations of a suspended run pick up the suspended assistant's
-        // parent in the same headers (the continuation message parents off
-        // the assistant). A `run-id` on the triggering input marks a
-        // continuation (re-entry via `ai-run-resume`); a fresh input carries
-        // none and opens the run with `ai-run-start`.
-        const sourceHeaders = lookupHeaders;
-        if (sourceHeaders) {
-          resolvedClientId = sourceHeaders[HEADER_RUN_CLIENT_ID];
-          resolvedParent = sourceHeaders[HEADER_PARENT];
-          resolvedForkOf = sourceHeaders[HEADER_FORK_OF];
-          resolvedRegenerates = sourceHeaders[HEADER_MSG_REGENERATE];
-          resolvedInputCodecMessageId = sourceHeaders[HEADER_CODEC_MESSAGE_ID];
-
-          // The triggering input's run-id (if any) IS this run's identity.
-          // Present → a continuation re-entering that run: adopt the id,
-          // overriding the provisional one minted at construction, and re-key
-          // the registration so cancel routing / deregistration resolve to the
-          // real run. Absent → a fresh run: the provisional id stands and the
-          // run opens with run-start.
-          const wireRunId = sourceHeaders[HEADER_RUN_ID];
-          resolvedContinuation = wireRunId !== undefined;
-          if (wireRunId !== undefined && wireRunId !== runId) {
-            registeredRuns.delete(runId);
-            runId = wireRunId;
-            registration.runId = runId;
-            registeredRuns.set(runId, registration);
-          }
-        }
-
-        // Compute the reply run's structural-parent fallback: the triggering
-        // user message's codec-message-id ONLY if that codec-message-id is
-        // backed by a real node in the Tree (i.e. the message decoded into at
-        // least one input event); otherwise — for regenerate carriers that
-        // are wire-only signals with no input events — fall back to the
-        // input message's own `parent` header.
-        assistantParentFallback =
-          resolvedInputCodecMessageId !== undefined &&
-          this._tree.getNodeByCodecMessageId(resolvedInputCodecMessageId) !== undefined
-            ? resolvedInputCodecMessageId
-            : resolvedParent;
-
-        // Pin run.view to this run's branch now the trigger is resolved — the
-        // same anchor / run-id / regenerate-target the conversation getters use.
-        // Until this, run.view is empty.
-        leafSource.setPin(assistantParentFallback, runId, resolvedRegenerates);
-
-        // The triggering input's codec-message-id is now resolved, so the
-        // `input-codec-message-id → run` linkage exists: index it for live
-        // cancels and pull any cancel that arrived before the run was known
-        // (a fresh-send cancel published before the agent minted this run-id).
-        // Honouring it here may abort the controller before run-start; that is
-        // fine — the abort propagates through the same signal a normal cancel
-        // would use.
-        if (resolvedInputCodecMessageId !== undefined) {
-          runIdByInputCodecMessageId.set(resolvedInputCodecMessageId, runId);
-          await pullDeferredCancel(registration, resolvedInputCodecMessageId);
-        }
+        // Resolve the run's write-time anchors from the channel (input-event
+        // lookup + anchor assignment + continuation identity adoption) before
+        // publishing run-start. A lookup failure throws here, having already
+        // deregistered the run — start() publishes nothing in that case.
+        await resolve();
 
         await publishLifecycle('run-start', 'start', async () =>
           runManager.startRun(runId, resolvedClientId, controller, {

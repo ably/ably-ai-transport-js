@@ -193,6 +193,31 @@ describe('RunManager', () => {
     });
   });
 
+  describe('registerRun', () => {
+    it('seeds the run owner WITHOUT publishing any lifecycle event', () => {
+      manager.registerRun('run-1', 'user-a');
+
+      // The owner is queryable for output / terminal stamping...
+      expect(manager.getClientId('run-1')).toBe('user-a');
+      // ...but registering alone publishes nothing on the channel.
+      expect(channel.publishCalls).toHaveLength(0);
+    });
+
+    it('defaults clientId to empty string when omitted', () => {
+      manager.registerRun('run-1');
+      expect(manager.getClientId('run-1')).toBe('');
+    });
+
+    it('adopts the external controller so close() aborts it', () => {
+      const controller = new AbortController();
+      manager.registerRun('run-1', 'user-a', controller);
+      expect(controller.signal.aborted).toBe(false);
+
+      manager.close();
+      expect(controller.signal.aborted).toBe(true);
+    });
+  });
+
   describe('endRun', () => {
     it('publishes run-end event with reason', async () => {
       await manager.startRun('run-1', 'user-a');

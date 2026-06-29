@@ -23,9 +23,17 @@ export interface UseMessagesWithSeedOptions {
   view: View<AI.UIMessage> | undefined;
   /**
    * The persisted conversation (the seed), oldest-first; an empty array surfaces
-   * the live channel window unchanged.
+   * the live channel window unchanged. While the seed is still loading, set
+   * {@link skip} rather than passing `[]`.
    */
   seed: AI.UIMessage[];
+  /**
+   * Hold the reconciliation while the seed is still loading (e.g. an async store
+   * fetch). When `true` the hook does not walk the channel and returns `[]`;
+   * clear it once the seed has loaded. Distinct from an empty `seed` (a
+   * loaded-but-empty conversation). Defaults to `false`.
+   */
+  skip?: boolean;
 }
 
 const uiMessageId = (message: AI.UIMessage): string => message.id;
@@ -36,7 +44,8 @@ const uiMessageId = (message: AI.UIMessage): string => message.id;
  * @param options - The view and the seed.
  * @param options.view - The {@link View} over the live channel, or `undefined` before it resolves.
  * @param options.seed - The persisted conversation (the seed), oldest-first.
+ * @param options.skip - Hold the reconciliation while the seed is still loading.
  * @returns The composed conversation, oldest-first.
  */
-export const useMessagesWithSeed = ({ view, seed }: UseMessagesWithSeedOptions): AI.UIMessage[] =>
-  useMessagesWithSeedCore({ view, seed, getMessageId: uiMessageId });
+export const useMessagesWithSeed = ({ view, seed, skip }: UseMessagesWithSeedOptions): AI.UIMessage[] =>
+  useMessagesWithSeedCore({ view, seed, getMessageId: uiMessageId, skip });

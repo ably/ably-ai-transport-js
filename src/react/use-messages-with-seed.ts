@@ -73,8 +73,9 @@ export interface UseMessagesWithSeedOptions<TMessage> {
    * reconciliation: a new `seed` reference re-runs the seam walk and recomposes
    * from scratch. Pass a **stable (e.g. memoised) reference** for a given
    * conversation so ordinary re-renders don't repeat the walk; change it to seed
-   * a different conversation. An empty array surfaces the live channel window
-   * unchanged (no seam, no walk).
+   * a different conversation. An empty array is a loaded-but-empty conversation —
+   * no seam, so the live channel window is surfaced unchanged; while the seed is
+   * still loading, set {@link skip} rather than passing `[]`.
    */
   seed: TMessage[];
   /**
@@ -83,6 +84,16 @@ export interface UseMessagesWithSeedOptions<TMessage> {
    * drop the single overlap when composing.
    */
   getMessageId: (message: TMessage) => string;
+  /**
+   * Hold the reconciliation while the seed is still loading (e.g. an async store
+   * fetch). When `true` the hook does not walk the channel and returns `[]`: the
+   * newest seed message's id is the walk's stop condition (the seam), so walking
+   * before the seed resolves would scan the channel with no stop point. Clear it
+   * once the seed has loaded — a loaded-but-empty `[]` then surfaces the live
+   * channel normally, which is why this "not loaded yet" hold is distinct from an
+   * empty seed. Defaults to `false`.
+   */
+  skip?: boolean;
 }
 
 /**
@@ -92,12 +103,14 @@ export interface UseMessagesWithSeedOptions<TMessage> {
  * @param options.view - The {@link View} over the live channel, or `undefined` before it resolves.
  * @param options.seed - The persisted conversation (the seed), oldest-first.
  * @param options.getMessageId - Returns a message's stable domain id (the seam key).
+ * @param options.skip - Hold the reconciliation (no walk, empty result) while the seed is still loading.
  * @returns The composed conversation, oldest-first.
  */
 export const useMessagesWithSeed = <TMessage>({
   view,
   seed,
   getMessageId,
+  skip = false,
 }: UseMessagesWithSeedOptions<TMessage>): TMessage[] => {
   // `getMessageId` is held in a ref: it's a pure accessor, so an unstable (e.g. inline) reference
   // shouldn't re-run the walk; the latest is read inside the effect.
@@ -106,18 +119,22 @@ export const useMessagesWithSeed = <TMessage>({
 
   // Resolve the live tail synchronously on first render so any already-visible
   // live messages are surfaced immediately alongside the seed — no transient
-  // empty frame for a consumer that replaces its messages with this value.
-  const [live, setLive] = useState<CodecMessage<TMessage>[]>(() => liveTail(view, seed, getMessageId));
+  // empty frame for a consumer that replaces its messages with this value. While
+  // skipping (seed not loaded) there is no tail and nothing to surface.
+  const [live, setLive] = useState<CodecMessage<TMessage>[]>(() => (skip ? [] : liveTail(view, seed, getMessageId)));
 
   const newestSeed = seed.at(-1);
   const seamId = newestSeed === undefined ? undefined : getIdRef.current(newestSeed);
 
-  // The effect re-runs whenever `view` or `seamId` (last seed message's id) changes — a new seam re-drives
-  // the walk from scratch (see the `seed` option doc).
+  // The effect re-runs whenever `view`, `seamId` (last seed message's id), or
+  // `skip` changes — a new seam re-drives the walk from scratch (see the `seed`
+  // option doc), and clearing `skip` starts it once the seed has loaded.
   useEffect(() => {
     const getId = getIdRef.current;
 
-    if (!view) {
+    // Hold while the seed is still loading (no seam yet) or before the view
+    // resolves: don't walk the channel, surface nothing.
+    if (skip || !view) {
       setLive([]);
       return;
     }
@@ -178,11 +195,12 @@ export const useMessagesWithSeed = <TMessage>({
       controller.abort();
       off();
     };
-  }, [view, seamId]);
+  }, [view, seamId, skip]);
 
   // Compose `seed ⧺ live`: the persisted prefix followed by the not-yet-seeded
   // live tail. Recomputed only when the seed reference or the resolved live tail
   // changes, so a new seed (e.g. a swapped conversation) recomposes while an
   // unchanged window keeps the same array reference for downstream consumers.
-  return useMemo(() => [...seed, ...live.map((m) => m.message)], [seed, live]);
+  // While skipping, the seed isn't loaded yet — surface nothing.
+  return useMemo(() => (skip ? [] : [...seed, ...live.map((m) => m.message)]), [skip, seed, live]);
 };

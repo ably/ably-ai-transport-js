@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { CodecMessage } from '../../src/core/codec/types.js';
 import type { View } from '../../src/core/transport/types.js';
@@ -162,5 +162,32 @@ describe('useMessagesWithSeed', () => {
     await waitFor(() => {
       expect(ids(result.current)).toEqual(['z1', 'u1', 'a1', 'u2', 'a2']);
     });
+  });
+
+  it('holds — no channel walk, empty result — while skip is set, then walks once cleared', async () => {
+    // While the seed is still loading the consumer sets skip: the seam (stop
+    // condition) is unknown, so the channel must not be paged. A loaded-but-empty
+    // seed would instead surface the window (covered above); skip is distinct.
+    const seed = [m('u1'), m('a1')]; // seam = a1
+    const { view } = makeView(['a1', 'u2', 'a2'], { initialVisible: 1 });
+    const loadOlder = vi.spyOn(view, 'loadOlder');
+
+    const { result, rerender } = renderHook(({ skip }) => useMessagesWithSeed({ view, seed, getMessageId, skip }), {
+      initialProps: { skip: true },
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current).toEqual([]); // held, nothing surfaced
+    expect(loadOlder).not.toHaveBeenCalled(); // no channel scan without a seam
+
+    // Seed loaded — clearing skip drives the walk to the seam and composes.
+    rerender({ skip: false });
+
+    await waitFor(() => {
+      expect(ids(result.current)).toEqual(['u1', 'a1', 'u2', 'a2']);
+    });
+    expect(loadOlder).toHaveBeenCalled();
   });
 });

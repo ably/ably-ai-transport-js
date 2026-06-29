@@ -16,6 +16,8 @@ interface MessageBubbleProps {
   // pure renderer with no SDK type dependencies.
   clientId: string | undefined;
   runId: string | undefined;
+  stepId: string | undefined;
+  stepCount: number;
   status: 'streaming' | 'complete' | 'cancelled' | 'error' | 'suspended' | undefined;
   errorMessage?: string;
   hasSiblings: boolean;
@@ -176,6 +178,8 @@ export function MessageBubble({
   codecMessageId,
   clientId,
   runId,
+  stepId,
+  stepCount,
   status,
   errorMessage,
   hasSiblings,
@@ -289,6 +293,13 @@ export function MessageBubble({
                     value={runId.slice(0, 8)}
                     color="bg-zinc-900 text-zinc-500"
                   />
+                  {stepId && (
+                    <Badge
+                      label="step"
+                      value={stepId.slice(0, 8) + (stepCount > 1 ? ` +${stepCount - 1}` : '')}
+                      color="bg-zinc-900 text-zinc-500"
+                    />
+                  )}
                   {status && !isUser && <StatusBadge status={status} />}
                 </>
               )}

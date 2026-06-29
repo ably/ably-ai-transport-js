@@ -825,23 +825,74 @@ class DefaultAgentSession<
     let lastStepReason: StepEndReason | undefined;
 
     /**
-     * Pipe a stream through a fresh encoder to the channel. Shared by
-     * {@link AgentRun.pipe} (stepless — `stepHeaders` undefined) and
-     * {@link RunStep.pipe} (stamps the step's `step-id` / `attempt-id`). Builds
-     * the assistant message's default headers from the run's resolved structural
-     * anchors, pipes, surfaces a stream error via `onError`, and runs the
-     * cancel safety-net (`endOnCancel`) so every observer's stream closes even
-     * if the caller omits `run.end()`.
+     * Mint the next default in-process step id and advance the index. Scoped to
+     * THIS invocation's id so steps from different invocations of the same run
+     * (e.g. the original turn and a suspend/resume continuation) never collide
+     * and supersede each other. Shared by {@link AgentRun.step}'s fresh-step
+     * branch and {@link AgentRun.pipe}'s implicit step — each `pipe` mints its
+     * own id, so two pipes are two independent steps (never a supersede).
+     * @returns The fresh `${invocationId}-step-N` id.
+     */
+    const mintNextStepId = (): string => {
+      const id = `${invocationId}-step-${String(stepIndex)}`;
+      stepIndex++;
+      return id;
+    };
+
+    /**
+     * Open a step attempt on the wire and seed the optimistic step-start into
+     * the Tree (serial-less; the wire echo promotes its serial). Shared by the
+     * eager open in {@link AgentRun.step} and the lazy first-output open in
+     * {@link AgentRun.pipe}.
+     * @param stepId - The step's id.
+     * @param attemptId - This attempt's id.
+     */
+    const openStep = async (stepId: string, attemptId: string): Promise<void> => {
+      await runManager.startStep(runId, stepId, attemptId);
+      // Optimistic step-start seed (serial-less) so reads before the wire echo
+      // see the step; the echo promotes its serial. Mirrors the run-start seed.
+      getTree().applyStepLifecycle({ type: 'step-start', runId, stepId, attemptId, serial: undefined });
+    };
+
+    /**
+     * Close a step attempt on the wire, seed the optimistic step-end into the
+     * Tree, and record it as the previous step so a following no-`stepId`
+     * retry can coalesce. Shared by {@link AgentRun.step} and the implicit
+     * step in {@link AgentRun.pipe}.
+     * @param stepId - The step's id.
+     * @param attemptId - This attempt's id.
+     * @param reason - The step-end reason.
+     */
+    const closeStep = async (stepId: string, attemptId: string, reason: StepEndReason): Promise<void> => {
+      lastStepId = stepId;
+      lastStepReason = reason;
+      await runManager.endStep(runId, stepId, attemptId, reason);
+      getTree().applyStepLifecycle({ type: 'step-end', runId, stepId, attemptId, serial: undefined, reason });
+    };
+
+    /**
+     * Pipe a stream through a fresh encoder to the channel, always within a step
+     * bracket. Shared by {@link AgentRun.pipe} (an implicit step opened LAZILY
+     * at first output via `step.onFirstOutput`) and {@link RunStep.pipe} (an
+     * explicit step the caller already opened eagerly, so it omits
+     * `onFirstOutput`). Stamps the step's `step-id` / `attempt-id` on every
+     * output, builds the assistant message's default headers from the run's
+     * resolved structural anchors, pipes, surfaces a stream error via `onError`,
+     * and runs the cancel safety-net (`endOnCancel`) so every observer's stream
+     * closes even if the caller omits `run.end()`.
      * @param stream - The output stream to pipe.
      * @param streamOpts - Per-stream overrides.
-     * @param stepHeaders - The step's id/attempt-id, or undefined for a stepless pipe.
+     * @param step - The step to stamp output under.
+     * @param step.stepId - The step's id, stamped on every output.
+     * @param step.attemptId - This attempt's id, stamped on every output.
+     * @param step.onFirstOutput - Optional hook fired once before the first output (the lazy implicit-step open); omitted when the step is already open.
      * @param endOnCancel - Called to end the run when the pipe is cancelled.
      * @returns The {@link StreamResult}.
      */
     const doPipe = async (
       stream: ReadableStream<TOutput>,
       streamOpts: PipeOptions<TOutput> | undefined,
-      stepHeaders: { stepId: string; attemptId: string } | undefined,
+      step: { stepId: string; attemptId: string; onFirstOutput?: () => Promise<void> },
       endOnCancel: () => Promise<void>,
     ): Promise<StreamResult> => {
       await requireConnected('pipe');
@@ -891,8 +942,8 @@ class DefaultAgentSession<
         inputClientId: resolvedInputClientId,
         inputCodecMessageId: resolvedInputCodecMessageId,
         regenerates: assistantRegenerates,
-        stepId: stepHeaders?.stepId,
-        attemptId: stepHeaders?.attemptId,
+        stepId: step.stepId,
+        attemptId: step.attemptId,
       });
       const encoder = codec.createEncoder(channel, {
         extras: { headers: defaultHeaders },
@@ -900,7 +951,15 @@ class DefaultAgentSession<
         messageId: codecMessageId,
       });
 
-      const result = await pipeStream(stream, encoder, signal, onCancelled, streamOpts?.resolveWriteOptions, logger);
+      const result = await pipeStream(
+        stream,
+        encoder,
+        signal,
+        onCancelled,
+        streamOpts?.resolveWriteOptions,
+        logger,
+        step.onFirstOutput,
+      );
 
       if (result.error) {
         const errInfo = new Ably.ErrorInfo(
@@ -1223,8 +1282,43 @@ class DefaultAgentSession<
       // Spec: AIT-ST6, AIT-ST6a, AIT-ST6b, AIT-ST6b1, AIT-ST6b2, AIT-ST6b3, AIT-ST6c
       pipe: async (stream: ReadableStream<TOutput>, streamOpts?: PipeOptions<TOutput>): Promise<StreamResult> => {
         logger?.trace('Run.pipe();', { runId });
-        // Stepless pipe: no step headers. The cancel safety-net ends the run.
-        return doPipe(stream, streamOpts, undefined, async () => run.end({ reason: 'cancelled' }));
+
+        // The implicit step's identity. A fresh default id per pipe (no explicit
+        // id, no coalescing) so two `run.pipe` calls are two independent steps,
+        // never a supersede. The ids are minted now but the step opens LAZILY:
+        // `openStep` fires from `onFirstOutput`, so a pipe that produces no
+        // output (empty / errored / cancelled before any chunk) brackets ZERO
+        // steps. Track whether it opened so the bracket is closed iff opened.
+        const stepId = mintNextStepId();
+        const attemptId = crypto.randomUUID();
+        // Object wrapper, not a bare `let`: TS flow-narrows a `let` assigned only
+        // inside the `onFirstOutput` callback to `false` at the close check
+        // below, hiding the mutation (mirrors `pipeState` in Run.step).
+        const stepState = { opened: false };
+
+        const result = await doPipe(
+          stream,
+          streamOpts,
+          {
+            stepId,
+            attemptId,
+            onFirstOutput: async () => {
+              stepState.opened = true;
+              await openStep(stepId, attemptId);
+            },
+          },
+          async () => run.end({ reason: 'cancelled' }),
+        );
+
+        // Close the implicit step iff it opened. A piped stream error closes it
+        // `failed` (mirroring Run.step); otherwise `complete`. A cancel is a
+        // run-level terminal handled by the safety-net above, not a step
+        // failure, so a cancelled pipe whose step opened still closes
+        // `complete`. (The cancel-mid-step `cancelled` reason is deferred.)
+        if (stepState.opened) {
+          await closeStep(stepId, attemptId, result.reason === 'error' ? 'failed' : 'complete');
+        }
+        return result;
       },
 
       step: async <T>(fn: (step: RunStep<TOutput>) => Promise<T>, options?: StepOptions): Promise<T> => {
@@ -1271,15 +1365,15 @@ class DefaultAgentSession<
         } else if (lastStepReason === 'failed' && lastStepId !== undefined) {
           stepId = lastStepId;
         } else {
-          stepId = `${invocationId}-step-${String(stepIndex)}`;
-          stepIndex++;
+          stepId = mintNextStepId();
         }
         const attemptId = crypto.randomUUID();
 
-        await runManager.startStep(runId, stepId, attemptId);
-        // Optimistic step-start seed (serial-less) so reads before the wire echo
-        // see the step; the echo promotes its serial. Mirrors the run-start seed.
-        getTree().applyStepLifecycle({ type: 'step-start', runId, stepId, attemptId, serial: undefined });
+        // Open the step eagerly: Run.step brackets the whole closure, so the
+        // step exists for its full duration even if no output is piped. (The
+        // lazy first-output open is Run.pipe's path; Run.step is the explicit
+        // unit a caller chose to open.)
+        await openStep(stepId, attemptId);
 
         // Object wrapper, not a bare `let`: TS flow-narrows a `let` to `false`
         // past the `fn` call, hiding the mutation that happens inside it.
@@ -1295,6 +1389,8 @@ class DefaultAgentSession<
             return signal;
           },
           pipe: async (stream: ReadableStream<TOutput>, streamOpts?: PipeOptions<TOutput>): Promise<StreamResult> => {
+            // The step is already open, so no `onFirstOutput` hook — output is
+            // stamped with its id/attempt-id directly.
             const result = await doPipe(stream, streamOpts, { stepId, attemptId }, async () =>
               run.end({ reason: 'cancelled' }),
             );
@@ -1306,16 +1402,9 @@ class DefaultAgentSession<
           },
         };
 
-        const closeStep = async (reason: StepEndReason): Promise<void> => {
-          lastStepId = stepId;
-          lastStepReason = reason;
-          await runManager.endStep(runId, stepId, attemptId, reason);
-          getTree().applyStepLifecycle({ type: 'step-end', runId, stepId, attemptId, serial: undefined, reason });
-        };
-
         try {
           const value = await fn(stepObj);
-          await closeStep(pipeState.errored ? 'failed' : 'complete');
+          await closeStep(stepId, attemptId, pipeState.errored ? 'failed' : 'complete');
           logger?.debug('Run.step(); step finished', { runId, stepId, attemptId, failed: pipeState.errored });
           return value;
         } catch (error) {
@@ -1323,7 +1412,7 @@ class DefaultAgentSession<
           // failure must not mask the original error) and re-throw so a durable
           // framework's retry policy observes it.
           try {
-            await closeStep('failed');
+            await closeStep(stepId, attemptId, 'failed');
           } catch {
             logger?.error('Run.step(); failed to close step after error', { runId, stepId });
           }

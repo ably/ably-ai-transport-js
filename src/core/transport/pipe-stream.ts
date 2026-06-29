@@ -49,6 +49,7 @@ const abortSignalToPromise = (signal: AbortSignal | undefined): { promise: Promi
  * @param onCancelled - Optional callback invoked when the stream is cancelled, before the stream ends.
  * @param resolveWriteOptions - Optional per-output hook returning {@link WriteOptions} overrides to pass to `encoder.publishOutput`.
  * @param logger - Optional logger for diagnostic output.
+ * @param beforeFirstWrite - Optional hook awaited exactly once, immediately before the FIRST output is published. Never fires for a stream that completes empty, errors, or is cancelled before producing any output — so a caller can open a resource (e.g. `run.pipe`'s implicit step) lazily, only when output actually begins.
  * @returns A {@link StreamResult}: `reason` is why the pipe ended, and `error` holds the caught error when `reason` is `'error'`.
  */
 export const pipeStream = async <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent>(
@@ -58,6 +59,7 @@ export const pipeStream = async <TInput extends CodecInputEvent, TOutput extends
   onCancelled?: (write: (output: TOutput) => Promise<void>) => void | Promise<void>,
   resolveWriteOptions?: (output: TOutput) => WriteOptions | undefined,
   logger?: Logger,
+  beforeFirstWrite?: () => Promise<void>,
 ): Promise<StreamResult> => {
   logger?.trace('pipeStream();');
 
@@ -66,6 +68,8 @@ export const pipeStream = async <TInput extends CodecInputEvent, TOutput extends
 
   let reason: StreamResult['reason'] = 'complete';
   let caughtError: Error | undefined;
+  // Tracks whether the first-output hook has fired so it runs at most once.
+  let firstWriteDone = false;
 
   try {
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- intentional infinite loop broken by return/break
@@ -98,6 +102,15 @@ export const pipeStream = async <TInput extends CodecInputEvent, TOutput extends
         await encoder.close();
         logger?.debug('pipeStream(); stream completed');
         break;
+      }
+
+      // Fire the lazy first-output hook before the first publish so a caller
+      // can open a resource (e.g. the implicit step) that must bracket the
+      // output. An empty / errored / pre-output-cancelled stream never reaches
+      // here, so the hook (and any resource it opens) never fires.
+      if (!firstWriteDone) {
+        firstWriteDone = true;
+        if (beforeFirstWrite) await beforeFirstWrite();
       }
 
       await encoder.publishOutput(value, resolveWriteOptions?.(value));

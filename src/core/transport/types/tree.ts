@@ -373,7 +373,7 @@ export interface OutputEvent<TOutput extends CodecOutputEvent> {
   serial: string | undefined;
   /**
    * The `step-id` of the step that published these outputs, or `undefined`
-   * when the carrying message belonged to no step (a stepless `run.pipe`
+   * when the carrying message belonged to no step (pre-intrinsic-step history
    * output, or an inputs-only fold). Set from the output's `step-id` header.
    */
   stepId?: string;

@@ -67,7 +67,8 @@ export type VercelRunOutcome =
  * Inside a `Run.step`, a stream that errors makes `pipeResult.reason ===
  * 'error'`, which both marks the step `failed` and yields an `'error'` outcome
  * here — so a `vercelRunOutcome(...) -> run.end(outcome)` flow keeps surfacing
- * the failure with no `try`/`catch`, just as for a stepless `Run.pipe`.
+ * the failure with no `try`/`catch`. `Run.pipe` surfaces the same `'error'`
+ * outcome (its implicit step closes `failed`).
  *
  * Surfaces the failure for both error shapes so the caller can forward it to
  * `Run.end(reason, error)`: a stream that threw (`pipeResult.error`) and a

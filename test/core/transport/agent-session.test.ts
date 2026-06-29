@@ -1143,6 +1143,168 @@ describe('AgentSession', () => {
       expect(enc?.publishCalls[0]?.opts).toBeUndefined();
       expect(enc?.publishCalls[1]?.opts).toEqual({ messageId: 'override-b' });
     });
+
+    // -----------------------------------------------------------------------
+    // implicit step bracket (lazy at first output)
+    // -----------------------------------------------------------------------
+
+    describe('implicit step bracket', () => {
+      it('brackets a producing pipe with ai-step-start -> ai-step-end(complete) and stamps step-id/attempt-id on output', async () => {
+        const run = createRunFromOpts(session, { runId: 'run-1' });
+        await run.start();
+        await run.pipe(streamOf({ type: 'text', text: 'hi' }));
+
+        const starts = stepHeadersOf(channel, 'ai-step-start');
+        const ends = stepHeadersOf(channel, 'ai-step-end');
+        expect(starts).toHaveLength(1);
+        expect(ends).toHaveLength(1);
+        expect(starts[0]?.[HEADER_RUN_ID]).toBe('run-1');
+        // The implicit step uses the same monotonic default id Run.step mints,
+        // scoped to the invocation (createRunFromOpts pins it to `run-1-inv`).
+        expect(starts[0]?.['step-id']).toBe('run-1-inv-step-0');
+        expect(ends[0]?.['step-reason']).toBe('complete');
+        // Start and end carry the same step-id / attempt-id pair.
+        expect(ends[0]?.['step-id']).toBe(starts[0]?.['step-id']);
+        expect(ends[0]?.['attempt-id']).toBe(starts[0]?.['attempt-id']);
+
+        // The piped output is stamped with that step's id/attempt-id.
+        const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
+        expect(headers['step-id']).toBe(starts[0]?.['step-id']);
+        expect(headers['attempt-id']).toBe(starts[0]?.['attempt-id']);
+      });
+
+      it('opens the step LAZILY at first output: step-start is published before the first output is encoded', async () => {
+        const run = createRunFromOpts(session, { runId: 'run-1' });
+        await run.start();
+        await run.pipe(streamOf({ type: 'text', text: 'hi' }));
+
+        // The implicit step-start (a channel.publish of `ai-step-start`) must
+        // precede the first encoder.publishOutput call — proving the step opens
+        // from the before-first-write hook, not eagerly at pipe() entry.
+        // Compare vitest's global invocation order across the two spies.
+        const publishMock = vi.mocked(channel.publish);
+        const stepStartCallIdx = publishMock.mock.calls.findIndex(([msg]) => {
+          const m = msg as Ably.Message;
+          return m.name === 'ai-step-start';
+        });
+        expect(stepStartCallIdx).toBeGreaterThanOrEqual(0);
+        const stepStartOrder = publishMock.mock.invocationCallOrder[stepStartCallIdx];
+
+        const enc = codec.lastEncoder();
+        // eslint-disable-next-line @typescript-eslint/unbound-method -- reading the vi.fn mock, not invoking
+        const firstOutputOrder = vi.mocked(enc?.publishOutput ?? vi.fn()).mock.invocationCallOrder[0];
+
+        expect(stepStartOrder).toBeDefined();
+        expect(firstOutputOrder).toBeDefined();
+        // Non-null asserted via the toBeDefined guards above.
+        expect(stepStartOrder ?? 0).toBeLessThan(firstOutputOrder ?? 0);
+      });
+
+      it('brackets ZERO steps for a pipe that produces no output (empty stream)', async () => {
+        const run = createRunFromOpts(session, { runId: 'run-1' });
+        await run.start();
+        const result = await run.pipe(streamOf());
+
+        expect(result.reason).toBe('complete');
+        expect(stepHeadersOf(channel, 'ai-step-start')).toHaveLength(0);
+        expect(stepHeadersOf(channel, 'ai-step-end')).toHaveLength(0);
+      });
+
+      it('brackets ZERO steps when the stream errors BEFORE any output (no empty bracket)', async () => {
+        const run = createRunFromOpts(session, { runId: 'run-1' });
+        await run.start();
+        // Errors on the first read, before enqueuing anything — the
+        // before-first-write hook never fires, so no step opens.
+        const failBeforeOutput = new ReadableStream<TestOutput>({
+          start: (controller) => {
+            controller.error(new Error('upstream failed before any chunk'));
+          },
+        });
+        const result = await run.pipe(failBeforeOutput);
+
+        expect(result.reason).toBe('error');
+        expect(stepHeadersOf(channel, 'ai-step-start')).toHaveLength(0);
+        expect(stepHeadersOf(channel, 'ai-step-end')).toHaveLength(0);
+      });
+
+      it('brackets a step that closes failed when the stream errors AFTER producing output', async () => {
+        const run = createRunFromOpts(session, { runId: 'run-1' });
+        await run.start();
+        // Deliver one chunk on the first pull, then error on the next pull — so
+        // a chunk genuinely reaches the encoder (the step opens) before the
+        // error. (Enqueue-then-error in one tick lets the error pre-empt the
+        // chunk, which is the separate "errors before output" case.)
+        let pulls = 0;
+        const errorAfterOutput = new ReadableStream<TestOutput>({
+          pull: (controller) => {
+            pulls++;
+            if (pulls === 1) {
+              controller.enqueue({ type: 'text', text: 'partial' });
+            } else {
+              controller.error(new Error('rate limit after first chunk'));
+            }
+          },
+        });
+        const result = await run.pipe(errorAfterOutput);
+
+        expect(result.reason).toBe('error');
+        const starts = stepHeadersOf(channel, 'ai-step-start');
+        const ends = stepHeadersOf(channel, 'ai-step-end');
+        expect(starts).toHaveLength(1);
+        expect(ends).toHaveLength(1);
+        expect(ends[0]?.['step-reason']).toBe('failed');
+      });
+
+      it('brackets ZERO steps when cancelled BEFORE any output (cancel safety-net still ends the run)', async () => {
+        const run = createRunFromOpts(session, { runId: 'run-1' });
+        await run.start();
+        simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
+        await new Promise((r) => setTimeout(r, 5));
+
+        const paused = new ReadableStream<TestOutput>({
+          start: () => {
+            /* never enqueues or closes */
+          },
+        });
+        const result = await run.pipe(paused);
+
+        expect(result.reason).toBe('cancelled');
+        // No output ever flowed, so no step opened — but the run still ends.
+        expect(stepHeadersOf(channel, 'ai-step-start')).toHaveLength(0);
+        expect(stepHeadersOf(channel, 'ai-step-end')).toHaveLength(0);
+        expect(channel.publishCalls.find((m) => m.name === 'ai-run-end')).toBeDefined();
+      });
+
+      it('two pipe calls open TWO independent steps (monotonic ids, distinct attempts) — no supersede', async () => {
+        const run = createRunFromOpts(session, { runId: 'run-1' });
+        await run.start();
+        await run.pipe(streamOf({ type: 'text', text: 'a' }));
+        await run.pipe(streamOf({ type: 'text', text: 'b' }));
+
+        const starts = stepHeadersOf(channel, 'ai-step-start');
+        const ends = stepHeadersOf(channel, 'ai-step-end');
+        expect(starts).toHaveLength(2);
+        expect(ends).toHaveLength(2);
+        // Distinct, monotonic step-ids: the second pipe is a fresh step, not a
+        // retry of the first, so it never supersedes it.
+        expect(starts.map((h) => h['step-id'])).toEqual(['run-1-inv-step-0', 'run-1-inv-step-1']);
+        expect(starts[0]?.['attempt-id']).not.toBe(starts[1]?.['attempt-id']);
+      });
+
+      it('continues the same monotonic step index across a pipe and a following step', async () => {
+        // The implicit pipe step and an explicit step share one per-run index,
+        // so a pipe then a step do not collide on the default id.
+        const run = createRunFromOpts(session, { runId: 'run-1' });
+        await run.start();
+        await run.pipe(streamOf({ type: 'text', text: 'a' }));
+        await run.step(async (step) => {
+          await step.pipe(streamOf({ type: 'text', text: 'b' }));
+        });
+
+        const starts = stepHeadersOf(channel, 'ai-step-start');
+        expect(starts.map((h) => h['step-id'])).toEqual(['run-1-inv-step-0', 'run-1-inv-step-1']);
+      });
+    });
   });
 
   // -------------------------------------------------------------------------

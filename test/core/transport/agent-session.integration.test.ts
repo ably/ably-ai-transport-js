@@ -25,6 +25,9 @@ import {
   EVENT_RUN_END,
   EVENT_RUN_RESUME,
   EVENT_RUN_START,
+  EVENT_STEP_END,
+  EVENT_STEP_START,
+  HEADER_ATTEMPT_ID,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_INPUT_CLIENT_ID,
   HEADER_INPUT_CODEC_MESSAGE_ID,
@@ -32,6 +35,8 @@ import {
   HEADER_ROLE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_STEP_ID,
+  HEADER_STEP_REASON,
 } from '../../../src/constants.js';
 import { toCodecEvents } from '../../../src/core/codec/codec-event.js';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
@@ -171,7 +176,9 @@ describe('AgentSession integration', () => {
     const textPart = msg?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
     expect(textPart?.text).toBe('Hello, world!');
 
-    const streamMsg = collector.rawMessages.find((m) => m.name !== EVENT_RUN_START && m.name !== EVENT_RUN_END);
+    // The assistant OUTPUT message (the run-start, the implicit step bracket,
+    // and the run-end are separate events on the wire — pick the output by role).
+    const streamMsg = collector.rawMessages.find((m) => getHeaders(m)[HEADER_ROLE] === 'assistant');
     expect(streamMsg).toBeDefined();
     if (streamMsg) {
       const headers = getHeaders(streamMsg);
@@ -411,6 +418,65 @@ describe('AgentSession integration', () => {
       const endHeaders = getHeaders(endMsg);
       expect(endHeaders[HEADER_RUN_ID]).toBe('run-lc-1');
       expect(endHeaders[HEADER_RUN_REASON]).toBe('complete');
+    }
+  });
+
+  it('run.pipe brackets its output in an implicit step on the wire (step-start -> output -> step-end)', async () => {
+    const channelName = uniqueChannelName('st-pipe-step');
+    const serverClient = ablyRealtimeClient();
+    const subClient = ablyRealtimeClient();
+    const subChannel = subClient.channels.get(channelName);
+
+    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+      client: serverClient,
+      channelName,
+      codec: UIMessageCodec,
+    });
+    await session.connect();
+
+    const wireMessages: Ably.InboundMessage[] = [];
+    let resolveEnd: () => void;
+    const gotEnd = new Promise<void>((r) => {
+      resolveEnd = r;
+    });
+    await subChannel.subscribe((msg) => {
+      wireMessages.push(msg);
+      if (msg.name === EVENT_RUN_END) resolveEnd();
+    });
+
+    const run = createRunFromOpts(session, { runId: 'run-pipe-step-1' });
+    await run.start();
+    await run.pipe(textResponseStream('msg-pipe-step-1', 'text-pipe-step-1', 'hello'));
+    await run.end({ reason: 'complete' });
+
+    await gotEnd;
+
+    // Exactly one implicit step bracket, opened at first output.
+    const stepStart = wireMessages.find((m) => m.name === EVENT_STEP_START);
+    const stepEnd = wireMessages.find((m) => m.name === EVENT_STEP_END);
+    expect(wireMessages.filter((m) => m.name === EVENT_STEP_START)).toHaveLength(1);
+    expect(wireMessages.filter((m) => m.name === EVENT_STEP_END)).toHaveLength(1);
+    expect(stepStart).toBeDefined();
+    expect(stepEnd).toBeDefined();
+
+    // The assistant output carries the step's id / attempt-id.
+    const output = wireMessages.find((m) => m.name === EVENT_AI_OUTPUT && getHeaders(m)[HEADER_ROLE] === 'assistant');
+    expect(output).toBeDefined();
+
+    if (stepStart && stepEnd && output) {
+      const startHeaders = getHeaders(stepStart);
+      const endHeaders = getHeaders(stepEnd);
+      const outputHeaders = getHeaders(output);
+      const stepId = startHeaders[HEADER_STEP_ID];
+      const attemptId = startHeaders[HEADER_ATTEMPT_ID];
+      expect(startHeaders[HEADER_RUN_ID]).toBe('run-pipe-step-1');
+      expect(stepId).toBeDefined();
+      expect(attemptId).toBeDefined();
+      expect(endHeaders[HEADER_STEP_ID]).toBe(stepId);
+      expect(endHeaders[HEADER_ATTEMPT_ID]).toBe(attemptId);
+      expect(endHeaders[HEADER_STEP_REASON]).toBe('complete');
+      expect(outputHeaders[HEADER_STEP_ID]).toBe(stepId);
+      expect(outputHeaders[HEADER_ATTEMPT_ID]).toBe(attemptId);
     }
   });
 

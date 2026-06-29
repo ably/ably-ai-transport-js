@@ -397,9 +397,19 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
    * Returns when the stream completes, is cancelled, or errors.
    * Does NOT call end() — the caller must call end() after pipe returns.
    *
-   * For a re-attemptable unit of work whose retries must not pollute the
-   * conversation, use {@link Run.step} instead; `pipe` is the stepless path
-   * (its output is never superseded by a retry).
+   * Brackets the output in ONE implicit step (so all agent output is published
+   * within a step), opened LAZILY at the first output: it publishes
+   * `ai-step-start` immediately before the first chunk, stamps every chunk with
+   * that step's `step-id` / `attempt-id`, then publishes `ai-step-end`
+   * (`complete`, or `failed` if the stream errored). A pipe that produces NO
+   * output — an empty stream, or one that errors or is cancelled before any
+   * chunk — brackets ZERO steps (no empty `ai-step-start` / `ai-step-end`).
+   *
+   * Each `pipe` call opens its OWN fresh implicit step, so two `pipe` calls are
+   * two independent steps and two assistant messages — a second `pipe` does NOT
+   * supersede the first. Only an explicit, stable `stepId` supersedes, which
+   * `pipe` never sets; for a re-attemptable unit whose retries must supersede
+   * the prior attempt's output rather than appending it, use {@link Run.step}.
    */
   pipe(stream: ReadableStream<TOutput>, options?: PipeOptions<TOutput>): Promise<StreamResult>;
 

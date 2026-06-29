@@ -71,7 +71,7 @@ async function waitForAssistantSettled(page: Page, timeoutMs = 60_000): Promise<
 }
 
 async function sendPrompt(page: Page, text: string): Promise<void> {
-  const input = page.getByPlaceholder('Type a message...');
+  const input = page.getByPlaceholder(/^Type a message/);
   await input.waitFor({ state: 'visible' });
   await input.fill(text);
   await input.press('Enter');
@@ -111,7 +111,7 @@ test.describe('use-client-session demo - chat behaviour', () => {
   test('fresh send: response streams and renders', async ({ page }, testInfo) => {
     await page.goto(freshChannelUrl(testInfo.title));
 
-    const input = page.getByPlaceholder('Type a message...');
+    const input = page.getByPlaceholder(/^Type a message/);
     await input.waitFor({ state: 'visible' });
     const sentinel = 'PROMPT-XYZZY-42';
     await input.fill(`Reply with one short sentence acknowledging the marker ${sentinel}.`);
@@ -422,7 +422,7 @@ test.describe('use-client-session demo - chat behaviour', () => {
     const page = await context.newPage();
     try {
       await page.goto(freshChannelUrl(testInfo.title));
-      const input = page.getByPlaceholder('Type a message...');
+      const input = page.getByPlaceholder(/^Type a message/);
       await input.waitFor({ state: 'visible' });
       await input.fill("what's the weather like?");
       await input.press('Enter');
@@ -449,7 +449,7 @@ test.describe('use-client-session demo - chat behaviour', () => {
   test('approval-gated tool continuation: run reaches status=finished live', async ({ page }, testInfo) => {
     // Mirror of the client-tool variant for the approval-gated path.
     await page.goto(freshChannelUrl(testInfo.title));
-    const input = page.getByPlaceholder('Type a message...');
+    const input = page.getByPlaceholder(/^Type a message/);
     await input.waitFor({ state: 'visible' });
     await input.fill("what's the weather forecast for London?");
     await input.press('Enter');
@@ -489,7 +489,7 @@ test.describe('use-client-session demo - chat behaviour', () => {
     try {
       await page.goto(freshChannelUrl(testInfo.title));
 
-      const input = page.getByPlaceholder('Type a message...');
+      const input = page.getByPlaceholder(/^Type a message/);
       await input.waitFor({ state: 'visible' });
       await input.fill("what's the weather like?");
       await input.press('Enter');
@@ -542,7 +542,7 @@ test.describe('use-client-session demo - chat behaviour', () => {
     // assistant approval bubble vanish.
     await page.goto(freshChannelUrl(testInfo.title));
 
-    const input = page.getByPlaceholder('Type a message...');
+    const input = page.getByPlaceholder(/^Type a message/);
     await input.waitFor({ state: 'visible' });
     await input.fill("what's the weather forecast for London?");
     await input.press('Enter');
@@ -614,7 +614,7 @@ test.describe('use-client-session demo - chat behaviour', () => {
   // checks: forecast TC+TT; regen the TC bubble -> still 2 bubbles, TC shows 2/2.
   test('regenerate on tool-call bubble hides the original follow-up text bubble', async ({ page }, testInfo) => {
     await page.goto(freshChannelUrl(testInfo.title));
-    const input = page.getByPlaceholder('Type a message...');
+    const input = page.getByPlaceholder(/^Type a message/);
     await input.waitFor({ state: 'visible' });
     await input.fill("what's the weather forecast for London?");
     await input.press('Enter');
@@ -685,7 +685,7 @@ test.describe('use-client-session demo - chat behaviour', () => {
     try {
       await page.goto(freshChannelUrl(testInfo.title));
 
-      const input = page.getByPlaceholder('Type a message...');
+      const input = page.getByPlaceholder(/^Type a message/);
       await input.waitFor({ state: 'visible' });
       await input.fill("what's the weather like?");
       await input.press('Enter');
@@ -743,7 +743,7 @@ test.describe('use-client-session demo - chat behaviour', () => {
     try {
       await page.goto(freshChannelUrl(testInfo.title));
 
-      const input = page.getByPlaceholder('Type a message...');
+      const input = page.getByPlaceholder(/^Type a message/);
       await input.waitFor({ state: 'visible' });
       await input.fill("what's the weather like?");
       await input.press('Enter');
@@ -867,7 +867,7 @@ test.describe('use-client-session demo - chat behaviour', () => {
     page,
   }, testInfo) => {
     await page.goto(freshChannelUrl(testInfo.title));
-    const input = page.getByPlaceholder('Type a message...');
+    const input = page.getByPlaceholder(/^Type a message/);
     await input.waitFor({ state: 'visible' });
     await input.fill("what's the weather forecast for London?");
     await input.press('Enter');
@@ -1014,7 +1014,7 @@ test.describe('use-client-session demo - chat behaviour', () => {
     page,
   }, testInfo) => {
     await page.goto(freshChannelUrl(testInfo.title));
-    const input = page.getByPlaceholder('Type a message...');
+    const input = page.getByPlaceholder(/^Type a message/);
     await input.waitFor({ state: 'visible' });
     await input.fill('Reply with a very long story about a dragon');
     await input.press('Enter');
@@ -1058,7 +1058,7 @@ test.describe('use-client-session demo - chat behaviour', () => {
     // the useChat demo, where Stop shows only while the request is in flight
     // (status 'submitted' | 'streaming'); a suspended run shows Send.
     await page.goto(freshChannelUrl(testInfo.title));
-    const input = page.getByPlaceholder('Type a message...');
+    const input = page.getByPlaceholder(/^Type a message/);
     await input.waitFor({ state: 'visible' });
     await input.fill("what's the weather forecast for London?");
     await input.press('Enter');
@@ -1260,7 +1260,7 @@ test.describe('use-client-session demo - chat behaviour', () => {
       await tabB.goto(`/?channel=${channel}&clientId=tab-b`);
 
       // Tab A drives the conversation.
-      const inputA = tabA.getByPlaceholder('Type a message...');
+      const inputA = tabA.getByPlaceholder(/^Type a message/);
       await inputA.fill("what's the weather like?");
       await inputA.press('Enter');
 

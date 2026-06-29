@@ -1173,6 +1173,35 @@ describe('AgentSession', () => {
         expect(headers['attempt-id']).toBe(starts[0]?.['attempt-id']);
       });
 
+      it('does not throw when the implicit step-end publish fails (best-effort close)', async () => {
+        // A fire-and-forget run.pipe whose connection dies mid-stream must not
+        // escape an unhandled rejection from the best-effort step-close. Spy the
+        // run manager so the step-end publish (endStep) rejects like a closed
+        // connection; the run-level terminal is the authority for completion.
+        const orig = runManagerModule.createRunManager;
+        const createSpy = vi
+          .spyOn(runManagerModule, 'createRunManager')
+          .mockImplementation((ch, logger): RunManager => {
+            const manager = orig(ch, logger);
+            manager.endStep = vi.fn().mockRejectedValue(new Error('connection closed'));
+            return manager;
+          });
+        const failChannel = createMockChannel();
+        const failSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+          client: createMockClient(failChannel),
+          channelName: 'test-channel',
+          codec,
+        });
+        await failSession.connect();
+        const run = createRunFromOpts(failSession, { runId: 'run-1' });
+        await run.start();
+        await expect(run.pipe(streamOf({ type: 'text', text: 'hi' }))).resolves.toMatchObject({
+          reason: 'complete',
+        });
+        await failSession.close();
+        createSpy.mockRestore();
+      });
+
       it('opens the step LAZILY at first output: step-start is published before the first output is encoded', async () => {
         const run = createRunFromOpts(session, { runId: 'run-1' });
         await run.start();

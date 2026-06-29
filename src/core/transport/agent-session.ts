@@ -1316,7 +1316,15 @@ class DefaultAgentSession<
         // failure, so a cancelled pipe whose step opened still closes
         // `complete`. (The cancel-mid-step `cancelled` reason is deferred.)
         if (stepState.opened) {
-          await closeStep(stepId, attemptId, result.reason === 'error' ? 'failed' : 'complete');
+          // Best-effort, like Run.step's close: a fire-and-forget run.pipe whose
+          // connection closed mid-stream must not escape an unhandled rejection from
+          // the step-end publish. The run-level terminal is the authority for
+          // run completion; a missing step-end on a dying connection is non-impactful.
+          try {
+            await closeStep(stepId, attemptId, result.reason === 'error' ? 'failed' : 'complete');
+          } catch {
+            logger?.error('Run.pipe(); failed to close implicit step', { runId, stepId });
+          }
         }
         return result;
       },

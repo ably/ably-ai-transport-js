@@ -5,7 +5,7 @@ import type * as Ably from 'ably';
 import type { CodecInputEvent, CodecMessage } from '../../codec/types.js';
 import type { ClientRun, SendOptions } from './client.js';
 import type { RunEndReason } from './shared.js';
-import type { RunLifecycleEvent } from './tree.js';
+import type { RunLifecycleEvent, StepInfo } from './tree.js';
 
 // ---------------------------------------------------------------------------
 // View — windowed projection over the tree
@@ -28,6 +28,14 @@ interface RunInfoBase {
    * invocation-id.
    */
   invocationId: string;
+  /**
+   * The steps observed within this Run, each summarising its canonical attempt
+   * (see {@link StepInfo}). Output is intrinsic to a step, so a Run that
+   * produced any output has at least one (the implicit step a bare `run.pipe`
+   * opens lazily on its first output chunk); an explicit `run.step` adds a
+   * named one. Empty only for a Run that emitted no output at all.
+   */
+  steps: readonly StepInfo[];
 }
 
 /**

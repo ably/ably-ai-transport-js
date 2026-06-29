@@ -185,7 +185,7 @@ describe('useView', () => {
   describe('Run lookup callbacks', () => {
     it('runOf forwards to view.runOf', () => {
       const mock = createMockSession();
-      const info: RunInfo = { runId: 'run-1', clientId: 'c1', status: 'active', invocationId: 'inv-1' };
+      const info: RunInfo = { runId: 'run-1', clientId: 'c1', status: 'active', invocationId: 'inv-1', steps: [] };
       (mock.view.runOf as ReturnType<typeof vi.fn>).mockReturnValue(info);
       const { result } = renderHook(() => useView({ session: mock.session }));
       expect(result.current.runOf('msg-1')).toEqual(info);
@@ -193,7 +193,7 @@ describe('useView', () => {
 
     it('run forwards to view.run', () => {
       const mock = createMockSession();
-      const info: RunInfo = { runId: 'run-1', clientId: 'c1', status: 'complete', invocationId: 'inv-1' };
+      const info: RunInfo = { runId: 'run-1', clientId: 'c1', status: 'complete', invocationId: 'inv-1', steps: [] };
       (mock.view.run as ReturnType<typeof vi.fn>).mockReturnValue(info);
       const { result } = renderHook(() => useView({ session: mock.session }));
       expect(result.current.run('run-1')).toEqual(info);
@@ -202,8 +202,8 @@ describe('useView', () => {
     it('runs forwards to view.runs', () => {
       const mock = createMockSession();
       const list: RunInfo[] = [
-        { runId: 'run-1', clientId: 'c1', status: 'complete', invocationId: 'inv-1' },
-        { runId: 'run-2', clientId: 'c1', status: 'active', invocationId: 'inv-2' },
+        { runId: 'run-1', clientId: 'c1', status: 'complete', invocationId: 'inv-1', steps: [] },
+        { runId: 'run-2', clientId: 'c1', status: 'active', invocationId: 'inv-2', steps: [] },
       ];
       (mock.view.runs as ReturnType<typeof vi.fn>).mockReturnValue(list);
       const { result } = renderHook(() => useView({ session: mock.session }));

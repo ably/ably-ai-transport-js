@@ -351,10 +351,12 @@ export interface RunNode<TProjection> {
   endSerial: string | undefined;
   /**
    * The steps observed within this Run, in first-observed order, each
-   * summarising its canonical attempt (see {@link StepInfo}). Empty for a run
-   * that used no steps (the common `run.pipe` case). Superseded non-canonical
-   * attempts are counted in {@link StepInfo.attemptCount} but not surfaced
-   * individually — their output is dropped from {@link projection}.
+   * summarising its canonical attempt (see {@link StepInfo}). Output is
+   * intrinsic to a step, so a Run that produced any output has at least one
+   * (the implicit step a bare `run.pipe` opens lazily on its first output
+   * chunk); empty only for a Run that emitted no output. Superseded
+   * non-canonical attempts are counted in {@link StepInfo.attemptCount} but not
+   * surfaced individually — their output is dropped from {@link projection}.
    */
   steps: readonly StepInfo[];
 }

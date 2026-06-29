@@ -154,6 +154,7 @@ const _toRunInfo = <TProjection>(run: RunNode<TProjection>): RunInfo => ({
   runId: run.runId,
   clientId: run.clientId,
   invocationId: run.invocationId,
+  steps: run.steps,
   ...run.state,
 });
 

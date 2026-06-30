@@ -120,6 +120,33 @@ const collectUntil = (
 const hasFinish = (outputs: VercelOutput[]): boolean => outputs.some((e) => e.type === 'finish');
 const isRunEnd = (msg: Ably.InboundMessage): boolean => msg.name === EVENT_RUN_END;
 
+/**
+ * Resolve once a node with `codecMessageId` has folded into `tree`. Used to
+ * confirm an input is on the channel (and thus in history for a later, freshly
+ * attached agent) before that agent connects.
+ * @param tree - The materialisation tree to watch.
+ * @param codecMessageId - The wire codec-message-id to wait for.
+ */
+// eslint-disable-next-line @typescript-eslint/promise-function-async -- the body IS a Promise executor
+const awaitNode = (tree: AgentSessionT['tree'], codecMessageId: string): Promise<void> =>
+  new Promise<void>((resolve, reject) => {
+    if (tree.getNodeByCodecMessageId(codecMessageId)) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(() => {
+      unsub();
+      reject(new Error(`timed out waiting for node ${codecMessageId}`));
+    }, 10_000);
+    const unsub = tree.on('update', () => {
+      if (tree.getNodeByCodecMessageId(codecMessageId)) {
+        clearTimeout(timer);
+        unsub();
+        resolve();
+      }
+    });
+  });
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -937,6 +964,116 @@ describe('AgentSession integration', () => {
       }
       expect(events.some((e) => e.type === 'finish')).toBe(true);
     } finally {
+      await clientSession.close();
+    }
+  });
+
+  /**
+   * Scenario: database-hydration reconciliation via `run.view.loadUntil`, the way
+   * the demos build their model context. A two-turn conversation is published,
+   * then a FRESH agent session connects — so the prior turns and the new input
+   * live only in channel history, never delivered live (a plain attach has no
+   * rewind). The fresh run reconstructs context by seeding the stored prefix and
+   * calling `loadUntil` to page `run.view` back to the seam (the newest stored
+   * message), returning only the not-yet-stored tail. This exercises cold-start
+   * locating (the trigger folds in via the walk), real history paging, and seam
+   * detection end-to-end. The unseeded path is covered too: with a predicate that
+   * never matches, `loadUntil` hydrates the whole conversation.
+   */
+  it('reconstructs the model context with run.view.loadUntil (seam tail and full hydration)', async () => {
+    const { createClientSession } = await import('../../../src/core/transport/client-session.js');
+    const channelName = uniqueChannelName('st-load-until');
+    const writerAgentClient = ablyRealtimeClient();
+    const clientClient = ablyRealtimeClient();
+    const freshAgentClient = ablyRealtimeClient();
+
+    // The writer agent produces the seed conversation's assistant reply live.
+    const writerAgent = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+      client: writerAgentClient,
+      channelName,
+      codec: UIMessageCodec,
+    });
+    await writerAgent.connect();
+
+    const clientSession = createClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+      client: clientClient,
+      channelName,
+      codec: UIMessageCodec,
+    });
+    await clientSession.connect();
+
+    // Resolve once `runId`'s run-end folds on the client, so the next turn
+    // auto-parents on the reply and the channel carries the whole prior turn.
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- the body IS a Promise executor
+    const awaitRunEnd = (runId: string): Promise<void> =>
+      new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          unsub();
+          reject(new Error(`timed out waiting for run-end of ${runId}`));
+        }, 10_000);
+        const unsub = clientSession.tree.on('run', (e) => {
+          if (e.runId === runId && e.type === 'end') {
+            clearTimeout(timer);
+            unsub();
+            resolve();
+          }
+        });
+      });
+
+    try {
+      // --- Publish a two-turn conversation: u1 "First" -> a1 "Reply one", u2 "Second" ---
+      const turn1 = await clientSession.view.send(
+        UIMessageCodec.createUserMessage({ id: 'user-turn-1', role: 'user', parts: [{ type: 'text', text: 'First' }] }),
+      );
+      const run1Id = crypto.randomUUID();
+      const writerRun1 = createRunFromOpts(writerAgent, { runId: run1Id, inputEventId: turn1.inputEventId });
+      await writerRun1.start();
+      await turn1.started;
+      const run1Ended = awaitRunEnd(run1Id);
+      await writerRun1.pipe(textResponseStream('asst-turn-1', 'text-turn-1', 'Reply one'));
+      await writerRun1.end({ reason: 'complete' });
+      await run1Ended;
+
+      // Turn 2 is published as an input only (no reply); wait until it is on the
+      // channel so the fresh agent must read it from history, not a live arrival.
+      const turn2 = await clientSession.view.send(
+        UIMessageCodec.createUserMessage({
+          id: 'user-turn-2',
+          role: 'user',
+          parts: [{ type: 'text', text: 'Second' }],
+        }),
+      );
+      // The node is keyed by the wire codec-message-id (minted by the SDK, not
+      // the domain id), which the client owns synchronously on send.
+      await awaitNode(writerAgent.tree, turn2.inputCodecMessageId);
+
+      // --- Fresh agent: connects AFTER publication, so all three messages are
+      // history-only. It reconstructs context the way the demos do. ---
+      session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+        client: freshAgentClient,
+        channelName,
+        codec: UIMessageCodec,
+      });
+      await session.connect();
+
+      // Seeded path: the store already holds [u1, a1]; the seam is a1. loadUntil
+      // pages run.view back to it (folding the history-only turn-2 trigger along
+      // the way) and returns only the not-yet-stored tail.
+      const seamRun = createRunFromOpts(session, { runId: crypto.randomUUID(), inputEventId: turn2.inputEventId });
+      const tail = await seamRun.view.loadUntil((message) => message.message.id === 'asst-turn-1');
+      expect(tail.map((message) => message.message.id)).toEqual(['user-turn-2']);
+
+      const seed = [{ id: 'user-turn-1' }, { id: 'asst-turn-1' }];
+      const conversation = [...seed.map((m) => m.id), ...tail.map((m) => m.message.id)];
+      expect(conversation).toEqual(['user-turn-1', 'asst-turn-1', 'user-turn-2']);
+
+      // Unseeded path: no seam, so the predicate never matches and loadUntil
+      // hydrates the whole conversation as the model context.
+      const fullRun = createRunFromOpts(session, { runId: crypto.randomUUID(), inputEventId: turn2.inputEventId });
+      const whole = await fullRun.view.loadUntil(() => false);
+      expect(whole.map((message) => message.message.id)).toEqual(['user-turn-1', 'asst-turn-1', 'user-turn-2']);
+    } finally {
+      await writerAgent.close();
       await clientSession.close();
     }
   });

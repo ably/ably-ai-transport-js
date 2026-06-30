@@ -36,7 +36,7 @@ import {
 import { toCodecEvents } from '../../../src/core/codec/codec-event.js';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
 import { buildTransportHeaders } from '../../../src/core/transport/headers.js';
-import type { AgentSession } from '../../../src/core/transport/types.js';
+import type { AgentSession, ClientSession } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { getCodecHeaders, getTransportHeaders } from '../../../src/utils.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
@@ -59,6 +59,32 @@ type AgentSessionT = AgentSession<VercelOutput, VercelProjection, AI.UIMessage>;
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Build an `awaitRunEnd(runId)` bound to a client session: it resolves once that
+ * run's terminal run-end (any reason) has folded on the client tree, so the next
+ * turn auto-parents on the reply just received and the channel carries the full
+ * prior turn before the next lookup runs. Rejects after 10s.
+ * @param clientSession - The client session whose tree observes run lifecycle.
+ * @returns A function resolving on the named run's run-end.
+ */
+const makeAwaitRunEnd =
+  (clientSession: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>) =>
+  // eslint-disable-next-line @typescript-eslint/promise-function-async -- the body IS a Promise executor; async would double-wrap it
+  (runId: string): Promise<void> =>
+    new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        unsub();
+        reject(new Error(`timed out waiting for run-end of ${runId}`));
+      }, 10_000);
+      const unsub = clientSession.tree.on('run', (e) => {
+        if (e.runId === runId && e.type === 'end') {
+          clearTimeout(timer);
+          unsub();
+          resolve();
+        }
+      });
+    });
 
 interface FoldingCollector {
   allOutputs: VercelOutput[];
@@ -870,24 +896,7 @@ describe('AgentSession integration', () => {
     });
     await clientSession.connect();
 
-    // Resolve once the given run's terminal run-end has folded on the client,
-    // so the next turn auto-parents on the assistant reply just received and
-    // the channel carries the full prior turn before the next lookup runs.
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- the body IS a Promise executor; async would double-wrap it
-    const awaitRunEnd = (runId: string): Promise<void> =>
-      new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          unsub();
-          reject(new Error(`timed out waiting for run-end of ${runId}`));
-        }, 10_000);
-        const unsub = clientSession.tree.on('run', (e) => {
-          if (e.runId === runId && e.type === 'end') {
-            clearTimeout(timer);
-            unsub();
-            resolve();
-          }
-        });
-      });
+    const awaitRunEnd = makeAwaitRunEnd(clientSession);
 
     try {
       // --- Turn 1: user "First" -> assistant "Reply one" ---
@@ -969,6 +978,80 @@ describe('AgentSession integration', () => {
   });
 
   /**
+   * Scenario: an incomplete prior turn is excluded from the agent's
+   * reconstructed prompt (AIT-878). Turn 1 completes normally; turn 2 ends
+   * cancelled — a non-`complete` terminal run, the same broken shape a run
+   * holding an unresolved tool call leaves on the branch; turn 3 then drains
+   * `run.view`. The agent's completed-run-only walk drops the cancelled turn-2
+   * run together with its user input, so the prompt carries only the completed
+   * turn 1 and the current turn-3 input — never the broken turn that would
+   * otherwise poison the request.
+   */
+  it('omits an incomplete prior run (and its input) from the reconstructed prompt', async () => {
+    const { createClientSession } = await import('../../../src/core/transport/client-session.js');
+    const channelName = uniqueChannelName('st-incomplete-run');
+    const serverClient = ablyRealtimeClient();
+    const clientClient = ablyRealtimeClient();
+
+    session = createAgentSession({ client: serverClient, channelName, codec: UIMessageCodec });
+    await session.connect();
+
+    const clientSession = createClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+      client: clientClient,
+      channelName,
+      codec: UIMessageCodec,
+    });
+    await clientSession.connect();
+
+    const awaitRunEnd = makeAwaitRunEnd(clientSession);
+
+    const sendTurn = async (id: string, text: string): Promise<{ inputEventId: string; started: Promise<void> }> => {
+      const turn = await clientSession.view.send(
+        UIMessageCodec.createUserMessage({ id, role: 'user', parts: [{ type: 'text', text }] }),
+      );
+      return { inputEventId: turn.inputEventId, started: turn.started };
+    };
+
+    try {
+      // --- Turn 1: completes normally (kept in the prompt) ---
+      const turn1 = await sendTurn('user-turn-1', 'First');
+      const serverRun1 = createRunFromOpts(session, { runId: crypto.randomUUID(), inputEventId: turn1.inputEventId });
+      await serverRun1.start();
+      await turn1.started;
+      const run1Ended = awaitRunEnd(serverRun1.runId);
+      await serverRun1.pipe(textResponseStream('asst-turn-1', 'text-turn-1', 'Reply one'));
+      await serverRun1.end({ reason: 'complete' });
+      await run1Ended;
+
+      // --- Turn 2: ends cancelled (a non-complete terminal run — dropped) ---
+      const turn2 = await sendTurn('user-turn-2', 'Second');
+      const serverRun2 = createRunFromOpts(session, { runId: crypto.randomUUID(), inputEventId: turn2.inputEventId });
+      await serverRun2.start();
+      await turn2.started;
+      const run2Ended = awaitRunEnd(serverRun2.runId);
+      await serverRun2.pipe(textResponseStream('asst-turn-2', 'text-turn-2', 'Reply two'));
+      await serverRun2.end({ reason: 'cancelled' });
+      await run2Ended;
+
+      // --- Turn 3: the current run; drains run.view to build its prompt ---
+      const turn3 = await sendTurn('user-turn-3', 'Third');
+      const serverRun3 = createRunFromOpts(session, { runId: crypto.randomUUID(), inputEventId: turn3.inputEventId });
+      await serverRun3.start();
+      await turn3.started;
+
+      while (serverRun3.view.hasOlder()) await serverRun3.view.loadOlder();
+      const messages = serverRun3.view.getMessages().map((m) => m.message);
+
+      // Completed turn 1 and the current turn-3 input survive; the cancelled
+      // turn 2 (its user input "Second" and its assistant reply) is omitted.
+      expect(messages.map((m) => m.id)).toEqual(['user-turn-1', 'asst-turn-1', 'user-turn-3']);
+      expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
+    } finally {
+      await clientSession.close();
+    }
+  });
+
+  /**
    * Scenario: database-hydration reconciliation via `run.view.loadUntil`, the way
    * the demos build their model context. A two-turn conversation is published,
    * then a FRESH agent session connects — so the prior turns and the new input
@@ -1002,23 +1085,7 @@ describe('AgentSession integration', () => {
     });
     await clientSession.connect();
 
-    // Resolve once `runId`'s run-end folds on the client, so the next turn
-    // auto-parents on the reply and the channel carries the whole prior turn.
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- the body IS a Promise executor
-    const awaitRunEnd = (runId: string): Promise<void> =>
-      new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          unsub();
-          reject(new Error(`timed out waiting for run-end of ${runId}`));
-        }, 10_000);
-        const unsub = clientSession.tree.on('run', (e) => {
-          if (e.runId === runId && e.type === 'end') {
-            clearTimeout(timer);
-            unsub();
-            resolve();
-          }
-        });
-      });
+    const awaitRunEnd = makeAwaitRunEnd(clientSession);
 
     try {
       // --- Publish a two-turn conversation: u1 "First" -> a1 "Reply one", u2 "Second" ---

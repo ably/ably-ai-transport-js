@@ -125,11 +125,12 @@ const data = (await req.json()) as InvocationData; // { inputEventId, sessionNam
 const invocation = Invocation.fromJSON(data);
 
 const run = session.createRun(invocation, { signal: req.signal });
-await run.start();
 
-// Drain run.view to walk the branch chain off the channel into LLM-ready history.
+// Drain run.view to walk the branch chain off the channel into LLM-ready history
+// (this also folds in the triggering input that start() waits for).
 while (run.view.hasOlder()) await run.view.loadOlder();
 const conversation = run.view.getMessages().map((m) => m.message);
+await run.start();
 
 const result = streamText({ model, messages: conversation, abortSignal: run.abortSignal });
 const { reason } = await run.pipe(result.toUIMessageStream());

@@ -16,14 +16,15 @@ import { Invocation, type InvocationData } from '@ably/ai-transport';
 const invocation = Invocation.fromJSON(data as InvocationData);
 const run = session.createRun(invocation, { signal: req.signal });
 
-// 1. Publish run-start event (visible to all clients)
-await run.start();
-
-// 2. Read the conversation from the channel — the agent does not republish the
+// 1. Read the conversation from the channel — the agent does not republish the
 //    user's prompt; it reads it from the input event the client already published.
-//    Drain run.view for the full multi-turn history; run.messages is only this turn.
+//    Drain run.view (the one history driver); run.messages is only this turn.
 while (run.view.hasOlder()) await run.view.loadOlder();
 const conversation = run.view.getMessages().map((m) => m.message);
+
+// 2. Publish run-start (visible to all clients). start() waits for the triggering
+//    input, which the drain above folds in — so drain before start.
+await run.start();
 
 // 3. Pipe the LLM response stream through the encoder
 const { reason } = await run.pipe(llmStream);
@@ -32,7 +33,7 @@ const { reason } = await run.pipe(llmStream);
 await run.end({ reason });
 ```
 
-`createRun()` is synchronous - it creates the run and registers it for cancel routing, but doesn't touch the channel. This means a cancel signal that arrives before `start()` still fires the run's `AbortSignal`. The invocation body carries only `inputEventId` and `sessionName` — run identity and the user's prompt both live on the channel. `run.start()` locates the triggering input event (via channel rewind) and opens the run on the channel (`ai-run-start`, or `ai-run-resume` when the input re-enters an existing run). The run id itself is assigned when the run is created, not in `start()`. To feed the model, drain `run.view` - the run's read-only [View](../internals/agent-session.md#run-view) over the channel - by paging it back with `loadOlder()` until `hasOlder()` is false, then read `getMessages()`. `run.messages` is only this run's own turn (its triggering input plus its streamed output), not the whole conversation.
+`createRun()` is synchronous - it creates the run and registers it for cancel routing, but doesn't touch the channel. This means a cancel signal that arrives before `start()` still fires the run's `AbortSignal`. The invocation body carries only `inputEventId` and `sessionName` — run identity and the user's prompt both live on the channel. `run.start()` opens the run on the channel (`ai-run-start`, or `ai-run-resume` when the input re-enters an existing run) once its triggering input has folded in — `start()` waits for that input but does not page history itself, so drain `run.view` first (a freshly-woken agent's trigger is often still in channel history). The run id itself is assigned when the run is created, not in `start()`. To feed the model, drain `run.view` - the run's read-only [View](../internals/agent-session.md#run-view) over the channel - by paging it back with `loadOlder()` until `hasOlder()` is false, then read `getMessages()`. `run.messages` is only this run's own turn (its triggering input plus its streamed output), not the whole conversation.
 
 Alongside `messages`, every run - on the client and the server - exposes the same small [read-model](../internals/glossary.md#run-read-model-baserun): `runId`, `status` (`active`, `suspended`, `complete`, `cancelled`, or `error`), and `error` (set only when `status` is `error`). These read live off the [conversation tree](../internals/conversation-tree.md), so they stay current as lifecycle events arrive.
 

@@ -112,12 +112,12 @@ export async function POST(req: Request) {
   await session.connect();
   const run = session.createRun(invocation, { signal: req.signal });
 
-  await run.start();
-
   // Drain run.view to read the conversation from the channel (the just-published
-  // user input plus prior history). run.messages is only this run's own turn.
+  // user input plus prior history); this also folds in the triggering input that
+  // start() waits for. run.messages is only this run's own turn.
   while (run.view.hasOlder()) await run.view.loadOlder();
   const conversation = run.view.getMessages().map((m) => m.message);
+  await run.start();
 
   const result = streamText({
     model: anthropic('claude-sonnet-4-6'),

@@ -4,6 +4,8 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import type { UIMessage } from 'ai';
 import type { CodecMessage } from '@ably/ai-transport';
 import type * as Ably from 'ably';
+import { Button } from '@/components/ui/button';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 export interface CallbackLogEntry {
   time: number;
@@ -107,7 +109,7 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
           >
             <div className="flex items-center gap-2 text-zinc-500 mb-1">
               <span className="text-zinc-600">#{idx}</span>
-              <span>{new Date(entry.timestamp ?? Date.now()).toLocaleTimeString()}</span>
+              <span>{entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : ''}</span>
               <span className="text-emerald-500">{entry.name ?? '(unnamed)'}</span>
               <span className="text-amber-500">{String(entry.action ?? 'message.create')}</span>
             </div>
@@ -326,79 +328,80 @@ export function DebugPane({
     localStorage.setItem(PANE_OPEN_STORAGE_KEY, String(isOpen));
   }, [isOpen]);
 
-  const [tab, setTab] = useState<Tab>('ably');
-
   // Project away the codec-message-id pairing — the pane renders raw messages.
   const uiMessages = useMemo(() => messages.map((m) => m.message), [messages]);
+  const [tab, setTab] = useState<Tab>('ably');
+
+  if (!isOpen) {
+    return (
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => setIsOpen(true)}
+        className="fixed right-0 top-1/2 h-auto -translate-y-1/2 rounded-l-md rounded-r-none border-r-0 px-1.5 py-3"
+        title="Show debug pane"
+      >
+        &lsaquo;
+      </Button>
+    );
+  }
 
   return (
-    <>
-      {!isOpen && (
-        <button
-          onClick={() => setIsOpen(true)}
-          className="fixed right-0 top-1/2 -translate-y-1/2 rounded-l-md bg-zinc-800 border border-r-0 border-zinc-700 px-1.5 py-3 text-xs text-zinc-400 hover:text-zinc-200 transition-colors"
-          title="Show debug pane"
+    <Tabs
+      value={tab}
+      onValueChange={(value) => setTab(value as Tab)}
+      className="flex w-[420px] flex-shrink-0 flex-col gap-0 border-l border-border bg-background"
+    >
+      <div className="flex h-16 flex-shrink-0 items-center justify-between border-b border-border px-3">
+        <TabsList>
+          <TabsTrigger value="ably">
+            Ably Messages
+            <span className="ml-1 text-muted-foreground">{ablyMessages.length}</span>
+          </TabsTrigger>
+          <TabsTrigger value="uimessages">
+            UIMessages
+            <span className="ml-1 text-muted-foreground">{messages.length}</span>
+          </TabsTrigger>
+          <TabsTrigger value="lifecycle">
+            Lifecycle
+            <span className="ml-1 text-muted-foreground">{callbackLog.length + clientToolLog.length}</span>
+          </TabsTrigger>
+        </TabsList>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setIsOpen(false)}
+          className="text-muted-foreground"
         >
-          &lsaquo;
-        </button>
-      )}
-
-      {isOpen && (
-        <div className="w-[420px] flex-shrink-0 border-l border-zinc-800 flex flex-col bg-zinc-950">
-          <div className="flex h-16 flex-shrink-0 items-center justify-between border-b border-zinc-800 px-3">
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => setTab('ably')}
-                className={`text-[10px] px-2 py-1 rounded transition-colors ${
-                  tab === 'ably' ? 'bg-zinc-800 text-zinc-300' : 'text-zinc-600 hover:text-zinc-400'
-                }`}
-              >
-                Ably Messages
-                <span className="ml-1 text-zinc-600">{ablyMessages.length}</span>
-              </button>
-              <button
-                onClick={() => setTab('uimessages')}
-                className={`text-[10px] px-2 py-1 rounded transition-colors ${
-                  tab === 'uimessages' ? 'bg-zinc-800 text-zinc-300' : 'text-zinc-600 hover:text-zinc-400'
-                }`}
-              >
-                UIMessages
-                <span className="ml-1 text-zinc-600">{messages.length}</span>
-              </button>
-              <button
-                onClick={() => setTab('lifecycle')}
-                className={`text-[10px] px-2 py-1 rounded transition-colors ${
-                  tab === 'lifecycle' ? 'bg-zinc-800 text-zinc-300' : 'text-zinc-600 hover:text-zinc-400'
-                }`}
-              >
-                Lifecycle
-                <span className="ml-1 text-zinc-600">{callbackLog.length + clientToolLog.length}</span>
-              </button>
-            </div>
-            <button
-              onClick={() => setIsOpen(false)}
-              className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
-            >
-              close
-            </button>
-          </div>
-          {tab === 'ably' ? (
-            <AblyMessagesTab entries={ablyMessages} />
-          ) : tab === 'uimessages' ? (
-            <UIMessagesTab
-              messages={uiMessages}
-              status={status}
-            />
-          ) : (
-            <LifecycleTab
-              callbackLog={callbackLog}
-              statusLog={statusLog}
-              clientToolLog={clientToolLog}
-              onClear={onClearLogs}
-            />
-          )}
-        </div>
-      )}
-    </>
+          close
+        </Button>
+      </div>
+      <TabsContent
+        value="ably"
+        className="flex min-h-0 flex-1 flex-col"
+      >
+        <AblyMessagesTab entries={ablyMessages} />
+      </TabsContent>
+      <TabsContent
+        value="uimessages"
+        className="flex min-h-0 flex-1 flex-col"
+      >
+        <UIMessagesTab
+          messages={uiMessages}
+          status={status}
+        />
+      </TabsContent>
+      <TabsContent
+        value="lifecycle"
+        className="flex min-h-0 flex-1 flex-col"
+      >
+        <LifecycleTab
+          callbackLog={callbackLog}
+          statusLog={statusLog}
+          clientToolLog={clientToolLog}
+          onClear={onClearLogs}
+        />
+      </TabsContent>
+    </Tabs>
   );
 }

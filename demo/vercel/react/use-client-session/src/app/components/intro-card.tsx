@@ -1,3 +1,5 @@
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+
 interface DemoStep {
   title: string;
   action: React.ReactNode;
@@ -9,7 +11,7 @@ const STEPS: DemoStep[] = [
     title: 'Server-side tool call',
     action: (
       <>
-        Ask: <span className="font-medium text-zinc-100">&ldquo;what&rsquo;s the weather in Tokyo?&rdquo;</span>
+        Ask: <span className="font-medium text-foreground">&ldquo;what&rsquo;s the weather in Tokyo?&rdquo;</span>
       </>
     ),
     demonstrates: 'The assistant calls getWeather, which runs on the server and streams the result back over Ably.',
@@ -18,7 +20,7 @@ const STEPS: DemoStep[] = [
     title: 'Client-side tool call',
     action: (
       <>
-        Ask: <span className="font-medium text-zinc-100">&ldquo;what&rsquo;s the weather like?&rdquo;</span>
+        Ask: <span className="font-medium text-foreground">&ldquo;what&rsquo;s the weather like?&rdquo;</span>
       </>
     ),
     demonstrates:
@@ -29,8 +31,8 @@ const STEPS: DemoStep[] = [
     action: (
       <>
         Ask:{' '}
-        <span className="font-medium text-zinc-100">&ldquo;what&rsquo;s the weather forecast for London?&rdquo;</span>,
-        then click <span className="font-medium text-zinc-100">Approve</span> on the card.
+        <span className="font-medium text-foreground">&ldquo;what&rsquo;s the weather forecast for London?&rdquo;</span>,
+        then click <span className="font-medium text-foreground">Approve</span> on the card.
       </>
     ),
     demonstrates:
@@ -40,8 +42,8 @@ const STEPS: DemoStep[] = [
     title: 'Multi-client sync',
     action: (
       <>
-        Click <span className="font-medium text-zinc-100">open in new tab</span> in the header, then send a message from
-        either tab.
+        Click <span className="font-medium text-foreground">open in new tab</span> in the header, then send a message
+        from either tab.
       </>
     ),
     demonstrates: 'Both tabs share the same Ably channel. Messages, streams, and run state stay in sync.',
@@ -50,7 +52,7 @@ const STEPS: DemoStep[] = [
     title: 'Edit (branch)',
     action: (
       <>
-        Hover a user message, click <span className="font-medium text-zinc-100">Edit</span>, change the text.
+        Hover a user message, click <span className="font-medium text-foreground">Edit</span>, change the text.
       </>
     ),
     demonstrates: 'Re-sends as a forked branch rooted at the edited message.',
@@ -59,7 +61,7 @@ const STEPS: DemoStep[] = [
     title: 'Regenerate (branch)',
     action: (
       <>
-        Hover an assistant reply, click <span className="font-medium text-zinc-100">Regenerate</span>.
+        Hover an assistant reply, click <span className="font-medium text-foreground">Regenerate</span>.
       </>
     ),
     demonstrates: 'Forks a new branch from that point. Previous branch is kept — the tree remembers both.',
@@ -68,7 +70,7 @@ const STEPS: DemoStep[] = [
     title: 'Cancel mid-stream',
     action: (
       <>
-        Send a long prompt, then click <span className="font-medium text-zinc-100">Stop</span> while the assistant is
+        Send a long prompt, then click <span className="font-medium text-foreground">Stop</span> while the assistant is
         writing.
       </>
     ),
@@ -78,7 +80,7 @@ const STEPS: DemoStep[] = [
     title: 'Observability',
     action: (
       <>
-        Open the <span className="font-medium text-zinc-100">Debug pane</span> on the right.
+        Open the <span className="font-medium text-foreground">Debug pane</span> on the right.
       </>
     ),
     demonstrates:
@@ -88,35 +90,36 @@ const STEPS: DemoStep[] = [
 
 export function IntroCard() {
   return (
-    <div className="mx-auto max-w-2xl space-y-6 py-8">
-      <header className="space-y-2">
-        <h2 className="text-lg font-semibold text-zinc-100">ClientSession over Ably</h2>
-        <p className="text-sm text-zinc-300">
+    <Card className="mx-auto max-w-2xl">
+      <CardHeader>
+        <CardTitle>ClientSession over Ably</CardTitle>
+        <CardDescription>
           A chat wired directly to the Ably AI Transport ClientSession API. The session subscribes to a single Ably
           channel and exposes a branching conversation tree, a paginated view, and write operations (send, regenerate,
-          edit, cancel). Sessions stay in sync across a user's devices and across multiple participants, with a
+          edit, cancel). Sessions stay in sync across a user&rsquo;s devices and across multiple participants, with a
           bidirectional channel between user and agent for cancellation and steering. Each item below exercises a
           specific feature - try them in order to see what it does.
-        </p>
-      </header>
-
-      <ol className="space-y-4">
-        {STEPS.map((step, i) => (
-          <li
-            key={step.title}
-            className="flex gap-3"
-          >
-            <span className="mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full border border-zinc-700 text-xs font-medium text-zinc-300">
-              {i + 1}
-            </span>
-            <div className="flex-1 space-y-1">
-              <div className="text-sm font-medium text-zinc-100">{step.title}</div>
-              <div className="text-sm text-zinc-300">{step.action}</div>
-              <div className="text-xs text-zinc-400">{step.demonstrates}</div>
-            </div>
-          </li>
-        ))}
-      </ol>
-    </div>
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <ol className="space-y-4">
+          {STEPS.map((step, i) => (
+            <li
+              key={step.title}
+              className="flex gap-3"
+            >
+              <span className="mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full border border-border text-xs font-medium text-muted-foreground">
+                {i + 1}
+              </span>
+              <div className="flex-1 space-y-1">
+                <div className="text-sm font-medium text-foreground">{step.title}</div>
+                <div className="text-sm text-muted-foreground">{step.action}</div>
+                <div className="text-xs text-muted-foreground/70">{step.demonstrates}</div>
+              </div>
+            </li>
+          ))}
+        </ol>
+      </CardContent>
+    </Card>
   );
 }

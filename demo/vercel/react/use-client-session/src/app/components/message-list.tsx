@@ -1,8 +1,18 @@
 'use client';
 
-import { useRef, useEffect } from 'react';
+import { useEffect } from 'react';
 import type { UIMessage } from 'ai';
 import type { BranchHandle, CodecMessage, RunInfo } from '@ably/ai-transport';
+import {
+  MessageScroller,
+  MessageScrollerButton,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerProvider,
+  MessageScrollerViewport,
+  useMessageScrollerVisibility,
+} from '@/components/ui/message-scroller';
+import { Button } from '@/components/ui/button';
 import { MessageBubble } from './message-bubble';
 import { IntroCard } from './intro-card';
 
@@ -26,6 +36,31 @@ interface MessageListProps {
   onToolDeny?: (codecMessageId: string, toolCallId: string) => void;
 }
 
+// Reaching the top of the conversation triggers history pagination. The
+// MessageScroller has no onReachStart hook, so watch its visibility state:
+// once the oldest visible message scrolls into view, ask for an older page.
+// `loading` gates re-entrancy, and the oldest id changes after a prepend, so
+// the same page is never requested twice.
+function AutoLoadOlder({
+  oldestId,
+  hasOlder,
+  loading,
+  onLoadOlder,
+}: {
+  oldestId: string | undefined;
+  hasOlder: boolean;
+  loading: boolean;
+  onLoadOlder: () => void;
+}) {
+  const { visibleMessageIds } = useMessageScrollerVisibility();
+  useEffect(() => {
+    if (hasOlder && !loading && oldestId && visibleMessageIds.includes(oldestId)) {
+      onLoadOlder();
+    }
+  }, [visibleMessageIds, oldestId, hasOlder, loading, onLoadOlder]);
+  return null;
+}
+
 export function MessageList({
   messages,
   hasOlder,
@@ -37,95 +72,103 @@ export function MessageList({
   onToolApprove,
   onToolDeny,
 }: MessageListProps) {
-  const endRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  // Whether the view is "stuck" to the bottom. While true, new content
-  // (including tokens streaming into the last message) keeps the latest output
-  // in view so it stays in sync across tabs. Set false when the user scrolls
-  // up, so we obey the scrollbar instead of yanking it back down.
-  const pinnedToBottomRef = useRef(true);
-
-  // Follow streaming output, not just new messages: this runs on every render
-  // caused by a `messages` change, which includes tokens appended to the last
-  // message. Only auto-scroll while pinned to the bottom.
-  useEffect(() => {
-    if (pinnedToBottomRef.current) {
-      endRef.current?.scrollIntoView({ behavior: 'auto' });
-    }
-  }, [messages]);
-
-  const handleScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-
-    // Re-pin once the user is within a small threshold of the bottom; unpin as
-    // soon as they scroll away. The threshold absorbs sub-pixel rounding and
-    // the scroll event fired by our own auto-scroll.
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    pinnedToBottomRef.current = distanceFromBottom < 80;
-
-    if (hasOlder && !loading && el.scrollTop < 60) {
-      onLoadOlder();
-    }
-  };
+  const oldestId = messages[0]?.codecMessageId;
 
   return (
-    <div
-      ref={scrollRef}
-      onScroll={handleScroll}
-      className="flex-1 overflow-y-auto px-4 py-4 space-y-4"
+    // autoScroll keeps the latest output in view while streaming and stops
+    // following as soon as the reader scrolls up; preserveScrollOnPrepend keeps
+    // the scroll anchored when an older page is prepended on scroll-up.
+    <MessageScrollerProvider
+      autoScroll
+      defaultScrollPosition="end"
+      scrollEdgeThreshold={60}
+      scrollPreviousItemPeek={64}
     >
-      <IntroCard />
-      {hasOlder && (
-        <div className="text-center">
-          <button
-            onClick={onLoadOlder}
-            disabled={loading}
-            className="text-xs text-zinc-500 hover:text-zinc-300 disabled:opacity-40 transition-colors"
-          >
-            {loading ? 'Loading...' : 'Load older messages'}
-          </button>
-        </div>
-      )}
-      {loading && <div className="text-center text-xs text-zinc-600 animate-pulse">Loading history...</div>}
-      {messages.length === 0 && !loading && (
-        <p className="text-sm text-zinc-600 text-center mt-20">Send a message to start chatting.</p>
-      )}
-      {messages.map(({ codecMessageId, message }) => {
-        // Project the owning Run + branch-selection bundle into primitives
-        // at this glue layer so the MessageBubble component stays free of
-        // SDK type dependencies. The bundle is total — safe to destructure
-        // for any message; non-anchor bubbles return `siblings = [message]`
-        // (length 1) so the bubble's render condition uses `hasSiblings`.
-        // All correlation keys on the codec-message-id, not `message.id`.
-        const run = view.runOf(codecMessageId);
-        const branch = view.branchSelection(codecMessageId);
-        // Translate the literal Run lifecycle state to the bubble's
-        // rendering vocabulary: `'active'` → `'streaming'`.
-        const bubbleStatus = run?.status === 'active' ? 'streaming' : run?.status;
-        return (
-          <MessageBubble
-            key={codecMessageId}
-            message={message}
-            codecMessageId={codecMessageId}
-            clientId={run?.clientId || undefined}
-            runId={run?.runId}
-            status={bubbleStatus}
-            errorMessage={run?.error?.message}
-            hasSiblings={branch.hasSiblings}
-            siblingCount={branch.siblings.length}
-            selectedIndex={branch.index}
-            onSelectSibling={(index) => {
-              branch.select(index);
-            }}
-            onRegenerate={message.role === 'assistant' ? () => onRegenerate(codecMessageId) : undefined}
-            onEdit={message.role === 'user' ? (text) => onEdit(codecMessageId, text) : undefined}
-            onToolApprove={onToolApprove}
-            onToolDeny={onToolDeny}
-          />
-        );
-      })}
-      <div ref={endRef} />
-    </div>
+      <MessageScroller className="min-h-0 flex-1">
+        <MessageScrollerViewport
+          preserveScrollOnPrepend
+          className="px-4 py-4"
+        >
+          <MessageScrollerContent>
+            <MessageScrollerItem messageId="__intro__">
+              <IntroCard />
+            </MessageScrollerItem>
+
+            {hasOlder && (
+              <div className="text-center">
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={onLoadOlder}
+                  disabled={loading}
+                  data-testid="load-older"
+                  className="text-muted-foreground"
+                >
+                  {loading ? 'Loading...' : 'Load older messages'}
+                </Button>
+              </div>
+            )}
+            {loading && (
+              <div className="animate-pulse text-center text-xs text-muted-foreground">Loading history...</div>
+            )}
+            {messages.length === 0 && !loading && (
+              <p className="mt-20 text-center text-sm text-muted-foreground">Send a message to start chatting.</p>
+            )}
+
+            {messages.map(({ codecMessageId, message }, idx) => {
+              // Project the owning Run + branch-selection bundle into primitives
+              // at this glue layer so the MessageBubble component stays free of
+              // SDK type dependencies. The bundle is total — safe to destructure
+              // for any message; non-anchor bubbles return `siblings = [message]`
+              // (length 1) so the bubble's render condition uses `hasSiblings`.
+              // All correlation keys on the codec-message-id, not `message.id`.
+              const run = view.runOf(codecMessageId);
+              const branch = view.branchSelection(codecMessageId);
+              // Translate the literal Run lifecycle state to the bubble's
+              // rendering vocabulary: `'active'` → `'streaming'`.
+              const bubbleStatus = run?.status === 'active' ? 'streaming' : run?.status;
+              const isLast = idx === messages.length - 1;
+              return (
+                <MessageScrollerItem
+                  key={codecMessageId}
+                  messageId={codecMessageId}
+                  scrollAnchor={isLast}
+                >
+                  <MessageBubble
+                    message={message}
+                    codecMessageId={codecMessageId}
+                    clientId={run?.clientId || undefined}
+                    runId={run?.runId}
+                    status={bubbleStatus}
+                    errorMessage={run?.error?.message}
+                    hasSiblings={branch.hasSiblings}
+                    siblingCount={branch.siblings.length}
+                    selectedIndex={branch.index}
+                    onSelectSibling={(index) => {
+                      branch.select(index);
+                    }}
+                    onRegenerate={message.role === 'assistant' ? () => onRegenerate(codecMessageId) : undefined}
+                    onEdit={message.role === 'user' ? (text) => onEdit(codecMessageId, text) : undefined}
+                    onToolApprove={onToolApprove}
+                    onToolDeny={onToolDeny}
+                  />
+                </MessageScrollerItem>
+              );
+            })}
+          </MessageScrollerContent>
+        </MessageScrollerViewport>
+
+        <MessageScrollerButton
+          direction="end"
+          data-testid="scroll-to-latest"
+        />
+        <AutoLoadOlder
+          oldestId={oldestId}
+          hasOlder={hasOlder}
+          loading={loading}
+          onLoadOlder={onLoadOlder}
+        />
+      </MessageScroller>
+    </MessageScrollerProvider>
   );
 }

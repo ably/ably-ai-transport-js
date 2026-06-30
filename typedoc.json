@@ -1,6 +1,12 @@
 {
   "$schema": "https://typedoc.org/schema.json",
-  "entryPoints": ["./src/index.ts", "./src/react/index.ts", "./src/vercel/index.ts", "./src/vercel/react/index.ts"],
+  "entryPoints": [
+    "./src/index.ts",
+    "./src/react/index.ts",
+    "./src/vercel/index.ts",
+    "./src/vercel/react/index.ts",
+    "./src/openai/index.ts"
+  ],
   "out": "typedoc/generated",
   "treatWarningsAsErrors": false,
   "includeVersion": true,

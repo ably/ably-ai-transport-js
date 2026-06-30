@@ -13,7 +13,7 @@
 
 import type { Responses } from 'openai/resources/responses/responses';
 
-import type { UserMessage } from '../../core/codec/index.js';
+import type { Regenerate, UserMessage } from '../../core/codec/index.js';
 
 /**
  * `TOutput` — the agent publishes raw Responses stream events on the `ai-output`
@@ -58,7 +58,9 @@ export interface OpenAITurn {
 
 /**
  * `TInput` — what the client publishes on the `ai-input` wire. This increment
- * supports only the well-known user-message variant; tool results and approval
- * responses join the union when client-side tools land.
+ * supports the well-known user-message variant plus the {@link Regenerate}
+ * signal (a wire-only reference to the assistant message being regenerated,
+ * which carries no projection state). Tool results and approval responses join
+ * the union when client-side tools land.
  */
-export type OpenAIInput = UserMessage<OpenAITurn>;
+export type OpenAIInput = UserMessage<OpenAITurn> | Regenerate;

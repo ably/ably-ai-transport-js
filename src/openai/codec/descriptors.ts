@@ -13,7 +13,9 @@
  *
  * Input side: the user message is a `batch` that fans the user turn's content
  * parts out into one `ai-input` event per part (one for a plain text prompt),
- * reassembled and merged by the reducer — see {@link inputs}.
+ * reassembled and merged by the reducer — see {@link inputs}. The `regenerate`
+ * signal is a wire-only event: it stamps only its `kind` header (the agent
+ * reads `target` / `parent` via the input-event lookup) and folds to nothing.
  *
  * Function calls, reasoning, refusals, and hosted tools are added in later
  * increments by adding entries here — the split established now does not change.
@@ -121,10 +123,15 @@ export const outputs = ({ event, stream }: OutputBuilder<OpenAIOutput>): readonl
  * `input_text` is the only content part this increment encodes.
  * TODO(AIT-742): add `input_image` and `input_file` parts for richer prompts.
  * @param builder - The `{ event, batch }` builder curried on {@link OpenAIInput}.
+ * @param builder.event - Declare a discrete input event.
  * @param builder.batch - Declare a multi-part (fan-out) input.
  * @returns The input descriptor table.
  */
-export const inputs = ({ batch }: InputBuilder<OpenAIInput>): readonly InputDescriptor<OpenAIInput>[] => [
+export const inputs = ({ event, batch }: InputBuilder<OpenAIInput>): readonly InputDescriptor<OpenAIInput>[] => [
+  // Regenerate is a wire-only signal: it references an existing assistant
+  // message by id, carries no payload, and folds to nothing. The agent reads
+  // `target` / `parent` from the wire headers via the input-event lookup.
+  event('regenerate', { wireOnly: true }),
   batch('user-message', {
     explode: (input) => {
       // Assumption in use here: a user turn is a single input message, so we
@@ -144,12 +151,16 @@ export const inputs = ({ batch }: InputBuilder<OpenAIInput>): readonly InputDesc
     partTypeOf: (part) => part.type,
     parts: (p) => [p('input_text', { data: { encode: (part) => part.text, decode: (d) => ({ text: asString(d) }) } })],
     messageHeaders: (input) => ({ transportHeaders: { [HEADER_ROLE]: input.message.role } }),
-    assemble: (part, { transportHeaders }) => ({
-      // CAST: HEADER_ROLE is wire data; the role string is trusted as a turn role.
-      message: {
+    assemble: (part, { transportHeaders }) => {
+      // Annotate the turn so the items literal is contextually typed as
+      // OpenAIItem (narrowing `type: 'message'`), independent of how the
+      // assemble callback's return type is inferred for the input union.
+      const message: OpenAITurn = {
+        // CAST: HEADER_ROLE is wire data; the role string is trusted as a turn role.
         role: (transportHeaders[HEADER_ROLE] ?? 'user') as OpenAITurn['role'],
         items: [{ type: 'message', role: 'user', content: [part] }],
-      },
-    }),
+      };
+      return { message };
+    },
   }),
 ];

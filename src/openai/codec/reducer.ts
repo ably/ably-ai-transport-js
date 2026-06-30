@@ -181,11 +181,13 @@ export const fold = (
 
   if (event.direction === 'output') {
     foldOutput(state, event.event);
-  } else {
-    // user-message is the only input variant this increment declares; tool
-    // results and approvals (with their own dispatch) arrive in later increments.
+  } else if (event.event.kind === 'user-message') {
     foldUserMessage(state, event.event.message);
   }
+  // The only other input variant is `regenerate` — a wire-only signal that
+  // decodes to nothing and so never reaches the reducer; it carries no
+  // projection state. Tool results and approvals (with their own dispatch)
+  // arrive in later increments.
   return state;
 };
 

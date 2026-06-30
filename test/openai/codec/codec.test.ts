@@ -159,6 +159,33 @@ describe('OpenAI codec roundtrip (offline)', () => {
     expect(firstInputText(turn)).toBe('Hi there');
   });
 
+  it('publishes a regenerate signal as a wire-only input that folds to nothing', async () => {
+    const { writer, inbound } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onMessage: stampHeaders('run-x', 'u1') });
+    await encoder.publishInput(ResponsesCodec.createRegenerate('asst-1', 'user-1'));
+    await encoder.close();
+
+    const messages = inbound();
+    const input = messages.find((m) => m.name === EVENT_AI_INPUT);
+    expect(input).toBeDefined();
+    expect(input && getCodecHeaders(input).kind).toBe('regenerate');
+
+    // Wire-only: the decoder emits no input events, so the reducer never folds
+    // it and the projection stays empty (the signal carries no message state).
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+    let inputCount = 0;
+    for (const msg of messages) {
+      const decoded = decoder.decode(msg);
+      inputCount += decoded.inputs.length;
+      for (const event of toCodecEvents(decoded)) {
+        projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+      }
+    }
+    expect(inputCount).toBe(0);
+    expect(ResponsesCodec.getMessages(projection)).toHaveLength(0);
+  });
+
   it('round-trips an empty prompt as a single empty text part', async () => {
     const { writer, inbound } = createBridge();
     const encoder = ResponsesCodec.createEncoder(writer, { onMessage: stampHeaders('run-x', 'u1') });

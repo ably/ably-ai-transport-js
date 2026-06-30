@@ -250,6 +250,57 @@ const landTTRegen = (
 };
 
 /**
+ * Build the canonical branched repro directly in the tree (wire/serial order
+ * chronological): M1 → R1 → (M2 → R2 | M3[edit of M2] → R3); R4 regenerates R1
+ * under M1. After the regenerate the current branch is M1 → R4; the whole R1
+ * subtree (M2/R2/M3/R3) hangs off the now-unselected R1.
+ * @param tree - The tree to build into.
+ */
+const buildBranchedRepro = (tree: DefaultTree<TestInput, TestOutput, TestProjection>): void => {
+  applyInput(tree, { codecMessageId: 'm1', message: { id: 'm1', content: 'joke?' }, serial: 's1' });
+  apply(tree, { runId: 'R1', codecMessageId: 'a1', parent: 'm1', role: 'assistant', message: { id: 'a1', content: 'joke' }, serial: 's2' }); // prettier-ignore
+  applyInput(tree, { codecMessageId: 'm2', parent: 'a1', message: { id: 'm2', content: 'fact?' }, serial: 's3' });
+  apply(tree, { runId: 'R2', codecMessageId: 'a2', parent: 'm2', role: 'assistant', message: { id: 'a2', content: 'fact' }, serial: 's4' }); // prettier-ignore
+  applyInput(tree, {
+    codecMessageId: 'm3',
+    parent: 'a1',
+    forkOf: 'm2',
+    message: { id: 'm3', content: 'poem?' },
+    serial: 's5',
+  });
+  apply(tree, { runId: 'R3', codecMessageId: 'a3', parent: 'm3', role: 'assistant', message: { id: 'a3', content: 'poem' }, serial: 's6' }); // prettier-ignore
+  apply(tree, { runId: 'R4', codecMessageId: 'a4', parent: 'm1', regenerates: 'a1', role: 'assistant', message: { id: 'a4', content: 'joke-2' }, serial: 's7' }); // prettier-ignore
+};
+
+/**
+ * A decoder that rebuilds both input nodes (role=user) and reply runs
+ * (assistant) from history wires, so backward hydration reconstructs a branched
+ * tree exactly as the channel stored it.
+ * @returns A decoder keyed on the wire's role header.
+ */
+const reproDecoder = (): Decoder<TestInput, TestOutput> => ({
+  decode: (msg: Ably.InboundMessage) => {
+    // CAST: test fixtures always stamp extras.ai.transport.
+    const t = (msg.extras as { ai: { transport: Record<string, string> } }).ai.transport;
+    const id = t[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
+    const message = { id, content: id };
+    return t[HEADER_ROLE] === 'user'
+      ? { inputs: [{ kind: 'user-message' as const, message }], outputs: [] }
+      : { inputs: [], outputs: [{ type: 'append-message' as const, message }] };
+  },
+});
+
+/**
+ * Build a raw history wire carrying the given transport headers and serial.
+ * @param transport - The `extras.ai.transport` headers.
+ * @param serial - The wire serial (also used as the version serial).
+ * @returns The inbound message.
+ */
+const wire = (transport: Record<string, string>, serial: string): Ably.InboundMessage =>
+  // CAST: history fixtures only need name/serial/version/extras.
+  ({ name: 'fake', serial, version: { serial }, extras: { ai: { transport } } }) as unknown as Ably.InboundMessage;
+
+/**
  * Build a fake {@link HistoryPagesCursor} the mocked `loadHistoryPages` returns.
  * Pages are given oldest-first (human-natural); each is reversed to Ably's
  * newest-first delivery order (via the shared {@link makeHistoryCursor}), so the
@@ -2236,17 +2287,17 @@ describe('client view', () => {
       expect(view.getMessages()).toEqual([]);
     });
 
-    it('does not surface a terminal contentless run left half-loaded below the pagination window', async () => {
-      // Regression: paginating by codecMessage can stop mid-history, leaving an
-      // older COMPLETED run whose content never folded (run-start + run-end, no
-      // message) as a contentless node. It must not leak into runs(): it owns no
-      // visible message and is terminal, not an in-progress run. (A *contentless
-      // in-progress* run — active/suspended, no run-end — still shows; covered
-      // by the zero-message and suspended-run tests above.)
+    it('does not surface off-branch runs (including a terminal contentless one) in the current branch', async () => {
+      // Regression: backward history can fold in runs that are not ancestors of
+      // the current branch's leaf — here three runs on separate lineages
+      // (distinct dangling parents, so none is the parent of another). Only the
+      // newest, R-new, is the selected leaf; pagination walks its ancestor chain,
+      // so R-mid and R-old stay off the current branch. R-old additionally owns
+      // no message (run-start + run-end, no content) and is terminal — a
+      // 0-message run the walk must skip cleanly rather than surface.
       const v = makeView(headerDecoder());
-      // Oldest run: run-start + run-end, no content → terminal contentless node.
-      // Distinct dangling parents keep the runs from collapsing as siblings;
-      // serials order them oldest → newest.
+      // Distinct dangling parents keep the runs on separate lineages; serials
+      // order them oldest → newest (R-new is the leaf).
       vi.mocked(loadHistoryPages).mockResolvedValueOnce(
         makeCursor([
           [
@@ -2258,9 +2309,9 @@ describe('client view', () => {
         ]),
       );
 
-      // Reveal a single message: the newest (a-new). a-mid is hidden (R-mid owns
-      // it but it's below the window), and the terminal contentless R-old is
-      // excluded — so runs() lists only R-new.
+      // The current branch is just the leaf R-new: R-mid and the terminal
+      // contentless R-old are off-branch (not R-new's ancestors), so runs() lists
+      // only R-new and getMessages only a-new.
       await v.loadOlder(1);
 
       expect(v.getMessages().map((m) => m.message.id)).toEqual(['a-new']);
@@ -2772,6 +2823,119 @@ describe('client view', () => {
       }
       // The settled frame is the full, gap-free conversation.
       expect(frames.at(-1)).toEqual(['mh0', 'mh1', 'mh2', 'mh3', 'mh4']);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Branched conversation: pagination walks the selected branch only (AIT-703)
+  // -------------------------------------------------------------------------
+
+  describe('branched conversation (selected-branch pagination)', () => {
+    it('shows only the selected branch (M1 → R4), excluding the off-branch R1 subtree', () => {
+      buildBranchedRepro(tree);
+      // The window is the ancestor chain of the selected leaf R4 — never the
+      // off-branch edit/original nodes that share the channel but hang off R1.
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['m1', 'a4']);
+      expect(view.runs().map((r) => r.runId)).toEqual(['R4']);
+    });
+
+    it('keeps both a reply run and a follow-up input child of the same node (concurrent fresh sends)', () => {
+      // Two concurrent fresh sends: uB's parent is uA (the visible tail at send
+      // time) because uA's reply RA had not landed yet. So uA has two non-sibling
+      // children — its reply RA and the next turn uB — and both belong on the
+      // conversation. The selected-leaf walk alone would follow only uB→uA and
+      // drop RA; the connected-set resolution readmits RA as a child of the
+      // in-spine uA. Serial order: uA, uB, RA, RB.
+      applyInput(tree, { codecMessageId: 'uA', message: { id: 'uA', content: 'qA' }, serial: 's1' });
+      applyInput(tree, { codecMessageId: 'uB', parent: 'uA', message: { id: 'uB', content: 'qB' }, serial: 's2' });
+      apply(tree, { runId: 'RA', codecMessageId: 'aA', parent: 'uA', role: 'assistant', message: { id: 'aA', content: 'answerA' }, serial: 's3' }); // prettier-ignore
+      apply(tree, { runId: 'RB', codecMessageId: 'aB', parent: 'uB', role: 'assistant', message: { id: 'aB', content: 'answerB' }, serial: 's4' }); // prettier-ignore
+
+      // All four nodes are visible — RA is not dropped.
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['uA', 'uB', 'aA', 'aB']);
+      expect(view.runs().map((r) => r.runId)).toEqual(['RA', 'RB']);
+      // Each assistant reply maps to its own run — no cross-talk.
+      expect(view.runOf('aA')?.runId).toBe('RA');
+      expect(view.runOf('aB')?.runId).toBe('RB');
+    });
+
+    it('paginates the selected branch incrementally during backward hydration, never the off-branch wires', async () => {
+      const v = makeView(reproDecoder());
+      // One wire per cursor page, newest page first — so loadOlder pages the
+      // channel backward exactly as the demo does. M1 (the branch root) is the
+      // OLDEST wire and therefore the last to hydrate.
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(
+        makeCursor([
+          [wire({ [HEADER_RUN_ID]: 'R4', [HEADER_CODEC_MESSAGE_ID]: 'a4', [HEADER_PARENT]: 'm1', 'msg-regenerate': 'a1', [HEADER_ROLE]: 'assistant' }, 's7')], // prettier-ignore
+          [wire({ [HEADER_RUN_ID]: 'R3', [HEADER_CODEC_MESSAGE_ID]: 'a3', [HEADER_PARENT]: 'm3', [HEADER_ROLE]: 'assistant' }, 's6')], // prettier-ignore
+          [wire({ [HEADER_CODEC_MESSAGE_ID]: 'm3', [HEADER_PARENT]: 'a1', [HEADER_FORK_OF]: 'm2', [HEADER_ROLE]: 'user' }, 's5')], // prettier-ignore
+          [wire({ [HEADER_RUN_ID]: 'R2', [HEADER_CODEC_MESSAGE_ID]: 'a2', [HEADER_PARENT]: 'm2', [HEADER_ROLE]: 'assistant' }, 's4')], // prettier-ignore
+          [wire({ [HEADER_CODEC_MESSAGE_ID]: 'm2', [HEADER_PARENT]: 'a1', [HEADER_ROLE]: 'user' }, 's3')],
+          [wire({ [HEADER_RUN_ID]: 'R1', [HEADER_CODEC_MESSAGE_ID]: 'a1', [HEADER_PARENT]: 'm1', [HEADER_ROLE]: 'assistant' }, 's2')], // prettier-ignore
+          [wire({ [HEADER_CODEC_MESSAGE_ID]: 'm1', [HEADER_ROLE]: 'user' }, 's1')],
+        ]),
+      );
+
+      // First page surfaces only R4; its ancestor M1 has not hydrated yet, so the
+      // window is just the leaf — never the off-branch R3 that folds in next.
+      await v.loadOlder(1);
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['a4']);
+
+      // Drain: the walk climbs R4 → M1. Reaching M1 folds the intervening
+      // off-branch wires (R3/M3/R2/M2/R1) into the Tree, but none enter the
+      // window — the final branch is exactly [M1, R4].
+      while (v.hasOlder()) await v.loadOlder(1);
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['m1', 'a4']);
+      expect(v.runs().map((r) => r.runId)).toEqual(['R4']);
+    });
+
+    it('preserves the pagination depth across a branch switch at a visible point', async () => {
+      // u1 → R1 → u2 → R2, with R2b regenerating R2 at the tail (latest, so the
+      // selected branch ends on R2b). The shared prefix is u1 → R1.
+      const v = makeView(reproDecoder());
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(
+        makeCursor([
+          [
+            wire({ [HEADER_CODEC_MESSAGE_ID]: 'u1', [HEADER_ROLE]: 'user' }, 's1'),
+            wire({ [HEADER_RUN_ID]: 'R1', [HEADER_CODEC_MESSAGE_ID]: 'a1', [HEADER_PARENT]: 'u1', [HEADER_ROLE]: 'assistant' }, 's2'), // prettier-ignore
+            wire({ [HEADER_CODEC_MESSAGE_ID]: 'u2', [HEADER_PARENT]: 'a1', [HEADER_ROLE]: 'user' }, 's3'),
+            wire({ [HEADER_RUN_ID]: 'R2', [HEADER_CODEC_MESSAGE_ID]: 'a2', [HEADER_PARENT]: 'u2', [HEADER_ROLE]: 'assistant' }, 's4'), // prettier-ignore
+            wire({ [HEADER_RUN_ID]: 'R2b', [HEADER_CODEC_MESSAGE_ID]: 'a2b', [HEADER_PARENT]: 'u2', 'msg-regenerate': 'a2', [HEADER_ROLE]: 'assistant' }, 's5'), // prettier-ignore
+          ],
+        ]),
+      );
+
+      // Reveal the newest 2 messages; the shared prefix (u1, R1) is withheld.
+      await v.loadOlder(2);
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['u2', 'a2b']);
+      expect(v.hasOlder()).toBe(true);
+
+      // Switch to the original reply R2 at the visible tail. The window depth is
+      // preserved (the withheld shared prefix is valid for both branches), so the
+      // view shows the same depth on the new branch — only the tail changes.
+      const handle = v.branchSelection('a2b');
+      expect(handle.siblings.map((m) => m.id)).toEqual(['a2', 'a2b']);
+      handle.select(0);
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['u2', 'a2']);
+      expect(v.hasOlder()).toBe(true);
+
+      // Paginating further drains the still-valid shared prefix onto branch R2.
+      await v.loadOlder(2);
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1', 'u2', 'a2']);
+    });
+
+    it('retargets to the R1 subtree when the user selects the original reply at the M1 fork', () => {
+      buildBranchedRepro(tree);
+      // Select the original reply R1 (index 0) at the regenerate group anchored
+      // on the assistant slot. The branch retargets off R4 onto R1's subtree.
+      // The edit group resolves to M2: when M3 forked in during the live build
+      // the View pinned the then-visible M2 to prevent branch drift, so the
+      // restored branch is M1 → R1 → M2 → R2 (not the latest edit M3).
+      const handle = view.branchSelection('a4');
+      expect(handle.siblings.map((m) => m.id)).toEqual(['a1', 'a4']);
+      handle.select(0);
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['m1', 'a1', 'm2', 'a2']);
+      expect(view.runs().map((r) => r.runId)).toEqual(['R1', 'R2']);
     });
   });
 

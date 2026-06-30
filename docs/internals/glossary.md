@@ -78,6 +78,15 @@ Three different identity headers serve different purposes:
 
 A run carries the agent's response messages and lifecycle events. The triggering user input is **run-less** — the agent mints the `run-id` at run-start, so a client-published input event carries no `run-id` and lives as its own input node. See [Wire protocol: message identity](wire-protocol.md#message-identity-codec-message-id) for the full lifecycle.
 
+### View, ClientView, and BranchSource
+
+The read surface over the [conversation tree](conversation-tree.md), split so one projection serves both sides:
+
+- **View** — the read base: a read-only, paginated, branch-aware projection of the tree along one branch ending at a leaf. Exposes `getMessages()`, `runs()`, `hasOlder()`, [`loadOlder()`](history.md#client-pagination), `loadUntil()`, `runOf()` / `run()`, scoped `on(...)` subscriptions, and `close()`. The client surfaces it as `session.view`; the agent surfaces it as `run.view`.
+- **ClientView** — extends `View` with branch **navigation** (`branchSelection(id).select(i)`) and the **write path** (`send()`, `regenerate()`, `edit()`). The client's `session.view` is a `ClientView`; the agent's `run.view` is the read-only base.
+- **BranchSource** — the strategy injected into a View that decides _which_ branch it walks: it resolves the visible node chain, flattens those nodes to the flat message list, and picks the selected reply run for an input node. One View implementation serves both sides by swapping the strategy.
+- **LeafBranchSource** — the `BranchSource` behind the agent's `run.view`. It pins to a single branch by walking `parentCodecMessageId` edges back from the run's leaf, so the agent reads exactly the ancestor chain of its triggering input - no sibling selection map, branch choice is implicit-by-parent-walk.
+
 ## Encoding/decoding concepts
 
 ### Terminal event

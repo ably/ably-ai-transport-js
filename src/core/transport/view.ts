@@ -183,6 +183,40 @@ class DefaultView<
   private readonly _emitter: EventEmitter<ViewEventsMap>;
   private readonly _onClose?: () => void;
 
+  /**
+   * Cache of `codec.getMessages`, keyed by node key (the Tree's stable primary
+   * key — `runId` for reply runs, `codecMessageId` for inputs). Flattening the
+   * visible chain (`extractMessages`) calls `getMessages` for every node, and
+   * `loadOlder` re-flattens on every reveal — so a backward walk that reveals
+   * one message at a time would otherwise re-run the codec over the whole
+   * growing window each step (O(K²) codecMessages flattened for a K-message
+   * walk). A reveal only needs to flatten the node that actually changed; this
+   * memo serves the rest from cache, making per-reveal codec work O(revealed).
+   *
+   * Invalidated per node by {@link _onTreeOutput} when a fold changes that
+   * node's projection — keyed by the stable node key (not the projection
+   * object), so a fold that replaces the projection object invalidates the same
+   * slot rather than orphaning it. Bounded by the conversation's node count;
+   * cleared on {@link close}.
+   */
+  private readonly _messagesByNode = new Map<string, CodecMessage<TMessage>[]>();
+
+  /**
+   * Flatten one node to its messages, served from {@link _messagesByNode} when
+   * the node is unchanged since its last flatten. Passed to
+   * `branchSource.extractMessages` so every flatten of the chain is memoised.
+   * @param node - The node to flatten.
+   * @returns The node's codecMessages (cached by node key).
+   */
+  private readonly _getMessages = (node: ConversationNode<TProjection>): CodecMessage<TMessage>[] => {
+    const key = nodeKey(node);
+    const cached = this._messagesByNode.get(key);
+    if (cached !== undefined) return cached;
+    const messages = this._codec.getMessages(node.projection);
+    this._messagesByNode.set(key, messages);
+    return messages;
+  };
+
   /** Spec: AIT-CT11c — runIds loaded from history but not yet revealed to the UI. */
   private readonly _withheldRunIds = new Set<string>();
 
@@ -303,6 +337,11 @@ class DefaultView<
    * @param event - The output event from the Tree.
    */
   private _onTreeOutput(event: OutputEvent<TOutput>): void {
+    // The fold mutated the target node's projection (possibly in place, per the
+    // reducer contract), so drop its memoised flattening before anything reads
+    // it again — even while processing history, where a later fold in the same
+    // page can change a projection this run already cached.
+    this._invalidateMessageCache(event);
     if (this._processingHistory) return;
     // The fold target may be a reply run (event.runId) or a user input node
     // (event.runId undefined — the agent mints run-ids, so an input fold has
@@ -323,9 +362,22 @@ class DefaultView<
     // no-op for unchanged hook consumers.
     this._lastVisibleProjections = this._cachedNodes.map((n) => n.projection);
     this._lastVisibleMessagePairs = this._branchSource
-      .extractMessages(this._cachedNodes)
+      .extractMessages(this._cachedNodes, this._getMessages)
       .slice(this._hiddenMessageCount);
     this._emitUpdate();
+  }
+
+  /**
+   * Drop the memoised flattening of the node a fold just changed, so the next
+   * flatten re-derives it. The output event's `runId` (reply-run fold) or
+   * `inputCodecMessageId` (input fold) is exactly that node's key, so this
+   * evicts the right slot whether the fold mutated the projection in place or
+   * replaced it.
+   * @param event - The output event naming the folded node.
+   */
+  private _invalidateMessageCache(event: OutputEvent<TOutput>): void {
+    const key = event.runId ?? event.inputCodecMessageId;
+    if (key !== undefined) this._messagesByNode.delete(key);
   }
 
   /**
@@ -466,12 +518,13 @@ class DefaultView<
       // then re-trim so exactly `limit` new messages surface. Runs are revealed
       // whole (node granularity); the trim makes the message count exact.
       const need = limit - this._hiddenMessageCount;
-      const before = this._branchSource.extractMessages(this._computeFlatNodes()).length;
-      const revealedSoFar = (): number => this._branchSource.extractMessages(this._computeFlatNodes()).length - before;
+      const before = this._branchSource.extractMessages(this._computeFlatNodes(), this._getMessages).length;
+      const revealedSoFar = (): number =>
+        this._branchSource.extractMessages(this._computeFlatNodes(), this._getMessages).length - before;
 
       // Drain the withheld buffer toward `need` (whole older runs, newest-first).
       if (this._withheldBuffer.length > 0) {
-        const splitIdx = messageTailSplitIndex(this._withheldBuffer, need, (p) => this._codec.getMessages(p));
+        const splitIdx = messageTailSplitIndex(this._withheldBuffer, need, this._getMessages);
         const batch = this._withheldBuffer.splice(splitIdx);
         this._releaseWithheld(batch);
       }
@@ -486,7 +539,7 @@ class DefaultView<
         if (this._closed) return [];
       }
 
-      const after = this._branchSource.extractMessages(this._computeFlatNodes()).length;
+      const after = this._branchSource.extractMessages(this._computeFlatNodes(), this._getMessages).length;
       // `after - before` whole-run messages were added at the oldest end; show
       // `limit` of them (newest), hiding the overshoot plus what was already
       // trimmed. `<= 0` when history is exhausted before `limit` is reached.
@@ -679,7 +732,7 @@ class DefaultView<
     const newVisibleCount = (): number => {
       let count = 0;
       for (const n of this._branchSource.visibleNodes()) {
-        if (!beforeKeys.has(nodeKey(n))) count += this._codec.getMessages(n.projection).length;
+        if (!beforeKeys.has(nodeKey(n))) count += this._getMessages(n).length;
       }
       return count;
     };
@@ -754,6 +807,7 @@ class DefaultView<
     this._emitter.off();
     this._withheldRunIds.clear();
     this._withheldBuffer.length = 0;
+    this._messagesByNode.clear();
     this._hiddenMessageCount = 0;
     this._onClose?.();
   }
@@ -772,7 +826,7 @@ class DefaultView<
    * @param target - Minimum codecMessages the revealed batch must cover.
    */
   private _splitReveal(newVisible: ConversationNode<TProjection>[], target: number): void {
-    const splitIdx = messageTailSplitIndex(newVisible, target, (p) => this._codec.getMessages(p));
+    const splitIdx = messageTailSplitIndex(newVisible, target, this._getMessages);
     const batch = newVisible.slice(splitIdx);
     const withheld = newVisible.slice(0, splitIdx);
     for (const n of withheld) {
@@ -806,7 +860,9 @@ class DefaultView<
     // Run-level reveal, message-level trim: drop the oldest `_hiddenMessageCount`
     // messages so a `loadOlder` page lands on exactly `limit` messages even
     // though whole runs were revealed.
-    this._lastVisibleMessagePairs = this._branchSource.extractMessages(resolved).slice(this._hiddenMessageCount);
+    this._lastVisibleMessagePairs = this._branchSource
+      .extractMessages(resolved, this._getMessages)
+      .slice(this._hiddenMessageCount);
   }
 
   private _onTreeUpdate(): void {

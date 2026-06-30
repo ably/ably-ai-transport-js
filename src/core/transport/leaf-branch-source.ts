@@ -215,14 +215,18 @@ export class LeafBranchSource<
     return withoutIncompleteRuns.filter((node) => !(node.kind === 'input' && droppedInputIds.has(node.codecMessageId)));
   }
 
-  extractMessages(nodes: ConversationNode<TProjection>[]): CodecMessage<TMessage>[] {
+  extractMessages(
+    nodes: ConversationNode<TProjection>[],
+    getMessages: (node: ConversationNode<TProjection>) => CodecMessage<TMessage>[] = (n) =>
+      this._codec.getMessages(n.projection),
+  ): CodecMessage<TMessage>[] {
     // Linear parent walk — plain concatenation, no sibling/regenerate collapse.
     // Stop before the regenerate target (where set) so the reconstructed history
     // ends on the message the agent is about to replace, not on it.
     const regenerateTarget = this._pin?.regenerateTarget;
     const out: CodecMessage<TMessage>[] = [];
     for (const node of nodes) {
-      for (const m of this._codec.getMessages(node.projection)) {
+      for (const m of getMessages(node)) {
         if (regenerateTarget !== undefined && m.codecMessageId === regenerateTarget) return out;
         out.push(m);
       }

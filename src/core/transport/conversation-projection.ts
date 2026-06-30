@@ -77,13 +77,14 @@ export interface NonHeadRegenerateResolver<TProjection> {
  * nothing here — `visibleNodes` (client) or the leaf parent walk (agent)
  * already picks the surviving sibling.
  * @param nodes - Visible nodes (inputs + reply runs), chronological.
- * @param getMessages - The codec's projection-to-messages function.
+ * @param getMessages - Flatten one node to its codecMessages; the caller may
+ *   memoise it by node (so a repeated flatten re-derives only changed nodes).
  * @param regenerate - Resolver for non-head-regenerate groups.
  * @returns The flat message list, each paired with its codec-message-id.
  */
 export const collectMessages = <TProjection, TMessage>(
   nodes: readonly ConversationNode<TProjection>[],
-  getMessages: (projection: TProjection) => CodecMessage<TMessage>[],
+  getMessages: (node: ConversationNode<TProjection>) => CodecMessage<TMessage>[],
   regenerate: NonHeadRegenerateResolver<TProjection>,
 ): CodecMessage<TMessage>[] => {
   // Emit one node's messages into `out`, applying non-head-regenerate
@@ -93,7 +94,7 @@ export const collectMessages = <TProjection, TMessage>(
   // its tail are dropped and the regenerator is emitted in its place
   // (recursively, for regen-of-regen).
   const emitNode = (node: ConversationNode<TProjection>, out: CodecMessage<TMessage>[]): void => {
-    const own = getMessages(node.projection);
+    const own = getMessages(node);
     if (node.kind !== 'run') {
       out.push(...own);
       return;
@@ -133,7 +134,7 @@ export const collectMessages = <TProjection, TMessage>(
   const nonHeadRegeneratorIds = new Set<string>();
   for (const node of nodes) {
     if (node.kind !== 'run') continue;
-    const own = getMessages(node.projection);
+    const own = getMessages(node);
     for (let i = 1; i < own.length; i++) {
       const target = own[i]?.codecMessageId;
       const predecessor = own[i - 1]?.codecMessageId;
@@ -163,19 +164,19 @@ export const collectMessages = <TProjection, TMessage>(
  * "covering `target` messages".
  * @param nodes - Candidate nodes, oldest-first.
  * @param target - Minimum codecMessages the revealed batch must cover.
- * @param getMessages - The codec's projection-to-messages function.
+ * @param getMessages - Flatten one node to its codecMessages (caller may memoise by node).
  * @returns The split index; `nodes[splitIdx..]` is the revealed batch.
  */
 export const messageTailSplitIndex = <TProjection, TMessage>(
   nodes: readonly ConversationNode<TProjection>[],
   target: number,
-  getMessages: (projection: TProjection) => CodecMessage<TMessage>[],
+  getMessages: (node: ConversationNode<TProjection>) => CodecMessage<TMessage>[],
 ): number => {
   let messages = 0;
   for (let i = nodes.length - 1; i >= 0; i--) {
     const node = nodes[i];
     if (!node) continue;
-    messages += getMessages(node.projection).length;
+    messages += getMessages(node).length;
     if (messages >= target) return i; // reveal nodes[i..]
   }
   return 0; // fewer than `target` messages — reveal everything

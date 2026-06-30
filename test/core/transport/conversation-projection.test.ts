@@ -21,8 +21,8 @@ interface TestProjection {
   ids: string[];
 }
 
-const getMessages = (projection: TestProjection): CodecMessage<TestMessage>[] =>
-  projection.ids.map((id) => ({ codecMessageId: id, message: { id } }));
+const getMessages = (node: ConversationNode<TestProjection>): CodecMessage<TestMessage>[] =>
+  node.projection.ids.map((id) => ({ codecMessageId: id, message: { id } }));
 
 const inputNode = (codecMessageId: string, ids: string[]): ConversationNode<TestProjection> => ({
   kind: 'input',

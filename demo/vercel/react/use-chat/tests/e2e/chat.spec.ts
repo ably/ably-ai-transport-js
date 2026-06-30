@@ -1249,7 +1249,7 @@ test.describe('use-chat demo - chat behaviour', () => {
   // checks: two tabs on one channel; the observer sees the continuation run-end (status=finished).
   test('exploratory: multi-tab observer sees continuation run-end (tab B reaches status=finished)', async ({
     browser,
-  }, testInfo) => {
+  }) => {
     // Regression for the observer-side run-end gate. The gate consults
     // the Tree's latest-continuation-invocation map ahead of the
     // serial-based winning-invocation map. Without that fallback, an

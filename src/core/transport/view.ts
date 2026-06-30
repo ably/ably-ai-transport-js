@@ -230,8 +230,39 @@ class DefaultView<
   private _cachedNodes: ConversationNode<TProjection>[] = [];
 
   private _loadingOlder = false;
+  /**
+   * The in-flight {@link loadOlder} promise while one is running, else
+   * `undefined`. A concurrent {@link loadUntil} awaits this to yield to the
+   * running load instead of busy-spinning on `loadOlder`'s synchronous `[]`
+   * return (which would starve the microtask queue — see {@link loadUntil}).
+   * Awaited purely as a barrier — its resolved value is never read — so it is
+   * typed `unknown`.
+   */
+  private _loadInFlight: Promise<unknown> | undefined;
   private _processingHistory = false;
   private _closed = false;
+
+  /**
+   * Whether a {@link loadUntil} walk is currently running. While one is, `update`
+   * emission is suppressed (the snapshot is still kept current) and a single
+   * settled `update` is emitted when the walk leaves. A walk pages the window
+   * back through the seam one reveal at a time, so every pre-trim reveal holds
+   * the seam (and older) — messages a seeded subscriber already has. Surfacing
+   * those would briefly compose a list with duplicate ids before the trim lands;
+   * suppressing them means a subscriber that mirrors `getMessages()` only ever
+   * sees the trimmed tail. Walks are serialized (see {@link loadUntil}), so at
+   * most one runs at a time — a boolean, not a counter.
+   */
+  private _walkInProgress = false;
+
+  /**
+   * The in-flight {@link loadUntil} walk's (rejection-swallowed) promise while
+   * one is running, else `undefined`. A concurrent walk chains after it so the
+   * two never interleave on the shared trim state; an idle walk (this
+   * `undefined`) starts synchronously, preserving single-walk timing. Awaited
+   * purely as an ordering barrier — its resolved value is never read.
+   */
+  private _walkTail: Promise<void> | undefined;
 
   constructor(options: ViewOptions<TInput, TOutput, TProjection, TMessage>) {
     this._tree = options.tree;
@@ -293,7 +324,17 @@ class DefaultView<
     this._lastVisibleMessagePairs = this._branchSource
       .extractMessages(this._cachedNodes)
       .slice(this._hiddenMessageCount);
-    this._emitter.emit('update');
+    this._emitUpdate();
+  }
+
+  /**
+   * Emit the `update` event unless a {@link loadUntil} walk is in progress, in
+   * which case it is suppressed (see {@link _walkInProgress}) — the snapshot is
+   * still refreshed by the caller, only the notification is held until the walk
+   * settles on the trimmed tail.
+   */
+  private _emitUpdate(): void {
+    if (!this._walkInProgress) this._emitter.emit('update');
   }
 
   // -------------------------------------------------------------------------
@@ -334,7 +375,7 @@ class DefaultView<
   recomputeAndEmit(): void {
     this._cachedNodes = this._computeFlatNodes();
     this._updateVisibleSnapshot(this._cachedNodes);
-    this._emitter.emit('update');
+    this._emitUpdate();
   }
 
   /**
@@ -348,7 +389,7 @@ class DefaultView<
     if (this._visibleChanged(nodes)) {
       this._cachedNodes = nodes;
       this._updateVisibleSnapshot(nodes);
-      this._emitter.emit('update');
+      this._emitUpdate();
     }
   }
 
@@ -374,7 +415,24 @@ class DefaultView<
     if (this._closed || this._loadingOlder) return [];
     this._loadingOlder = true;
     this._logger.trace('DefaultView.loadOlder();', { limit });
+    // Publish the in-flight promise (set synchronously, before the first await,
+    // so a concurrent caller that observes `_loadingOlder === true` always finds
+    // it) so `loadUntil` can await this load rather than busy-spinning.
+    const inFlight = this._doLoadOlder(limit);
+    this._loadInFlight = inFlight;
+    return inFlight;
+  }
 
+  /**
+   * The body of {@link loadOlder}, run once the single-flight guard is held.
+   * Split out so `loadOlder` can publish the in-flight promise synchronously.
+   * `loadOlder` sets the `_loadingOlder` / `_loadInFlight` guard pair; this
+   * method owns clearing both (in its `finally`), so the set/clear is a
+   * deliberate wrapper-sets / body-clears pair.
+   * @param limit - Number of older codecMessages to reveal.
+   * @returns The revealed codecMessages, oldest-first; `[]` when nothing older was revealed.
+   */
+  private async _doLoadOlder(limit: number): Promise<CodecMessage<TMessage>[]> {
     // Anchor the revealed page on the current oldest visible codec-message-id:
     // the page is "everything now above the previous oldest message". For a
     // non-empty window this is robust to a live message folding in at the tail
@@ -414,7 +472,7 @@ class DefaultView<
       // is exhausted, so a single call here suffices.
       if (revealedSoFar() < need) {
         await this._fetchOlder(need - revealedSoFar());
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- close() may be set during the await above
+        // close() may fire during the await above.
         if (this._closed) return [];
       }
 
@@ -430,6 +488,143 @@ class DefaultView<
       throw error;
     } finally {
       this._loadingOlder = false;
+      this._loadInFlight = undefined;
+    }
+  }
+
+  async loadUntil(
+    predicate: (message: CodecMessage<TMessage>) => boolean,
+    signal?: AbortSignal,
+  ): Promise<CodecMessage<TMessage>[]> {
+    this._logger.trace('DefaultView.loadUntil();');
+
+    // Already aborted before we start — resolve to `[]` (the documented aborted
+    // result) without queueing or scanning. The in-loop check catches an abort
+    // mid-walk, and `_walk` re-checks for one that fires while queued; this
+    // catches one that fired before the walk was even scheduled.
+    if (signal?.aborted) return [];
+
+    // Serialize walks. React StrictMode double-invokes the hook effect, starting
+    // two walks over one view (the first aborted on cleanup, the second live). A
+    // plain concurrent run interleaves them on the shared trim state
+    // (`_hiddenMessageCount` + the withheld buffer) and the single-flight
+    // `loadOlder` — one walk's reveal un-hides what the other just hid — leaving
+    // the window UNTRIMMED (the whole conversation rather than the post-seam
+    // tail), so a seeded subscriber composes `seed ⧺ window` with every id
+    // duplicated. Chaining each walk after the previous means only one mutates
+    // the window at a time; the later walk re-walks from the trimmed state and
+    // converges on the same tail.
+    // When idle, start the walk synchronously (so an un-contended walk reaches
+    // its first history fetch in the same tick, as a single walk always has);
+    // when a walk is already in flight, chain this one after it (`prior` is
+    // already rejection-swallowed, so `.then` runs regardless of its outcome).
+    const prior = this._walkTail;
+    const run =
+      prior === undefined ? this._walk(predicate, signal) : prior.then(async () => this._walk(predicate, signal));
+    // Track the in-flight tail (rejection-swallowed so a failed walk can't reject
+    // the next), and clear it once the queue drains so the next idle walk starts
+    // synchronously again.
+    const tail = run.then(
+      () => {
+        /* outcome surfaces to the caller via `run`; the queue only needs ordering */
+      },
+      () => {
+        /* same — a rejected walk must not reject the next queued walk */
+      },
+    );
+    this._walkTail = tail;
+    void tail.finally(() => {
+      if (this._walkTail === tail) this._walkTail = undefined;
+    });
+    return run;
+  }
+
+  /**
+   * Run one seam walk exclusively (serialized by {@link loadUntil}). Suppresses
+   * intermediate `update` emission for the walk's duration (see
+   * {@link _walkInProgress}) and emits a single settled `update` once the window
+   * is the trimmed tail. Scans the warm window for the seam, else pages back one
+   * reveal at a time until the seam is found (trimming it and everything older
+   * into the withheld region) or history is exhausted.
+   * @param predicate - Identifies the seam — the newest message the caller already holds.
+   * @param signal - Optional abort signal; an abort resolves the walk to `[]`.
+   * @returns The not-yet-seeded tail (messages strictly newer than the seam), oldest-first.
+   */
+  private async _walk(
+    predicate: (message: CodecMessage<TMessage>) => boolean,
+    signal: AbortSignal | undefined,
+  ): Promise<CodecMessage<TMessage>[]> {
+    // The signal may have fired while this walk waited behind another in the
+    // queue. (A close mid-walk is handled by the walk loop and the `finally`.)
+    if (signal?.aborted) return [];
+    this._walkInProgress = true;
+    // Terminal outcome for the exit log; defaults to the abort/close path, which
+    // returns `[]` below without setting it.
+    let outcome: 'seam' | 'exhausted' | 'aborted' = 'aborted';
+    try {
+      // The seam may already be visible (a warm window): trim to it and return
+      // without paging. Scanning here also covers the page the first reveal
+      // returns whole.
+      const tailAtSeam = (page: CodecMessage<TMessage>[]): CodecMessage<TMessage>[] | undefined => {
+        const idx = page.findIndex((m) => predicate(m));
+        if (idx === -1) return undefined;
+        // `page` is always the window's oldest-end prefix (the initial window, or
+        // the slice `loadOlder` just prepended), so the match's index within it is
+        // its index within the window. Trim the window to exclude the seam and
+        // everything older: the seam is the single overlap the caller already holds,
+        // and any history a reveal fetched beyond it (the initial attach window, or a
+        // wider earlier `loadOlder`) sits in the caller's store too. Hiding it leaves
+        // `getMessages()` reporting exactly the not-yet-seeded tail — equal to this
+        // method's result — rather than the over-fetched history below the seam.
+        this._hiddenMessageCount += idx + 1;
+        this.recomputeAndEmit();
+        // The window is now the tail: the messages strictly newer than the seam.
+        return [...this._lastVisibleMessagePairs];
+      };
+
+      const initial = tailAtSeam(this._lastVisibleMessagePairs);
+      if (initial !== undefined) {
+        outcome = 'seam';
+        return initial;
+      }
+
+      // Page back one codecMessage at a time, inspecting only each revealed page.
+      // Locating-aware: keep paging while older history remains even when a reveal
+      // surfaces nothing yet (the pin is unanchored / the trigger hasn't folded).
+      // The `_closed` re-check is load-bearing: `loadOlder` returns `[]` on a closed
+      // view while `hasOlder()` may still report true, so without it this loop would
+      // spin.
+      while (this.hasOlder()) {
+        if (this._closed || signal?.aborted) return [];
+        // Another loadOlder is already running — e.g. a second loadUntil walk from
+        // the same view (React StrictMode double-invokes the hook effect, starting
+        // two concurrent walks). `loadOlder` returns `[]` synchronously to a
+        // concurrent caller, so calling it here would spin a tight microtask loop
+        // that never yields to the running load's network fetch — starving the
+        // event loop and hanging the page. Await the in-flight load instead, then
+        // re-evaluate from its result.
+        if (this._loadingOlder) {
+          await this._loadInFlight;
+          continue;
+        }
+        const tail = tailAtSeam(await this.loadOlder(1));
+        if (tail !== undefined) {
+          outcome = 'seam';
+          return tail;
+        }
+      }
+
+      // History exhausted with no seam (no seed, or a seam absent from the
+      // channel): the whole window is the tail.
+      outcome = 'exhausted';
+      return [...this._lastVisibleMessagePairs];
+    } finally {
+      this._walkInProgress = false;
+      this._logger.debug('DefaultView.loadUntil(); walk settled', { outcome });
+      // One settled emit when the walk leaves. Skip on abort/close: an aborted
+      // walk may leave a partial, not-yet-trimmed window, and the next queued
+      // walk (or a `skip`-driven reset in the hook) settles it.
+      if (!this._closed && !signal?.aborted) this._emitUpdate();
     }
   }
 
@@ -543,6 +738,7 @@ class DefaultView<
     this._logger.info('DefaultView.close();');
     this._closed = true;
     this._loadingOlder = false;
+    this._loadInFlight = undefined;
     for (const unsub of this._unsubs) unsub();
     this._unsubs.length = 0;
     this._emitter.off();
@@ -770,6 +966,13 @@ class DefaultClientView<
 
   async loadOlder(limit?: number): Promise<CodecMessage<TMessage>[]> {
     return this._base.loadOlder(limit);
+  }
+
+  async loadUntil(
+    predicate: (message: CodecMessage<TMessage>) => boolean,
+    signal?: AbortSignal,
+  ): Promise<CodecMessage<TMessage>[]> {
+    return this._base.loadUntil(predicate, signal);
   }
 
   runOf(codecMessageId: string): RunInfo | undefined {

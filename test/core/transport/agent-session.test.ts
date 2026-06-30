@@ -16,6 +16,8 @@ import {
   EVENT_CANCEL,
   EVENT_RUN_END,
   EVENT_RUN_START,
+  EVENT_RUN_SUSPEND,
+  EVENT_STEP_START,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
   HEADER_FORK_OF,
@@ -27,7 +29,9 @@ import {
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
+  HEADER_RUN_REASON,
   HEADER_STEP_CLIENT_ID,
+  HEADER_STEP_ID,
 } from '../../../src/constants.js';
 import type {
   ChannelWriter,
@@ -296,6 +300,15 @@ const erroringStream = (): ReadableStream<TestOutput> =>
     start: (controller) => {
       controller.enqueue({ type: 'text', text: 'partial' });
       controller.error(new Error('rate limit'));
+    },
+  });
+
+// A never-completing stream — a cancel mid-pipe wins the read race so the pipe
+// returns reason:'cancelled' WITHOUT any output (so no step opens).
+const pausedStream = (): ReadableStream<TestOutput> =>
+  new ReadableStream<TestOutput>({
+    start: () => {
+      /* never enqueues or closes */
     },
   });
 
@@ -1009,13 +1022,15 @@ describe('AgentSession', () => {
       expect(result.reason).toBe('complete');
     });
 
-    it('publishes ai-run-end(reason:cancelled) on a cancelled pipe without an explicit end()', async () => {
+    it('does NOT publish ai-run-end on a cancelled pipe (pipe never auto-ends the run)', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
 
       // Cancel the run, then pipe a stream that never completes: pipeStream
-      // observes the aborted signal and returns reason:'cancelled'. Run.pipe
-      // must then guarantee the transport terminator itself.
+      // observes the aborted signal and returns reason:'cancelled'. pipe closes
+      // only its own step bracket (here zero steps, as nothing was produced) —
+      // it does NOT publish a run terminal. The run terminal is the outer
+      // layer's job (run.end / session.end).
       simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
       await new Promise((r) => setTimeout(r, 5));
 
@@ -1027,13 +1042,10 @@ describe('AgentSession', () => {
       const result = await run.pipe(paused);
       expect(result.reason).toBe('cancelled');
 
-      const endMsg = channel.publishCalls.find((m) => m.name === 'ai-run-end');
-      expect(endMsg).toBeDefined();
-      const headers = (endMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
-      expect(headers?.['run-reason']).toBe('cancelled');
+      expect(channel.publishCalls.some((m) => m.name === 'ai-run-end')).toBe(false);
     });
 
-    it('a developer run.end() after a cancelled pipe is a no-op (no second run-end)', async () => {
+    it('a developer run.end() after a cancelled pipe is the SOLE run terminal', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
       simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
@@ -1044,11 +1056,16 @@ describe('AgentSession', () => {
           /* never enqueues or closes */
         },
       });
+      // The cancelled pipe publishes no terminal; the developer's run.end is the
+      // only ai-run-end on the wire.
       await run.pipe(paused);
       await run.end({ reason: 'cancelled' });
 
       const endMsgs = channel.publishCalls.filter((m) => m.name === 'ai-run-end');
       expect(endMsgs).toHaveLength(1);
+      const headers = (endMsgs[0]?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai
+        ?.transport;
+      expect(headers?.['run-reason']).toBe('cancelled');
     });
 
     it('uses explicit parent from pipe options', async () => {
@@ -1321,7 +1338,7 @@ describe('AgentSession', () => {
         expect(ends[0]?.['step-reason']).toBe('failed');
       });
 
-      it('brackets ZERO steps when cancelled BEFORE any output (cancel safety-net still ends the run)', async () => {
+      it('brackets ZERO steps when cancelled BEFORE any output, and publishes no run terminal', async () => {
         const run = createRunFromOpts(session, { runId: 'run-1' });
         await run.start();
         simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
@@ -1335,14 +1352,14 @@ describe('AgentSession', () => {
         const result = await run.pipe(paused);
 
         expect(result.reason).toBe('cancelled');
-        // No output ever flowed, so no step opened — but the run still ends,
-        // exactly once.
+        // No output ever flowed, so no step opened — and pipe never auto-ends
+        // the run, so there is no run terminal either.
         expect(stepHeadersOf(channel, 'ai-step-start')).toHaveLength(0);
         expect(stepHeadersOf(channel, 'ai-step-end')).toHaveLength(0);
-        expect(channel.publishCalls.filter((m) => m.name === 'ai-run-end')).toHaveLength(1);
+        expect(channel.publishCalls.some((m) => m.name === 'ai-run-end')).toBe(false);
       });
 
-      it('closes the implicit step cancelled (step-end before run-end) when cancelled mid-output', async () => {
+      it('closes the implicit step cancelled when cancelled mid-output, but publishes no run terminal', async () => {
         const run = createRunFromOpts(session, { runId: 'run-1' });
         await run.start();
 
@@ -1372,17 +1389,13 @@ describe('AgentSession', () => {
         const ends = stepHeadersOf(channel, 'ai-step-end');
         expect(starts).toHaveLength(1);
         expect(ends).toHaveLength(1);
-        // The open step closes 'cancelled' (a run-level terminal), not
+        // The open step closes 'cancelled' (close-iff-opened), not
         // 'complete'/'failed'.
         expect(ends[0]?.['step-reason']).toBe('cancelled');
-        // Exactly one run terminal (no double-publish from the safety-net).
-        const runEnds = channel.publishCalls.filter((m) => m.name === 'ai-run-end');
-        expect(runEnds).toHaveLength(1);
-        const runEndHeaders = (runEnds[0]?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai
-          ?.transport;
-        expect(runEndHeaders?.['run-reason']).toBe('cancelled');
-        // Wire ORDER: ai-step-end{cancelled} precedes ai-run-end{cancelled}.
-        expect(stepEndBeforeRunEnd(channel)).toBe(true);
+        // pipe never auto-ends the run: the step-end bracket is published, but no
+        // run terminal. The run terminal is the outer layer's (run.end /
+        // session.end).
+        expect(channel.publishCalls.some((m) => m.name === 'ai-run-end')).toBe(false);
       });
 
       it('two pipe calls open TWO independent steps (distinct monotonic step-ids) — no supersede', async () => {
@@ -1515,11 +1528,11 @@ describe('AgentSession', () => {
       expect(ends[0]?.['step-reason']).toBe('failed');
     });
 
-    it('closes the step cancelled via the safety-net; a later step.end() cannot override it', async () => {
-      // A cancelled step.pipe is a run-level terminal: the cancel safety-net
-      // closes the step 'cancelled' and ends the run (step-end before run-end).
-      // 'cancelled' wins: a later explicit step.end({ reason: 'failed' }) is
-      // idempotent and neither double-publishes nor re-labels the step.
+    it('a step.end() with no reason after a cancelled pipe derives cancelled, and pipe publishes no run terminal', async () => {
+      // A cancelled step.pipe marks the step cancelled (pipeState.cancelled);
+      // step.end() with no explicit reason derives 'cancelled' from that. pipe
+      // never auto-ends the run, so no run terminal is published — the run
+      // terminal is the caller's (run.end / session.end).
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
 
@@ -1535,17 +1548,12 @@ describe('AgentSession', () => {
       await step.start();
       const result = await step.pipe(paused); // returns 'cancelled'
       expect(result.reason).toBe('cancelled');
-      await step.end({ reason: 'failed' }); // no-op: the step already closed 'cancelled'
+      await step.end(); // no reason → derives 'cancelled'
 
       const ends = stepHeadersOf(channel, 'ai-step-end');
       expect(ends).toHaveLength(1);
       expect(ends[0]?.['step-reason']).toBe('cancelled');
-      const runEnds = channel.publishCalls.filter((m) => m.name === 'ai-run-end');
-      expect(runEnds).toHaveLength(1);
-      const runEndHeaders = (runEnds[0]?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai
-        ?.transport;
-      expect(runEndHeaders?.['run-reason']).toBe('cancelled');
-      expect(stepEndBeforeRunEnd(channel)).toBe(true);
+      expect(channel.publishCalls.some((m) => m.name === 'ai-run-end')).toBe(false);
     });
 
     it('reuses the previous step id on a no-id retry after a failure (coalescing)', async () => {
@@ -1621,6 +1629,25 @@ describe('AgentSession', () => {
 
       const starts = stepHeadersOf(channel, 'ai-step-start');
       expect(starts[0]?.['step-id']).toBe('answer');
+    });
+
+    it('stamps an explicit stepId on the step bracket and output', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      const step = run.createStep({ stepId: 'turn-1' });
+      await step.start();
+      await step.pipe(streamOf({ type: 'text', text: 'a' }));
+      await step.end();
+
+      const starts = stepHeadersOf(channel, 'ai-step-start');
+      const ends = stepHeadersOf(channel, 'ai-step-end');
+      // The explicit id is stamped on the start, end, and the output's default
+      // headers.
+      expect(starts[0]?.['step-id']).toBe('turn-1');
+      expect(ends[0]?.['step-id']).toBe('turn-1');
+      const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
+      expect(headers['step-id']).toBe('turn-1');
     });
 
     it('start() throws when the run has not been started', async () => {
@@ -1779,14 +1806,15 @@ describe('AgentSession', () => {
       expect(channel.publishCalls.some((m) => m.name === 'ai-run-suspend')).toBe(true);
     });
 
-    it('closes the step cancelled and ends the run cancelled when a step pipe is cancelled', async () => {
+    it('closes the step cancelled when a step pipe is cancelled, but pipe publishes no run terminal', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
 
       // Cancel the run, then pipe a never-completing stream inside the step:
-      // pipeStream observes the abort and returns reason:'cancelled', which the
-      // shared doPipe turns into a run-end terminal whose auto-close settles the
-      // open step cancelled ahead of the run-end.
+      // pipeStream observes the abort and returns reason:'cancelled'. step.end()
+      // with no reason derives 'cancelled' from the cancelled pipe. pipe never
+      // auto-ends the run, so no run terminal is published — the run terminal is
+      // the caller's (run.end / session.end).
       simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
       await new Promise((r) => setTimeout(r, 5));
 
@@ -1802,21 +1830,10 @@ describe('AgentSession', () => {
 
       expect(result.reason).toBe('cancelled');
       const ends = stepHeadersOf(channel, 'ai-step-end');
-      // A cancel ends the run while the step was open: the step closes
-      // 'cancelled' (neither completed its output nor failed retryably) and the
-      // run-end carries the cancellation.
+      // A cancel while the step was open: the step closes 'cancelled' (neither
+      // completed its output nor failed retryably).
       expect(ends[0]?.['step-reason']).toBe('cancelled');
-      // Exactly one run terminal (the safety-net does not double-publish).
-      const runEnds = channel.publishCalls.filter((m) => m.name === 'ai-run-end');
-      expect(runEnds).toHaveLength(1);
-      const runEndHeaders = (runEnds[0]?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai
-        ?.transport;
-      expect(runEndHeaders?.['run-reason']).toBe('cancelled');
-
-      // Wire ORDER: ai-step-end{cancelled} must precede ai-run-end{cancelled}
-      // (the step-end-before-terminal invariant). Compare the two publishes'
-      // global invocation order.
-      expect(stepEndBeforeRunEnd(channel)).toBe(true);
+      expect(channel.publishCalls.some((m) => m.name === 'ai-run-end')).toBe(false);
     });
 
     it('coalesces a cross-process retry that supplies the same explicit stepId', async () => {
@@ -2059,6 +2076,140 @@ describe('AgentSession', () => {
   });
 
   // -------------------------------------------------------------------------
+  // cancel terminal — pipe never auto-ends; the caller owns the run terminal
+  // -------------------------------------------------------------------------
+
+  describe('cancel terminal — pipe never auto-ends', () => {
+    it('caller catch arm: a cancel survives a cleanup throw — a finally step.end() closes cancelled, NO ai-run-end', async () => {
+      // The handle has no closure bracket, so the caller owns the catch arm. A
+      // cancelled step.pipe publishes no run terminal; the caller's post-cancel
+      // cleanup may throw, but as long as a finally closes the step it still ends
+      // 'cancelled' (the cancelled pipe derives it). The cleanup error propagates
+      // from the caller, and no run terminal is published by pipe.
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
+      await new Promise((r) => setTimeout(r, 5));
+
+      const step = run.createStep({ stepId: 'S1' });
+      await step.start();
+      await expect(
+        (async () => {
+          try {
+            await step.pipe(pausedStream()); // returns 'cancelled'
+            throw new Error('boom'); // post-cancel cleanup fails
+          } finally {
+            await step.end(); // derives 'cancelled' from the cancelled pipe
+          }
+        })(),
+      ).rejects.toThrow('boom');
+
+      const ends = stepHeadersOf(channel, 'ai-step-end');
+      expect(ends).toHaveLength(1);
+      expect(ends[0]?.['step-reason']).toBe('cancelled');
+      expect(channel.publishCalls.some((m) => m.name === 'ai-run-end')).toBe(false);
+    });
+
+    it('publish-time terminal re-check: a step after a folded ai-run-end{cancelled} rejects (no bracketing onto a terminal run)', async () => {
+      // The TOCTOU / dual-writer backstop: a separate cleanup arm can publish the
+      // run terminal while this process is mid-turn. Once that terminal has folded
+      // into the Tree, this process's step/pipe/end sees a terminal status and
+      // refuses to publish rather than bracketing onto an already-ended run.
+      // Reuses `deliverRunTerminal` (the adopt suite's folding-wire helper).
+      const run = createRunFromOpts(session, { runId: 'run-dw' });
+      await run.start();
+
+      // A cleanup arm's terminal folds in (the optimistic run-node's status
+      // advances to cancelled).
+      deliverRunTerminal(channel, EVENT_RUN_END, 'run-dw', { serial: 's-dw-end', reason: 'cancelled' });
+      expect(run.status).toBe('cancelled');
+
+      // This process now tries a step — the publish-time re-check on start() sees
+      // the run is already terminal and rejects rather than bracketing onto it.
+      const step = run.createStep({ stepId: 'late-step' });
+      await expect(step.start()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+
+      // This process published NO ai-run-end — the folded cleanup terminal
+      // (delivered, not published here) is the sole one.
+      expect(channel.publishCalls.some((m) => m.name === 'ai-run-end')).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // durable lifecycle composition
+  // -------------------------------------------------------------------------
+
+  describe('durable lifecycle composition', () => {
+    it('threads one constant invocationId across run-start, step-start, step-end, and run-end of a turn', async () => {
+      // Durable execution stamps ONE invocationId per turn on every lifecycle event, so a
+      // receiver correlates a turn's open / step / end whether it ran as one
+      // process or three adopting activities. One process with a fixed id proves
+      // the thread end to end.
+      const run = session.createRun(Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }), {
+        runId: 'run-1',
+        invocationId: 'inv-C',
+      });
+      await run.start();
+      const step = run.createStep({ stepId: 's-0' });
+      await step.start();
+      await step.pipe(streamOf({ type: 'text', text: 'a' }));
+      await step.end();
+      await run.end({ reason: 'complete' });
+
+      const runStart = channel.publishCalls.find((m) => m.name === 'ai-run-start');
+      const runEnd = channel.publishCalls.find((m) => m.name === 'ai-run-end');
+      const tStart = (runStart?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+      const tEnd = (runEnd?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+      expect(tStart?.[HEADER_INVOCATION_ID]).toBe('inv-C');
+      expect(tEnd?.[HEADER_INVOCATION_ID]).toBe('inv-C');
+      expect(stepHeadersOf(channel, 'ai-step-start')[0]?.[HEADER_INVOCATION_ID]).toBe('inv-C');
+      expect(stepHeadersOf(channel, 'ai-step-end')[0]?.[HEADER_INVOCATION_ID]).toBe('inv-C');
+    });
+
+    it('the error-handler arm lands ai-run-end{error} after a failed step closes ai-step-end{failed}', async () => {
+      // The workflow's catch arm still lands a terminal when a step's work
+      // throws: the caller closes the step `failed`, then publishes
+      // ai-run-end{error}, so the step-end precedes the run terminal on the wire.
+      const run = session.createRun(Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }), {
+        runId: 'run-1',
+        invocationId: 'inv-C',
+      });
+      await run.start();
+
+      const step = run.createStep({ stepId: 's-0' });
+      await step.start();
+      await step.end({ reason: 'failed' });
+      await run.end({ reason: 'error' });
+
+      expect(stepHeadersOf(channel, 'ai-step-end')[0]?.['step-reason']).toBe('failed');
+      const stepEndIdx = channel.publishCalls.findIndex((m) => m.name === 'ai-step-end');
+      const runEndIdx = channel.publishCalls.findIndex((m) => m.name === 'ai-run-end');
+      expect(runEndIdx).toBeGreaterThan(stepEndIdx);
+      const runEnd = channel.publishCalls.find((m) => m.name === 'ai-run-end');
+      const tEnd = (runEnd?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+      expect(tEnd?.['run-reason']).toBe('error');
+    });
+
+    it('an error before any step ends the run with just the terminal (zero step events)', async () => {
+      // A turn that errors before opening a step ends with just the run terminal,
+      // not an empty step bracket.
+      const run = session.createRun(Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }), {
+        runId: 'run-1',
+        invocationId: 'inv-C',
+      });
+      await run.start();
+      await run.end({ reason: 'error' });
+
+      expect(stepHeadersOf(channel, 'ai-step-start')).toHaveLength(0);
+      expect(stepHeadersOf(channel, 'ai-step-end')).toHaveLength(0);
+      const runEnd = channel.publishCalls.find((m) => m.name === 'ai-run-end');
+      const tEnd = (runEnd?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+      expect(tEnd?.['run-reason']).toBe('error');
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // cancel routing
   // -------------------------------------------------------------------------
 
@@ -2157,15 +2308,14 @@ describe('AgentSession', () => {
       await s.close();
     });
 
-    it('still lands a balanced ai-run-end after start + pipe (no orphaned run)', async () => {
+    it('session.end() balances a run-start after a buffered-cancel start + pipe (no orphaned run)', async () => {
       // A cancel buffered before run-start aborts the controller during the
       // lookup, but start() still publishes ai-run-start (run-start is
       // unconditional once the linkage resolves). The run is therefore visible
-      // to observers and MUST be terminated: when the agent goes on to pipe its
-      // response, the already-aborted signal makes the pipe return 'cancelled'
-      // and Run.pipe guarantees the ai-run-end terminal — so the buffered-cancel
-      // path leaves no run stuck active. (PR 5c run-end guarantee reaching the
-      // deferred-cancel path.)
+      // to observers and MUST be terminated. pipe never auto-ends, so the
+      // cancelled pipe publishes NO terminal; session.end() (the graceful
+      // teardown backstop) ends the still-open run cancelled, so the
+      // buffered-cancel path leaves no run stuck active.
       const { session: s, ch } = lookupSession();
       await s.connect();
 
@@ -2200,13 +2350,16 @@ describe('AgentSession', () => {
       });
       const result = await run.pipe(paused);
       expect(result.reason).toBe('cancelled');
+      // pipe published no terminal — the run is still open at this point.
+      expect(ch.publishCalls.some((m) => m.name === 'ai-run-end')).toBe(false);
 
-      // The run-start is balanced by a run-end(reason:cancelled) — no orphan.
+      // session.end() balances the run-start with a run-end(reason:cancelled) —
+      // no orphan.
+      await s.end();
       const endMsg = ch.publishCalls.find((m) => m.name === 'ai-run-end');
       expect(endMsg).toBeDefined();
       const headers = (endMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
       expect(headers?.['run-reason']).toBe('cancelled');
-      await s.close();
     });
 
     it('honours a continuation cancel (run-id + input id) that arrived before run-resume', async () => {
@@ -2678,6 +2831,144 @@ describe('AgentSession', () => {
       await session.close();
       expect(channel.unsubscribe).toHaveBeenCalledTimes(1);
       expect(channel.detach).toHaveBeenCalledTimes(1);
+    });
+
+    it('publishes NO run terminal for an open run (detach-only)', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+      await session.close();
+      // close() is detach-only: an open run is left as-is on the channel, to be
+      // resumed or cleaned up elsewhere. Its controller is aborted, but no
+      // ai-run-end is published.
+      expect(run.abortSignal.aborted).toBe(true);
+      expect(channel.publishCalls.some((m) => m.name === 'ai-run-end')).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // end (the graceful-teardown onion)
+  // -------------------------------------------------------------------------
+
+  describe('end', () => {
+    it('ends an open run {cancelled}, closing its open step first (step-end before run-end)', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      // Open a step and leave it open (a forgotten step.end / a fire-and-forget
+      // turn). session.end() must close the step before the run terminal.
+      const step = run.createStep({ stepId: 's-0' });
+      await step.start();
+
+      await session.end();
+
+      const stepEnds = stepHeadersOf(channel, 'ai-step-end');
+      expect(stepEnds).toHaveLength(1);
+      expect(stepEnds[0]?.['step-reason']).toBe('cancelled');
+      const runEnds = channel.publishCalls.filter((m) => m.name === 'ai-run-end');
+      expect(runEnds).toHaveLength(1);
+      const runEndHeaders = (runEnds[0]?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai
+        ?.transport;
+      expect(runEndHeaders?.['run-reason']).toBe('cancelled');
+      // The onion order: ai-step-end{cancelled} precedes ai-run-end{cancelled}.
+      expect(stepEndBeforeRunEnd(channel)).toBe(true);
+    });
+
+    it('ends an open run with no step {cancelled} (just the run terminal)', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      await session.end();
+
+      expect(stepHeadersOf(channel, 'ai-step-start')).toHaveLength(0);
+      const runEnds = channel.publishCalls.filter((m) => m.name === 'ai-run-end');
+      expect(runEnds).toHaveLength(1);
+      const runEndHeaders = (runEnds[0]?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai
+        ?.transport;
+      expect(runEndHeaders?.['run-reason']).toBe('cancelled');
+    });
+
+    it('does NOT terminate a run already ended explicitly (its terminal is the only one)', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+      await run.end({ reason: 'complete' });
+
+      await session.end();
+
+      // The run deregistered on its own complete terminal, so session.end has
+      // nothing to terminate — exactly one ai-run-end, the explicit complete one.
+      const runEnds = channel.publishCalls.filter((m) => m.name === 'ai-run-end');
+      expect(runEnds).toHaveLength(1);
+      const runEndHeaders = (runEnds[0]?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai
+        ?.transport;
+      expect(runEndHeaders?.['run-reason']).toBe('complete');
+    });
+
+    it('does NOT terminate an unopened run (created but never started)', async () => {
+      // A run created but never start()ed has nothing on the wire to terminate;
+      // run.end would reject it, so the hook no-ops. The detach still aborts it.
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+
+      await session.end();
+
+      expect(channel.publishCalls.some((m) => m.name === 'ai-run-end')).toBe(false);
+      expect(run.abortSignal.aborted).toBe(true);
+    });
+
+    it('detaches and aborts like close() (supersets the detach-only teardown)', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      await session.end();
+
+      expect(run.abortSignal.aborted).toBe(true);
+      expect(channel.unsubscribe).toHaveBeenCalled();
+      expect(channel.detach).toHaveBeenCalledTimes(1);
+    });
+
+    it('is idempotent and a no-op after close()', async () => {
+      await session.close();
+      await session.end();
+      // close() already tore down; end() finds no open runs and re-running the
+      // detach is a no-op (CLOSED guard).
+      expect(channel.detach).toHaveBeenCalledTimes(1);
+    });
+
+    it('surfaces a per-run terminal publish failure via on(error) and still tears the rest down', async () => {
+      // A run-end publish that fails on session.end() must NOT abort the teardown:
+      // it is logged + emitted as RunLifecycleError on the session emitter, and
+      // the OTHER open runs are still ended and the channel still detached
+      // (best-effort per run).
+      const ch = createMockChannel();
+      const onError = vi.fn();
+      const s = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'end-publish-fail',
+        codec: createMockCodec(),
+      });
+      s.on('error', onError);
+      await s.connect();
+
+      const run1 = createRunFromOpts(s, { runId: 'run-1' });
+      const run2 = createRunFromOpts(s, { runId: 'run-2' });
+      await run1.start();
+      await run2.start();
+
+      // After both runs opened, make every subsequent publish reject — so each
+      // run's run-end during session.end() fails.
+      vi.mocked(ch.publish).mockRejectedValue(new Error('publish failed'));
+
+      await s.end();
+
+      // Both runs' terminal failures surfaced on the session emitter as
+      // RunLifecycleError (one per run), never silently dropped.
+      expect(onError).toHaveBeenCalledTimes(2);
+      for (const [emitted] of onError.mock.calls) {
+        expect(emitted).toBeErrorInfoWithCode(ErrorCode.RunLifecycleError);
+      }
+      // Teardown still completed: both controllers aborted and the channel detached.
+      expect(run1.abortSignal.aborted).toBe(true);
+      expect(run2.abortSignal.aborted).toBe(true);
+      expect(ch.detach).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -3795,5 +4086,536 @@ describe('agent run.view (shared read base)', () => {
     expect(runViewIds).toEqual(['u1', 'a1', 'u2', 'a2']);
     expect(runViewIds).toEqual(clientIds);
     await session.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// adoptRun / load() — fresh-process run adoption
+//
+// A durable workflow runs each activity (open / step / end / cancel-cleanup) in
+// a FRESH process. `adoptRun(identity).load()` adopts an already-open run for
+// publishing in such a process WITHOUT republishing the opening event: it waits
+// for the run's `ai-run-start` to hydrate off the channel (so `startSerial` is
+// confirmed), status-gates (active adopt / suspended + terminal reject), seeds
+// the owner from the hydrated run-start, and opens.
+//
+// These unit tests isolate load()'s visibility-wait + status-gate + owner-seed
+// by adopting with an EMPTY triggerEventId (so `run.located` resolves
+// immediately — nothing to locate); the trigger-resolution path is exercised
+// end-to-end by the cross-process integration matrix.
+// ---------------------------------------------------------------------------
+
+/**
+ * Deliver a foreign-process `ai-run-start` wire to the session's channel
+ * listener, folding it so the run node carries a confirmed `startSerial` (and,
+ * with `runClientId`, its owner) in the read-model — the channel-as-truth source
+ * a fresh adopting process's `load()` waits for and seeds from.
+ * @param ch - The mock channel hosting the session's listener.
+ * @param runId - The run the start opens.
+ * @param opts - The serial (confirms `startSerial`) and optional run owner.
+ * @param opts.serial - The Ably serial (confirms the run-start).
+ * @param opts.runClientId - The run owner's `run-client-id`.
+ */
+const deliverRunStart = (ch: MockChannel, runId: string, opts: { serial: string; runClientId?: string }): void => {
+  const headers: Record<string, string> = { [HEADER_RUN_ID]: runId };
+  if (opts.runClientId !== undefined) headers[HEADER_RUN_CLIENT_ID] = opts.runClientId;
+  const msg = {
+    name: EVENT_RUN_START,
+    serial: opts.serial,
+    extras: { ai: { transport: headers } },
+    version: { serial: opts.serial },
+  } as unknown as Ably.InboundMessage;
+  if (ch.listener) ch.listener(msg);
+};
+
+/**
+ * Deliver a foreign-process `ai-step-start` wire to the session's channel
+ * listener, folding it so the run node carries a prior step (with its
+ * `step-client-id`) in the read-model — the channel-as-truth source a fresh
+ * adopting process re-derives sticky `stepClientId` from. Carries a real serial
+ * so the step-start is canonical.
+ * @param ch - The mock channel hosting the session's listener.
+ * @param runId - The run the step belongs to.
+ * @param opts - The step id, serial, and client scope.
+ * @param opts.stepId - The prior step's id.
+ * @param opts.serial - The Ably serial — the step-start's identity (its `start-serial`), making it canonical.
+ * @param opts.stepClientId - The prior step's `step-client-id`.
+ */
+const deliverStepStart = (
+  ch: MockChannel,
+  runId: string,
+  opts: { stepId: string; serial: string; stepClientId: string },
+): void => {
+  const headers: Record<string, string> = {
+    [HEADER_RUN_ID]: runId,
+    [HEADER_STEP_ID]: opts.stepId,
+    [HEADER_STEP_CLIENT_ID]: opts.stepClientId,
+  };
+  const msg = {
+    name: EVENT_STEP_START,
+    serial: opts.serial,
+    extras: { ai: { transport: headers } },
+    version: { serial: opts.serial },
+  } as unknown as Ably.InboundMessage;
+  if (ch.listener) ch.listener(msg);
+};
+
+/**
+ * Deliver a foreign-process terminal run-lifecycle wire (run-end or run-suspend)
+ * to the session's channel listener, folding it so the run's status advances.
+ * @param ch - The mock channel hosting the session's listener.
+ * @param name - The lifecycle event name (run-end / run-suspend).
+ * @param runId - The run being ended or suspended.
+ * @param opts - Serial and, for run-end, the run-reason.
+ * @param opts.serial - The Ably serial of the terminal lifecycle event.
+ * @param opts.reason - The run-reason header (run-end only).
+ */
+const deliverRunTerminal = (
+  ch: MockChannel,
+  name: string,
+  runId: string,
+  opts: { serial: string; reason?: string },
+): void => {
+  const headers: Record<string, string> = { [HEADER_RUN_ID]: runId };
+  if (opts.reason !== undefined) headers[HEADER_RUN_REASON] = opts.reason;
+  const msg = {
+    name,
+    serial: opts.serial,
+    extras: { ai: { transport: headers } },
+    version: { serial: opts.serial },
+  } as unknown as Ably.InboundMessage;
+  if (ch.listener) ch.listener(msg);
+};
+
+/**
+ * Stand up a connected agent session over a mock channel for adopt tests. The
+ * channel's history is empty, so `load()`'s visibility-wait depends on a
+ * `deliverRunStart` on the live listener (or times out).
+ * @returns The session and its mock channel.
+ */
+const adoptSession = (): {
+  session: AgentSession<TestOutput, TestProjection, TestMessage>;
+  ch: MockChannel & Ably.RealtimeChannel;
+} => {
+  const ch = createMockChannel();
+  // eslint-disable-next-line @typescript-eslint/no-misused-promises -- mock returns Promise directly
+  ch.history.mockImplementation(singlePageHistory([]));
+  const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+    client: createMockClient(ch),
+    channelName: 'adopt',
+    codec: codecWithFunctionalDecoder(),
+  });
+  return { session, ch };
+};
+
+/**
+ * The adopt identity for a run. `triggerEventId` is EMPTY so `run.located`
+ * resolves immediately (these tests isolate the visibility-wait + status-gate +
+ * owner-seed, not trigger resolution). `invocationId` is distinct (a cleanup
+ * activity's id) so the terminal stamp can be asserted.
+ * @param runId - The run to adopt.
+ * @returns The adopt identity.
+ */
+const identityFor = (runId: string): { runId: string; invocationId: string; triggerEventId: string } => ({
+  runId,
+  invocationId: `${runId}-icancel`,
+  triggerEventId: '',
+});
+
+/**
+ * Assert a promise rejects with an `Ably.ErrorInfo` of the given code whose
+ * message CONTAINS `substr` (the matcher's `message` field is exact-match only,
+ * so a substring assertion goes through the caught error).
+ * @param promise - The promise expected to reject.
+ * @param code - The expected error code.
+ * @param substr - A substring the error message must contain.
+ */
+const expectRejectsWithMessage = async (promise: Promise<unknown>, code: number, substr: string): Promise<void> => {
+  try {
+    await promise;
+  } catch (error) {
+    expect(error).toBeErrorInfoWithCode(code);
+    expect((error as Ably.ErrorInfo).message).toContain(substr);
+    return;
+  }
+  throw new Error(`expected rejection containing "${substr}"`);
+};
+
+describe('adoptRun / load()', () => {
+  it('adopts an ACTIVE run: seeds the owner, publishes NO opening event, opens for publishing', async () => {
+    const { session, ch } = adoptSession();
+    await session.connect();
+    // A foreign process already opened run-1 (run-start on the channel).
+    deliverRunStart(ch, 'run-1', { serial: 's-start-1', runClientId: 'owner-x' });
+
+    const run = session.adoptRun(identityFor('run-1'));
+    await run.load();
+
+    // load() published nothing — adopt never re-opens the run.
+    expect(ch.publishCalls.find((m) => m.name === EVENT_RUN_START)).toBeUndefined();
+    expect(ch.publishCalls.find((m) => m.name === EVENT_RUN_END)).toBeUndefined();
+
+    // The owner was seeded from the run-start's run-client-id: the terminal then
+    // stamps it (the run-end run-client-id read site, empty in a fresh process
+    // without the seed).
+    await run.end({ reason: 'complete' });
+    const endMsg = ch.publishCalls.find((m) => m.name === EVENT_RUN_END);
+    const headers = (endMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+    expect(headers?.[HEADER_RUN_CLIENT_ID]).toBe('owner-x');
+    // The terminal also carries the adopt-SUPPLIED invocationId (a cleanup
+    // activity's distinct id, e.g. I_cancel), threaded by the adopt identity
+    // through the runtime.invocationId override — the fresh-process terminal
+    // needs no endRun signature change, only the existing override.
+    expect(headers?.[HEADER_INVOCATION_ID]).toBe('run-1-icancel');
+
+    await session.close();
+  });
+
+  it('rejects loading a SUSPENDED run (resume via createRun().start())', async () => {
+    const { session, ch } = adoptSession();
+    await session.connect();
+    deliverRunStart(ch, 'run-s', { serial: 's-start-s' });
+    deliverRunTerminal(ch, EVENT_RUN_SUSPEND, 'run-s', { serial: 's-suspend-s' });
+
+    const run = session.adoptRun(identityFor('run-s'));
+    await expectRejectsWithMessage(run.load(), ErrorCode.InvalidArgument, 'suspended');
+
+    await session.close();
+  });
+
+  it('rejects loading a TERMINAL run (read-only)', async () => {
+    const { session, ch } = adoptSession();
+    await session.connect();
+    deliverRunStart(ch, 'run-t', { serial: 's-start-t' });
+    deliverRunTerminal(ch, EVENT_RUN_END, 'run-t', { serial: 's-end-t', reason: 'complete' });
+
+    const run = session.adoptRun(identityFor('run-t'));
+    await expectRejectsWithMessage(run.load(), ErrorCode.InvalidArgument, 'terminal');
+
+    await session.close();
+  });
+
+  it('visibility-waits for a late run-start, then adopts', async () => {
+    const { session, ch } = adoptSession();
+    await session.connect();
+
+    // The run-start has NOT arrived yet — load() must wait for it.
+    const run = session.adoptRun(identityFor('run-late'));
+    const loadPromise = run.load({ timeoutMs: 5000 });
+
+    // The foreign run-start folds in after load() began waiting.
+    deliverRunStart(ch, 'run-late', { serial: 's-start-late', runClientId: 'owner-late' });
+
+    await loadPromise;
+    expect(ch.publishCalls.find((m) => m.name === EVENT_RUN_START)).toBeUndefined();
+
+    // Adopted and open: end() publishes the terminal stamped with the seeded owner.
+    await run.end({ reason: 'complete' });
+    const endMsg = ch.publishCalls.find((m) => m.name === EVENT_RUN_END);
+    expect(endMsg).toBeDefined();
+    const headers = (endMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+    expect(headers?.[HEADER_RUN_CLIENT_ID]).toBe('owner-late');
+
+    await session.close();
+  });
+
+  it('times out when the run-start is never observed (retryable InputEventNotFound)', async () => {
+    vi.useFakeTimers();
+    const { session, ch } = adoptSession();
+    await session.connect();
+
+    const run = session.adoptRun(identityFor('run-missing'));
+    const loadPromise = run.load({ timeoutMs: 1000 });
+    // Attach the rejection expectation before advancing the timer so the
+    // rejection is never momentarily unhandled.
+    const expectation = expect(loadPromise).rejects.toBeErrorInfoWithCode(ErrorCode.InputEventNotFound);
+    // Flush the empty history scan, then fire the visibility-wait timeout.
+    await vi.advanceTimersByTimeAsync(1000);
+    await expectation;
+    // Nothing published — load() that never adopts publishes nothing.
+    expect(ch.publishCalls).toHaveLength(0);
+
+    await session.close();
+    vi.useRealTimers();
+  });
+
+  it('carries a failing history scan as the timeout rejection cause', async () => {
+    vi.useFakeTimers();
+    const ch = createMockChannel();
+    // The visibility-wait's history scan fails; the run-start never arrives, so
+    // the timeout must surface the fetch error as the cause.
+    ch.history.mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns a rejected promise
+      () => Promise.reject(new Ably.ErrorInfo('history offline', ErrorCode.HistoryFetchFailed, 500)),
+    );
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'adopt-cause',
+      codec: codecWithFunctionalDecoder(),
+    });
+    await session.connect();
+
+    const run = session.adoptRun(identityFor('run-cause'));
+    const loadPromise = run.load({ timeoutMs: 1000 });
+    const expectation = expect(loadPromise).rejects.toBeErrorInfo({
+      code: ErrorCode.InputEventNotFound,
+      cause: { code: ErrorCode.HistoryFetchFailed },
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    await expectation;
+
+    await session.close();
+    vi.useRealTimers();
+  });
+
+  it('an adopted run can create a step, pipe, and end WITHOUT run.start()', async () => {
+    const { session, ch } = adoptSession();
+    await session.connect();
+    deliverRunStart(ch, 'run-step', { serial: 's-start-step', runClientId: 'owner-step' });
+
+    const run = session.adoptRun(identityFor('run-step'));
+    await run.load();
+
+    // createStep() brackets output; pipe() inside the step publishes assistant
+    // output; end() closes it — all without ever calling run.start().
+    const step = run.createStep();
+    await step.start();
+    await step.pipe(streamOf({ type: 'text', text: 'a' }));
+    await step.end();
+    await run.end({ reason: 'complete' });
+
+    expect(stepHeadersOf(ch, 'ai-step-start')).toHaveLength(1);
+    expect(stepHeadersOf(ch, 'ai-step-end')).toHaveLength(1);
+    expect(ch.publishCalls.find((m) => m.name === EVENT_RUN_END)).toBeDefined();
+    // Adopt never publishes an opening event.
+    expect(ch.publishCalls.find((m) => m.name === EVENT_RUN_START)).toBeUndefined();
+
+    await session.close();
+  });
+
+  it('a fresh-process step re-derives the prior step client from the hydrated channel (cross-process stickiness)', async () => {
+    // The cross-process headline: a fresh adopting process has NO in-memory
+    // step cursor and (with no resolved input publisher) NO input client — so
+    // the ONLY source for the new step's client is the channel. A prior step of
+    // this run (published by another process, client 'user-prior') is hydrated
+    // off the channel into the Tree; the new step must INHERIT 'user-prior'
+    // from it rather than reset to the empty default.
+    const { session, ch } = adoptSession();
+    await session.connect();
+    deliverRunStart(ch, 'run-xproc', { serial: 's-start-xproc', runClientId: 'owner-xproc' });
+    // A prior step from another process, carrying its step-client-id.
+    deliverStepStart(ch, 'run-xproc', {
+      stepId: 'prior-step',
+      serial: 's-prior-step',
+      stepClientId: 'user-prior',
+    });
+
+    const run = session.adoptRun(identityFor('run-xproc'));
+    await run.load();
+
+    // A NEW step with no explicit client and no fresh input: stickiness is
+    // re-derived from the channel, NOT reset to the default.
+    const step = run.createStep({ stepId: 'next-step' });
+    await step.start();
+    await step.pipe(streamOf({ type: 'text', text: 'a' }));
+    await step.end();
+
+    const starts = stepHeadersOf(ch, 'ai-step-start');
+    const newStart = starts.find((h) => h[HEADER_STEP_ID] === 'next-step');
+    expect(newStart?.[HEADER_STEP_CLIENT_ID]).toBe('user-prior');
+    // run-client-id is the adopt-seeded owner, read LIVE from the run manager
+    // (seeded from the hydrated run-start), distinct from the re-derived step
+    // client — proving a fresh process stamps the channel owner, not a local.
+    expect(newStart?.[HEADER_RUN_CLIENT_ID]).toBe('owner-xproc');
+    // The new step's end also carries the re-derived client (sticky from the
+    // cursor the resolution just set).
+    const ends = stepHeadersOf(ch, 'ai-step-end');
+    const newEnd = ends.find((h) => h[HEADER_STEP_ID] === 'next-step');
+    expect(newEnd?.[HEADER_STEP_CLIENT_ID]).toBe('user-prior');
+
+    await session.close();
+  });
+
+  it('rejects load() on a run cancelled before load()', async () => {
+    const { session, ch } = adoptSession();
+    await session.connect();
+    deliverRunStart(ch, 'run-cx', { serial: 's-start-cx' });
+
+    const controller = new AbortController();
+    controller.abort();
+    const run = session.adoptRun(identityFor('run-cx'), { signal: controller.signal });
+    await expect(run.load()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+
+    await session.close();
+  });
+
+  it('pages history for a trigger older than a live run-start, without caller pre-paging', async () => {
+    // The page-split hazard: with a real triggerEventId, the trigger (`ai-input`)
+    // is OLDER than the run-start. Here the run-start arrives LIVE (so its
+    // startSerial is confirmed immediately) but the trigger sits only in channel
+    // history. The input-event watcher is passive, so load() must drive the
+    // hydrator far enough back to fold the trigger and resolve `located` — if its
+    // visibility-wait stopped at the (already-confirmed) run-start it would hang
+    // forever on `await located`. No caller pre-paging.
+    const ch = createMockChannel();
+    // The trigger lives in channel history (older than the live run-start), so a
+    // history scan must fold it for `located` to resolve.
+    const triggerWire = {
+      name: 'text',
+      serial: 's-trigger-hist',
+      clientId: 'user-hist',
+      extras: {
+        ai: {
+          transport: {
+            [HEADER_ROLE]: 'user',
+            [HEADER_INVOCATION_ID]: 'run-hist-icancel',
+            [HEADER_CODEC_MESSAGE_ID]: 'u-hist',
+            [HEADER_EVENT_ID]: 'trigger-hist',
+          },
+        },
+      },
+      version: { serial: 's-trigger-hist' },
+    } as unknown as Ably.InboundMessage;
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises -- mock returns Promise directly
+    ch.history.mockImplementation(singlePageHistory([triggerWire]));
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'adopt-pagesplit',
+      codec: codecWithFunctionalDecoder(),
+    });
+    await session.connect();
+
+    // A NON-empty triggerEventId — the trigger must be located off the channel.
+    const run = session.adoptRun({
+      runId: 'run-hist',
+      invocationId: 'run-hist-icancel',
+      triggerEventId: 'trigger-hist',
+    });
+    // The run-start folds LIVE (startSerial confirmed at once); only the trigger
+    // requires paging.
+    deliverRunStart(ch, 'run-hist', { serial: 's-start-hist', runClientId: 'owner-hist' });
+
+    // load() resolves by paging to the trigger itself — it does NOT hang.
+    await run.load({ timeoutMs: 5000 });
+
+    // Adopted and open: the trigger was located (run.view pinned) and the owner
+    // seeded, so the terminal stamps the hydrated owner.
+    await run.end({ reason: 'complete' });
+    const endMsg = ch.publishCalls.find((m) => m.name === EVENT_RUN_END);
+    const headers = (endMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+    expect(headers?.[HEADER_RUN_CLIENT_ID]).toBe('owner-hist');
+    expect(ch.publishCalls.find((m) => m.name === EVENT_RUN_START)).toBeUndefined();
+
+    await session.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Opening latch — synchronous re-entrancy guard on start() / load()
+//
+// The opening verb sets `open = true` only AFTER its awaits (located + publish /
+// adopt). A synchronous `opening` latch, set before the first await, closes the
+// window where two overlapping calls would otherwise both fall through and
+// double-publish run-start (start) or double-seed the owner (load).
+// ---------------------------------------------------------------------------
+
+/**
+ * Spy on `createRunManager` so the next session built captures its run manager
+ * and a `registerRun` spy on it. Installed BEFORE `createAgentSession` so the
+ * session's own manager is the spied instance.
+ * @returns The captured-manager accessor and the registerRun spy holder.
+ */
+const spyRunManager = (): {
+  registerRunSpy: () => ReturnType<typeof vi.fn> | undefined;
+  restore: () => void;
+} => {
+  let spy: ReturnType<typeof vi.fn> | undefined;
+  const orig = runManagerModule.createRunManager;
+  const createSpy = vi.spyOn(runManagerModule, 'createRunManager').mockImplementation((channel, logger): RunManager => {
+    const manager = orig(channel, logger);
+    spy = vi.fn(manager.registerRun.bind(manager));
+    manager.registerRun = spy as unknown as RunManager['registerRun'];
+    return manager;
+  });
+  return {
+    registerRunSpy: () => spy,
+    restore: (): void => {
+      createSpy.mockRestore();
+    },
+  };
+};
+
+describe('opening latch (concurrent re-entrancy)', () => {
+  it('two overlapping start() calls publish EXACTLY ONE ai-run-start', async () => {
+    const { session, ch } = adoptSession();
+    await session.connect();
+    const run = createRunFromOpts(session, { runId: 'run-conc-start' });
+
+    // Fire both without awaiting the first: the second must observe the latch
+    // (set synchronously before the located wait) and no-op rather than re-publish.
+    const a = run.start();
+    const b = run.start();
+    await Promise.all([a, b]);
+
+    expect(ch.publishCalls.filter((m) => m.name === EVENT_RUN_START)).toHaveLength(1);
+
+    await session.close();
+  });
+
+  it('two overlapping load() calls seed the owner EXACTLY ONCE', async () => {
+    const { registerRunSpy, restore } = spyRunManager();
+    const ch = createMockChannel();
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises -- mock returns Promise directly
+    ch.history.mockImplementation(singlePageHistory([]));
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'adopt-conc',
+      codec: codecWithFunctionalDecoder(),
+    });
+    await session.connect();
+    deliverRunStart(ch, 'run-conc-load', { serial: 's-start-conc', runClientId: 'owner-conc' });
+
+    const run = session.adoptRun(identityFor('run-conc-load'));
+    const a = run.load();
+    const b = run.load();
+    await Promise.all([a, b]);
+
+    // The latch let exactly one call run the adopt body: one owner seed.
+    expect(registerRunSpy()).toHaveBeenCalledTimes(1);
+    expect(registerRunSpy()).toHaveBeenCalledWith('run-conc-load', 'owner-conc', expect.anything());
+
+    // Adopted and open: end() publishes one terminal stamped with the owner.
+    await run.end({ reason: 'complete' });
+    const endMsg = ch.publishCalls.find((m) => m.name === EVENT_RUN_END);
+    const headers = (endMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+    expect(headers?.[HEADER_RUN_CLIENT_ID]).toBe('owner-conc');
+
+    await session.close();
+    restore();
+  });
+
+  it('sequential load() is idempotent: the second call is a no-op', async () => {
+    const { registerRunSpy, restore } = spyRunManager();
+    const ch = createMockChannel();
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises -- mock returns Promise directly
+    ch.history.mockImplementation(singlePageHistory([]));
+    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+      client: createMockClient(ch),
+      channelName: 'adopt-idem',
+      codec: codecWithFunctionalDecoder(),
+    });
+    await session.connect();
+    deliverRunStart(ch, 'run-idem', { serial: 's-start-idem', runClientId: 'owner-idem' });
+
+    const run = session.adoptRun(identityFor('run-idem'));
+    await run.load();
+    await run.load();
+
+    // The second load() did not re-seed the owner; status is unchanged (active).
+    expect(registerRunSpy()).toHaveBeenCalledTimes(1);
+    expect(run.status).toBe('active');
+
+    await session.close();
+    restore();
   });
 });

@@ -74,6 +74,16 @@ export enum ErrorCode {
   StreamError = 104008,
 
   /**
+   * A fresh process adopting an open run via {@link AdoptedRun.load} waited for
+   * that run's `ai-run-start` to be observed on the channel — across the live
+   * subscription and the bounded history scan — but the `timeoutMs` bound lapsed
+   * (or the channel exhausted) without seeing it. Retryable: a workflow-ordering
+   * error where the open activity's run-start has not yet propagated. Any
+   * history-fetch failure is preserved as `cause`.
+   */
+  InputEventNotFound = 104010,
+
+  /**
    * Channel history pagination failed after bounded retry — either the initial
    * `channel.history()` call or a subsequent `page.next()` exhausted its
    * retry budget. The original failure is preserved as `cause`.

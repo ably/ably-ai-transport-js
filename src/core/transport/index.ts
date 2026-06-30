@@ -1,5 +1,7 @@
 // Shared types
 export type {
+  AdoptedRun,
+  AdoptIdentity,
   AgentRun,
   AgentSession,
   AgentSessionOptions,
@@ -12,6 +14,7 @@ export type {
   ClientView,
   ConversationNode,
   InputNode,
+  OpenableRun,
   OutputEvent,
   PipeOptions,
   RunEndParams,

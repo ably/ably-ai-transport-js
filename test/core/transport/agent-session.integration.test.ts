@@ -648,8 +648,9 @@ describe('AgentSession integration', () => {
     const result = await streamPromise;
     expect(result.reason).toBe('cancelled');
     expect(run.abortSignal.aborted).toBe(true);
-    // The pipe's safety-net already ended the run cancelled; a developer end()
-    // here no-ops via the publish-time terminal re-check (no second run-end).
+    // The cancelled pipe closed its implicit step `cancelled` but published NO
+    // run terminal (pipe never auto-ends); the developer's run.end is the sole
+    // ai-run-end (its auto-close of the already-closed step is a no-op).
     await run.end({ reason: 'cancelled' });
 
     await gotEnd;
@@ -668,6 +669,73 @@ describe('AgentSession integration', () => {
       expect(getHeaders(stepEnd)[HEADER_STEP_REASON]).toBe('cancelled');
       expect(getHeaders(runEnd)[HEADER_RUN_REASON]).toBe('cancelled');
     }
+  });
+
+  it('a cancelled in-flight pipe publishes no run terminal; session.end() ends the open run cancelled', async () => {
+    // The Theme-2 onion over real Ably: a cancelled run.pipe closes its step
+    // bracket but publishes NO ai-run-end (pipe never auto-ends). A forgotten
+    // run.end() then leaves the run open — session.end() is the graceful teardown
+    // backstop, publishing the sole ai-run-end{cancelled} (step-end before it).
+    const channelName = uniqueChannelName('st-cancel-sessionend');
+    const serverClient = ablyRealtimeClient();
+    const cancelClient = ablyRealtimeClient();
+    const cancelChannel = cancelClient.channels.get(channelName);
+    const subClient = ablyRealtimeClient();
+    const subChannel = subClient.channels.get(channelName);
+
+    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+      client: serverClient,
+      channelName,
+      codec: UIMessageCodec,
+    });
+    await session.connect();
+
+    const wireMessages: Ably.InboundMessage[] = [];
+    let resolveStepEnd: () => void;
+    const gotStepEnd = new Promise<void>((r) => {
+      resolveStepEnd = r;
+    });
+    await subChannel.subscribe((msg) => {
+      wireMessages.push(msg);
+      if (msg.name === EVENT_STEP_END) resolveStepEnd();
+    });
+
+    const run = createRunFromOpts(session, { runId: 'run-cancel-se' });
+    await run.start();
+
+    const stream = new ReadableStream<VercelOutput>({
+      start: (ctrl) => {
+        ctrl.enqueue({ type: 'start', messageId: 'msg-cancel-se-1' });
+        ctrl.enqueue({ type: 'start-step' });
+        ctrl.enqueue({ type: 'text-start', id: 'text-cancel-se-1' });
+        ctrl.enqueue({ type: 'text-delta', id: 'text-cancel-se-1', delta: 'Partial...' });
+      },
+    });
+
+    const streamPromise = run.pipe(stream);
+    await new Promise((r) => setTimeout(r, 500));
+
+    await cancelChannel.publish({
+      name: EVENT_CANCEL,
+      extras: { ai: { transport: { [HEADER_RUN_ID]: 'run-cancel-se' } } },
+    });
+
+    const result = await streamPromise;
+    expect(result.reason).toBe('cancelled');
+    // The step bracket closed cancelled, but pipe published NO run terminal —
+    // the run is still open (a forgotten run.end).
+    await gotStepEnd;
+    await new Promise((r) => setTimeout(r, 500));
+    expect(wireMessages.filter((m) => m.name === EVENT_RUN_END)).toHaveLength(0);
+
+    // session.end() is the graceful teardown backstop: it ends the still-open run
+    // cancelled, publishing the sole ai-run-end{cancelled}.
+    await session.end();
+    await new Promise((r) => setTimeout(r, 500));
+    const runEnds = wireMessages.filter((m) => m.name === EVENT_RUN_END);
+    expect(runEnds).toHaveLength(1);
+    const [sessionRunEnd] = runEnds;
+    if (sessionRunEnd) expect(getHeaders(sessionRunEnd)[HEADER_RUN_REASON]).toBe('cancelled');
   });
 
   it('handles sequential runs', async () => {

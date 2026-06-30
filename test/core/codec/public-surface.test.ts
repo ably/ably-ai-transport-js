@@ -1,6 +1,8 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import type {
+  AdoptedRun,
+  AdoptIdentity,
   BatchSpec,
   CodecEvent,
   DataCodec,
@@ -9,6 +11,7 @@ import type {
   InputDescriptor,
   InputEventSpec,
   LifecyclePolicy,
+  OpenableRun,
   OutputBuilder,
   OutputDescriptor,
   OutputEventSpec,
@@ -76,5 +79,19 @@ describe('public codec-authoring surface', () => {
     // seam, so both must carry it on the public surface.
     expectTypeOf<StepInfo>().toHaveProperty('stepClientId').toEqualTypeOf<string | undefined>();
     expectTypeOf<StepOptions>().toHaveProperty('stepClientId').toEqualTypeOf<string | undefined>();
+  });
+
+  // The run-adoption surface (durable cross-process execution) is public too:
+  // adoptRun returns an AdoptedRun, createRun an OpenableRun, and adoptRun takes
+  // an AdoptIdentity. All must be importable from the entry point, like the step
+  // vocabulary above.
+  it('exports the run-adoption types', () => {
+    interface Output {
+      type: 'note';
+      text: string;
+    }
+    expectTypeOf<AdoptIdentity>().not.toBeNever();
+    expectTypeOf<AdoptedRun<Output, unknown, unknown>>().not.toBeNever();
+    expectTypeOf<OpenableRun<Output, unknown, unknown>>().not.toBeNever();
   });
 });

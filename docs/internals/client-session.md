@@ -1,6 +1,6 @@
 # Client session
 
-The client session (`src/core/transport/client-session.ts`) manages the full client-side conversation lifecycle over a single Ably channel. It composes a [conversation tree](conversation-tree.md) and codec [decoder](decoder.md) to handle receiving streamed responses and managing conversation state. Write operations (`send`, `regenerate`, `edit`) live on the View, which delegates to the session's internal send machinery.
+The client session (`src/core/transport/client-session.ts`) manages the full client-side conversation lifecycle over a single Ably channel. It composes a [conversation tree](conversation-tree.md) and codec [decoder](decoder.md) to handle receiving streamed responses and managing conversation state. Write operations (`send`, `regenerate`, `edit`) live on the [ClientView](glossary.md#view-clientview-and-branchsource), which delegates to the session's internal send machinery.
 
 The client publishes user messages directly to the channel via the shared codec encoder. It does **not** send HTTP — the core session is a pure Ably-channel transport. Waking an agent is the application's concern: it POSTs `run.toInvocation().toJSON()` to its own endpoint if and when it wants one woken (the Vercel [chat transport](chat-transport.md) does this automatically for `useChat` parity). The agent locates the triggering input event by its `event-id` header (channel rewind + live subscribe), mints the `invocation-id` itself (one per HTTP request), and publishes [run lifecycle events](wire-protocol.md#lifecycle-events) plus assistant chunks. The channel is the durable session record — agents that weren't running at publish time can resume by reading channel rewind.
 
@@ -9,14 +9,15 @@ The client publishes user messages directly to the channel via the shared codec 
 ```
 DefaultClientSession
 ├── Tree                   - node-keyed conversation forest; owns per-node TProjection via codec.fold
-├── View(s)                - wraps tree with pagination, selection, 'update' events, and write ops
+├── ClientView(s)          - navigable/writable view over the tree: pagination, branch selection,
+│                            'update' events, and the write path (send/regenerate/edit)
 ├── Decoder                - decodes inbound Ably messages to codec events
 ├── Encoder                - shared encoder; publishInput on the ai-input wire
 ├── EventEmitter           - typed event bus for the 'error' event
 └── pending run-start trackers - resolve ActiveRun.runId on the matching ai-run-start
 ```
 
-The session owns a default `view` plus any further views created via `createView()`, all sharing the one Tree.
+The session owns a default `view` plus any further views created via `createView()`, all sharing the one Tree. Each is a [ClientView](glossary.md#view-clientview-and-branchsource) - the read-only [View](glossary.md#view-clientview-and-branchsource) base (`getMessages`, pagination, scoped events) extended with branch navigation and the write path. A ClientView walks the whole-tree branch via an injected [BranchSource](glossary.md#view-clientview-and-branchsource); the agent's leaf-pinned `run.view` reuses the same View base with a different BranchSource.
 
 The Tree keys each node by its primary key — `codec-message-id` for a user [input node](conversation-tree.md), the agent-minted `runId` for a reply run — and owns the per-node codec projection. Inbound events flow directly into `tree.applyMessage()`, which folds them into the owning node's projection and surfaces decoded outputs on the tree's `output` event. The session keeps only the bookkeeping it needs locally: pending run-start trackers keyed by the triggering input's `codec-message-id`.
 

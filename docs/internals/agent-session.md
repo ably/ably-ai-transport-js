@@ -78,6 +78,12 @@ Publishes `ai-run-end` to the channel and unregisters the run from cancel routin
 
 Publishes `ai-run-suspend` instead of `ai-run-end`, pausing the run without ending it - call this when the run is awaiting participant input (a client-side tool execution or a server-side tool approval). The run stays live so a later invocation can resume it under the same `runId`. The suspend carries the same per-invocation attribution as `end()` (`invocation-id`, `input-client-id`, `input-codec-message-id`). The run manager drops the run from cancel routing on suspend - the agent process terminates, so a cancel arriving during suspension is a no-op and the resuming invocation re-registers the run. Like `end()`, it is terminal for this Run instance (a fresh Run handles the resume) and is a no-op if the run has already ended or suspended.
 
+## Run view
+
+Each run exposes `run.view` - a read-only [View](glossary.md#view-clientview-and-branchsource) over the session's materialisation Tree, the same read base the client surfaces as `session.view`. The difference is the injected [BranchSource](glossary.md#view-clientview-and-branchsource): the agent's run.view uses a `LeafBranchSource` pinned to this run's branch, walking `parentCodecMessageId` edges back from the triggering input's leaf. Branch choice is implicit-by-parent-walk - there is no sibling-selection map and no write path, so run.view exposes the read surface only (`getMessages`, `runs`, `hasOlder`, `loadOlder`, `loadUntil`).
+
+The agent reads ancestor history by paging run.view back: `while (run.view.hasOlder()) await run.view.loadOlder()`, then `run.view.getMessages()` yields the full branch oldest-to-newest. Paging drives the session's shared [history hydrator](history.md) - the single-flight cursor that the input-event lookup also uses - so the channel is walked once even when the lookup and the ancestor drain overlap. `run.view` closes when the run is removed from the session's routing maps.
+
 ## Cancel routing
 
 The agent session handles cancel messages directly - no separate cancel manager. See [Transport components: cancel routing](transport-components.md#cancel-routing-agent-session) for the lookup and handler-isolation rules.

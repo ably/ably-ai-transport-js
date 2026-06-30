@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
+import { Loader2Icon } from 'lucide-react';
 import type { UIMessage } from 'ai';
 import type { BranchHandle, CodecMessage, RunInfo } from '@ably/ai-transport';
 import {
@@ -19,6 +20,16 @@ import { IntroCard } from './intro-card';
 interface ViewLookupApi {
   branchSelection: (codecMessageId: string) => BranchHandle<UIMessage>;
   runOf: (codecMessageId: string) => RunInfo | undefined;
+}
+
+// Quiet spinner shown while an older history page is loading.
+function LoadingHistory() {
+  return (
+    <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
+      <Loader2Icon className="size-3.5 animate-spin" />
+      Loading history…
+    </div>
+  );
 }
 
 interface MessageListProps {
@@ -84,7 +95,7 @@ export function MessageList({
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
         <IntroCard />
         {loading ? (
-          <div className="animate-pulse text-center text-xs text-muted-foreground">Loading history...</div>
+          <LoadingHistory />
         ) : (
           <p className="mt-20 text-center text-sm text-muted-foreground">Send a message to start chatting.</p>
         )}
@@ -122,9 +133,7 @@ export function MessageList({
                 </Button>
               </div>
             )}
-            {loading && (
-              <div className="animate-pulse text-center text-xs text-muted-foreground">Loading history...</div>
-            )}
+            {loading && <LoadingHistory />}
 
             {messages.map(({ codecMessageId, message }) => {
               // Project the owning Run + branch-selection bundle into primitives

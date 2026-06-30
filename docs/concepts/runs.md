@@ -47,6 +47,23 @@ Alongside `messages`, every run - on the client and the server - exposes the sam
 
 Pass `reason` to `end()` so all clients see why the run ended. To give clients specific detail for a run that ends in `error`, you can optionally pass an `Ably.ErrorInfo`: `run.end({ reason: 'error', error: new Ably.ErrorInfo(message, code, statusCode) })`.
 
+#### Durable, cross-process runs
+
+`createRun().start()` opens and drives a run in one process — the right shape for a provisioned server or a single serverless invocation. A run's lifecycle can also span several processes under one stable `runId`, which is what a durable-execution framework (Vercel Workflow DevKit, Temporal) needs: it runs each step / end / cancel-cleanup as an independently-retried activity in its own process.
+
+A fresh process continues an already-open run by adopting it rather than re-opening it:
+
+```ts
+const run = session.adoptRun({ runId, invocationId, triggerEventId });
+await run.load(); // resolves the run's context off the channel; publishes no opening event
+const step = run.createStep({ stepId }); // a stable stepId makes a retry supersede, not append
+await step.start();
+await step.pipe(stream);
+await step.end();
+```
+
+`adoptRun(identity)` returns an `AdoptedRun` whose `load()` waits for the run's `ai-run-start` to be observed on the channel, adopts the run for publishing **without** republishing an opening event, and seeds the run owner so this process's output and terminal stamp the real `run-client-id`. The `AdoptIdentity.runId` you pass to `adoptRun(identity)` is the existing run's id (authoritative — the adopt path ignores `RunRuntime.runId` and never re-keys from the trigger). A stable `StepOptions.stepId` makes a step retry supersede the dead attempt's output instead of appending it — a re-emitted `ai-step-start` under the same `stepId` carries a later channel serial, so the latest-serial attempt is canonical (no developer-supplied attempt id is needed). There is no durable flag: the durable behaviour is a usage pattern. At teardown an in-flight activity hands the still-open run off with `session.close()` (detach only, no terminal), and a separate cleanup activity publishes the terminal with an explicit `run.end({ reason: 'cancelled' })`. See [Agent session: durable cross-process execution](../internals/agent-session.md#durable-cross-process-execution).
+
 ### Client side
 
 The client creates runs implicitly when you call `view.send()`, `view.regenerate()`, or `view.edit()`:

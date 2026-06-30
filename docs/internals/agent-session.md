@@ -2,11 +2,16 @@
 
 The agent session (`src/core/transport/agent-session.ts`) handles the server-side run lifecycle over an Ably channel. It composes a [RunManager](transport-components.md#runmanager) for run state and lifecycle event publishing, and delegates stream piping to [pipeStream](transport-components.md#pipestream).
 
-The session exposes a single factory method - `createRun()` - which returns a `Run` object with explicit lifecycle methods: `start()`, `pipe()`, `suspend()`, and `end()`.
+The session exposes two run-construction factories that share one common publishable surface (`pipe()`, `createStep()`, `suspend()`, `end()`) built by a single internal run-object builder parameterised by an opening strategy:
+
+- `createRun()` returns an `OpenableRun` whose `start()` **opens** a new run by publishing the opening lifecycle event (`ai-run-start`, or `ai-run-resume` for a continuation).
+- `adoptRun()` returns an `AdoptedRun` whose `load()` **adopts** an already-open run for publishing in a fresh process **without** publishing an opening event — the durable cross-process seam (see [Durable cross-process execution](#durable-cross-process-execution)).
+
+The opening verb is factory-specific, so calling `load()` on a created run, or `start()` on an adopted run, is a compile error.
 
 ## Construction and connect
 
-`createAgentSession()` is synchronous and does no channel I/O - it constructs the [RunManager](transport-components.md#runmanager) bound to the channel and returns. Callers must `await session.connect()` before `createRun()` or any run-lifecycle method; otherwise those methods throw `InvalidArgument`.
+`createAgentSession()` is synchronous and does no channel I/O - it constructs the [RunManager](transport-components.md#runmanager) bound to the channel and returns. Callers must `await session.connect()` before `createRun()` / `adoptRun()` or any run-lifecycle method; otherwise those methods throw `InvalidArgument`.
 
 `connect()`:
 
@@ -97,6 +102,27 @@ The agent reads ancestor history by paging run.view back: `while (run.view.hasOl
 
 `run` exposes the same `BaseRun` [read-model](glossary.md#run-read-model-baserun) the client's run does - `runId`, `status`, `error`, and `messages` (this run's whole contribution: its originating input plus all of its output across every suspend/resume segment) - read live off the Tree via getter accessors rather than snapshotted. The agent run (`AgentRun`) adds `view` and `located` on top; the client run (`ClientRun`) adds the send handle and the `started` promise. Sharing one base keeps the two run surfaces consistent.
 
+## Durable cross-process execution
+
+A run's lifecycle can span several processes under one stable `runId`. One process opens the run with `createRun(...).start()`; a separate process — a step, end, or cancel-cleanup activity of a durable workflow (Vercel Workflow DevKit, Temporal), each retried independently — continues it with `session.adoptRun(identity).load()`, then publishes steps / `suspend` / `end` **without** republishing `ai-run-start`.
+
+The publish methods gate on whether the run is **open** — a flag set by `start()` _or_ an adopting `load()` — rather than on "was `start()` called on this instance", so a fresh process that adopted the run can publish onto it. A publish-time re-check of the run's status backstops a run that went terminal since it opened (e.g. a concurrent cancel cleanup): a publish onto an already-terminal run is rejected (`pipe` / `createStep`) or no-ops (`suspend` / `end`).
+
+`adoptRun(identity, runtime?)` takes an `AdoptIdentity` — `{ runId, invocationId, triggerEventId }` — that the orchestration threads across the process boundary; the run object itself never crosses processes (its read-model is reconstructible from the channel). The identity is **authoritative**: unlike `start()`'s continuation path, `load()` does not re-key the run from the trigger event's `run-id` header (for a delegation trigger that header names the _parent_ run). `load(options?)`:
+
+1. **Waits (bounded by `options.timeoutMs`, default 30 000 ms) for the run's `ai-run-start` to be observed** so its `startSerial` is confirmed on the Tree. The opener's optimistic run-node insert is local to its own process, so a fresh process's Tree is empty until it pages the run-start off channel history. The bound is composed _into_ the single history fold via a timeout-abort signal (not a `Promise.race` around the fold, which would leave it paging and holding the shared single-flight history cursor, starving concurrent runs). On the timeout — or channel exhaustion without the run-start — it rejects with `InputEventNotFound` (retryable: a workflow-ordering error where the open activity's run-start has not yet propagated), carrying any history-fetch failure as `cause`.
+2. **Awaits the trigger** (`run.located`) so the watcher has resolved the run's write anchors and pinned `run.view`.
+3. **Status-gates** (now `startSerial` is confirmed, so the read sees the hydrated status rather than the unhydrated `'active'` default): an `active` run is adopted; a `suspended` run is rejected (resume it via `createRun().start()` instead); a terminal run is rejected (read-only).
+4. **Seeds the run owner** into the run manager from the run-start's `run-client-id`, so this process's output _and_ its terminal stamp the real owner even though it never opened the run.
+5. **Opens for publishing** — without publishing any opening event.
+
+`load()` is idempotent (a synchronous re-entrancy latch makes a second overlapping call a no-op rather than a double owner-seed) and may fire the run's `AbortSignal` before returning if a cancel for the run already arrived. The run is registered for cancel routing by its authoritative `runId` the moment `adoptRun()` is called, so a cancel keyed by that `run-id` fires the signal directly — the adopt path needs no deferred-cancel buffering (that buffer exists only for a fresh run, whose `runId` the client cannot know at cancel time).
+
+There is no durable flag. The cross-process retry safety a workflow needs is a usage pattern, not a run option:
+
+- **A stable `stepId` per step.** A fresh-process step retry re-emits its `ai-step-start` under the same `StepOptions.stepId` (a new channel serial), so the latest-serial attempt is canonical and the dead attempt's output is gated out. Supplying a stable `stepId` is how cross-process supersession works; the process-local default id would mint a different id per process and double-output, so a durable step must pass one (the deferred durable helper supplies it by construction).
+- **`session.close()` vs `session.end()` at teardown.** `pipe` never auto-ends its run, so a cancel mid-step closes only the step bracket. An in-flight activity hands the still-open run off with `session.close()` (detach only, no terminal), and a separate cleanup activity is the sole publisher of `ai-run-end{cancelled}` via an explicit `run.end({ reason: 'cancelled' })`. A publish-time status re-check backstops the window where the in-flight arm and the cleanup arm are both live: a publish onto a run whose terminal has already folded is rejected (`pipe` / `createStep`) or no-ops (`suspend` / `end`).
+
 ## Cancel routing
 
 The agent session handles cancel messages directly - no separate cancel manager. See [Transport components: cancel routing](transport-components.md#cancel-routing-agent-session) for the lookup and handler-isolation rules.
@@ -114,9 +140,13 @@ The agent session monitors the channel for continuity loss after the initial att
 
 Unlike the [client session's handling](client-session.md#delivery-guarantee), the agent does not cancel in-flight runs or fan out to per-run `onError`. The agent only consumes cancel messages from the channel, so losing one is survivable; the signal is observability so developers can choose whether to terminate in-flight work themselves (e.g. by aborting their external signals). Per-run `onError` remains scoped to that run's own operations.
 
+## End
+
+`end()` is the graceful teardown — the onion one layer up from `run.end()`, so `session.end -> run.end -> step.end`. For every still-**open** run the session owns it publishes `ai-run-end{cancelled}`, closing that run's open step first (via `run.end`'s existing auto-close, so the `ai-step-end` precedes the `ai-run-end` on the wire). It then does everything `close()` does (detach + abort). An open run ends `{cancelled}` — not `complete` (would falsely mark an unfinished turn done), not `suspend` (hangs observers with no resumer — preserve-for-resume is `close()`'s job), not `error`. This is the normal teardown for a non-durable agent: it also backstops a forgotten `run.end()` (a fire-and-forget turn) so no observer is left stuck `streaming` — `pipe` does not itself end the run, so the run terminal is always the caller's (`run.end()`, or this `end()`). Each run's terminal is best-effort — one run's publish failure is surfaced via the session `onError` and does not block the others or the detach. A run already ended explicitly is gone from the registry, so `end()` does not re-terminate it; an unopened run (created/adopted but never started/loaded) has nothing on the wire to terminate, so its hook no-ops while the detach still aborts it. Idempotent.
+
 ## Close
 
-`close()` unsubscribes the channel listener, stops listening for channel state changes, aborts all registered runs (via their `AbortController`s), clears the routing maps (registered runs, the `input-codec-message-id → run-id` index, and deferred cancels), and closes the RunManager. It then detaches the channel the session attached — best-effort and only when the session had connected (a detach failure is swallowed and logged at debug) — and returns a promise that resolves once the detach completes, so a serverless agent can `await session.close()` for a graceful teardown before the function returns. It does **not** close the injected Ably client — the caller owns its lifecycle. It is idempotent. After close, existing Run objects can still call `end()` (to publish run-end), since publishing is independent of the subscription.
+`close()` is the detach-only teardown. It unsubscribes the channel listener, stops listening for channel state changes, aborts all registered runs (via their `AbortController`s), clears the routing maps (registered runs, the `input-codec-message-id → run-id` index, and deferred cancels), and closes the RunManager. It publishes **no run terminal** — an open run is left as-is on the channel, to be resumed or cleaned up by another process; this is the escape hatch a durable in-flight activity uses to hand a run off mid-sequence (for graceful teardown that closes open runs, use `end()`). It then detaches the channel the session attached — best-effort and only when the session had connected (a detach failure is swallowed and logged at debug) — and returns a promise that resolves once the detach completes, so a serverless agent can `await session.close()` before the function returns. It does **not** close the injected Ably client — the caller owns its lifecycle. It is idempotent. After close, existing Run objects can still call `end()` (to publish run-end), since publishing is independent of the subscription.
 
 ## Error handling
 

@@ -56,13 +56,14 @@ const run = await view.send(userMessage);
 
 // run.inputCodecMessageId - the triggering input's codec-message-id; the
 //              synchronous routing handle the client owns the moment it publishes
-// run.runId  - a promise; resolves to the agent-minted run id once ai-run-start
-//              is observed on the channel
+// run.started - a promise; resolves once the agent's ai-run-start is observed,
+//              after which run.runId holds the agent-minted run id
+// run.runId  - the agent-minted run id (string), empty until run-start is observed
 // run.cancel() - cancel this specific run
 // run.toInvocation() - the pointer to POST to your agent endpoint
 ```
 
-The returned `ActiveRun` gives you the run's identity and a cancel handle. The agent mints the run id now, so it is not known synchronously: `run.runId` is a promise that resolves once the agent's `ai-run-start` is observed. The synchronous handle is `run.inputCodecMessageId` — the triggering input's `codec-message-id`, which the client owns the instant it publishes and which keys stream routing and cancellation. `send()` resolves as soon as your input is published to the channel — it does **not** send HTTP or block on the agent. Decoded outputs are observed on the conversation tree's `output` event (or, more usually, via the view) — see [Token streaming](../features/streaming.md). To wake a serverless agent, POST the run's invocation pointer to your endpoint yourself:
+The returned `ClientRun` gives you the run's identity and a cancel handle. The agent mints the run id now, so it is not known synchronously: `run.runId` is a string that stays empty until the agent's `ai-run-start` is observed — `await run.started` to wait for that, then read `run.runId`. The synchronous handle is `run.inputCodecMessageId` — the triggering input's `codec-message-id`, which the client owns the instant it publishes and which keys stream routing and cancellation. `send()` resolves as soon as your input is published to the channel — it does **not** send HTTP or block on the agent. Decoded outputs are observed on the conversation tree's `output` event (or, more usually, via the view) — see [Token streaming](../features/streaming.md). To wake a serverless agent, POST the run's invocation pointer to your endpoint yourself:
 
 ```typescript
 const run = await view.send(userMessage);
@@ -75,14 +76,15 @@ await fetch('/api/chat', {
 
 `run.toInvocation()` carries only the `inputEventId` and `sessionName` — no `runId`, since run identity lives on the channel. The agent reads the conversation from the channel and mints the `invocationId` and the `runId` for a fresh run — or reads a continuation's `runId` off the triggering input event — returning them on the response. The streamed output is available immediately from the channel subscription, not from the HTTP response. (With the Vercel `useChat` integration the chat transport issues this POST for you.)
 
-If you need the agent-minted run id, or to know when the agent has actually picked up the run, await `run.runId`: it resolves to the run id when the agent's `ai-run-start` for this send is observed, and rejects only if the session is closed first. There is no built-in deadline — race it against your own timeout if you want to bound the wait:
+If you need the agent-minted run id, or to know when the agent has actually picked up the run, await `run.started`: it resolves when the agent's `ai-run-start` for this send is observed (then read the id from `run.runId`), and rejects only if the session is closed first. There is no built-in deadline — race it against your own timeout if you want to bound the wait:
 
 ```typescript
 const run = await view.send(userMessage);
-const runId = await Promise.race([
-  run.runId,
-  new Promise<string>((_, reject) => setTimeout(() => reject(new Error('agent did not start in time')), 30_000)),
+await Promise.race([
+  run.started,
+  new Promise<never>((_, reject) => setTimeout(() => reject(new Error('agent did not start in time')), 30_000)),
 ]);
+const runId = run.runId; // the agent-minted id, now populated
 ```
 
 ## Run lifecycle events
@@ -128,7 +130,7 @@ await Promise.all([
 ]);
 ```
 
-On the client, each `send()` call returns its own `ActiveRun`. Cancellation is scoped - you can cancel one run without affecting others. See [Concurrent runs](../features/concurrent-runs.md) for patterns.
+On the client, each `send()` call returns its own `ClientRun`. Cancellation is scoped - you can cancel one run without affecting others. See [Concurrent runs](../features/concurrent-runs.md) for patterns.
 
 ## The cancel signal
 

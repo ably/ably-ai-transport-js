@@ -68,7 +68,7 @@ const { messages, hasOlder, loading, loadOlder, send, regenerate, edit, branchSe
 });
 ```
 
-This path gives you conversation branching UI (sibling navigation via `branchSelection(id).select(index)`), write operations, and direct access to the view state. Unlike the `useChat` path, `ClientSessionProvider` does not POST anything — the session only publishes on the channel. Wake the agent yourself by POSTing `run.toInvocation().toJSON()` to your endpoint from the `ActiveRun` that `send`/`regenerate`/`edit` returns.
+This path gives you conversation branching UI (sibling navigation via `branchSelection(id).select(index)`), write operations, and direct access to the view state. Unlike the `useChat` path, `ClientSessionProvider` does not POST anything — the session only publishes on the channel. Wake the agent yourself by POSTing `run.toInvocation().toJSON()` to your endpoint from the `ClientRun` that `send`/`regenerate`/`edit` returns.
 
 ### When to use which
 

@@ -21,7 +21,7 @@ export interface SeededChatProps {
 /**
  * A deliberately minimal, linear chat that seeds `useChat` from the database and
  * reconciles it with the live channel via `useMessageSync`: the agent has
- * persisted each completed turn to the store, and on load the stored
+ * persisted each completed run to the store, and on load the stored
  * conversation renders immediately while the live channel is stitched on at the
  * seam with no duplicate.
  *
@@ -58,7 +58,7 @@ export function SeededChat({ chatId, seed }: SeededChatProps): React.ReactElemen
   // Pass the stable `seed` prop (not useChat's live `messages`): useMessageSync
   // writes the reconciled result back via setMessages, so feeding `messages`
   // back in as the seed would churn its reference every push and loop. The seed
-  // is the fixed page-load history; new turns arrive through the live channel.
+  // is the fixed page-load history; new runs arrive through the live channel.
   useMessageSync({ messages: seed, setMessages });
 
   // Connect (subscribe + attach) before offering the composer — `connect()`
@@ -89,8 +89,8 @@ export function SeededChat({ chatId, seed }: SeededChatProps): React.ReactElemen
     const text = input.trim();
     if (!text) return;
     setInput('');
-    // Linear history: a new turn cancels any still-streaming response first, so
-    // the seam reconciliation only ever meets complete (or cancelled) turns.
+    // Linear history: a new run cancels any still-streaming response first, so
+    // the seam reconciliation only ever meets complete (or cancelled) runs.
     void (async () => {
       if (streaming) await stop();
       await sendMessage({ text });

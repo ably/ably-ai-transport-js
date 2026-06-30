@@ -1,6 +1,6 @@
 /**
  * Chat API route — receives the invocation pointer from the client's HTTP POST,
- * streams the AI response back over Ably, and persists each completed turn.
+ * streams the AI response back over Ably, and persists each completed run.
  *
  * This is the database-hydration demo: the agent is the sole writer. It
  * hydrates the model context the same way the client does — seeding the prior
@@ -46,7 +46,7 @@ export async function POST(req: Request) {
   // Hydrate the model context the way the client does (see useMessageSync, which
   // this demo's client uses to seed useChat): seed the prior conversation from
   // the store and reconcile only the live tail from the channel, rather than
-  // replaying the whole channel. The store holds every completed turn, so the
+  // replaying the whole channel. The store holds every completed run, so the
   // newest stored message is the seam.
   //
   // loadUntil pages run.view back to the seam and returns only the messages newer
@@ -82,17 +82,17 @@ export async function POST(req: Request) {
     } else {
       // End the run first, then persist. run.end publishes the completion
       // signal, so it shouldn't wait on (or fail with) the database write. The
-      // turn's content is already on the channel (from run.pipe above), and both
+      // run's content is already on the channel (from run.pipe above), and both
       // a reloading client and the agent's next run reconcile the stored seed
-      // with the live channel — so a turn the store hasn't caught up on yet is
+      // with the live channel — so a run the store hasn't caught up on yet is
       // still read from the channel, never dropped. Keyed by domain id, so
-      // idempotent; only completed turns are stored (cancelled/errored partials
+      // idempotent; only completed runs are stored (cancelled/errored partials
       // stay on the channel via run-end).
-      const turn = run.messages;
+      const runMessages = run.messages;
       await run.end(outcome);
-      // The database write: persist the completed turn (the in-memory
+      // The database write: persist the completed run's messages (the in-memory
       // message-store stands in for a durable store).
-      if (outcome.reason === 'complete') await appendMessages(invocation.sessionName, turn);
+      if (outcome.reason === 'complete') await appendMessages(invocation.sessionName, runMessages);
     }
     await session.close();
     ably.close();

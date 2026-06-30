@@ -13,8 +13,9 @@ Each call to `view.send()`, `view.regenerate()`, or `view.edit()` on the client 
 const runA = await view.send(messageA);
 const runB = await view.send(messageB);
 
-// runId is minted by the agent, so it resolves asynchronously
-const runAId = await runA.runId;
+// runId is minted by the agent, so await run.started before reading it
+await runA.started;
+const runAId = runA.runId;
 
 // Outputs for each run are keyed by runId on the tree's output event
 session.tree.on('output', (event) => {

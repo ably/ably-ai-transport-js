@@ -28,6 +28,7 @@ type VercelSession = ClientSession<VercelInput, VercelOutput, VercelProjection, 
 const makeEmitter = (): {
   on: (event: string, handler: (arg: never) => void) => () => void;
   emit: (event: string, arg?: unknown) => void;
+  listenerCount: () => number;
 } => {
   const handlers = new Map<string, Set<(arg: never) => void>>();
   return {
@@ -47,6 +48,13 @@ const makeEmitter = (): {
     emit: (event, arg) => {
       for (const handler of handlers.get(event) ?? []) (handler as (a: unknown) => void)(arg);
     },
+    // Total live handlers across all events — lets a test assert teardown
+    // unsubscribed everything (a settled or cancelled stream leaks no listeners).
+    listenerCount: () => {
+      let total = 0;
+      for (const set of handlers.values()) total += set.size;
+      return total;
+    },
   };
 };
 
@@ -60,6 +68,8 @@ interface MockSession {
   runSuspend: (runId: string) => void;
   /** Emit a session `error`. */
   error: (reason: Ably.ErrorInfo) => void;
+  /** Total live Tree + session listeners — 0 once a stream has torn down. */
+  listenerCount: () => number;
 }
 
 // `opts.runStatus` is the lifecycle status `tree.getRunNode` reports for any
@@ -108,6 +118,7 @@ const createMockSession = (opts?: {
     error: (reason) => {
       sessionEmitter.emit('error', reason);
     },
+    listenerCount: () => treeEmitter.listenerCount() + sessionEmitter.listenerCount(),
   };
 };
 
@@ -234,6 +245,23 @@ describe('createRunOutputStream', () => {
     const events = await drain(stream);
     expect(events).toEqual([]);
   });
+
+  it('tears down its subscriptions when the consumer cancels the reader', async () => {
+    // The consumer walking away (reader.cancel()) must run the same teardown as a
+    // normal settle, so the stream leaves no Tree/session listeners behind.
+    const mock = createMockSession();
+    const { stream } = createRunOutputStream(mock.session, Promise.resolve('run-1'), 'u-1');
+    expect(mock.listenerCount()).toBeGreaterThan(0);
+
+    const reader = stream.getReader();
+    await reader.cancel();
+
+    expect(mock.listenerCount()).toBe(0);
+    // Post-cancel events are inert (no listeners, no throw).
+    mock.output('run-1', [textDelta('late')], 'u-1');
+    mock.runEnd('run-1', 'complete');
+    expect(mock.listenerCount()).toBe(0);
+  });
 });
 
 describe('createDeferredContinuationStream', () => {
@@ -336,5 +364,25 @@ describe('createDeferredContinuationStream', () => {
     close();
 
     await expect(drain(stream)).resolves.toEqual([]);
+  });
+
+  it('clears its timer and subscriptions when the consumer cancels the reader', async () => {
+    // Consumer cancel must run teardown: unsubscribe every listener and clear the
+    // best-effort timeout, so the cancelled stream leaves nothing pending.
+    vi.useFakeTimers();
+    try {
+      const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
+      const mock = createMockSession({ runStatus: 'suspended' });
+      const { stream } = createDeferredContinuationStream(mock.session, 'run-1');
+      expect(mock.listenerCount()).toBeGreaterThan(0);
+
+      const reader = stream.getReader();
+      await reader.cancel();
+
+      expect(mock.listenerCount()).toBe(0);
+      expect(clearTimeoutSpy).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

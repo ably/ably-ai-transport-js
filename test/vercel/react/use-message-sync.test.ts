@@ -5,12 +5,14 @@ import type * as AI from 'ai';
 import { createElement, type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
+import type { CodecMessage } from '../../../src/core/codec/types.js';
 import type { ClientSession } from '../../../src/core/transport/types.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
 import type { ChatTransportSlot } from '../../../src/vercel/react/contexts/chat-transport-context.js';
 import { ChatTransportContext } from '../../../src/vercel/react/contexts/chat-transport-context.js';
 import { useMessageSync } from '../../../src/vercel/react/use-message-sync.js';
 import type { ChatTransport } from '../../../src/vercel/transport/chat-transport.js';
+import { makeFakeLoadUntil } from '../../helper/fake-load-until.js';
 
 type Handler = () => void;
 
@@ -116,13 +118,16 @@ const createMockSlot = (): MockSlot => {
     viewFlattenNodes().map((n) => ({ codecMessageId: n.message.id, message: n.message })),
   );
 
+  const viewHasOlder = vi.fn(() => false);
+  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+  const viewLoadOlder = vi.fn(() => Promise.resolve([] as CodecMessage<AI.UIMessage>[]));
   const view = {
     on: viewOn,
     flattenNodes: viewFlattenNodes,
     getMessages: viewGetMessages,
-    hasOlder: vi.fn(() => false),
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-    loadOlder: vi.fn(() => Promise.resolve([])),
+    hasOlder: viewHasOlder,
+    loadOlder: viewLoadOlder,
+    loadUntil: makeFakeLoadUntil({ getMessages: viewGetMessages, hasOlder: viewHasOlder, loadOlder: viewLoadOlder }),
   } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>['view'];
 
   // --- ChatTransport ---
@@ -178,11 +183,22 @@ const createPagingSlot = ({ visible, older }: { visible: AI.UIMessage[]; older: 
     return Promise.resolve(page.map((m) => toCodec(m)));
   });
 
+  const getMessages = vi.fn(() => revealed.map((m) => toCodec(m)));
+  const hasOlder = vi.fn(() => buffer.length > 0);
+  // Model DefaultView.loadUntil's exclusive-floor trim: re-hide the oldest
+  // `count` revealed messages (the seam and older) as the newest hidden block, so
+  // getMessages() reports the tail and loadOlder can re-reveal them seam-first.
+  const hideOldest = (count: number): void => {
+    const cut = revealed.splice(0, count);
+    buffer.push(...cut);
+    emitView('update');
+  };
   const view = {
     on: viewOn,
-    getMessages: vi.fn(() => revealed.map((m) => toCodec(m))),
-    hasOlder: vi.fn(() => buffer.length > 0),
+    getMessages,
+    hasOlder,
     loadOlder,
+    loadUntil: makeFakeLoadUntil({ getMessages, hasOlder, loadOlder, hideOldest }),
   } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>['view'];
 
   const appendLive = (...msgs: AI.UIMessage[]): void => {
@@ -242,6 +258,33 @@ describe('useMessageSync', () => {
     expect(setMessages).toHaveBeenCalledTimes(2);
     const updater2 = setMessages.mock.calls[1]?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
     expect(updater2([])).toEqual(msgs2);
+  });
+
+  it('does not re-sync on host re-renders when no seed is provided (no render loop)', () => {
+    // Regression: useMessageSync defaulted the seed to a fresh `[]` every render
+    // (`messages ?? []`). useMessagesWithSeed keys its composed result on the seed
+    // reference, so the result churned a new reference each render and this effect
+    // re-fired setMessages every render — useChat's setMessages then re-rendered
+    // the host, looping ("Maximum update depth exceeded"). A stable empty-seed
+    // default keeps the result reference-stable, so a no-op re-render does not sync.
+    const { slot, viewFlattenNodes } = createMockSlot();
+    viewFlattenNodes.mockReturnValue([makeNode(makeMessage('1'))]);
+
+    const setMessages = vi.fn();
+    const { rerender } = renderHook(
+      () => {
+        useMessageSync({ setMessages });
+      },
+      { wrapper: withContext(slot) },
+    );
+
+    expect(setMessages).toHaveBeenCalledTimes(1); // initial mount sync
+    setMessages.mockClear();
+
+    // Re-render the host with nothing changed — must not re-sync.
+    rerender();
+    rerender();
+    expect(setMessages).not.toHaveBeenCalled();
   });
 
   it('does not subscribe when no ChatTransportProvider is present', () => {

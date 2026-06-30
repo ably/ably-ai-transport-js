@@ -15,7 +15,14 @@ import {
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
 } from '../../../src/constants.js';
-import type { Codec, CodecEvent, CodecInputEvent, Decoder, ReducerMeta } from '../../../src/core/codec/types.js';
+import type {
+  Codec,
+  CodecEvent,
+  CodecInputEvent,
+  CodecMessage,
+  Decoder,
+  ReducerMeta,
+} from '../../../src/core/codec/types.js';
 import { createWireApplier } from '../../../src/core/transport/decode-fold.js';
 import { createHistoryHydrator, type HistoryHydrator } from '../../../src/core/transport/history-hydrator.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
@@ -27,6 +34,7 @@ import type { ClientRun, ClientView, RunLifecycleEvent } from '../../../src/core
 import type { SendDelegate } from '../../../src/core/transport/view.js';
 import { createClientView } from '../../../src/core/transport/view.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
+import { makeFakeLoadUntil } from '../../helper/fake-load-until.js';
 import { makeHistoryCursor } from '../../helper/history-cursor.js';
 
 vi.mock('../../../src/core/transport/load-history-pages.js', () => ({
@@ -90,7 +98,10 @@ const makeTestCodec = (): Codec<TestInput, TestOutput, TestProjection, TestMessa
 const silentLogger = makeLogger({ logLevel: LogLevel.Silent });
 
 // Drain the microtask queue. A busy microtask loop (the bug this guards against)
-// would never let the queued resolve run, so this never settles.
+// would never let the queued resolve run, so this never settles. Deliberately
+// distinct from test/helper/streams.ts#flushMicrotasks (a fixed two-tick
+// `Promise.resolve`): only a single queued `queueMicrotask` detects a busy spin,
+// so do not consolidate the two.
 const flushMicrotasks = async (): Promise<void> => {
   await new Promise<void>((resolve) => {
     queueMicrotask(resolve);
@@ -280,6 +291,45 @@ const makeChain = (indices: number[]): Ably.InboundMessage[] =>
         extras: { ai: { transport: linearChainHeaders(i) } },
       }) as unknown as Ably.InboundMessage,
   );
+
+/**
+ * A plain-array stand-in for the same conversation a real view pages, used to pin
+ * `makeFakeLoadUntil` (test/helper/fake-load-until.ts) against the production
+ * walk on a shared fixture. `oldest` models both the pagination floor (loadOlder
+ * lowers it) and the exclusive-floor trim (hideOldest raises it), so one index
+ * drives both, mirroring DefaultView's window.
+ * @param messageIds - The conversation's message ids, oldest-first.
+ * @param initialVisible - How many newest messages start revealed.
+ * @returns The mock window accessors `makeFakeLoadUntil` consumes.
+ */
+const fakeViewOver = (
+  messageIds: string[],
+  initialVisible: number,
+): {
+  getMessages: () => CodecMessage<TestMessage>[];
+  hasOlder: () => boolean;
+  loadOlder: () => Promise<CodecMessage<TestMessage>[]>;
+  hideOldest: (count: number) => void;
+} => {
+  const nodes: CodecMessage<TestMessage>[] = messageIds.map((id) => ({
+    codecMessageId: id,
+    message: { id, content: id },
+  }));
+  let oldest = messageIds.length - initialVisible;
+  return {
+    getMessages: () => nodes.slice(oldest),
+    hasOlder: () => oldest > 0,
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
+    loadOlder: () => {
+      if (oldest === 0) return Promise.resolve([]);
+      oldest -= 1;
+      return Promise.resolve(nodes.slice(oldest, oldest + 1));
+    },
+    hideOldest: (count) => {
+      oldest = Math.min(nodes.length, oldest + count);
+    },
+  };
+};
 
 /**
  * History fixture where message-counting diverges from run-counting: the
@@ -2335,6 +2385,27 @@ describe('client view', () => {
   // -------------------------------------------------------------------------
 
   describe('loadUntil', () => {
+    it('agrees with the makeFakeLoadUntil test double on a shared fixture', async () => {
+      // Pin the test double (test/helper/fake-load-until.ts) against the production
+      // walk: for the same conversation and seam, both must return the same tail
+      // and leave the same window — so the hook tests' mirror cannot silently drift
+      // from DefaultView.loadUntil.
+      const real = makeView(headerDecoder());
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(makeCursor([makeChain([0, 1, 2, 3, 4])]));
+
+      const fake = fakeViewOver(['mh0', 'mh1', 'mh2', 'mh3', 'mh4'], 1);
+      const fakeLoadUntil = makeFakeLoadUntil(fake);
+
+      const realTail = await real.loadUntil((msg) => msg.message.id === 'mh2');
+      const fakeTail = await fakeLoadUntil((msg) => msg.message.id === 'mh2');
+
+      // Same not-yet-seeded tail, and the same trimmed window left behind.
+      expect(realTail.map((m) => m.message.id)).toEqual(fakeTail.map((m) => m.message.id));
+      expect(real.getMessages().map((m) => m.message.id)).toEqual(fake.getMessages().map((m) => m.message.id));
+      // And both land on the expected result (guards against both drifting together).
+      expect(realTail.map((m) => m.message.id)).toEqual(['mh3', 'mh4']);
+    });
+
     it('returns the tail past an already-visible seam and trims the window past it', async () => {
       // Live (post-attach) chain m0→m1→m2 already in the window: the seam is
       // visible, so no history fetch is needed.

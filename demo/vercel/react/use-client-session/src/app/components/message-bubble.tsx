@@ -8,6 +8,7 @@ import { Bubble, BubbleContent } from '@/components/ui/bubble';
 import { Button } from '@/components/ui/button';
 import { Message, MessageContent, MessageFooter } from '@/components/ui/message';
 import { Textarea } from '@/components/ui/textarea';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ToolInvocation } from './tool-invocation';
 import { clientColor } from '../lib/client-color';
 
@@ -50,32 +51,40 @@ function BranchNavigator({
       data-testid="branch-navigator"
       className="inline-flex items-center gap-0.5 rounded-md bg-muted px-0.5"
     >
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        onClick={() => onSelect(current - 1)}
-        disabled={current === 0}
-        title="Previous branch"
-        aria-label="Previous branch"
-      >
-        <ChevronLeftIcon />
-      </Button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => onSelect(current - 1)}
+            disabled={current === 0}
+            aria-label="Previous branch"
+          >
+            <ChevronLeftIcon />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Previous branch</TooltipContent>
+      </Tooltip>
       <span
         data-testid="branch-counter"
         className="min-w-[2.5rem] text-center text-[10px] text-muted-foreground tabular-nums"
       >
         {current + 1} / {total}
       </span>
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        onClick={() => onSelect(current + 1)}
-        disabled={current >= total - 1}
-        title="Next branch"
-        aria-label="Next branch"
-      >
-        <ChevronRightIcon />
-      </Button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => onSelect(current + 1)}
+            disabled={current >= total - 1}
+            aria-label="Next branch"
+          >
+            <ChevronRightIcon />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Next branch</TooltipContent>
+      </Tooltip>
     </div>
   );
 }

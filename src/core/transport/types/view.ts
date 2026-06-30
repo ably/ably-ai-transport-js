@@ -145,6 +145,12 @@ export interface View<TMessage> {
    * via its `codecMessageId`, which the SDK assigns and tracks
    * independently of any identity the domain `message` may carry. Read the
    * domain object from each entry's `message` field.
+   *
+   * The window's oldest bound is set by pagination, not by how much history a
+   * fetch happened to read: {@link loadOlder} and {@link loadUntil} reveal whole
+   * runs but trim the flat list to exactly the messages paginated to, so history
+   * fetched beyond the paginated window is withheld here (and surfaced by a later
+   * {@link loadOlder}) rather than appearing as over-fetched older messages.
    */
   getMessages(): CodecMessage<TMessage>[];
 
@@ -185,6 +191,56 @@ export interface View<TMessage> {
    * @returns The revealed codecMessages, oldest-first; `[]` when nothing older was revealed.
    */
   loadOlder(limit?: number): Promise<CodecMessage<TMessage>[]>;
+
+  /**
+   * Page older history back until `predicate` matches a visible message — the
+   * **seam** — then resolve to the messages **strictly newer than** it, oldest-first.
+   * The matched message is excluded: it is the single overlap a caller already
+   * holds (e.g. the newest message of a persisted seed), so
+   * `[...seed, ...loadUntil(...)]` composes the full conversation with no gap and
+   * no duplicate.
+   *
+   * On a match it trims the window to **exactly the tail it returns**: the seam is
+   * an **exclusive floor** — it and everything older are withheld, including any
+   * history a reveal fetched beyond it (the initial attach window, or a wider
+   * earlier {@link View.loadOlder}). So after a match {@link View.getMessages}
+   * reports the not-yet-seeded tail and nothing else — equal to this method's
+   * result — rather than the over-fetched history below the seam. The withheld
+   * history is still reachable — {@link View.hasOlder} stays `true` and
+   * {@link View.loadOlder} reveals it (the seam first) — so a caller can page back
+   * onto the stored prefix if it wants it on the channel too.
+   *
+   * The intended use is database-backed hydration: seed the model context from a
+   * store, then reconcile only the not-yet-stored tail off the channel by paging
+   * back to the newest stored message. It pages one codecMessage at a time and
+   * inspects only the page each reveal returns, so its own work is linear in the
+   * messages revealed (the per-reveal cost of {@link View.loadOlder} aside).
+   *
+   * It **drives the paging itself** and is locating-aware: it keeps paging while
+   * older history remains ({@link View.hasOlder}) even across reveals that surface
+   * nothing yet — e.g. an agent `run.view` whose triggering input is still in
+   * channel history and folds in only as the walk pages it back. A caller must
+   * therefore not gate this on the input having already arrived; this walk is
+   * what brings it in.
+   *
+   * Resolves to the **whole visible window** when the predicate never matches —
+   * channel history is exhausted with no seam (an empty seed, or a seam absent
+   * from the channel) — so an unseeded caller hydrates the entire conversation.
+   * Resolves to `[]` if the view is closed (or closes mid-walk), or if `signal`
+   * aborts before the seam is found.
+   *
+   * Pass `signal` to abandon a walk that is no longer needed — e.g. a React
+   * effect that re-runs (or is double-invoked under StrictMode) should abort the
+   * superseded walk on cleanup so it stops promptly rather than paging on in the
+   * background. The walk checks the signal between reveals.
+   * @param predicate - Tested against each newly-revealed message; the first match (the seam) stops the walk.
+   * @param signal - Optional abort signal; checked between reveals. When it fires the walk stops and resolves to `[]`.
+   * @returns The messages strictly newer than the seam, oldest-first; the whole window when no message matched.
+   */
+  loadUntil(
+    predicate: (message: CodecMessage<TMessage>) => boolean,
+    signal?: AbortSignal,
+  ): Promise<CodecMessage<TMessage>[]>;
 
   // --- Run lookup ---
 

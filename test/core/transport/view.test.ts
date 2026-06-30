@@ -89,6 +89,14 @@ const makeTestCodec = (): Codec<TestInput, TestOutput, TestProjection, TestMessa
 
 const silentLogger = makeLogger({ logLevel: LogLevel.Silent });
 
+// Drain the microtask queue. A busy microtask loop (the bug this guards against)
+// would never let the queued resolve run, so this never settles.
+const flushMicrotasks = async (): Promise<void> => {
+  await new Promise<void>((resolve) => {
+    queueMicrotask(resolve);
+  });
+};
+
 // ---------------------------------------------------------------------------
 // Mock channel and helpers
 // ---------------------------------------------------------------------------
@@ -254,6 +262,24 @@ const linearChainHeaders = (i: number): Record<string, string> => {
   if (i > 0) h[HEADER_PARENT] = `mh${String(i - 1)}`;
   return h;
 };
+
+/**
+ * Build a linear-chain history page (one wire per index) from
+ * {@link linearChainHeaders}, oldest-first. Each index `i` becomes run `Ri` /
+ * message `mhi`, parented at the prior message so the runs stay a visible chain.
+ * @param indices - Run indices to include, oldest-first (e.g. `[0, 1, 2]`).
+ * @returns The raw wires, oldest-first.
+ */
+const makeChain = (indices: number[]): Ably.InboundMessage[] =>
+  indices.map(
+    (i) =>
+      ({
+        name: 'fake',
+        serial: `s${String(i)}`,
+        version: { serial: `s${String(i)}` },
+        extras: { ai: { transport: linearChainHeaders(i) } },
+      }) as unknown as Ably.InboundMessage,
+  );
 
 /**
  * History fixture where message-counting diverges from run-counting: the
@@ -2301,6 +2327,303 @@ describe('client view', () => {
       const live = window[0]?.message.id === seamId ? window.slice(1) : window;
       const conversation = [...db, ...live.map((m) => m.message)];
       expect(conversation.map((m) => m.id)).toEqual(['mh0', 'm-a', 'm-b']);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // loadUntil — seam reconciliation
+  // -------------------------------------------------------------------------
+
+  describe('loadUntil', () => {
+    it('returns the tail past an already-visible seam and trims the window past it', async () => {
+      // Live (post-attach) chain m0→m1→m2 already in the window: the seam is
+      // visible, so no history fetch is needed.
+      apply(tree, { runId: 'R0', codecMessageId: 'm0', message: { id: 'm0', content: 'a' }, serial: 's0' });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm1',
+        parent: 'm0',
+        message: { id: 'm1', content: 'b' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'm2',
+        parent: 'm1',
+        message: { id: 'm2', content: 'c' },
+        serial: 's2',
+      });
+      view.runs(); // prime the cache
+
+      const tail = await view.loadUntil((m) => m.message.id === 'm1');
+
+      // Strictly newer than the seam m1; the seam itself is excluded.
+      expect(tail.map((m) => m.message.id)).toEqual(['m2']);
+      // The seam is an exclusive floor: the warm window held m1 (the seam) and m0
+      // (older), both in the caller's store; loadUntil trims past the seam, so
+      // getMessages() reports exactly the returned tail.
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['m2']);
+      expect(vi.mocked(loadHistoryPages)).not.toHaveBeenCalled();
+    });
+
+    it('withholds the seam and over-fetched pre-seam history, recoverable via loadOlder', async () => {
+      // A warm window that reaches back past the seam: m0 is older than the m1
+      // seam and already in the caller's store.
+      apply(tree, { runId: 'R0', codecMessageId: 'm0', message: { id: 'm0', content: 'a' }, serial: 's0' });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm1',
+        parent: 'm0',
+        message: { id: 'm1', content: 'b' },
+        serial: 's1',
+      });
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'm2',
+        parent: 'm1',
+        message: { id: 'm2', content: 'c' },
+        serial: 's2',
+      });
+      view.runs(); // prime the cache
+
+      const tail = await view.loadUntil((m) => m.message.id === 'm1');
+
+      // Exclusive floor: the window is the tail, the seam m1 and older m0 withheld.
+      expect(tail.map((m) => m.message.id)).toEqual(['m2']);
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['m2']);
+      // Withheld, not lost: hasOlder() still reports it and loadOlder reveals it
+      // again, the seam first (it is the newest withheld message).
+      expect(view.hasOlder()).toBe(true);
+      const revealed = await view.loadOlder(1);
+      expect(revealed.map((m) => m.message.id)).toEqual(['m1']);
+      expect(view.getMessages().map((m) => m.message.id)).toEqual(['m1', 'm2']);
+    });
+
+    it('pages back to the seam and returns only the not-yet-stored tail (seam excluded)', async () => {
+      const v = makeView(headerDecoder());
+      // Linear history chain mh0..mh4 (oldest→newest), served as one page.
+      const chain = makeChain([0, 1, 2, 3, 4]);
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(makeCursor([chain]));
+
+      const tail = await v.loadUntil((m) => m.message.id === 'mh2');
+
+      // Tail is strictly newer than the mh2 seam.
+      expect(tail.map((m) => m.message.id)).toEqual(['mh3', 'mh4']);
+      // The seam is an exclusive floor: mh2 (and older mh1, mh0) are withheld, so
+      // the window equals the returned tail.
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['mh3', 'mh4']);
+      // A single fetch — the buffered page serves every loadOlder(1) reveal.
+      expect(vi.mocked(loadHistoryPages)).toHaveBeenCalledTimes(1);
+    });
+
+    it('composes [...db, ...loadUntil()] with a single seam overlap dropped', async () => {
+      const v = makeView(headerDecoder());
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(makeCursor([multiMessagePage()]));
+
+      // The caller's store already holds the oldest message; its newest row is
+      // the seam. loadUntil returns everything newer, so compose with no dup.
+      const db = [{ id: 'mh0' }];
+      const seamId = db.at(-1)?.id;
+      const tail = await v.loadUntil((m) => m.message.id === seamId);
+
+      const conversation = [...db, ...tail.map((m) => m.message)];
+      expect(conversation.map((m) => m.id)).toEqual(['mh0', 'm-a', 'm-b']);
+      // The seam appears exactly once — the overlap drop is the whole point.
+      expect(conversation.filter((m) => m.id === seamId)).toHaveLength(1);
+    });
+
+    it('returns an empty tail when the seam is the newest visible message (store fully caught up)', async () => {
+      // The DB-seeded steady state: the store already holds every channel message,
+      // so the seam is the newest visible message and there is no live tail.
+      apply(tree, { runId: 'R0', codecMessageId: 'm0', message: { id: 'm0', content: 'a' }, serial: 's0' });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm1',
+        parent: 'm0',
+        message: { id: 'm1', content: 'b' },
+        serial: 's1',
+      });
+      view.runs(); // prime the cache
+
+      const tail = await view.loadUntil((m) => m.message.id === 'm1');
+
+      expect(tail).toEqual([]);
+      expect(vi.mocked(loadHistoryPages)).not.toHaveBeenCalled();
+    });
+
+    it('returns the whole window when no message matches (history exhausted)', async () => {
+      const v = makeView(headerDecoder());
+      const chain = makeChain([0, 1]);
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(makeCursor([chain]));
+
+      // No seam (e.g. an unseeded caller): page everything, return the full window.
+      const tail = await v.loadUntil((m) => m.message.id === 'no-such-seam');
+
+      expect(tail.map((m) => m.message.id)).toEqual(['mh0', 'mh1']);
+      expect(v.hasOlder()).toBe(false);
+    });
+
+    it('returns [] when the view is closed', async () => {
+      view.close();
+      const tail = await view.loadUntil(() => true);
+      expect(tail).toEqual([]);
+    });
+
+    it('does not starve the event loop when two walks run concurrently', async () => {
+      // Two concurrent loadUntil walks over one view — as React StrictMode
+      // produces by double-invoking the hook effect on a reload. The first walk's
+      // history fetch is parked at cursor-open, so it holds the single-flight
+      // loadOlder guard. The second walk must NOT busy-spin on loadOlder's
+      // synchronous [] return (the guard) — that tight microtask loop would
+      // starve the queue and stop the parked fetch's own continuation from ever
+      // running, hanging the page. It must yield to the in-flight load instead.
+      const v = makeView(headerDecoder());
+      const chain = makeChain([0, 1]);
+      let releaseFetch: ((cursor: HistoryPagesCursor) => void) | undefined;
+      vi.mocked(loadHistoryPages).mockImplementationOnce(
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- parks on a promise the test resolves
+        () =>
+          new Promise<HistoryPagesCursor>((resolve) => {
+            releaseFetch = resolve;
+          }),
+      );
+
+      const walkA = v.loadUntil((m) => m.message.id === 'mh1');
+      const walkB = v.loadUntil((m) => m.message.id === 'mh1');
+
+      // The crux: with the bug, walkB spins synchronously and this never settles.
+      await flushMicrotasks();
+      expect(releaseFetch).toBeDefined();
+
+      // Release the parked fetch; both walks complete (neither hung).
+      releaseFetch?.(makeCursor([chain]));
+      const [tailA, tailB] = await Promise.all([walkA, walkB]);
+
+      expect(Array.isArray(tailA)).toBe(true);
+      expect(Array.isArray(tailB)).toBe(true);
+      // The shared single-flight cursor pages the channel once across both walks.
+      expect(vi.mocked(loadHistoryPages)).toHaveBeenCalledTimes(1);
+      // Walks are serialized, so the window converges on the correctly trimmed
+      // tail: the seam mh1 is the newest message, so everything is withheld and
+      // the visible window is empty — not the un-trimmed full chain a concurrent
+      // interleave would leave (which a seeded subscriber would double-render).
+      expect(v.getMessages().map((m) => m.message.id)).toEqual([]);
+    });
+
+    it('serializes concurrent walks so they trim past the newest seam (StrictMode reload, no seed overlap)', async () => {
+      // The use-client-session-db reload after two turns: the store holds the
+      // whole conversation, so the seam is the NEWEST channel message and a
+      // correct walk trims the window to the empty tail. React StrictMode
+      // double-invokes the hook effect, so walk A starts, is aborted on cleanup,
+      // and walk B runs — concurrently sharing the single-flight history fetch.
+      // Both must converge on the trimmed tail; if the shared trim state is
+      // corrupted the window stays the full conversation and the hook composes
+      // seed ⧺ full-window with a duplicate id for every message.
+      const v = makeView(headerDecoder());
+      const chain = makeChain([0, 1, 2, 3]);
+      let releaseFetch: ((cursor: HistoryPagesCursor) => void) | undefined;
+      vi.mocked(loadHistoryPages).mockImplementationOnce(
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- parks on a promise the test resolves
+        () =>
+          new Promise<HistoryPagesCursor>((resolve) => {
+            releaseFetch = resolve;
+          }),
+      );
+
+      // The store the demo seeds from — the whole conversation; mh3 is the seam.
+      const seed = ['mh0', 'mh1', 'mh2', 'mh3'];
+      const controllerA = new AbortController();
+      const walkA = v.loadUntil((m) => m.message.id === 'mh3', controllerA.signal);
+      const walkB = v.loadUntil((m) => m.message.id === 'mh3');
+
+      await flushMicrotasks();
+      // StrictMode cleanup aborts the first effect's walk.
+      controllerA.abort();
+      releaseFetch?.(makeCursor([chain]));
+      await Promise.all([walkA, walkB]);
+
+      // The seam mh3 is the newest message, so the trimmed window is empty —
+      // composing seed ⧺ window must not duplicate any id.
+      const composed = [...seed, ...v.getMessages().map((m) => m.message.id)];
+      expect(composed).toEqual([...new Set(composed)]);
+      expect(v.getMessages().map((m) => m.message.id)).toEqual([]);
+    });
+
+    it('abandons the walk when its abort signal fires mid-fetch', async () => {
+      // A superseded walk (a React effect aborting on cleanup) stops promptly:
+      // the signal fires while the first reveal's fetch is parked, so once that
+      // fetch resolves the walk bails on the next loop check rather than paging on.
+      const v = makeView(headerDecoder());
+      const chain = makeChain([0, 1]);
+      let releaseFetch: ((cursor: HistoryPagesCursor) => void) | undefined;
+      vi.mocked(loadHistoryPages).mockImplementationOnce(
+        // eslint-disable-next-line @typescript-eslint/promise-function-async -- parks on a promise the test resolves
+        () =>
+          new Promise<HistoryPagesCursor>((resolve) => {
+            releaseFetch = resolve;
+          }),
+      );
+
+      const controller = new AbortController();
+      // Seam mh0 is the oldest message, so a complete walk would page the whole
+      // chain; aborting must cut it short before it gets there.
+      const walk = v.loadUntil((m) => m.message.id === 'mh0', controller.signal);
+
+      await flushMicrotasks();
+      expect(releaseFetch).toBeDefined();
+
+      controller.abort();
+      releaseFetch?.(makeCursor([chain]));
+      const tail = await walk;
+
+      // Aborted walks resolve to [] regardless of what the in-flight reveal surfaced.
+      expect(tail).toEqual([]);
+      // Only the one already-in-flight fetch ran; the walk did not page further.
+      expect(vi.mocked(loadHistoryPages)).toHaveBeenCalledTimes(1);
+    });
+
+    it('resolves [] without paging when the signal is already aborted on entry', async () => {
+      // A walk handed an already-aborted signal must honour the documented
+      // aborted result ([]) even when no history is left to page — the in-loop
+      // check would never run, so the early check carries this case.
+      const v = makeView(headerDecoder());
+      const tail = await v.loadUntil((m) => m.message.id === 'mh0', AbortSignal.abort());
+
+      expect(tail).toEqual([]);
+      expect(vi.mocked(loadHistoryPages)).not.toHaveBeenCalled();
+    });
+
+    it('never emits a pre-trim window holding the seam (no seed overlap mid-walk)', async () => {
+      // The bug this guards: the walk pages back through the seam one reveal at a
+      // time, and each reveal momentarily holds the seam (and older) before the
+      // trim. A subscriber mirroring getMessages() and composing [...seed, ...it]
+      // would then see duplicate ids for that frame (the React "two children with
+      // the same key" warning on a seeded reload). loadUntil must suppress those
+      // intermediate frames and emit only the settled tail.
+      const v = makeView(headerDecoder());
+      const chain = makeChain([0, 1, 2, 3, 4]);
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(makeCursor([chain]));
+
+      // The caller's store holds mh0..mh2; its newest row (mh2) is the seam.
+      const seed = ['mh0', 'mh1', 'mh2'];
+
+      // Capture the composed conversation a hook-like subscriber would render on
+      // every emit — [...seed, ...getMessages()].
+      const frames: string[][] = [];
+      v.on('update', () => {
+        frames.push([...seed, ...v.getMessages().map((m) => m.message.id)]);
+      });
+
+      const tail = await v.loadUntil((m) => m.message.id === 'mh2');
+
+      expect(tail.map((m) => m.message.id)).toEqual(['mh3', 'mh4']);
+      // Every emitted frame is duplicate-free: the seam and older are never
+      // surfaced alongside the seed that already holds them.
+      for (const frame of frames) {
+        expect(frame).toEqual([...new Set(frame)]);
+      }
+      // The settled frame is the full, gap-free conversation.
+      expect(frames.at(-1)).toEqual(['mh0', 'mh1', 'mh2', 'mh3', 'mh4']);
     });
   });
 

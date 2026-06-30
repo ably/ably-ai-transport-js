@@ -176,7 +176,7 @@ interface ReducerMeta {
 
 ### Why a list, not a single message
 
-A single run can produce multiple domain messages. For example, a Vercel run produces both the user message and the streamed assistant message. `getMessages()` returns a `CodecMessage<TMessage>[]` - each message paired with the `codec-message-id` that identifies it on the wire:
+`getMessages()` returns a `CodecMessage<TMessage>[]` - a list, not a single message - because one node's projection can hold more than one domain message, each paired with the `codec-message-id` that identifies it on the wire. (The user prompt and the agent's reply are _not_ an instance of this: they live in separate nodes - an `InputNode` and a `RunNode` - each with its own projection. A list arises when a single projection accumulates several messages under distinct codec-message-ids, e.g. more than one assistant message folded into one run's projection.)
 
 ```typescript
 interface CodecMessage<TMessage> {

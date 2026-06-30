@@ -185,29 +185,46 @@ function Chat({ chatId }: { chatId: string }) {
 
 ### Authentication
 
-The Ably client authenticates via token auth. Create an endpoint that issues token requests:
+The Ably client authenticates with a short-lived Ably JWT that your server signs with your API key secret. Create an endpoint that issues the JWT:
 
 ```typescript
 // app/api/auth/ably-token/route.ts
-import Ably from 'ably';
+import jwt from 'jsonwebtoken';
 
-const ably = new Ably.Rest({ key: process.env.ABLY_API_KEY });
+const [keyName, keySecret] = process.env.ABLY_API_KEY!.split(':');
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const clientId = searchParams.get('clientId') ?? 'anonymous';
-  const token = await ably.auth.createTokenRequest({ clientId });
-  return Response.json(token);
+
+  const token = jwt.sign(
+    {
+      'x-ably-clientId': clientId,
+      'x-ably-capability': JSON.stringify({
+        'ai:*': ['publish', 'subscribe', 'presence', 'history'],
+      }),
+    },
+    keySecret,
+    { algorithm: 'HS256', keyid: keyName, expiresIn: '1h' },
+  );
+
+  return new Response(token, { headers: { 'Content-Type': 'application/jwt' } });
 }
 ```
+
+Scope `x-ably-capability` to the channel namespace your conversations use (`ai:*` here). The `x-ably-clientId` claim binds the token to a user identity that Ably verifies on every publish. Only the server sees `keySecret`; never embed your API key in client code.
 
 ```typescript
 // Client-side Ably setup
 const ably = new Ably.Realtime({
   authCallback: async (_params, callback) => {
-    const response = await fetch('/api/auth/ably-token');
-    const token = await response.json();
-    callback(null, token);
+    try {
+      const response = await fetch('/api/auth/ably-token');
+      if (!response.ok) throw new Error('Auth failed');
+      callback(null, await response.text());
+    } catch (err) {
+      callback(err instanceof Error ? err.message : String(err), null);
+    }
   },
 });
 ```

@@ -2,10 +2,12 @@
 
 import { useState } from 'react';
 import type { UIMessage, DynamicToolUIPart } from 'ai';
+import { Loader2Icon } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Bubble, BubbleContent } from '@/components/ui/bubble';
 import { Button } from '@/components/ui/button';
 import { Message, MessageContent, MessageFooter } from '@/components/ui/message';
+import { Textarea } from '@/components/ui/textarea';
 import { ToolInvocation } from './tool-invocation';
 import { clientColor } from '../lib/client-color';
 
@@ -129,10 +131,10 @@ function EditForm({
       onSubmit={handleSubmit}
       className="w-full"
     >
-      <textarea
+      <Textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        className="w-full resize-none rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-ring"
+        data-testid="edit-input"
         rows={Math.min(6, text.split('\n').length + 1)}
         autoFocus
         onKeyDown={(e) => {
@@ -191,6 +193,10 @@ export function MessageBubble({
     .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
     .map((p) => p.text)
     .join('');
+  const hasToolParts = message.parts.some((p) => p.type === 'dynamic-tool');
+  // Assistant turn that is streaming but has produced no text or tool activity
+  // yet — show a quiet loader instead of an empty row (no blinking caret).
+  const showThinking = !isUser && status === 'streaming' && messageText.trim() === '' && !hasToolParts;
 
   return (
     <Message
@@ -207,33 +213,37 @@ export function MessageBubble({
           />
         ) : (
           <>
+            {/* shadcn chat convention: the user's own messages sit in a filled
+                bubble; the assistant's reply is a ghost bubble that reads as
+                plain prose. */}
             <Bubble
-              variant={isUser ? 'default' : 'muted'}
+              variant={isUser ? 'default' : 'ghost'}
               align={isUser ? 'end' : 'start'}
             >
               <BubbleContent className="whitespace-pre-wrap">
-                {message.parts.map((part, i) => {
-                  if (part.type === 'text') return <span key={i}>{part.text}</span>;
-                  if (part.type === 'dynamic-tool') {
-                    const toolPart = part as DynamicToolUIPart;
-                    const noop = (): void => undefined;
-                    const approvalId = toolPart.approval?.id;
-                    return (
-                      <ToolInvocation
-                        key={i}
-                        part={toolPart}
-                        onApprove={onToolApprove && approvalId ? () => onToolApprove(approvalId) : noop}
-                        onDeny={onToolDeny && approvalId ? () => onToolDeny(approvalId) : noop}
-                      />
-                    );
-                  }
-                  return null;
-                })}
-                {!isUser && status === 'streaming' && (
-                  <span
-                    data-testid="streaming-caret"
-                    className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse rounded-sm bg-amber-500/60 align-text-bottom"
-                  />
+                {isUser
+                  ? messageText
+                  : message.parts.map((part, i) => {
+                      if (part.type === 'text') return <span key={i}>{part.text}</span>;
+                      if (part.type === 'dynamic-tool') {
+                        const toolPart = part as DynamicToolUIPart;
+                        const approvalId = toolPart.approval?.id;
+                        return (
+                          <ToolInvocation
+                            key={i}
+                            part={toolPart}
+                            onApprove={onToolApprove && approvalId ? () => onToolApprove(approvalId) : undefined}
+                            onDeny={onToolDeny && approvalId ? () => onToolDeny(approvalId) : undefined}
+                          />
+                        );
+                      }
+                      return null;
+                    })}
+                {showThinking && (
+                  <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+                    <Loader2Icon className="size-3.5 animate-spin" />
+                    Thinking…
+                  </span>
                 )}
               </BubbleContent>
             </Bubble>

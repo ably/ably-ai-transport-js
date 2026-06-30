@@ -125,18 +125,20 @@ export function MessageList({
               <div className="animate-pulse text-center text-xs text-muted-foreground">Loading history...</div>
             )}
 
-            {messages.map(({ codecMessageId, message }, idx) => {
+            {messages.map(({ codecMessageId, message }) => {
               // View lookups key on the codec-message-id; useChat regenerate/edit
               // key on the domain `message.id` (the id useChat references).
               const run = view.runOf(codecMessageId);
               const branch = view.branchSelection(codecMessageId);
               const bubbleStatus = run?.status === 'active' ? 'streaming' : run?.status;
-              const isLast = idx === messages.length - 1;
               return (
+                // Anchor on the user's own turns (shadcn's convention): sending
+                // pins the new prompt to the top of the viewport while the reply
+                // streams in below it.
                 <MessageScrollerItem
                   key={codecMessageId}
                   messageId={codecMessageId}
-                  scrollAnchor={isLast}
+                  scrollAnchor={message.role === 'user'}
                 >
                   <MessageBubble
                     message={message}

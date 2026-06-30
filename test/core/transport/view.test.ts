@@ -2390,6 +2390,71 @@ describe('client view', () => {
       const conversation = [...db, ...live.map((m) => m.message)];
       expect(conversation.map((m) => m.id)).toEqual(['mh0', 'm-a', 'm-b']);
     });
+
+    it('reveal cost is independent of window size — per-reveal flattening does not grow as more is revealed', async () => {
+      // A K-message backward walk (loadOlder(1) per step, as loadUntil drives)
+      // must stay O(K): each reveal re-flattens only the projection it surfaced,
+      // not the whole growing window. codec.getMessages is the per-node flatten,
+      // so counting its calls per reveal pins that the cost does not climb with
+      // the count of already-revealed messages.
+      const v = makeView(headerDecoder());
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(
+        makeCursor([makeChain([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])]),
+      );
+
+      // The first reveal also fetches and folds the whole page, warming the
+      // per-projection cache for every run; measure the cache-warm drains after.
+      await v.loadOlder(1);
+
+      const getMessages = vi.spyOn(codec, 'getMessages');
+      const perReveal: number[] = [];
+      while (v.hasOlder()) {
+        const before = getMessages.mock.calls.length;
+        await v.loadOlder(1);
+        perReveal.push(getMessages.mock.calls.length - before);
+      }
+      getMessages.mockRestore();
+      v.close();
+
+      // The chain drains one run at a time, so many reveals happen...
+      expect(perReveal.length).toBeGreaterThan(5);
+      // ...and the last (oldest, widest-window) reveal flattens no more than the
+      // first: per-reveal work is flat, not linear in the window. A full
+      // per-reveal re-flatten would make this climb with each step.
+      expect(perReveal.at(-1)).toBeLessThanOrEqual(perReveal[0] ?? 0);
+      // Per-reveal flattening is a small constant, independent of window size.
+      expect(Math.max(...perReveal)).toBeLessThanOrEqual(2);
+    });
+
+    it('drops the memoised flattening when a fold mutates a run projection in place', () => {
+      // A reducer that mutates the projection IN PLACE (same object ref), as the
+      // production reducer contract permits. Caching the flatten by projection
+      // identity cannot see the change, so the View must invalidate on the
+      // fold's output event — else getMessages reports the stale pre-fold list.
+      const mutatingCodec = makeTestCodec();
+      mutatingCodec.fold = (state, codecEvent) => {
+        const event = codecEvent.event;
+        if ('type' in event) state.messages.push(event.message);
+        return state;
+      };
+      const t = createTree<TestInput, TestOutput, TestProjection>(mutatingCodec, silentLogger);
+      const v = createClientView({
+        tree: t,
+        codec: mutatingCodec,
+        hydrator: makeHydrator(t),
+        sendDelegate,
+        logger: silentLogger,
+      });
+
+      apply(t, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a1', content: 'first' }, serial: 's1' });
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['a1']);
+
+      // Fold a second message into the SAME run (same projection ref); the
+      // memoised flatten must be dropped so getMessages reflects it.
+      apply(t, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a2', content: 'more' }, serial: 's2' });
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['a1', 'a2']);
+      v.close();
+    });
   });
 
   // -------------------------------------------------------------------------

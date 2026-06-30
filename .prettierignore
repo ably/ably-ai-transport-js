@@ -4,3 +4,10 @@ specification/
 .vercel/
 next-env.d.ts
 pnpm-lock.yaml
+
+# Playwright run artifacts (gitignored; not source)
+**/test-results/
+
+# Vendored shadcn/ui primitives — regeneratable, kept in shadcn's own formatting
+demo/**/src/components/ui/
+demo/**/src/lib/utils.ts

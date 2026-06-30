@@ -82,7 +82,7 @@ function Chat({ seed }: { seed: UIMessage[] }) {
 }
 ```
 
-Pass a **stable** `seed` reference (the page-load history) - a new reference re-runs the seam walk. While the seed is still loading from your store, pass `skip: true` rather than `[]`: an empty array is a loaded-but-empty conversation, which surfaces the live channel unchanged.
+Pass the page-load history as `seed`. It is compared by **content**, so a fresh array each render is safe (`store ?? []` inline is fine - no memoisation needed); only a genuine content change, such as swapping to a different conversation, re-runs the seam walk. While the seed is still loading from your store, pass `skip: true` rather than `[]`: an empty array is a loaded-but-empty conversation, which surfaces the live channel unchanged.
 
 ### useChat path
 

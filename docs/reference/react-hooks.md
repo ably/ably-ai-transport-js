@@ -135,7 +135,7 @@ const view = useView<TInput, TOutput, TProjection, TMessage>({ session?, view?, 
 
 Each view has independent branch selections and pagination state. When you pass a session, the hook uses its default view. For [split-pane UIs](../features/branching.md#multiple-views) where each pane needs its own branch and message history, use [`useCreateView()`](#usecreateview) to create independent views with the same API.
 
-Write operations (`send`, `regenerate`, `edit`) automatically derive the parent message — and, for `regenerate`/`edit`, the fork target — from this view's selected branch. No conversation history is sent; the agent assembles it from the channel. Each returns an `ClientRun`.
+Write operations (`send`, `regenerate`, `edit`) automatically derive the parent message — and, for `regenerate`/`edit`, the fork target — from this view's selected branch. No conversation history is sent; the agent assembles it from the channel. Each returns a `ClientRun`.
 
 `edit` forks a user message with replacement content; `regenerate` forks an assistant message with no new user input. For [client-executed tool results](../features/tool-calling.md#client-executed-tools), `send` a tool-result input composed via the codec — it is published to the channel and the model streams a follow-up response in the same run.
 
@@ -222,12 +222,12 @@ Compose a database-backed seed with the live channel into one gap-free, duplicat
 const messages = useMessagesWithSeed<TMessage>({ view, seed, getMessageId, skip? });
 ```
 
-| Option         | Type                            | Description                                                                                                                                                                                         |
-| -------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `view`         | `View<TMessage> \| undefined`   | The view over the live channel to reconcile against (e.g. `session.view`), or `undefined` before the session resolves (the seed is surfaced as-is)                                                  |
-| `seed`         | `TMessage[]`                    | The persisted conversation, oldest-first. A **dependency** - a new reference re-runs the seam walk, so pass a stable (memoised) reference per conversation. `[]` is a loaded-but-empty conversation |
-| `getMessageId` | `(message: TMessage) => string` | The stable domain id of a message - the seam key shared between your store and the channel                                                                                                          |
-| `skip`         | `boolean?`                      | Hold the walk while the seed is still loading; returns `[]`. Distinct from an empty `seed`. Defaults to `false`                                                                                     |
+| Option         | Type                            | Description                                                                                                                                                                                                                                                     |
+| -------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `view`         | `View<TMessage> \| undefined`   | The view over the live channel to reconcile against (e.g. `session.view`), or `undefined` before the session resolves (the seed is surfaced as-is)                                                                                                              |
+| `seed`         | `TMessage[]`                    | The persisted conversation, oldest-first. Compared by **content**, so a fresh array each render is safe (no memoisation needed); only a genuine content change (different or reordered messages) re-runs the seam walk. `[]` is a loaded-but-empty conversation |
+| `getMessageId` | `(message: TMessage) => string` | The stable domain id of a message - the seam key shared between your store and the channel                                                                                                                                                                      |
+| `skip`         | `boolean?`                      | Hold the walk while the seed is still loading; returns `[]`. Distinct from an empty `seed`. Defaults to `false`                                                                                                                                                 |
 
 **Returns:** `TMessage[]` - the seed followed by the reconciled live tail, with the single seam message deduplicated.
 

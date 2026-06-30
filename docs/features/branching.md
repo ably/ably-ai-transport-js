@@ -20,7 +20,7 @@ User: "What is Rust?"                       (input-1, parent: null)
   └── Run: "Rust is a systems..."            (run-2, parent: input-1)  ← regenerated (same input parent)
 ```
 
-The live View's `getMessages()` returns the messages of the Tree's `visibleNodes()`, which walks the nodes applying parent reachability and **explicit sibling-group selection**: where a node has siblings, a selection map picks the active member (the user's selection, or the latest by default) and the others are skipped. The View then layers its pagination window on top and concatenates each visible node's projected messages into the flat list. (The agent reads a single branch through its `run.view`, a read-only View pinned to the run's leaf via a [LeafBranchSource](../internals/agent-session.md), where branch selection is implicit-by-parent-walk rather than an explicit selection map.) The user navigates between siblings to switch branches.
+The live View's `getMessages()` returns the messages of the Tree's `visibleNodes()`, which walks the nodes applying parent reachability and **explicit sibling-group selection**: where a node has siblings, a selection map picks the active member (the user's selection, or the latest by default) and the others are skipped. The View then layers its pagination window on top and concatenates each visible node's projected messages into the flat list. (The agent reads a single branch through its `run.view`, a read-only View pinned to the run's leaf via a [LeafBranchSource](../internals/glossary.md#view-clientview-and-branchsource), where branch selection is implicit-by-parent-walk rather than an explicit selection map.) The user navigates between siblings to switch branches.
 
 ## Regenerate
 

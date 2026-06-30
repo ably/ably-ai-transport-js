@@ -25,7 +25,7 @@ sequenceDiagram
     CS->>U: render tokens
 ```
 
-1. The user sends a message. The client session publishes the input on the Ably channel — the durable record — and `send()` resolves with an `ClientRun`. The core never sends HTTP.
+1. The user sends a message. The client session publishes the input on the Ably channel — the durable record — and `send()` resolves with a `ClientRun`. The core never sends HTTP.
 2. Your app wakes the agent by POSTing the run's invocation pointer (`run.toInvocation().toJSON()`) to your server endpoint. (With the Vercel `useChat` integration, the [chat transport](../internals/chat-transport.md) does this for you.)
 3. Your endpoint creates a run on the agent session, which reads the input off the channel (via rewind), calls the LLM, and pipes the response stream through the encoder to the channel.
 4. The client session receives messages from the channel subscription, decodes them through the codec, and updates the conversation state.

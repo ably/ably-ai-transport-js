@@ -109,12 +109,12 @@ Subscribe to a view and return its visible messages with pagination, branch navi
 const view = useView<TInput, TOutput, TProjection, TMessage>({ session?, view?, limit?, skip? } = {});
 ```
 
-| Prop      | Type                     | Description                                                                     |
-| --------- | ------------------------ | ------------------------------------------------------------------------------- |
-| `session` | `ClientSession \| null?` | Session whose default view to subscribe to; defaults to the nearest provider    |
-| `view`    | `ClientView \| null?`    | A specific `ClientView` to subscribe to directly; takes priority over `session` |
-| `limit`   | `number?`                | Max older Runs per page. When provided, auto-loads the first page on mount      |
-| `skip`    | `boolean?`               | When `true`, skip all subscriptions and return an empty handle                  |
+| Prop      | Type                     | Description                                                                                                   |
+| --------- | ------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| `session` | `ClientSession \| null?` | Session whose default view to subscribe to; defaults to the nearest provider                                  |
+| `view`    | `ClientView \| null?`    | A specific `ClientView` to subscribe to directly; takes priority over `session`                               |
+| `limit`   | `number?`                | Max older messages per page (the View's `loadOlder` limit). When provided, auto-loads the first page on mount |
+| `skip`    | `boolean?`               | When `true`, skip all subscriptions and return an empty handle                                                |
 
 **Returns:** `ViewHandle<TInput, TMessage>`
 
@@ -124,7 +124,7 @@ const view = useView<TInput, TOutput, TProjection, TMessage>({ session?, view?, 
 | `hasOlder`                          | `boolean`                                                                                      | Whether older messages may exist and can be revealed via `loadOlder`. Optimistically `true` before the first fetch (history may exist) and `false` once channel history is drained                                                                                                                                                                                                                                                      |
 | `loading`                           | `boolean`                                                                                      | Is a page being fetched?                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `loadError`                         | `Ably.ErrorInfo \| undefined`                                                                  | Set when the most recent `loadOlder` call failed. Cleared automatically on the next successful load                                                                                                                                                                                                                                                                                                                                     |
-| `loadOlder()`                       | `() => Promise<void>`                                                                          | Reveal older Runs. No-op if already loading                                                                                                                                                                                                                                                                                                                                                                                             |
+| `loadOlder()`                       | `() => Promise<void>`                                                                          | Reveal older messages (uses the hook's `limit`). No-op if already loading                                                                                                                                                                                                                                                                                                                                                               |
 | `runOf(codecMessageId)`             | `(codecMessageId: string) => RunInfo \| undefined`                                             | Look up the `RunInfo` for the Run that owns `codecMessageId`. `undefined` when the codec-message-id hasn't been observed                                                                                                                                                                                                                                                                                                                |
 | `run(runId)`                        | `(runId: string) => RunInfo \| undefined`                                                      | Direct lookup of a Run's `RunInfo` by runId. `undefined` when the Run hasn't been observed                                                                                                                                                                                                                                                                                                                                              |
 | `runs()`                            | `() => RunInfo[]`                                                                              | Snapshot of the visible Runs along the selected branch, in chronological order. Returns `[]` when the view isn't resolved                                                                                                                                                                                                                                                                                                               |
@@ -211,6 +211,42 @@ const messages = useAblyMessages<TInput, TOutput, TProjection, TMessage>({ sessi
 | `skip`    | `boolean?`       | When `true`, skip all subscriptions and return an empty array |
 
 **Returns:** `Ably.InboundMessage[]` - raw Ably messages in chronological order. Includes live and history-loaded messages.
+
+---
+
+### useMessagesWithSeed
+
+Compose a database-backed seed with the live channel into one gap-free, duplicate-free conversation. Use it when you hold persisted history (from your own store) and want to render `seed` immediately, then reconcile only the not-yet-stored tail off the channel. See the [database-hydration recipe](../features/database-hydration.md) for the full pattern.
+
+```typescript
+const messages = useMessagesWithSeed<TMessage>({ view, seed, getMessageId, skip? });
+```
+
+| Option         | Type                            | Description                                                                                                                                                                                         |
+| -------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `view`         | `View<TMessage> \| undefined`   | The view over the live channel to reconcile against (e.g. `session.view`), or `undefined` before the session resolves (the seed is surfaced as-is)                                                  |
+| `seed`         | `TMessage[]`                    | The persisted conversation, oldest-first. A **dependency** - a new reference re-runs the seam walk, so pass a stable (memoised) reference per conversation. `[]` is a loaded-but-empty conversation |
+| `getMessageId` | `(message: TMessage) => string` | The stable domain id of a message - the seam key shared between your store and the channel                                                                                                          |
+| `skip`         | `boolean?`                      | Hold the walk while the seed is still loading; returns `[]`. Distinct from an empty `seed`. Defaults to `false`                                                                                     |
+
+**Returns:** `TMessage[]` - the seed followed by the reconciled live tail, with the single seam message deduplicated.
+
+It drives [`View.loadUntil`](#viewloaduntil) under the hood: it pages the view back until the newest seed message's id reappears, then composes `[...seed, ...tail]`.
+
+---
+
+### View.loadUntil
+
+The View primitive behind seam reconciliation - not a hook, but the read method `useMessagesWithSeed` and `useMessageSync` build on (and which you can call directly on `session.view` or an agent `run.view`).
+
+```typescript
+view.loadUntil(
+  predicate: (message: CodecMessage<TMessage>) => boolean,
+  signal?: AbortSignal,
+): Promise<CodecMessage<TMessage>[]>;
+```
+
+Pages older history back until `predicate` matches a visible message - the **seam** - then resolves to the messages **strictly newer than** it, oldest-first. The matched message is **excluded** (it is the single overlap a caller already holds, e.g. the newest persisted seed message), so `[...seed, ...loadUntil(...)]` composes with no gap and no duplicate. It drives the paging itself, so a caller must not gate it on the seam having already arrived. Resolves to the **whole window** when the predicate never matches (no seam - an unseeded caller hydrates the full conversation), or `[]` if the view is closed or `signal` aborts before the seam is found.
 
 ---
 
@@ -320,16 +356,18 @@ useMessageSync(options: UseMessageSyncOptions): void;
 ```typescript
 interface UseMessageSyncOptions {
   setMessages: (updater: (prev: UIMessage[]) => UIMessage[]) => void; // required
+  messages?: UIMessage[];
   channelName?: string;
   skip?: boolean;
 }
 ```
 
-| Option        | Type                     | Default          | Description                                                                                         |
-| ------------- | ------------------------ | ---------------- | --------------------------------------------------------------------------------------------------- |
-| `setMessages` | `(updater: ...) => void` | —                | **Required.** The `setMessages` function from `useChat()`                                           |
-| `channelName` | `string?`                | nearest provider | Channel name of the `ChatTransportProvider` to observe. Omit to use the nearest in the tree         |
-| `skip`        | `boolean?`               | `false`          | When `true`, skip all subscriptions. Use when dependencies are not yet resolved (e.g. auth pending) |
+| Option        | Type                     | Default          | Description                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ------------- | ------------------------ | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `setMessages` | `(updater: ...) => void` | —                | **Required.** The `setMessages` function from `useChat()`                                                                                                                                                                                                                                                                                                                                                                                      |
+| `messages`    | `UIMessage[]?`           | `[]`             | A database-backed seed - typically `useChat()`'s own `messages`. When non-empty, the hook reconciles it with the channel: it takes the newest entry's `id` as the seam, pages the view back to it, and composes `seed ⧺ live` with no duplicate. Read once per channel, on the first render the view resolves. Omit (or `[]`) to surface the full live channel history. See the [database-hydration recipe](../features/database-hydration.md) |
+| `channelName` | `string?`                | nearest provider | Channel name of the `ChatTransportProvider` to observe. Omit to use the nearest in the tree                                                                                                                                                                                                                                                                                                                                                    |
+| `skip`        | `boolean?`               | `false`          | When `true`, skip all subscriptions. Use when dependencies are not yet resolved (e.g. auth pending)                                                                                                                                                                                                                                                                                                                                            |
 
 **Returns:** `void`
 
@@ -344,3 +382,23 @@ useMessageSync({ channelName: 'ai:main', setMessages });
 ```
 
 Required when using the useChat path with multi-client sync. Without it, `useChat()` only shows messages from its own sends.
+
+`useMessageSync` is the `useChat`-integrated path. If you render messages yourself (the `useClientSession` path), use [`useMessagesWithSeed`](#usemessageswithseed-vercel) instead.
+
+---
+
+### useMessagesWithSeed (Vercel)
+
+The Vercel-typed counterpart of the generic [`useMessagesWithSeed`](#usemessageswithseed), pre-bound to `UIMessage`. It uses `message.id` as the seam key, so no `getMessageId` is needed. Use it on the `useClientSession` path to compose a database-backed seed with the live channel; for the `useChat` path use [`useMessageSync`](#usemessagesync), which seeds via its `messages` option.
+
+```typescript
+const messages = useMessagesWithSeed({ view, seed, skip? });
+```
+
+| Option | Type                           | Description                                                                                                     |
+| ------ | ------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `view` | `View<UIMessage> \| undefined` | The view over the live channel (e.g. `session.view`), or `undefined` before it resolves                         |
+| `seed` | `UIMessage[]`                  | The persisted conversation, oldest-first. `[]` surfaces the live channel window unchanged                       |
+| `skip` | `boolean?`                     | Hold the walk while the seed is still loading; returns `[]`. Distinct from an empty `seed`. Defaults to `false` |
+
+**Returns:** `UIMessage[]` - the seed followed by the reconciled live tail, deduplicated at the seam. See the [database-hydration recipe](../features/database-hydration.md).

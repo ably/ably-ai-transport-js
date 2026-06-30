@@ -1,7 +1,11 @@
 'use client';
 
 import { useState } from 'react';
-import { isToolUIPart, type UIMessage } from 'ai';
+import type { UIMessage, DynamicToolUIPart } from 'ai';
+import { Badge } from '@/components/ui/badge';
+import { Bubble, BubbleContent } from '@/components/ui/bubble';
+import { Button } from '@/components/ui/button';
+import { Message, MessageContent, MessageFooter } from '@/components/ui/message';
 import { ToolInvocation } from './tool-invocation';
 import { clientColor } from '../lib/client-color';
 
@@ -40,22 +44,28 @@ function BranchNavigator({
   onSelect: (index: number) => void;
 }) {
   return (
-    <div className="inline-flex items-center gap-1 rounded bg-zinc-800/60 px-1.5 py-0.5">
+    <div
+      data-testid="branch-navigator"
+      className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5"
+    >
       <button
         onClick={() => onSelect(current - 1)}
         disabled={current === 0}
-        className="text-[11px] text-zinc-400 hover:text-zinc-200 disabled:text-zinc-700 disabled:cursor-not-allowed transition-colors px-0.5"
+        className="px-0.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
         title="Previous branch"
       >
         &lt;
       </button>
-      <span className="text-[10px] text-zinc-500 tabular-nums min-w-[2.5rem] text-center">
+      <span
+        data-testid="branch-counter"
+        className="min-w-[2.5rem] text-center text-[10px] text-muted-foreground tabular-nums"
+      >
         {current + 1} / {total}
       </span>
       <button
         onClick={() => onSelect(current + 1)}
         disabled={current >= total - 1}
-        className="text-[11px] text-zinc-400 hover:text-zinc-200 disabled:text-zinc-700 disabled:cursor-not-allowed transition-colors px-0.5"
+        className="px-0.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
         title="Next branch"
       >
         &gt;
@@ -64,50 +74,34 @@ function BranchNavigator({
   );
 }
 
-function Badge({ label, value, color }: { label: string; value: string; color: string }) {
+function InfoBadge({ label, value, className }: { label: string; value: string; className?: string }) {
   return (
-    <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] leading-tight ${color}`}>
-      <span className="text-zinc-600">{label}</span>
+    <Badge
+      variant="secondary"
+      className={className}
+    >
+      <span className="text-muted-foreground">{label}</span>
       <span>{value}</span>
-    </span>
+    </Badge>
   );
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const color =
+  const className =
     status === 'complete'
       ? 'bg-emerald-950 text-emerald-400'
       : status === 'streaming'
         ? 'bg-amber-950 text-amber-400'
         : status === 'cancelled' || status === 'error'
           ? 'bg-red-950 text-red-400'
-          : 'bg-zinc-900 text-zinc-500';
+          : undefined;
   return (
-    <Badge
+    <InfoBadge
       label="status"
       value={status}
-      color={color}
+      className={className}
     />
   );
-}
-
-function bubbleClasses(isUser: boolean, status: string | undefined, userBgClass?: string): string {
-  const base = 'rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap';
-
-  if (isUser) {
-    return `${base} ${userBgClass ?? 'bg-zinc-800'} text-zinc-100`;
-  }
-
-  if (status === 'streaming') {
-    return `${base} bg-zinc-900 text-zinc-300 border border-amber-900/40`;
-  }
-  if (status === 'complete') {
-    return `${base} bg-zinc-900 text-zinc-300 border border-emerald-900/40`;
-  }
-  if (status === 'cancelled' || status === 'error') {
-    return `${base} bg-zinc-900 text-zinc-300 border border-red-900/40`;
-  }
-  return `${base} bg-zinc-900 text-zinc-300 border border-zinc-800`;
 }
 
 // ---------------------------------------------------------------------------
@@ -142,7 +136,7 @@ function EditForm({
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        className="w-full rounded-lg bg-zinc-800 border border-zinc-600 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-400 resize-none"
+        className="w-full resize-none rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-ring"
         rows={Math.min(6, text.split('\n').length + 1)}
         autoFocus
         onKeyDown={(e) => {
@@ -153,21 +147,22 @@ function EditForm({
           }
         }}
       />
-      <div className="flex gap-2 mt-1.5">
-        <button
+      <div className="mt-1.5 flex gap-2">
+        <Button
           type="submit"
+          size="xs"
           disabled={!text.trim() || text.trim() === initialText}
-          className="rounded px-2.5 py-1 text-[11px] font-medium bg-zinc-700 text-zinc-200 hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           Save &amp; Submit
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
+          size="xs"
+          variant="ghost"
           onClick={onCancel}
-          className="rounded px-2.5 py-1 text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors"
         >
           Cancel
-        </button>
+        </Button>
       </div>
     </form>
   );
@@ -203,8 +198,12 @@ export function MessageBubble({
     .join('');
 
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className="max-w-[75%]">
+    <Message
+      align={isUser ? 'end' : 'start'}
+      data-testid="message-bubble"
+      data-role={role}
+    >
+      <MessageContent>
         {isEditing && onEdit ? (
           <EditForm
             initialText={messageText}
@@ -213,32 +212,39 @@ export function MessageBubble({
           />
         ) : (
           <>
-            <div className={bubbleClasses(isUser, status, colors?.userBg)}>
-              {message.parts.map((part, i) => {
-                if (part.type === 'text') return <span key={i}>{part.text}</span>;
-                if (isToolUIPart(part)) {
-                  // eslint-disable-next-line @typescript-eslint/no-empty-function -- no-op fallback when no approval handler
-                  const noop = (): void => {};
-                  return (
-                    <ToolInvocation
-                      key={i}
-                      part={part}
-                      onApprove={
-                        onToolApprove && codecMessageId ? () => onToolApprove(codecMessageId, part.toolCallId) : noop
-                      }
-                      onDeny={onToolDeny && codecMessageId ? () => onToolDeny(codecMessageId, part.toolCallId) : noop}
-                    />
-                  );
-                }
-                return null;
-              })}
-              {!isUser && status === 'streaming' && (
-                <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-amber-500/60 animate-pulse rounded-sm align-text-bottom" />
-              )}
-            </div>
-            <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+            <Bubble
+              variant={isUser ? 'default' : 'muted'}
+              align={isUser ? 'end' : 'start'}
+            >
+              <BubbleContent className="whitespace-pre-wrap">
+                {message.parts.map((part, i) => {
+                  if (part.type === 'text') return <span key={i}>{part.text}</span>;
+                  if (part.type === 'dynamic-tool') {
+                    const toolPart = part as DynamicToolUIPart;
+                    return (
+                      <ToolInvocation
+                        key={i}
+                        part={toolPart}
+                        onApprove={
+                          onToolApprove ? () => onToolApprove(codecMessageId, toolPart.toolCallId) : undefined
+                        }
+                        onDeny={onToolDeny ? () => onToolDeny(codecMessageId, toolPart.toolCallId) : undefined}
+                      />
+                    );
+                  }
+                  return null;
+                })}
+                {!isUser && status === 'streaming' && (
+                  <span
+                    data-testid="streaming-caret"
+                    className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse rounded-sm bg-amber-500/60 align-text-bottom"
+                  />
+                )}
+              </BubbleContent>
+            </Bubble>
+            <MessageFooter className="mt-1 flex flex-wrap items-center gap-1.5">
               {/* Branch navigator (when the message has siblings) */}
-              {hasSiblings && siblingCount !== undefined && selectedIndex !== undefined && onSelectSibling && (
+              {hasSiblings && (
                 <BranchNavigator
                   current={selectedIndex}
                   total={siblingCount}
@@ -248,45 +254,47 @@ export function MessageBubble({
 
               {/* Edit button (user messages) */}
               {onEdit && status !== 'streaming' && (
-                <button
+                <Button
+                  variant="ghost"
+                  size="xs"
                   onClick={() => setIsEditing(true)}
-                  className="text-[10px] text-zinc-500 hover:text-zinc-200 transition-colors rounded bg-zinc-800/60 px-1.5 py-0.5"
                   title="Edit message"
+                  data-testid="edit-message"
                 >
                   edit
-                </button>
+                </Button>
               )}
 
               {/* Regenerate button (assistant messages) */}
               {onRegenerate && status !== 'streaming' && (
-                <button
+                <Button
+                  variant="ghost"
+                  size="xs"
                   onClick={onRegenerate}
-                  className="text-[10px] text-zinc-500 hover:text-zinc-200 transition-colors rounded bg-zinc-800/60 px-1.5 py-0.5"
                   title="Regenerate response"
+                  data-testid="regenerate-message"
                 >
                   regenerate
-                </button>
+                </Button>
               )}
 
               {/* Debug badges (only when we know which Run the message belongs to). */}
               {runId && (
                 <>
-                  <Badge
+                  <InfoBadge
                     label="role"
                     value={role}
-                    color="bg-zinc-900 text-zinc-500"
                   />
                   {clientId && (
-                    <Badge
+                    <InfoBadge
                       label="client"
                       value={clientId}
-                      color={`bg-zinc-900 ${colors?.text ?? 'text-zinc-500'}`}
+                      className={colors?.text}
                     />
                   )}
-                  <Badge
+                  <InfoBadge
                     label="run"
                     value={runId.slice(0, 8)}
-                    color="bg-zinc-900 text-zinc-500"
                   />
                   {stepId && (
                     <Badge
@@ -298,13 +306,13 @@ export function MessageBubble({
                   {status && !isUser && <StatusBadge status={status} />}
                 </>
               )}
-            </div>
+            </MessageFooter>
             {!isUser && status === 'error' && errorMessage && (
-              <div className="mt-1 text-[11px] text-red-300 break-words">{errorMessage}</div>
+              <div className="mt-1 text-[11px] break-words text-destructive">{errorMessage}</div>
             )}
           </>
         )}
-      </div>
-    </div>
+      </MessageContent>
+    </Message>
   );
 }

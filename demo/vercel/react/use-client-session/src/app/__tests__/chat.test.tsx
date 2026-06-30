@@ -24,8 +24,8 @@ let setMockViewMessages: ((messages: AI.UIMessage[]) => void) | null = null;
 // the Stop / Send button state) for the rendered messages. Default: no Run.
 let mockRunOf: (codecMessageId: string) => RunInfo | undefined = () => undefined;
 
-const mockSend = vi.fn(
-  (_input: VercelInput | VercelInput[], _opts?: SendOptions): Promise<ClientRun<AI.UIMessage>> =>
+const mockSend = vi.fn<(input: VercelInput | VercelInput[], opts?: SendOptions) => Promise<ClientRun<AI.UIMessage>>>(
+  () =>
     Promise.resolve({
       // The triggering input's codec-message-id — the synchronous routing
       // handle the client owns the moment it publishes.
@@ -102,7 +102,6 @@ vi.mock('ably/react', () => ({
 }));
 
 // Chat must be imported AFTER vi.mock so it picks up the mocked module.
-// eslint-disable-next-line import/first
 import { Chat } from '../components/chat';
 
 // ---------------------------------------------------------------------------
@@ -129,7 +128,6 @@ describe('<Chat>', () => {
     // agent route returns the minted invocation-id, which wakeAgent reads.
     vi.stubGlobal(
       'fetch',
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
       vi.fn(() => Promise.resolve(Response.json({ invocationId: 'inv-1' }))),
     );
   });

@@ -114,14 +114,15 @@ export async function POST(req: Request) {
 
   await run.start();
 
-  // Hydrate the conversation from the channel (the just-published user input
-  // plus prior history). `run.messages` is the UIMessage[] for the LLM.
-  await run.loadConversation();
+  // Drain run.view to read the conversation from the channel (the just-published
+  // user input plus prior history). run.messages is only this run's own turn.
+  while (run.view.hasOlder()) await run.view.loadOlder();
+  const conversation = run.view.getMessages().map((m) => m.message);
 
   const result = streamText({
     model: anthropic('claude-sonnet-4-6'),
     system: 'You are a helpful assistant.',
-    messages: await convertToModelMessages(run.messages),
+    messages: await convertToModelMessages(conversation),
     abortSignal: run.abortSignal,
   });
 
@@ -245,7 +246,7 @@ Open `http://localhost:3000`. Type a message - you'll see tokens stream in real 
 2. `useChatTransport()` reads both from `ChatTransportContext` — no arguments needed for the nearest provider.
 3. `chatTransport` satisfies Vercel's `ChatTransport` interface; `session` is the underlying `ClientSession` used for `useMessageSync` and `useView`.
 4. When you send a message, `useChat()` calls the chat transport's `sendMessages`, which publishes your message on the Ably channel and POSTs the run's invocation pointer (`{ inputEventId, sessionName }`) to `/api/chat` to wake the agent.
-5. The server creates a run, hydrates the conversation with `run.loadConversation()`, streams the LLM response through the encoder to the channel, and publishes a run-end event.
+5. The server creates a run, reads the conversation by draining `run.view` (paging `loadOlder()` until `hasOlder()` is false), streams the LLM response through the encoder to the channel, and publishes a run-end event.
 6. The client session decodes incoming Ably messages through `UIMessageCodec` and routes them to the stream.
 7. `useMessageSync()` syncs messages from the session (including messages from other clients) into `useChat`'s state.
 

@@ -62,8 +62,10 @@ const run = session.createRun(invocation);
 // reads the user's message and per-run metadata, and publishes `ai-run-start`.
 await run.start();
 
-// Load the conversation the client published to the channel, then prompt the LLM.
-const history = await run.loadConversation();
+// Read the conversation the client published to the channel, then prompt the LLM.
+// Drain run.view for the full multi-turn history; run.messages is only this turn.
+while (run.view.hasOlder()) await run.view.loadOlder();
+const history = run.view.getMessages().map((m) => m.message);
 const result = streamText({ model, messages: history });
 const { reason } = await run.pipe(result.toUIMessageStream());
 await run.end({ reason });

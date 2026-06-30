@@ -20,8 +20,10 @@ const run = session.createRun(invocation, { signal: req.signal });
 await run.start();
 
 // 2. Read the conversation from the channel — the agent does not republish the
-//    user's prompt; it reads it from the input event the client already published
-await run.loadConversation();
+//    user's prompt; it reads it from the input event the client already published.
+//    Drain run.view for the full multi-turn history; run.messages is only this turn.
+while (run.view.hasOlder()) await run.view.loadOlder();
+const conversation = run.view.getMessages().map((m) => m.message);
 
 // 3. Pipe the LLM response stream through the encoder
 const { reason } = await run.pipe(llmStream);
@@ -30,7 +32,7 @@ const { reason } = await run.pipe(llmStream);
 await run.end({ reason });
 ```
 
-`createRun()` is synchronous - it creates the run and registers it for cancel routing, but doesn't touch the channel. This means a cancel signal that arrives before `start()` still fires the run's `AbortSignal`. The invocation body carries only `inputEventId` and `sessionName` — run identity and the user's prompt both live on the channel. `run.start()` locates the triggering input event (via channel rewind) and opens the run on the channel (`ai-run-start`, or `ai-run-resume` when the input re-enters an existing run). The run id itself is assigned when the run is created, not in `start()`. `run.loadConversation()` hydrates `run.messages` from the channel so you can feed them to the model.
+`createRun()` is synchronous - it creates the run and registers it for cancel routing, but doesn't touch the channel. This means a cancel signal that arrives before `start()` still fires the run's `AbortSignal`. The invocation body carries only `inputEventId` and `sessionName` — run identity and the user's prompt both live on the channel. `run.start()` locates the triggering input event (via channel rewind) and opens the run on the channel (`ai-run-start`, or `ai-run-resume` when the input re-enters an existing run). The run id itself is assigned when the run is created, not in `start()`. To feed the model, drain `run.view` - the run's read-only [View](../internals/transport-components.md) over the channel - by paging it back with `loadOlder()` until `hasOlder()` is false, then read `getMessages()`. `run.messages` is only this run's own turn (its triggering input plus its streamed output), not the whole conversation.
 
 `pipe()` returns a `StreamResult` with a `reason` field:
 

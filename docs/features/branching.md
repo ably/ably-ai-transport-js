@@ -20,7 +20,7 @@ User: "What is Rust?"                       (input-1, parent: null)
   └── Run: "Rust is a systems..."            (run-2, parent: input-1)  ← regenerated (same input parent)
 ```
 
-The live View's `getMessages()` returns the messages of the Tree's `visibleNodes()`, which walks the nodes applying parent reachability and **explicit sibling-group selection**: where a node has siblings, a selection map picks the active member (the user's selection, or the latest by default) and the others are skipped. The View then layers its pagination window on top and concatenates each visible node's projected messages into the flat list. (The agent's `loadConversation` and history decode use a different path — `buildBranchChain` — where branch selection is implicit-by-unreachability rather than an explicit selection map.) The user navigates between siblings to switch branches.
+The live View's `getMessages()` returns the messages of the Tree's `visibleNodes()`, which walks the nodes applying parent reachability and **explicit sibling-group selection**: where a node has siblings, a selection map picks the active member (the user's selection, or the latest by default) and the others are skipped. The View then layers its pagination window on top and concatenates each visible node's projected messages into the flat list. (The agent reads a single branch through its `run.view`, a read-only View pinned to the run's leaf via a [LeafBranchSource](../internals/agent-session.md), where branch selection is implicit-by-parent-walk rather than an explicit selection map.) The user navigates between siblings to switch branches.
 
 ## Regenerate
 
@@ -115,7 +115,7 @@ Calling `branch.select()` updates the view's active branch and re-renders with t
 
 ## Server handling
 
-The agent receives only an invocation pointer — `{ inputEventId, sessionName }` — in the POST body, not the messages or branching metadata. It replays the triggering input event off the channel via rewind, then `loadConversation()` walks the branch chain from that input event (following `parent` links and resolving `fork-of` / `msg-regenerate`) to assemble the LLM-ready history. The agent never needs to read `forkOf` or `parent` itself:
+The agent receives only an invocation pointer — `{ inputEventId, sessionName }` — in the POST body, not the messages or branching metadata. It replays the triggering input event off the channel via rewind, then drains `run.view` - which walks the branch chain from that input event (following `parent` links and resolving `fork-of` / `msg-regenerate`) - to assemble the LLM-ready history. The agent never needs to read `forkOf` or `parent` itself:
 
 ```typescript
 import { Invocation } from '@ably/ai-transport';
@@ -127,15 +127,16 @@ const invocation = Invocation.fromJSON(data);
 const run = session.createRun(invocation, { signal: req.signal });
 await run.start();
 
-// Walk the branch chain off the channel into LLM-ready history.
-await run.loadConversation();
+// Drain run.view to walk the branch chain off the channel into LLM-ready history.
+while (run.view.hasOlder()) await run.view.loadOlder();
+const conversation = run.view.getMessages().map((m) => m.message);
 
-const result = streamText({ model, messages: run.messages, abortSignal: run.abortSignal });
+const result = streamText({ model, messages: conversation, abortSignal: run.abortSignal });
 const { reason } = await run.pipe(result.toUIMessageStream());
 await run.end({ reason });
 ```
 
-The client stamps `parent`, `fork-of`, and `msg-regenerate` headers on the published input event. All clients on the channel see these headers and update their local tree; the agent resolves them through `loadConversation`.
+The client stamps `parent`, `fork-of`, and `msg-regenerate` headers on the published input event. All clients on the channel see these headers and update their local tree; the agent resolves them by draining `run.view`.
 
 ## Multiple views
 

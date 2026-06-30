@@ -20,11 +20,11 @@ function freshChannelUrl(testTitle: string): string {
   return `/?channel=ai:e2e-${slug}-${stamp}`;
 }
 
-// `MessageBubble` always renders a `.max-w-[75%]` wrapper containing the
-// bubble body and (when not streaming) an action bar with role-specific
-// buttons.
+// `MessageBubble` renders a `[data-testid="message-bubble"]` wrapper (the
+// shadcn Message row) containing the bubble body and (when not streaming) an
+// action bar with role-specific buttons.
 function allBubbles(page: Page): Locator {
-  return page.locator('div.max-w-\\[75\\%\\]');
+  return page.locator('[data-testid="message-bubble"]');
 }
 
 // Edit button is rendered only on user bubbles; Regenerate only on
@@ -85,8 +85,8 @@ async function branchCounter(bubble: Locator): Promise<string | null> {
 }
 
 async function bubbleText(bubble: Locator): Promise<string> {
-  // The bubble body div has class beginning with "rounded-lg".
-  const body = bubble.locator('div.rounded-lg').first();
+  // The bubble body is the shadcn BubbleContent (data-slot="bubble-content").
+  const body = bubble.locator('[data-slot="bubble-content"]').first();
   if ((await body.count()) === 0) return (await bubble.innerText()).trim();
   return (await body.innerText()).trim();
 }
@@ -1018,7 +1018,7 @@ test.describe('use-chat demo - chat behaviour', () => {
     // appears races the agent's abort listeners and can miss server-side
     // paths that only surface once tokens are mid-flight. The user's
     // manual reproduction is "press Stop as something starts coming in".
-    const assistantBubble = page.locator('div.max-w-\\[75\\%\\]').filter({ hasText: /./ }).nth(1);
+    const assistantBubble = page.locator('[data-testid="message-bubble"]').filter({ hasText: /./ }).nth(1);
     await expect(assistantBubble).toBeVisible({ timeout: 30_000 });
     await expect(assistantBubble).toHaveText(/.{40,}/, { timeout: 30_000 });
 

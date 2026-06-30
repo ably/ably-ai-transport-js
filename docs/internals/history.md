@@ -53,7 +53,7 @@ await view.loadOlder(10);
 // view.hasOlder()    — whether more history may be revealed
 ```
 
-A run whose stream is still in progress, or spans a page boundary, simply contributes to a projection that completes once a later page supplies the rest of its wires — no special handling, because folding is incremental and idempotent. Concurrent runs stay isolated for the same reason they do live: each wire folds into its owning node's projection, keyed by [`run-id`](wire-protocol.md#transport-headers).
+A run whose stream is still in progress, or spans a page boundary, simply contributes to a projection that completes once a later page supplies the rest of its wires — no special handling at the fold, because folding is incremental and idempotent. Concurrent runs stay isolated for the same reason they do live: each wire folds into its owning node's projection, keyed by [`run-id`](wire-protocol.md#transport-headers). The agent's [`run.view`](agent-session.md#run-view) is the one place that does treat an in-progress run specially: paging still stops only on history exhaustion, but the materialised branch its `getMessages()` returns omits ancestor runs that have not completed (and the inputs they replied to), so a broken earlier turn can't leak an unresolved tool call into the prompt fed to the model.
 
 ## Page size
 

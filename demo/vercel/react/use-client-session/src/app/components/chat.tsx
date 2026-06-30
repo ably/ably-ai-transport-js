@@ -5,7 +5,8 @@ import type { ClientRun } from '@ably/ai-transport';
 import type { UIMessage } from 'ai';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
-import { Button } from '@/components/ui/button';
+import { ArrowUpIcon, SquareIcon } from 'lucide-react';
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from '@/components/ui/input-group';
 import { userMessage, wakeAgent } from '../helpers';
 import { useClientTools } from '../hooks/use-client-tools';
 import { useDemoProgress } from '../hooks/use-demo-progress';
@@ -140,7 +141,7 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
   const unfinishedSteps = useDemoProgress(messages, branchSelection, runOf, ablyMessages);
 
   const [input, setInput] = useState('');
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const handleSelectPrompt = useCallback((prompt: string) => {
     setInput(prompt);
     inputRef.current?.focus();
@@ -326,48 +327,69 @@ function InputBar({
 }: {
   value: string;
   onChange: (value: string) => void;
-  inputRef?: React.RefObject<HTMLInputElement | null>;
+  inputRef?: React.RefObject<HTMLTextAreaElement | null>;
   onSend: (text: string) => void;
   onStop: () => void;
   hasAnyRuns: boolean;
 }) {
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const submit = () => {
     const text = value.trim();
     if (!text) return;
     onChange('');
     onSend(text);
   };
 
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    submit();
+  };
+
   return (
     <form
       onSubmit={handleSubmit}
-      className="px-4 py-3 flex gap-2"
+      className="px-4 py-3"
     >
-      <input
-        ref={inputRef}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="Type a message..."
-        className="flex-1 rounded-md border border-input bg-input/30 px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-ring"
-        autoFocus
-      />
-      {hasAnyRuns ? (
-        <Button
-          type="button"
-          variant="destructive"
-          onClick={onStop}
-        >
-          Stop
-        </Button>
-      ) : (
-        <Button
-          type="submit"
-          disabled={!value.trim()}
-        >
-          Send
-        </Button>
-      )}
+      <InputGroup>
+        <InputGroupTextarea
+          ref={inputRef}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="Type a message..."
+          autoFocus
+          // Enter sends; Shift+Enter inserts a newline (standard composer UX).
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+        />
+        <InputGroupAddon align="block-end">
+          {hasAnyRuns ? (
+            <InputGroupButton
+              type="button"
+              variant="destructive"
+              size="icon-sm"
+              className="ml-auto rounded-full"
+              aria-label="Stop"
+              onClick={onStop}
+            >
+              <SquareIcon className="fill-current" />
+            </InputGroupButton>
+          ) : (
+            <InputGroupButton
+              type="submit"
+              variant="default"
+              size="icon-sm"
+              className="ml-auto rounded-full"
+              aria-label="Send"
+              disabled={!value.trim()}
+            >
+              <ArrowUpIcon />
+            </InputGroupButton>
+          )}
+        </InputGroupAddon>
+      </InputGroup>
     </form>
   );
 }

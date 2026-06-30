@@ -97,7 +97,9 @@ async function bubbleText(bubble: Locator): Promise<string> {
 // matching mid-flow — pull the textarea off the page itself.
 async function editAndSubmit(page: Page, userBubble: Locator, newText: string): Promise<void> {
   await userBubble.locator('button[title="Edit message"]').click();
-  const ta = page.locator('textarea').first();
+  // The edit field carries data-testid="edit-input"; the message composer is
+  // also a textarea, so target the edit field specifically.
+  const ta = page.getByTestId('edit-input');
   await ta.fill(newText);
   await ta.press('Enter');
 }

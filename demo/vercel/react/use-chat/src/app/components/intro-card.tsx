@@ -31,8 +31,8 @@ const STEPS: DemoStep[] = [
     action: (
       <>
         Ask:{' '}
-        <span className="font-medium text-foreground">&ldquo;what&rsquo;s the weather forecast for London?&rdquo;</span>,
-        then click <span className="font-medium text-foreground">Approve</span> on the card.
+        <span className="font-medium text-foreground">&ldquo;what&rsquo;s the weather forecast for London?&rdquo;</span>
+        , then click <span className="font-medium text-foreground">Approve</span> on the card.
       </>
     ),
     demonstrates:
@@ -114,16 +114,16 @@ export function IntroCard() {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <ol className="space-y-4">
+        <ol className="flex flex-col gap-4">
           {STEPS.map((step, i) => (
             <li
               key={step.title}
               className="flex gap-3"
             >
-              <span className="mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full border border-border text-xs font-medium text-muted-foreground">
+              <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full border border-border text-xs font-medium text-muted-foreground">
                 {i + 1}
               </span>
-              <div className="flex-1 space-y-1">
+              <div className="flex flex-1 flex-col gap-1">
                 <div className="text-sm font-medium text-foreground">{step.title}</div>
                 <div className="text-sm text-muted-foreground">{step.action}</div>
                 <div className="text-xs text-muted-foreground/70">{step.demonstrates}</div>

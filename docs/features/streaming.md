@@ -51,10 +51,12 @@ await session.connect();
 const run = session.createRun(invocation, { signal: req.signal });
 
 await run.start();
-// Replay the channel into the codec to reconstruct the conversation so far
-await run.loadConversation();
+// Drain run.view to reconstruct the conversation so far from the channel.
+// run.messages is only this run's own turn.
+while (run.view.hasOlder()) await run.view.loadOlder();
+const conversation = run.view.getMessages().map((m) => m.message);
 
-const result = streamText({ model, messages: run.messages, abortSignal: run.abortSignal });
+const result = streamText({ model, messages: conversation, abortSignal: run.abortSignal });
 const pipeResult = await run.pipe(result.toUIMessageStream());
 
 const outcome = await vercelRunOutcome(pipeResult, result.finishReason);

@@ -42,11 +42,15 @@ await session.connect();
 const run = session.createRun(invocation, { signal: req.signal });
 
 await run.start();
-await run.loadConversation();
+
+// Drain run.view for the full multi-turn conversation to feed the model.
+// run.messages is only this run's own turn.
+while (run.view.hasOlder()) await run.view.loadOlder();
+const conversation = run.view.getMessages().map((m) => m.message);
 
 const result = streamText({
   model,
-  messages: await convertToModelMessages(run.messages),
+  messages: await convertToModelMessages(conversation),
   tools: {
     getWeather: {
       description: 'Get the current weather for a location.',

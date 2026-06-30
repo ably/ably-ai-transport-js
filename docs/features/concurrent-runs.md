@@ -39,8 +39,9 @@ const invocation = Invocation.fromJSON(await req.json());
 const run = session.createRun(invocation, { signal: req.signal });
 await run.start();
 
-// Load the conversation the triggering input produced from the channel
-const messages = await run.loadConversation();
+// Drain run.view for the conversation the triggering input produced from the channel
+while (run.view.hasOlder()) await run.view.loadOlder();
+const messages = run.view.getMessages().map((m) => m.message);
 
 const result = streamText({ model, messages, abortSignal: run.abortSignal });
 const { reason } = await run.pipe(result.toUIMessageStream());

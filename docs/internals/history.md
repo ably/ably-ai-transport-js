@@ -34,11 +34,11 @@ The hydrator follows the lifecycle of the Tree it folds into: the client session
 
 ## Stop predicates, per caller
 
-| Caller                                                                               | `shouldStop` predicate                                                                        |
-| ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------- |
-| Client `View.loadOlder`                                                              | enough newly-visible codecMessages have folded to cover the requested page                    |
-| Agent input-event lookup ([`locateInputEvent`](agent-session.md#input-event-lookup)) | the triggering `event-id` has been found (via the Tree's `ably-message` event the fold emits) |
-| Agent ancestor hydration (`loadConversation`)                                        | the run's parent chain reaches the conversation root (or the `maxRuns` bound)                 |
+| Caller                                                                               | `shouldStop` predicate                                                                                             |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| Client `View.loadOlder`                                                              | enough newly-visible codecMessages have folded to cover the requested page                                         |
+| Agent input-event lookup ([`locateInputEvent`](agent-session.md#input-event-lookup)) | the triggering `event-id` has been found (via the Tree's `ably-message` event the fold emits)                      |
+| Agent ancestor hydration (`run.view` drain)                                          | each reveal covers its page; the agent repeats `loadOlder` until `hasOlder()` is false (channel history exhausted) |
 
 The transport never reads inside a domain message to decide when to stop — the criterion lives entirely in caller code.
 

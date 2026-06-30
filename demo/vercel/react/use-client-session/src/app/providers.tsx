@@ -44,7 +44,7 @@ export function Providers({ clientId, children }: { clientId?: string; children:
     // The Ably client must be created in the browser (never during SSR) and
     // torn down on cleanup, so it is built in this effect and published via
     // setState; a lazy useState initialiser could not run the close() cleanup.
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- browser-only client with required teardown
+    // (react-hooks/set-state-in-effect is scoped off for this file in eslint.config.mjs.)
     setClient(ably);
     return () => {
       ably.close();

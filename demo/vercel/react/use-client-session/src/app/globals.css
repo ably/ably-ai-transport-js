@@ -154,10 +154,6 @@
   -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 1.5rem), transparent);
   mask-image: linear-gradient(to bottom, black calc(100% - 1.5rem), transparent);
 }
-.scroll-fade-t {
-  -webkit-mask-image: linear-gradient(to top, black calc(100% - 1.5rem), transparent);
-  mask-image: linear-gradient(to top, black calc(100% - 1.5rem), transparent);
-}
 
 @keyframes shimmer {
   0% {

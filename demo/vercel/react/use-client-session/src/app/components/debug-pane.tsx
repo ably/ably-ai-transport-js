@@ -349,6 +349,8 @@ export function DebugPane({
   return (
     <Tabs
       value={tab}
+      // CAST: Radix Tabs widens its onValueChange arg to string; the only
+      // values wired up are the three TabsTrigger values, which are exactly Tab.
       onValueChange={(value) => setTab(value as Tab)}
       className="flex w-[420px] flex-shrink-0 flex-col gap-0 border-l border-border bg-background"
     >

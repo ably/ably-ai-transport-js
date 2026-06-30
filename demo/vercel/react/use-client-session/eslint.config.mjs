@@ -8,6 +8,18 @@ const config = [
   { ignores: ['.next/**', 'next-env.d.ts'] },
   ...coreWebVitals,
   ...typescript,
+  {
+    // These two files run effects that synchronise React with an external
+    // system — exactly what effects are for: providers.tsx creates the
+    // browser-only Ably client (and tears it down on cleanup) and the chat
+    // component appends a transition entry whenever the session status changes.
+    // The React-Compiler rule react-hooks/set-state-in-effect can't tell these
+    // apart from accidental cascading setState, and a lazy useState initialiser
+    // can't run the client teardown. Scope the rule off to just these files
+    // rather than suppress inline.
+    files: ['src/app/providers.tsx', 'src/app/components/chat.tsx'],
+    rules: { 'react-hooks/set-state-in-effect': 'off' },
+  },
 ];
 
 export default config;

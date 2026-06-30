@@ -78,6 +78,10 @@ Three different identity headers serve different purposes:
 
 A run carries the agent's response messages and lifecycle events. The triggering user input is **run-less** — the agent mints the `run-id` at run-start, so a client-published input event carries no `run-id` and lives as its own input node. See [Wire protocol: message identity](wire-protocol.md#message-identity-codec-message-id) for the full lifecycle.
 
+### Run read-model (BaseRun)
+
+The shared read surface every run exposes, on the client and the agent alike (`BaseRun`, `src/core/transport/base-run.ts`): `runId`, `status` (`active` / `suspended` / `complete` / `cancelled` / `error`), `error` (set only when `status` is `error`), and `messages` - **this run's own turn**, its triggering input plus its streamed output, not the whole conversation. The fields are live getter accessors over the [conversation tree](conversation-tree.md), not a snapshot, so they stay current as lifecycle events fold in. The client's `ActiveRun` extends it with the send/cancel handle and the `runId` promise; the agent's run extends it with [`run.view`](agent-session.md#run-view) and [`run.located`](agent-session.md#runlocated). For the full conversation (not just this turn) drain `run.view`.
+
 ### View, ClientView, and BranchSource
 
 The read surface over the [conversation tree](conversation-tree.md), split so one projection serves both sides:

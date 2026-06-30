@@ -48,7 +48,7 @@ import type {
   StreamTrackerState,
   WriteOptions,
 } from './types.js';
-import { type WellKnownInputFactories, wellKnownInputs } from './well-known-inputs.js';
+import { type DefinedCodecFactories, type WellKnownInputFactories, wellKnownInputs } from './well-known-inputs.js';
 
 // Re-exported so codec descriptor tables (e.g. the Vercel `inputs.ts` / `outputs.ts`)
 // can type their builder parameter without reaching into the descriptor modules directly.
@@ -149,7 +149,11 @@ export interface DefineCodecConfig<
  * former types them against `UserMessageOf<TInput>` / `ToolResultPayloadOf<TInput>`
  * — equal to the codec's `TMessage` / payloads for every real codec, but not
  * provably so to the generic type system. At a concrete call site a
- * `DefinedCodec` is assignable to the corresponding `Codec`.
+ * `DefinedCodec` is assignable to the corresponding `Codec` — including for a
+ * partial codec, because the tool factories are typed by
+ * {@link DefinedCodecFactories} as present only when `TInput` carries the
+ * matching variant (so a text-only codec satisfies `Codec`'s optional tool
+ * factories rather than over-promising them).
  */
 export type DefinedCodec<
   TInput extends CodecInputEvent,
@@ -157,7 +161,7 @@ export type DefinedCodec<
   TProjection,
   TMessage,
 > = Omit<Codec<TInput, TOutput, TProjection, TMessage>, keyof WellKnownInputFactories<TInput>> &
-  WellKnownInputFactories<TInput>;
+  DefinedCodecFactories<TInput>;
 
 // ---------------------------------------------------------------------------
 // Generic encoder
@@ -427,6 +431,15 @@ export const defineCodec =
           // here would be unreachable surface.
           createDecoderCore(buildHooks(outputDecoder, inputDecoder, decodeLifecycle?.()), {}),
         ),
-      ...wellKnownInputs<TInput>(),
+      // CAST: wellKnownInputs always provides all five factory bodies (it
+      // cannot branch on the erased TInput), but DefinedCodecFactories<TInput>
+      // hides the tool factories for a codec whose TInput omits the variant —
+      // which is what keeps a partial DefinedCodec assignable to Codec. The
+      // hidden methods remain on the runtime object but are unreachable through
+      // the typed surface.
+      // TODO(AIT-742): remove this cast (and the phantom runtime methods) by
+      // having each codec pass the factory set it wants into defineCodec; see
+      // the note on DefinedCodecFactories.
+      ...(wellKnownInputs<TInput>() as unknown as DefinedCodecFactories<TInput>),
     };
   };

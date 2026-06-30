@@ -76,6 +76,46 @@ export interface WellKnownInputFactories<TInput extends CodecInputEvent> {
   ): ToolApprovalResponse<ToolApprovalResponsePayloadOf<TInput>>;
 }
 
+/** True when `TInput`'s union includes a member with the given `kind`. */
+type HasInputKind<TInput extends CodecInputEvent, K extends string> = [Extract<TInput, { kind: K }>] extends [never]
+  ? false
+  : true;
+
+/**
+ * The well-known factories as they appear on a {@link DefinedCodec}: the
+ * always-present user-message and regenerate factories, plus each tool factory
+ * ONLY when `TInput` includes that variant (typed absent otherwise). This is
+ * what lets a partial codec's `DefinedCodec` (one whose `TInput` omits the
+ * tool variants, e.g. a text-only codec) stay assignable to {@link Codec}
+ * (whose tool factories are optional), while keeping the tool factories callable
+ * without a guard on a codec whose `TInput` does include the variant.
+ *
+ * TODO(AIT-742): reconsider this. {@link wellKnownInputs} cannot branch on
+ * `TInput` (it is erased at runtime), so it always returns all five factory
+ * bodies; this type hides the unsupported ones, and {@link defineCodec} bridges
+ * the two with a single cast. The consequence is that a partial codec carries
+ * tool-factory methods at runtime that its type denies — unreachable through the
+ * typed surface, and harmless if forced (they build a value the codec has no
+ * descriptor for, so it throws at encode), but still a smell. A cleaner shape
+ * has each codec pass the factory set it wants into `defineCodec` (so the
+ * runtime object and the type match exactly, with no cast and no phantom
+ * method); deferred to avoid widening this change.
+ * @template TInput - The codec's input union.
+ */
+export type DefinedCodecFactories<TInput extends CodecInputEvent> = Pick<
+  WellKnownInputFactories<TInput>,
+  'createUserMessage' | 'createRegenerate'
+> &
+  (HasInputKind<TInput, 'tool-result'> extends true
+    ? Pick<WellKnownInputFactories<TInput>, 'createToolResult'>
+    : { createToolResult?: undefined }) &
+  (HasInputKind<TInput, 'tool-result-error'> extends true
+    ? Pick<WellKnownInputFactories<TInput>, 'createToolResultError'>
+    : { createToolResultError?: undefined }) &
+  (HasInputKind<TInput, 'tool-approval-response'> extends true
+    ? Pick<WellKnownInputFactories<TInput>, 'createToolApprovalResponse'>
+    : { createToolApprovalResponse?: undefined });
+
 /**
  * Build the {@link WellKnownInputFactories} for a codec's `TInput` union. The
  * returned factories wrap domain values into the well-known input variants and

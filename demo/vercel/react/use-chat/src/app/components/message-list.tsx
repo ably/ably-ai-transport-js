@@ -75,6 +75,22 @@ export function MessageList({
 }: MessageListProps) {
   const oldestId = messages[0]?.codecMessageId;
 
+  // Empty conversation: show the onboarding intro from the top in a plain
+  // scroll container. The MessageScroller anchors to the newest message, which
+  // would otherwise scroll the tall intro off-screen on an empty chat. The
+  // scroller below only mounts once there are messages, so it opens at the
+  // latest message on both a first send and history hydration.
+  if (messages.length === 0) {
+    return (
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <IntroCard />
+        {loading && (
+          <div className="animate-pulse text-center text-xs text-muted-foreground">Loading history...</div>
+        )}
+      </div>
+    );
+  }
+
   return (
     // autoScroll keeps the latest output in view while streaming and stops
     // following as soon as the reader scrolls up; preserveScrollOnPrepend keeps
@@ -91,10 +107,6 @@ export function MessageList({
           className="px-4 py-4"
         >
           <MessageScrollerContent>
-            <MessageScrollerItem messageId="__intro__">
-              <IntroCard />
-            </MessageScrollerItem>
-
             {hasOlder && (
               <div className="text-center">
                 <Button

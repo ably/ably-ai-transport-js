@@ -4,6 +4,9 @@
 // tests. Install a minimal in-memory Storage when the environment's one is
 // non-functional. No-op when a real localStorage is present.
 function installMemoryStorage(): void {
+  // CAST: trust boundary — Node's experimental `localStorage` global is
+  // loosely typed and may be absent or non-functional, so narrow it to the
+  // Storage shape we probe before deciding whether to install the shim.
   const probe = globalThis.localStorage as Storage | undefined;
   if (probe && typeof probe.getItem === 'function') return;
 
@@ -13,7 +16,7 @@ function installMemoryStorage(): void {
       return store.size;
     },
     clear: () => store.clear(),
-    getItem: (key) => (store.has(key) ? (store.get(key) as string) : null),
+    getItem: (key) => store.get(key) ?? null,
     key: (index) => Array.from(store.keys())[index] ?? null,
     removeItem: (key) => {
       store.delete(key);

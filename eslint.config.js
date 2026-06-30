@@ -28,6 +28,9 @@ export default [
   security.configs.recommended,
   {
     ignores: [
+      // AIT-742 Phase 0 spike — disposable scratch; not held to the full lint
+      // ruleset (JSDoc-on-every-export etc.). Still typechecked and formatted.
+      'test/openai-spike/**',
       'demo/**',
       '**/eslint.config.js',
       '**/dist',

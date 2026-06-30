@@ -1,9 +1,17 @@
 'use client';
 
 import type { DynamicToolUIPart } from 'ai';
-import { Loader2Icon } from 'lucide-react';
+import { Loader2Icon, ShieldAlertIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
 import { Marker, MarkerContent, MarkerIcon } from '@/components/ui/marker';
 
 // ---------------------------------------------------------------------------
@@ -33,23 +41,26 @@ function WeatherCard({ data }: { data: WeatherData }) {
   const tempC = Math.round(((data.temperature - 32) * 5) / 9);
 
   return (
-    <div className="my-1 max-w-[280px] rounded-lg border border-sky-800/30 bg-gradient-to-br from-sky-900/40 to-indigo-900/40 p-3">
-      <div className="flex items-start justify-between gap-2">
-        <div>
-          <div className="text-xs font-medium text-sky-400/80">{data.location}</div>
-          <div className="mt-0.5 text-2xl font-semibold text-foreground">
-            {data.temperature}&deg;F
-            <span className="ml-1 text-sm font-normal text-muted-foreground">({tempC}&deg;C)</span>
-          </div>
-          <div className="mt-0.5 text-sm text-muted-foreground">{data.conditions}</div>
+    <Card
+      size="sm"
+      className="my-1 max-w-[280px]"
+    >
+      <CardHeader>
+        <CardDescription>{data.location}</CardDescription>
+        <CardTitle className="text-2xl">
+          {data.temperature}°F
+          <span className="ml-1 text-sm font-normal text-muted-foreground">({tempC}°C)</span>
+        </CardTitle>
+        <CardAction className="text-3xl">{icon}</CardAction>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-1">
+        <div className="text-muted-foreground">{data.conditions}</div>
+        <div className="flex gap-4 text-xs text-muted-foreground">
+          <span>Humidity: {data.humidity}%</span>
+          <span>Wind: {data.windSpeed} mph</span>
         </div>
-        <div className="mt-1 text-3xl">{icon}</div>
-      </div>
-      <div className="mt-2 flex gap-4 text-xs text-muted-foreground">
-        <span>Humidity: {data.humidity}%</span>
-        <span>Wind: {data.windSpeed} mph</span>
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -71,9 +82,15 @@ interface ForecastData {
 
 function ForecastCard({ data }: { data: ForecastData }) {
   return (
-    <div className="my-1 max-w-[360px] rounded-lg border border-indigo-800/30 bg-gradient-to-br from-indigo-900/40 to-purple-900/40 p-3">
-      <div className="mb-2 text-xs font-medium text-indigo-400/80">5-Day Forecast: {data.location}</div>
-      <div className="space-y-1">
+    <Card
+      size="sm"
+      className="my-1 max-w-[360px]"
+    >
+      <CardHeader>
+        <CardTitle className="text-sm">5-day forecast</CardTitle>
+        <CardDescription>{data.location}</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-1">
         {data.forecast.map((day) => {
           const icon = conditionIcon[day.conditions] ?? '🌤️';
           const highC = Math.round(((day.high - 32) * 5) / 9);
@@ -86,16 +103,16 @@ function ForecastCard({ data }: { data: ForecastData }) {
               <span className="w-8 text-muted-foreground">{day.day}</span>
               <span className="text-base">{icon}</span>
               <span className="ml-auto text-right whitespace-nowrap text-muted-foreground">
-                {day.high}&deg;/{day.low}&deg;F
+                {day.high}°/{day.low}°F
                 <span className="ml-1 text-muted-foreground/60">
-                  ({highC}&deg;/{lowC}&deg;C)
+                  ({highC}°/{lowC}°C)
                 </span>
               </span>
             </div>
           );
         })}
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -174,36 +191,37 @@ function ToolApprovalCard({
 
   return (
     <Card
+      size="sm"
       data-testid="tool-approval"
-      className="my-1 gap-3 border-amber-800/50 bg-amber-950/30 py-3"
+      className="my-1 max-w-[360px]"
     >
-      <CardContent className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="text-xs font-medium text-amber-400">Approval Required</div>
-          <p className="mt-1 text-sm text-foreground">
-            <span className="font-mono text-amber-300">{part.toolName}</span>
-            {inputSummary && <span className="text-muted-foreground"> &mdash; {inputSummary}</span>}
-          </p>
-        </div>
-        {onApprove && onDeny && (
-          <div className="flex shrink-0 gap-2">
-            <Button
-              size="sm"
-              onClick={onApprove}
-              className="bg-emerald-900/60 text-emerald-300 hover:bg-emerald-900/80"
-            >
-              Approve
-            </Button>
-            <Button
-              size="sm"
-              variant="destructive"
-              onClick={onDeny}
-            >
-              Deny
-            </Button>
-          </div>
-        )}
-      </CardContent>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-1.5 text-sm">
+          <ShieldAlertIcon className="size-4 text-muted-foreground" />
+          Approval required
+        </CardTitle>
+        <CardDescription>
+          <span className="font-mono text-foreground">{part.toolName}</span>
+          {inputSummary && <span> — {inputSummary}</span>}
+        </CardDescription>
+      </CardHeader>
+      {onApprove && onDeny && (
+        <CardFooter className="gap-2">
+          <Button
+            size="sm"
+            onClick={onApprove}
+          >
+            Approve
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onDeny}
+          >
+            Deny
+          </Button>
+        </CardFooter>
+      )}
     </Card>
   );
 }
@@ -270,7 +288,7 @@ export function ToolInvocation({ part, onApprove, onDeny }: ToolInvocationProps)
       return (
         <Marker className="my-1 text-muted-foreground">
           <MarkerContent>
-            <span className="font-mono">{part.toolName}</span> &mdash; denied
+            <span className="font-mono">{part.toolName}</span> — denied
           </MarkerContent>
         </Marker>
       );

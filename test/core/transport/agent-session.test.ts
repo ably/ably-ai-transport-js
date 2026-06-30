@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   EVENT_CANCEL,
+  EVENT_RUN_END,
   EVENT_RUN_START,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
@@ -2595,6 +2596,24 @@ const makeRunStartMsg = (
 };
 
 /**
+ * Build a synthetic ai-run-end wire message. With no explicit reason header the
+ * wire decodes the run-end reason as 'complete', so the Tree records the run as
+ * completed — the normal terminal state a finished turn carries in channel
+ * history. The agent's run.view only retains completed ancestor runs, so a
+ * served conversation's prior turns must carry their run-end to be hydrated.
+ * @param runId - The run that ended.
+ * @param serial - Serial override; defaults to `s-end-<runId>`. Supply an explicit
+ *   value when the run-end must sort chronologically against surrounding wires.
+ * @returns A synthetic inbound message mimicking an ai-run-end wire event.
+ */
+const makeRunEndMsg = (runId: string, serial?: string): Ably.InboundMessage =>
+  ({
+    name: EVENT_RUN_END,
+    serial: serial ?? `s-end-${runId}`,
+    extras: { ai: { transport: { [HEADER_RUN_ID]: runId } } },
+  }) as unknown as Ably.InboundMessage;
+
+/**
  * Build a synthetic content wire message for a run. The functional decoder
  * folds it into a TestMessage with id=codecMsgId.
  * @param runId - The run that owns this message.
@@ -2706,6 +2725,20 @@ const viewMessageIds = (wiresOldestFirst: Ably.InboundMessage[]): string[] => {
       });
       continue;
     }
+    if (wire.name === EVENT_RUN_END) {
+      const h = transportHeadersOf(wire);
+      tree.applyRunLifecycle({
+        type: 'end',
+        runId: h[HEADER_RUN_ID] ?? '',
+        clientId: '',
+        invocationId: h[HEADER_INVOCATION_ID] ?? '',
+        // The fixtures only emit completed run-ends (the wire default reason);
+        // a run-end carries no codec content, so it must not be decoded.
+        reason: 'complete',
+        serial: wire.serial,
+      });
+      continue;
+    }
     const decoded = decoder.decode(wire);
     tree.applyMessage(decoded, transportHeadersOf(wire), wire.serial);
   }
@@ -2780,10 +2813,14 @@ describe('agent run.view (shared read base)', () => {
 
   it('drained, reconstructs the identical multi-turn branch the client View does', async () => {
     // Same two-turn history as the cross-engine block; the agent serves run-2.
+    // The prior turn (run-1) carries its run-end, as a completed turn does in a
+    // served conversation's history — so the agent's completed-run-only walk
+    // retains it and stays equivalent to the unfiltered client View.
     const wiresNewestFirst = [
       makeContentMsg('run-2', 'a2', 's-06'),
       makeRunStartMsg('run-2', 'u2', { serial: 's-055' }),
       makeInputMsg('u2', 's-05', { parent: 'a1' }),
+      makeRunEndMsg('run-1', 's-045'),
       makeContentMsg('run-1', 'a1', 's-04'),
       makeRunStartMsg('run-1', 'u1', { serial: 's-03' }),
       makeInputMsg('u1', 's-02'),

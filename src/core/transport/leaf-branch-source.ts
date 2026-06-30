@@ -19,6 +19,12 @@
  * The branch is a linear parent walk, so flattening is a plain concatenation
  * (truncated before the regenerate target where one is set) — there is no
  * sibling/regenerate collapse to apply, unlike the client's navigable source.
+ *
+ * Ancestor turns whose run did not complete successfully — still streaming,
+ * suspended, cancelled, or errored — are omitted from the branch: such a run can
+ * hold an assistant tool call with no matching tool result, which the model
+ * provider rejects when it reaches the prompt. The current run (the leaf being
+ * served) is always kept — see {@link LeafBranchSource.visibleNodes}.
  */
 
 import type { Codec, CodecInputEvent, CodecMessage, CodecOutputEvent } from '../codec/types.js';
@@ -159,7 +165,15 @@ export class LeafBranchSource<
   // BranchSource contract — drives the run's paginating run.view
   // -------------------------------------------------------------------------
 
-  visibleNodes(): ConversationNode<TProjection>[] {
+  /**
+   * The full structural branch: the ancestor chain from the pin's anchor back to
+   * the conversation root, plus the current run's node (the leaf) when the walk
+   * didn't already reach it. Unfiltered — this is the branch's identity, used for
+   * run lookup and sibling selection where a run's lifecycle status is
+   * irrelevant. {@link visibleNodes} layers the prompt-safety filter on top.
+   * @returns The branch nodes in root-first (chronological) order.
+   */
+  private _structuralBranch(): ConversationNode<TProjection>[] {
     const pin = this._pin;
     if (pin === undefined) return [];
     const tree = this._getTree();
@@ -171,6 +185,34 @@ export class LeafBranchSource<
       return [...chain, runNode];
     }
     return [...chain];
+  }
+
+  visibleNodes(): ConversationNode<TProjection>[] {
+    const pin = this._pin;
+    if (pin === undefined) return [];
+
+    // Omit ancestor turns whose run did not complete successfully. An incomplete
+    // run — one still streaming, suspended awaiting a client tool result, or
+    // cancelled/errored mid-call — can carry an assistant tool call with no
+    // matching tool result; flattened into the prompt, the model provider
+    // rejects the whole request. We drop such a run together with the user input
+    // it replied to (its `parentCodecMessageId`), so the prompt stays a clean
+    // user/assistant sequence rather than carrying an orphaned input. Read off
+    // live `RunNode.state` on every call, so a run that later completes reappears
+    // and a late history re-walk cannot reintroduce a still-incomplete one. The
+    // current run (`pin.runId`) is exempt — it is the leaf we are serving, its
+    // own as-yet-unresolved work is expected and its resolutions are applied
+    // before the prompt is built — so its input (`pin.anchor`) is never dropped.
+    // Two passes, and they must stay separate: the branch is root-first so an
+    // input precedes the run that replied to it, and pass two can only drop an
+    // input once pass one has collected every dropped run's `parentCodecMessageId`.
+    const droppedInputIds = new Set<string>();
+    const withoutIncompleteRuns = this._structuralBranch().filter((node) => {
+      if (node.kind !== 'run' || node.runId === pin.runId || node.state.status === 'complete') return true;
+      if (node.parentCodecMessageId !== undefined) droppedInputIds.add(node.parentCodecMessageId);
+      return false;
+    });
+    return withoutIncompleteRuns.filter((node) => !(node.kind === 'input' && droppedInputIds.has(node.codecMessageId)));
   }
 
   extractMessages(nodes: ConversationNode<TProjection>[]): CodecMessage<TMessage>[] {
@@ -191,8 +233,11 @@ export class LeafBranchSource<
   selectedReplyRun(inputCodecMessageId: string): RunNode<TProjection> | undefined {
     const replies = this._getTree().getReplyRuns(inputCodecMessageId);
     if (replies.length <= 1) return replies[0];
-    // Prefer the reply run on this leaf's branch; otherwise the latest.
-    const onBranch = new Set(this.visibleNodes().map((n) => nodeKey(n)));
+    // Prefer the reply run on this leaf's branch; otherwise the latest. Resolve
+    // against the structural branch, not the prompt-filtered `visibleNodes()` —
+    // an incomplete reply is still the one structurally on this branch, so branch
+    // identity must not shift just because that reply hasn't completed yet.
+    const onBranch = new Set(this._structuralBranch().map((n) => nodeKey(n)));
     return (
       replies.find((r) => onBranch.has(r.runId)) ??
       replies.toSorted((a, b) => (a.startSerial ?? '￿').localeCompare(b.startSerial ?? '￿')).at(-1)

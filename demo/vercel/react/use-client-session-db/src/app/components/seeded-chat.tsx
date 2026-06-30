@@ -47,7 +47,7 @@ export interface SeededChatProps {
  * database-hydration demo. It seeds from the database and reconciles with the
  * live channel via the SDK's `useMessagesWithSeed` (the seam walk), then renders
  * the composed conversation and sends new turns over the session view. The agent
- * persists every completed turn back to the store.
+ * persists every completed run back to the store.
  *
  * It is intentionally simple (text turns, no branch navigation or tool flows):
  * the seam composition is the showcase here. For the full branching UI and tool
@@ -96,8 +96,8 @@ export function SeededChat({ chatId, seed, api }: SeededChatProps): React.ReactE
     if (!text) return;
     setInput('');
     // Linear history: cancel any still-active response before starting a new
-    // turn, so the seam reconciliation only ever meets complete (or cancelled)
-    // turns. Then send over the session view and wake the agent to stream the
+    // run, so the seam reconciliation only ever meets complete (or cancelled)
+    // runs. Then send over the session view and wake the agent to stream the
     // reply (which it persists to the store). Failures surface via
     // session.on('error').
     void (async () => {

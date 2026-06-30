@@ -2,7 +2,7 @@ import type { UIMessage } from 'ai';
 
 /**
  * An in-memory stand-in for the conversation database an app would persist
- * completed turns to, keyed by conversation id (the channel name, which the
+ * completed runs to, keyed by conversation id (the channel name, which the
  * agent sees as `invocation.sessionName`). It is module-scoped, so it persists
  * across requests within one Node process — enough for the demo's dev server —
  * and is lost on restart. A real app swaps this for a durable store.
@@ -24,10 +24,10 @@ const store = new Map<string, UIMessage[]>();
  *
  * Modelled as async — it resolves once the write is durable, as a real store
  * would. The agent awaits it before ending the run, so the run-end completion
- * signal never races ahead of the persisted turn.
+ * signal never races ahead of the persisted run.
  * @param conversationId - The conversation key (the channel name).
  * @param messages - This run's whole turn (`run.messages`).
- * @returns A promise that resolves once the turn is persisted.
+ * @returns A promise that resolves once the run is persisted.
  */
 export async function appendMessages(conversationId: string, messages: UIMessage[]): Promise<void> {
   const byId = new Map((store.get(conversationId) ?? []).map((message) => [message.id, message]));

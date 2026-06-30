@@ -17,7 +17,7 @@ const AGENT_API = 'api/chat';
 /**
  * Fetch the persisted conversation, then mount the session and the seeded chat.
  * The seed is fetched before mount so the seam walk has it from the first
- * render. The agent persists every completed turn, so no per-request flag is
+ * render. The agent persists every completed run, so no per-request flag is
  * needed.
  */
 function SeededChatWhenLoaded({ channelName }: { channelName: string }) {

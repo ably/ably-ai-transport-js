@@ -13,7 +13,7 @@ const CHANNEL_NAMESPACE = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ai:
 /**
  * Fetch the persisted conversation, then mount the seeded chat. The seed is
  * fetched before mount so `useChat` reads it synchronously at init. The agent
- * persists every completed turn, so no per-request flag is needed.
+ * persists every completed run, so no per-request flag is needed.
  */
 function SeededChatWhenLoaded({ channelName }: { channelName: string }) {
   const [seed, setSeed] = useState<UIMessage[] | null>(null);

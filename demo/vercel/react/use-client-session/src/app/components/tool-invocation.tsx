@@ -1,9 +1,10 @@
 'use client';
 
 import type { DynamicToolUIPart } from 'ai';
+import { Loader2Icon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { Marker, MarkerContent } from '@/components/ui/marker';
+import { Marker, MarkerContent, MarkerIcon } from '@/components/ui/marker';
 
 // ---------------------------------------------------------------------------
 // Weather card — generative UI for the getWeather tool result
@@ -131,7 +132,10 @@ function LocationResult({ output }: { output: unknown }) {
 function ToolPending({ name, input }: { name: string; input: unknown }) {
   return (
     <Marker className="my-1">
-      <MarkerContent className="shimmer font-mono">
+      <MarkerIcon>
+        <Loader2Icon className="animate-spin" />
+      </MarkerIcon>
+      <MarkerContent className="font-mono">
         Calling {name}
         {input != null && Object.keys(input as object).length > 0 && ` (${JSON.stringify(input)})`}
       </MarkerContent>

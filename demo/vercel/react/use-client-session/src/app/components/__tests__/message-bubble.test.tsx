@@ -1,72 +1,63 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
-import type { UIMessage } from 'ai';
+import type * as AI from 'ai';
+
 import { MessageBubble } from '../message-bubble';
 
-// MessageBubble is a pure renderer: the list glue (MessageList) derives the
-// per-message step attribution from the View's `run.steps` and passes it as the
-// primitive `stepId` / `stepCount` props. These tests pin the step badge that
-// surfaces that attribution beside the run id.
+// The bubble shows a quiet "Thinking…" loader for an assistant turn that is
+// streaming but has produced no text or tool activity yet (replacing the old
+// blinking caret). These tests pin that branch and its suppressions.
 
-const assistantMessage: UIMessage = {
-  id: 'm1',
-  role: 'assistant',
-  parts: [{ type: 'text', text: 'hello' }],
-};
+afterEach(() => {
+  cleanup();
+});
 
-const baseProps = {
-  message: assistantMessage,
-  codecMessageId: 'cm1',
-  clientId: 'agent',
-  runId: 'run-1',
-  status: 'complete' as const,
-  hasSiblings: false,
-  siblingCount: 1,
-  selectedIndex: 0,
-  onSelectSibling: () => {},
-};
+function assistant(parts: AI.UIMessage['parts']): AI.UIMessage {
+  return { id: 'a1', role: 'assistant', parts };
+}
 
-describe('<MessageBubble> step badge', () => {
-  afterEach(cleanup);
+function renderBubble(message: AI.UIMessage) {
+  return render(
+    <MessageBubble
+      message={message}
+      codecMessageId="a1"
+      clientId={undefined}
+      runId={undefined}
+      status="streaming"
+      hasSiblings={false}
+      siblingCount={0}
+      selectedIndex={0}
+      onSelectSibling={() => {}}
+    />,
+  );
+}
 
-  it('renders the step badge with the truncated step id', () => {
-    render(
-      <MessageBubble
-        {...baseProps}
-        stepId="abcdef0123456789"
-        stepCount={1}
-      />,
-    );
+describe('<MessageBubble> thinking indicator', () => {
+  it('shows the loader for a streaming assistant turn with no text or tools yet', () => {
+    renderBubble(assistant([]));
 
-    // The badge shows the first 8 chars of the step id; a single-step run has no
-    // overflow suffix.
-    expect(screen.getByText('step')).not.toBeNull();
-    expect(screen.getByText('abcdef01')).not.toBeNull();
+    expect(screen.getByText(/Thinking/)).toBeTruthy();
   });
 
-  it('appends a "+N" suffix when the run has more than one step', () => {
-    render(
-      <MessageBubble
-        {...baseProps}
-        stepId="abcdef0123456789"
-        stepCount={3}
-      />,
-    );
+  it('hides the loader once the streaming turn has text', () => {
+    renderBubble(assistant([{ type: 'text', text: 'partial' }]));
 
-    // Three steps on the run: the bubble names its last step and tallies the
-    // other two as "+2".
-    expect(screen.getByText('abcdef01 +2')).not.toBeNull();
+    expect(screen.queryByText(/Thinking/)).toBeNull();
   });
 
-  it('renders no step badge when the message carries no step id', () => {
-    render(
-      <MessageBubble
-        {...baseProps}
-        stepId={undefined}
-        stepCount={0}
-      />,
-    );
+  it('hides the loader while a tool is active (tool parts count as activity)', () => {
+    // CAST: minimal dynamic-tool fixture — only the discriminant fields the
+    // bubble reads (type, toolName, toolCallId, state, input) are populated.
+    const toolPart = {
+      type: 'dynamic-tool',
+      toolName: 'getWeather',
+      toolCallId: 'tc1',
+      state: 'input-streaming',
+      input: {},
+    } as AI.DynamicToolUIPart;
 
-    expect(screen.queryByText('step')).toBeNull();
+    renderBubble(assistant([toolPart]));
+
+    expect(screen.queryByText(/Thinking/)).toBeNull();
   });
 });

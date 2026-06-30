@@ -5,15 +5,17 @@
  * (keyed by the domain message id) seeds this hook with that history and a
  * {@link View} over the live channel. The hook takes the newest seed message's
  * id as the **seam** — the only id shared between the store and the channel,
- * since the transport's internal `codecMessageId` is never persisted — pages the
- * view back until that id reappears, and composes `seed ⧺ live` with the single
- * seam overlap dropped.
+ * since the transport's internal `codecMessageId` is never persisted — and drives
+ * {@link View.loadUntil} to page the view back until that id reappears, composing
+ * `seed ⧺ live` with the single seam overlap dropped.
  *
- * The backward walk is re-entrant and update-driven: an empty page (e.g. racing
- * the initial attach, React StrictMode's double-invoke, or a concurrent load)
- * defers rather than giving up, and the next view `update` re-drives it. So a
- * conversation reloaded mid-stream still pages back to the seam once the live
- * arrival or hydration progresses.
+ * {@link View.loadUntil} owns the backward walk and treats the seam as an
+ * **exclusive floor**: once it reaches the seam the view window *is* exactly the
+ * not-yet-seeded tail (the seam and everything older withheld). So the hook holds
+ * no seam logic of its own — it mirrors {@link View.getMessages} into state on
+ * each view `update` (both as the walk's reveals land and as new live messages
+ * arrive) and appends it to the seed. A conversation reloaded mid-stream still
+ * pages back to the seam, and the tail stays current as the stream progresses.
  *
  * This assumes a **linear history**: each turn is persisted whole before the
  * next is sent (and a concurrent send cancels the active run), so the stored
@@ -26,40 +28,28 @@ import type { CodecMessage } from '../core/codec/types.js';
 import type { View } from '../core/transport/types.js';
 
 /**
- * The live tail to append after the seed: the visible window with everything up
- * to and including the seam dropped, leaving only messages newer than the seam.
- * The seed already covers everything up to and including the seam, so with the
- * seam visible we slice past it; with no seam in the window (or no seed) the
- * whole live window stands as the tail. With no view there is nothing live yet.
- * @param view - The live-channel view, or `undefined` before it resolves.
- * @param seed - The persisted prefix, oldest-first.
- * @param getId - Returns a message's stable domain id (the seam key).
- * @returns The live tail to append after the seed, oldest-first.
- */
-const liveTail = <TMessage>(
-  view: View<TMessage> | undefined,
-  seed: TMessage[],
-  getId: (message: TMessage) => string,
-): CodecMessage<TMessage>[] => {
-  if (!view) return [];
-  const newestSeed = seed.at(-1);
-  const seamId = newestSeed === undefined ? undefined : getId(newestSeed);
-  const visible = view.getMessages();
-  const seamIndex = seamId === undefined ? -1 : visible.findIndex((m) => getId(m.message) === seamId);
-  return seamIndex >= 0 ? visible.slice(seamIndex + 1) : [...visible];
-};
-
-/**
  * Identity-equal, same-length comparison of two live-tail lists, by the domain
  * message each entry wraps. The View rebuilds its {@link CodecMessage} wrappers
  * on every refresh, so compare the underlying `message` references — those are
- * stable while the window is unchanged.
+ * stable while the window is unchanged. Used to hold the previous array when a
+ * refresh doesn't move the window, so a redundant `update` (or the first effect
+ * sync matching the render-time snapshot) doesn't churn a new reference through
+ * every downstream consumer.
  * @param a - First live-tail list.
  * @param b - Second live-tail list.
  * @returns `true` when both lists wrap the same messages in the same order.
  */
 const sameMessages = <TMessage>(a: CodecMessage<TMessage>[], b: CodecMessage<TMessage>[]): boolean =>
   a.length === b.length && a.every((m, i) => m.message === b[i]?.message);
+
+/**
+ * Identity-equal, same-length comparison of two lists. Used to hold the seed
+ * reference stable while its content is unchanged.
+ * @param a - First list.
+ * @param b - Second list.
+ * @returns `true` when both lists hold the same elements in the same order.
+ */
+const sameRefs = <T>(a: T[], b: T[]): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
 
 /** Options for {@link useMessagesWithSeed}. */
 export interface UseMessagesWithSeedOptions<TMessage> {
@@ -69,19 +59,19 @@ export interface UseMessagesWithSeedOptions<TMessage> {
    */
   view: View<TMessage> | undefined;
   /**
-   * The persisted conversation (the seed), oldest-first. A **dependency** of the
-   * reconciliation: a new `seed` reference re-runs the seam walk and recomposes
-   * from scratch. Pass a **stable (e.g. memoised) reference** for a given
-   * conversation so ordinary re-renders don't repeat the walk; change it to seed
-   * a different conversation. An empty array is a loaded-but-empty conversation —
-   * no seam, so the live channel window is surfaced unchanged; while the seed is
-   * still loading, set {@link skip} rather than passing `[]`.
+   * The persisted conversation (the seed), oldest-first. Compared by **content**
+   * (element identity), so a fresh array each render is safe — passing
+   * `store ?? []` or `props.messages` inline won't churn the result or re-run the
+   * walk. A genuine content change (different or reordered messages, e.g. a
+   * swapped conversation) re-seams and recomposes. An empty array is a
+   * loaded-but-empty conversation — no seam, so the live channel window is
+   * surfaced unchanged; while the seed is still loading, set {@link skip} rather
+   * than passing `[]`.
    */
   seed: TMessage[];
   /**
    * Return the stable domain id of a message — the seam key shared between the
-   * application's store and the channel. Called to identify the seam and to
-   * drop the single overlap when composing.
+   * application's store and the channel. Called to identify the seam.
    */
   getMessageId: (message: TMessage) => string;
   /**
@@ -117,14 +107,32 @@ export const useMessagesWithSeed = <TMessage>({
   const getIdRef = useRef(getMessageId);
   getIdRef.current = getMessageId;
 
-  // Resolve the live tail synchronously on first render so any already-visible
-  // live messages are surfaced immediately alongside the seed — no transient
-  // empty frame for a consumer that replaces its messages with this value. While
-  // skipping (seed not loaded) there is no tail and nothing to surface.
-  const [live, setLive] = useState<CodecMessage<TMessage>[]>(() => (skip ? [] : liveTail(view, seed, getMessageId)));
+  // Hold the seed reference stable while its content is unchanged. Callers
+  // commonly pass a fresh array each render (`data ?? []`, `props.messages`), and
+  // the composed result below is keyed on the seed — so an unstable reference
+  // would hand back a new array every render and loop any effect that depends on
+  // it (the classic "Maximum update depth exceeded"). Compare by element identity
+  // — the seed messages are themselves stable — and reuse the prior reference
+  // when equal: a fresh-but-equal seed is then a no-op, while a genuine content
+  // change re-seeds. So referential stability is a convenience, not a contract.
+  const seedRef = useRef(seed);
+  if (seedRef.current !== seed && !sameRefs(seedRef.current, seed)) seedRef.current = seed;
+  const stableSeed = seedRef.current;
 
-  const newestSeed = seed.at(-1);
+  const newestSeed = stableSeed.at(-1);
   const seamId = newestSeed === undefined ? undefined : getIdRef.current(newestSeed);
+
+  // Mirror the view window synchronously on first render so any already-visible
+  // live messages surface immediately alongside the seed — no transient empty
+  // frame for a consumer that replaces its messages with this value. Only when
+  // there is no seam (no seed): with a seam the warm window may still reach back
+  // through it, so an eager mirror would compose `seed ⧺ window` with the seam
+  // (and older) duplicated for the first frame, before the effect's walk trims
+  // below the floor. With a seam, start empty and let the walk populate the
+  // trimmed tail. While skipping (seed not loaded) there is nothing live yet.
+  const [live, setLive] = useState<CodecMessage<TMessage>[]>(() =>
+    skip || !view || seamId !== undefined ? [] : [...view.getMessages()],
+  );
 
   // The effect re-runs whenever `view`, `seamId` (last seed message's id), or
   // `skip` changes — a new seam re-drives the walk from scratch (see the `seed`
@@ -139,68 +147,46 @@ export const useMessagesWithSeed = <TMessage>({
       return;
     }
 
-    // Re-resolve the live tail, but keep the previous array when the messages
-    // are unchanged so an `update` that doesn't alter the window (or a redundant
-    // remount) doesn't churn a new reference through every downstream consumer.
-    const trim = (): void => {
-      const next = liveTail(view, seed, getId);
-      setLive((prev) => (sameMessages(prev, next) ? prev : next));
+    // The live tail is simply the view window: `loadUntil`'s exclusive floor
+    // keeps the window equal to the not-yet-seeded tail once the seam is reached,
+    // and growing live messages append to it. Mirror it into state on every
+    // `update` — the walk's settled reveal and live arrivals both flow through
+    // here — but keep the previous array when the window is unchanged so a no-op
+    // refresh doesn't churn downstream.
+    const sync = (): void => {
+      const next = view.getMessages();
+      setLive((prev) => (sameMessages(prev, next) ? prev : [...next]));
     };
+    const off = view.on('update', sync);
 
-    // `signal.aborted` (vs. a plain boolean) survives the `await` below without
-    // TypeScript narrowing it away — the cleanup aborts and an in-flight
-    // `loadOlder` then settles into a no-op.
+    // Drive the backward walk to the seam. Abort it on cleanup so a superseded
+    // run (a dep change, or React StrictMode's double-invoke) stops promptly
+    // instead of paging on in the background concurrently with the remount's walk.
     const controller = new AbortController();
-    const { signal } = controller;
-    let walking = false;
-
-    // The seam is reached once it's in the window — or there's nothing to seed,
-    // or no more history to page. Until then, keep paging.
-    const seamReached = (): boolean =>
-      seamId === undefined || !view.hasOlder() || view.getMessages().some((m) => getId(m.message) === seamId);
-
-    // Page back toward the seam. Re-entrant and update-driven: an empty page
-    // defers instead of giving up, and the next view `update` re-drives the
-    // walk. The `walking` guard collapses concurrent invocations — including the
-    // reveal-emitted updates — so it never spins.
-    const driveWalk = async (): Promise<void> => {
-      if (walking || seamReached()) return;
-      walking = true;
-      try {
-        // `signal.aborted` is re-read each iteration: after the cleanup aborts,
-        // the in-flight `loadOlder` settles and the loop then exits.
-        //
-        // Reveal one message at a time (`loadOlder(1)`), not because each call
-        // hits the channel — the network fetch is batched by the session's
-        // `historyPageSize` and served from the buffer — but so the walk stops
-        // exactly at the seam and never reveals past it, keeping the `seed ⧺ live`
-        // overlap a single message.
-        while (!signal.aborted && !seamReached()) {
-          const revealed = await view.loadOlder(1);
-          if (revealed.length === 0) break; // defer to the next update
-        }
-      } finally {
-        walking = false;
-      }
-    };
-
-    trim();
-    const off = view.on('update', () => {
-      trim();
-      void driveWalk();
-    });
-    void driveWalk();
+    if (seamId === undefined) {
+      // No seam (no seed): no walk runs, so the window already is the live tail.
+      // Mirror it now to surface any already-visible live messages immediately.
+      sync();
+    } else {
+      // A walk will run. It suppresses its intermediate reveals and emits a single
+      // settled `update` once the window is the trimmed tail, which `sync` mirrors.
+      // So do NOT mirror the window now: the warm window may still reach back
+      // through the seam, and surfacing it pre-trim would compose `seed ⧺ window`
+      // with the seam (and older) duplicated for that frame.
+      void view.loadUntil((m) => getId(m.message) === seamId, controller.signal);
+    }
 
     return () => {
-      controller.abort();
       off();
+      controller.abort();
     };
   }, [view, seamId, skip]);
 
   // Compose `seed ⧺ live`: the persisted prefix followed by the not-yet-seeded
-  // live tail. Recomputed only when the seed reference or the resolved live tail
-  // changes, so a new seed (e.g. a swapped conversation) recomposes while an
-  // unchanged window keeps the same array reference for downstream consumers.
-  // While skipping, the seed isn't loaded yet — surface nothing.
-  return useMemo(() => (skip ? [] : [...seed, ...live.map((m) => m.message)]), [skip, seed, live]);
+  // live tail. Keyed on the content-stable seed and the live tail, so a
+  // fresh-but-equal seed doesn't churn the result, a genuine seed content change
+  // (e.g. a swapped conversation) recomposes, and the reference is held stable
+  // for downstream consumers. While skipping, the seed isn't loaded yet —
+  // surface nothing.
+  return useMemo(() => (skip ? [] : [...stableSeed, ...live.map((m) => m.message)]), [skip, stableSeed, live]);
 };

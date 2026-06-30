@@ -104,8 +104,9 @@ export async function POST(req: Request) {
   const invocation = Invocation.fromJSON(data);
 
   // A fresh Ably client per request (trusted environment, API key direct).
-  // The agent is ephemeral: it attaches the channel with rewind, replays the
-  // just-published input event, streams the response, and closes.
+  // The agent is ephemeral: it attaches the channel, reads the just-published
+  // input event back from history by draining run.view, streams the response,
+  // and closes.
   const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY! });
 
   const session = createAgentSession({ client: ably, channelName: invocation.sessionName });

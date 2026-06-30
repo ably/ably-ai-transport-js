@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import type { UIMessage, DynamicToolUIPart } from 'ai';
-import { Loader2Icon } from 'lucide-react';
+import { ChevronLeftIcon, ChevronRightIcon, Loader2Icon } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Bubble, BubbleContent } from '@/components/ui/bubble';
 import { Button } from '@/components/ui/button';
@@ -48,60 +48,68 @@ function BranchNavigator({
   return (
     <div
       data-testid="branch-navigator"
-      className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5"
+      className="inline-flex items-center gap-0.5 rounded-md bg-muted px-0.5"
     >
-      <button
+      <Button
+        variant="ghost"
+        size="icon-xs"
         onClick={() => onSelect(current - 1)}
         disabled={current === 0}
-        className="px-0.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
         title="Previous branch"
+        aria-label="Previous branch"
       >
-        &lt;
-      </button>
+        <ChevronLeftIcon />
+      </Button>
       <span
         data-testid="branch-counter"
         className="min-w-[2.5rem] text-center text-[10px] text-muted-foreground tabular-nums"
       >
         {current + 1} / {total}
       </span>
-      <button
+      <Button
+        variant="ghost"
+        size="icon-xs"
         onClick={() => onSelect(current + 1)}
         disabled={current >= total - 1}
-        className="px-0.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
         title="Next branch"
+        aria-label="Next branch"
       >
-        &gt;
-      </button>
+        <ChevronRightIcon />
+      </Button>
     </div>
   );
 }
 
-function InfoBadge({ label, value, className }: { label: string; value: string; className?: string }) {
+function InfoBadge({
+  label,
+  value,
+  variant = 'secondary',
+  className,
+}: {
+  label: string;
+  value: string;
+  variant?: 'secondary' | 'destructive';
+  className?: string;
+}) {
   return (
     <Badge
-      variant="secondary"
+      variant={variant}
       className={className}
     >
-      <span className="text-muted-foreground">{label}</span>
+      <span className={variant === 'destructive' ? 'opacity-70' : 'text-muted-foreground'}>{label}</span>
       <span>{value}</span>
     </Badge>
   );
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const className =
-    status === 'complete'
-      ? 'bg-emerald-950 text-emerald-400'
-      : status === 'streaming'
-        ? 'bg-amber-950 text-amber-400'
-        : status === 'cancelled' || status === 'error'
-          ? 'bg-red-950 text-red-400'
-          : undefined;
+  // Only a failed/cancelled run carries a colour (destructive); complete and
+  // streaming deliberately stay neutral so the row doesn't read as an alert.
   return (
     <InfoBadge
       label="status"
       value={status}
-      className={className}
+      variant={status === 'cancelled' || status === 'error' ? 'destructive' : 'secondary'}
     />
   );
 }
@@ -234,9 +242,7 @@ export function MessageBubble({
                       <ToolInvocation
                         key={i}
                         part={toolPart}
-                        onApprove={
-                          onToolApprove ? () => onToolApprove(codecMessageId, toolPart.toolCallId) : undefined
-                        }
+                        onApprove={onToolApprove ? () => onToolApprove(codecMessageId, toolPart.toolCallId) : undefined}
                         onDeny={onToolDeny ? () => onToolDeny(codecMessageId, toolPart.toolCallId) : undefined}
                       />
                     );

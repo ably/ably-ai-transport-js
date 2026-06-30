@@ -90,8 +90,11 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
   useMessageSync({ setMessages });
 
   // Track status transitions, annotating an `error` transition with the
-  // accompanying error message useChat exposes alongside the status.
+  // accompanying error message useChat exposes alongside the status. Recording
+  // a history of an external value's transitions is the intended use of this
+  // effect — it observes useChat's status, it does not derive render state.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- appends a transition log on each status change
     setStatusLog((prev) => [
       ...prev,
       { time: Date.now(), status, error: status === 'error' ? error?.message : undefined },

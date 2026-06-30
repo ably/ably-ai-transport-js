@@ -209,8 +209,7 @@ export function MessageBubble({
                 if (part.type === 'text') return <span key={i}>{part.text}</span>;
                 if (part.type === 'dynamic-tool') {
                   const toolPart = part as DynamicToolUIPart;
-                  // eslint-disable-next-line @typescript-eslint/no-empty-function -- no-op fallback when no approval handler
-                  const noop = (): void => {};
+                  const noop = (): void => undefined;
                   const approvalId = toolPart.approval?.id;
                   return (
                     <ToolInvocation

@@ -102,7 +102,7 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
           >
             <div className="flex items-center gap-2 text-zinc-500 mb-1">
               <span className="text-zinc-600">#{idx}</span>
-              <span>{new Date(entry.timestamp ?? Date.now()).toLocaleTimeString()}</span>
+              <span>{entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : ''}</span>
               <span className="text-emerald-500">{entry.name ?? '(unnamed)'}</span>
               <span className="text-amber-500">{String(entry.action ?? 'message.create')}</span>
             </div>

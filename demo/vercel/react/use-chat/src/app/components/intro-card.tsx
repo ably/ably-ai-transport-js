@@ -95,7 +95,7 @@ export function IntroCard() {
         <CardTitle>useChat over Ably</CardTitle>
         <CardDescription>
           A Vercel AI SDK chat wired to an Ably transport. Supplying Ably as the customTransport for Vercel useChat
-          gives the app resumable streams, sessions that stay in sync across a user's devices and across multiple
+          gives the app resumable streams, sessions that stay in sync across a user&rsquo;s devices and across multiple
           participants, plus a bidirectional channel between user and agent for cancellation and steering. Each item
           below exercises a specific feature - try them in order to see what it does.
         </CardDescription>

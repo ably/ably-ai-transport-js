@@ -84,6 +84,14 @@ Each run exposes `run.view` - a read-only [View](glossary.md#view-clientview-and
 
 The agent reads ancestor history by paging run.view back: `while (run.view.hasOlder()) await run.view.loadOlder()`, then `run.view.getMessages()` yields the full branch oldest-to-newest. Paging drives the session's shared [history hydrator](history.md) - the single-flight cursor that the input-event lookup also uses - so the channel is walked once even when the lookup and the ancestor drain overlap. `run.view` closes when the run is removed from the session's routing maps.
 
+### run.located
+
+`run.located` is a `Promise<void>` that resolves once the run's triggering input has folded into the Tree - whether it arrives live or is paged in by a `run.view.loadOlder()` walk. It is a **passive** watcher: it observes the fold, it does not drive paging, so a caller that wants the trigger pulled in from history must page `run.view` itself (the drain loop above does). It resolves immediately when the invocation carries no `inputEventId` (a degenerate run with no client input), and rejects only if the run is cancelled or the session closes before the trigger is located. There is no built-in deadline.
+
+### Shared run read-model
+
+`run` exposes the same `BaseRun` [read-model](glossary.md#run-read-model-baserun) the client's run does - `runId`, `status`, `error`, and `messages` (this run's own turn: its triggering input plus its streamed output) - read live off the Tree via getter accessors rather than snapshotted. The agent run adds `view` and `located` on top; the client run adds the send handle and `runId` promise. Sharing one base keeps the two run surfaces consistent.
+
 ## Cancel routing
 
 The agent session handles cancel messages directly - no separate cancel manager. See [Transport components: cancel routing](transport-components.md#cancel-routing-agent-session) for the lookup and handler-isolation rules.

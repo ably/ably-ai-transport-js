@@ -1,9 +1,10 @@
 'use client';
 
 import type { DynamicToolUIPart } from 'ai';
+import { Loader2Icon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { Marker, MarkerContent } from '@/components/ui/marker';
+import { Marker, MarkerContent, MarkerIcon } from '@/components/ui/marker';
 
 // ---------------------------------------------------------------------------
 // Weather card — generative UI for the getWeather tool result
@@ -131,7 +132,10 @@ function LocationResult({ output }: { output: unknown }) {
 function ToolPending({ name, input }: { name: string; input: unknown }) {
   return (
     <Marker className="my-1">
-      <MarkerContent className="shimmer font-mono">
+      <MarkerIcon>
+        <Loader2Icon className="animate-spin" />
+      </MarkerIcon>
+      <MarkerContent className="font-mono">
         Calling {name}
         {input != null && Object.keys(input as object).length > 0 && ` (${JSON.stringify(input)})`}
       </MarkerContent>
@@ -162,8 +166,8 @@ function ToolApprovalCard({
   onDeny,
 }: {
   part: DynamicToolUIPart;
-  onApprove: () => void;
-  onDeny: () => void;
+  onApprove?: () => void;
+  onDeny?: () => void;
 }) {
   const inputObj = part.input as Record<string, unknown> | undefined;
   const inputSummary = inputObj ? Object.values(inputObj).join(', ') : JSON.stringify(part.input);
@@ -181,22 +185,24 @@ function ToolApprovalCard({
             {inputSummary && <span className="text-muted-foreground"> &mdash; {inputSummary}</span>}
           </p>
         </div>
-        <div className="flex shrink-0 gap-2">
-          <Button
-            size="sm"
-            onClick={onApprove}
-            className="bg-emerald-900/60 text-emerald-300 hover:bg-emerald-900/80"
-          >
-            Approve
-          </Button>
-          <Button
-            size="sm"
-            variant="destructive"
-            onClick={onDeny}
-          >
-            Deny
-          </Button>
-        </div>
+        {onApprove && onDeny && (
+          <div className="flex shrink-0 gap-2">
+            <Button
+              size="sm"
+              onClick={onApprove}
+              className="bg-emerald-900/60 text-emerald-300 hover:bg-emerald-900/80"
+            >
+              Approve
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={onDeny}
+            >
+              Deny
+            </Button>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -208,8 +214,8 @@ function ToolApprovalCard({
 
 interface ToolInvocationProps {
   part: DynamicToolUIPart;
-  onApprove: () => void;
-  onDeny: () => void;
+  onApprove?: () => void;
+  onDeny?: () => void;
 }
 
 export function ToolInvocation({ part, onApprove, onDeny }: ToolInvocationProps) {

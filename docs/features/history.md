@@ -8,20 +8,33 @@ Without persistent history, page refresh means starting over. With AI Transport,
 
 ```typescript
 const view = session.view;
-await view.loadOlder(30);
+const revealed = await view.loadOlder(30); // resolves to the newly-revealed page
 
-// view.getMessages() - flat messages concatenated across visible Runs, oldest-first.
-// view.getMessagesWithIds() - the same messages paired with their codec-message-ids.
-// Call loadOlder again to fetch more older Runs.
+// view.getMessages() - the full visible branch as CodecMessage<TMessage>[]
+//   (each { codecMessageId, message }), oldest-first.
+// `revealed` is the page this call prepended; it prefixes the next getMessages() result.
+// Call loadOlder again to reveal more older messages.
 ```
+
+`loadOlder(limit)` resolves to the page it revealed - the `CodecMessage<TMessage>[]` newly prepended to the window, oldest-first - or `[]` when channel history is exhausted (or a load is already in flight). The revealed page is the delta a caller inspects to drive its own stop criterion; the [database-hydration recipe](database-hydration.md) uses it to page back only as far as a stored seam.
 
 History messages are inserted into the session's conversation tree and trigger an `'update'` notification on the view. After loading history, `view.getMessages()` returns the combined history + live messages - flattened across every visible Run along the currently selected branch. If the history contains forks (from regeneration or editing), only the active branch is included. Use the conversation tree to navigate between branches (see [Conversation branching](branching.md)).
 
-The `limit` parameter controls how many **Runs** to reveal, not how many messages or how many Ably wire messages to fetch. Each Run typically contributes more than one message (e.g. a user prompt + an assistant reply), so revealing `limit` Runs may add several messages to the flat list. The implementation pages through Ably history transparently until enough Runs are buffered.
+The `limit` parameter controls how many older **messages** to reveal (default `10`), not how many Ably wire messages to fetch. The view pages through Ably history transparently until it has revealed `limit` more messages - fewer only when channel history is exhausted - then resolves to exactly that revealed page. How many wire messages each round-trip fetches is a separate, configurable concern (see [Page size](#page-size)).
 
 ## Gapless continuity
 
 The client session subscribes to the Ably channel before any history call - the subscribe call itself implicitly attaches the channel (RTL7g), so the live listener is in place from the moment of attach. When you call `loadOlder()`, it uses `untilAttach` mode - fetching messages up to the point of attachment. This means there's no gap between history and the live subscription: every message is accounted for exactly once.
+
+## Page size
+
+`loadOlder`'s `limit` is how many messages are **revealed** to the view. Independently, the SDK fetches Ably history in pages of a fixed wire-message size, set by the `historyPageSize` option on `createClientSession` (and `createAgentSession`), default `100`. One round-trip usually covers several messages, since a streamed message spans many wire messages (create + appends + close).
+
+```typescript
+const session = createClientSession({ client, channelName, codec, historyPageSize: 200 });
+```
+
+Tune `historyPageSize` only to trade round-trips against per-fetch payload size; it does not change how many messages `loadOlder` reveals.
 
 ## React hook
 
@@ -37,7 +50,7 @@ const { messages, hasOlder, loading, loadError, loadOlder } = useView({ session,
 // hasOlder - are there older pages?
 // loading - is a page being fetched?
 // loadError - the Ably.ErrorInfo from the most recent failed loadOlder, or undefined
-// loadOlder() - load more older Runs (takes no argument; uses the hook's `limit`)
+// loadOlder() - load more older messages (takes no argument; uses the hook's `limit`)
 ```
 
 Omit `limit` to disable auto-load:

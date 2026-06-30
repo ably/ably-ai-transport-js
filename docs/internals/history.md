@@ -44,7 +44,7 @@ The transport never reads inside a domain message to decide when to stop — the
 
 ## Client pagination
 
-`View.loadOlder(limit)` (default `10`) reveals up to `limit` older codecMessages. After draining what it already holds (hidden messages and the withheld-node buffer), it drives `foldUntil` with a predicate that stops once enough newly-visible codecMessages have folded to cover the remaining page budget — all under a processing-history guard (so a fold doesn't surface transient events before the window is set up) — then reveals the newest whole runs covering the page and withholds the rest for the next call. `View.hasOlder()` reads `hydrator.hasNext()` for its history component, so it reflects real cursor exhaustion: it is optimistically `true` before the first fetch (history may exist) and `false` once the channel is drained — which is what the `while (view.hasOlder()) await view.loadOlder()` drain loop relies on.
+`View.loadOlder(limit)` (default `10`) reveals up to `limit` older codecMessages. After draining what it already holds (hidden messages and the withheld-node buffer), it drives `foldUntil` with a predicate that stops once enough newly-visible codecMessages have folded to cover the remaining page budget — all under a processing-history guard (so a fold doesn't surface transient events before the window is set up) — then reveals the newest whole runs covering the page, withholds the rest for the next call, and resolves to the revealed page (the newly-prepended codecMessages, oldest-first). `View.hasOlder()` reads `hydrator.hasNext()` for its history component, so it reflects real cursor exhaustion: it is optimistically `true` before the first fetch (history may exist) and `false` once the channel is drained — which is what the `while (view.hasOlder()) await view.loadOlder()` drain loop relies on.
 
 ```typescript
 await view.loadOlder(10);
@@ -57,7 +57,7 @@ A run whose stream is still in progress, or spans a page boundary, simply contri
 
 ## Page size
 
-The cursor fetches a fixed `HISTORY_PAGE_LIMIT` (200) wire messages per Ably page, over-provisioning for the many-wire-messages-per-domain-message ratio so a single round-trip usually covers several domain messages. `loadOlder`'s `limit` controls how many codecMessages are **revealed**, decoupled from how many wires are fetched per round-trip.
+The cursor fetches a configurable number of wire messages per Ably page - the `historyPageSize` option on `createClientSession` / `createAgentSession` (`DEFAULT_HISTORY_PAGE_SIZE`, 100) - over-provisioning for the many-wire-messages-per-domain-message ratio so a single round-trip usually covers several domain messages. `loadOlder`'s `limit` controls how many codecMessages are **revealed**, decoupled from how many wires are fetched per round-trip.
 
 ## Channel attach and untilAttach
 

@@ -89,9 +89,9 @@ Publishing the cancel does **not** tear down the Run locally — late server eve
 
 ## History
 
-`view.loadOlder()` loads older Runs from the Ably channel using [`untilAttach`](glossary.md#untilattach-ably) for gapless continuity with the live subscription. Pages are decoded through the codec, lifecycle events are dispatched to `tree.applyRunLifecycle`, and per-Run events fold into the owning Run's projection via `tree.applyMessage`.
+`view.loadOlder()` loads older messages from the Ably channel using [`untilAttach`](glossary.md#untilattach-ably) for gapless continuity with the live subscription. Pages are decoded through the codec, lifecycle events are dispatched to `tree.applyRunLifecycle`, and per-Run events fold into the owning Run's projection via `tree.applyMessage`.
 
-The view paginates at **Run** granularity. `loadOlder(limit)` reveals up to `limit` Runs per call. A single channel page may materialise more than `limit` Runs, so the view applies a **withholding** buffer: the newest `limit` Runs are released immediately, and the rest are held back for subsequent `loadOlder()` calls. This prevents the UI from jumping to show many Runs at once and gives the consumer a predictable Run-unit page size regardless of how channel pages happen to align with Run boundaries.
+The view paginates at **codecMessage** granularity. `loadOlder(limit)` (default `10`) reveals up to `limit` older messages per call and resolves to that revealed page (oldest-first), or `[]` once channel history is exhausted or a load is already in flight. Internally runs are revealed **whole**: the view counts codecMessages to decide how many older runs to bring in, releases the newest run(s) covering the budget, withholds the rest in a buffer for subsequent calls, then trims the flat `getMessages()` list to exactly `limit` new messages. A run straddling the page boundary still appears in `runs()` (it is a revealed node) while only its newest messages show in `getMessages()`. This gives the consumer a predictable message-unit page size regardless of how channel pages align with run boundaries.
 
 ## Delivery guarantee
 

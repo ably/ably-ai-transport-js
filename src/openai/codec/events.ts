@@ -37,6 +37,17 @@ export type OpenAIItem = Responses.ResponseOutputItem | Responses.ResponseInputI
  * One run renders as one assistant turn; one prompt as one user turn.
  * System/developer instructions are server-side configuration and never appear
  * here.
+ *
+ * `items` is a list because an **assistant** turn can hold several output items
+ * (a message plus one or more function calls). A **user** turn is expected to
+ * be a single input message *item*; the input codec relies on that (see
+ * `inputs`). Note "single message" is not "single part": that one message item
+ * can carry multiple content parts (text today; image/file later) in its
+ * `content` array — the multiplicity for a user turn lives in the parts, not
+ * the items.
+ *
+ * The list does not encode that user/assistant asymmetry in the type — a
+ * possible future tightening is a role-discriminated `TMessage`.
  */
 export interface OpenAITurn {
   /** Whether this turn is the user's prompt or the assistant's reply. */

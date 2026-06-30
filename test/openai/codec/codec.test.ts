@@ -12,27 +12,30 @@ import type * as Ably from 'ably';
 import type { Responses } from 'openai/resources/responses/responses';
 import { describe, expect, it } from 'vitest';
 
-import { HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../../src/constants.js';
+import { EVENT_AI_INPUT, HEADER_ROLE, HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../../src/constants.js';
 import { toCodecEvents } from '../../../src/core/codec/codec-event.js';
 import type { OpenAIOutput } from '../../../src/openai/codec/index.js';
 import { ResponsesCodec } from '../../../src/openai/codec/index.js';
 import { init, type OpenAIProjection } from '../../../src/openai/codec/reducer.js';
-import { getTransportHeaders } from '../../../src/utils.js';
+import { getCodecHeaders, getTransportHeaders } from '../../../src/utils.js';
 import {
   completed,
   contentPartDone,
   createBridge,
   created,
   failed,
+  firstInputText,
   incomplete,
   inProgress,
   itemAdded,
   itemDone,
   messageItem,
+  metaOf,
   queued,
   stampHeaders,
   streamError,
   textRun,
+  userTurn,
 } from './fixtures.js';
 
 const transportOf = (m: Ably.InboundMessage): Record<string, string> => getTransportHeaders(m);
@@ -128,5 +131,98 @@ describe('OpenAI codec roundtrip (offline)', () => {
     expect(added?.type === 'response.output_item.added' ? added.item.id : '').toBe('msg_1');
     const errorEvent = outputs.find((e) => e.type === 'error');
     expect(errorEvent?.type === 'error' ? errorEvent.message : '').toBe('boom');
+  });
+
+  it('roundtrips a user message on the ai-input wire', async () => {
+    const { writer, inbound } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onMessage: stampHeaders('run-x', 'u1') });
+    await encoder.publishInput(ResponsesCodec.createUserMessage(userTurn('Hi there')));
+    await encoder.close();
+
+    const messages = inbound();
+    const input = messages.find((m) => m.name === EVENT_AI_INPUT);
+    expect(input).toBeDefined();
+    expect(input && getCodecHeaders(input).kind).toBe('user-message');
+    expect(input && getCodecHeaders(input).partType).toBe('input_text');
+    expect(input && getTransportHeaders(input)[HEADER_ROLE]).toBe('user');
+    expect(input?.data).toBe('Hi there');
+
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+    for (const msg of messages) {
+      for (const event of toCodecEvents(decoder.decode(msg))) {
+        projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+      }
+    }
+    const turn = ResponsesCodec.getMessages(projection)[0]?.message;
+    expect(turn?.role).toBe('user');
+    expect(firstInputText(turn)).toBe('Hi there');
+  });
+
+  it('round-trips an empty prompt as a single empty text part', async () => {
+    const { writer, inbound } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onMessage: stampHeaders('run-x', 'u1') });
+    // A turn whose message has no content parts exercises explode's ≥1-part guarantee.
+    await encoder.publishInput(
+      ResponsesCodec.createUserMessage({ role: 'user', items: [{ type: 'message', role: 'user', content: [] }] }),
+    );
+    await encoder.close();
+
+    const messages = inbound();
+    const input = messages.find((m) => m.name === EVENT_AI_INPUT);
+    expect(input && getCodecHeaders(input).partType).toBe('input_text');
+    expect(input?.data).toBe('');
+
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+    for (const msg of messages) {
+      for (const event of toCodecEvents(decoder.decode(msg))) {
+        projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+      }
+    }
+    expect(firstInputText(ResponsesCodec.getMessages(projection)[0]?.message)).toBe('');
+  });
+
+  it('round-trips the turn role rather than defaulting it', async () => {
+    const { writer, inbound } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onMessage: stampHeaders('run-x', 'u1') });
+    // A non-'user' role would be masked by the 'user' fallback if the header
+    // were mis-keyed, so round-tripping it proves the role is actually read.
+    await encoder.publishInput(
+      ResponsesCodec.createUserMessage({
+        role: 'assistant',
+        items: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] }],
+      }),
+    );
+    await encoder.close();
+
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+    for (const msg of inbound()) {
+      for (const event of toCodecEvents(decoder.decode(msg))) {
+        projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+      }
+    }
+    expect(ResponsesCodec.getMessages(projection)[0]?.message.role).toBe('assistant');
+  });
+
+  it('defaults the role to user when the role header is absent', () => {
+    const decoder = ResponsesCodec.createDecoder();
+    // CAST: a minimal inbound ai-input part with no role transport header, to
+    // exercise assemble's `?? 'user'` fallback.
+    const msg = {
+      action: 'message.create',
+      serial: 's1',
+      version: { serial: 's1' },
+      name: EVENT_AI_INPUT,
+      data: 'hi',
+      extras: { ai: { transport: {}, codec: { kind: 'user-message', partType: 'input_text' } } },
+    } as unknown as Ably.InboundMessage;
+
+    let projection: OpenAIProjection = init();
+    for (const event of toCodecEvents(decoder.decode(msg))) {
+      projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+    }
+    expect(ResponsesCodec.getMessages(projection)[0]?.message.role).toBe('user');
   });
 });

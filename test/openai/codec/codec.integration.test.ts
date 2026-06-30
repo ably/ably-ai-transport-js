@@ -19,12 +19,14 @@ import {
   completed,
   contentPartAdded,
   created,
+  firstInputText,
   itemAdded,
   messageItem,
   metaOf,
   stampHeaders,
   textDelta,
   textDone,
+  userTurn,
 } from './fixtures.js';
 
 describe('OpenAI ResponsesCodec integration', () => {
@@ -75,5 +77,36 @@ describe('OpenAI ResponsesCodec integration', () => {
     const message = messages[0]?.message.items.find((i): i is Responses.ResponseOutputMessage => i.type === 'message');
     const part = message?.content.find((p) => p.type === 'output_text');
     expect(part?.type === 'output_text' ? part.text : '').toBe('Hello, world!');
+  });
+
+  it('user message roundtrip', async () => {
+    const channelName = uniqueChannelName('openai-user-roundtrip');
+    const pubChannel = ablyRealtimeClient().channels.get(channelName);
+    const subChannel = ablyRealtimeClient().channels.get(channelName);
+
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+
+    let resolveDone: () => void;
+    const done = new Promise<void>((r) => {
+      resolveDone = r;
+    });
+
+    await subChannel.subscribe((msg) => {
+      const decoded = decoder.decode(msg);
+      for (const event of toCodecEvents(decoded)) projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+      if (decoded.inputs.length > 0) resolveDone();
+    });
+
+    const encoder = ResponsesCodec.createEncoder(pubChannel, { onMessage: stampHeaders('run-1', 'u-1') });
+    await encoder.publishInput(ResponsesCodec.createUserMessage(userTurn('what is the weather in London?')));
+    await encoder.close();
+
+    await done;
+
+    const messages = ResponsesCodec.getMessages(projection);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.message.role).toBe('user');
+    expect(firstInputText(messages[0]?.message)).toBe('what is the weather in London?');
   });
 });

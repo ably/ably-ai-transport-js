@@ -2,9 +2,9 @@
  * OpenAI Responses reducer.
  *
  * Pure `(init, fold, getMessages)` over the `OpenAIInput | OpenAIOutput`
- * union. Folds the agent's Responses event stream into a per-node projection of
- * OpenAI items, exposed as one {@link OpenAITurn} per node. (Input folding —
- * the user-message turn — lands with the input-wire increment.)
+ * union. Folds the agent's Responses event stream — and the client's
+ * user-message turn — into a per-node projection of OpenAI items, exposed as
+ * one {@link OpenAITurn} per node.
  *
  * The fold is a mirror of OpenAI's own stream reduction
  * (`openai/lib/responses/ResponseAccumulator`), re-keyed on **`item_id`**
@@ -126,6 +126,46 @@ const foldOutput = (state: OpenAIProjection, event: OpenAIOutput): void => {
 };
 
 /**
+ * Whether an item is an input message (the shape a user turn carries). Within
+ * the user-message fold every item is an input message the codec constructed,
+ * so the narrowing to {@link Responses.ResponseInputItem.Message} is sound here
+ * even though an output message would also satisfy `type === 'message'`.
+ * @param item - The item to test.
+ * @returns Whether to treat `item` as an input message.
+ */
+const isInputMessage = (item: OpenAIItem): item is Responses.ResponseInputItem.Message =>
+  item.type === 'message' && Array.isArray(item.content);
+
+/**
+ * Fold a user-message turn into the projection. The input wire delivers one
+ * event per content part, so each fold merges its part(s) into the turn's
+ * single input message — appending to the existing message item if present,
+ * else seeding it. This keeps the optimistic (whole-message) fold and the
+ * per-part wire refold converging on the same turn.
+ * @param state - Projection to mutate.
+ * @param turn - The user turn (one input message, one or more content parts).
+ */
+const foldUserMessage = (state: OpenAIProjection, turn: OpenAITurn): void => {
+  // Use the turn's own role (carried on the wire role header) rather than
+  // forcing 'user', so the role round-trips faithfully. For the user-message
+  // input it is 'user' in practice.
+  state.role = turn.role;
+  // Assumption in use here: a user turn is a single input message, so every
+  // incoming part merges into the one message item — resolved once, seeded on
+  // first contact, appended thereafter.
+  let target = state.items.find(isInputMessage);
+  for (const incoming of turn.items) {
+    if (!isInputMessage(incoming)) continue;
+    if (target) {
+      target.content.push(...incoming.content);
+    } else {
+      target = structuredClone(incoming);
+      state.items.push(target);
+    }
+  }
+};
+
+/**
  * Fold one direction-tagged input or output event into the projection.
  * @param state - Projection to fold into (mutated in place and returned).
  * @param event - The direction-tagged input or output event.
@@ -141,9 +181,11 @@ export const fold = (
 
   if (event.direction === 'output') {
     foldOutput(state, event.event);
+  } else {
+    // user-message is the only input variant this increment declares; tool
+    // results and approvals (with their own dispatch) arrive in later increments.
+    foldUserMessage(state, event.event.message);
   }
-  // This increment folds assistant output only.
-  // TODO(AIT-742): fold the user-message turn when the input wire lands.
   return state;
 };
 

@@ -11,7 +11,9 @@
  * - **Lifecycle and the item/content-part envelopes are discrete events.** Each
  *   carries no streamed string and hence no `status` header.
  *
- * Input side: empty in this increment (assistant output only) — see {@link inputs}.
+ * Input side: the user message is a `batch` that fans the user turn's content
+ * parts out into one `ai-input` event per part (one for a plain text prompt),
+ * reassembled and merged by the reducer — see {@link inputs}.
  *
  * Function calls, reasoning, refusals, and hosted tools are added in later
  * increments by adding entries here — the split established now does not change.
@@ -19,9 +21,10 @@
 
 import type { Responses } from 'openai/resources/responses/responses';
 
-import type { InputDescriptor, OutputBuilder, OutputDescriptor } from '../../core/codec/index.js';
+import { HEADER_ROLE } from '../../constants.js';
+import type { InputBuilder, InputDescriptor, OutputBuilder, OutputDescriptor } from '../../core/codec/index.js';
 import { jsonField, strField } from '../../core/codec/index.js';
-import type { OpenAIInput, OpenAIOutput } from './events.js';
+import type { OpenAIInput, OpenAIOutput, OpenAITurn } from './events.js';
 
 // Coerce arbitrary wire data to a string, defaulting to empty.
 const asString = (data: unknown): string => (typeof data === 'string' ? data : '');
@@ -102,14 +105,51 @@ export const outputs = ({ event, stream }: OutputBuilder<OpenAIOutput>): readonl
 /**
  * The OpenAI codec's `ai-input` descriptor table.
  *
- * Empty in this increment: the user-input turn rides the `ai-input` wire, but
- * its representation (fanning a turn's content out into wire parts and merging
- * them back in the reducer) is a deliberate design step taken in the next
- * increment. This increment streams assistant output only. `OpenAIInput` still
- * declares the well-known `user-message` variant so `createUserMessage` is
- * available, but nothing encodes or decodes it yet.
+ * The user message is a `batch`: a user turn is a single input message whose
+ * content parts (`input_text`, and later `input_image` / `input_file`) are
+ * fanned out into one `ai-input` event per part, all sharing `kind:
+ * user-message` and the turn's codec-message-id, each carrying its `partType`
+ * and the turn's `role`. The transport groups the parts into one node by their
+ * shared codec-message-id; the reducer then merges them within that node (see
+ * the reducer's user-message merge). A turn with no encodable part still emits
+ * one empty text part so the message round-trips.
  *
- * TODO(AIT-742): add the user-message input mapping (fan-out + reducer merge).
- * @returns An empty input descriptor table.
+ * Assumes a user turn is a **single** input message: the fan-out carries no
+ * item boundary, so all content parts reassemble into one message item. (A turn
+ * with multiple message items would be merged into one — see `OpenAITurn`.)
+ *
+ * `input_text` is the only content part this increment encodes.
+ * TODO(AIT-742): add `input_image` and `input_file` parts for richer prompts.
+ * @param builder - The `{ event, batch }` builder curried on {@link OpenAIInput}.
+ * @param builder.batch - Declare a multi-part (fan-out) input.
+ * @returns The input descriptor table.
  */
-export const inputs = (): readonly InputDescriptor<OpenAIInput>[] => [];
+export const inputs = ({ batch }: InputBuilder<OpenAIInput>): readonly InputDescriptor<OpenAIInput>[] => [
+  batch('user-message', {
+    explode: (input) => {
+      // Assumption in use here: a user turn is a single input message, so we
+      // flatten content parts across items with no item boundary on the wire.
+      // A multi-item turn would collapse into one message on reassembly.
+      const parts: Responses.ResponseInputText[] = [];
+      for (const item of input.message.items) {
+        if (item.type !== 'message' || !Array.isArray(item.content)) continue;
+        for (const part of item.content) {
+          if (part.type === 'input_text') parts.push(part);
+        }
+      }
+      // Guarantee ≥1 encodable part so an empty prompt still round-trips.
+      const empty: Responses.ResponseInputText = { type: 'input_text', text: '' };
+      return parts.length > 0 ? parts : [empty];
+    },
+    partTypeOf: (part) => part.type,
+    parts: (p) => [p('input_text', { data: { encode: (part) => part.text, decode: (d) => ({ text: asString(d) }) } })],
+    messageHeaders: (input) => ({ transportHeaders: { [HEADER_ROLE]: input.message.role } }),
+    assemble: (part, { transportHeaders }) => ({
+      // CAST: HEADER_ROLE is wire data; the role string is trusted as a turn role.
+      message: {
+        role: (transportHeaders[HEADER_ROLE] ?? 'user') as OpenAITurn['role'],
+        items: [{ type: 'message', role: 'user', content: [part] }],
+      },
+    }),
+  }),
+];

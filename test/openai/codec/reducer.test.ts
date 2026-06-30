@@ -9,12 +9,14 @@ import {
   contentPartAdded,
   created,
   failed,
+  firstInputText,
   itemAdded,
   itemDone,
   messageItem,
   streamError,
   textDelta,
   textDone,
+  userTurn,
 } from './fixtures.js';
 
 // ---------------------------------------------------------------------------
@@ -157,12 +159,30 @@ describe('OpenAI reducer', () => {
     expect(getMessages(state)[0]?.message.items).toHaveLength(1);
   });
 
-  it('ignores input events in this increment (input wire deferred)', () => {
-    const state = init();
+  it('folds a user-message turn into a user message', () => {
     const userInput: CodecEvent<OpenAIInput, OpenAIOutput> = {
       direction: 'input',
-      event: { kind: 'user-message', message: { role: 'user', items: [] } },
+      event: { kind: 'user-message', message: userTurn('what is the weather?') },
     };
-    expect(getMessages(fold(state, userInput, { serial: '', messageId: 'u1' }))).toHaveLength(0);
+    const state = fold(init(), userInput, { serial: '', messageId: 'u1' });
+
+    const messages = getMessages(state);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.message.role).toBe('user');
+    expect(firstInputText(messages[0]?.message)).toBe('what is the weather?');
+  });
+
+  it('merges content parts delivered as separate inputs into one message', () => {
+    // The input wire fans a user message out into one event per content part;
+    // folding them under the same node accumulates one message with both parts.
+    const meta: ReducerMeta = { serial: '', messageId: 'u1' };
+    let state = fold(init(), { direction: 'input', event: { kind: 'user-message', message: userTurn('one ') } }, meta);
+    state = fold(state, { direction: 'input', event: { kind: 'user-message', message: userTurn('two') } }, meta);
+
+    const items = getMessages(state)[0]?.message.items ?? [];
+    expect(items).toHaveLength(1);
+    const message = items.find((i): i is Responses.ResponseInputItem.Message => i.type === 'message');
+    const texts = message?.content.filter((p) => p.type === 'input_text').map((p) => p.text);
+    expect(texts).toEqual(['one ', 'two']);
   });
 });

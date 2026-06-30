@@ -10,6 +10,7 @@ import type { Responses } from 'openai/resources/responses/responses';
 
 import { HEADER_CODEC_MESSAGE_ID, HEADER_RUN_ID } from '../../../src/constants.js';
 import type { ChannelWriter } from '../../../src/core/codec/index.js';
+import type { OpenAITurn } from '../../../src/openai/codec/index.js';
 import { getTransportHeaders } from '../../../src/utils.js';
 
 // --- minimal domain objects --------------------------------------------------
@@ -138,6 +139,19 @@ export const textRun = (itemId: string, text: string): Responses.ResponseStreamE
   ];
 };
 
+// A plain-text user turn: one input message with a single `input_text` part.
+export const userTurn = (text: string): OpenAITurn => ({
+  role: 'user',
+  items: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }],
+});
+
+// The first `input_text` part's text from a (user) turn, or '' if absent.
+export const firstInputText = (turn: OpenAITurn | undefined): string => {
+  const message = turn?.items.find((i): i is Responses.ResponseInputItem.Message => i.type === 'message');
+  const part = message?.content.find((p) => p.type === 'input_text');
+  return part?.type === 'input_text' ? part.text : '';
+};
+
 // --- transport-header helpers ------------------------------------------------
 
 /**
@@ -173,6 +187,7 @@ interface Recorded {
   action: 'message.create' | 'message.append';
   serial: string;
   versionSerial: string;
+  name: string | undefined;
   data: unknown;
   extras: unknown;
 }
@@ -188,17 +203,31 @@ export const createBridge = (): { writer: ChannelWriter; inbound: () => Ably.Inb
   let serials = 0;
   let versions = 0;
   const writer: ChannelWriter = {
+    // A batch publishes an array in one call; record each message as its own
+    // create with its own serial (the wire `name` distinguishes input/output).
     publish: async (message) => {
-      const msg = Array.isArray(message) ? message[0] : message;
-      const serial = `serial-${String((serials += 1))}`;
-      recorded.push({ action: 'message.create', serial, versionSerial: serial, data: msg?.data, extras: msg?.extras });
-      return await Promise.resolve({ serials: [serial] });
+      const msgs = Array.isArray(message) ? message : [message];
+      const out: string[] = [];
+      for (const msg of msgs) {
+        const serial = `serial-${String((serials += 1))}`;
+        recorded.push({
+          action: 'message.create',
+          serial,
+          versionSerial: serial,
+          name: msg.name,
+          data: msg.data,
+          extras: msg.extras,
+        });
+        out.push(serial);
+      }
+      return await Promise.resolve({ serials: out });
     },
     appendMessage: async (message) => {
       recorded.push({
         action: 'message.append',
         serial: message.serial ?? '',
         versionSerial: `v${String((versions += 1)).padStart(7, '0')}`,
+        name: message.name,
         data: message.data,
         extras: message.extras,
       });
@@ -219,7 +248,7 @@ export const createBridge = (): { writer: ChannelWriter; inbound: () => Ably.Inb
             action: r.action,
             serial: r.serial,
             version: { serial: r.versionSerial },
-            name: 'ai-output',
+            name: r.name ?? '',
             data: r.data,
             extras: r.extras,
           }) as unknown as Ably.InboundMessage,

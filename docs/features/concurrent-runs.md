@@ -37,11 +37,11 @@ import { Invocation } from '@ably/ai-transport';
 // Each HTTP POST creates its own run from the invocation body
 const invocation = Invocation.fromJSON(await req.json());
 const run = session.createRun(invocation, { signal: req.signal });
-await run.start();
-
-// Drain run.view for the conversation the triggering input produced from the channel
+// Drain run.view for the conversation the triggering input produced (this also
+// folds in that input, which start() waits for)
 while (run.view.hasOlder()) await run.view.loadOlder();
 const messages = run.view.getMessages().map((m) => m.message);
+await run.start();
 
 const result = streamText({ model, messages, abortSignal: run.abortSignal });
 const { reason } = await run.pipe(result.toUIMessageStream());

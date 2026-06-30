@@ -58,14 +58,15 @@ const invocationData = (await req.json()) as InvocationData;
 const invocation = Invocation.fromJSON(invocationData);
 const run = session.createRun(invocation);
 
-// start() looks up the triggering input event on the channel (via rewind),
-// reads the user's message and per-run metadata, and publishes `ai-run-start`.
-await run.start();
-
-// Read the conversation the client published to the channel, then prompt the LLM.
-// Drain run.view for the full multi-turn history; run.messages is only this turn.
+// Read the conversation the client published to the channel (drain run.view, the
+// one history driver); run.messages is only this turn. The drain also folds in
+// the triggering input that start() waits for.
 while (run.view.hasOlder()) await run.view.loadOlder();
 const history = run.view.getMessages().map((m) => m.message);
+
+// Publish ai-run-start once the trigger is located (the drain above brings it in).
+await run.start();
+
 const result = streamText({ model, messages: history });
 const { reason } = await run.pipe(result.toUIMessageStream());
 await run.end({ reason });

@@ -41,12 +41,11 @@ const session = createAgentSession({ client: ably, channelName: invocation.sessi
 await session.connect();
 const run = session.createRun(invocation, { signal: req.signal });
 
-await run.start();
-
-// Drain run.view for the full multi-turn conversation to feed the model.
-// run.messages is only this run's own turn.
+// Drain run.view for the full multi-turn conversation to feed the model (this also
+// folds in the triggering input that start() waits for); run.messages is only this turn.
 while (run.view.hasOlder()) await run.view.loadOlder();
 const conversation = run.view.getMessages().map((m) => m.message);
+await run.start();
 
 const result = streamText({
   model,

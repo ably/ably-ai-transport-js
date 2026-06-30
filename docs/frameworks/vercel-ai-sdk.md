@@ -108,13 +108,13 @@ const session = createAgentSession({ client: ably, channelName: invocation.sessi
 await session.connect();
 const run = session.createRun(invocation, { signal: req.signal });
 
-await run.start();
 // Replay the conversation from the channel — the user messages were already
 // published by the client, so the agent reads them back rather than republishing.
-// Draining run.view yields the full multi-turn conversation to feed the model;
-// run.messages is only this run's own turn (the unit to persist).
+// Draining run.view yields the full multi-turn conversation and folds in the
+// triggering input start() waits for; run.messages is only this run's own turn.
 while (run.view.hasOlder()) await run.view.loadOlder();
 const conversation = run.view.getMessages().map((m) => m.message);
+await run.start();
 
 const result = streamText({
   model: yourModel,

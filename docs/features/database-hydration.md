@@ -6,7 +6,7 @@ The channel already persists the whole conversation, so [history replay](history
 
 ## The seam
 
-The store and the channel overlap. The store holds every completed turn up to some point; the channel holds everything, including the turns the store hasn't recorded yet. The newest message the store and channel share is the **seam** - the join point.
+The store and the channel overlap. The store holds the messages of every completed run up to some point; the channel holds everything, including the runs the store hasn't recorded yet. The newest message the store and channel share is the **seam** - the join point.
 
 The seam is keyed on the **domain message id** (`message.id`) - the only id shared between your store and the channel. The transport's internal `codecMessageId` is never persisted, so it can't be the seam key.
 
@@ -16,7 +16,7 @@ With no stored history (an empty seed, or a seam absent from the channel) the pr
 
 ## Server side
 
-The agent is the **sole writer** to the store. After a run completes, it appends that turn; on the next invocation it seeds from the store and reconciles the tail, exactly as the client does. Persist only completed turns - a cancelled or errored partial stays on the channel and is read back from there.
+The agent is the **sole writer** to the store. After a run completes, it appends that run's messages; on the next invocation it seeds from the store and reconciles the tail, exactly as the client does. Persist only completed runs - a cancelled or errored partial stays on the channel and is read back from there.
 
 ```typescript
 import { streamText, convertToModelMessages } from 'ai';
@@ -50,12 +50,12 @@ const result = streamText({
 const pipeResult = await run.pipe(result.toUIMessageStream());
 const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
 await run.end(outcome);
-// Persist after the run ends. Keyed by domain id, so re-persisting a turn is
-// idempotent; only completed turns are stored.
+// Persist after the run ends. Keyed by domain id, so re-persisting a run is
+// idempotent; only completed runs are stored.
 if (outcome.reason === 'complete') await appendMessages(invocation.sessionName, run.messages);
 ```
 
-`run.messages` is this run's own turn (its triggering input plus its streamed output) - the exact unit to persist. A turn the store hasn't caught up on yet is still read from the channel by the next reader, so nothing is dropped in the window between a run ending and its store write landing.
+`run.messages` is this run's own turn (its triggering input plus its streamed output) - the exact unit to persist. A run the store hasn't caught up on yet is still read from the channel by the next reader, so nothing is dropped in the window between a run ending and its store write landing.
 
 ## Client side
 
@@ -109,7 +109,7 @@ function Chat({ chatId, seed }: { chatId: string; seed: UIMessage[] }) {
 
 Reconciliation drops the one overlapping message at the seam, on the assumption that the seam walk is the **only** thing paging that view. Point a second paginator (e.g. [`useView`](../reference/react-hooks.md#useview)) at the same `session.view` and page it past the seam, and you can reintroduce a duplicate. Render the seeded conversation from the composed result instead of mixing pagers over one view.
 
-This is also why the seeded UI stays linear: cancel a still-active response before starting a new turn, so the seam reconciliation only ever meets complete (or cancelled) turns.
+This is also why the seeded UI stays linear: cancel a still-active response before starting a new run, so the seam reconciliation only ever meets complete (or cancelled) runs.
 
 ## Edge cases
 
@@ -118,6 +118,6 @@ This is also why the seeded UI stays linear: cancel a still-active response befo
 | Empty seed (`[]`, loaded)    | No seam; `loadUntil` hydrates the whole channel - identical to plain [history replay](history.md) |
 | Seam absent from the channel | The predicate never matches; the whole window is returned, so the conversation still hydrates     |
 | Seed still loading           | Pass `skip: true` (the hooks) so the walk holds until the seam id is known                        |
-| Store behind the channel     | The missing turns are read from the channel; the store catches up on the next agent write         |
+| Store behind the channel     | The missing runs are read from the channel; the store catches up on the next agent write          |
 
 See [History and replay](history.md) for the underlying pagination, [Runs](../concepts/runs.md) for `run.messages` and `run.view`, and the [React hooks reference](../reference/react-hooks.md#usemessageswithseed) for the hook signatures.

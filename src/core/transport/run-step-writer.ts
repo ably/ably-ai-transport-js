@@ -9,10 +9,11 @@
  *
  * The run object delegates `pipe`/`createStep` to the writer and supplies its
  * dependencies through {@link RunStepWriterContext}. The callback seams —
- * `assertPublishable` (the open/terminal gate), `getAnchors` (the late-resolved
- * structural anchors), and `endRun` (the cancel safety-net) — let the run object
- * own how a run opens, resolves, and terminates, so the writer stays agnostic of
- * those policies.
+ * `assertPublishable` (the open/terminal gate) and `getAnchors` (the
+ * late-resolved structural anchors) — let the run object own how a run opens and
+ * resolves, so the writer stays agnostic of those policies. The writer never
+ * ends the run: a cancelled pipe closes only its own step bracket, and the run
+ * terminal is the run object's (`run.end()` / `session.end()`).
  */
 
 import * as Ably from 'ably';
@@ -28,7 +29,6 @@ import type { RunManager, StepClientScopes } from './run-manager.js';
 import type { DefaultTree } from './tree.js';
 import type {
   PipeOptions,
-  RunEndParams,
   RunEndReason,
   RunRuntime,
   RunStep,
@@ -85,9 +85,8 @@ export interface StepWriterAnchors {
 /**
  * The dependencies the {@link RunStepWriter} needs from its owning agent run,
  * passed by the run object at construction. The callback seams
- * (`assertPublishable` / `getAnchors` / `endRun`) keep the run's open, resolve,
- * and terminal policy in the run object while the writer owns the step + pipe
- * mechanics.
+ * (`assertPublishable` / `getAnchors`) keep the run's open / resolve policy in
+ * the run object while the writer owns the step + pipe mechanics.
  */
 export interface RunStepWriterContext<
   TInput extends CodecInputEvent,
@@ -124,8 +123,6 @@ export interface RunStepWriterContext<
   assertPublishable(verb: 'pipe' | 'step'): void;
   /** The run's resolved structural anchors, read live at publish time. */
   getAnchors(): StepWriterAnchors;
-  /** End the run — the cancel safety-net invoked when a pipe ends cancelled. */
-  endRun(params: RunEndParams): Promise<void>;
 }
 
 /** The output-producing surface of an agent run: stream piping and explicit step handles. */
@@ -216,11 +213,37 @@ export const createRunStepWriter = <
   });
 
   /**
+   * Re-derive the sticky `stepClientId` from the channel: the `step-client-id`
+   * of the run's latest preceding step, read off the hydrated Tree (the same
+   * channel-as-truth source `load()` / `adoptRun` use). The fast-path
+   * {@link lastStepClientId} cursor is empty in a fresh adopting process whose
+   * prior steps ran elsewhere, but that process's `load()`-hydrated Tree carries
+   * those steps — so the sticky inheritance is authoritative from the channel,
+   * not the (empty) cursor. Reads `StepInfo.stepClientId` of the most-recent step
+   * that carries one (walking the read-model's first-observed order from the tail).
+   * @returns The latest preceding step's client, or undefined when the run has no
+   *   prior step on the channel yet (its first step).
+   */
+  const stepClientIdFromChannel = (): string | undefined => {
+    const steps = getTree().getRunNode(ctx.getRunId())?.steps;
+    if (!steps) return undefined;
+    for (let i = steps.length - 1; i >= 0; i--) {
+      const sc = steps[i]?.stepClientId;
+      if (sc !== undefined && sc !== '') return sc;
+    }
+    return undefined;
+  };
+
+  /**
    * Resolve a step's `stepClientId` at `ai-step-start` (the precedence ladder,
    * parallel to the `stepId` ladder), and update the {@link lastStepClientId}
    * cursor:
    *   1. an explicit {@link StepOptions.stepClientId} (the steer seam populates) wins;
-   *   2. else inherit the prior step's client — STICKY — from the in-process cursor;
+   *   2. else inherit the prior step's client — STICKY — from the in-process
+   *      cursor (the provisioned/serverless fast-path), falling back to
+   *      re-deriving it from the channel ({@link stepClientIdFromChannel}) so a
+   *      fresh-process step with no cursor still inherits the run's prior step's
+   *      client rather than resetting to the default;
    *   3. else (no prior step — the run's FIRST step) default to the triggering
    *      input's publisher (`input-client-id`), NOT the run owner: the two coincide
    *      on a fresh turn but diverge on a non-owner continuation, and the input's
@@ -229,7 +252,7 @@ export const createRunStepWriter = <
    * @returns The resolved step client (empty string when nothing resolves a value).
    */
   const resolveStepClientId = (explicit?: string): string => {
-    const resolved = explicit ?? lastStepClientId ?? ctx.getAnchors().inputClientId ?? '';
+    const resolved = explicit ?? lastStepClientId ?? stepClientIdFromChannel() ?? ctx.getAnchors().inputClientId ?? '';
     lastStepClientId = resolved;
     return resolved;
   };
@@ -320,9 +343,11 @@ export const createRunStepWriter = <
    * `onMessage` hook (the start-serial is known only after the step-start
    * publishes, which for the lazy implicit step happens inside `onFirstOutput`,
    * after the encoder is created). Builds the assistant message's default
-   * headers from the run's resolved structural anchors, pipes, surfaces a stream
-   * error via `onError`, and runs the cancel safety-net (`endOnCancel`) so every
-   * observer's stream closes even if the caller omits `run.end()`.
+   * headers from the run's resolved structural anchors, pipes, and surfaces a
+   * stream error via `onError`. It does NOT end the run on cancel — the run
+   * terminal is the outer layer's responsibility (`run.end()`, or
+   * `session.end()` for an open run at teardown); a cancelled pipe closes only
+   * its own step bracket (the caller's close-iff-opened / `step.end()`).
    * @param stream - The output stream to pipe.
    * @param streamOpts - Per-stream overrides.
    * @param step - The step to stamp output under.
@@ -330,7 +355,6 @@ export const createRunStepWriter = <
    * @param step.startSerialRef - Holds the step attempt's `start-serial`, stamped on every output once known.
    * @param step.stepClientId - The step's resolved client, stamped as `step-client-id` on every output.
    * @param step.onFirstOutput - Optional hook fired once before the first output (the lazy implicit-step open); omitted when the step is already open.
-   * @param endOnCancel - Called to end the run when the pipe is cancelled.
    * @returns The {@link StreamResult}.
    */
   const doPipe = async (
@@ -342,7 +366,6 @@ export const createRunStepWriter = <
       stepClientId: string;
       onFirstOutput?: () => Promise<void>;
     },
-    endOnCancel: () => Promise<void>,
   ): Promise<StreamResult> => {
     await ctx.requireConnected('pipe');
     ctx.assertPublishable('pipe');
@@ -423,17 +446,6 @@ export const createRunStepWriter = <
       runOnError?.(errInfo);
     }
 
-    // Run cancellation is transport-tier: guarantee the run-end terminal so
-    // every observer's stream closes even if the caller's handler omits
-    // run.end(). Best-effort — pipe must still return the StreamResult.
-    if (result.reason === 'cancelled') {
-      try {
-        await endOnCancel();
-      } catch {
-        logger?.error('Run.pipe(); run-end on cancel failed', { runId });
-      }
-    }
-
     logger?.debug('Run.pipe(); stream finished', { runId, reason: result.reason });
     return result;
   };
@@ -481,9 +493,9 @@ export const createRunStepWriter = <
       // only inside the onFirstOutput callback) to false at the close check below.
       const stepState = { opened: false, settled: false };
 
-      // Idempotent close that clears the latch if this step holds it, so the
-      // cancel safety-net (run.end -> closeActiveStep) and the close-iff-opened
-      // below never double-publish `ai-step-end`.
+      // Idempotent close that clears the latch if this step holds it, so
+      // run.end's auto-close (run.end -> closeActiveStep, e.g. from session.end)
+      // and the close-iff-opened below never double-publish `ai-step-end`.
       const settle = async (reason: StepEndReason): Promise<void> => {
         if (stepState.settled) return;
         stepState.settled = true;
@@ -491,26 +503,21 @@ export const createRunStepWriter = <
         await closeStep(stepId, startSerialRef.value, reason, stepClientId);
       };
 
-      const result = await doPipe(
-        stream,
-        streamOpts,
-        {
-          stepId,
-          startSerialRef,
-          stepClientId,
-          onFirstOutput: async () => {
-            stepState.opened = true;
-            activeStep = { settle };
-            startSerialRef.value = await openStep(stepId, stepClientId);
-          },
+      const result = await doPipe(stream, streamOpts, {
+        stepId,
+        startSerialRef,
+        stepClientId,
+        onFirstOutput: async () => {
+          stepState.opened = true;
+          activeStep = { settle };
+          startSerialRef.value = await openStep(stepId, stepClientId);
         },
-        async () => ctx.endRun({ reason: 'cancelled' }),
-      );
+      });
 
       // Close the implicit step iff it opened: a cancel closes it `cancelled`, a
-      // stream error `failed`, anything else `complete`. Idempotent, so if the
-      // cancel safety-net already drove run.end (which auto-closed via
-      // closeActiveStep with the same mapping) this is a no-op.
+      // stream error `failed`, anything else `complete`. Idempotent, so if
+      // run.end (or session.end) already auto-closed this step via
+      // closeActiveStep (the same reason mapping) this is a no-op.
       if (stepState.opened) {
         // Best-effort, like the explicit step's close: a fire-and-forget run.pipe
         // whose connection closed mid-stream must not escape an unhandled rejection
@@ -559,10 +566,10 @@ export const createRunStepWriter = <
 
     // Step state machine: 'initialized' (minted, not started) -> 'active'
     // (ai-step-start published) -> 'settled' (ai-step-end published). Gates
-    // pipe-before-start, double-start, and double-end. Object wrapper for
-    // `errored` so TS doesn't flow-narrow away the mutation pipe() makes.
+    // pipe-before-start, double-start, and double-end. Object wrapper so TS
+    // doesn't flow-narrow away the `errored`/`cancelled` mutations pipe() makes.
     let state: 'initialized' | 'active' | 'settled' = 'initialized';
-    const pipeState = { errored: false };
+    const pipeState = { errored: false, cancelled: false };
 
     // Close the step exactly once, clearing the active-step latch if this step
     // holds it. Idempotent, so end()-after-end() and run.end's auto-close after
@@ -616,19 +623,24 @@ export const createRunStepWriter = <
             400,
           );
         }
-        const result = await doPipe(stream, streamOpts, { stepId, startSerialRef, stepClientId }, async () =>
-          ctx.endRun({ reason: 'cancelled' }),
-        );
+        const result = await doPipe(stream, streamOpts, { stepId, startSerialRef, stepClientId });
         // A piped stream error marks the step failed without throwing — so the
         // common `vercelRunOutcome(...) -> run.end(outcome)` flow needs no
         // try/catch, while the step status still reflects the failure.
         if (result.reason === 'error') pipeState.errored = true;
+        // A cancel marks it cancelled so an explicit end() still closes the step
+        // `cancelled` rather than the derived `complete`.
+        if (result.reason === 'cancelled') pipeState.cancelled = true;
         return result;
       },
       end: async (params?: StepEndParams): Promise<void> => {
         // Derive the reason from piped output when not given, so a step closed
-        // after a stream error settles `failed` with no explicit bookkeeping.
-        await settle(params?.reason ?? (pipeState.errored ? 'failed' : 'complete'));
+        // after a stream error settles `failed` with no explicit bookkeeping. A
+        // cancel settles `cancelled` — whether the cancelled pipe marked it, or
+        // the run's signal aborted with no (or before any) output, so a step
+        // cancelled before piping still closes `cancelled`.
+        const cancelled = pipeState.cancelled || signal.aborted;
+        await settle(params?.reason ?? (cancelled ? 'cancelled' : pipeState.errored ? 'failed' : 'complete'));
       },
     };
   };

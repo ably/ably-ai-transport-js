@@ -5,9 +5,13 @@
  * lifecycle. Cancel message routing is handled directly by the session's
  * single channel subscription — no separate cancel manager needed.
  *
- * The session exposes a single factory method — `createRun()` — which returns
- * an AgentRun with explicit lifecycle methods: start(), pipe(), suspend(),
- * and end() (suspend() and end() are both terminal).
+ * The session exposes two run-construction factories with different return
+ * types: `createRun()` returns an OpenableRun (its `start()` opens a new run by
+ * publishing) and `adoptRun()` returns an AdoptedRun (its `load()` adopts an
+ * already-open run for publishing in a fresh process, without publishing an
+ * opening event). Both share the common publishable surface — pipe(), step(),
+ * suspend(), and end() (suspend() and end() are both terminal) — built by one
+ * internal run-object builder parameterised by an opening strategy.
  */
 
 import * as Ably from 'ably';
@@ -55,12 +59,16 @@ import {
 } from './session-support.js';
 import type { DefaultTree } from './tree.js';
 import type {
+  AdoptedRun,
+  AdoptIdentity,
   AgentRun,
   AgentSession,
   AgentSessionOptions,
   CancelRequest,
+  OpenableRun,
   RunEndParams,
   RunRuntime,
+  RunStatus,
   Tree,
   View,
 } from './types.js';
@@ -99,17 +107,38 @@ interface RegisteredRun {
    * (the deadline-free counterpart to the client's `started` rejection on close).
    */
   rejectLocated?: (error: Ably.ErrorInfo) => void;
+  /**
+   * End this run `{cancelled}`, driven by {@link AgentSession.end}'s graceful
+   * teardown. Set once the run object is built (it delegates to `run.end`, which
+   * auto-closes the open step before the run terminal). Present only while the
+   * run is OPEN — the run deregisters (dropping this entry) on its own terminal,
+   * so `end()` only ends runs still open. A no-op for a run that never opened
+   * (still `INITIALIZED`): `run.end` rejects an unopened run, so the hook guards
+   * on the open state.
+   */
+  endCancelled?: () => Promise<void>;
 }
 
-// ---------------------------------------------------------------------------
-// Internal state machines
-// ---------------------------------------------------------------------------
+/**
+ * How a run is opened, chosen by the construction factory and threaded into the
+ * one internal run-object builder. `start` (from `createRun`) publishes the
+ * opening event and may re-key the run-id from a continuation's trigger header;
+ * `adopt` (from `adoptRun`) waits for the run-start to hydrate, status-gates,
+ * seeds the owner, and opens WITHOUT publishing — its identity is authoritative,
+ * so the trigger's run-id header never re-keys it.
+ */
+type OpenStrategy = { open: 'start' } | { open: 'adopt'; identity: AdoptIdentity };
 
-enum RunState {
-  INITIALIZED = 'initialized',
-  STARTED = 'started',
-  ENDED = 'ended',
-}
+/**
+ * Whether a run status is terminal (no further publishing is valid). The
+ * publish methods re-read {@link AgentRun.status} at entry and no-op / reject on
+ * a terminal — the backstop for a run that went terminal since it was opened
+ * (e.g. a concurrent cancel cleanup).
+ * @param status - The run's current status.
+ * @returns True when the run has reached a terminal status.
+ */
+const isTerminalStatus = (status: RunStatus): boolean =>
+  status === 'complete' || status === 'cancelled' || status === 'error';
 
 // Event map for the session's typed EventEmitter.
 interface AgentSessionEventsMap {
@@ -302,9 +331,23 @@ class DefaultAgentSession<
   }
 
   // Spec: AIT-ST3
-  createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): AgentRun<TOutput, TProjection, TMessage> {
+  createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): OpenableRun<TOutput, TProjection, TMessage> {
     this._logger?.trace('DefaultAgentSession.createRun();', { inputEventId: invocation.inputEventId });
-    return this._createRun(invocation, runtime ?? {});
+    return this._createRun(invocation, runtime ?? {}, { open: 'start' });
+  }
+
+  adoptRun(identity: AdoptIdentity, runtime?: RunRuntime<TOutput>): AdoptedRun<TOutput, TProjection, TMessage> {
+    this._logger?.trace('DefaultAgentSession.adoptRun();', {
+      runId: identity.runId,
+      triggerEventId: identity.triggerEventId,
+    });
+    // The adopt path takes identity from `identity` (authoritative), not the
+    // runtime overrides — its run-id, invocation-id, and trigger come from the
+    // orchestration that opened the run. Build an Invocation pinned to the
+    // trigger event so the shared run-object body arms the input-event watcher
+    // for it.
+    const invocation = Invocation.fromJSON({ inputEventId: identity.triggerEventId, sessionName: '' });
+    return this._createRun(invocation, runtime ?? {}, { open: 'adopt', identity });
   }
 
   on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void {
@@ -313,6 +356,47 @@ class DefaultAgentSession<
     return () => {
       this._emitter.off(event, handler);
     };
+  }
+
+  async end(): Promise<void> {
+    if (this._state === SessionState.CLOSED) return;
+    this._logger?.trace('DefaultAgentSession.end();');
+
+    // End every still-open run `{cancelled}` BEFORE detaching, so the terminals
+    // (and each run's preceding step-end, via run.end's auto-close) reach the
+    // channel while the session is still connected. Snapshot the registrations
+    // first: run.end deregisters as it ends, mutating `_registeredRuns` under us.
+    // Best-effort per run — one run's publish failure must not strand the others
+    // or block the detach.
+    const open = [...this._registeredRuns.values()];
+    for (const reg of open) {
+      try {
+        await reg.endCancelled?.();
+      } catch (error) {
+        this._logger?.error('DefaultAgentSession.end(); failed to end open run', { runId: reg.runId });
+        // Surface so a publish failure on teardown is observable, never silent.
+        this._emitter.emit(
+          'error',
+          new Ably.ErrorInfo(
+            `unable to end run ${reg.runId} on session end; ${errorMessage(error)}`,
+            ErrorCode.RunLifecycleError,
+            500,
+            errorCause(error),
+          ),
+        );
+      }
+      // Fire the run's abort signal so in-process consumers observe the cancel.
+      // run.end deregistered this run (so close()'s abort loop won't reach it),
+      // and an unopened run's hook no-op'd without ending — abort it here either
+      // way, matching close()'s abort-all teardown.
+      reg.controller.abort();
+    }
+
+    // Then do everything close() does (detach + abort any run that survived the
+    // loop, e.g. one created after this snapshot — close() is idempotent here).
+    await this.close();
+
+    this._logger?.debug('DefaultAgentSession.end(); session ended');
   }
 
   // Spec: AIT-ST11
@@ -593,22 +677,55 @@ class DefaultAgentSession<
   // Run creation
   // -------------------------------------------------------------------------
 
-  private _createRun(invocation: Invocation, runtime: RunRuntime<TOutput>): AgentRun<TOutput, TProjection, TMessage> {
-    // The run-id is not carried in the invocation body — the agent mints it.
-    // Mint a provisional id now (or take the `runtime.runId` override for
-    // tests / in-process drivers) — this IS the id for a fresh run. A
-    // continuation overrides it in `Run.start()` with the existing run-id read
-    // off the triggering input event's message headers (the run it re-enters).
-    // Mirrors the invocationId mint below.
-    let runId = runtime.runId ?? crypto.randomUUID();
-    // The agent mints the invocation id — one per HTTP request that invokes
-    // it. A per-run override (runtime.invocationId) supports deterministic ids
-    // in tests and in-process drivers.
-    const invocationId = runtime.invocationId ?? crypto.randomUUID();
+  private _createRun(
+    invocation: Invocation,
+    runtime: RunRuntime<TOutput>,
+    strategy: { open: 'start' },
+  ): OpenableRun<TOutput, TProjection, TMessage>;
+  private _createRun(
+    invocation: Invocation,
+    runtime: RunRuntime<TOutput>,
+    strategy: { open: 'adopt'; identity: AdoptIdentity },
+  ): AdoptedRun<TOutput, TProjection, TMessage>;
+  private _createRun(
+    invocation: Invocation,
+    runtime: RunRuntime<TOutput>,
+    strategy: OpenStrategy,
+  ): OpenableRun<TOutput, TProjection, TMessage> | AdoptedRun<TOutput, TProjection, TMessage> {
+    // Identity. For a CREATED run the agent mints a provisional run-id (or takes
+    // the `runtime.runId` override for tests / in-process drivers) — this IS the
+    // id for a fresh run, and a continuation re-keys it in the watcher's
+    // `resolveTriggerMetadata` from the trigger's `run-id` header. For an ADOPTED
+    // run the identity is AUTHORITATIVE: its run-id / invocation-id come from
+    // `AdoptIdentity` and the trigger's run-id header NEVER re-keys it.
+    let runId = strategy.open === 'adopt' ? strategy.identity.runId : (runtime.runId ?? crypto.randomUUID());
+    // The invocation id is the agent's mint (one per HTTP request) for a created
+    // run, or the authoritative `AdoptIdentity.invocationId` for an adopted one.
+    const invocationId =
+      strategy.open === 'adopt' ? strategy.identity.invocationId : (runtime.invocationId ?? crypto.randomUUID());
     const { onCancel, onError: runOnError, signal: externalSignal } = runtime;
 
+    // Whether the run is being adopted (vs. created). Identity is authoritative
+    // on the adopt path: the trigger's run-id header never re-keys the run (for a
+    // delegation trigger that header names the PARENT run, not this one).
+    const adopting = strategy.open === 'adopt';
+
     const controller = new AbortController();
-    let state = RunState.INITIALIZED;
+    // Whether the run has published its terminal (an end or a suspend). The
+    // publish guards read it to reject after-terminal calls; `open` owns whether
+    // the run is publishable at all.
+    let ended = false;
+    // Whether the run is open for publishing — set by `start()` (created) or an
+    // adopting `load()` (adopted, active). The publish methods (pipe / step /
+    // suspend / end) guard on this instead of a process-local "started here"
+    // state, so a fresh process that adopted the run can publish.
+    let open = false;
+    // Synchronous re-entrancy latch for the opening verb (start / load). Set
+    // BEFORE the verb's first await so two overlapping calls can't both fall
+    // through and double-publish run-start / double-seed the owner — `open` only
+    // flips AFTER the publish/adopt completes, leaving a window the latch closes.
+    // Never reset on a throw: a failed open does not re-open.
+    let opening = false;
 
     // Compose the internal controller signal with the external signal (e.g.
     // req.signal) so platform-level cancellation (request cancellation, function
@@ -735,14 +852,17 @@ class DefaultAgentSession<
         resolvedRegenerates = headers[HEADER_MSG_REGENERATE];
         resolvedInputCodecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
 
-        // The triggering input's run-id (if any) IS this run's identity. Present
-        // → a continuation re-entering that run: adopt the id, overriding the
-        // provisional one minted at construction, and re-key the registration so
-        // cancel routing / deregistration resolve to the real run. Absent → a
-        // fresh run: the provisional id stands and the run opens with run-start.
+        // The triggering input's run-id (if any). For a CREATED run it IS this
+        // run's identity: present → a continuation re-entering that run, so adopt
+        // the id, overriding the provisional one minted at construction, and
+        // re-key the registration so cancel routing / deregistration resolve to
+        // the real run; absent → a fresh run, the provisional id stands and the
+        // run opens with run-start. For an ADOPTED run the run-id is fixed from
+        // `AdoptIdentity` and the trigger's run-id header NEVER re-keys it (a
+        // delegation trigger carries the PARENT's id).
         const wireRunId = headers[HEADER_RUN_ID];
         resolvedContinuation = wireRunId !== undefined;
-        if (wireRunId !== undefined && wireRunId !== runId) {
+        if (!adopting && wireRunId !== undefined && wireRunId !== runId) {
           registeredRuns.delete(runId);
           runId = wireRunId;
           registration.runId = runId;
@@ -786,12 +906,23 @@ class DefaultAgentSession<
       registration.resolveLocated = resolve;
       registration.rejectLocated = reject;
     });
+    // Whether `located` has settled (resolved or rejected). The adopt path's
+    // visibility-wait reads this synchronously to decide whether to keep paging:
+    // the trigger is OLDER than the run's run-start, so the run-start can fold on
+    // a newer page while the trigger still sits in an un-fetched older one — the
+    // wait must page on until BOTH have surfaced, not stop at the run-start.
+    let locatedSettled = false;
     // Suppress unhandled-rejection warnings for callers that never await
     // `run.located`; the caller still observes the rejection via `run.located`
-    // or `start()` if it awaits either.
-    located.catch(() => {
-      /* observed via run.located / start(), if at all */
-    });
+    // or `start()` if it awaits either. The same handler records the settle.
+    located.then(
+      () => {
+        locatedSettled = true;
+      },
+      () => {
+        locatedSettled = true;
+      },
+    );
 
     if (inputEventId) {
       locateInputEvent({
@@ -871,23 +1002,38 @@ class DefaultAgentSession<
      * @param verb - The calling verb, selecting the error message.
      */
     const assertPublishable = (verb: 'pipe' | 'step'): void => {
-      if (state === RunState.INITIALIZED) {
-        const action = verb === 'pipe' ? 'pipe stream' : 'run step';
+      const action = verb === 'pipe' ? 'pipe stream' : 'run step';
+      if (!open) {
+        // Name the public method the developer calls — run.pipe() for a stream,
+        // run.createStep() for a step (there is no run.step()).
+        const method = verb === 'pipe' ? 'pipe' : 'createStep';
         throw new Ably.ErrorInfo(
-          `unable to ${action}; start() must be called before ${verb}() (run ${runId})`,
+          `unable to ${action}; load() or start() must be called before ${method}() (run ${runId})`,
           ErrorCode.InvalidArgument,
           400,
         );
       }
-      if (verb === 'step' && state === RunState.ENDED) {
+      if (verb === 'step' && ended) {
         throw new Ably.ErrorInfo(`unable to run step; run ${runId} has already ended`, ErrorCode.InvalidArgument, 400);
+      }
+      // Publish-time terminal re-check (TOCTOU / dual-writer backstop): the run
+      // can go terminal between open and now (e.g. a concurrent cancel cleanup
+      // arm publishing run-end). Reject rather than publish onto an ended run.
+      if (isTerminalStatus(base.status)) {
+        throw new Ably.ErrorInfo(
+          `unable to ${action}; run ${runId} is already ${base.status} (read-only)`,
+          ErrorCode.InvalidArgument,
+          400,
+        );
       }
     };
 
     // The run's output write-path (pipe + explicit steps), extracted so the
     // session stays focused on the run lifecycle. The seams let it gate on the
-    // open state, read the run's late-resolved anchors, and run the cancel
-    // safety-net without knowing how the run opens or resolves.
+    // open state and read the run's late-resolved anchors without knowing how
+    // the run opens or resolves. The writer never ends the run — a cancelled
+    // pipe closes only its own step bracket; the run terminal is the run
+    // object's (run.end, or session.end for an open run at teardown).
     const stepWriter = createRunStepWriter<TInput, TOutput, TProjection, TMessage>({
       getRunId: () => runId,
       invocationId,
@@ -907,7 +1053,6 @@ class DefaultAgentSession<
         inputClientId: resolvedInputClientId,
         inputCodecMessageId: resolvedInputCodecMessageId,
       }),
-      endRun: async (params) => run.end(params),
     });
 
     const run: AgentRun<TOutput, TProjection, TMessage> = {
@@ -937,100 +1082,6 @@ class DefaultAgentSession<
         return located;
       },
 
-      // Spec: AIT-ST4, AIT-ST4a, AIT-ST4b
-      start: async (): Promise<void> => {
-        logger?.trace('Run.start();', { runId, inputEventId });
-
-        await requireConnected('start');
-
-        // Spec: AIT-ST4a
-        if (signal.aborted) {
-          throw new Ably.ErrorInfo(
-            `unable to start run; run ${runId} was cancelled before start()`,
-            ErrorCode.InvalidArgument,
-            400,
-          );
-        }
-        if (state !== RunState.INITIALIZED) return;
-        state = RunState.STARTED;
-
-        // Wait until the triggering input event folds into the Tree — a live
-        // arrival, or a `run.view.loadOlder()` page the caller drove on a cold
-        // start. The watcher armed at createRun resolves `located` then, having
-        // already resolved this run's per-run metadata (parent, forkOf,
-        // continuation flag, run-id) and pinned run.view in its onMatched hook;
-        // an empty inputEventId resolved `located` immediately (nothing to
-        // locate). There is no deadline — a caller wanting one races
-        // `run.located` against its own timeout; `located` rejects only on
-        // cancel or session close.
-        try {
-          await located;
-        } catch (error) {
-          // `located` rejects only on cancel or session close — both routine
-          // run outcomes, so this is a debug-level event, not an error. The
-          // rejection bubbles up to the developer's HTTP handler, which surfaces
-          // the failure as a non-2xx response — the signal the client sees. No
-          // channel publish: an `ai-run-end` without a preceding `ai-run-start`
-          // would break the lifecycle invariant for other channel observers.
-          deregisterRun();
-          logger?.debug('Run.start(); located rejected before run-start', { runId, invocationId });
-          throw error instanceof Ably.ErrorInfo
-            ? error
-            : new Ably.ErrorInfo(`unable to start run; ${errorMessage(error)}`, ErrorCode.InvalidArgument, 400);
-        }
-
-        // Per-run metadata and the run.view pin were resolved by the watcher's
-        // onMatched when the trigger folded (above). Now pull any cancel that
-        // arrived before the `input-codec-message-id → run` linkage existed (a
-        // fresh-send cancel published before the agent minted this run-id).
-        // Honouring it here may abort the controller before run-start; that is
-        // fine — the abort propagates through the same signal a normal cancel
-        // would use.
-        if (resolvedInputCodecMessageId !== undefined) {
-          await pullDeferredCancel(registration, resolvedInputCodecMessageId);
-        }
-
-        await publishLifecycle('run-start', 'start', async () =>
-          runManager.startRun(runId, resolvedClientId, controller, {
-            // Stamp the reply run's STRUCTURAL parent (its input node, M_user) —
-            // the same value the output path stamps — not the input message's own
-            // parent. Makes `parent` structural on every message so the Tree's two
-            // creation paths agree regardless of arrival order. Valid only now
-            // that M_user is a separate input node (the two-node flip).
-            parent: assistantParentFallback,
-            forkOf: resolvedForkOf,
-            regenerates: resolvedRegenerates,
-            invocationId,
-            inputClientId: resolvedInputClientId,
-            inputCodecMessageId: resolvedInputCodecMessageId,
-            continuation: resolvedContinuation,
-          }),
-        );
-
-        // Optimistically insert the fresh run's node into the session Tree so
-        // reads that follow start() (run.view, Run.messages) see the
-        // run immediately rather than depending on the channel echo of the
-        // run-start just published. The echo (or a history fold) reconciles
-        // through the Tree's run-start handling, promoting startSerial onto
-        // this serial-less node. Continuations re-enter an existing run via
-        // run-resume, which creates no structure — their node comes from
-        // history hydration instead.
-        if (!resolvedContinuation) {
-          getTree().applyRunLifecycle({
-            type: 'start',
-            runId,
-            clientId: resolvedClientId ?? '',
-            serial: undefined,
-            invocationId,
-            ...(assistantParentFallback !== undefined && { parent: assistantParentFallback }),
-            ...(resolvedForkOf !== undefined && { forkOf: resolvedForkOf }),
-            ...(resolvedRegenerates !== undefined && { regenerates: resolvedRegenerates }),
-          });
-        }
-
-        logger?.debug('Run.start(); run started', { runId, inputEventId });
-      },
-
       // The output write-path is the RunStepWriter's; the run object delegates.
       // Spec: AIT-ST6, AIT-ST6a, AIT-ST6b, AIT-ST6b1, AIT-ST6b2, AIT-ST6b3, AIT-ST6c
       pipe: stepWriter.pipe,
@@ -1042,16 +1093,16 @@ class DefaultAgentSession<
 
         await requireConnected('suspend');
 
-        if (state === RunState.INITIALIZED) {
+        if (!open) {
           throw new Ably.ErrorInfo(
-            `unable to suspend run; start() must be called before suspend() (run ${runId})`,
+            `unable to suspend run; load() or start() must be called before suspend() (run ${runId})`,
             ErrorCode.InvalidArgument,
             400,
           );
         }
-        // ENDED is the terminal state for either an end or a suspend on this
-        // Run instance; a second terminal call is a no-op.
-        if (state === RunState.ENDED) return;
+        // `ended` is set for either an end or a suspend on this Run instance; a
+        // second terminal call is a no-op.
+        if (ended) return;
         // A suspend mid-step would strand the open step (no ai-step-end before
         // the run pauses); require the caller to end it first. Unlike run.end,
         // suspend does NOT auto-close — a suspended run may resume and continue
@@ -1063,7 +1114,17 @@ class DefaultAgentSession<
             400,
           );
         }
-        state = RunState.ENDED;
+        // Publish-time terminal re-check (TOCTOU / dual-writer backstop): the run
+        // went terminal since open (e.g. a concurrent cancel cleanup published
+        // run-end). No-op rather than publish a suspend onto an ended run; still
+        // settle this instance and clean up.
+        if (isTerminalStatus(base.status)) {
+          ended = true;
+          deregisterRun();
+          logger?.debug('Run.suspend(); run already terminal, skipping publish', { runId, status: base.status });
+          return;
+        }
+        ended = true;
 
         try {
           await publishLifecycle('run-suspend', 'suspend', async () =>
@@ -1084,15 +1145,25 @@ class DefaultAgentSession<
 
         await requireConnected('end');
 
-        if (state === RunState.INITIALIZED) {
+        if (!open) {
           throw new Ably.ErrorInfo(
-            `unable to end run; start() must be called before end() (run ${runId})`,
+            `unable to end run; load() or start() must be called before end() (run ${runId})`,
             ErrorCode.InvalidArgument,
             400,
           );
         }
-        if (state === RunState.ENDED) return;
-        state = RunState.ENDED;
+        if (ended) return;
+        // Publish-time terminal re-check (TOCTOU / dual-writer backstop): the run
+        // went terminal since open (e.g. a concurrent cancel cleanup published
+        // run-end). No-op rather than publish a second terminal; still settle
+        // this instance and clean up.
+        if (isTerminalStatus(base.status)) {
+          ended = true;
+          deregisterRun();
+          logger?.debug('Run.end(); run already terminal, skipping publish', { runId, status: base.status });
+          return;
+        }
+        ended = true;
 
         // Auto-close any still-open step first, so its ai-step-end precedes this
         // ai-run-end on the wire and no observer is stranded on an unsettled
@@ -1118,7 +1189,322 @@ class DefaultAgentSession<
       },
     };
 
-    return run;
+    // The graceful-teardown hook session.end() drives: end this run `{cancelled}`
+    // (which auto-closes its open step first) — but only while it is OPEN. An
+    // unopened run (still INITIALIZED — created/adopted but never started/loaded)
+    // has nothing on the wire to terminate and run.end would reject it, so the
+    // hook no-ops; session.end's detach still aborts its controller.
+    registration.endCancelled = async (): Promise<void> => {
+      if (!open || ended) return;
+      await run.end({ reason: 'cancelled' });
+    };
+
+    // -----------------------------------------------------------------------
+    // The opening verb — factory-specific, attached to the common run.
+    // -----------------------------------------------------------------------
+
+    /**
+     * Open a created run: wait for the trigger, publish the opening lifecycle
+     * event (run-start, or run-resume for a continuation), and open for
+     * publishing. Idempotent; a `located` rejection (cancel / session close)
+     * throws having published nothing.
+     */
+    // Spec: AIT-ST4, AIT-ST4a, AIT-ST4b
+    const start = async (): Promise<void> => {
+      logger?.trace('Run.start();', { runId, inputEventId });
+
+      await requireConnected('start');
+
+      // Spec: AIT-ST4a — the cancelled-before-start check precedes the latch so
+      // a retry of a run cancelled before start() re-throws rather than no-oping.
+      if (signal.aborted) {
+        throw new Ably.ErrorInfo(
+          `unable to start run; run ${runId} was cancelled before start()`,
+          ErrorCode.InvalidArgument,
+          400,
+        );
+      }
+      // Synchronous re-entrancy latch (no await between here and the located
+      // wait below): a second overlapping start() returns without double-publishing.
+      if (opening) return;
+      opening = true;
+
+      // Wait until the triggering input event folds into the Tree — a live
+      // arrival, or a `run.view.loadOlder()` page the caller drove on a cold
+      // start. The watcher armed at createRun resolves `located` then, having
+      // already resolved this run's per-run metadata (parent, forkOf,
+      // continuation flag, run-id) and pinned run.view in its onMatched hook;
+      // an empty inputEventId resolved `located` immediately (nothing to
+      // locate). There is no deadline — a caller wanting one races
+      // `run.located` against its own timeout; `located` rejects only on
+      // cancel or session close.
+      try {
+        await located;
+      } catch (error) {
+        // `located` rejects only on cancel or session close — both routine
+        // run outcomes, so this is a debug-level event, not an error. The
+        // rejection bubbles up to the developer's HTTP handler, which surfaces
+        // the failure as a non-2xx response — the signal the client sees. No
+        // channel publish: an `ai-run-end` without a preceding `ai-run-start`
+        // would break the lifecycle invariant for other channel observers.
+        deregisterRun();
+        logger?.debug('Run.start(); located rejected before run-start', { runId, invocationId });
+        throw error instanceof Ably.ErrorInfo
+          ? error
+          : new Ably.ErrorInfo(`unable to start run; ${errorMessage(error)}`, ErrorCode.InvalidArgument, 400);
+      }
+
+      // Per-run metadata and the run.view pin were resolved by the watcher's
+      // onMatched when the trigger folded (above). Now pull any cancel that
+      // arrived before the `input-codec-message-id → run` linkage existed (a
+      // fresh-send cancel published before the agent minted this run-id).
+      // Honouring it here may abort the controller before run-start; that is
+      // fine — the abort propagates through the same signal a normal cancel
+      // would use.
+      if (resolvedInputCodecMessageId !== undefined) {
+        await pullDeferredCancel(registration, resolvedInputCodecMessageId);
+      }
+
+      await publishLifecycle('run-start', 'start', async () =>
+        runManager.startRun(runId, resolvedClientId, controller, {
+          // Stamp the reply run's STRUCTURAL parent (its input node, M_user) —
+          // the same value the output path stamps — not the input message's own
+          // parent. Makes `parent` structural on every message so the Tree's two
+          // creation paths agree regardless of arrival order. Valid only now
+          // that M_user is a separate input node (the two-node flip).
+          parent: assistantParentFallback,
+          forkOf: resolvedForkOf,
+          regenerates: resolvedRegenerates,
+          invocationId,
+          inputClientId: resolvedInputClientId,
+          inputCodecMessageId: resolvedInputCodecMessageId,
+          continuation: resolvedContinuation,
+        }),
+      );
+
+      // Open for publishing only after the opening event is on the wire.
+      open = true;
+
+      // Optimistically insert the fresh run's node into the session Tree so
+      // reads that follow start() (run.view, Run.messages) see the
+      // run immediately rather than depending on the channel echo of the
+      // run-start just published. The echo (or a history fold) reconciles
+      // through the Tree's run-start handling, promoting startSerial onto
+      // this serial-less node. Continuations re-enter an existing run via
+      // run-resume, which creates no structure — their node comes from
+      // history hydration instead.
+      if (!resolvedContinuation) {
+        getTree().applyRunLifecycle({
+          type: 'start',
+          runId,
+          clientId: resolvedClientId ?? '',
+          serial: undefined,
+          invocationId,
+          ...(assistantParentFallback !== undefined && { parent: assistantParentFallback }),
+          ...(resolvedForkOf !== undefined && { forkOf: resolvedForkOf }),
+          ...(resolvedRegenerates !== undefined && { regenerates: resolvedRegenerates }),
+        });
+      }
+
+      logger?.debug('Run.start(); run started', { runId, inputEventId });
+    };
+
+    /**
+     * Visibility-wait for an adopted run to become adoptable: page channel
+     * history until BOTH the run's `ai-run-start` has folded (so its
+     * `startSerial` is confirmed) AND the trigger has folded (so `located`
+     * settles — see below), bounded by `timeoutMs`. The opener's optimistic
+     * run-node insert is LOCAL to its process, so a fresh adopting process's Tree
+     * has neither until it hydrates them off the channel.
+     *
+     * Why wait for both, not just the run-start: the trigger (`ai-input`) is
+     * OLDER than the run's `ai-run-start`, and the input-event watcher is passive
+     * (it never pages history itself). Paging backward, the run-start folds on a
+     * newer page while the trigger may still sit in an un-fetched older one — so
+     * stopping at the run-start would leave `located` forever unresolved and the
+     * subsequent `await located` in `load()` would hang (it has no deadline). The
+     * predicate therefore also requires `locatedSettled`, driving the fold far
+     * enough back to surface the trigger too. An empty `triggerEventId` settles
+     * `located` immediately, so this collapses to just the run-start wait.
+     *
+     * The bound is wired INTO the single history fold via a composed
+     * timeout-abort signal — NOT a `Promise.race` wrapper around `foldUntil`. A
+     * race would leave the fold paging the channel and holding the single-flight
+     * cursor after the timer fired, starving concurrent runs; composing the
+     * timeout into the fold's own abort path releases the cursor promptly.
+     *
+     * On resolution the run-start is confirmed and the trigger located. Otherwise:
+     * the run's own signal aborting (cancel) rejects with `InvalidArgument`; the
+     * timeout firing, or the channel exhausting without the run-start, rejects
+     * with `InputEventNotFound` (retryable — a workflow-ordering error: the
+     * run-start has not arrived yet), carrying any history-fetch failure as the
+     * cause.
+     * @param waitRunId - The run-id whose run-start to wait for.
+     * @param timeoutMs - Maximum wait before rejecting.
+     */
+    const waitForRunStart = async (waitRunId: string, timeoutMs: number): Promise<void> => {
+      const startConfirmed = (): boolean => getTree().getRunNode(waitRunId)?.startSerial !== undefined;
+      // Adoptable once the run-start has folded AND the trigger has surfaced
+      // (`located` settled). Both must be paged in; see the function doc.
+      const ready = (): boolean => startConfirmed() && locatedSettled;
+      if (ready()) {
+        logger?.debug('Run.load(); run-start and trigger already observed', { runId: waitRunId, invocationId });
+        return;
+      }
+
+      // Compose a timeout-abort into the fold's signal so the bound lives INSIDE
+      // the fold (it releases the shared cursor on fire) rather than racing it.
+      const timeoutController = new AbortController();
+      const timer = setTimeout(() => {
+        timeoutController.abort();
+      }, timeoutMs);
+      const boundedSignal = AbortSignal.any([signal, timeoutController.signal]);
+
+      let fetchError: Ably.ErrorInfo | undefined;
+      try {
+        // Page until the run-start AND the trigger have folded (predicate), the
+        // channel is exhausted, or `boundedSignal` aborts (cancel or timeout).
+        // Each paged trigger fold reaches the watcher, which resolves `located`
+        // and pins run.view.
+        await getHydrator().foldUntil(ready, boundedSignal);
+      } catch (error) {
+        // A history-fetch failure: keep it to thread as the rejection cause if
+        // the run-start never arrived (so a broken fetch is not masked behind
+        // the not-found code).
+        fetchError = error instanceof Ably.ErrorInfo ? error : errorCause(error);
+      } finally {
+        clearTimeout(timer);
+      }
+
+      // The run-start is the load-gate; `located` is awaited separately by
+      // load() (and may legitimately still be settling on the microtask queue
+      // when the run-start fold satisfies the predicate). Gate on the run-start
+      // here so a confirmed run-start with a not-yet-flushed `located` is not
+      // mistaken for a timeout.
+      if (startConfirmed()) {
+        logger?.debug('Run.load(); run-start observed', { runId: waitRunId, invocationId });
+        return;
+      }
+
+      // The run's OWN signal aborted (a genuine cancel, not the timeout): a
+      // cancelled load, not a workflow-ordering miss.
+      if (signal.aborted) {
+        throw new Ably.ErrorInfo(`unable to load run; run ${waitRunId} was cancelled`, ErrorCode.InvalidArgument, 400);
+      }
+      // The timeout fired, or the channel exhausted without the run-start: a
+      // retryable workflow-ordering error.
+      throw new Ably.ErrorInfo(
+        `unable to load run; run-start for run ${waitRunId} not observed within ${String(timeoutMs)}ms`,
+        ErrorCode.InputEventNotFound,
+        504,
+        fetchError,
+      );
+    };
+
+    /**
+     * Adopt an already-open run for publishing in this process WITHOUT
+     * publishing an opening event. See {@link AdoptedRun.load} for the contract
+     * and side effects. Waits for the run's start to hydrate, awaits the trigger
+     * (`located`), status-gates, seeds the owner, and opens without publishing.
+     * Idempotent.
+     * @param options - Adopt options ({@link AdoptedRun.load}).
+     * @param options.timeoutMs - Visibility-wait bound for the run-start; default 30000.
+     */
+    const load = async (options?: { timeoutMs?: number }): Promise<void> => {
+      logger?.trace('Run.load();', { runId, inputEventId });
+
+      await requireConnected('load');
+
+      // The cancelled-before-load check precedes the latch so a retry of a run
+      // cancelled before load() re-throws rather than no-oping.
+      if (signal.aborted) {
+        throw new Ably.ErrorInfo(
+          `unable to load run; run ${runId} was cancelled before load()`,
+          ErrorCode.InvalidArgument,
+          400,
+        );
+      }
+      // Synchronous re-entrancy latch (no await between here and the wait below):
+      // a second overlapping load() returns without a double owner-seed or a
+      // double visibility-wait.
+      if (opening) return;
+      opening = true;
+
+      const timeoutMs = options?.timeoutMs ?? 30000;
+
+      // (1) Visibility-wait: drive the hydrator until the run's `ai-run-start` is
+      // hydrated (so its `startSerial` is confirmed) AND the trigger has folded
+      // (so `located` resolves). The opener's optimistic run-node insert is LOCAL
+      // to its own process, so a fresh process's Tree is empty until it hydrates
+      // them off the channel; this closes that race and pages far enough back to
+      // surface the trigger (which is older than the run-start). On timeout /
+      // abort, deregister before re-throwing — symmetric with the status-gate
+      // rejections below.
+      try {
+        await waitForRunStart(runId, timeoutMs);
+      } catch (error) {
+        deregisterRun();
+        throw error;
+      }
+
+      // (2) Await the trigger so the watcher's onMatched has resolved this run's
+      // anchors (parent, forkOf, input-client-id) and pinned run.view. The
+      // visibility-wait above already paged until the trigger folded (or an empty
+      // triggerEventId resolved `located` immediately), so this normally resolves
+      // at once; awaiting it surfaces a `located` rejection (cancel / session
+      // close), which deregisters and re-throws.
+      try {
+        await located;
+      } catch (error) {
+        deregisterRun();
+        logger?.debug('Run.load(); located rejected before adopt', { runId, invocationId });
+        throw error instanceof Ably.ErrorInfo
+          ? error
+          : new Ably.ErrorInfo(`unable to load run; ${errorMessage(error)}`, ErrorCode.InvalidArgument, 400);
+      }
+
+      // (3) Status-gate the adopt, now `startSerial` is confirmed (so `base.status`
+      // reads the hydrated state, not the unhydrated `'active'` default). A
+      // suspended or terminal run must not be adopted: suspended needs a resume (a
+      // publishing re-entry), terminal is read-only. Only an active run is adoptable.
+      const status = base.status;
+      if (status === 'suspended') {
+        deregisterRun();
+        throw new Ably.ErrorInfo(
+          `unable to load run; run ${runId} is suspended, resume via createRun().start()`,
+          ErrorCode.InvalidArgument,
+          400,
+        );
+      }
+      if (isTerminalStatus(status)) {
+        deregisterRun();
+        throw new Ably.ErrorInfo(
+          `unable to load run; run ${runId} is terminal (read-only)`,
+          ErrorCode.InvalidArgument,
+          400,
+        );
+      }
+
+      // (4) Seed the owner into the run manager from the run-start's
+      // `run-client-id` (the trigger event's may be empty — read the RunNode).
+      // This feeds BOTH the per-output `run-client-id` and the terminal stamp.
+      // (5) Open for publishing — WITHOUT publishing an opening event.
+      const ownerClientId = getTree().getRunNode(runId)?.clientId;
+      runManager.registerRun(runId, ownerClientId, controller);
+      open = true;
+
+      logger?.debug('Run.load(); run adopted', { runId, inputEventId });
+    };
+
+    // Attach the opening verb by mutation (Object.assign), NOT a spread: `run`'s
+    // members are live getters (status / messages / view delegate to `base`), and
+    // spreading would snapshot them to their construction-time (empty) values.
+    if (strategy.open === 'adopt') {
+      const adoptedRun: AdoptedRun<TOutput, TProjection, TMessage> = Object.assign(run, { load });
+      return adoptedRun;
+    }
+    const openableRun: OpenableRun<TOutput, TProjection, TMessage> = Object.assign(run, { start });
+    return openableRun;
   }
 }
 

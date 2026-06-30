@@ -203,13 +203,17 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
    * note a continuation needs no override at all (its run id comes from the
    * channel).
    *
-   * A run is driven by one in-memory instance: {@link Run.createStep},
-   * {@link Run.suspend}, and {@link Run.end} require {@link Run.start} on that
-   * SAME instance (they read the anchors it resolves), so a turn's
-   * start/step/end belong in one durable activity — a single run cannot be
-   * split across several. A fresh-process retry re-runs `start()` and
-   * re-publishes `ai-run-start` under the stable id; receivers absorb the
-   * repeat idempotently (it never re-opens a terminal run).
+   * A run's lifecycle CAN span several processes under this stable id. `start()`
+   * opens the run in one activity (publishing `ai-run-start` ONCE); a fresh
+   * process then continues it via {@link AgentSession.adoptRun} + `load()`, which
+   * resolves the run's anchors from the channel and adopts it for publishing
+   * WITHOUT republishing `ai-run-start`, before calling {@link AgentRun.createStep} /
+   * {@link AgentRun.suspend} / {@link AgentRun.end}. The publish methods gate on whether
+   * the run is open — set by `start()` OR an adopting `load()` — not on "was
+   * `start()` called on this instance", so a durable turn's open / step / end
+   * may each be a separate retryable activity. (A fresh-process step retry
+   * adopts and re-emits its `ai-step-start` under the same {@link StepOptions.stepId}
+   * to supersede the dead attempt; it does NOT re-open the run.)
    */
   runId?: string;
 
@@ -270,7 +274,7 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
 // ---------------------------------------------------------------------------
 
 /**
- * A single step attempt within a run, created by {@link Run.createStep}.
+ * A single step attempt within a run, created by {@link AgentRun.createStep}.
  *
  * A **transport step** is a re-attemptable unit of agent execution within a
  * run — it may wrap a whole agent loop (which itself runs many model/tool
@@ -286,13 +290,13 @@ export interface RunStep<TOutput extends CodecOutputEvent> {
   /** This step's id — stable across retry attempts of the same step. */
   readonly stepId: string;
   /**
-   * The run's AbortSignal (the same one as {@link Run.abortSignal}); there is
+   * The run's AbortSignal (the same one as {@link AgentRun.abortSignal}); there is
    * no per-step abort. Fires when a cancel arrives for this run.
    */
   readonly abortSignal: AbortSignal;
   /**
    * Publish `ai-step-start`, opening the step for output. Call once, after
-   * {@link Run.start} on the run and before {@link RunStep.pipe}. Idempotent —
+   * {@link OpenableRun.start} on the run and before {@link RunStep.pipe}. Idempotent —
    * a second call is a no-op. Rejects if another step is already active on the
    * run (only one step may be open at a time), or if the run has ended.
    * @throws InvalidArgument if another step is active or the run has ended.
@@ -301,7 +305,7 @@ export interface RunStep<TOutput extends CodecOutputEvent> {
   /**
    * Pipe an output stream through the encoder to the channel, stamping every
    * output with this step's `step-id` and its attempt's `start-serial`.
-   * Otherwise identical to {@link Run.pipe}: returns when the stream completes,
+   * Otherwise identical to {@link AgentRun.pipe}: returns when the stream completes,
    * is cancelled, or errors. A stream error returns `{ reason: 'error' }` (it
    * does NOT throw) and marks the step `failed` when {@link RunStep.end} closes
    * it.
@@ -322,8 +326,8 @@ export interface RunStep<TOutput extends CodecOutputEvent> {
    * common "compute an outcome, then `run.end(outcome)`" flow needs no
    * `try`/`catch`; pass an explicit `reason` to override.
    *
-   * A step terminal is NOT a run terminal: drive the run to {@link Run.suspend}
-   * / {@link Run.end} afterwards exactly as for {@link Run.pipe}. {@link Run.end}
+   * A step terminal is NOT a run terminal: drive the run to {@link AgentRun.suspend}
+   * / {@link AgentRun.end} afterwards exactly as for {@link AgentRun.pipe}. {@link AgentRun.end}
    * auto-closes a still-open step, so a forgotten `end()` cannot strand
    * observers — but an explicit `end()` is clearer and lets you set the reason.
    * @param params - Optional {@link StepEndParams}; the reason is derived if omitted.
@@ -356,11 +360,14 @@ export type RunEndParams =
 
 /**
  * A server-side run with explicit lifecycle methods, extending the shared
- * {@link BaseRun} read-model with the agent's lifecycle surface. Generic over
- * the codec's output, projection, and message types. `TProjection` is retained
- * for parameter symmetry with {@link AgentSession.createRun}; it does not
- * appear in the run's public surface today but keeps the type slot available
- * for future per-run projection accessors.
+ * {@link BaseRun} read-model with the agent's lifecycle surface. The COMMON
+ * publishable surface shared by {@link OpenableRun} (which adds `start()`) and
+ * {@link AdoptedRun} (which adds `load()`) — the opening verb is factory-specific
+ * so opening a created run with `load()`, or an adopted run with `start()`, is a
+ * compile error. Generic over the codec's output, projection, and message types.
+ * `TProjection` is retained for parameter symmetry with
+ * {@link AgentSession.createRun}; it does not appear in the run's public surface
+ * today but keeps the type slot available for future per-run projection accessors.
  *
  * `runId`, `status`, `error`, and the whole-turn `messages` come from
  * {@link BaseRun}; the members below are the agent's own.
@@ -412,19 +419,10 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
    * folds. Race it against your own timeout if you need one. {@link AgentRun.start}
    * awaits this internally before reading the trigger's wire headers, so you
    * only await it directly to read the trigger (or page extra ancestor context)
-   * before deciding how to start.
+   * before deciding how to start. An {@link AdoptedRun.load} awaits it too,
+   * before adopting the run for publishing.
    */
   readonly located: Promise<void>;
-
-  /**
-   * Publish the run's opening lifecycle event to the channel (run-start, or
-   * run-resume for a continuation). Awaits {@link AgentRun.located} first — so a
-   * cold-start caller pages `run.view` for context, then calls `start()` and
-   * locating is handled for them — then reads the trigger's wire headers and
-   * publishes. Must be called before any other run method (pipe, suspend, end).
-   * Propagates `located`'s rejection (cancel / session close).
-   */
-  start(): Promise<void>;
 
   /**
    * Pipe a ReadableStream through the encoder to the channel.
@@ -444,7 +442,7 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
    * two independent steps and two assistant messages — a second `pipe` does NOT
    * supersede the first. Only an explicit, stable `stepId` supersedes, which
    * `pipe` never sets; for a re-attemptable unit whose retries must supersede
-   * the prior attempt's output rather than appending it, use {@link Run.createStep}.
+   * the prior attempt's output rather than appending it, use {@link AgentRun.createStep}.
    */
   pipe(stream: ReadableStream<TOutput>, options?: PipeOptions<TOutput>): Promise<StreamResult>;
 
@@ -469,8 +467,8 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
    * Creating the handle (id minting) is synchronous and does no I/O — only
    * {@link RunStep.start} publishes. Exactly one step may be active on a run at
    * a time; `start()` rejects if another is still open. A step terminal is NOT
-   * a run terminal: call {@link Run.suspend} / {@link Run.end} afterwards as for
-   * {@link Run.pipe}. If a step is left open, {@link Run.end} auto-closes it so
+   * a run terminal: call {@link AgentRun.suspend} / {@link AgentRun.end} afterwards as for
+   * {@link AgentRun.pipe}. If a step is left open, {@link AgentRun.end} auto-closes it so
    * observers are never stranded.
    *
    * `stepId` resolution (see {@link StepOptions.stepId}): an explicit
@@ -478,8 +476,9 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
    * call with no `stepId` made after the previous step ended `failed` reuses
    * that step's id (in-process retry coalescing).
    *
-   * Must be called after {@link Run.start}; the returned handle's `start()`
-   * throws `InvalidArgument` if the run has already ended or suspended.
+   * The run must be open first ({@link OpenableRun.start}, or an adopting
+   * {@link AdoptedRun.load}); the returned handle's `start()` throws
+   * `InvalidArgument` if the run is not open, or has already ended or suspended.
    * @param options - Optional {@link StepOptions}.
    * @returns A {@link RunStep} handle to drive the step's lifecycle.
    */
@@ -491,17 +490,118 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
    * waiting on participant input (e.g. a client-side tool execution or a
    * server-side tool approval): the run stays live and a later invocation can
    * resume it under the same `runId`. Like {@link AgentRun.end}, it is terminal
-   * for this run instance — the resuming invocation builds a fresh run. Must be
-   * called after {@link AgentRun.start}; a no-op if the run has already ended or
-   * suspended.
+   * for this run instance — the resuming invocation builds a fresh run. The run
+   * must be open ({@link OpenableRun.start} or an adopting {@link AdoptedRun.load}
+   * called first); a no-op if the run has already ended or suspended.
    */
   suspend(): Promise<void>;
 
   /**
-   * Publish run-end event to the channel and clean up. Terminal.
+   * Publish run-end event to the channel and clean up. Terminal. The run must be
+   * open ({@link OpenableRun.start} or an adopting {@link AdoptedRun.load} called
+   * first); a no-op if the run has already ended or suspended.
    * @param params - How the run ended; see {@link RunEndParams}.
    */
   end(params: RunEndParams): Promise<void>;
+}
+
+/**
+ * The identity of an existing run, passed to {@link AgentSession.adoptRun} so a
+ * fresh process can resolve that run's write context off the channel and adopt
+ * it for publishing. The three fields are plain data threaded across the process
+ * boundary by the orchestration that opened the run — the run object itself does
+ * not cross processes (its read-model is reconstructible from the channel).
+ */
+export interface AdoptIdentity {
+  /**
+   * The existing run's id. Authoritative: unlike {@link OpenableRun.start}'s
+   * continuation path, {@link AdoptedRun.load} does NOT re-key the run from the
+   * trigger event's `run-id` header (for a delegation trigger that header names
+   * the PARENT run, not this one).
+   */
+  runId: string;
+  /**
+   * This activity's invocation id — e.g. the step/end activity's id, or a
+   * distinct cancel-cleanup id. Stamped on every event this process publishes
+   * for the run. Independent of the run's owner identity.
+   */
+  invocationId: string;
+  /**
+   * The id of the event whose headers resolve the run's write-time anchors (an
+   * `ai-input` for a normal turn). The same trigger every activity of an
+   * invocation resolves against — a step carries no input event of its own.
+   */
+  triggerEventId: string;
+}
+
+/**
+ * A created run: the OPENING role. {@link OpenableRun.start} publishes the run's
+ * opening lifecycle event (`ai-run-start`, or `ai-run-resume` for a continuation
+ * whose trigger carries a run-id) and opens the run for publishing. Returned by
+ * {@link AgentSession.createRun}. `load()` is not available — a created run is
+ * opened by publishing, never adopted.
+ */
+export interface OpenableRun<TOutput extends CodecOutputEvent, TProjection, TMessage> extends AgentRun<
+  TOutput,
+  TProjection,
+  TMessage
+> {
+  /**
+   * Publish the run's opening lifecycle event to the channel (run-start, or
+   * run-resume for a continuation). Awaits {@link AgentRun.located} first — so a
+   * cold-start caller pages `run.view` for context, then calls `start()` and
+   * locating is handled for them — then reads the trigger's wire headers and
+   * publishes, opening the run for publishing. Must be called before any other
+   * run method (pipe, step, suspend, end). Idempotent — a second call is a
+   * no-op. Propagates `located`'s rejection (cancel / session close).
+   * @throws {Ably.ErrorInfo} `InvalidArgument` when the run was cancelled before
+   *   `start()` (or `located` rejected on cancel / session close);
+   *   `RunLifecycleError` when the opening publish fails.
+   */
+  start(): Promise<void>;
+}
+
+/**
+ * An adopted run: the CONTINUE role. {@link AdoptedRun.load} resolves the run's
+ * write context off the channel and adopts an already-open run for publishing in
+ * THIS process WITHOUT publishing an opening event. Returned by
+ * {@link AgentSession.adoptRun} for a step / end / cancel-cleanup activity that
+ * an orchestrator runs in a fresh process. `start()` is not available — an
+ * adopted run was opened elsewhere; publishing another opening event would
+ * corrupt its lifecycle.
+ */
+export interface AdoptedRun<TOutput extends CodecOutputEvent, TProjection, TMessage> extends AgentRun<
+  TOutput,
+  TProjection,
+  TMessage
+> {
+  /**
+   * Resolve this run's write context from the channel and adopt it for publishing
+   * in this process, WITHOUT publishing an opening event. Awaits the run's
+   * `ai-run-start` to be observed so its `startSerial` is confirmed on the Tree
+   * (bounded by `timeoutMs`, paging channel history as needed); awaits
+   * {@link AgentRun.located} so the trigger ({@link AdoptIdentity.triggerEventId})
+   * resolves the run's anchors and pins {@link AgentRun.view}; then status-gates:
+   * an `active` run is adopted; a `suspended` or terminal run is rejected.
+   * Idempotent — a second call is a no-op.
+   *
+   * Side effects on success: pins {@link AgentRun.view} to the triggering branch;
+   * seeds the run's owner into the run manager so output AND the terminal stamp
+   * the real `run-client-id`; and MAY fire {@link AgentRun.abortSignal} before
+   * returning if a cancel for this run already arrived (the run is registered for
+   * cancel routing by its authoritative `runId` at `adoptRun`, so such a cancel
+   * fires the signal directly — there is no deferred-cancel buffering, which only
+   * applies to a fresh run whose `runId` is unknown at cancel time).
+   * @param options - Adopt options.
+   * @param options.timeoutMs - How long to wait for the run's `ai-run-start` to
+   *   be observed on the channel before rejecting. Defaults to 30000.
+   * @throws {Ably.ErrorInfo} `InvalidArgument` when the run is suspended
+   *   ("resume via `createRun().start()`") or terminal (read-only), or when the
+   *   run was cancelled before `load()`; `InputEventNotFound` when the run's
+   *   `ai-run-start` is not observed within `timeoutMs` (a workflow-ordering
+   *   error; retryable).
+   */
+  load(options?: { timeoutMs?: number }): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -553,24 +653,42 @@ export interface AgentSession<TOutput extends CodecOutputEvent, TProjection, TMe
    * events fold into the Tree and surface through its event-id index and
    * `ably-message` event — the two sources each run's input-event watcher uses
    * to catch a trigger published before the agent attached. Idempotent —
-   * subsequent calls return the same promise. All run methods (`start`, `pipe`,
-   * `suspend`, `end`) throw `InvalidArgument` until `connect()` has been *called*;
-   * once it has, they await the in-flight connect promise rather than throwing.
+   * subsequent calls return the same promise. All run methods (`start`, `load`,
+   * `pipe`, `suspend`, `end`) throw `InvalidArgument` until `connect()` has been
+   * called (`connect` must be *invoked* first; once it has, they await the
+   * in-flight connect promise rather than throwing).
    */
   connect(): Promise<void>;
 
   /**
-   * Create a new run from an invocation. Returns synchronously, and arms the
-   * run's input-event watcher — a passive pre-scan of the Tree plus a listener
-   * for the trigger's arrival (it publishes nothing to the channel until
-   * start()). The run is registered for cancel routing immediately so that
-   * early cancels fire the AbortSignal.
+   * Create a new run from an invocation — the OPENING role. Returns an
+   * {@link OpenableRun} whose `start()` publishes the run's opening event.
+   * Returns synchronously, and arms the run's input-event watcher — a passive
+   * pre-scan of the Tree plus a listener for the trigger's arrival (it publishes
+   * nothing to the channel until start()). The run is registered for cancel
+   * routing immediately so that early cancels fire the AbortSignal.
    * @param invocation - The {@link Invocation} carrying run identity and
    *   conversation messages.
    * @param runtime - Optional runtime hooks and external AbortSignal
    *   (e.g. the HTTP request's `req.signal`).
    */
-  createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): AgentRun<TOutput, TProjection, TMessage>;
+  createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): OpenableRun<TOutput, TProjection, TMessage>;
+
+  /**
+   * Adopt an existing run by its {@link AdoptIdentity} — the CONTINUE role for a
+   * step / end / cancel-cleanup activity running in a fresh process. Returns an
+   * {@link AdoptedRun} whose `load()` resolves the run's write context off the
+   * channel and adopts it WITHOUT publishing an opening event. Returns
+   * synchronously, and arms the run's input-event watcher for the trigger (it
+   * publishes nothing to the channel until load()). The run is registered for
+   * cancel routing immediately so that early cancels fire the AbortSignal.
+   * @param identity - The existing run's {@link AdoptIdentity} (runId,
+   *   invocationId, triggerEventId).
+   * @param runtime - Optional runtime hooks and external AbortSignal. The
+   *   `runtime.runId` / `runtime.invocationId` overrides do not apply — identity
+   *   comes from `identity`.
+   */
+  adoptRun(identity: AdoptIdentity, runtime?: RunRuntime<TOutput>): AdoptedRun<TOutput, TProjection, TMessage>;
 
   /**
    * Subscribe to non-fatal session-level errors not scoped to any run —
@@ -583,8 +701,31 @@ export interface AgentSession<TOutput extends CodecOutputEvent, TProjection, TMe
   on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void;
 
   /**
-   * Unsubscribe from cancel messages, cancel all active runs, detach the
-   * channel this session attached, and clean up.
+   * Gracefully end the session: for every still-OPEN run this session owns,
+   * close its open step (if any) then publish `ai-run-end{cancelled}` — so a
+   * forgotten `run.end()` (a fire-and-forget turn) still closes every observer's
+   * stream rather than leaving it stuck `streaming` — then do everything
+   * {@link close} does (detach + abort). The onion mirrors `run.end()` one layer
+   * up: `session.end -> run.end -> step.end`, the step-end preceding the run-end
+   * on the wire via `run.end`'s existing auto-close.
+   *
+   * An open run ends `{cancelled}` — not `complete` (would falsely mark an
+   * unfinished turn done), not `suspend` (hangs observers with no resumer;
+   * preserve-for-resume is {@link close}'s job), not `error`. Use this as the
+   * normal teardown for a non-durable agent. A durable in-flight activity uses
+   * {@link close} instead, to hand a still-open run off to the next activity
+   * WITHOUT terminating it. Resolves once the terminals are published and the
+   * detach completes. Idempotent.
+   */
+  end(): Promise<void>;
+
+  /**
+   * Detach-only teardown: unsubscribe from cancel messages, abort all active
+   * runs' controllers (firing their `abortSignal`), detach the channel this
+   * session attached, and clean up. Publishes NO run terminal — an open run is
+   * left as-is on the channel, to be resumed or cleaned up by another process.
+   * This is the escape hatch a durable in-flight activity uses to hand a run off
+   * mid-sequence; for graceful teardown that closes open runs, use {@link end}.
    *
    * Resolves once the detach completes. The detach is best-effort:
    * a failure (e.g. the channel is already FAILED) is swallowed

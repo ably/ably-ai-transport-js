@@ -173,6 +173,8 @@ Observer clients see the tool call arrive (the assistant message streams normall
 
 Tool call events persist in Ably channel history. When a client loads history, the decoder reconstructs tool parts with their final state - including cross-run events. A tool that was called, executed, and resolved in a previous session appears with `state: 'output-available'` and the full output.
 
+When the agent reconstructs a prompt by draining [`run.view`](../concepts/runs.md), a prior turn whose run never completed - a tool call left unresolved because the run was suspended, cancelled, or errored - is omitted from that prompt along with the turn's user input, so a dangling tool call can't invalidate the request sent to the model.
+
 Cross-run events (from a client `tool-result` input via `view.send()`) carry the `codec-message-id` of the message they target. When loading history, the SDK routes these amend events to the correct message and folds them through the codec's reducer, so the tool part state is reconstructed correctly.
 
 To avoid re-executing client tools after a page refresh, check whether the tool call already has a follow-up assistant message (which means the model already consumed the result):

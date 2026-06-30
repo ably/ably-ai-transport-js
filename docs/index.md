@@ -21,10 +21,10 @@ Peer dependencies: `ably` (required), `ai` (for Vercel entry points), `react` (f
 
 **Build something** - follow the [Get Started with useChat](get-started/vercel-use-chat.md) quickstart to have a working streaming chat app in minutes. Or use the [generic hooks quickstart](get-started/vercel-use-client-session.md) for more control.
 
-**Add a feature** - the [Features](features/) section covers streaming, cancellation, interruption, optimistic updates, history, conversation branching, multi-client sync, presence, and LiveObjects.
+**Add a feature** - the [Features](features/) section covers streaming, cancellation, interruption, optimistic updates, history, [database hydration](features/database-hydration.md), conversation branching, multi-client sync, presence, and LiveObjects.
 
 **Look up an API** - the [Reference](reference/) section has complete signatures for all React hooks and error codes.
 
 ## Status
 
-This SDK is pre-release (v0.1.0). The Vercel AI SDK is the only supported framework today. The generic transport and codec interfaces support custom integrations - additional framework codecs are planned.
+This SDK is pre-release (v0.4.0). The Vercel AI SDK is the only supported framework today. The generic transport and codec interfaces support custom integrations - additional framework codecs are planned.

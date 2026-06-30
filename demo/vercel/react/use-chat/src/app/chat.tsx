@@ -4,6 +4,7 @@ import { useChat } from '@ai-sdk/react';
 import { lastAssistantMessageIsCompleteWithApprovalResponses, lastAssistantMessageIsCompleteWithToolCalls } from 'ai';
 import { useAblyMessages, useChatTransport, useMessageSync, useView } from '@ably/ai-transport/vercel/react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Button } from '@/components/ui/button';
 import { MessageList } from './components/message-list';
 import type { CallbackLogEntry, ClientToolLogEntry } from './components/debug-pane';
 import { DebugPane } from './components/debug-pane';
@@ -146,7 +147,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
             addToolApprovalResponse({ id: approvalId, approved: false, reason: 'User denied' })
           }
         />
-        <div className="border-t border-zinc-800">
+        <div className="border-t border-border">
           <SuggestionChips
             steps={unfinishedSteps}
             onSelectPrompt={handleSelectPrompt}
@@ -287,25 +288,24 @@ function InputBar({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder="Type a message..."
-        className="flex-1 rounded-md bg-zinc-900 border border-zinc-700 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500"
+        className="flex-1 rounded-md border border-input bg-input/30 px-3 py-2 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-ring"
         autoFocus
       />
       {hasAnyRuns ? (
-        <button
+        <Button
           type="button"
+          variant="destructive"
           onClick={onStop}
-          className="rounded-md bg-red-900/60 px-4 py-2 text-sm font-medium text-red-300 hover:bg-red-900/80 transition-colors"
         >
           Stop
-        </button>
+        </Button>
       ) : (
-        <button
+        <Button
           type="submit"
           disabled={!value.trim()}
-          className="rounded-md bg-zinc-700 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           Send
-        </button>
+        </Button>
       )}
     </form>
   );

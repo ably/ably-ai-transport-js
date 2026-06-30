@@ -26,6 +26,7 @@ import type {
 import { createWireApplier } from '../../../src/core/transport/decode-fold.js';
 import { createHistoryHydrator, type HistoryHydrator } from '../../../src/core/transport/history-hydrator.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
+import { createLeafBranchSource, LeafBranchSource } from '../../../src/core/transport/leaf-branch-source.js';
 // Vitest hoists vi.mock above imports, so this static import gets the mock.
 import { type HistoryPagesCursor, loadHistoryPages } from '../../../src/core/transport/load-history-pages.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
@@ -3679,5 +3680,225 @@ describe('client view', () => {
       expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'TC', 'TTp']);
       expect(view.branchSelection('TTp').siblings.map((m) => m.id)).toEqual(['TT', 'TTp']);
     });
+  });
+});
+
+describe('agent leaf view — incomplete-run filtering (LeafBranchSource)', () => {
+  let tree: DefaultTree<TestInput, TestOutput, TestProjection>;
+  let source: LeafBranchSource<TestInput, TestOutput, TestProjection, TestMessage>;
+
+  beforeEach(() => {
+    const codec = makeTestCodec();
+    tree = createTree<TestInput, TestOutput, TestProjection>(codec, silentLogger);
+    source = createLeafBranchSource<TestInput, TestOutput, TestProjection, TestMessage>({
+      getTree: () => tree,
+      codec,
+    });
+  });
+
+  // Node keys in branch order — runId for a run node, codec-message-id for an input.
+  const nodeKeys = (): string[] => source.visibleNodes().map((n) => (n.kind === 'run' ? n.runId : n.codecMessageId));
+  // The flattened prompt the agent would feed the model, by codec-message-id.
+  const promptIds = (): string[] => source.extractMessages(source.visibleNodes()).map((m) => m.codecMessageId);
+
+  type AncestorStatus = 'active' | 'suspended' | 'complete' | 'cancelled' | 'error';
+
+  // Seed three turns and pin the current run:
+  //   u1 → R1  (always completed)
+  //   u2 → R2  (status under test — the ancestor that may be incomplete)
+  //   u3 → R3  (the current run; pinned, deliberately left without a run-end)
+  // Each input hangs off the prior run's assistant message, mirroring the wire.
+  const seedThreeTurns = (r2Status: AncestorStatus): void => {
+    applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'q1' }, serial: 's1' });
+    apply(tree, {
+      runId: 'R1',
+      codecMessageId: 'a1',
+      parent: 'u1',
+      role: 'assistant',
+      message: { id: 'a1', content: 'r1' },
+      serial: 's2',
+    });
+    tree.applyRunLifecycle({
+      type: 'end',
+      runId: 'R1',
+      clientId: 'c',
+      invocationId: '',
+      reason: 'complete',
+      serial: 's3',
+    });
+
+    applyInput(tree, { codecMessageId: 'u2', parent: 'a1', message: { id: 'u2', content: 'q2' }, serial: 's4' });
+    apply(tree, {
+      runId: 'R2',
+      codecMessageId: 'tc2',
+      parent: 'u2',
+      role: 'assistant',
+      message: { id: 'tc2', content: 'tool-call' },
+      serial: 's5',
+    });
+    switch (r2Status) {
+      case 'complete':
+      case 'cancelled': {
+        tree.applyRunLifecycle({
+          type: 'end',
+          runId: 'R2',
+          clientId: 'c',
+          invocationId: '',
+          reason: r2Status,
+          serial: 's6',
+        });
+        break;
+      }
+      case 'error': {
+        tree.applyRunLifecycle({
+          type: 'end',
+          runId: 'R2',
+          clientId: 'c',
+          invocationId: '',
+          reason: 'error',
+          error: new Ably.ErrorInfo('boom', 104008, 500),
+          serial: 's6',
+        });
+        break;
+      }
+      case 'suspended': {
+        tree.applyRunLifecycle({ type: 'suspend', runId: 'R2', clientId: 'c', invocationId: '', serial: 's6' });
+        break;
+      }
+      case 'active': {
+        // No terminal lifecycle; the run is still in flight.
+        break;
+      }
+    }
+
+    applyInput(tree, { codecMessageId: 'u3', parent: 'tc2', message: { id: 'u3', content: 'q3' }, serial: 's7' });
+    apply(tree, {
+      runId: 'R3',
+      codecMessageId: 'a3',
+      parent: 'u3',
+      role: 'assistant',
+      message: { id: 'a3', content: 'r3' },
+      serial: 's8',
+    });
+
+    source.setPin('u3', 'R3', undefined);
+  };
+
+  it('keeps a completed ancestor turn, in order', () => {
+    seedThreeTurns('complete');
+    expect(nodeKeys()).toEqual(['u1', 'R1', 'u2', 'R2', 'u3', 'R3']);
+    expect(promptIds()).toEqual(['u1', 'a1', 'u2', 'tc2', 'u3', 'a3']);
+  });
+
+  it.each<AncestorStatus>(['active', 'suspended', 'cancelled', 'error'])(
+    'drops a %s ancestor run together with its triggering input',
+    (status) => {
+      seedThreeTurns(status);
+      expect(nodeKeys()).toEqual(['u1', 'R1', 'u3', 'R3']);
+      // The incomplete run's dangling tool-call (tc2) and its prompt (u2) are gone.
+      expect(promptIds()).toEqual(['u1', 'a1', 'u3', 'a3']);
+    },
+  );
+
+  it('always includes the current run and its input, even when it has not completed (resume case)', () => {
+    // R3 is the pinned current run and is left without a run-end; an ancestor
+    // (R2) is suspended. The current run and its input survive regardless of the
+    // current run's own status, while the suspended ancestor turn (u2 + R2) goes.
+    seedThreeTurns('suspended');
+    expect(nodeKeys()).toEqual(['u1', 'R1', 'u3', 'R3']);
+  });
+
+  it('drops only the run when an incomplete ancestor has no triggering input node', () => {
+    // R1 completes; R2 is an output-only run parented directly on R1's assistant
+    // message (no input node of its own) and never completes. Dropping R2 must
+    // not take R1's input with it.
+    applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'q1' }, serial: 's1' });
+    apply(tree, {
+      runId: 'R1',
+      codecMessageId: 'a1',
+      parent: 'u1',
+      role: 'assistant',
+      message: { id: 'a1', content: 'r1' },
+      serial: 's2',
+    });
+    tree.applyRunLifecycle({
+      type: 'end',
+      runId: 'R1',
+      clientId: 'c',
+      invocationId: '',
+      reason: 'complete',
+      serial: 's3',
+    });
+    apply(tree, {
+      runId: 'R2',
+      codecMessageId: 'x2',
+      parent: 'a1',
+      role: 'assistant',
+      message: { id: 'x2', content: 'partial' },
+      serial: 's4',
+    });
+    applyInput(tree, { codecMessageId: 'u3', parent: 'x2', message: { id: 'u3', content: 'q3' }, serial: 's5' });
+    apply(tree, {
+      runId: 'R3',
+      codecMessageId: 'a3',
+      parent: 'u3',
+      role: 'assistant',
+      message: { id: 'a3', content: 'r3' },
+      serial: 's6',
+    });
+    source.setPin('u3', 'R3', undefined);
+
+    expect(nodeKeys()).toEqual(['u1', 'R1', 'u3', 'R3']);
+    expect(promptIds()).toEqual(['u1', 'a1', 'u3', 'a3']);
+  });
+
+  it('resolves selectedReplyRun against the structural branch, so an incomplete on-branch reply is not displaced by a completed sibling', () => {
+    // u1 has two reply runs: R1, still active and structurally on this branch
+    // (the current run u2/R2 hangs off R1's output), and Rx, a later completed
+    // regenerate sibling at the same input. Branch identity must not shift to the
+    // completed sibling just because the on-branch reply hasn't finished — the
+    // prompt-safety filter that drops R1 from `visibleNodes()` must not leak into
+    // branch selection.
+    applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'q1' }, serial: 's1' });
+    apply(tree, {
+      runId: 'R1',
+      codecMessageId: 'a1',
+      parent: 'u1',
+      role: 'assistant',
+      message: { id: 'a1', content: 'r1' },
+      serial: 's2',
+    });
+    tree.applyRunLifecycle({ type: 'start', runId: 'R1', clientId: 'c', invocationId: '', parent: 'u1', serial: 's2' });
+    // A completed regenerate sibling of R1 at the same input, started later (so
+    // the latest-by-startSerial fallback would pick it if selection were filtered).
+    apply(tree, {
+      runId: 'Rx',
+      codecMessageId: 'ax',
+      parent: 'u1',
+      role: 'assistant',
+      message: { id: 'ax', content: 'rx' },
+      serial: 's9',
+    });
+    tree.applyRunLifecycle({ type: 'start', runId: 'Rx', clientId: 'c', invocationId: '', parent: 'u1', serial: 's9' });
+    tree.applyRunLifecycle({
+      type: 'end',
+      runId: 'Rx',
+      clientId: 'c',
+      invocationId: '',
+      reason: 'complete',
+      serial: 's10',
+    });
+    applyInput(tree, { codecMessageId: 'u2', parent: 'a1', message: { id: 'u2', content: 'q2' }, serial: 's3' });
+    apply(tree, {
+      runId: 'R2',
+      codecMessageId: 'a2',
+      parent: 'u2',
+      role: 'assistant',
+      message: { id: 'a2', content: 'r2' },
+      serial: 's4',
+    });
+    source.setPin('u2', 'R2', undefined);
+
+    expect(source.selectedReplyRun('u1')?.runId).toBe('R1');
   });
 });

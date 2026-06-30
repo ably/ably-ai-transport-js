@@ -237,9 +237,16 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
    * client's `session.view` exposes, with no navigation or write path.
    *
    * Where {@link BaseRun.messages} is this run's own turn, `view` is a
-   * paginating projection of the full branch up to this run — the conversation
-   * to feed the model. Drain it with `loadOlder()` (the sole history driver) for
-   * as much ancestor context as you want, or page back to a database seam.
+   * paginating projection of the branch up to this run — the conversation to
+   * feed the model. Drain it with `loadOlder()` (the sole history driver) for as
+   * much ancestor context as you want, or page back to a database seam.
+   *
+   * The projection includes an ancestor turn only when its run completed
+   * (`status: 'complete'`); an ancestor run that is still active, suspended,
+   * cancelled, or errored is omitted along with the user input it replied to, so
+   * an unresolved tool call from a broken prior turn can't invalidate the prompt.
+   * This run itself is always included, even mid-flight. The omission is computed
+   * live on each read, so an ancestor that later completes reappears.
    */
   readonly view: View<TMessage>;
 

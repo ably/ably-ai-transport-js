@@ -90,7 +90,7 @@ vi.mock('ably/react', () => ({
 }));
 
 // Chat must be imported AFTER vi.mock so it picks up the mocked module.
- 
+
 import { Chat } from '../chat';
 
 // ---------------------------------------------------------------------------

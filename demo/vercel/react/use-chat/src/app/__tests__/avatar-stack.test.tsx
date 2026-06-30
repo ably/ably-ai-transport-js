@@ -16,7 +16,7 @@ vi.mock('ably/react', () => ({
 }));
 
 // Imported after vi.mock so it picks up the mocked presence hooks.
- 
+
 import { AvatarStack } from '../components/avatar-stack';
 
 afterEach(() => {

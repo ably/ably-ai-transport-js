@@ -95,7 +95,6 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
   // a history of an external value's transitions is the intended use of this
   // effect — it observes useChat's status, it does not derive render state.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- appends a transition log on each status change
     setStatusLog((prev) => [
       ...prev,
       { time: Date.now(), status, error: status === 'error' ? error?.message : undefined },

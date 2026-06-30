@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Bubble, BubbleContent } from '@/components/ui/bubble';
 import { Button } from '@/components/ui/button';
 import { Message, MessageContent, MessageFooter } from '@/components/ui/message';
+import { Response } from '@/components/ui/response';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ToolInvocation } from './tool-invocation';
@@ -237,32 +238,36 @@ export function MessageBubble({
               variant={isUser ? 'default' : 'ghost'}
               align={isUser ? 'end' : 'start'}
             >
-              <BubbleContent className="whitespace-pre-wrap">
-                {isUser
-                  ? messageText
-                  : message.parts.map((part, i) => {
-                      if (part.type === 'text') return <span key={i}>{part.text}</span>;
-                      if (part.type === 'dynamic-tool') {
-                        const toolPart = part as DynamicToolUIPart;
-                        const approvalId = toolPart.approval?.id;
-                        return (
-                          <ToolInvocation
-                            key={i}
-                            part={toolPart}
-                            onApprove={onToolApprove && approvalId ? () => onToolApprove(approvalId) : undefined}
-                            onDeny={onToolDeny && approvalId ? () => onToolDeny(approvalId) : undefined}
-                          />
-                        );
-                      }
-                      return null;
-                    })}
-                {showThinking && (
-                  <span className="inline-flex items-center gap-1.5 text-muted-foreground">
-                    <Loader2Icon className="size-3.5 animate-spin" />
-                    Thinking…
-                  </span>
-                )}
-              </BubbleContent>
+              {isUser ? (
+                <BubbleContent className="whitespace-pre-wrap">{messageText}</BubbleContent>
+              ) : (
+                <BubbleContent>
+                  {message.parts.map((part, i) => {
+                    // The assistant reply is markdown; render it through Response
+                    // (Streamdown) so lists, code, and emphasis format correctly.
+                    if (part.type === 'text') return <Response key={i}>{part.text}</Response>;
+                    if (part.type === 'dynamic-tool') {
+                      const toolPart = part as DynamicToolUIPart;
+                      const approvalId = toolPart.approval?.id;
+                      return (
+                        <ToolInvocation
+                          key={i}
+                          part={toolPart}
+                          onApprove={onToolApprove && approvalId ? () => onToolApprove(approvalId) : undefined}
+                          onDeny={onToolDeny && approvalId ? () => onToolDeny(approvalId) : undefined}
+                        />
+                      );
+                    }
+                    return null;
+                  })}
+                  {showThinking && (
+                    <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+                      <Loader2Icon className="size-3.5 animate-spin" />
+                      Thinking…
+                    </span>
+                  )}
+                </BubbleContent>
+              )}
             </Bubble>
             <MessageFooter className="mt-1 flex flex-wrap items-center gap-1.5">
               {/* Branch navigator (when the message has siblings) */}

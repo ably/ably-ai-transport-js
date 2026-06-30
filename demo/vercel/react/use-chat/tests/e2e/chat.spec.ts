@@ -285,16 +285,16 @@ test.describe('use-chat demo - chat behaviour', () => {
     await expect.poll(async () => branchCounter(userBubbles(page).first())).toBe('2 / 2');
     expect(await bubbleText(userBubbles(page).first())).toContain('second');
 
-    // 4. Navigate prompt back to P1. Branch nav buttons are matched by
-    // their `title` attribute since the visible text is just "<"/">".
-    await userBubbles(page).first().locator('button[title="Previous branch"]').click();
+    // 4. Navigate prompt back to P1. The branch-nav buttons are icon-only
+    // (chevrons), so they are located by their `aria-label`.
+    await userBubbles(page).first().locator('button[aria-label="Previous branch"]').click();
     await expect.poll(async () => bubbleText(userBubbles(page).first())).toContain('first');
     // The asst bubble must now show the regen counter ("2 / 2" — latest
     // member of the regen group selected by default).
     await expect.poll(async () => branchCounter(assistantBubbles(page).first())).toBe('2 / 2');
 
     // 5. Click `<` on the asst bubble to switch to the original (R1).
-    await assistantBubbles(page).first().locator('button[title="Previous branch"]').click();
+    await assistantBubbles(page).first().locator('button[aria-label="Previous branch"]').click();
     await expect.poll(async () => branchCounter(assistantBubbles(page).first())).toBe('1 / 2');
     // The user prompt must still be P1 ("first") — switching members of
     // the regen group must not affect the fork-of selection on the user
@@ -302,7 +302,7 @@ test.describe('use-chat demo - chat behaviour', () => {
     expect(await bubbleText(userBubbles(page).first())).toContain('first');
 
     // 6. Click `>` on the asst bubble to navigate forward.
-    await assistantBubbles(page).first().locator('button[title="Next branch"]').click();
+    await assistantBubbles(page).first().locator('button[aria-label="Next branch"]').click();
 
     // CRITICAL: the user prompt MUST stay on P1 ("first"), not switch to
     // P2 ("second"). Bug repro: clicking `>` on the asst bubble drives
@@ -385,11 +385,11 @@ test.describe('use-chat demo - chat behaviour', () => {
     await expect.poll(async () => branchCounter(userBubbles(page).first())).toBe('3 / 3');
 
     // Navigate back through the chain.
-    await userBubbles(page).first().locator('button[title="Previous branch"]').click();
+    await userBubbles(page).first().locator('button[aria-label="Previous branch"]').click();
     await expect.poll(async () => bubbleText(userBubbles(page).first())).toContain('bravo');
     await expect.poll(async () => branchCounter(userBubbles(page).first())).toBe('2 / 3');
 
-    await userBubbles(page).first().locator('button[title="Previous branch"]').click();
+    await userBubbles(page).first().locator('button[aria-label="Previous branch"]').click();
     await expect.poll(async () => bubbleText(userBubbles(page).first())).toContain('alpha');
     await expect.poll(async () => branchCounter(userBubbles(page).first())).toBe('1 / 3');
   });
@@ -992,7 +992,7 @@ test.describe('use-chat demo - chat behaviour', () => {
       expect(await branchCounter(assistantBubbles(page).first())).toBe('2 / 2');
 
       // Navigate back to the original sibling.
-      await assistantBubbles(page).first().locator('button[title="Previous branch"]').click();
+      await assistantBubbles(page).first().locator('button[aria-label="Previous branch"]').click();
       await expect.poll(async () => branchCounter(assistantBubbles(page).first())).toBe('1 / 2');
 
       // Regenerate again — should create a 3rd member.
@@ -1018,7 +1018,7 @@ test.describe('use-chat demo - chat behaviour', () => {
     expect(await branchCounter(userBubbles(page).last())).toBe('2 / 2');
 
     // Navigate back to the original prompt sibling.
-    await userBubbles(page).last().locator('button[title="Previous branch"]').click();
+    await userBubbles(page).last().locator('button[aria-label="Previous branch"]').click();
     await expect.poll(async () => branchCounter(userBubbles(page).last())).toBe('1 / 2');
 
     // Edit again from the original -> a 3rd sibling.
@@ -1148,7 +1148,7 @@ test.describe('use-chat demo - chat behaviour', () => {
     // regenerate-substitution model (a follow-up belongs to the reply it
     // answered), verified at the SDK level in view.test.ts. Navigating P1
     // forward again restores them.
-    await assistantBubbles(page).nth(0).locator('button[title="Previous branch"]').click();
+    await assistantBubbles(page).nth(0).locator('button[aria-label="Previous branch"]').click();
     await expect.poll(async () => branchCounter(assistantBubbles(page).nth(0))).toBe('2 / 3');
     // Only P1's prompt + its selected reply remain visible (P2/P3 hidden).
     await expect.poll(async () => userBubbles(page).count()).toBe(1);
@@ -1157,7 +1157,7 @@ test.describe('use-chat demo - chat behaviour', () => {
     // Navigate P1 forward to the latest regen again — P2 and P3 reappear with
     // their own branch counters intact, proving they were hidden (branch
     // selection), not lost.
-    await assistantBubbles(page).nth(0).locator('button[title="Next branch"]').click();
+    await assistantBubbles(page).nth(0).locator('button[aria-label="Next branch"]').click();
     await expect.poll(async () => branchCounter(assistantBubbles(page).nth(0))).toBe('3 / 3');
     await expect.poll(async () => userBubbles(page).count()).toBe(3);
     await expect.poll(async () => branchCounter(userBubbles(page).nth(1))).toBe('2 / 2');
@@ -1243,7 +1243,7 @@ test.describe('use-chat demo - chat behaviour', () => {
 
     // Navigate the regen group back to the original P1 reply (1/2). P2's turn
     // reappears — it was hidden by branch selection, not lost.
-    await assistantBubbles(page).first().locator('button[title="Previous branch"]').click();
+    await assistantBubbles(page).first().locator('button[aria-label="Previous branch"]').click();
     await expect.poll(async () => branchCounter(assistantBubbles(page).first())).toBe('1 / 2');
     await expect.poll(async () => userBubbles(page).count()).toBe(2);
     await expect.poll(async () => assistantBubbles(page).count()).toBe(2);

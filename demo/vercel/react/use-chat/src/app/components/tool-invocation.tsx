@@ -70,7 +70,7 @@ interface ForecastData {
 
 function ForecastCard({ data }: { data: ForecastData }) {
   return (
-    <div className="my-1 max-w-[320px] rounded-lg border border-indigo-800/30 bg-gradient-to-br from-indigo-900/40 to-purple-900/40 p-3">
+    <div className="my-1 max-w-[360px] rounded-lg border border-indigo-800/30 bg-gradient-to-br from-indigo-900/40 to-purple-900/40 p-3">
       <div className="mb-2 text-xs font-medium text-indigo-400/80">5-Day Forecast: {data.location}</div>
       <div className="space-y-1">
         {data.forecast.map((day) => {
@@ -80,11 +80,11 @@ function ForecastCard({ data }: { data: ForecastData }) {
           return (
             <div
               key={day.day}
-              className="flex items-center justify-between text-xs"
+              className="flex items-center gap-3 text-xs"
             >
               <span className="w-8 text-muted-foreground">{day.day}</span>
               <span className="text-base">{icon}</span>
-              <span className="w-24 text-right text-muted-foreground">
+              <span className="ml-auto text-right whitespace-nowrap text-muted-foreground">
                 {day.high}&deg;/{day.low}&deg;F
                 <span className="ml-1 text-muted-foreground/60">
                   ({highC}&deg;/{lowC}&deg;C)

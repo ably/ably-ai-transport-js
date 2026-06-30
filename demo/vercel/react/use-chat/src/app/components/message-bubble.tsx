@@ -211,10 +211,10 @@ export function MessageBubble({
             <div className={bubbleClasses(isUser, status, colors?.userBg)}>
               {message.parts.map((part, i) => {
                 if (part.type === 'text') return <span key={i}>{part.text}</span>;
-                if (isToolUIPart(part)) {
-                  // eslint-disable-next-line @typescript-eslint/no-empty-function -- no-op fallback when no approval handler
-                  const noop = (): void => {};
-                  const approvalId = part.approval?.id;
+                if (part.type === 'dynamic-tool') {
+                  const toolPart = part as DynamicToolUIPart;
+                  const noop = (): void => undefined;
+                  const approvalId = toolPart.approval?.id;
                   return (
                     <ToolInvocation
                       key={i}

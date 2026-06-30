@@ -17,21 +17,23 @@ const run = await view.send(UIMessageCodec.createUserMessage(message));
 await run.cancel();
 
 // Or cancel by runId from anywhere that holds the id. The agent mints the run
-// id now, so await run.runId to learn it (run.cancel() avoids this wait).
-await session.cancel(await run.runId);
+// id now, so await run.started to learn it, then read run.runId (run.cancel()
+// avoids this wait).
+await run.started;
+await session.cancel(run.runId);
 ```
 
-Each `session.cancel(runId)` call targets exactly one run. To cancel multiple runs, iterate over runIds you hold yourself (the `runId` promise on each handle returned by `send()`).
+Each `session.cancel(runId)` call targets exactly one run. To cancel multiple runs, iterate over runIds you hold yourself (await each `send()` handle's `started`, then read its `runId`).
 
-In React, the simplest "stop" button keeps the most recent `ActiveRun` returned by `send` and calls `run.cancel()` on it. Because `run.cancel()` keys on the input's codec-message-id, it works the instant the send is published — no need to await `run.runId`:
+In React, the simplest "stop" button keeps the most recent `ClientRun` returned by `send` and calls `run.cancel()` on it. Because `run.cancel()` keys on the input's codec-message-id, it works the instant the send is published — no need to await `run.started`:
 
 ```typescript
 import { useState } from 'react';
 import { useView } from '@ably/ai-transport/react';
-import type { ActiveRun } from '@ably/ai-transport';
+import type { ClientRun } from '@ably/ai-transport';
 
 const { send } = useView({ session });
-const [activeRun, setActiveRun] = useState<ActiveRun | undefined>();
+const [activeRun, setActiveRun] = useState<ClientRun | undefined>();
 
 const onSend = async (message: AI.UIMessage) => {
   const run = await send(UIMessageCodec.createUserMessage(message));

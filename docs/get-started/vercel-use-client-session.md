@@ -21,7 +21,7 @@ import {
   useClientSession,
   useView,
 } from '@ably/ai-transport/react';
-import type { ActiveRun } from '@ably/ai-transport';
+import type { ClientRun } from '@ably/ai-transport';
 import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import type * as AI from 'ai';
@@ -30,7 +30,7 @@ import { useState } from 'react';
 // Wake the agent: the core session never sends HTTP, so the app POSTs the
 // run's invocation pointer to its endpoint. The agent reads the conversation
 // from the channel; the pointer carries only identifiers.
-const wakeAgent = (run: ActiveRun) =>
+const wakeAgent = (run: ClientRun) =>
   fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

@@ -71,7 +71,7 @@ For the "is this rendered message still streaming?" question, read `node.headers
 
 ## Cancelling individual runs
 
-`session.cancel(runId)` cancels exactly one run, leaving its siblings alone. The simplest form is `run.cancel()` on the handle returned by `view.send()` — it keys on the input's `codec-message-id`, so it works even before the agent has minted the run id. To cancel by run id directly, use one you hold — `await run.runId` (the agent mints it, so it resolves once `ai-run-start` arrives), or `node.headers['run-id']` on the message node you want to stop.
+`session.cancel(runId)` cancels exactly one run, leaving its siblings alone. The simplest form is `run.cancel()` on the handle returned by `view.send()` — it keys on the input's `codec-message-id`, so it works even before the agent has minted the run id. To cancel by run id directly, use one you hold — `await run.started` then read `run.runId` (the agent mints it; `started` resolves once `ai-run-start` arrives), or `node.headers['run-id']` on the message node you want to stop.
 
 See [Cancel](cancel.md) for the full cancel protocol.
 

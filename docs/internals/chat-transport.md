@@ -1,6 +1,6 @@
 # Chat transport
 
-The chat transport (`src/vercel/transport/chat-transport.ts`) is a thin adapter that wraps a core [ClientSession](client-session.md) to satisfy the `ChatTransport` interface that Vercel's `useChat()` hook expects. It maps Vercel's `sendMessages()` / `reconnectToStream()` contract to the session's default [view](client-session.md)'s `send()` / `regenerate()` and to per-run cancellation via the `ActiveRun` handle.
+The chat transport (`src/vercel/transport/chat-transport.ts`) is a thin adapter that wraps a core [ClientSession](client-session.md) to satisfy the `ChatTransport` interface that Vercel's `useChat()` hook expects. It maps Vercel's `sendMessages()` / `reconnectToStream()` contract to the session's default [view](client-session.md)'s `send()` / `regenerate()` and to per-run cancellation via the `ClientRun` handle.
 
 The core session is a pure Ably-channel transport — it never sends HTTP. `useChat`'s contract, however, is request-driven: calling `sendMessages` is expected to trigger the backend. So the chat transport is the one place that issues the agent-invocation POST, keeping `useChat` a drop-in transport while the generic core stays HTTP-free.
 
@@ -35,7 +35,7 @@ A **fork-on-unresolved-tool** occurs when the user sends a fresh message while t
 
 ### Waking the agent (the invocation POST)
 
-After `send()` publishes on the channel and returns the `ActiveRun`, the transport POSTs `run.toInvocation().toJSON()` to its configured `api` (default `/api/chat`) to wake the agent. The body is the invocation pointer — `inputEventId` and `sessionName` (the channel name), no `run-id` (run identity lives on the channel) — so the agent rebuilds it with `Invocation.fromJSON` and reads the conversation from the channel; no history is sent. The agent mints the `invocationId` (one per request) and returns it on the response, though this transport's POST is fire-and-forget and does not read it back (it routes outputs by the triggering input's `codec-message-id` over the channel). The POST uses the configured `fetch` and `credentials`.
+After `send()` publishes on the channel and returns the `ClientRun`, the transport POSTs `run.toInvocation().toJSON()` to its configured `api` (default `/api/chat`) to wake the agent. The body is the invocation pointer — `inputEventId` and `sessionName` (the channel name), no `run-id` (run identity lives on the channel) — so the agent rebuilds it with `Invocation.fromJSON` and reads the conversation from the channel; no history is sent. The agent mints the `invocationId` (one per request) and returns it on the response, though this transport's POST is fire-and-forget and does not read it back (it routes outputs by the triggering input's `codec-message-id` over the channel). The POST uses the configured `fetch` and `credentials`.
 
 The POST is fire-and-forget — the response arrives over the Ably channel, not the HTTP response, so awaiting it would needlessly delay the stream return. If the POST fails (non-2xx or network error), the agent never woke, so the transport errors **only** the `useChat`-facing stream with `SessionSendFailed` (which surfaces as `useChat` `status: 'error'`). It does this by failing the wrapped stream; the core session, conversation tree, and other observers are untouched.
 
@@ -55,7 +55,7 @@ Correlation does not rely on the domain `UIMessage.id`. The SDK keys every messa
 
 ### Abort signal
 
-When `useChat()` provides an `abortSignal` (e.g. the user clicks stop), the adapter wires it to `run.cancel()` on the `ActiveRun` returned by the just-issued send and closes that run's per-run stream so `useChat`'s reader ends immediately without waiting for the agent's run-end round-trip. The abort listener closes over the `ActiveRun` returned by `view.send` / `view.regenerate` (whose `runId` resolves once the agent mints it), so each stop fires exactly one cancel scoped to its originating send. (Because `useChat` enables Stop synchronously, the adapter also handles an already-aborted signal — firing the cancel directly rather than via the `abort` listener, which would never fire.)
+When `useChat()` provides an `abortSignal` (e.g. the user clicks stop), the adapter wires it to `run.cancel()` on the `ClientRun` returned by the just-issued send and closes that run's per-run stream so `useChat`'s reader ends immediately without waiting for the agent's run-end round-trip. The abort listener closes over the `ClientRun` returned by `view.send` / `view.regenerate` (whose `started` resolves once the agent mints the run id), so each stop fires exactly one cancel scoped to its originating send. (Because `useChat` enables Stop synchronously, the adapter also handles an already-aborted signal — firing the cancel directly rather than via the `abort` listener, which would never fire.)
 
 ## reconnectToStream
 

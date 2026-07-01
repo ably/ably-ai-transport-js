@@ -229,7 +229,7 @@ const wrapStreamWithDone = <T>(
 // ---------------------------------------------------------------------------
 
 /**
- * Whether an assistant message has a `dynamic-tool` part that can't resolve
+ * Whether an assistant message has a tool part that can't resolve
  * without further user action. Matches:
  * - `input-streaming` / `input-available` — tool call emitted, not yet run.
  * - `approval-requested` — waiting for the user.
@@ -249,20 +249,20 @@ const hasUnresolvedToolCall = (msg: AI.UIMessage): boolean =>
   );
 
 /**
- * `dynamic-tool` part states that mean "the LLM produced a tool call and
- * is waiting on it". Used to detect new client-side resolutions in the
- * useChat overlay relative to the tree.
+ * Tool-part states that mean "the LLM produced a tool call and is waiting on
+ * it". Used to detect new client-side resolutions in the useChat overlay
+ * relative to the tree.
  */
 const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'approval-requested']);
 
 /**
  * Walk the useChat message overlay against the session tree and synthesize
- * the {@link VercelInput}s needed to resolve every `dynamic-tool` part the
- * user acted on (executed a tool, approved, denied) but the tree's reduced
- * state hasn't reflected yet.
+ * the {@link VercelInput}s needed to resolve every tool part the user acted on
+ * (executed a tool, approved, denied) but the tree's reduced state hasn't
+ * reflected yet.
  *
  * Each input carries the prior assistant's tree codec-message-id (the one
- * holding the original `dynamic-tool` part the resolution targets) in its
+ * holding the original tool part the resolution targets) in its
  * `codecMessageId` field, so the encoder stamps `codec-message-id`
  * and the reducer's direct-fold path lands the resolution on that assistant
  * in one step — no cross-message redirect-by-toolCallId fallback. Every
@@ -305,11 +305,10 @@ const deriveContinuationInputs = (
 
     for (const overlayPart of overlay.parts) {
       if (!isToolPart(overlayPart)) continue;
-      // The codec normalises every tool part to `dynamic-tool`, but the
-      // AI SDK's useChat overlay emits `tool-${name}` parts for statically
-      // declared tools. Match by toolCallId rather than the type prefix
-      // so the cross-representation comparison works regardless of which
-      // side the tool was declared on.
+      // The tree and the useChat overlay may each carry a tool part in either
+      // representation (`dynamic-tool` or `tool-${name}`). Match by toolCallId
+      // rather than the type prefix so the comparison holds regardless of how
+      // the tool was declared on each side.
       const treePart = treeMessage.parts.find(
         (p: AI.UIMessage['parts'][number]): p is ToolPart => isToolPart(p) && p.toolCallId === overlayPart.toolCallId,
       );

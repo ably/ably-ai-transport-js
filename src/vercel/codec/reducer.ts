@@ -21,7 +21,7 @@
  * Client-published tool resolutions (`ToolResult`, `ToolResultError`,
  * `ToolApprovalResponse`) carry `codecMessageId` targeting the assistant
  * they amend; the reducer applies the resolution onto that assistant's
- * `dynamic-tool` part directly. If the assistant has not yet arrived in
+ * tool part directly. If the assistant has not yet arrived in
  * the projection (out-of-order delivery), the resolution is buffered in
  * `pendingToolResolutions` and re-evaluated on each subsequent fold.
  *

@@ -1,12 +1,13 @@
 /**
  * Shared tool-part type guard for the Vercel layer.
  *
- * The codec normalises every tool part to the `dynamic-tool` shape, but the AI
- * SDK emits `tool-${name}` parts for statically-declared tools. Both shapes
- * carry `toolCallId` and `state`. The guard accepts either representation so
- * the transport's unresolved-tool detection and the React overlay merge can
- * match tool parts uniformly — and so the cross-representation rule lives in
- * one place rather than being re-spelled per call site.
+ * A tool part occurs in one of two representations: `dynamic-tool` (with an
+ * explicit `toolName`) for a dynamic tool, or `tool-${name}` for a
+ * statically-declared tool (the codec preserves whichever the source used).
+ * Both shapes carry `toolCallId` and `state`. The guard accepts either so the
+ * transport's unresolved-tool detection and the React overlay merge can match
+ * tool parts uniformly — and so the cross-representation rule lives in one
+ * place rather than being re-spelled per call site.
  */
 
 import type * as AI from 'ai';

@@ -15,7 +15,7 @@ import {
 import { transitionToolPart } from './tool-transitions.js';
 
 /**
- * Locate the `dynamic-tool` part for a `toolCallId` anywhere in the projection.
+ * Locate the tool part for a `toolCallId` anywhere in the projection.
  * Agent-emitted second-pass tool outputs (after an approved tool runs) are
  * stamped with a fresh codec-message-id that differs from the assistant holding
  * the tool call, so they can't be found via `meta.messageId` — they fold onto

@@ -71,10 +71,9 @@ export const foldUserMessage = (
 
 /**
  * Fold a client-published `ToolResult`. The input carries
- * `codecMessageId` pointing at the assistant whose `dynamic-tool` part
- * holds the matching `toolCallId`. If the assistant and its matching
- * `dynamic-tool` part are both present, fold directly; otherwise pend
- * until that tool part arrives.
+ * `codecMessageId` pointing at the assistant whose tool part holds the
+ * matching `toolCallId`. If the assistant and its matching tool part are
+ * both present, fold directly; otherwise pend until that tool part arrives.
  * @param state - Projection to fold into.
  * @param event - The tool-result input (codecMessageId + domain payload).
  * @returns The same projection reference.
@@ -104,8 +103,8 @@ export const foldClientToolResultError = (
 
 /**
  * Fold a client-published `ToolApprovalResponse`. The input carries
- * `codecMessageId` pointing at the assistant whose `dynamic-tool` part
- * holds the matching `toolCallId`. Approval → `approval-responded`;
+ * `codecMessageId` pointing at the assistant whose tool part holds the
+ * matching `toolCallId`. Approval → `approval-responded`;
  * denial → `output-denied` via {@link transitionToolPart}.
  * @param state - Projection to fold into.
  * @param event - The approval-response input.

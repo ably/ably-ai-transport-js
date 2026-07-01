@@ -38,12 +38,17 @@ export interface BaseRun<TMessage> {
   readonly error: Ably.ErrorInfo | undefined;
 
   /**
-   * This run's whole turn: the triggering input message (when the run
-   * introduced one) followed by this run's own streamed output, deduped by
-   * codec-message-id. This is the unit to persist — because every send
-   * introduces at most one new message and triggers exactly one run, the union
-   * of all runs' `messages` reconstructs the conversation with no gaps or
-   * duplicates. Empty until the run is observed on the Tree. Each access
+   * This run's entire contribution: its one originating input message (when the
+   * run introduced one) followed by all of the run's own output, across every
+   * segment of a suspend/resume run (including tool results), in chronological
+   * order and deduped by codec-message-id. A continuation adds no new input, so
+   * a resumed run still leads with its original prompt — the whole run is
+   * self-contained here.
+   *
+   * This is the atomic unit to persist, once when the run completes: because
+   * every send introduces at most one new message and triggers exactly one run,
+   * the union of all runs' `messages` reconstructs the conversation with no gaps
+   * or duplicates. Empty until the run is observed on the Tree. Each access
    * returns a fresh array, safe to mutate without affecting run state.
    */
   readonly messages: TMessage[];

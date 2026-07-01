@@ -1206,8 +1206,14 @@ describe('AgentSession integration', () => {
         start: (controller) => {
           controller.enqueue({ type: 'start', messageId });
           controller.enqueue({ type: 'start-step' });
-          controller.enqueue({ type: 'tool-input-start', toolCallId, toolName: 'getLocation' });
-          controller.enqueue({ type: 'tool-input-available', toolCallId, toolName: 'getLocation', input: {} });
+          controller.enqueue({ type: 'tool-input-start', toolCallId, toolName: 'getLocation', dynamic: true });
+          controller.enqueue({
+            type: 'tool-input-available',
+            toolCallId,
+            toolName: 'getLocation',
+            input: {},
+            dynamic: true,
+          });
           controller.enqueue({ type: 'finish', finishReason: 'tool-calls' });
           controller.close();
         },

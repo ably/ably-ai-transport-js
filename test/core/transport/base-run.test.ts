@@ -2,9 +2,10 @@
  * Unit tests for `createBaseRun` — the shared run read-model over the Tree.
  *
  * Exercises the four read members (`runId`, `status`, `error`, `messages`)
- * against a minimal in-memory Tree, covering the whole-turn composition
- * (input + this run's output), the fresh / continuation / no-input / wire-only
- * cases, dedupe, terminal status/error, liveness, and the union invariant.
+ * against a minimal in-memory Tree, covering the whole-run composition
+ * (input + all of this run's output), the fresh / continuation / no-input /
+ * wire-only cases, the resumed-run anchor and optimistic-window fallback,
+ * dedupe, terminal status/error, liveness, and the union invariant.
  */
 
 import * as Ably from 'ably';
@@ -151,6 +152,45 @@ describe('createBaseRun', () => {
       codec,
     });
     expect(run.messages).toEqual([{ id: 'a1', content: 'a1' }]);
+  });
+
+  it('keeps a resumed run anchored on the run node parent, ignoring a wire-only continuation trigger', () => {
+    // A suspend/resume run keeps its stable run node (parentCodecMessageId ->
+    // the original prompt) and accumulates all output in it. On resume the
+    // per-invocation trigger is recomputed to the continuation's wire-only
+    // reference (a tool result), which backs no input node. `messages` must
+    // still lead with the original input, then all of the run's output —
+    // anchoring on getInputAnchor() alone would drop the original input.
+    const tree = makeTree(
+      [inputNode('u1', projectionOf('u1'))],
+      [runNode('r1', projectionOf('a1', 'tool-out'), { status: 'complete' }, 'u1')],
+    );
+    const run = createBaseRun({
+      getRunId: () => 'r1',
+      getInputAnchor: () => 'tool-result-continuation',
+      getTree: () => tree,
+      codec,
+    });
+    expect(run.messages).toEqual([
+      { id: 'u1', content: 'u1' },
+      { id: 'a1', content: 'a1' },
+      { id: 'tool-out', content: 'tool-out' },
+    ]);
+  });
+
+  it('falls back to the send anchor before the run node parent has backfilled (optimistic window)', () => {
+    // Run node exists but its parentCodecMessageId is not yet populated (the
+    // assistant wire arrived before run-start): the anchor falls back to the
+    // caller's own send anchor so the fresh send's input is still included.
+    const tree = makeTree(
+      [inputNode('u1', projectionOf('u1'))],
+      [runNode('r1', projectionOf('a1'), { status: 'active' })],
+    );
+    const run = createBaseRun({ getRunId: () => 'r1', getInputAnchor: () => 'u1', getTree: () => tree, codec });
+    expect(run.messages).toEqual([
+      { id: 'u1', content: 'u1' },
+      { id: 'a1', content: 'a1' },
+    ]);
   });
 
   it('dedupes by codec-message-id across input and run projections', () => {

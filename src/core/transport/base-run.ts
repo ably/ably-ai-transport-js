@@ -2,8 +2,9 @@
  * The shared run read-model implementation.
  *
  * `createBaseRun` derives the {@link BaseRun} contract — `runId`, `status`,
- * `error`, and the whole-turn `messages` — live off the conversation Tree,
- * keyed by the run's id. Because every session holds a Tree, this one
+ * `error`, and the whole-run `messages` (the run's one input plus all its
+ * output across every suspend/resume segment) — live off the conversation
+ * Tree, keyed by the run's id. Because every session holds a Tree, this one
  * implementation can back both sides' runs: a side composes its live getters
  * onto its own run object (e.g. delegating each base getter to it, as the
  * agent's run does) and adds its own side-specific verbs. The getters must be
@@ -35,8 +36,12 @@ export interface BaseRunOptions<
   /** The run's current id. Empty string while the run is not yet known (client, pre run-start). */
   getRunId: () => string;
   /**
-   * The codec-message-id of this run's structural triggering input (the input
-   * node whose reply this run is). `undefined` when the run has no triggering
+   * Fallback anchor for the run's content input, consulted only in the
+   * pre-run-start optimistic window — before a run node exists, or before its
+   * structural parent has backfilled from run-start. Once the run node is
+   * known, `messages` anchors on its stable `parentCodecMessageId` instead, so
+   * this is the caller's own send anchor (the client's optimistic input) used
+   * until that pointer is available. `undefined` when the run has no triggering
    * input node — a no-input run, or a wire-only continuation/regenerate carrier
    * that introduced no input message; such runs contribute output only.
    */
@@ -90,17 +95,27 @@ export const createBaseRun = <TInput extends CodecInputEvent, TOutput extends Co
         }
       };
 
-      // The triggering input's own message(s), when this run introduced an
-      // input node. A wire-only carrier (regenerate signal, tool resolution)
-      // has no input node — or resolves to a prior run node — so it is skipped
-      // and the turn is output-only.
-      const anchor = getInputAnchor();
+      // Resolve the run's single content input from the run node's stable
+      // structural parent. By protocol a continuation introduces no new
+      // message, so a run has exactly one content input — its original prompt —
+      // and `parentCodecMessageId` names it: it is backfilled once from
+      // run-start and never re-pointed on resume. Anchoring here (rather than
+      // on the per-invocation trigger, which a resume recomputes to its
+      // wire-only carrier — a tool result / approval) makes `messages` span the
+      // whole run: the original input then all output, for every segment.
+      // `getInputAnchor()` is the fallback only in the pre-run-start optimistic
+      // window, where no run node exists yet (or its parent has not backfilled).
+      const runNode = tree.getRunNode(getRunId());
+      const anchor = runNode?.parentCodecMessageId ?? getInputAnchor();
+
+      // The triggering input's own message(s), when the anchor resolves to an
+      // input node. A no-input run, or an anchor resolving to a prior run node
+      // (never an input), contributes output only.
       const inputNode = anchor === undefined ? undefined : tree.getNodeByCodecMessageId(anchor);
       if (inputNode?.kind === 'input') append(inputNode.projection);
 
-      // This run's own streamed output. Deduped against the input above so a
-      // continuation whose input node is its run node is not double-counted.
-      const runNode = tree.getRunNode(getRunId());
+      // This run's own streamed output — every suspend/resume segment
+      // accumulates in the one run node. Deduped against the input above.
       if (runNode !== undefined) append(runNode.projection);
 
       return out;

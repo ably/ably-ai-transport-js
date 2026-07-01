@@ -180,7 +180,7 @@ class DefaultClientSession<
     this._hasAttachedOnce = this._channel.state === 'attached';
 
     // Compose sub-components
-    const { tree, applier } = createMaterialisation(this._codec, this._logger);
+    const { tree, applier } = createMaterialisation(this._codec, this._logger, options.reorderWindowMs);
     this._tree = tree;
     this._applier = applier;
     this._hydrator = createHistoryHydrator({

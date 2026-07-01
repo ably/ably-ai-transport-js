@@ -504,11 +504,11 @@ describe('useMessageSync', () => {
       id: 'a1',
       role: 'assistant',
       parts: [
-        // CAST: hand-rolled dynamic-tool part matches the AI SDK shape.
+        // CAST: hand-rolled static tool part (`tool-${name}`) matches the AI SDK
+        // shape — a statically-declared tool the codec round-trips faithfully.
         {
-          type: 'dynamic-tool',
+          type: 'tool-getLocation',
           toolCallId: 'tc-1',
-          toolName: 'getLocation',
           state: 'input-available',
           input: { highAccuracy: false },
         } as unknown as AI.UIMessage['parts'][number],
@@ -530,11 +530,10 @@ describe('useMessageSync', () => {
 
     // CAST: setMessages receives an updater function from useMessageSync.
     const updater = setMessages.mock.calls.at(-1)?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
-    // Overlay carries the AI SDK's static-tool representation
-    // (`tool-${name}`) — the codec normalises everything to
-    // `dynamic-tool`, but `addToolResult` stamps the static prefix when
-    // the tool was declared statically on the server. The merge must
-    // bridge the two when the overlay is more advanced.
+    // The overlay carries the same `tool-${name}` representation the codec now
+    // round-trips faithfully, but a step ahead: `addToolResult` has resolved it
+    // to `output-available`. The merge keeps the tree's part type and adopts the
+    // overlay's resolved state when the overlay is more advanced.
     const overlayAsst: AI.UIMessage = {
       id: 'a1',
       role: 'assistant',
@@ -557,9 +556,9 @@ describe('useMessageSync', () => {
     expect(mergedAsst?.id).toBe('a1');
     const mergedToolPart = mergedAsst?.parts[0];
     expect(mergedToolPart).toBeDefined();
-    // The merged result keeps the tree's part type so downstream
-    // consumers matching on `dynamic-tool` continue to render…
-    expect((mergedToolPart as { type?: string }).type).toBe('dynamic-tool');
+    // The merged result keeps the tree's faithful `tool-getLocation` type so
+    // downstream consumers keying on the static tool type continue to render…
+    expect((mergedToolPart as { type?: string }).type).toBe('tool-getLocation');
     // …but adopts the overlay's resolved state and output, so the AI
     // SDK's `sendAutomaticallyWhen` and the chat-transport's
     // continuation derivation can see the result.

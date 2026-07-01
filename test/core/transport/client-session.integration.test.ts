@@ -1148,7 +1148,7 @@ describe('ClientSession integration', () => {
       start: (controller) => {
         controller.enqueue({ type: 'start', messageId: 'asst-tool-1' });
         controller.enqueue({ type: 'start-step' });
-        controller.enqueue({ type: 'tool-input-start', toolCallId, toolName: 'getLocation' });
+        controller.enqueue({ type: 'tool-input-start', toolCallId, toolName: 'getLocation', dynamic: true });
         controller.enqueue({ type: 'tool-input-delta', toolCallId, inputTextDelta: '{"highAcc' });
         controller.enqueue({ type: 'tool-input-delta', toolCallId, inputTextDelta: 'uracy":false}' });
         controller.enqueue({
@@ -1156,6 +1156,7 @@ describe('ClientSession integration', () => {
           toolCallId,
           toolName: 'getLocation',
           input: { highAccuracy: false },
+          dynamic: true,
         });
         controller.enqueue({ type: 'finish', finishReason: 'tool-calls' });
         controller.close();

@@ -159,9 +159,9 @@ describe('Vercel UIMessageCodec integration', () => {
   });
 
   /**
-   * Scenario 2: Tool call roundtrip
+   * Scenario 2: Dynamic tool call roundtrip
    */
-  it('tool call roundtrip', async () => {
+  it('dynamic tool call roundtrip', async () => {
     const channelName = uniqueChannelName('tool-roundtrip');
     const pubClient = ablyRealtimeClient();
     const subClient = ablyRealtimeClient();
@@ -201,6 +201,7 @@ describe('Vercel UIMessageCodec integration', () => {
       type: 'tool-input-start',
       toolCallId,
       toolName: 'get_weather',
+      dynamic: true,
     });
     void encoder.publishOutput({ type: 'tool-input-delta', toolCallId, inputTextDelta: '{"loc' });
     void encoder.publishOutput({ type: 'tool-input-delta', toolCallId, inputTextDelta: 'ation":"SF"}' });
@@ -209,6 +210,7 @@ describe('Vercel UIMessageCodec integration', () => {
       toolCallId,
       toolName: 'get_weather',
       input: { location: 'SF' },
+      dynamic: true,
     });
     await encoder.publishOutput({
       type: 'tool-output-available',
@@ -241,6 +243,77 @@ describe('Vercel UIMessageCodec integration', () => {
       expect(toolPart.input).toEqual({ location: 'SF' });
     }
     if (toolPart?.state === 'output-available') {
+      expect(toolPart.output).toEqual({ temp: 72 });
+    }
+  });
+
+  /**
+   * Scenario 2b: Static tool call roundtrip — a statically-declared tool
+   * (no `dynamic` flag) must survive encode → decode → fold with its
+   * `tool-<name>` type intact, not collapse to `dynamic-tool`.
+   */
+  it('static tool call roundtrip preserves the tool-<name> type', async () => {
+    const channelName = uniqueChannelName('tool-roundtrip-static');
+    const pubClient = ablyRealtimeClient();
+    const subClient = ablyRealtimeClient();
+
+    const pubChannel = pubClient.channels.get(channelName);
+    const subChannel = subClient.channels.get(channelName);
+
+    const decoder = UIMessageCodec.createDecoder();
+    let projection = UIMessageCodec.init();
+
+    const messageId = 'msg-tool-static-1';
+    const toolCallId = 'tc-static-1';
+
+    let resolveFinish: () => void;
+    const finished = new Promise<void>((r) => {
+      resolveFinish = r;
+    });
+
+    await subChannel.subscribe((msg) => {
+      const decoded = decoder.decode(msg);
+      projection = foldDecoded(projection, decoded, msg);
+      if (decoded.outputs.some((e) => e.type === 'finish')) {
+        resolveFinish();
+      }
+    });
+
+    const encoder = UIMessageCodec.createEncoder(pubChannel, {
+      onMessage: stampHeaders('run-tool-static-1', messageId),
+    });
+
+    await encoder.publishOutput({ type: 'start', messageId });
+    await encoder.publishOutput({ type: 'start-step' });
+    // No `dynamic` flag — a statically-declared tool.
+    await encoder.publishOutput({ type: 'tool-input-start', toolCallId, toolName: 'get_weather' });
+    void encoder.publishOutput({ type: 'tool-input-delta', toolCallId, inputTextDelta: '{"loc' });
+    void encoder.publishOutput({ type: 'tool-input-delta', toolCallId, inputTextDelta: 'ation":"SF"}' });
+    await encoder.publishOutput({
+      type: 'tool-input-available',
+      toolCallId,
+      toolName: 'get_weather',
+      input: { location: 'SF' },
+    });
+    await encoder.publishOutput({ type: 'tool-output-available', toolCallId, output: { temp: 72 } });
+    await encoder.publishOutput({ type: 'finish', finishReason: 'tool-calls' });
+    await encoder.close();
+
+    await finished;
+
+    const messages = UIMessageCodec.getMessages(projection).map((m) => m.message);
+    expect(messages).toHaveLength(1);
+    const [msg] = messages;
+
+    // The part keeps its static `tool-get_weather` type — not `dynamic-tool`.
+    const toolPart = msg?.parts.find((p): p is AI.ToolUIPart => p.type === 'tool-get_weather');
+    expect(toolPart).toBeDefined();
+    expect(toolPart?.toolCallId).toBe(toolCallId);
+    expect(toolPart?.state).toBe('output-available');
+    // A static tool part carries no separate toolName — the name is in `type`.
+    expect(toolPart && 'toolName' in toolPart).toBe(false);
+    if (toolPart?.state === 'output-available') {
+      expect(toolPart.input).toEqual({ location: 'SF' });
       expect(toolPart.output).toEqual({ temp: 72 });
     }
   });
@@ -289,6 +362,7 @@ describe('Vercel UIMessageCodec integration', () => {
       toolCallId,
       toolName: 'calculator',
       input: { expression: '2+2' },
+      dynamic: true,
     });
     await encoder.publishOutput({
       type: 'tool-output-available',

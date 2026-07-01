@@ -64,9 +64,9 @@ export interface UseMessageSyncOptions {
 // ---------------------------------------------------------------------------
 //
 // The merge matches tool parts by toolCallId (via the shared {@link isToolPart}
-// guard, which accepts both the codec's `dynamic-tool` shape and the AI SDK's
-// `tool-${name}` shape) and keeps the tree's `type` on the result so downstream
-// consumers narrowing on `dynamic-tool` keep working.
+// guard, which accepts both the `dynamic-tool` and `tool-${name}` shapes) and
+// keeps the tree's `type` on the result, so the merged part stays in whichever
+// representation the codec reconstructed.
 
 const RESOLVED_TOOL_STATES = new Set(['output-available', 'output-error', 'approval-responded', 'output-denied']);
 

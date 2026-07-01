@@ -1,11 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ClientRun, RunInfo, RunStatus } from '@ably/ai-transport';
-import { isToolUIPart, type UIMessage } from 'ai';
+import type { ClientRun, RunStatus } from '@ably/ai-transport';
+import type { UIMessage, DynamicToolUIPart } from 'ai';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import { useMessagesWithSeed } from '@ably/ai-transport/vercel/react';
+import { ArrowUpIcon, ExternalLinkIcon, SquareIcon } from 'lucide-react';
 
+import { Button } from '@/components/ui/button';
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from '@/components/ui/input-group';
 import { userMessage, wakeAgent } from '../helpers';
 import { useClientTools } from '../hooks/use-client-tools';
 import { useDemoProgress } from '../hooks/use-demo-progress';
@@ -180,14 +183,14 @@ export function Chat({ chatId, clientId, seed, api }: ChatProps) {
   // each message's own domain id (this demo has no separate codec id to show).
   const codecMessages = useMemo(() => messages.map((message) => ({ codecMessageId: message.id, message })), [messages]);
 
-  // Snapshot the visible runs for demo-progress derivation. `latestRun` is a
-  // recompute trigger, not a value read here: it changes as runs start/end, so
-  // depending on it re-reads view.runs() when the run set changes.
-  const runs = useMemo<RunInfo[]>(() => view.runs(), [view, latestRun]);
+  // Read the visible runs for demo-progress derivation. view.runs() returns the
+  // current run set, so reading it each render keeps demo-progress in step with
+  // run starts/ends (the run-state effect above re-renders on every change).
+  const runs = view.runs();
   const unfinishedSteps = useDemoProgress(messages, runs);
 
   const [input, setInput] = useState('');
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const handleSelectPrompt = useCallback((prompt: string) => {
     setInput(prompt);
     inputRef.current?.focus();
@@ -288,7 +291,7 @@ export function Chat({ chatId, clientId, seed, api }: ChatProps) {
           onToolApprove={handleToolApprove}
           onToolDeny={handleToolDeny}
         />
-        <div className="border-t border-zinc-800">
+        <div className="border-t border-border">
           <SuggestionChips
             steps={unfinishedSteps}
             onSelectPrompt={handleSelectPrompt}
@@ -328,31 +331,45 @@ export function Chat({ chatId, clientId, seed, api }: ChatProps) {
 
 function Header({ clientId, channelName }: { clientId?: string; channelName: string }) {
   return (
-    <header className="flex h-16 flex-shrink-0 items-center gap-3 border-b border-zinc-800 px-4">
+    <header className="flex h-16 flex-shrink-0 items-center gap-3 border-b border-border px-4">
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center gap-2">
-          <div className="h-2 w-2 rounded-full bg-emerald-500" />
-          <h1 className="text-sm font-medium text-zinc-300">Ably AI — ClientSession (DB hydration)</h1>
+          {/* Liveness indicator — no semantic "online" token exists, so a
+              fixed status colour is intentional here. */}
+          <div className="size-2 rounded-full bg-emerald-500" />
+          <h1 className="text-sm font-medium text-foreground">Ably AI — ClientSession (DB hydration)</h1>
         </div>
         <div className="flex items-center gap-2 pl-4">
-          <a
-            href="https://github.com/ably/ably-ai-transport-js"
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1 rounded-full border border-zinc-700 px-2.5 py-0.5 text-xs text-zinc-300 hover:text-zinc-100 hover:border-zinc-500 transition-colors"
+          <Button
+            asChild
+            variant="outline"
+            size="xs"
+            className="rounded-full"
           >
-            SDK repo
-            <ExternalLinkIcon />
-          </a>
-          <a
-            href="https://ably.com/docs/ai-transport"
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1 rounded-full border border-zinc-700 px-2.5 py-0.5 text-xs text-zinc-300 hover:text-zinc-100 hover:border-zinc-500 transition-colors"
+            <a
+              href="https://github.com/ably/ably-ai-transport-js"
+              target="_blank"
+              rel="noreferrer"
+            >
+              SDK repo
+              <ExternalLinkIcon data-icon="inline-end" />
+            </a>
+          </Button>
+          <Button
+            asChild
+            variant="outline"
+            size="xs"
+            className="rounded-full"
           >
-            Ably docs
-            <ExternalLinkIcon />
-          </a>
+            <a
+              href="https://ably.com/docs/ai-transport"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Ably docs
+              <ExternalLinkIcon data-icon="inline-end" />
+            </a>
+          </Button>
         </div>
       </div>
       <div className="ml-auto flex items-center gap-3">
@@ -360,41 +377,22 @@ function Header({ clientId, channelName }: { clientId?: string; channelName: str
           channelName={channelName}
           selfClientId={clientId}
         />
-        <button
+        <Button
           type="button"
+          variant="outline"
+          size="xs"
           onClick={() => {
             const url = new URL(window.location.href);
             url.searchParams.delete('clientId');
             window.open(url.toString(), '_blank');
           }}
-          className="rounded-md border border-zinc-700 px-2 py-1 text-[10px] text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors"
           title="Open this channel in a new tab as a fresh client"
         >
           open in new tab
-        </button>
+        </Button>
         {clientId && <span className={`font-mono text-xs ${clientColor(clientId).text}`}>{clientId}</span>}
       </div>
     </header>
-  );
-}
-
-function ExternalLinkIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      fill="none"
-      viewBox="0 0 24 24"
-      strokeWidth={1.75}
-      stroke="currentColor"
-      className="h-3 w-3"
-      aria-hidden
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"
-      />
-    </svg>
   );
 }
 
@@ -412,49 +410,70 @@ function InputBar({
 }: {
   value: string;
   onChange: (value: string) => void;
-  inputRef?: React.RefObject<HTMLInputElement | null>;
+  inputRef?: React.RefObject<HTMLTextAreaElement | null>;
   onSend: (text: string) => void;
   onStop: () => void;
   streaming: boolean;
 }) {
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const submit = () => {
     const text = value.trim();
     if (!text) return;
     onChange('');
     onSend(text);
   };
 
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    submit();
+  };
+
   return (
     <form
       onSubmit={handleSubmit}
-      className="px-4 py-3 flex gap-2"
+      className="px-4 py-3"
     >
-      <input
-        ref={inputRef}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="Type a message..."
-        className="flex-1 rounded-md bg-zinc-900 border border-zinc-700 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500"
-        autoFocus
-      />
-      {streaming ? (
-        <button
-          type="button"
-          onClick={onStop}
-          className="rounded-md bg-red-900/60 px-4 py-2 text-sm font-medium text-red-300 hover:bg-red-900/80 transition-colors"
-        >
-          Stop
-        </button>
-      ) : (
-        <button
-          type="submit"
-          disabled={!value.trim()}
-          className="rounded-md bg-zinc-700 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-        >
-          Send
-        </button>
-      )}
+      <InputGroup>
+        <InputGroupTextarea
+          ref={inputRef}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder="Type a message..."
+          autoFocus
+          // Enter sends; Shift+Enter inserts a newline (standard composer UX).
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+        />
+        <InputGroupAddon align="block-end">
+          {streaming ? (
+            <InputGroupButton
+              type="button"
+              data-testid="stop"
+              variant="destructive"
+              size="icon-sm"
+              className="ml-auto rounded-full"
+              aria-label="Stop"
+              onClick={onStop}
+            >
+              <SquareIcon className="fill-current" />
+            </InputGroupButton>
+          ) : (
+            <InputGroupButton
+              type="submit"
+              variant="default"
+              size="icon-sm"
+              className="ml-auto rounded-full"
+              aria-label="Send"
+              disabled={!value.trim()}
+            >
+              <ArrowUpIcon />
+            </InputGroupButton>
+          )}
+        </InputGroupAddon>
+      </InputGroup>
     </form>
   );
 }

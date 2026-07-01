@@ -4,6 +4,11 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import type { UIMessage } from 'ai';
 import type { CodecMessage } from '@ably/ai-transport';
 import type * as Ably from 'ably';
+import { ChevronLeftIcon } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 export interface CallbackLogEntry {
   time: number;
@@ -93,23 +98,23 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
   return (
     <div
       ref={scrollRef}
-      className="flex-1 overflow-y-auto p-3 space-y-3"
+      className="flex flex-1 flex-col gap-3 overflow-y-auto p-3"
     >
       {entries.length === 0 && (
-        <p className="text-xs text-zinc-700 text-center mt-8">Raw Ably messages will appear here.</p>
+        <p className="mt-8 text-center text-xs text-muted-foreground">Raw Ably messages will appear here.</p>
       )}
       {entries.map((entry, idx) => {
         const tiers = extractTiers(entry);
         return (
           <div
             key={idx}
-            className="rounded border border-zinc-800 bg-zinc-900/50 p-2 text-[11px] font-mono"
+            className="rounded-md border border-border bg-muted/50 p-2 font-mono text-[11px]"
           >
-            <div className="flex items-center gap-2 text-zinc-500 mb-1">
-              <span className="text-zinc-600">#{idx}</span>
-              <span>{new Date(entry.timestamp ?? Date.now()).toLocaleTimeString()}</span>
-              <span className="text-emerald-500">{entry.name ?? '(unnamed)'}</span>
-              <span className="text-amber-500">{String(entry.action ?? 'message.create')}</span>
+            <div className="mb-1 flex flex-wrap items-center gap-1.5 text-muted-foreground">
+              <span>#{idx}</span>
+              <span>{entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : ''}</span>
+              <Badge variant="secondary">{entry.name ?? '(unnamed)'}</Badge>
+              <Badge variant="outline">{String(entry.action ?? 'message.create')}</Badge>
             </div>
             {AI_TIERS.map((tier) => {
               const tierHeaders = tiers[tier];
@@ -117,24 +122,24 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
               return (
                 <div
                   key={tier}
-                  className="ml-2 mb-1 space-y-0.5"
+                  className="mb-1 ml-2 flex flex-col gap-0.5"
                 >
-                  <div className="text-zinc-700">extras.ai.{tier}</div>
+                  <div className="text-muted-foreground">extras.ai.{tier}</div>
                   {Object.entries(tierHeaders).map(([k, v]) => (
                     <div
                       key={k}
-                      className="text-zinc-600 ml-2"
+                      className="ml-2 text-muted-foreground"
                     >
-                      <span className="text-zinc-500">{k}</span>
-                      <span className="text-zinc-700">: </span>
-                      <span className="text-zinc-400">{v}</span>
+                      <span>{k}</span>
+                      <span>: </span>
+                      <span className="text-foreground">{v}</span>
                     </div>
                   ))}
                 </div>
               );
             })}
             {entry.data !== undefined && entry.data !== null && (
-              <div className="mt-1 text-zinc-600 break-all whitespace-pre-wrap">
+              <div className="mt-1 break-all whitespace-pre-wrap text-muted-foreground">
                 {typeof entry.data === 'string' ? entry.data : JSON.stringify(entry.data, null, 2)}
               </div>
             )}
@@ -159,35 +164,20 @@ function UIMessagesTab({ messages, status }: { messages: UIMessage[]; status: st
       ref={scrollRef}
       className="flex-1 overflow-y-auto p-3"
     >
-      <div className="mb-3 flex gap-2">
-        <div className="rounded border border-zinc-800 bg-zinc-900/50 px-2 py-1.5 text-[10px]">
-          <span className="text-zinc-600">Session status: </span>
-          <span className={`font-mono ${status === 'running' ? 'text-emerald-400' : 'text-zinc-600'}`}>{status}</span>
-        </div>
+      <div className="mb-3 flex items-center gap-2">
+        <span className="text-[10px] text-muted-foreground">Session status</span>
+        <Badge variant="secondary">{status}</Badge>
       </div>
       {messages.length === 0 ? (
-        <p className="text-xs text-zinc-700 text-center mt-8">Messages will appear here as JSON.</p>
+        <p className="mt-8 text-center text-xs text-muted-foreground">Messages will appear here as JSON.</p>
       ) : (
-        <pre className="text-[11px] leading-4 text-zinc-500 whitespace-pre-wrap break-all font-mono">
+        <pre className="font-mono text-[11px] leading-4 break-all whitespace-pre-wrap text-muted-foreground">
           {JSON.stringify(messages, null, 2)}
         </pre>
       )}
     </div>
   );
 }
-
-const callbackTypeColors: Record<string, string> = {
-  runStart: 'text-blue-400',
-  runSuspend: 'text-amber-400',
-  runResume: 'text-cyan-400',
-  runEnd: 'text-emerald-400',
-  error: 'text-red-400',
-};
-
-const statusColors: Record<string, string> = {
-  idle: 'text-zinc-500',
-  running: 'text-emerald-400',
-};
 
 function LifecycleTab({
   callbackLog,
@@ -211,91 +201,85 @@ function LifecycleTab({
   return (
     <div
       ref={scrollRef}
-      className="flex-1 overflow-y-auto p-3 space-y-3"
+      className="flex flex-1 flex-col gap-3 overflow-y-auto p-3"
     >
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-[10px] text-zinc-400 uppercase tracking-wider">Status transitions</span>
-        <button
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] tracking-wider text-muted-foreground uppercase">Status transitions</span>
+        <Button
+          variant="ghost"
+          size="xs"
           onClick={onClear}
-          className="text-[10px] text-zinc-600 hover:text-zinc-400 transition-colors"
+          className="text-muted-foreground"
         >
           clear
-        </button>
+        </Button>
       </div>
 
       {statusLog.length === 0 ? (
-        <p className="text-xs text-zinc-500 text-center">No status changes yet.</p>
+        <p className="text-center text-xs text-muted-foreground">No status changes yet.</p>
       ) : (
-        <div className="rounded border border-zinc-800 bg-zinc-900/50 p-2 text-[11px] font-mono flex flex-wrap gap-1 items-center">
+        <div className="flex flex-wrap items-center gap-1 rounded-md border border-border bg-muted/50 p-2 font-mono text-[11px]">
           {statusLog.map((entry, idx) => (
             <span
               key={idx}
               className="flex items-center gap-1"
             >
-              {idx > 0 && <span className="text-zinc-700">&rarr;</span>}
-              <span className={statusColors[entry.status] ?? 'text-zinc-500'}>{entry.status}</span>
+              {idx > 0 && <span className="text-muted-foreground">→</span>}
+              <span className="text-foreground">{entry.status}</span>
             </span>
           ))}
         </div>
       )}
 
-      <div className="mt-4 mb-2">
-        <span className="text-[10px] text-zinc-400 uppercase tracking-wider">Run lifecycle</span>
+      <div className="mt-1">
+        <span className="text-[10px] tracking-wider text-muted-foreground uppercase">Run lifecycle</span>
       </div>
 
       {callbackLog.length === 0 ? (
-        <p className="text-xs text-zinc-500 text-center">Run start, run end, and error events will appear here.</p>
+        <p className="text-center text-xs text-muted-foreground">
+          Run start, run end, and error events will appear here.
+        </p>
       ) : (
         callbackLog.map((entry, idx) => (
           <div
             key={idx}
-            className="rounded border border-zinc-800 bg-zinc-900/50 p-2 text-[11px] font-mono"
+            className="rounded-md border border-border bg-muted/50 p-2 font-mono text-[11px]"
           >
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-zinc-400">{new Date(entry.time).toLocaleTimeString()}</span>
-              <span className={callbackTypeColors[entry.type] ?? 'text-zinc-400'}>{entry.type}</span>
+            <div className="mb-1 flex items-center gap-2">
+              <span className="text-muted-foreground">{new Date(entry.time).toLocaleTimeString()}</span>
+              <Badge variant={entry.type === 'error' ? 'destructive' : 'secondary'}>{entry.type}</Badge>
             </div>
-            <div className="text-indigo-300 break-all whitespace-pre-wrap">{entry.summary}</div>
+            <div className="break-all whitespace-pre-wrap text-foreground">{entry.summary}</div>
           </div>
         ))
       )}
 
-      <div className="mt-4 mb-2">
-        <span className="text-[10px] text-zinc-400 uppercase tracking-wider">Client-side tool calls</span>
+      <div className="mt-1">
+        <span className="text-[10px] tracking-wider text-muted-foreground uppercase">Client-side tool calls</span>
       </div>
 
       {clientToolLog.length === 0 ? (
-        <p className="text-xs text-zinc-500 text-center">
+        <p className="text-center text-xs text-muted-foreground">
           Tools this client executes (e.g. getLocation) will appear here.
         </p>
       ) : (
         clientToolLog.map((entry) => (
           <div
             key={entry.toolCallId}
-            className="rounded border border-zinc-800 bg-zinc-900/50 p-2 text-[11px] font-mono"
+            className="rounded-md border border-border bg-muted/50 p-2 font-mono text-[11px]"
           >
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-zinc-400">{new Date(entry.time).toLocaleTimeString()}</span>
-              <span className="text-blue-400">{entry.toolName}</span>
-              <span
-                className={
-                  entry.status === 'done'
-                    ? 'text-emerald-400'
-                    : entry.status === 'error'
-                      ? 'text-red-400'
-                      : 'text-amber-400'
-                }
-              >
-                {entry.status}
-              </span>
+            <div className="mb-1 flex items-center gap-2">
+              <span className="text-muted-foreground">{new Date(entry.time).toLocaleTimeString()}</span>
+              <span className="text-foreground">{entry.toolName}</span>
+              <Badge variant={entry.status === 'error' ? 'destructive' : 'secondary'}>{entry.status}</Badge>
             </div>
-            <div className="text-zinc-600 break-all">id: {entry.toolCallId}</div>
-            <div className="text-zinc-500 break-all whitespace-pre-wrap">in: {JSON.stringify(entry.input)}</div>
+            <div className="break-all text-muted-foreground">id: {entry.toolCallId}</div>
+            <div className="break-all whitespace-pre-wrap text-muted-foreground">in: {JSON.stringify(entry.input)}</div>
             {entry.status === 'done' && (
-              <div className="text-indigo-300 break-all whitespace-pre-wrap">out: {JSON.stringify(entry.output)}</div>
+              <div className="break-all whitespace-pre-wrap text-foreground">out: {JSON.stringify(entry.output)}</div>
             )}
             {entry.status === 'error' && (
-              <div className="text-red-300 break-all whitespace-pre-wrap">err: {entry.error}</div>
+              <div className="break-all whitespace-pre-wrap text-destructive">err: {entry.error}</div>
             )}
           </div>
         ))
@@ -326,79 +310,87 @@ export function DebugPane({
     localStorage.setItem(PANE_OPEN_STORAGE_KEY, String(isOpen));
   }, [isOpen]);
 
-  const [tab, setTab] = useState<Tab>('ably');
-
   // Project away the codec-message-id pairing — the pane renders raw messages.
   const uiMessages = useMemo(() => messages.map((m) => m.message), [messages]);
+  const [tab, setTab] = useState<Tab>('ably');
+
+  if (!isOpen) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setIsOpen(true)}
+            className="fixed top-1/2 right-0 h-auto -translate-y-1/2 rounded-r-none rounded-l-md border-r-0 px-1.5 py-3"
+            aria-label="Show debug pane"
+          >
+            <ChevronLeftIcon />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="left">Show debug pane</TooltipContent>
+      </Tooltip>
+    );
+  }
 
   return (
-    <>
-      {!isOpen && (
-        <button
-          onClick={() => setIsOpen(true)}
-          className="fixed right-0 top-1/2 -translate-y-1/2 rounded-l-md bg-zinc-800 border border-r-0 border-zinc-700 px-1.5 py-3 text-xs text-zinc-400 hover:text-zinc-200 transition-colors"
-          title="Show debug pane"
+    <Tabs
+      value={tab}
+      // CAST: Radix Tabs widens its onValueChange arg to string; the only
+      // values wired up are the three TabsTrigger values, which are exactly Tab.
+      onValueChange={(value) => setTab(value as Tab)}
+      className="flex w-[420px] shrink-0 flex-col gap-0 border-l border-border bg-background"
+    >
+      <div className="flex h-16 shrink-0 items-center justify-between border-b border-border px-3">
+        <TabsList>
+          <TabsTrigger value="ably">
+            Ably Messages
+            <span className="ml-1 text-muted-foreground">{ablyMessages.length}</span>
+          </TabsTrigger>
+          <TabsTrigger value="uimessages">
+            UIMessages
+            <span className="ml-1 text-muted-foreground">{messages.length}</span>
+          </TabsTrigger>
+          <TabsTrigger value="lifecycle">
+            Lifecycle
+            <span className="ml-1 text-muted-foreground">{callbackLog.length + clientToolLog.length}</span>
+          </TabsTrigger>
+        </TabsList>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setIsOpen(false)}
+          className="text-muted-foreground"
         >
-          &lsaquo;
-        </button>
-      )}
-
-      {isOpen && (
-        <div className="w-[420px] flex-shrink-0 border-l border-zinc-800 flex flex-col bg-zinc-950">
-          <div className="flex h-16 flex-shrink-0 items-center justify-between border-b border-zinc-800 px-3">
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => setTab('ably')}
-                className={`text-[10px] px-2 py-1 rounded transition-colors ${
-                  tab === 'ably' ? 'bg-zinc-800 text-zinc-300' : 'text-zinc-600 hover:text-zinc-400'
-                }`}
-              >
-                Ably Messages
-                <span className="ml-1 text-zinc-600">{ablyMessages.length}</span>
-              </button>
-              <button
-                onClick={() => setTab('uimessages')}
-                className={`text-[10px] px-2 py-1 rounded transition-colors ${
-                  tab === 'uimessages' ? 'bg-zinc-800 text-zinc-300' : 'text-zinc-600 hover:text-zinc-400'
-                }`}
-              >
-                UIMessages
-                <span className="ml-1 text-zinc-600">{messages.length}</span>
-              </button>
-              <button
-                onClick={() => setTab('lifecycle')}
-                className={`text-[10px] px-2 py-1 rounded transition-colors ${
-                  tab === 'lifecycle' ? 'bg-zinc-800 text-zinc-300' : 'text-zinc-600 hover:text-zinc-400'
-                }`}
-              >
-                Lifecycle
-                <span className="ml-1 text-zinc-600">{callbackLog.length + clientToolLog.length}</span>
-              </button>
-            </div>
-            <button
-              onClick={() => setIsOpen(false)}
-              className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
-            >
-              close
-            </button>
-          </div>
-          {tab === 'ably' ? (
-            <AblyMessagesTab entries={ablyMessages} />
-          ) : tab === 'uimessages' ? (
-            <UIMessagesTab
-              messages={uiMessages}
-              status={status}
-            />
-          ) : (
-            <LifecycleTab
-              callbackLog={callbackLog}
-              statusLog={statusLog}
-              clientToolLog={clientToolLog}
-              onClear={onClearLogs}
-            />
-          )}
-        </div>
-      )}
-    </>
+          close
+        </Button>
+      </div>
+      <TabsContent
+        value="ably"
+        className="flex min-h-0 flex-1 flex-col"
+      >
+        <AblyMessagesTab entries={ablyMessages} />
+      </TabsContent>
+      <TabsContent
+        value="uimessages"
+        className="flex min-h-0 flex-1 flex-col"
+      >
+        <UIMessagesTab
+          messages={uiMessages}
+          status={status}
+        />
+      </TabsContent>
+      <TabsContent
+        value="lifecycle"
+        className="flex min-h-0 flex-1 flex-col"
+      >
+        <LifecycleTab
+          callbackLog={callbackLog}
+          statusLog={statusLog}
+          clientToolLog={clientToolLog}
+          onClear={onClearLogs}
+        />
+      </TabsContent>
+    </Tabs>
   );
 }

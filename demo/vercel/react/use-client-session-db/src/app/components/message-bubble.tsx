@@ -1,6 +1,10 @@
 'use client';
 
-import { isToolUIPart, type UIMessage } from 'ai';
+import type { UIMessage } from 'ai';
+import { Loader2Icon } from 'lucide-react';
+import { Bubble, BubbleContent } from '@/components/ui/bubble';
+import { Message, MessageContent } from '@/components/ui/message';
+import { Response } from '@/components/ui/response';
 import { ToolInvocation } from './tool-invocation';
 import type { BubbleStatus } from './message-list';
 
@@ -8,9 +12,9 @@ interface MessageBubbleProps {
   /** The message to render. */
   message: UIMessage;
   /**
-   * Bubble status for assistant messages — `'streaming'` renders the caret and
-   * amber border, terminal statuses colour the border. `undefined` for user
-   * messages and un-tracked assistant messages.
+   * Bubble status for assistant messages — the last assistant message reflects
+   * the latest run's live state; `undefined` for user messages and un-tracked
+   * assistant messages. Drives the streaming "Thinking…" placeholder.
    */
   status: BubbleStatus | undefined;
   /** Approve a pending tool call, addressed by its `toolCallId`. */
@@ -19,53 +23,70 @@ interface MessageBubbleProps {
   onToolDeny?: (toolCallId: string) => void;
 }
 
-function bubbleClasses(isUser: boolean, status: BubbleStatus | undefined): string {
-  const base = 'rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap';
-
-  if (isUser) {
-    return `${base} bg-zinc-800 text-zinc-100`;
-  }
-
-  if (status === 'streaming') {
-    return `${base} bg-zinc-900 text-zinc-300 border border-amber-900/40`;
-  }
-  if (status === 'complete') {
-    return `${base} bg-zinc-900 text-zinc-300 border border-emerald-900/40`;
-  }
-  if (status === 'cancelled' || status === 'error') {
-    return `${base} bg-zinc-900 text-zinc-300 border border-red-900/40`;
-  }
-  return `${base} bg-zinc-900 text-zinc-300 border border-zinc-800`;
-}
-
+/**
+ * A single chat bubble. Renders text and tool-invocation parts, the approval
+ * card for approval-gated tools, and a quiet "Thinking…" loader while the last
+ * assistant response is streaming with no content yet. This demo is linear (no
+ * branch navigation, edit, or regenerate), so the bubble is a pure renderer.
+ * @param props - The message, its run status, and the approval handlers.
+ */
 export function MessageBubble({ message, status, onToolApprove, onToolDeny }: MessageBubbleProps) {
   const isUser = message.role === 'user';
 
+  const messageText = message.parts
+    .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+    .map((p) => p.text)
+    .join('');
+  const hasToolParts = message.parts.some((p) => p.type === 'dynamic-tool');
+  // Assistant turn that is streaming but has produced no text or tool activity
+  // yet — show a quiet loader instead of an empty row.
+  const showThinking = !isUser && status === 'streaming' && messageText.trim() === '' && !hasToolParts;
+
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className="max-w-[75%]">
-        <div className={bubbleClasses(isUser, status)}>
-          {message.parts.map((part, i) => {
-            if (part.type === 'text') return <span key={i}>{part.text}</span>;
-            if (isToolUIPart(part)) {
-              // eslint-disable-next-line @typescript-eslint/no-empty-function -- no-op fallback when no approval handler
-              const noop = (): void => {};
-              return (
-                <ToolInvocation
-                  key={i}
-                  part={part}
-                  onApprove={onToolApprove ? () => onToolApprove(part.toolCallId) : noop}
-                  onDeny={onToolDeny ? () => onToolDeny(part.toolCallId) : noop}
-                />
-              );
-            }
-            return null;
-          })}
-          {!isUser && status === 'streaming' && (
-            <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-amber-500/60 animate-pulse rounded-sm align-text-bottom" />
+    <Message
+      align={isUser ? 'end' : 'start'}
+      data-testid="message-bubble"
+      data-role={message.role}
+    >
+      <MessageContent>
+        {/* shadcn chat convention: the user's own messages sit in a filled
+            bubble; the assistant's reply is a ghost bubble that reads as plain
+            prose. */}
+        <Bubble
+          variant={isUser ? 'default' : 'ghost'}
+          align={isUser ? 'end' : 'start'}
+        >
+          {isUser ? (
+            <BubbleContent className="whitespace-pre-wrap">{messageText}</BubbleContent>
+          ) : (
+            <BubbleContent>
+              {message.parts.map((part, i) => {
+                // The assistant reply is markdown; render it through Response
+                // (Streamdown) so lists, code, and emphasis format correctly.
+                if (part.type === 'text') return <Response key={i}>{part.text}</Response>;
+                if (part.type === 'dynamic-tool') {
+                  const toolPart = part;
+                  return (
+                    <ToolInvocation
+                      key={i}
+                      part={toolPart}
+                      onApprove={onToolApprove ? () => onToolApprove(toolPart.toolCallId) : undefined}
+                      onDeny={onToolDeny ? () => onToolDeny(toolPart.toolCallId) : undefined}
+                    />
+                  );
+                }
+                return null;
+              })}
+              {showThinking && (
+                <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+                  <Loader2Icon className="size-3.5 animate-spin" />
+                  Thinking…
+                </span>
+              )}
+            </BubbleContent>
           )}
-        </div>
-      </div>
-    </div>
+        </Bubble>
+      </MessageContent>
+    </Message>
   );
 }

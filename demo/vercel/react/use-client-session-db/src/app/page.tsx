@@ -44,7 +44,9 @@ function SeededChatWhenLoaded({ channelName, clientId }: { channelName: string; 
 
   if (seed === null) {
     return (
-      <div className="flex h-dvh items-center justify-center text-sm text-zinc-600">Loading saved conversation…</div>
+      <div className="flex h-dvh items-center justify-center text-sm text-muted-foreground">
+        Loading saved conversation…
+      </div>
     );
   }
 
@@ -67,7 +69,7 @@ function ChatWhenReady({ channelName, clientId }: { channelName: string; clientI
   const ready = useAblyReady();
 
   if (!ready) {
-    return <div className="flex h-dvh items-center justify-center text-sm text-zinc-600">Connecting...</div>;
+    return <div className="flex h-dvh items-center justify-center text-sm text-muted-foreground">Connecting...</div>;
   }
 
   return (

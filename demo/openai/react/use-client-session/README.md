@@ -31,7 +31,7 @@ pnpm dev
 
 Open the URL the dev server prints.
 
-The default model is `gpt-4.1` — a non-reasoning model, so the Responses stream stays within what the codec models plus the small set of events it doesn't yet stream (the function-call argument deltas, listed via the codec's `ignore` construct and dropped on encode). The agent pipes the raw stream; any event that is neither modelled nor ignored would throw, surfacing that we haven't decided how to carry it. Override the model with `OPENAI_MODEL`.
+The default model is `gpt-5.5` (a reasoning model, per OpenAI's current guidance). Its reasoning-summary events — along with refusals, text annotations, and the function-call argument deltas — fall in the codec's `ignore` set (listed in `src/openai/codec/descriptors.ts`) and are dropped on encode, so the answer text still streams and the agent pipes the raw stream. Any event that is neither modelled nor ignored would throw, surfacing an opt-in feature (hosted tools, audio, …) we don't support yet. Override the model with `OPENAI_MODEL`.
 
 ## How it works
 

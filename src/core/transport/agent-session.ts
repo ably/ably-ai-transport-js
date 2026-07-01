@@ -34,16 +34,15 @@ import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js
 import { createBaseRun } from './base-run.js';
 import { readCancelTarget } from './cancel-envelope.js';
 import { foldAndEmit, type WireApplier } from './decode-fold.js';
-import { buildTransportHeaders } from './headers.js';
 import { createHistoryHydrator, type HistoryHydrator } from './history-hydrator.js';
 import { locateInputEvent } from './input-event-locator.js';
 import { evictOldestIfFull } from './internal/bounded-map.js';
 import { Invocation } from './invocation.js';
 import { createLeafBranchSource } from './leaf-branch-source.js';
 import { createMaterialisation } from './materialisation.js';
-import { pipeStream } from './pipe-stream.js';
 import type { RunManager } from './run-manager.js';
 import { createRunManager } from './run-manager.js';
+import { createRunStepWriter, stepEndReasonFor } from './run-step-writer.js';
 import {
   bestEffortDetach,
   continuityLostError,
@@ -60,10 +59,8 @@ import type {
   AgentSession,
   AgentSessionOptions,
   CancelRequest,
-  PipeOptions,
   RunEndParams,
   RunRuntime,
-  StreamResult,
   Tree,
   View,
 } from './types.js';
@@ -604,7 +601,7 @@ class DefaultAgentSession<
     // it. A per-run override (runtime.invocationId) supports deterministic ids
     // in tests and in-process drivers.
     const invocationId = runtime.invocationId ?? crypto.randomUUID();
-    const { onMessage, onCancelled, onCancel, onError: runOnError, signal: externalSignal } = runtime;
+    const { onCancel, onError: runOnError, signal: externalSignal } = runtime;
 
     const controller = new AbortController();
     let state = RunState.INITIALIZED;
@@ -862,6 +859,53 @@ class DefaultAgentSession<
       codec,
     });
 
+    /**
+     * Throw if the run is not open for publishing, and — for `step` — if it has
+     * already ended. The {@link RunStepWriter} gates its publishes on this; the
+     * run object owns the open/terminal policy so the writer need not know how a
+     * run opens.
+     * @param verb - The calling verb, selecting the error message.
+     */
+    const assertPublishable = (verb: 'pipe' | 'step'): void => {
+      if (state === RunState.INITIALIZED) {
+        const action = verb === 'pipe' ? 'pipe stream' : 'run step';
+        throw new Ably.ErrorInfo(
+          `unable to ${action}; start() must be called before ${verb}() (run ${runId})`,
+          ErrorCode.InvalidArgument,
+          400,
+        );
+      }
+      if (verb === 'step' && state === RunState.ENDED) {
+        throw new Ably.ErrorInfo(`unable to run step; run ${runId} has already ended`, ErrorCode.InvalidArgument, 400);
+      }
+    };
+
+    // The run's output write-path (pipe + explicit steps), extracted so the
+    // session stays focused on the run lifecycle. The seams let it gate on the
+    // open state, read the run's late-resolved anchors, and run the cancel
+    // safety-net without knowing how the run opens or resolves.
+    const stepWriter = createRunStepWriter<TInput, TOutput, TProjection, TMessage>({
+      getRunId: () => runId,
+      invocationId,
+      codec,
+      channel,
+      runManager,
+      getTree,
+      runtime,
+      signal,
+      logger,
+      requireConnected,
+      assertPublishable,
+      getAnchors: () => ({
+        parentFallback: assistantParentFallback,
+        forkOf: resolvedForkOf,
+        regenerates: resolvedRegenerates,
+        inputClientId: resolvedInputClientId,
+        inputCodecMessageId: resolvedInputCodecMessageId,
+      }),
+      endRun: async (params) => run.end(params),
+    });
+
     const run: AgentRun<TOutput, TProjection, TMessage> = {
       // Shared read members delegate to `base` (live getters, not snapshots).
       get runId() {
@@ -983,89 +1027,11 @@ class DefaultAgentSession<
         logger?.debug('Run.start(); run started', { runId, inputEventId });
       },
 
+      // The output write-path is the RunStepWriter's; the run object delegates.
       // Spec: AIT-ST6, AIT-ST6a, AIT-ST6b, AIT-ST6b1, AIT-ST6b2, AIT-ST6b3, AIT-ST6c
-      pipe: async (stream: ReadableStream<TOutput>, streamOpts?: PipeOptions<TOutput>): Promise<StreamResult> => {
-        logger?.trace('Run.pipe();', { runId });
+      pipe: stepWriter.pipe,
 
-        await requireConnected('pipe');
-
-        if (state === RunState.INITIALIZED) {
-          throw new Ably.ErrorInfo(
-            `unable to pipe stream; start() must be called before pipe() (run ${runId})`,
-            ErrorCode.InvalidArgument,
-            400,
-          );
-        }
-
-        const runOwnerClientId = runManager.getClientId(runId);
-
-        // The assistant message's parent: an explicit per-stream
-        // `streamOpts.parent` from the caller, else the reply run's
-        // structural-parent fallback computed once at run-start
-        // (`assistantParentFallback` — the triggering user message, or the
-        // input message's own parent for regenerate messages that produced no
-        // MessageNodes). Owning the default here means agent routes don't have
-        // to pass `{ parent: lastUserCodecMessageId }` to keep tree threading
-        // correct; edit-then-regenerate sibling resolution relies on the
-        // user→assistant chain being explicit.
-        const assistantParent = streamOpts?.parent ?? assistantParentFallback;
-        const assistantForkOf = streamOpts?.forkOf ?? resolvedForkOf;
-        // Echo `msg-regenerate` on the assistant message so that a
-        // client receiving the assistant chunk before `ai-run-start`
-        // (e.g. via history pagination across a page boundary, or a lost
-        // lifecycle publish) can still populate `RunNode.regeneratesCodecMessageId`
-        // when creating the Run from headers. Mirrors the symmetric
-        // behaviour for `assistantForkOf` on edit runs.
-        const assistantRegenerates = resolvedRegenerates;
-
-        const codecMessageId = crypto.randomUUID();
-        const defaultHeaders = buildTransportHeaders({
-          role: 'assistant',
-          runId,
-          codecMessageId,
-          runClientId: runOwnerClientId,
-          parent: assistantParent,
-          forkOf: assistantForkOf,
-          invocationId,
-          inputClientId: resolvedInputClientId,
-          inputCodecMessageId: resolvedInputCodecMessageId,
-          regenerates: assistantRegenerates,
-        });
-        const encoder = codec.createEncoder(channel, {
-          extras: { headers: defaultHeaders },
-          onMessage,
-          messageId: codecMessageId,
-        });
-
-        const result = await pipeStream(stream, encoder, signal, onCancelled, streamOpts?.resolveWriteOptions, logger);
-
-        if (result.error) {
-          const errInfo = new Ably.ErrorInfo(
-            `unable to pipe response for run ${runId}; ${result.error.message}`,
-            ErrorCode.StreamError,
-            500,
-            errorCause(result.error),
-          );
-          logger?.error('Run.pipe(); stream error', { runId });
-          runOnError?.(errInfo);
-        }
-
-        // Run cancellation is transport-tier: guarantee the run-end terminal so
-        // every observer's stream closes even if the caller's handler omits
-        // run.end(). Best-effort — pipe must still return the StreamResult; a
-        // later run.end() is a no-op via the ENDED guard. The run is past
-        // INITIALIZED here (pipe requires start()), so end()'s guards pass.
-        if (result.reason === 'cancelled') {
-          try {
-            await run.end({ reason: 'cancelled' });
-          } catch {
-            logger?.error('Run.pipe(); run-end on cancel failed', { runId });
-          }
-        }
-
-        logger?.debug('Run.pipe(); stream finished', { runId, reason: result.reason });
-        return result;
-      },
+      createStep: stepWriter.createStep,
 
       suspend: async (): Promise<void> => {
         logger?.trace('Run.suspend();', { runId });
@@ -1082,6 +1048,17 @@ class DefaultAgentSession<
         // ENDED is the terminal state for either an end or a suspend on this
         // Run instance; a second terminal call is a no-op.
         if (state === RunState.ENDED) return;
+        // A suspend mid-step would strand the open step (no ai-step-end before
+        // the run pauses); require the caller to end it first. Unlike run.end,
+        // suspend does NOT auto-close — a suspended run may resume and continue
+        // the step, so silently ending it would be wrong.
+        if (stepWriter.hasActiveStep()) {
+          throw new Ably.ErrorInfo(
+            `unable to suspend run; end the active step before suspending (run ${runId})`,
+            ErrorCode.InvalidArgument,
+            400,
+          );
+        }
         state = RunState.ENDED;
 
         try {
@@ -1112,6 +1089,18 @@ class DefaultAgentSession<
         }
         if (state === RunState.ENDED) return;
         state = RunState.ENDED;
+
+        // Auto-close any still-open step first, so its ai-step-end precedes this
+        // ai-run-end on the wire and no observer is stranded on an unsettled
+        // step (the handle has no lexical finally guaranteeing closure). The run
+        // terminal maps to the step terminal: an errored run fails its step,
+        // otherwise it completes. Best-effort — a step-close failure must not
+        // block the run terminal.
+        try {
+          await stepWriter.closeActiveStep(stepEndReasonFor(reason));
+        } catch {
+          logger?.error('Run.end(); failed to auto-close active step', { runId });
+        }
 
         try {
           await publishLifecycle('run-end', 'end', async () =>

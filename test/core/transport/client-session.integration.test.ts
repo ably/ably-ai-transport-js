@@ -23,6 +23,8 @@ import {
   EVENT_CANCEL,
   EVENT_RUN_END,
   EVENT_RUN_START,
+  EVENT_STEP_END,
+  EVENT_STEP_START,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_INVOCATION_ID,
   HEADER_ROLE,
@@ -32,7 +34,7 @@ import {
 } from '../../../src/constants.js';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
 import { createClientSession } from '../../../src/core/transport/client-session.js';
-import { buildTransportHeaders } from '../../../src/core/transport/headers.js';
+import { buildStepHeaders, buildTransportHeaders } from '../../../src/core/transport/headers.js';
 import type { AgentSession, ClientSession, ClientView, RunLifecycleEvent } from '../../../src/core/transport/types.js';
 import { getCodecHeaders, getTransportHeaders } from '../../../src/utils.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
@@ -367,6 +369,80 @@ const publishRegenerateRun = async (
   }
 
   await publishRunEnd(channel, opts.runId, opts.invocationId, opts.clientId, 'complete');
+};
+
+/**
+ * Publish one step attempt: `ai-step-start`, the attempt's streamed assistant
+ * output (stamped with the step-id / start-serial), then `ai-step-end`. Used to
+ * seed a step-retry scenario into channel history.
+ * @param channel - The channel to publish on.
+ * @param opts - Attempt identifiers, content, and terminal reason.
+ * @param opts.runId - The run the step belongs to.
+ * @param opts.invocationId - Invocation identifier for the publish.
+ * @param opts.clientId - Client identifier stamped on the wire.
+ * @param opts.parent - Codec-message-id the assistant output parents at.
+ * @param opts.stepId - The step's id (stable across attempts).
+ * @param opts.asstMsgId - Codec-message-id of this attempt's assistant message.
+ * @param opts.asstText - This attempt's assistant text.
+ * @param opts.reason - The step-end reason ('complete' or 'failed').
+ */
+const publishStepAttempt = async (
+  channel: Ably.RealtimeChannel,
+  opts: {
+    runId: string;
+    invocationId: string;
+    clientId: string;
+    parent: string;
+    stepId: string;
+    asstMsgId: string;
+    asstText: string;
+    reason: 'complete' | 'failed';
+  },
+): Promise<void> => {
+  // The step-start's own channel serial is the attempt's identity (its
+  // `start-serial`); back-reference it on the output and step-end so the later
+  // attempt (a higher serial) supersedes the earlier one.
+  const startResult = await channel.publish({
+    name: EVENT_STEP_START,
+    extras: { ai: { transport: buildStepHeaders({ runId: opts.runId, stepId: opts.stepId }) } },
+  });
+  const startSerial = startResult.serials[0] ?? undefined;
+
+  const asstHeaders = buildTransportHeaders({
+    role: 'assistant',
+    runId: opts.runId,
+    codecMessageId: opts.asstMsgId,
+    invocationId: opts.invocationId,
+    runClientId: opts.clientId,
+    parent: opts.parent,
+    stepId: opts.stepId,
+    startSerial,
+  });
+  const encoder = UIMessageCodec.createEncoder(channel, {
+    extras: { headers: asstHeaders },
+    messageId: opts.asstMsgId,
+  });
+  const stream = textResponseStream(opts.asstMsgId, `text-${opts.asstMsgId}`, opts.asstText);
+  const reader = stream.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    await encoder.publishOutput(value);
+  }
+
+  await channel.publish({
+    name: EVENT_STEP_END,
+    extras: {
+      ai: {
+        transport: buildStepHeaders({
+          runId: opts.runId,
+          stepId: opts.stepId,
+          startSerial,
+          reason: opts.reason,
+        }),
+      },
+    },
+  });
 };
 
 // ---------------------------------------------------------------------------
@@ -714,6 +790,71 @@ describe('ClientSession integration', () => {
     expect(asstMsg).toBeDefined();
     const textPart = asstMsg?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
     expect(textPart?.text).toBe('History answer');
+  });
+
+  it('hydrates a step retry showing only the canonical (latest-serial) attempt output', async () => {
+    const channelName = uniqueChannelName('ct-step-retry');
+    const seedClient = ablyRealtimeClient();
+    const seedChannel = seedClient.channels.get(channelName);
+
+    // User input node.
+    const userEncoder = UIMessageCodec.createEncoder(seedChannel, {
+      extras: { headers: buildTransportHeaders({ role: 'user', codecMessageId: 'user-step-1' }) },
+      messageId: 'user-step-1',
+    });
+    await userEncoder.publishInput({
+      kind: 'user-message',
+      message: { id: 'user-step-1', role: 'user', parts: [{ type: 'text', text: 'Step question' }] },
+    });
+
+    // One run whose step failed (attempt A1) and was retried under the same
+    // stepId (attempt A2). A2's step-start has the later serial, so it is the
+    // canonical attempt; A1's output must not materialise.
+    await publishRunStart(seedChannel, 'run-step-1', 'inv-step-1', 'seed', 'user-step-1');
+    await publishStepAttempt(seedChannel, {
+      runId: 'run-step-1',
+      invocationId: 'inv-step-1',
+      clientId: 'seed',
+      parent: 'user-step-1',
+      stepId: 'S',
+      asstMsgId: 'asst-A1',
+      asstText: 'PARTIAL superseded answer',
+      reason: 'failed',
+    });
+    await publishStepAttempt(seedChannel, {
+      runId: 'run-step-1',
+      invocationId: 'inv-step-1',
+      clientId: 'seed',
+      parent: 'user-step-1',
+      stepId: 'S',
+      asstMsgId: 'asst-A2',
+      asstText: 'FULL canonical answer',
+      reason: 'complete',
+    });
+    await publishRunEnd(seedChannel, 'run-step-1', 'inv-step-1', 'seed', 'complete');
+
+    const historyClient = ablyRealtimeClient();
+    clientSession = createClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+      client: historyClient,
+      channelName,
+      codec: UIMessageCodec,
+    });
+    await clientSession.connect();
+
+    await clientSession.view.loadOlder(10);
+
+    const messages = clientSession.view.getMessages().map((m) => m.message);
+    const assistantMessages = messages.filter((m) => m.role === 'assistant');
+    const assistantText = assistantMessages
+      .flatMap((m) => m.parts.filter((p): p is AI.TextUIPart => p.type === 'text'))
+      .map((p) => p.text)
+      .join('');
+
+    // The superseded attempt is gated out of the projection; only the canonical
+    // attempt's output survives in the hydrated conversation.
+    expect(assistantText).toContain('FULL canonical answer');
+    expect(assistantText).not.toContain('PARTIAL superseded answer');
+    expect(assistantMessages).toHaveLength(1);
   });
 
   // Spec: AIT-CT11, AIT-773 §7.1 - cross-Run history concatenation.

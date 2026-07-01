@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenAI Responses streaming — event cheat sheet</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --panel2: #1e222b;
+        --border: #2a2f3a;
+        --text: #e6e9ef;
+        --muted: #9aa3b0;
+        --accent: #6ea8fe;
+        --green: #46c08a;
+        --amber: #e3a008;
+        --red: #ef6b6b;
+        --purple: #d2a8ff;
+        --cyan: #8fd3e8;
+        --pink: #f6a5c0;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: var(--bg); color: var(--text);
+        font: 15px/1.6 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 30px 20px 80px;
+      }
+      .wrap { max-width: 1220px; margin: 0 auto; }
+      h1 { font-size: 24px; margin: 0 0 8px; letter-spacing: -0.01em; }
+      p.lede { color: var(--muted); margin: 0 0 4px; max-width: 940px; font-size: 15.5px; }
+      code, .mono { font-family: var(--mono); }
+      code.inl { font-size: 12.5px; background: #11151c; padding: 1px 6px; border-radius: 4px; color: #d6b36b; border: 1px solid var(--border); }
+
+      .sec { margin-top: 42px; }
+      .sec > .h { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; }
+      .sec > .h .n { font-family: var(--mono); font-size: 13px; color: var(--accent); border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; }
+      .sec > .h .t { font-size: 18px; font-weight: 700; }
+      .sec > p.intro { color: var(--muted); margin: 0 0 16px; max-width: 960px; }
+
+      /* coordinate colour system — used everywhere consistently */
+      .c-oi { color: var(--cyan); }      /* output_index */
+      .c-ci { color: var(--pink); }       /* content_index */
+      .c-si { color: var(--amber); }       /* summary_index */
+      .c-id { color: var(--green); }       /* item id */
+      .c-cid { color: var(--purple); }     /* call_id */
+      .c-ai { color: #c3e88d; }            /* annotation_index */
+      .c-seq { color: var(--muted); }      /* sequence_number */
+
+      /* the tree */
+      .tree { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); padding: 16px 20px; font-family: var(--mono); font-size: 13px; overflow-x: auto; }
+      .tline { display: flex; align-items: center; min-height: 25px; }
+      .tline .code { white-space: pre; min-width: 34ch; flex-shrink: 0; }
+      .tline .ann { margin-left: 16px; color: #5a626e; white-space: nowrap; flex-shrink: 0; }
+      .tree .kw { color: var(--purple); font-weight: 700; }
+      .tree .prop { color: #9aa3b0; }
+      .tree .lit { color: #c9a978; }
+      .tree .brace { color: #5a626e; }
+      .badge { display: inline-block; font-family: var(--mono); font-size: 10.5px; padding: 0 6px; border-radius: 5px; border: 1px solid var(--border); margin-left: 4px; vertical-align: middle; }
+      .b-oi { color: var(--cyan); border-color: #2c4a52; background: #0f1c22; }
+      .b-ci { color: var(--pink); border-color: #4d2c38; background: #1f1319; }
+      .b-si { color: var(--amber); border-color: #4a3d1a; background: #1d180f; }
+      .b-id { color: var(--green); border-color: #2c4a3b; background: #10231b; }
+      .b-cid { color: var(--purple); border-color: #3d2f52; background: #171029; }
+      .b-ai { color: #c3e88d; border-color: #3f4a2a; background: #161a0f; }
+      .cmt { color: #5a626e; }
+
+      /* coordinate legend cards */
+      .coords { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+      @media (max-width: 900px) { .coords { grid-template-columns: 1fr; } }
+      .coord { border: 1px solid var(--border); border-radius: 11px; background: var(--panel); padding: 14px 16px; border-left-width: 3px; }
+      .coord.oi { border-left-color: var(--cyan); }
+      .coord.ci { border-left-color: var(--pink); }
+      .coord.si { border-left-color: var(--amber); }
+      .coord.id { border-left-color: var(--green); }
+      .coord.cid { border-left-color: var(--purple); }
+      .coord.seq { border-left-color: var(--muted); }
+      .coord .cn { font-family: var(--mono); font-size: 13.5px; font-weight: 700; }
+      .coord .ck { font-size: 11px; color: var(--muted); margin: 2px 0 8px; }
+      .coord p { margin: 0; font-size: 13px; color: #cfd5df; }
+      .coord p b { color: var(--text); font-weight: 600; }
+
+      /* event catalogue */
+      .tier { margin-bottom: 22px; }
+      .tier .th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); margin: 0 0 8px; display: flex; align-items: center; gap: 9px; }
+      .tier .th .scope { font-family: var(--mono); font-size: 11px; color: #7f8895; text-transform: none; letter-spacing: 0; }
+      table.cat { width: 100%; border-collapse: collapse; font-size: 13px; }
+      table.cat th { text-align: left; padding: 8px 11px; border-bottom: 2px solid var(--border); color: var(--muted); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; }
+      table.cat td { padding: 9px 11px; border-bottom: 1px solid var(--border); vertical-align: top; }
+      table.cat td.ev { font-family: var(--mono); color: var(--text); white-space: nowrap; font-size: 12.5px; }
+      table.cat td.ev .pre { color: #5a626e; }
+      table.cat td.co { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+      table.cat td.does { color: #cfd5df; }
+      table.cat td.does b { color: var(--text); font-weight: 600; }
+      .disp { font-family: var(--mono); font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); white-space: nowrap; }
+      .disp.stream { color: var(--cyan); border-color: #2c4a52; background: #0f1c22; }
+      .disp.event { color: var(--text); border-color: #3a4150; background: #1c2029; }
+      .disp.ignore { color: var(--amber); border-color: #4a3d1a; background: #1d180f; }
+      .disp.throw { color: var(--red); border-color: #5a2b2b; background: #221414; }
+      .disp.codec { color: var(--green); border-color: #2c4a3b; background: #10231b; }
+
+      /* worked timeline */
+      .tl { display: grid; grid-template-columns: 1.35fr 1fr; gap: 16px; align-items: start; }
+      @media (max-width: 900px) { .tl { grid-template-columns: 1fr; } }
+      .tlpanel { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); padding: 8px 4px; }
+      .tlpanel h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 10px 14px; }
+      .seqrow { display: grid; grid-template-columns: 30px 1fr; gap: 8px; padding: 5px 12px; align-items: baseline; font-family: var(--mono); font-size: 12px; border-left: 2px solid transparent; }
+      .seqrow .sq { color: #5a626e; text-align: right; }
+      .seqrow .evn { color: var(--text); }
+      .seqrow .evn .pre { color: #5a626e; }
+      .seqrow.reason { border-left-color: var(--amber); background: #1a160e; }
+      .seqrow.fc { border-left-color: var(--purple); background: #16112099; }
+      .seqrow.text { border-left-color: var(--cyan); background: #0f1c2288; }
+      .seqrow.life { color: var(--muted); }
+      .seqrow .co { font-size: 11px; }
+      .built { font-family: var(--mono); font-size: 12px; line-height: 1.85; padding: 6px 14px 14px; white-space: pre-wrap; }
+      .built .kw { color: var(--purple); } .built .lit { color: #7f8895; } .built .prop { color: var(--muted); }
+
+      .note-row { margin-top: 16px; font-size: 13px; color: #cfd5df; border-left: 3px solid var(--amber); padding: 11px 15px; background: var(--panel2); border-radius: 0 8px 8px 0; }
+      .note-row b { color: var(--amber); }
+      .footref { margin-top: 34px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--border); padding-top: 14px; }
+      .footref code { font-family: var(--mono); color: #d6b36b; }
+      .legendbar { display: flex; gap: 18px; flex-wrap: wrap; margin: 10px 0 0; font-size: 12px; color: var(--muted); }
+      .legendbar span { display: inline-flex; align-items: center; gap: 6px; }
+      .sw { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+
+      /* pinnable reference drawer */
+      .refbtn {
+        position: fixed; right: 22px; bottom: 22px; z-index: 60;
+        background: var(--accent); color: #0b1020; border: none; border-radius: 999px;
+        padding: 11px 18px; font: 700 14px system-ui, sans-serif; cursor: pointer;
+        box-shadow: 0 4px 18px rgba(0,0,0,0.45);
+      }
+      .refbtn:hover { filter: brightness(1.08); }
+      .refdrawer {
+        position: fixed; top: 0; right: 0; height: 100vh; width: 500px; max-width: 94vw;
+        background: var(--panel); border-left: 1px solid var(--border);
+        box-shadow: -10px 0 34px rgba(0,0,0,0.55); z-index: 59;
+        transform: translateX(102%); transition: transform 0.24s ease;
+        overflow-y: auto; padding: 20px 20px 70px;
+      }
+      body.ref-open .refdrawer { transform: translateX(0); }
+      .refdrawer .rhead { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
+      .refdrawer .rhead .tt { font-size: 15px; font-weight: 700; }
+      .refdrawer .rhead .hint { font-size: 11px; color: var(--muted); }
+      .refdrawer h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); margin: 22px 0 9px; }
+      .refdrawer .legendbar { flex-direction: column; gap: 7px; margin: 0; font-size: 12.5px; }
+      .refdrawer .tree { font-size: 11px; padding: 12px 13px; }
+      .refdrawer .tline { min-height: 19px; }
+      .refdrawer .tline .code { min-width: 0; }
+      .refdrawer .tline .ann { margin-left: 12px; font-size: 10.5px; }
+      .refdrawer .badge { font-size: 9.5px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>OpenAI Responses streaming — event cheat sheet</h1>
+      <p class="lede">
+        A single <code class="inl">/responses</code> call streams dozens of small events. They aren't a flat log — each one
+        <b>creates or mutates a node</b> in the <code class="inl">Response</code> object being assembled, and they address that
+        node with a fixed set of <b>ids and indices</b>. This sheet shows the shape being built, what every coordinate points at,
+        which event touches which node, and how it all interleaves on the wire.
+      </p>
+      <div class="legendbar">
+        <span><span class="sw" style="background:var(--green)"></span> item id</span>
+        <span><span class="sw" style="background:var(--cyan)"></span> output_index</span>
+        <span><span class="sw" style="background:var(--pink)"></span> content_index</span>
+        <span><span class="sw" style="background:var(--amber)"></span> summary_index</span>
+        <span><span class="sw" style="background:#c3e88d"></span> annotation_index</span>
+        <span><span class="sw" style="background:var(--purple)"></span> call_id</span>
+        <span><span class="sw" style="background:var(--muted)"></span> sequence_number</span>
+      </div>
+
+      <!-- 1. THE SHAPE -->
+      <section class="sec">
+        <div class="h"><span class="n">1</span><span class="t">The shape being assembled</span></div>
+        <p class="intro">
+          A <code class="inl">Response</code> is a flat <code class="inl">output[]</code> array of <b>items</b>. An item is a
+          message, a reasoning block, a function call, or a hosted-tool call. Only some items have inner arrays — a message has
+          <b>content parts</b>; a reasoning item has <b>summary parts</b> (and optionally raw <b>content</b> parts). The badges
+          are the coordinates that address each level.
+        </p>
+        <div class="tree">
+          <div class="tline"><span class="code"><span class="kw">Response</span> <span class="brace">{</span></span></div>
+          <div class="tline"><span class="code">  <span class="prop">id</span>: <span class="lit">"resp_…"</span></span></div>
+          <div class="tline"><span class="code">  <span class="prop">status</span>: <span class="lit">"in_progress" → "completed"</span></span></div>
+          <div class="tline"><span class="code">  <span class="prop">output</span>: <span class="brace">[</span></span><span class="ann">the items — each item's position is its <span class="badge b-oi">output_index</span></span></div>
+          <div class="tline"><span class="code"> </span></div>
+          <div class="tline"><span class="code">    <span class="brace">{</span></span><span class="ann"><span class="c-oi">output[0]</span></span></div>
+          <div class="tline"><span class="code">      <span class="prop">type</span>: <span class="lit">"message"</span></span><span class="ann">← the item kind lives in its <span class="prop">type</span> field</span></div>
+          <div class="tline"><span class="code">      <span class="prop">id</span>: <span class="lit">"msg_…"</span></span><span class="ann">← streaming events refer to this as <span class="badge b-id">item_id</span></span></div>
+          <div class="tline"><span class="code">      <span class="prop">role</span>: <span class="lit">"assistant"</span></span></div>
+          <div class="tline"><span class="code">      <span class="prop">content</span>: <span class="brace">[</span></span><span class="ann">the parts — each part's position is its <span class="badge b-ci">content_index</span></span></div>
+          <div class="tline"><span class="code">        <span class="brace">{</span></span><span class="ann"><span class="c-ci">content[0]</span></span></div>
+          <div class="tline"><span class="code">          <span class="prop">type</span>: <span class="lit">"output_text"</span></span></div>
+          <div class="tline"><span class="code">          <span class="prop">text</span>: <span class="lit">"It's sunny."</span></span></div>
+          <div class="tline"><span class="code">          <span class="prop">annotations</span>: <span class="brace">[</span></span><span class="ann">citations on the text — position is <span class="badge b-ai">annotation_index</span></span></div>
+          <div class="tline"><span class="code">            <span class="brace">{</span> <span class="prop">type</span>: <span class="lit">"url_citation"</span>, <span class="prop">url</span>, <span class="prop">title</span>, … <span class="brace">}</span></span></div>
+          <div class="tline"><span class="code">            <span class="brace">{</span> <span class="prop">type</span>: <span class="lit">"file_citation"</span>, <span class="prop">file_id</span>, <span class="prop">filename</span>, … <span class="brace">}</span></span></div>
+          <div class="tline"><span class="code">          <span class="brace">]</span></span></div>
+          <div class="tline"><span class="code">        <span class="brace">}</span></span></div>
+          <div class="tline"><span class="code">        <span class="brace">{</span> <span class="prop">type</span>: <span class="lit">"refusal"</span>, <span class="prop">refusal</span> <span class="brace">}</span></span><span class="ann"><span class="c-ci">content[1]</span></span></div>
+          <div class="tline"><span class="code">      <span class="brace">]</span></span></div>
+          <div class="tline"><span class="code">    <span class="brace">}</span></span></div>
+          <div class="tline"><span class="code"> </span></div>
+          <div class="tline"><span class="code">    <span class="brace">{</span></span><span class="ann"><span class="c-oi">output[1]</span></span></div>
+          <div class="tline"><span class="code">      <span class="prop">type</span>: <span class="lit">"reasoning"</span></span></div>
+          <div class="tline"><span class="code">      <span class="prop">id</span>: <span class="lit">"rs_…"</span></span><span class="ann">← <span class="badge b-id">item_id</span></span></div>
+          <div class="tline"><span class="code">      <span class="prop">summary</span>: <span class="brace">[</span></span><span class="ann">the streamed "thinking" — position is <span class="badge b-si">summary_index</span></span></div>
+          <div class="tline"><span class="code">        <span class="brace">{</span> <span class="prop">type</span>: <span class="lit">"summary_text"</span>, <span class="prop">text</span> <span class="brace">}</span></span></div>
+          <div class="tline"><span class="code">      <span class="brace">]</span></span></div>
+          <div class="tline"><span class="code">      <span class="prop">content</span>: <span class="brace">[</span></span><span class="ann">raw reasoning — position is <span class="badge b-ci">content_index</span></span></div>
+          <div class="tline"><span class="code">        <span class="brace">{</span> <span class="prop">type</span>: <span class="lit">"reasoning_text"</span>, <span class="prop">text</span> <span class="brace">}</span></span></div>
+          <div class="tline"><span class="code">      <span class="brace">]</span></span></div>
+          <div class="tline"><span class="code">    <span class="brace">}</span></span></div>
+          <div class="tline"><span class="code"> </span></div>
+          <div class="tline"><span class="code">    <span class="brace">{</span></span><span class="ann"><span class="c-oi">output[2]</span></span></div>
+          <div class="tline"><span class="code">      <span class="prop">type</span>: <span class="lit">"function_call"</span></span></div>
+          <div class="tline"><span class="code">      <span class="prop">id</span>: <span class="lit">"fc_…"</span></span><span class="ann">← <span class="badge b-id">item_id</span></span></div>
+          <div class="tline"><span class="code">      <span class="prop">call_id</span>: <span class="lit">"call_…"</span></span><span class="ann">← <span class="badge b-cid">call_id</span>, pairs the call with its result</span></div>
+          <div class="tline"><span class="code">      <span class="prop">name</span>: <span class="lit">"getWeather"</span></span></div>
+          <div class="tline"><span class="code">      <span class="prop">arguments</span>: <span class="lit">'{"city":"SF"}'</span></span><span class="ann">no inner array — this JSON string streams straight in</span></div>
+          <div class="tline"><span class="code">    <span class="brace">}</span></span></div>
+          <div class="tline"><span class="code">  <span class="brace">]</span></span></div>
+          <div class="tline"><span class="code">}</span></div>
+        </div>
+        <div class="note-row">
+          <b>Three levels of nesting, four index axes — one nesting rule repeated.</b> Every level is "an array whose
+          positions are named by an index": <span class="c-oi">output_index</span> selects the item in <code class="inl">output[]</code>;
+          <span class="c-ci">content_index</span> selects a part <em>within</em> a message/reasoning item;
+          <span class="c-si">summary_index</span> selects a summary part <em>within</em> a reasoning item;
+          <span class="c-ai">annotation_index</span> selects a citation <em>within</em> a text part. Each deeper axis just repeats
+          the same idea one level in. The exception is <code class="inl">function_call</code>: it has <em>no</em> inner array —
+          its <code class="inl">arguments</code> is a single JSON string — which is why its stream carries only
+          <code class="inl">item_id</code>, no inner index at all.
+        </div>
+      </section>
+
+      <!-- 2. COORDINATES -->
+      <section class="sec">
+        <div class="h"><span class="n">2</span><span class="t">How the ids &amp; indices link up</span></div>
+        <p class="intro">
+          Every streamed event carries some subset of these. Ids name a thing; indices name a <em>position</em>. The two
+          overlap on purpose — an event usually gives you both a stable id <em>and</em> a positional index for the same node.
+        </p>
+        <div class="coords">
+          <div class="coord id">
+            <div class="cn c-id">item id</div>
+            <div class="ck">wire: <code>item_id</code> (top-level) · or <code>item.id</code> (inside an envelope)</div>
+            <p>The item's own <b>stable, globally-unique</b> id (<code>msg_</code>, <code>rs_</code>, <code>fc_</code>…). Names a node
+              in <code>output[]</code> without caring about position. The codec keys its reducer on this.</p>
+          </div>
+          <div class="coord oi">
+            <div class="cn c-oi">output_index</div>
+            <div class="ck">wire: <code>output_index</code> (number)</div>
+            <p>The item's <b>position</b> in <code>output[]</code>. Present on nearly every event as the fast path to the item.
+              <b>Positional, so it resets to 0 on each new <code>/responses</code> call</b> — not unique across a multi-call run.</p>
+          </div>
+          <div class="coord ci">
+            <div class="cn c-ci">content_index</div>
+            <div class="ck">wire: <code>content_index</code> (number)</div>
+            <p>Position of a part within a message's <code>content[]</code> (or a reasoning item's <code>content[]</code>).
+              Text, refusal, annotation, and reasoning-text events carry it; function-call events don't.</p>
+          </div>
+          <div class="coord si">
+            <div class="cn c-si">summary_index</div>
+            <div class="ck">wire: <code>summary_index</code> (number)</div>
+            <p>Position of a summary part within a reasoning item's <code>summary[]</code>. The reason a reasoning item's id
+              alone isn't a stream key: one item, many summary parts, distinguished only by this.</p>
+          </div>
+          <div class="coord" style="border-left-color:#c3e88d">
+            <div class="cn c-ai">annotation_index</div>
+            <div class="ck">wire: <code>annotation_index</code> (number)</div>
+            <p>Position of a citation within a text part's <code>annotations[]</code>. The deepest axis — three levels down
+              (<code>output</code> → <code>content</code> → <code>annotations</code>). Only <code>output_text.annotation.added</code> carries it.</p>
+          </div>
+          <div class="coord cid">
+            <div class="cn c-cid">call_id</div>
+            <div class="ck">wire: <code>call_id</code> (on the function_call item)</div>
+            <p>Distinct from the item id. Pairs a <code>function_call</code> with its <code>function_call_output</code>
+              — the value the codec matches on when re-pairing a call to its result <b>across turns</b>.</p>
+          </div>
+          <div class="coord seq">
+            <div class="cn c-seq">sequence_number</div>
+            <div class="ck">wire: <code>sequence_number</code> (number)</div>
+            <p>A single monotonic counter across <b>all</b> events in the response, regardless of item. The canonical
+              ordering; the only coordinate that's global rather than per-node.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. CATALOGUE -->
+      <section class="sec">
+        <div class="h"><span class="n">3</span><span class="t">The event catalogue — what each event does to the tree</span></div>
+        <p class="intro">
+          Grouped by tier: whole-response lifecycle, the item envelope, the content-part envelope, then the streaming families
+          that fill parts. <b>Coordinates</b> = the addressing fields the event carries. <b>Codec</b> = how our OpenAI codec
+          handles it today (<span class="disp stream">stream</span> family · <span class="disp event">discrete event</span> ·
+          <span class="disp ignore">ignore</span> not-yet-streamed · <span class="disp codec">codec-only</span> ·
+          <span class="disp throw">throws</span> until supported).
+        </p>
+
+        <div class="tier">
+          <div class="th">Whole-response lifecycle <span class="scope">— scope: the Response; carries the full snapshot as data</span></div>
+          <table class="cat">
+            <tr><th style="width:26%">event</th><th style="width:14%">coordinates</th><th>what it does</th><th style="width:11%">codec</th></tr>
+            <tr><td class="ev"><span class="pre">response.</span>created</td><td class="co c-seq">seq</td><td class="does">Opens the <b>Response</b> (<code>status: in_progress</code>). Full snapshot in data.</td><td><span class="disp event">event</span></td></tr>
+            <tr><td class="ev"><span class="pre">response.</span>in_progress / queued</td><td class="co c-seq">seq</td><td class="does">Status heartbeats. No structural change.</td><td><span class="disp event">event</span></td></tr>
+            <tr><td class="ev"><span class="pre">response.</span>completed / incomplete / failed</td><td class="co c-seq">seq</td><td class="does"><b>Terminal.</b> Carries the final <code>Response</code>. Run outcome is read out-of-band; the reducer folds these to nothing.</td><td><span class="disp event">event</span></td></tr>
+            <tr><td class="ev">error <span class="cmt">(stream-level)</span></td><td class="co c-seq">seq</td><td class="does">Stream aborted with an error message. Not folded into items.</td><td><span class="disp event">event</span></td></tr>
+          </table>
+        </div>
+
+        <div class="tier">
+          <div class="th">Item envelope <span class="scope">— scope: one item in output[]; carried by <span class="c-oi">output_index</span> + the item's <span class="c-id">id</span></span></div>
+          <table class="cat">
+            <tr><th style="width:26%">event</th><th style="width:14%">coordinates</th><th>what it does</th><th style="width:11%">codec</th></tr>
+            <tr><td class="ev"><span class="pre">response.</span>output_item.added</td><td class="co"><span class="c-oi">output_index</span> + <span class="c-id">item.id</span> <span class="cmt">(nested)</span></td><td class="does"><b>Creates the item</b> at <code>output[<span class="c-oi">output_index</span>]</code> — a stub message / reasoning / function_call. This is the envelope the mid-stream-join repair synthesises.</td><td><span class="disp event">event</span></td></tr>
+            <tr><td class="ev"><span class="pre">response.</span>output_item.done</td><td class="co"><span class="c-oi">output_index</span> + <span class="c-id">item.id</span></td><td class="does"><b>Finalises the item</b> — replaces the stub with the complete item (full text, full <code>arguments</code>, status). The whole-value backstop for anything streamed inside it.</td><td><span class="disp event">event</span></td></tr>
+          </table>
+        </div>
+
+        <div class="tier">
+          <div class="th">Content-part envelope <span class="scope">— scope: one part in a message/reasoning item; <span class="c-id">item_id</span> + <span class="c-oi">output_index</span> + <span class="c-ci">content_index</span></span></div>
+          <table class="cat">
+            <tr><th style="width:26%">event</th><th style="width:14%">coordinates</th><th>what it does</th><th style="width:11%">codec</th></tr>
+            <tr><td class="ev"><span class="pre">response.</span>content_part.added</td><td class="co"><span class="c-id">item_id</span> <span class="c-oi">oi</span> <span class="c-ci">ci</span></td><td class="does"><b>Adds an empty part</b> to <code>content[<span class="c-ci">content_index</span>]</code> (output_text / refusal). Doubles as the <b>start</b> of the text stream — it's the first event carrying <code>item_id</code> top-level.</td><td><span class="disp stream">stream start</span></td></tr>
+            <tr><td class="ev"><span class="pre">response.</span>content_part.done</td><td class="co"><span class="c-id">item_id</span> <span class="c-oi">oi</span> <span class="c-ci">ci</span></td><td class="does">Closes the part. Folds to nothing, but kept as a discrete event so the boundary round-trips.</td><td><span class="disp event">event</span></td></tr>
+          </table>
+        </div>
+
+        <div class="tier">
+          <div class="th">Content streaming families <span class="scope">— scope: fills a part with incremental text</span></div>
+          <table class="cat">
+            <tr><th style="width:26%">event</th><th style="width:14%">coordinates</th><th>what it does</th><th style="width:11%">codec</th></tr>
+            <tr><td class="ev"><span class="pre">response.</span>output_text.delta</td><td class="co"><span class="c-id">item_id</span> <span class="c-oi">oi</span> <span class="c-ci">ci</span></td><td class="does">Appends a text fragment to the message's <code>output_text</code> part.</td><td><span class="disp stream">stream Δ</span></td></tr>
+            <tr><td class="ev"><span class="pre">response.</span>output_text.done</td><td class="co"><span class="c-id">item_id</span> <span class="c-oi">oi</span> <span class="c-ci">ci</span></td><td class="does">Finalises that part's <code>text</code>.</td><td><span class="disp stream">stream end</span></td></tr>
+            <tr><td class="ev"><span class="pre">response.</span>output_text.annotation.added</td><td class="co"><span class="c-id">item_id</span> <span class="c-oi">oi</span> <span class="c-ci">ci</span> <span class="c-ai">ai</span></td><td class="does">Attaches a citation to <code>annotations[<span class="c-ai">annotation_index</span>]</code> of the text part. Text streams regardless.</td><td><span class="disp ignore">ignore</span></td></tr>
+            <tr><td class="ev"><span class="pre">response.</span>refusal.delta / .done</td><td class="co"><span class="c-id">item_id</span> <span class="c-oi">oi</span> <span class="c-ci">ci</span></td><td class="does">Streams a refusal part (same slot shape as text). Final value still on <code>output_item.done</code>.</td><td><span class="disp ignore">ignore</span></td></tr>
+          </table>
+        </div>
+
+        <div class="tier">
+          <div class="th">Function-call arguments <span class="scope">— scope: the function_call item; <span class="c-id">item_id</span> + <span class="c-oi">output_index</span> (no content_index)</span></div>
+          <table class="cat">
+            <tr><th style="width:26%">event</th><th style="width:14%">coordinates</th><th>what it does</th><th style="width:11%">codec</th></tr>
+            <tr><td class="ev"><span class="pre">response.</span>function_call_arguments.delta</td><td class="co"><span class="c-id">item_id</span> <span class="c-oi">oi</span></td><td class="does">Appends a fragment of the JSON <code>arguments</code> string onto the function_call item.</td><td><span class="disp ignore">ignore</span></td></tr>
+            <tr><td class="ev"><span class="pre">response.</span>function_call_arguments.done</td><td class="co"><span class="c-id">item_id</span> <span class="c-oi">oi</span> <span class="cmt">+ name</span></td><td class="does">Finalises <code>arguments</code>. The complete args also arrive on <code>output_item.done</code> — which is why dropping the deltas loses only the incremental streaming.</td><td><span class="disp ignore">ignore</span></td></tr>
+          </table>
+        </div>
+
+        <div class="tier">
+          <div class="th">Reasoning families <span class="scope">— scope: the reasoning item; <span class="c-id">item_id</span> + <span class="c-oi">output_index</span> + (<span class="c-si">summary_index</span> or <span class="c-ci">content_index</span>)</span></div>
+          <table class="cat">
+            <tr><th style="width:26%">event</th><th style="width:14%">coordinates</th><th>what it does</th><th style="width:11%">codec</th></tr>
+            <tr><td class="ev"><span class="pre">response.</span>reasoning_summary_part.added / .done</td><td class="co"><span class="c-id">item_id</span> <span class="c-oi">oi</span> <span class="c-si">si</span></td><td class="does">Opens/closes a summary part in <code>summary[<span class="c-si">summary_index</span>]</code>.</td><td><span class="disp ignore">ignore</span></td></tr>
+            <tr><td class="ev"><span class="pre">response.</span>reasoning_summary_text.delta / .done</td><td class="co"><span class="c-id">item_id</span> <span class="c-oi">oi</span> <span class="c-si">si</span></td><td class="does">Streams the "thinking" text into that summary part.</td><td><span class="disp ignore">ignore</span></td></tr>
+            <tr><td class="ev"><span class="pre">response.</span>reasoning_text.delta / .done</td><td class="co"><span class="c-id">item_id</span> <span class="c-oi">oi</span> <span class="c-ci">ci</span></td><td class="does">Streams raw reasoning into the reasoning item's <code>content[]</code> (distinct from the summary).</td><td><span class="disp ignore">ignore</span></td></tr>
+          </table>
+        </div>
+
+        <div class="tier">
+          <div class="th">Hosted tools &amp; modalities <span class="scope">— scope: opt-in only; each on its own item</span></div>
+          <table class="cat">
+            <tr><th style="width:26%">family</th><th style="width:14%">coordinates</th><th>what it does</th><th style="width:11%">codec</th></tr>
+            <tr><td class="ev">web_search / file_search_call.*</td><td class="co"><span class="c-oi">oi</span> + item_id</td><td class="does">Hosted retrieval tool lifecycle (in_progress → searching → completed).</td><td><span class="disp throw">throws</span></td></tr>
+            <tr><td class="ev">code_interpreter_call(_code).*</td><td class="co"><span class="c-oi">oi</span> + item_id</td><td class="does">Code-interpreter lifecycle + streamed code.</td><td><span class="disp throw">throws</span></td></tr>
+            <tr><td class="ev">image_generation_call.*</td><td class="co"><span class="c-oi">oi</span> + item_id</td><td class="does">Image-gen lifecycle incl. partial_image frames.</td><td><span class="disp throw">throws</span></td></tr>
+            <tr><td class="ev">mcp_call(_arguments) / mcp_list_tools.*</td><td class="co"><span class="c-oi">oi</span> + item_id</td><td class="does">MCP tool call + arg streaming + tool listing.</td><td><span class="disp throw">throws</span></td></tr>
+            <tr><td class="ev">custom_tool_call_input.* · audio(.transcript).*</td><td class="co"><span class="c-oi">oi</span> + item_id</td><td class="does">Custom-tool input streaming; audio output + transcript.</td><td><span class="disp throw">throws</span></td></tr>
+          </table>
+        </div>
+
+        <div class="note-row">
+          <b>The pattern to internalise:</b> every "content" event = <code>item_id</code> (which item) + <code>output_index</code>
+          (its position) + an inner index that says <em>where inside the item</em> — <code>content_index</code> for message/reasoning
+          text, <code>summary_index</code> for reasoning summaries, and <em>nothing</em> for function-call arguments (the item has no
+          inner array). The <code>.added</code>/<code>.done</code> envelopes bracket a node; the <code>.delta</code>s fill it;
+          <code>output_item.done</code> is always the authoritative whole-value backstop.
+        </div>
+      </section>
+
+      <!-- 4. WORKED TIMELINE -->
+      <section class="sec">
+        <div class="h"><span class="n">4</span><span class="t">A worked run — reasoning, then a tool call, then the answer</span></div>
+        <p class="intro">
+          A reasoning model answering a weather question with <code class="inl">reasoning.summary: 'auto'</code>. Read the wire order
+          (left, by <span class="c-seq">sequence_number</span>) against the tree it grows (right). Notice how the coordinates on each
+          event point straight at a slot in the tree.
+        </p>
+        <div class="tl">
+          <div class="tlpanel">
+            <h3>Wire events, in sequence_number order</h3>
+            <div class="seqrow life"><span class="sq">0</span><span class="evn"><span class="pre">response.</span>created</span></div>
+
+            <div class="seqrow reason"><span class="sq">1</span><span class="evn"><span class="pre">…</span>output_item.added <span class="co"><span class="c-oi">oi=0</span> <span class="c-id">rs_1</span></span></span></div>
+            <div class="seqrow reason"><span class="sq">2</span><span class="evn"><span class="pre">…</span>reasoning_summary_part.added <span class="co"><span class="c-oi">0</span> <span class="c-id">rs_1</span> <span class="c-si">si=0</span></span></span></div>
+            <div class="seqrow reason"><span class="sq">3</span><span class="evn"><span class="pre">…</span>reasoning_summary_text.delta <span class="co"><span class="c-id">rs_1</span> <span class="c-si">0</span> "I need…"</span></span></div>
+            <div class="seqrow reason"><span class="sq">4</span><span class="evn"><span class="pre">…</span>reasoning_summary_text.done <span class="co"><span class="c-id">rs_1</span> <span class="c-si">0</span></span></span></div>
+            <div class="seqrow reason"><span class="sq">5</span><span class="evn"><span class="pre">…</span>output_item.done <span class="co"><span class="c-oi">0</span> <span class="c-id">rs_1</span></span></span></div>
+
+            <div class="seqrow fc"><span class="sq">6</span><span class="evn"><span class="pre">…</span>output_item.added <span class="co"><span class="c-oi">oi=1</span> <span class="c-id">fc_1</span> <span class="c-cid">call_9</span></span></span></div>
+            <div class="seqrow fc"><span class="sq">7</span><span class="evn"><span class="pre">…</span>function_call_arguments.delta <span class="co"><span class="c-id">fc_1</span> <span class="c-oi">1</span> '{"ci'</span></span></div>
+            <div class="seqrow fc"><span class="sq">8</span><span class="evn"><span class="pre">…</span>function_call_arguments.delta <span class="co"><span class="c-id">fc_1</span> <span class="c-oi">1</span> 'ty":"SF"}'</span></span></div>
+            <div class="seqrow fc"><span class="sq">9</span><span class="evn"><span class="pre">…</span>function_call_arguments.done <span class="co"><span class="c-id">fc_1</span> <span class="c-oi">1</span></span></span></div>
+            <div class="seqrow fc"><span class="sq">10</span><span class="evn"><span class="pre">…</span>output_item.done <span class="co"><span class="c-oi">1</span> <span class="c-id">fc_1</span></span></span></div>
+
+            <div class="seqrow life"><span class="sq">*</span><span class="evn"><span class="cmt"># agent runs getWeather → new /responses call; output_index resets to 0</span></span></div>
+
+            <div class="seqrow text"><span class="sq">0</span><span class="evn"><span class="pre">…</span>output_item.added <span class="co"><span class="c-oi">oi=0</span> <span class="c-id">msg_2</span></span></span></div>
+            <div class="seqrow text"><span class="sq">1</span><span class="evn"><span class="pre">…</span>content_part.added <span class="co"><span class="c-id">msg_2</span> <span class="c-oi">0</span> <span class="c-ci">ci=0</span></span></span></div>
+            <div class="seqrow text"><span class="sq">2</span><span class="evn"><span class="pre">…</span>output_text.delta <span class="co"><span class="c-id">msg_2</span> <span class="c-oi">0</span> <span class="c-ci">0</span> "It's "</span></span></div>
+            <div class="seqrow text"><span class="sq">3</span><span class="evn"><span class="pre">…</span>output_text.delta <span class="co"><span class="c-id">msg_2</span> <span class="c-oi">0</span> <span class="c-ci">0</span> "sunny."</span></span></div>
+            <div class="seqrow text"><span class="sq">4</span><span class="evn"><span class="pre">…</span>output_text.done <span class="co"><span class="c-id">msg_2</span> <span class="c-oi">0</span> <span class="c-ci">0</span></span></span></div>
+            <div class="seqrow text"><span class="sq">5</span><span class="evn"><span class="pre">…</span>content_part.done <span class="co"><span class="c-id">msg_2</span> <span class="c-oi">0</span> <span class="c-ci">0</span></span></span></div>
+            <div class="seqrow text"><span class="sq">6</span><span class="evn"><span class="pre">…</span>output_item.done <span class="co"><span class="c-oi">0</span> <span class="c-id">msg_2</span></span></span></div>
+            <div class="seqrow life"><span class="sq">7</span><span class="evn"><span class="pre">response.</span>completed</span></div>
+          </div>
+
+          <div class="tlpanel">
+            <h3>The tree, once folded (one codec message per run)</h3>
+            <div class="built"><span class="kw">turn</span> {
+  <span class="prop">items</span>: [
+    <span class="c-id">rs_1</span> <span class="kw">reasoning</span> {
+      summary[<span class="c-si">0</span>]: <span class="lit">"I need the weather in SF…"</span>
+    }
+    <span class="c-id">fc_1</span> <span class="kw">function_call</span> {
+      <span class="c-cid">call_id</span>: <span class="lit">"call_9"</span>
+      name: <span class="lit">"getWeather"</span>
+      arguments: <span class="lit">'{"city":"SF"}'</span>
+    }
+    <span class="c-cid">call_9</span> <span class="kw">function_call_output</span> {  <span class="cmt"># codec-only</span>
+      output: <span class="lit">'{"tempC":22}'</span>
+    }
+    <span class="c-id">msg_2</span> <span class="kw">message</span> {
+      content[<span class="c-ci">0</span>]: <span class="lit">"It's sunny."</span>
+    }
+  ]
+}</div>
+          </div>
+        </div>
+        <div class="note-row">
+          <b>Two things the timeline makes concrete.</b> (1) <span class="c-oi">output_index</span> restarts at 0 in the second
+          <code>/responses</code> call — so it can't be a run-wide key; the stable <span class="c-id">item id</span> can. (2) The
+          <code>function_call_output</code> (paired to the call by <span class="c-cid">call_id</span>, not item id) is <b>not</b> an
+          OpenAI stream event at all — the agent publishes it after running the tool, and the codec folds it beside its call. All
+          four items land under <b>one</b> codec message for the run.
+        </div>
+      </section>
+
+      <div class="footref">
+        Event &amp; container shapes verified against <code>openai@6.44.0</code> (<code>resources/responses/responses.d.ts</code>:
+        <code>Response</code>, <code>ResponseOutputItem</code>, <code>ResponseReasoningItem</code>, <code>ResponseOutputMessage</code>,
+        and the <code>Response*Event</code> members of <code>ResponseStreamEvent</code>). Codec dispositions from
+        <code>src/openai/codec/descriptors.ts</code> (the <code>stream('text')</code> family, the <code>event(...)</code> discretes,
+        the <code>ignore(...)</code> set, and the codec's own <code>function_call_output</code>) and the reducer's item-id keying in
+        <code>src/openai/codec/reducer.ts</code>. Companion: <code>streaming-fncall-args-and-reasoning.html</code> (why the ignored
+        families can't stream yet).
+      </div>
+    </div>
+
+    <aside class="refdrawer" id="refdrawer" aria-label="Pinned reference">
+      <div class="rhead"><span class="tt">Quick reference</span><span class="hint">press <b>R</b> to toggle</span></div>
+      <h3>Colour key</h3>
+      <div id="ref-key"></div>
+      <h3>The shape being assembled</h3>
+      <div id="ref-shape"></div>
+    </aside>
+    <button class="refbtn" id="refbtn" aria-expanded="false">📌 Pin reference</button>
+
+    <script>
+      // Clone the on-page key + shape into the drawer so there's a single source of truth.
+      const key = document.querySelector('.legendbar');
+      const tree = document.querySelector('.tree');
+      if (key) document.getElementById('ref-key').appendChild(key.cloneNode(true));
+      if (tree) document.getElementById('ref-shape').appendChild(tree.cloneNode(true));
+
+      const btn = document.getElementById('refbtn');
+      const setOpen = (open) => {
+        document.body.classList.toggle('ref-open', open);
+        btn.setAttribute('aria-expanded', String(open));
+        btn.textContent = open ? '✕ Close reference' : '📌 Pin reference';
+      };
+      btn.addEventListener('click', () => setOpen(!document.body.classList.contains('ref-open')));
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'r' || e.key === 'R') setOpen(!document.body.classList.contains('ref-open'));
+        if (e.key === 'Escape') setOpen(false);
+      });
+    </script>
+  </body>
+</html>

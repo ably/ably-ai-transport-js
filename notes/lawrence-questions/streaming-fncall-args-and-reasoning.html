@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenAI codec — why function-call args &amp; reasoning summaries can't stream</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --panel2: #1e222b;
+        --border: #2a2f3a;
+        --text: #e6e9ef;
+        --muted: #9aa3b0;
+        --accent: #6ea8fe;
+        --green: #46c08a;
+        --amber: #e3a008;
+        --red: #ef6b6b;
+        --purple: #d2a8ff;
+        --cyan: #8fd3e8;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 15px/1.6 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        padding: 30px 20px 80px;
+      }
+      .wrap { max-width: 1180px; margin: 0 auto; }
+      h1 { font-size: 24px; margin: 0 0 8px; letter-spacing: -0.01em; }
+      h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 12px; }
+      code, .mono { font-family: var(--mono); }
+      code.inl { font-size: 12.5px; background: #11151c; padding: 1px 6px; border-radius: 4px; color: #d6b36b; border: 1px solid var(--border); }
+      p.lede { color: var(--muted); margin: 0 0 8px; max-width: 900px; font-size: 15.5px; }
+      a { color: var(--accent); }
+
+      .question {
+        background: var(--panel2); border: 1px solid var(--border); border-left: 3px solid var(--purple);
+        border-radius: 10px; padding: 16px 20px; margin: 22px 0 30px; max-width: 940px;
+      }
+      .question .qlabel { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--purple); margin: 0 0 6px; }
+      .question p { margin: 0; color: var(--text); font-size: 15px; }
+      .question .a { margin-top: 10px; color: var(--muted); font-size: 13.5px; }
+      .question .a b { color: var(--text); font-weight: 600; }
+
+      .sec { margin-top: 40px; }
+      .sec > .h { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; }
+      .sec > .h .n { font-family: var(--mono); font-size: 13px; color: var(--accent); border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; }
+      .sec > .h .t { font-size: 18px; font-weight: 700; }
+      .sec > p.intro { color: var(--muted); margin: 0 0 16px; max-width: 940px; }
+
+      /* the mechanism strip */
+      .flow { display: grid; grid-template-columns: 1fr 40px 1fr; gap: 0; align-items: stretch; }
+      @media (max-width: 820px) { .flow { grid-template-columns: 1fr; } .flow .arrowcol { display: none; } }
+      .flowbox { border: 1px solid var(--border); border-radius: 12px; padding: 16px; background: var(--panel); }
+      .flowbox.enc { border-color: #2c4a3b; }
+      .flowbox.dec { border-color: #28525f; }
+      .flowbox h3 { margin: 0 0 12px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; }
+      .flowbox.enc h3 { color: var(--green); }
+      .flowbox.dec h3 { color: var(--cyan); }
+      .arrowcol { display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 22px; }
+      .op { font-family: var(--mono); font-size: 12.5px; background: #11151c; border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px; margin-bottom: 7px; }
+      .op .fn { color: var(--accent); }
+      .op .id { color: var(--green); font-weight: 700; }
+      .op .frag { color: #d6b36b; }
+      .op .note { display: block; color: var(--muted); font-family: system-ui, sans-serif; font-size: 11.5px; margin-top: 4px; }
+      .keyline { margin-top: 12px; border-left: 3px solid var(--amber); background: var(--panel2); border-radius: 0 8px 8px 0; padding: 11px 14px; font-size: 13.5px; color: #cfd5df; }
+      .keyline b { color: var(--amber); }
+
+      /* contract */
+      .contract { border: 1px solid var(--border); border-radius: 12px; padding: 4px 20px; background: var(--panel); }
+      .contract .row { display: flex; gap: 14px; padding: 13px 0; border-bottom: 1px solid var(--border); align-items: baseline; }
+      .contract .row:last-child { border-bottom: none; }
+      .contract .row .k { font-family: var(--mono); color: var(--accent); font-size: 13px; min-width: 118px; font-weight: 700; }
+      .contract .row .d { font-size: 13.5px; color: #cfd5df; }
+      .contract .row .d em { color: var(--amber); font-style: normal; font-weight: 600; }
+
+      /* shape gallery */
+      .gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; align-items: start; }
+      @media (max-width: 960px) { .gallery { grid-template-columns: 1fr; } }
+      .col { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); overflow: hidden; }
+      .col > .head { padding: 13px 15px; border-bottom: 1px solid var(--border); }
+      .col.ok > .head { background: #10231b; border-bottom-color: #2c4a3b; }
+      .col.bad > .head { background: #221414; border-bottom-color: #5a2b2b; }
+      .col .verdict { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+      .col.ok .verdict { color: var(--green); }
+      .col.bad .verdict { color: var(--red); }
+      .col .name { font-size: 15px; font-weight: 700; margin-top: 3px; }
+      .col .sub { font-size: 12px; color: var(--muted); margin-top: 3px; }
+      .col .body { padding: 13px 14px; }
+
+      .phase { margin-bottom: 12px; }
+      .phase:last-child { margin-bottom: 0; }
+      .phase .plabel { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); margin-bottom: 5px; }
+      .phase .plabel b { color: var(--text); }
+      .obj { font-family: var(--mono); font-size: 12px; background: #11151c; border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; line-height: 1.75; }
+      .obj .ty { color: var(--purple); }
+      .obj .fld { color: var(--muted); }
+      .obj .idok { color: var(--green); font-weight: 700; }
+      .obj .idok::after { content: " ← stream id"; color: var(--green); font-weight: 400; font-size: 10px; opacity: 0.8; }
+      .obj .idbad { color: var(--red); font-weight: 700; }
+      .obj .delta { color: #d6b36b; }
+      .obj .idx { color: var(--amber); }
+      .obj .nest { color: var(--red); }
+      .obj .val { color: #7f8895; }
+      .col .foot { padding: 11px 14px; border-top: 1px solid var(--border); font-size: 12.5px; color: #cfd5df; background: var(--panel2); }
+      .col.ok .foot { border-top-color: #2c4a3b; }
+      .col.bad .foot { border-top-color: #5a2b2b; }
+      .col .foot b.g { color: var(--green); }
+      .col .foot b.r { color: var(--red); }
+      .col .foot b.a { color: var(--amber); }
+
+      .legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 14px 0 0; font-size: 12px; color: var(--muted); }
+      .legend span { display: inline-flex; align-items: center; gap: 6px; }
+      .swatch { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+
+      /* index table */
+      table.idx { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 4px; }
+      table.idx th, table.idx td { text-align: left; padding: 10px 11px; border-bottom: 1px solid var(--border); vertical-align: top; }
+      table.idx th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+      table.idx td.f { font-family: var(--mono); color: var(--accent); white-space: nowrap; }
+      table.idx td .yes { color: var(--green); font-weight: 700; }
+      table.idx td .no { color: #5a626e; }
+      table.idx td .partial { color: var(--amber); font-weight: 700; }
+      table.idx tr.head-row th { border-bottom: 2px solid var(--border); }
+
+      .cards2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 4px; }
+      @media (max-width: 820px) { .cards2 { grid-template-columns: 1fr; } }
+      .card { border: 1px solid var(--border); border-radius: 11px; padding: 15px 17px; background: var(--panel); }
+      .card.fc { border-left: 3px solid var(--red); }
+      .card.rs { border-left: 3px solid var(--amber); }
+      .card h3 { margin: 0 0 8px; font-size: 14px; }
+      .card h3 .tag { font-family: var(--mono); font-size: 11px; color: var(--muted); font-weight: 400; }
+      .card p { margin: 0 0 9px; font-size: 13.5px; color: #cfd5df; }
+      .card p:last-child { margin-bottom: 0; }
+      .card .idkey { font-family: var(--mono); font-size: 12.5px; background: #11151c; border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; display: inline-block; margin: 2px 0; color: #d6b36b; }
+
+      .verdictbox { margin-top: 40px; border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 12px; padding: 20px 22px; background: var(--panel); }
+      .verdictbox h2 { color: var(--accent); }
+      .verdictbox ul { margin: 10px 0 0; padding-left: 20px; }
+      .verdictbox li { margin-bottom: 11px; color: #d3d9e2; }
+      .verdictbox li b { color: #fff; }
+      .verdictbox code { font-size: 12.5px; background: #11151c; padding: 1px 5px; border-radius: 4px; color: #d6b36b; border: 1px solid var(--border); }
+      .pill { font-family: var(--mono); font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--border); }
+      .pill.two { background: #221414; color: var(--red); border-color: #5a2b2b; }
+      .pill.one { background: #231d10; color: var(--amber); border-color: #5a4a1e; }
+      .footref { margin-top: 30px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--border); padding-top: 14px; }
+      .footref code { font-family: var(--mono); color: #d6b36b; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Why the codec can stream <span style="color:var(--green)">text</span> but not <span style="color:var(--red)">function-call arguments</span> or <span style="color:var(--amber)">reasoning summaries</span></h1>
+      <p class="lede">
+        The codec's <code class="inl">stream(...)</code> construct maps a provider's <b>start → delta → done</b> event
+        trio onto one Ably streamed message. Everything hinges on one requirement: the codec must be able to name the
+        stream with a <b>single string</b> that appears the same way on all three events. Text satisfies it; function-call
+        arguments and reasoning summaries don't — but for different reasons, and the fields that block them tell you what
+        a fix would need.
+      </p>
+
+      <div class="question">
+        <p class="qlabel">Lawrence's question</p>
+        <p>
+          "All the commentary so far is based on <code class="inl">*_id</code> fields — but the events also carry various
+          <code class="inl">*_index</code> properties (<code class="inl">output_index</code>,
+          <code class="inl">content_index</code>, <code class="inl">summary_index</code>). Would those be useful, or offer
+          an alternative approach?"
+        </p>
+        <p class="a">
+          <b>Short answer:</b> for <b>function-call arguments</b>, yes — <code class="inl">output_index</code> is a single
+          top-level field present <em>identically</em> on all three phases (it's the one thing the nested
+          <code class="inl">item.id</code> lacks), so it genuinely reframes the blocker. For <b>reasoning summaries</b>,
+          no — indices don't rescue it, because the id you need is inherently <em>composite</em>
+          (<code class="inl">item_id</code> + <code class="inl">summary_index</code>) no matter which fields you reach for.
+          Section 5 works through both.
+        </p>
+      </div>
+
+      <!-- 1. THE MECHANISM -->
+      <section class="sec">
+        <div class="h"><span class="n">1</span><span class="t">The wire mechanism a stream rides on</span></div>
+        <p class="intro">
+          A discrete event is published as one self-contained Ably message carrying its own headers + data. A
+          <b>streamed family</b> is different: it opens <b>one</b> Ably streamed message and appends bare text fragments to
+          it. That streamed message is identified — on both sides — by a <b>single string stream id</b>.
+        </p>
+        <div class="flow">
+          <div class="flowbox enc">
+            <h3>Encode (agent) — output-descriptor-encoder.ts</h3>
+            <div class="op"><span class="fn">startStream</span>(<span class="id">streamId</span>, { data: <span class="val">''</span>, headers }) <span class="note">streamId = chunk[<b>idField</b>] — one string, read off the start chunk</span></div>
+            <div class="op"><span class="fn">appendStream</span>(<span class="id">streamId</span>, <span class="frag">"frag"</span>) <span class="note">the delta puts <b>only</b> the fragment on the wire — no id, no headers, just text appended to that stream</span></div>
+            <div class="op"><span class="fn">closeStream</span>(<span class="id">streamId</span>, { headers }) <span class="note">the done chunk</span></div>
+          </div>
+          <div class="arrowcol">→</div>
+          <div class="flowbox dec">
+            <h3>Decode (client) — output-descriptor-decoder.ts</h3>
+            <div class="op"><span class="fn">buildStart</span> → { [<span class="id">idField</span>]: streamId, …headers }</div>
+            <div class="op"><span class="fn">buildDelta</span> → { [<span class="id">idField</span>]: streamId, [deltaField]: <span class="frag">"frag"</span> } <span class="note">a decoded delta recovers <b>exactly two things</b>: the stream id and the fragment. Nothing else survives.</span></div>
+            <div class="op"><span class="fn">buildEnd</span> → { [<span class="id">idField</span>]: streamId, …closing headers }</div>
+          </div>
+        </div>
+        <div class="keyline">
+          <b>The consequence that drives everything below:</b> a streamed delta carries no identity of its own — Ably
+          identifies it only by the stream id string. So the reducer can only route a fragment to the right item by that
+          <b>one string</b>. Whatever names a stream must be a single string that is (a) present on the start event to open
+          the stream, and (b) recoverable as that same string to place every fragment. This is also why the reducer keys on
+          <code class="inl">item_id</code> and not OpenAI's positional <code class="inl">output_index</code>: the index is
+          simply not on a decoded delta (findings §B).
+        </div>
+      </section>
+
+      <!-- 2. THE CONTRACT -->
+      <section class="sec">
+        <div class="h"><span class="n">2</span><span class="t">What <code style="font-family:var(--mono);font-size:15px;color:var(--accent)">stream(...)</code> demands of the id</span></div>
+        <p class="intro">
+          The construct's type (<code class="inl">OutputStreamSpec</code> in <code class="inl">output-descriptors.ts</code>)
+          bakes the mechanism above into three hard constraints on <code class="inl">idField</code>:
+        </p>
+        <div class="contract">
+          <div class="row">
+            <span class="k">single field</span>
+            <span class="d"><code class="inl">idField</code> names <em>one</em> property. There is no composite / multi-field id — the stream id is one string.</span>
+          </div>
+          <div class="row">
+            <span class="k">string-valued</span>
+            <span class="d"><code class="inl">StringKeyOf&lt;…&gt;</code> — the property must be <em>string</em>-typed. Numeric keys (all the <code class="inl">*_index</code> fields) are excluded by the type.</span>
+          </div>
+          <div class="row">
+            <span class="k">top-level</span>
+            <span class="d">A key of the chunk itself, read via <code class="inl">chunk[idField]</code>. A value nested under <code class="inl">item.id</code> is unreachable.</span>
+          </div>
+          <div class="row">
+            <span class="k">on all 3 phases</span>
+            <span class="d">The type is the <em>intersection</em> <code class="inl">StringKeyOf&lt;Start&gt; &amp; StringKeyOf&lt;Delta&gt; &amp; StringKeyOf&lt;End&gt;</code> — the id key must exist, string-typed, on <em>each</em> of the three distinct event types.</span>
+          </div>
+          <div class="row">
+            <span class="k">uniquely</span>
+            <span class="d">(Implied by the mechanism.) The id must uniquely name one logical stream, so concurrent/repeated streams don't collide on the same Ably stream id.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. SHAPE GALLERY -->
+      <section class="sec">
+        <div class="h"><span class="n">3</span><span class="t">The object shapes, side by side</span></div>
+        <p class="intro">
+          The real <code class="inl">ResponseStreamEvent</code> members (verified against <code class="inl">openai@6.44.0</code>;
+          <code class="inl">sequence_number</code> / <code class="inl">logprobs</code> omitted as noise). Look at what's
+          <b style="color:var(--green)">top-level &amp; string</b> across a column's three rows — that's the only thing that can be the stream id.
+        </p>
+        <div class="gallery">
+          <!-- TEXT -->
+          <div class="col ok">
+            <div class="head">
+              <div class="verdict">✓ streams today</div>
+              <div class="name">Assistant text</div>
+              <div class="sub">the one <code style="font-family:var(--mono);font-size:11px">stream('text')</code> family</div>
+            </div>
+            <div class="body">
+              <div class="phase">
+                <div class="plabel"><b>start</b> · dedicated event</div>
+                <div class="obj"><span class="ty">response.content_part.added</span><br />&nbsp;&nbsp;<span class="idok">item_id</span>: <span class="val">"msg_1"</span><br />&nbsp;&nbsp;<span class="idx">output_index</span>: <span class="val">0</span>&nbsp;&nbsp;<span class="idx">content_index</span>: <span class="val">0</span><br />&nbsp;&nbsp;<span class="fld">part</span>: <span class="val">{…}</span></div>
+              </div>
+              <div class="phase">
+                <div class="plabel"><b>delta</b></div>
+                <div class="obj"><span class="ty">response.output_text.delta</span><br />&nbsp;&nbsp;<span class="idok">item_id</span>: <span class="val">"msg_1"</span><br />&nbsp;&nbsp;<span class="delta">delta</span>: <span class="val">"Hel"</span><br />&nbsp;&nbsp;<span class="idx">output_index</span>: <span class="val">0</span>&nbsp;&nbsp;<span class="idx">content_index</span>: <span class="val">0</span></div>
+              </div>
+              <div class="phase">
+                <div class="plabel"><b>done</b></div>
+                <div class="obj"><span class="ty">response.output_text.done</span><br />&nbsp;&nbsp;<span class="idok">item_id</span>: <span class="val">"msg_1"</span><br />&nbsp;&nbsp;<span class="fld">text</span>: <span class="val">"Hello"</span></div>
+              </div>
+            </div>
+            <div class="foot">
+              <b class="g">item_id</b> is top-level, string, on all three, and unique per item. <code style="font-family:var(--mono);font-size:11px">idField: 'item_id'</code>. Done.
+            </div>
+          </div>
+
+          <!-- FUNCTION CALL ARGS -->
+          <div class="col bad">
+            <div class="head">
+              <div class="verdict">✗ ignored for now</div>
+              <div class="name">Function-call arguments</div>
+              <div class="sub">args deltas dropped; full args ride <code style="font-family:var(--mono);font-size:11px">output_item.done</code></div>
+            </div>
+            <div class="body">
+              <div class="phase">
+                <div class="plabel"><b>start?</b> · shared envelope (no dedicated start)</div>
+                <div class="obj"><span class="ty">response.output_item.added</span><br />&nbsp;&nbsp;<span class="fld">item</span>: {<br />&nbsp;&nbsp;&nbsp;&nbsp;<span class="nest">id</span>: <span class="val">"fc_1"</span> <span class="fld">// nested — & optional!</span><br />&nbsp;&nbsp;&nbsp;&nbsp;<span class="fld">type</span>: <span class="val">"function_call"</span><br />&nbsp;&nbsp;&nbsp;&nbsp;<span class="fld">call_id, name, arguments</span><br />&nbsp;&nbsp;}<br />&nbsp;&nbsp;<span class="idx">output_index</span>: <span class="val">0</span></div>
+              </div>
+              <div class="phase">
+                <div class="plabel"><b>delta</b></div>
+                <div class="obj"><span class="ty">response.function_call_arguments.delta</span><br />&nbsp;&nbsp;<span class="idbad">item_id</span>: <span class="val">"fc_1"</span> <span class="fld">// top-level here…</span><br />&nbsp;&nbsp;<span class="delta">delta</span>: <span class="val">'{"ci'</span><br />&nbsp;&nbsp;<span class="idx">output_index</span>: <span class="val">0</span></div>
+              </div>
+              <div class="phase">
+                <div class="plabel"><b>done</b></div>
+                <div class="obj"><span class="ty">response.function_call_arguments.done</span><br />&nbsp;&nbsp;<span class="idbad">item_id</span>: <span class="val">"fc_1"</span><br />&nbsp;&nbsp;<span class="fld">arguments</span>: <span class="val">'{"city":"SF"}'</span><br />&nbsp;&nbsp;<span class="idx">output_index</span>: <span class="val">0</span></div>
+              </div>
+            </div>
+            <div class="foot">
+              <b class="r">item_id</b> is top-level on the deltas but <b class="r">nested (item.id)</b> on the only possible start.
+              Intersection of top-level strings across all three = just <code style="font-family:var(--mono);font-size:11px">type</code> (a constant).
+            </div>
+          </div>
+
+          <!-- REASONING SUMMARY -->
+          <div class="col bad">
+            <div class="head">
+              <div class="verdict">✗ ignored for now</div>
+              <div class="name">Reasoning summary</div>
+              <div class="sub">GPT-5.x "thinking"; needs <code style="font-family:var(--mono);font-size:11px">reasoning.summary:'auto'</code></div>
+            </div>
+            <div class="body">
+              <div class="phase">
+                <div class="plabel"><b>start</b> · dedicated event ✓</div>
+                <div class="obj"><span class="ty">…reasoning_summary_part.added</span><br />&nbsp;&nbsp;<span class="idbad">item_id</span>: <span class="val">"rs_1"</span><br />&nbsp;&nbsp;<span class="idx">summary_index</span>: <span class="val">0</span> <span class="fld">// ← the twist</span><br />&nbsp;&nbsp;<span class="idx">output_index</span>: <span class="val">0</span></div>
+              </div>
+              <div class="phase">
+                <div class="plabel"><b>delta</b></div>
+                <div class="obj"><span class="ty">…reasoning_summary_text.delta</span><br />&nbsp;&nbsp;<span class="idbad">item_id</span>: <span class="val">"rs_1"</span><br />&nbsp;&nbsp;<span class="delta">delta</span>: <span class="val">"First"</span><br />&nbsp;&nbsp;<span class="idx">summary_index</span>: <span class="val">0</span></div>
+              </div>
+              <div class="phase">
+                <div class="plabel"><b>done</b></div>
+                <div class="obj"><span class="ty">…reasoning_summary_text.done</span><br />&nbsp;&nbsp;<span class="idbad">item_id</span>: <span class="val">"rs_1"</span><br />&nbsp;&nbsp;<span class="fld">text</span>: <span class="val">"First, …"</span><br />&nbsp;&nbsp;<span class="idx">summary_index</span>: <span class="val">0</span></div>
+              </div>
+            </div>
+            <div class="foot">
+              <b class="a">item_id</b> <em>is</em> top-level &amp; string on all three — but it's <b class="a">not unique</b>: one reasoning
+              item emits several summary parts sharing <code style="font-family:var(--mono);font-size:11px">item_id</code>, told apart only by <b class="a">summary_index</b>.
+            </div>
+          </div>
+        </div>
+        <div class="legend">
+          <span><span class="swatch" style="background:var(--green)"></span> top-level string usable as stream id</span>
+          <span><span class="swatch" style="background:var(--red)"></span> id that fails a constraint (nested / not unique)</span>
+          <span><span class="swatch" style="background:var(--amber)"></span> numeric <code style="font-size:11px">*_index</code> (excluded by StringKeyOf)</span>
+          <span><span class="swatch" style="background:var(--purple)"></span> event <code style="font-size:11px">type</code> discriminator</span>
+        </div>
+      </section>
+
+      <!-- 4. WHY EACH -->
+      <section class="sec">
+        <div class="h"><span class="n">4</span><span class="t">The two failures have different root causes</span></div>
+        <p class="intro">
+          They're lumped together as "the id isn't a single top-level string," but that hides that they break on <em>different</em>
+          constraints from section 2 — which matters, because it changes what a fix must do.
+        </p>
+        <div class="cards2">
+          <div class="card fc">
+            <h3>Function-call args <span class="tag">breaks: top-level + all-3-phases &nbsp;<span class="pill two">2 blockers</span></span></h3>
+            <p><b>Blocker A — the id's location.</b> The deltas carry <code>item_id</code> top-level, but the only event that
+              precedes them (so the only candidate <b>start</b>) is <code>response.output_item.added</code> — a
+              <em>shared envelope</em> that carries the id nested under <code>item.id</code> (and it's even optional there). The
+              three phases share no top-level string but the constant <code>type</code>.</p>
+            <p><b>Blocker B — there is no dedicated start event.</b> <code>output_item.added</code> is the same envelope that
+              introduces <em>every</em> item (messages, reasoning, function calls). The encoder dispatches purely on
+              <code>type</code>, so it can't make that one event a stream-start for function calls yet a discrete envelope for
+              text. This is the deeper reason the spike modelled args as discrete events, not a <code>stream(...)</code> family.</p>
+          </div>
+          <div class="card rs">
+            <h3>Reasoning summaries <span class="tag">breaks: uniqueness &nbsp;<span class="pill one">1 blocker</span></span></h3>
+            <p><b>It clears every constraint except uniqueness.</b> There <em>is</em> a dedicated start
+              (<code>reasoning_summary_part.added</code>), and <code>item_id</code> is top-level &amp; string on all three phases.</p>
+            <p><b>But <code>item_id</code> alone names the wrong thing.</b> A single reasoning item streams one <em>or more</em>
+              summary parts — each its own start→delta→done cycle — all sharing one <code>item_id</code>, separated only by the
+              numeric <code>summary_index</code>. Keying the stream on <code>item_id</code> would collapse several parts into one
+              garbled stream. The id you actually need is the pair:</p>
+            <p><span class="idkey">`${item_id}:${summary_index}`</span></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 5. THE INDEX QUESTION -->
+      <section class="sec">
+        <div class="h"><span class="n">5</span><span class="t">Do the <code style="font-family:var(--mono);font-size:15px;color:var(--amber)">*_index</code> fields offer a way out?</span></div>
+        <p class="intro">
+          This is the direct answer to the question. Here's where every candidate identifier actually lives across the phases of
+          each stream (✓ = top-level; nested / — as noted). Numeric fields are marked, because
+          <code class="inl">StringKeyOf</code> excludes them today.
+        </p>
+        <table class="idx">
+          <tr class="head-row">
+            <th>stream</th>
+            <th>phase / event</th>
+            <th><code>item_id</code> <span style="font-weight:400;color:var(--muted)">(string)</span></th>
+            <th><code>output_index</code> <span style="font-weight:400;color:var(--amber)">(num)</span></th>
+            <th><code>summary_index</code> <span style="font-weight:400;color:var(--amber)">(num)</span></th>
+          </tr>
+          <tr><td class="f" rowspan="3" style="color:var(--green)">text&nbsp;✓</td><td class="f">content_part.added</td><td><span class="yes">✓ top-level</span></td><td><span class="partial">✓ top-level</span></td><td><span class="no">—</span></td></tr>
+          <tr><td class="f">output_text.delta</td><td><span class="yes">✓ top-level</span></td><td><span class="partial">✓ top-level</span></td><td><span class="no">—</span></td></tr>
+          <tr><td class="f">output_text.done</td><td><span class="yes">✓ top-level</span></td><td><span class="partial">✓ top-level</span></td><td><span class="no">—</span></td></tr>
+          <tr><td class="f" rowspan="3" style="color:var(--red)">fn-call&nbsp;✗</td><td class="f">output_item.added <span style="color:var(--muted)">(start)</span></td><td><span class="no">nested&nbsp;item.id</span></td><td><span class="partial">✓ top-level</span></td><td><span class="no">—</span></td></tr>
+          <tr><td class="f">function_call_arguments.delta</td><td><span class="yes">✓ top-level</span></td><td><span class="partial">✓ top-level</span></td><td><span class="no">—</span></td></tr>
+          <tr><td class="f">function_call_arguments.done</td><td><span class="yes">✓ top-level</span></td><td><span class="partial">✓ top-level</span></td><td><span class="no">—</span></td></tr>
+          <tr><td class="f" rowspan="3" style="color:var(--amber)">reason&nbsp;✗</td><td class="f">reasoning_summary_part.added</td><td><span class="yes">✓ top-level</span></td><td><span class="partial">✓ top-level</span></td><td><span class="partial">✓ top-level</span></td></tr>
+          <tr><td class="f">reasoning_summary_text.delta</td><td><span class="yes">✓ top-level</span></td><td><span class="partial">✓ top-level</span></td><td><span class="partial">✓ top-level</span></td></tr>
+          <tr><td class="f">reasoning_summary_text.done</td><td><span class="yes">✓ top-level</span></td><td><span class="partial">✓ top-level</span></td><td><span class="partial">✓ top-level</span></td></tr>
+        </table>
+
+        <div class="cards2" style="margin-top:18px">
+          <div class="card fc">
+            <h3>Function calls: <span style="color:var(--green)">yes, <code>output_index</code> is a real alternative</code></span></h3>
+            <p>Look down the <code>output_index</code> column for fn-call: it's top-level on <em>all three</em> phases —
+              including <code>output_item.added</code>, the exact place <code>item_id</code> is nested. So it satisfies
+              findings §A's stated blocker ("no single top-level id shared by start/delta/end"). The blocker shrinks from
+              <b>"teach the model to read a nested key"</b> to just <b>"allow a numeric (or coerced) key."</b></p>
+            <p><b>Two caveats before celebrating.</b> (1) <code>output_index</code> is positional and <em>resets to 0 each
+              <code>/responses</code> call</em>; a run's agentic loop makes several, so an id of just <code>output_index</code>
+              would collide across turns in one run — <code>item_id</code> is globally unique and doesn't. (2) It does
+              <b>nothing for Blocker B</b>: the start is still the shared <code>output_item.added</code> envelope the encoder
+              can't specialise by item type.</p>
+          </div>
+          <div class="card rs">
+            <h3>Reasoning: <span style="color:var(--red)">no, indices don't collapse it</span></h3>
+            <p>The problem isn't a <em>missing</em> field — it's that the unit of streaming is <em>below</em> the item.
+              <code>item_id</code> is present but not unique; <code>summary_index</code> is unique <em>within</em> an item but
+              not across items. Neither alone is a stream id.</p>
+            <p>Any working id here is a <b>pair</b> — <code>item_id:summary_index</code> (or
+              <code>output_index:summary_index</code>). That's still two fields, so it defeats the "single top-level string
+              key" model <em>however</em> you pick the fields. Indices change which pair you'd use, not whether you need one.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- VERDICT -->
+      <div class="verdictbox">
+        <h2>So what actually unblocks this</h2>
+        <ul>
+          <li><b>One core change covers the id-identity facet of both cases:</b> let <code>idField</code> be an
+            <em>extractor</em> <code>(chunk) =&gt; string</code> instead of only a top-level string key name (spike Observation A).
+            Then function calls use <code>c =&gt; c.type === 'response.output_item.added' ? c.item.id : c.item_id</code> (globally
+            unique, sidesteps both the nesting and the numeric-key issue), and reasoning summaries use
+            <code>c =&gt; `${c.item_id}:${c.summary_index}`</code> (the composite). The reducer keys on that same string.</li>
+          <li><b><code>output_index</code> is the lighter-weight alternative for function calls only</b> — no extractor needed if
+            the type merely allowed a numeric/coercible key — but its cross-<code>/responses</code> reuse makes it riskier than
+            an <code>item.id</code> extractor. Good to know it exists; the extractor is the more robust pick.</li>
+          <li><b>Function calls need a second thing the id fix doesn't give:</b> a way to start a stream on the shared
+            <code>output_item.added</code> envelope for function-call items <em>only</em> (Blocker B). That's an encoder-dispatch
+            problem, not an id problem — likely a per-item-type predicate on the stream start, or a bespoke escape-hatch encode.
+            <span class="pill two">this is the harder half</span></li>
+          <li><b>Reasoning summaries need only the extractor</b> — dedicated start, uniform top-level fields, no shared-envelope
+            problem. Once <code>idField</code> can be composite, reasoning streams with no further work.
+            <span class="pill one">closest to shippable</span></li>
+        </ul>
+      </div>
+
+      <div class="footref">
+        Sources — code: <code>src/core/codec/output-descriptors.ts</code> (the <code>OutputStreamSpec</code> / <code>StringKeyOf</code> constraint),
+        <code>output-descriptor-encoder.ts</code> &amp; <code>output-descriptor-decoder.ts</code> (start/append/close &amp; the two-field delta rebuild),
+        <code>src/openai/codec/descriptors.ts</code> (the <code>stream('text')</code> family + the <code>ignore(...)</code> set),
+        <code>src/openai/codec/reducer.ts</code> (item_id keying). Event shapes verified against <code>openai@6.44.0</code>
+        (<code>resources/responses/responses.d.ts</code>). Prior notes: build-log "stream the ignored deltas" &amp; findings §A/§B.
+      </div>
+    </div>
+  </body>
+</html>

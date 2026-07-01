@@ -77,6 +77,7 @@
       .ev .badge.synth { background: var(--amber); color: #1a1505; }
       .ev .badge.hit { background: var(--green); color: #04140d; }
       .ev .badge.miss { background: var(--red); color: #200707; }
+      .ev .badge.noop { background: #3a4150; color: var(--muted); }
       .ev .badge.envelope { background: #3a4150; color: var(--text); }
       .ev .k { color: var(--accent); }
       .ev .v { color: #d6b36b; }
@@ -106,9 +107,11 @@
       .caption.hit { border-color: #2c4a3b; }
       .caption.miss { border-color: #5a2b2b; background: #1f1414; }
       .caption.synth { border-color: #5a4a1e; background: #1d1810; }
+      .caption.noop { border-color: #3a4150; background: #15171d; }
       .caption b.hit { color: var(--green); }
       .caption b.miss { color: var(--red); }
       .caption b.synth { color: var(--amber); }
+      .caption b.noop { color: var(--muted); }
       .caption .mono { font-family: var(--mono); font-size: 13px; color: #d6b36b; }
 
       .outcome { margin-top: 14px; font-weight: 600; font-size: 14px; }
@@ -315,13 +318,41 @@
         </div>
       </section>
 
+      <section class="sec">
+        <h2>Why synthesise <em>always</em>? The idempotency guard</h2>
+        <p class="intro">
+          The decoder can't tell whether it's replaying full history or joining mid-stream — <code>onStreamStart</code>
+          fires the same way for both. So rather than try to detect the mid-stream case, the codec synthesises the
+          <code>output_item.added</code> envelope on <b>every</b> stream start, unconditionally, and leans on the
+          reducer to make the redundant case harmless.
+        </p>
+        <div class="cards">
+          <div class="card">
+            <h3>Full / live path</h3>
+            <p><span class="when">real envelope first</span><br />The real <code>output_item.added</code> already created the item; the synthesised one that follows finds <code>byItemId["msg_1"]</code> already set, so the guard <b style="color:var(--muted)">skips the re-add</b> — a no-op. Step through <b>Scenario 1</b> to watch it get absorbed.</p>
+          </div>
+          <div class="card">
+            <h3>Mid-stream join</h3>
+            <p><span class="when">no real envelope</span><br />Nothing created the item, so the synthesised add is the one that <b style="color:var(--amber)">creates</b> it — and every later part &amp; delta lands. Scenario 3.</p>
+          </div>
+        </div>
+        <div class="note-row">
+          <b>The guard in one line</b> (<code>src/openai/codec/reducer.ts</code>): on <code>output_item.added</code>, if
+          <code>item.id</code> is already in <code>byItemId</code>, return without re-adding. An OpenAI item id is unique
+          per response, so a repeat id names the same item — skipping it is always correct. This is what lets the codec
+          avoid a stateful "have I emitted the envelope yet?" tracker (the mechanism the Vercel codec uses): synthesise
+          unconditionally, fold idempotently.
+        </div>
+      </section>
+
       <div class="takeaway">
         <h2>The takeaway</h2>
         <ul>
-          <li><b>Scenario 1</b> (present from the start): the <code>output_item.added</code> envelope arrives first, so every part &amp; delta finds its item. Message builds fine — this is also what full history replay gives you.</li>
-          <li><b>Scenario 2</b> (join mid-stream, no repair): the late client's decoder reconstructs the streamed part &amp; deltas, but the <code>output_item.added</code> envelope was a <em>separate, earlier</em> event it never saw. Every lookup <b class="miss" style="color:var(--red)">MISSES</b> → the message silently never renders.</li>
-          <li><b>Scenario 3</b> (join mid-stream, <code>decodeLifecycle</code>): the decoder's <code>onStreamStart</code> hook <b class="synth" style="color:var(--amber)">synthesises</b> the one missing <code>output_item.added</code> and prepends it. Now the item exists before everything else → it all lands.</li>
+          <li><b>Scenario 1</b> (present from the start): the real <code>output_item.added</code> arrives first, so every part &amp; delta finds its item. <code>onStreamStart</code> synthesises a second envelope regardless, but the reducer's <b style="color:var(--muted)">idempotency guard</b> drops it as a <b class="noop" style="color:var(--muted)">no-op</b>. Message builds fine — this is also what full history replay gives you.</li>
+          <li><b>Scenario 2</b> (join mid-stream, <em>if there were no repair</em>): the late client's decoder reconstructs the streamed part &amp; deltas, but the <code>output_item.added</code> envelope was a <em>separate, earlier</em> event it never saw. Every lookup <b class="miss" style="color:var(--red)">MISSES</b> → the streamed text is dropped. (A <em>live</em> joiner would still get the final message when the real <code>output_item.done</code> arrives at completion; a history slice lacking both envelopes loses it entirely. Either way the incremental streaming text is gone.)</li>
+          <li><b>Scenario 3</b> (join mid-stream, <code>decodeLifecycle</code>): the decoder's <code>onStreamStart</code> hook <b class="synth" style="color:var(--amber)">synthesises</b> the missing <code>output_item.added</code> and prepends it. With no real envelope already present, this is the add that creates the item → everything lands.</li>
           <li><b>Why only the envelope?</b> The <code>content_part.added</code> is the stream's declared <em>start</em>, so the decoder's own <code>buildStart</code> already rebuilds it. You only fill the gap nothing else covers: the item envelope. (Synthesising the content part too would create a duplicate empty part.)</li>
+          <li><b>Why synthesise unconditionally?</b> The decoder can't distinguish a mid-stream join from a full replay, so it always prepends the envelope and lets the idempotency guard absorb the redundant case. That trades a stateful "already emitted?" tracker for a one-line reducer guard.</li>
         </ul>
       </div>
     </div>
@@ -339,24 +370,30 @@
       function evTextDone() { return { t: "output_text.done", id: ID, text: TEXT.join(""), kind: "end" }; }
       function evItemDone() { return { t: "output_item.done", id: ID, kind: "envelope" }; }
 
+      // The live / full-replay path. onStreamStart fires on EVERY stream start,
+      // so it prepends a synthesised envelope here too — right before the
+      // stream's start (content_part.added), just after the real envelope. The
+      // reducer's idempotency guard makes that duplicate a no-op.
       const full = [
         evItemAdded(false),
+        evItemAdded(true),
         evPartAdded(),
         ...TEXT.map(evDelta),
         evTextDone(),
         evItemDone(),
       ];
 
-      // A late joiner: the streamed message machinery rebuilds the stream's
-      // start (content_part.added) + accumulated deltas + done, but NOT the
-      // separately-published output_item.added envelope.
+      // A late joiner WITHOUT the repair (counterfactual): the streamed message
+      // machinery rebuilds the stream's start (content_part.added) + accumulated
+      // deltas + done, but NOT the separately-published output_item.added envelope.
       const broken = [
         evPartAdded(),
         ...TEXT.map(evDelta),
         evTextDone(),
       ];
 
-      // decodeLifecycle.onStreamStart prepends the missing envelope.
+      // decodeLifecycle.onStreamStart prepends the missing envelope; with no real
+      // one already present, this is the add that creates the item.
       const repaired = [
         evItemAdded(true),
         evPartAdded(),
@@ -366,9 +403,9 @@
 
       const SCENARIOS = [
         { key: "full", t: "t1", tag: "1 · Present from the start  ✅",
-          desc: "Subscribed before the reply began (or full history replay). Every event arrives, in order." },
+          desc: "Subscribed before the reply began (or full history replay). The real envelope arrives; onStreamStart still synthesises one too, absorbed as a no-op." },
         { key: "broken", t: "t2", tag: "2 · Join mid-stream — no repair  ❌",
-          desc: "A second tab opens while the reply is streaming. The envelope event is already gone." },
+          desc: "Counterfactual: a second tab opens mid-reply and decodeLifecycle does NOT exist. The envelope event is already gone." },
         { key: "repaired", t: "t3", tag: "3 · Join mid-stream — decodeLifecycle  ✅",
           desc: "Same mid-stream join, but the codec synthesises the missing envelope." },
       ];
@@ -381,6 +418,19 @@
       function apply(state, ev) {
         switch (ev.t) {
           case "output_item.added": {
+            // Idempotency guard (mirrors reducer.ts): a second add for an id
+            // already present is skipped, so the unconditional synthesis is a
+            // no-op whenever the real envelope got there first.
+            if (state.byItemId[ev.id]) {
+              return {
+                kind: "noop",
+                html: (ev.synthetic
+                    ? `<b class="synth">SYNTHESISED</b> by <span class="mono">decodeLifecycle.onStreamStart</span>, but `
+                    : "") +
+                  `<span class="mono">byItemId["${ev.id}"]</span> already exists → the <b class="noop">idempotency guard</b> skips the re-add. ` +
+                  `<b>No-op</b> — the existing item is untouched.`,
+              };
+            }
             state.byItemId[ev.id] = { content: [] };
             return {
               kind: ev.synthetic ? "synth" : "ok",
@@ -481,8 +531,10 @@
           else cls += " pending";
           d.className = cls;
           let badge = "";
-          if (ev.synthetic) badge = `<span class="badge synth">SYNTH</span>`;
-          else if (i === step - 1 && last) badge = `<span class="badge ${last.kind === "miss" ? "miss" : "hit"}">${last.kind === "miss" ? "MISS" : "OK"}</span>`;
+          if (i === step - 1 && last) {
+            const b = { miss: ["miss", "MISS"], synth: ["synth", "SYNTH"], noop: ["noop", "NO-OP"], ok: ["hit", "OK"] }[last.kind] || ["hit", "OK"];
+            badge = `<span class="badge ${b[0]}">${b[1]}</span>`;
+          } else if (ev.synthetic) badge = `<span class="badge synth">SYNTH</span>`;
           else if (ev.kind === "envelope") badge = `<span class="badge envelope">envelope</span>`;
           d.innerHTML = evLabel(ev) + badge;
           eventsEl.appendChild(d);
@@ -516,7 +568,7 @@
           captionEl.innerHTML = `Press <b>Step ▶</b> to feed the first event into the reducer.`;
         } else {
           const ev = seq[step - 1];
-          captionEl.className = "caption " + (last.kind === "miss" ? "miss" : last.kind === "synth" ? "synth" : "hit");
+          captionEl.className = "caption " + ({ miss: "miss", synth: "synth", noop: "noop" }[last.kind] || "hit");
           captionEl.innerHTML = `<span class="mono">${ev.t}</span> — ${last.html}`;
         }
 

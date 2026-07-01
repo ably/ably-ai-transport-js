@@ -498,7 +498,7 @@ test.describe('use-chat demo - chat behaviour', () => {
     // Drives the same flow that surfaced the original user-reported
     // regression: the assistant calls getLocation (client-side), and the
     // client tool runner (`useClientTools`) must observe the
-    // `dynamic-tool` part transition to `input-available` via a View
+    // tool part transition to `input-available` via a View
     // update so it can execute the browser API and publish the result.
     // Pre-fix the View suppressed streaming chunk updates, so the runner
     // never fired and the bubble stayed at "Calling getLocation".
@@ -526,7 +526,7 @@ test.describe('use-chat demo - chat behaviour', () => {
       // The bubble must transition past `input-available`. Granting
       // geolocation means the client tool runner resolves with the
       // mocked coordinates, publishes a tool-output-available wire, and
-      // the dynamic-tool part flips to `output-available` — at which
+      // the tool part flips to `output-available` — at which
       // point the LocationResult card renders with the lat/lng.
       const locationCard = page.locator('text=/Location:\\s*51\\./').first();
       await expect(locationCard).toBeVisible({ timeout: 60_000 });
@@ -814,7 +814,7 @@ test.describe('use-chat demo - chat behaviour', () => {
   }, testInfo) => {
     // Regression for the malformed-history bug: an edit forwards the
     // pre-edit conversation as `history` to the agent. If any assistant
-    // message in that history contains a dynamic-tool part with no
+    // message in that history contains a tool part with no
     // `input`, `convertToModelMessages` produces a `tool_use` block
     // without an `input` field and Anthropic rejects with 400.
     const context = await browser.newContext({

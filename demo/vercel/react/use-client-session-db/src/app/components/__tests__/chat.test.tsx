@@ -161,7 +161,9 @@ describe('<Chat> (use-client-session-db)', () => {
   });
 
   it('shows Stop while the latest run is active, and Stop cancels it', async () => {
-    runsHolder.current = [{ runId: 'run-active', clientId: 'user-a', status: 'active', invocationId: 'inv-1' }];
+    runsHolder.current = [
+      { runId: 'run-active', clientId: 'user-a', status: 'active', invocationId: 'inv-1', steps: [] },
+    ];
     renderedMessages = [userMsg('u1', 'hi')];
     renderChat();
 
@@ -176,7 +178,9 @@ describe('<Chat> (use-client-session-db)', () => {
   });
 
   it('shows Send (not Stop) when the latest run is suspended awaiting approval', async () => {
-    runsHolder.current = [{ runId: 'run-suspended', clientId: 'user-a', status: 'suspended', invocationId: 'inv-1' }];
+    runsHolder.current = [
+      { runId: 'run-suspended', clientId: 'user-a', status: 'suspended', invocationId: 'inv-1', steps: [] },
+    ];
     renderedMessages = [assistantApproval('a1', 'call-1')];
     renderChat();
 
@@ -189,7 +193,9 @@ describe('<Chat> (use-client-session-db)', () => {
   });
 
   it('cancels the active run before sending a concurrent message', async () => {
-    runsHolder.current = [{ runId: 'run-active', clientId: 'user-a', status: 'active', invocationId: 'inv-1' }];
+    runsHolder.current = [
+      { runId: 'run-active', clientId: 'user-a', status: 'active', invocationId: 'inv-1', steps: [] },
+    ];
     renderedMessages = [userMsg('u1', 'hi')];
     renderChat();
 
@@ -206,7 +212,9 @@ describe('<Chat> (use-client-session-db)', () => {
   });
 
   it('approving a pending tool call looks up its codec-message-id and publishes an approval response', async () => {
-    runsHolder.current = [{ runId: 'run-approval', clientId: 'user-a', status: 'suspended', invocationId: 'inv-1' }];
+    runsHolder.current = [
+      { runId: 'run-approval', clientId: 'user-a', status: 'suspended', invocationId: 'inv-1', steps: [] },
+    ];
     // The rendered list carries the approval bubble; view.getMessages() carries
     // the same message paired with its codec-message-id.
     renderedMessages = [assistantApproval('a1', 'call-1')];

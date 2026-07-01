@@ -95,12 +95,19 @@ export function MessageList({
         const run = view.runOf(codecMessageId);
         const branch = view.branchSelection(codecMessageId);
         const bubbleStatus = run?.status === 'active' ? 'streaming' : run?.status;
+        // Surface the message's step the same way as its run: a step badge per
+        // bubble. A run.pipe reply has one implicit step; show its id (the
+        // latest if a run ran several), with a count when there is more than one.
+        const steps = run?.steps ?? [];
+        const lastStep = steps[steps.length - 1];
         return (
           <MessageBubble
             key={codecMessageId}
             message={message}
             clientId={run?.clientId || undefined}
             runId={run?.runId}
+            stepId={lastStep?.stepId}
+            stepCount={steps.length}
             status={bubbleStatus}
             errorMessage={run?.error?.message}
             hasSiblings={branch.hasSiblings}

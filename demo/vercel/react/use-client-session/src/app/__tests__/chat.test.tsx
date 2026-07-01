@@ -186,7 +186,13 @@ describe('<Chat>', () => {
     // the request is in flight (status 'submitted' | 'streaming'). Showing Stop
     // here was the bug - pressing it published a dead ai-cancel that no agent
     // acted on, leaving the run suspended on a refresh.
-    mockRunOf = () => ({ runId: 'run-suspended-1', clientId: 'user-a', status: 'suspended', invocationId: 'inv-1' });
+    mockRunOf = () => ({
+      runId: 'run-suspended-1',
+      clientId: 'user-a',
+      status: 'suspended',
+      invocationId: 'inv-1',
+      steps: [],
+    });
 
     render(
       <Chat
@@ -215,7 +221,13 @@ describe('<Chat>', () => {
     // An 'active' run is genuinely in flight, so Stop is offered; pressing it
     // publishes session.cancel for that run (a live agent then aborts and ends
     // the run, flipping it terminal and reverting Stop to Send).
-    mockRunOf = () => ({ runId: 'run-active-1', clientId: 'user-a', status: 'active', invocationId: 'inv-1' });
+    mockRunOf = () => ({
+      runId: 'run-active-1',
+      clientId: 'user-a',
+      status: 'active',
+      invocationId: 'inv-1',
+      steps: [],
+    });
 
     render(
       <Chat

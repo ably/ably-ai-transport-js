@@ -145,7 +145,9 @@ const createSettlingStream = (): SettlingStream => {
  * close the stream once it resolves.
  * @param session - The Vercel client session whose Tree to observe.
  * @param runId - The agent-minted runId, resolved when run-start is observed.
- *   Used only by the run-end safety-net; routing keys on `inputCodecMessageId`.
+ *   Used only by the run-end safety-net, which awaits it so a run-end that races
+ *   ahead of run-start (same-frame output-less terminal, or a multi-publisher
+ *   reorder) still closes the stream; routing keys on `inputCodecMessageId`.
  * @param inputCodecMessageId - The triggering input's codec-message-id. An
  *   output routes to this stream when it carries this id.
  * @returns The stream and its external close handle.
@@ -190,11 +192,30 @@ export const createRunOutputStream = (
     }),
     session.tree.on('run', (event) => {
       // run-end is always terminal; a run-suspend (event.type === 'suspend')
-      // keeps the core run alive and must not close the consumer stream. Match
-      // against the resolved runId once the agent has minted it.
-      if (event.type === 'end' && resolvedRunId !== undefined && event.runId === resolvedRunId) {
-        close();
+      // keeps the core run alive and must not close the consumer stream.
+      if (event.type !== 'end') return;
+      if (resolvedRunId !== undefined) {
+        // Common path: the agent's runId is already known — match synchronously.
+        if (event.runId === resolvedRunId) close();
+        return;
       }
+      // The runId promise has not resolved yet, so run-end raced ahead of
+      // run-start — landing in the SAME dispatch frame (an output-less terminal,
+      // routine for a crash-recovered run whose dead output is superseded away)
+      // or BEFORE it (multi-publisher delivery reorders run-end ahead of
+      // run-start, up to the reorder bound). A synchronous `resolvedRunId` check
+      // would miss both and hang the consumer stream, so await the minted runId
+      // and then match. Fire-and-forget: a never-resolving runId (session closed
+      // before run-start) simply forgoes the net, as the sync path's `undefined`
+      // already does.
+      void runId.then(
+        (id) => {
+          if (event.runId === id) close();
+        },
+        () => {
+          /* session closed before run-start; safety-net stays disarmed */
+        },
+      );
     }),
     session.on('error', (reason) => {
       error(reason);

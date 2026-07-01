@@ -356,23 +356,69 @@ const multiMessagePage = (): Ably.InboundMessage[] => {
 };
 
 /**
- * A content wire carrying one codecMessage for `runId`, on its own (dangling)
- * parent so several such runs stay distinct visible runs rather than collapsing
- * as same-parent siblings.
+ * A content wire carrying one codecMessage for `runId`. Defaults to its own
+ * (dangling) parent `p-${runId}` so several such runs stay distinct visible runs
+ * rather than collapsing as same-parent siblings; pass `parent` to chain a reply
+ * after a specific predecessor (a linear multi-turn conversation).
  * @param runId - The reply run id.
  * @param msgId - The codec-message-id of the content message.
  * @param serial - The wire serial (orders the runs).
+ * @param parent - The predecessor codec-message-id to parent at; defaults to `p-${runId}`.
  * @returns The content wire.
  */
-const contentWire = (runId: string, msgId: string, serial: string): Ably.InboundMessage =>
+const contentWire = (runId: string, msgId: string, serial: string, parent = `p-${runId}`): Ably.InboundMessage =>
   ({
     name: 'fake',
     serial,
     version: { serial },
     extras: {
-      ai: { transport: { [HEADER_RUN_ID]: runId, [HEADER_CODEC_MESSAGE_ID]: msgId, [HEADER_PARENT]: `p-${runId}` } },
+      ai: { transport: { [HEADER_RUN_ID]: runId, [HEADER_CODEC_MESSAGE_ID]: msgId, [HEADER_PARENT]: parent } },
     },
   }) as unknown as Ably.InboundMessage;
+
+/**
+ * A user input wire (run-less INPUT node), role 'user'. Optional `parent`
+ * chains it after a prior reply so a multi-turn conversation stays linear.
+ * @param msgId - The input node's codec-message-id.
+ * @param serial - The wire serial (orders the turns).
+ * @param parent - Optional structural parent codec-message-id.
+ * @returns The input wire.
+ */
+const inputWire = (msgId: string, serial: string, parent?: string): Ably.InboundMessage =>
+  ({
+    name: 'fake',
+    serial,
+    version: { serial },
+    extras: {
+      ai: {
+        transport: {
+          [HEADER_CODEC_MESSAGE_ID]: msgId,
+          [HEADER_ROLE]: 'user',
+          ...(parent !== undefined && { [HEADER_PARENT]: parent }),
+        },
+      },
+    },
+  }) as unknown as Ably.InboundMessage;
+
+/**
+ * A decoder yielding one append-message for content wires and a user input
+ * event for role='user' wires (no output for lifecycle wires) — so a single
+ * history page can carry a full multi-turn conversation (user prompt + assistant
+ * reply per turn) folded into input nodes and reply runs, exactly as a page
+ * refresh rebuilds it.
+ * @returns The decoder.
+ */
+const turnDecoder = (): Decoder<TestInput, TestOutput> => ({
+  decode: (msg: Ably.InboundMessage) => {
+    // CAST: test fixtures always stamp extras.ai.transport.
+    const transport = (msg.extras as { ai: { transport: Record<string, string> } }).ai.transport;
+    const id = transport[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
+    if (transport[HEADER_ROLE] === 'user') {
+      return { inputs: [{ kind: 'user-message' as const, message: { id, content: id } }], outputs: [] };
+    }
+    return { inputs: [], outputs: [{ type: 'append-message' as const, message: { id, content: id } }] };
+  },
+});
 
 /**
  * A run-lifecycle wire (`name`) for `runId`. Pass `reason` on a run-end to mark
@@ -3679,6 +3725,95 @@ describe('client view', () => {
       // refresh shows.
       expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'TC', 'TTp']);
       expect(view.branchSelection('TTp').siblings.map((m) => m.id)).toEqual(['TT', 'TTp']);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Older-availability invariant at a tiny limit (AIT-1026)
+  // -------------------------------------------------------------------------
+
+  describe('older-availability invariant at limit=1 (AIT-1026)', () => {
+    it('reveals a multi-turn single history page one message at a time, keeping hasOlder true until the oldest surfaces', async () => {
+      // The demo's refresh scenario: two turns (PAGE1 = u1 + reply a1, PAGE2 =
+      // u2 + reply a2) fold from ONE history page, user-first and linear. At
+      // limit=1 the "Load older" button is gated on hasOlder(), so the invariant
+      // this pins is: after each settled loadOlder there is older content
+      // reachable ⟺ hasOlder() is true — never a strict message suffix visible
+      // while hasOlder() is false.
+      const v = makeView(turnDecoder());
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(
+        makeCursor([
+          [
+            inputWire('u1', 's0'),
+            contentWire('R1', 'a1', 's1', 'u1'),
+            inputWire('u2', 's2', 'a1'),
+            contentWire('R2', 'a2', 's3', 'u2'),
+          ],
+        ]),
+      );
+
+      // The useView({ limit: 1 }) auto-load reveals exactly the newest message.
+      await v.loadOlder(1);
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['a2']);
+      expect(v.hasOlder()).toBe(true);
+
+      // Each loadOlder(1) reveals exactly one older message, oldest-first, and
+      // hasOlder stays true while any turn remains hidden.
+      await v.loadOlder(1);
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['u2', 'a2']);
+      expect(v.hasOlder()).toBe(true);
+
+      await v.loadOlder(1);
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['a1', 'u2', 'a2']);
+      expect(v.hasOlder()).toBe(true);
+
+      // The oldest message (PAGE1's prompt) is now reachable — only after it
+      // surfaces and the channel is exhausted does hasOlder() go false.
+      await v.loadOlder(1);
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1', 'u2', 'a2']);
+      expect(v.hasOlder()).toBe(false);
+
+      // The whole conversation came from a single history fetch.
+      expect(vi.mocked(loadHistoryPages)).toHaveBeenCalledTimes(1);
+    });
+
+    it('upholds the invariant when the newest run of a multi-run page projects zero messages', async () => {
+      // The specific fold ordering AIT-1026 suspected: a single page whose newest
+      // run contributes no codecMessage (an active run-start that has not yet
+      // produced content). messageTailSplitIndex counts newest-first, so it walks
+      // past the zero-message run to cover the requested message — the invariant
+      // must still hold: after the load, either every run is visible OR
+      // hasOlder() reports the withheld remainder. R-live is a lone active
+      // run-start (no run-end), which folds to a zero-message run node.
+      const v = makeView(turnDecoder());
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(
+        makeCursor([
+          [
+            contentWire('R0', 'm0', 's0'),
+            contentWire('R1', 'm1', 's1'),
+            lifecycleWire(EVENT_RUN_START, 'R-live', 's2'),
+          ],
+        ]),
+      );
+
+      await v.loadOlder(1);
+      const runIds = new Set(v.runs().map((r) => r.runId));
+      // Invariant: not a strict suffix of the runs visible while hasOlder is false.
+      const allVisible = ['R0', 'R1', 'R-live'].every((id) => runIds.has(id));
+      expect(allVisible || v.hasOlder()).toBe(true);
+
+      // Draining reveals the older run and every message.
+      while (v.hasOlder()) await v.loadOlder(1);
+      expect(v.getMessages().map((m) => m.message.id)).toEqual(['m0', 'm1']);
+      expect(
+        v
+          .runs()
+          .map((r) => r.runId)
+          .toSorted(),
+      ).toEqual(['R-live', 'R0', 'R1'].toSorted());
+      // The whole page was a single fetch: the cursor exhausts after it, so the
+      // invariant above turned on the withhold accounting (not `_hydrator.hasNext()`).
+      expect(vi.mocked(loadHistoryPages)).toHaveBeenCalledTimes(1);
     });
   });
 });

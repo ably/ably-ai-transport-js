@@ -661,6 +661,52 @@ describe('Vercel reducer', () => {
       if (part?.type !== 'dynamic-tool') throw new Error('expected dynamic-tool');
       expect(part.toolName).toBe('getWeather');
     });
+
+    it('keeps a static tool part static through a tool-output-error transition', () => {
+      let state = init();
+      state = fold(
+        state,
+        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'getWeather' },
+        meta('s1', 'msg-1'),
+      );
+      state = fold(
+        state,
+        { type: 'tool-input-available', toolCallId: 'tc-1', toolName: 'getWeather', input: { city: 'SF' } },
+        meta('s2', 'msg-1'),
+      );
+      state = fold(state, { type: 'tool-output-error', toolCallId: 'tc-1', errorText: 'boom' }, meta('s3', 'msg-1'));
+      const part = toolPartOf(state, 'msg-1', 'tc-1');
+      expect(part?.type).toBe('tool-getWeather');
+      expect(part?.state).toBe('output-error');
+      if (part?.state !== 'output-error') throw new Error('expected output-error');
+      expect(part.errorText).toBe('boom');
+    });
+
+    it('keeps a static tool part static through an approval denial', () => {
+      let state = init();
+      state = fold(
+        state,
+        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'getWeather' },
+        meta('s1', 'msg-1'),
+      );
+      state = fold(
+        state,
+        { type: 'tool-approval-request', toolCallId: 'tc-1', approvalId: 'ap-1' },
+        meta('s2', 'msg-1'),
+      );
+      state = fold(
+        state,
+        {
+          kind: 'tool-approval-response',
+          codecMessageId: 'msg-1',
+          payload: { toolCallId: 'tc-1', approved: false, reason: 'nope' },
+        },
+        meta('s3', 'continuation'),
+      );
+      const part = toolPartOf(state, 'msg-1', 'tc-1');
+      expect(part?.type).toBe('tool-getWeather');
+      expect(part?.state).toBe('output-denied');
+    });
   });
 
   // -- lifecycle folds (finish-step reset, metadata merges) -----------------

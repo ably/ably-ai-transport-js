@@ -120,7 +120,7 @@ export async function POST(req: Request) {
       // message-store stands in for a durable store).
       if (outcome.reason === 'complete') await appendMessages(invocation.sessionName, runMessages);
     }
-    await session.close();
+    await session.end();
     ably.close();
   });
 

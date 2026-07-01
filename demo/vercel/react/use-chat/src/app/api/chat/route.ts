@@ -46,7 +46,7 @@ export async function POST(req: Request) {
   // A fresh Ably client per request (trusted environment, API key direct).
   // The agent is ephemeral: it attaches the channel, looks up the triggering
   // input event via `untilAttach: true` history, streams the response, and
-  // closes. A per-request client keeps concurrent runs on the same channel
+  // ends its session. A per-request client keeps concurrent runs on the same channel
   // from detaching each other.
   // `ABLY_ENDPOINT` lets the e2e tests point the agent at the Ably sandbox
   // (`nonprod:sandbox`); unset in normal use, so it defaults to production.
@@ -106,7 +106,7 @@ export async function POST(req: Request) {
     // The run has already started on the channel; end it so clients don't see
     // a permanently active run, then release the connection.
     await run.end({ reason: 'error' });
-    await session.close();
+    await session.end();
     ably.close();
     throw error;
   }
@@ -122,7 +122,7 @@ export async function POST(req: Request) {
       // failure detail.
       await run.end(outcome);
     }
-    await session.close();
+    await session.end();
     ably.close();
   });
 

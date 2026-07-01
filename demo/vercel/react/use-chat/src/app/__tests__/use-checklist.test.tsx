@@ -1,7 +1,16 @@
-import { describe, expect, it } from 'vitest';
-import { renderHook, waitFor, act } from '@testing-library/react';
+import { afterEach, describe, expect, it } from 'vitest';
+import { renderHook, cleanup, waitFor, act } from '@testing-library/react';
 import { FakeRoot } from './fake-root';
 import { useChecklist, type ObjectSession } from '../hooks/use-checklist';
+
+afterEach(() => {
+  // vitest isn't configured with globals, so @testing-library/react's
+  // auto-cleanup hook isn't registered — unmount explicitly so the hook's
+  // effect cleanup runs after each test. Otherwise a mounted hook leaks past
+  // the test file and React flushes scheduled work after jsdom tears down
+  // the window, surfacing as an uncaught "window is not defined".
+  cleanup();
+});
 
 function sessionFor(fake: FakeRoot): ObjectSession {
   return {

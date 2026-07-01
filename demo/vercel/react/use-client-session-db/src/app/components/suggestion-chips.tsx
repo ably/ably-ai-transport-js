@@ -1,3 +1,6 @@
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import type { DemoStep } from '../hooks/use-demo-progress';
 
 interface SuggestionChipsProps {
@@ -9,28 +12,38 @@ export function SuggestionChips({ steps, onSelectPrompt }: SuggestionChipsProps)
   if (steps.length === 0) return null;
 
   return (
-    <div className="chip-scrollbar flex max-h-[7.5rem] flex-wrap items-start gap-1.5 overflow-y-auto px-4 py-3">
-      {steps.map((step) =>
-        step.type === 'prompt' ? (
-          <button
-            key={step.id}
-            type="button"
-            onClick={() => onSelectPrompt(step.prompt)}
-            className="rounded-full border border-zinc-700 bg-zinc-900/40 px-3 py-1 text-xs text-zinc-300 hover:border-zinc-500 hover:text-zinc-100 transition-colors"
-          >
-            <span className="mr-1.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-400">{step.tag}</span>
-            {step.label}
-          </button>
-        ) : (
-          <span
-            key={step.id}
-            className="rounded-full border border-dashed border-zinc-700/70 px-3 py-1 text-xs text-zinc-500"
-          >
-            <span className="mr-1.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">{step.tag}</span>
-            {step.label}
-          </span>
-        ),
-      )}
-    </div>
+    <ScrollArea
+      data-testid="suggestion-chips"
+      className="max-h-[7.5rem]"
+    >
+      <div className="flex flex-wrap items-start gap-1.5 px-4 py-3">
+        {steps.map((step) =>
+          step.type === 'prompt' ? (
+            <Button
+              key={step.id}
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => onSelectPrompt(step.prompt)}
+              className="rounded-full"
+            >
+              <span className="text-[10px] font-semibold tracking-wide text-muted-foreground uppercase">
+                {step.tag}
+              </span>
+              {step.label}
+            </Button>
+          ) : (
+            <Badge
+              key={step.id}
+              variant="outline"
+              className="rounded-full border-dashed px-3 py-1 text-muted-foreground"
+            >
+              <span className="text-[10px] font-semibold tracking-wide uppercase">{step.tag}</span>
+              {step.label}
+            </Badge>
+          ),
+        )}
+      </div>
+    </ScrollArea>
   );
 }

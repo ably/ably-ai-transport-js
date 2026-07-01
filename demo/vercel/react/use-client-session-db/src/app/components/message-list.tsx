@@ -1,7 +1,14 @@
 'use client';
 
-import { useRef, useEffect } from 'react';
 import type { UIMessage } from 'ai';
+import {
+  MessageScroller,
+  MessageScrollerButton,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerProvider,
+  MessageScrollerViewport,
+} from '@/components/ui/message-scroller';
 import { MessageBubble } from './message-bubble';
 import { IntroCard } from './intro-card';
 
@@ -32,54 +39,57 @@ interface MessageListProps {
 }
 
 export function MessageList({ messages, statusOf, onToolApprove, onToolDeny }: MessageListProps) {
-  const endRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  // Whether the view is "stuck" to the bottom. While true, new content
-  // (including tokens streaming into the last message) keeps the latest output
-  // in view so it stays in sync across tabs. Set false when the user scrolls
-  // up, so we obey the scrollbar instead of yanking it back down.
-  const pinnedToBottomRef = useRef(true);
-
-  // Follow streaming output, not just new messages: this runs on every render
-  // caused by a `messages` change, which includes tokens appended to the last
-  // message. Only auto-scroll while pinned to the bottom.
-  useEffect(() => {
-    if (pinnedToBottomRef.current) {
-      endRef.current?.scrollIntoView({ behavior: 'auto' });
-    }
-  }, [messages]);
-
-  const handleScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-
-    // Re-pin once the user is within a small threshold of the bottom; unpin as
-    // soon as they scroll away. The threshold absorbs sub-pixel rounding and
-    // the scroll event fired by our own auto-scroll.
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    pinnedToBottomRef.current = distanceFromBottom < 80;
-  };
+  // Empty conversation: show the onboarding intro from the top in a plain
+  // scroll container. The MessageScroller anchors to the newest message, which
+  // would otherwise scroll the tall intro off-screen; the scroller below only
+  // mounts once there are messages.
+  if (messages.length === 0) {
+    return (
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <IntroCard />
+      </div>
+    );
+  }
 
   return (
-    <div
-      ref={scrollRef}
-      onScroll={handleScroll}
-      className="flex-1 overflow-y-auto px-4 py-4 space-y-4"
+    // autoScroll keeps the latest output in view while streaming and stops
+    // following as soon as the reader scrolls up. This demo is linear with no
+    // history pagination — the seam walk in useMessagesWithSeed loads prior
+    // history once at hydration, so there is no load-older control.
+    <MessageScrollerProvider
+      autoScroll
+      defaultScrollPosition="end"
+      scrollEdgeThreshold={60}
+      scrollPreviousItemPeek={64}
     >
-      <IntroCard />
-      {messages.length === 0 && (
-        <p className="text-sm text-zinc-600 text-center mt-20">Send a message to start chatting.</p>
-      )}
-      {messages.map((message, index) => (
-        <MessageBubble
-          key={message.id}
-          message={message}
-          status={statusOf(message, index)}
-          onToolApprove={onToolApprove}
-          onToolDeny={onToolDeny}
+      <MessageScroller className="min-h-0 flex-1">
+        <MessageScrollerViewport className="px-4 py-4">
+          <MessageScrollerContent data-testid="messages">
+            {messages.map((message, index) => (
+              // Anchor on the user's own turns (shadcn's convention): sending
+              // pins the new prompt to the top of the viewport while the reply
+              // streams in below it.
+              <MessageScrollerItem
+                key={message.id}
+                messageId={message.id}
+                scrollAnchor={message.role === 'user'}
+              >
+                <MessageBubble
+                  message={message}
+                  status={statusOf(message, index)}
+                  onToolApprove={onToolApprove}
+                  onToolDeny={onToolDeny}
+                />
+              </MessageScrollerItem>
+            ))}
+          </MessageScrollerContent>
+        </MessageScrollerViewport>
+
+        <MessageScrollerButton
+          direction="end"
+          data-testid="scroll-to-latest"
         />
-      ))}
-      <div ref={endRef} />
-    </div>
+      </MessageScroller>
+    </MessageScrollerProvider>
   );
 }

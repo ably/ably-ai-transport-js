@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenAI codec — mid-stream join &amp; decodeLifecycle</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --panel2: #1e222b;
+        --border: #2a2f3a;
+        --text: #e6e9ef;
+        --muted: #9aa3b0;
+        --accent: #6ea8fe;
+        --green: #46c08a;
+        --amber: #e3a008;
+        --red: #ef6b6b;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 15px/1.55 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        padding: 28px 20px 60px;
+      }
+      .wrap { max-width: 1060px; margin: 0 auto; }
+      h1 { font-size: 22px; margin: 0 0 6px; }
+      h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 10px; }
+      p.lede { color: var(--muted); margin: 0 0 22px; max-width: 760px; }
+      a { color: var(--accent); }
+
+      .scenarios { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; }
+      .scenario {
+        flex: 1 1 250px; text-align: left; cursor: pointer;
+        background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+        padding: 12px 14px; color: var(--text); transition: 0.15s;
+      }
+      .scenario:hover { border-color: #3a4150; }
+      .scenario.active { border-color: var(--accent); background: #1b2330; box-shadow: 0 0 0 1px var(--accent) inset; }
+      .scenario .tag { font-size: 12px; font-weight: 700; letter-spacing: 0.04em; }
+      .scenario .t1 { color: var(--green); }
+      .scenario .t2 { color: var(--red); }
+      .scenario .t3 { color: var(--green); }
+      .scenario .desc { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
+
+      .controls { display: flex; gap: 8px; align-items: center; margin-bottom: 18px; flex-wrap: wrap; }
+      button.ctrl {
+        background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+        border-radius: 8px; padding: 8px 14px; cursor: pointer; font-size: 14px; font-weight: 600;
+      }
+      button.ctrl:hover:not(:disabled) { border-color: var(--accent); }
+      button.ctrl:disabled { opacity: 0.4; cursor: default; }
+      button.primary { background: var(--accent); color: #0b1020; border-color: var(--accent); }
+      .stepcount { color: var(--muted); font-size: 13px; margin-left: 4px; }
+
+      .grid { display: grid; grid-template-columns: 1.15fr 1fr; gap: 16px; align-items: start; }
+      @media (max-width: 820px) { .grid { grid-template-columns: 1fr; } }
+      .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+
+      .ev {
+        font-family: var(--mono); font-size: 13px; border: 1px solid var(--border);
+        border-radius: 8px; padding: 8px 11px; margin-bottom: 7px; background: var(--panel2);
+        transition: 0.18s; position: relative; opacity: 0.5;
+      }
+      .ev .ph { color: var(--muted); }
+      .ev.done { opacity: 0.45; }
+      .ev.current { opacity: 1; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+      .ev.pending { opacity: 0.85; }
+      .ev.synthetic { border-style: dashed; border-color: var(--amber); background: #221d12; }
+      .ev .badge {
+        position: absolute; right: 9px; top: 7px; font-size: 10px; font-weight: 700;
+        letter-spacing: 0.04em; padding: 1px 6px; border-radius: 999px;
+      }
+      .ev .badge.synth { background: var(--amber); color: #1a1505; }
+      .ev .badge.hit { background: var(--green); color: #04140d; }
+      .ev .badge.miss { background: var(--red); color: #200707; }
+      .ev .badge.envelope { background: #3a4150; color: var(--text); }
+      .ev .k { color: var(--accent); }
+      .ev .v { color: #d6b36b; }
+
+      .statebox { margin-bottom: 16px; }
+      .map {
+        font-family: var(--mono); font-size: 13px; border-radius: 8px; padding: 12px;
+        border: 1px dashed var(--border); background: var(--panel2); min-height: 54px; transition: 0.18s;
+      }
+      .map.empty { color: var(--red); }
+      .map.has { color: var(--green); border-style: solid; border-color: #2c4a3b; }
+      .map .key { color: var(--text); }
+
+      .render {
+        font-size: 16px; line-height: 1.5; border-radius: 8px; padding: 14px; min-height: 64px;
+        border: 1px solid var(--border); background: #11151c;
+      }
+      .render.empty { color: var(--red); font-style: italic; font-size: 14px; }
+      .render .cursor { display: inline-block; width: 7px; height: 17px; background: var(--amber);
+        margin-left: 1px; vertical-align: text-bottom; animation: blink 1s steps(2) infinite; border-radius: 1px; }
+      @keyframes blink { 0%,50% { opacity: 1 } 50.01%,100% { opacity: 0 } }
+
+      .caption {
+        margin-top: 16px; border-radius: 10px; padding: 13px 15px; font-size: 14px;
+        border: 1px solid var(--border); background: var(--panel2); min-height: 50px;
+      }
+      .caption.hit { border-color: #2c4a3b; }
+      .caption.miss { border-color: #5a2b2b; background: #1f1414; }
+      .caption.synth { border-color: #5a4a1e; background: #1d1810; }
+      .caption b.hit { color: var(--green); }
+      .caption b.miss { color: var(--red); }
+      .caption b.synth { color: var(--amber); }
+      .caption .mono { font-family: var(--mono); font-size: 13px; color: #d6b36b; }
+
+      .outcome { margin-top: 14px; font-weight: 600; font-size: 14px; }
+      .outcome.ok { color: var(--green); }
+      .outcome.bad { color: var(--red); }
+
+      .takeaway { margin-top: 28px; border: 1px solid var(--border); border-left: 3px solid var(--accent);
+        border-radius: 10px; padding: 16px 18px; background: var(--panel); }
+      .takeaway h2 { margin-bottom: 8px; }
+      .takeaway ul { margin: 8px 0 0; padding-left: 20px; }
+      .takeaway li { margin-bottom: 7px; color: #cfd5df; }
+      .takeaway code { font-family: var(--mono); font-size: 12.5px; background: #11151c; padding: 1px 5px; border-radius: 4px; color: #d6b36b; }
+      .pill { font-family: var(--mono); font-size: 12px; padding: 1px 6px; border-radius: 5px; background: #11151c; border: 1px solid var(--border); }
+
+      .question {
+        background: var(--panel2); border: 1px solid var(--border); border-left: 3px solid #d2a8ff;
+        border-radius: 10px; padding: 16px 20px; margin: 0 0 22px; max-width: 820px;
+      }
+      .question .qlabel { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #d2a8ff; margin: 0 0 6px; }
+      .question p { margin: 0; color: var(--text); font-size: 15px; line-height: 1.55; }
+      .question .ctx { margin-top: 8px; color: var(--muted); font-size: 13px; }
+      code.inline { font-family: var(--mono); font-size: 12.5px; background: #11151c; padding: 1px 6px; border-radius: 4px; color: #d2a8ff; }
+
+      .sec { margin-top: 34px; }
+      .sec > p.intro { color: var(--muted); margin: 0 0 14px; max-width: 840px; }
+      .sec code { font-family: var(--mono); font-size: 12.5px; color: #d6b36b; }
+      .timeline { display: flex; flex-direction: column; }
+      .tl-msg { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: var(--panel2); font-family: var(--mono); font-size: 13px; }
+      .tl-msg .tag { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+      .tl-msg .ev2 { font-weight: 700; }
+      .tl-msg .note { display: block; font-family: system-ui, sans-serif; font-size: 12.5px; color: var(--muted); margin-top: 7px; line-height: 1.5; }
+      .tl-msg.stream { border-color: #28525f; background: #0f1c22; }
+      .tl-msg.stream .ev2 { color: #8fd3e8; }
+      .tl-msg.stream .tag { color: #8fd3e8; }
+      .tl-msg.discrete .ev2 { color: #c9b6ee; }
+      .tl-msg.discrete .tag { color: #c9b6ee; }
+      .tl-msg.missing { border-style: dashed; border-color: #6a2f2f; background: #1d1414; }
+      .tl-msg.missing .ev2 { color: var(--red); text-decoration: line-through; }
+      .tl-msg.missing .tag { color: var(--red); }
+      .tl-msg .callout { display: block; color: var(--red); font-family: system-ui, sans-serif; font-size: 12.5px; margin-top: 6px; font-weight: 600; }
+      .joinline { text-align: center; color: var(--amber); font-weight: 700; font-size: 13px; padding: 9px 0; }
+      .cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+      @media (max-width: 820px) { .cards { grid-template-columns: 1fr; } }
+      .card { border: 1px solid var(--border); border-radius: 10px; padding: 13px 15px; background: var(--panel); }
+      .card h3 { margin: 0 0 6px; font-size: 14px; }
+      .card p { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
+      .card .when { font-family: var(--mono); font-size: 11px; color: var(--amber); text-transform: uppercase; letter-spacing: 0.04em; }
+      .note-row { margin-top: 13px; font-size: 13px; color: #cfd5df; border-left: 3px solid var(--amber); padding: 9px 13px; background: var(--panel2); border-radius: 0 8px 8px 0; }
+      table.fields { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
+      table.fields th, table.fields td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+      table.fields th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+      table.fields td.f { font-family: var(--mono); color: var(--accent); white-space: nowrap; }
+      table.fields td.ok2 { color: var(--green); }
+      table.fields td.warn2 { color: var(--amber); }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Mid-stream join &amp; <code style="font-family:var(--mono);font-size:18px;color:var(--amber)">decodeLifecycle</code></h1>
+      <p class="lede">
+        The OpenAI codec rebuilds an assistant message by folding a <em>sequence</em> of wire events. The order matters:
+        the <span class="pill">output_item.added</span> envelope must arrive first to create the item, because every later
+        event looks the item up by <span class="pill">item_id</span> in a map called <code style="font-family:var(--mono)">byItemId</code>
+        — and silently does nothing if it's missing. Pick a scenario and step through to see what happens.
+      </p>
+
+      <div class="question">
+        <p class="qlabel">Lawrence's question</p>
+        <p>
+          "Is <code class="inline">decodeLifecycle</code> a small thing? Explain what it does — and for the
+          mid-stream-join repair, do we need to fill in both a content part and an output item?"
+        </p>
+        <p class="ctx">
+          Asked while weighing <code class="inline">decodeLifecycle</code> as the next OpenAI-codec increment
+          (AIT-742). Short answer: it's a small, self-contained repair, and you synthesise <b>only</b> the
+          <code class="inline">output_item.added</code> envelope — step through scenario 3 to see why the content
+          part is already handled for you.
+        </p>
+      </div>
+
+      <div class="scenarios" id="scenarios"></div>
+
+      <div class="controls">
+        <button class="ctrl" id="prev">◀ Prev</button>
+        <button class="ctrl primary" id="next">Step ▶</button>
+        <button class="ctrl" id="auto">Auto-play</button>
+        <button class="ctrl" id="reset">Reset</button>
+        <span class="stepcount" id="stepcount"></span>
+      </div>
+
+      <div class="grid">
+        <div class="panel">
+          <h2>Events the reducer receives</h2>
+          <div id="events"></div>
+        </div>
+        <div>
+          <div class="panel statebox">
+            <h2>Reducer state · <code style="font-family:var(--mono)">byItemId</code></h2>
+            <div class="map empty" id="map">{ }  ← empty</div>
+          </div>
+          <div class="panel">
+            <h2>Rendered message (what the user sees)</h2>
+            <div class="render empty" id="render">nothing rendered yet</div>
+            <div class="outcome" id="outcome"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="caption" id="caption">Press <b>Step ▶</b> to feed the first event into the reducer.</div>
+
+      <section class="sec">
+        <h2>Why only the envelope is missing — streamed vs discrete</h2>
+        <p class="intro">
+          On the wire a run isn't one stream of events — it's a few separate <b>Ably messages</b>. The text is
+          <b>one streamed message</b> that Ably hands any subscriber in its current accumulated state, so the decoder
+          can always rebuild it. The envelopes are <b>separate one-shot messages</b> published around it; a late joiner
+          only gets those if they're still in the rewind / history window.
+        </p>
+        <div class="timeline">
+          <div class="tl-msg discrete missing">
+            <span class="tag">discrete Ably message · before you joined</span><br />
+            <span class="ev2">response.output_item.added</span> &nbsp;{ id: "msg_1", type: "message", content: [] }
+            <span class="note">Creates the item in <code>byItemId</code>. Published once, early — so it's the piece a late joiner misses.</span>
+            <span class="callout">✗ missing on a mid-stream join → this is the one thing <code>onStreamStart</code> synthesises.</span>
+          </div>
+          <div class="joinline">▼ you attach here (mid-stream)</div>
+          <div class="tl-msg stream">
+            <span class="tag">one streamed Ably message · readable on join</span><br />
+            <span class="ev2">content_part.added → output_text.delta × N → output_text.done</span>
+            <span class="note">
+              A <b>single</b> streamed message (one create + appends). Ably delivers a late subscriber its current
+              <b>accumulated value</b>, and the decoder's own <code>buildStart</code> rebuilds the stream's start
+              (<code>content_part.added</code>) plus the text — automatically, no synthesis needed.
+              <b>This is the "somehow handled" part:</b> the content part isn't missing, it's regenerated from the
+              streamed message itself.
+            </span>
+          </div>
+          <div class="tl-msg discrete">
+            <span class="tag">discrete Ably message · after</span><br />
+            <span class="ev2">response.output_item.done</span> &nbsp;{ id: "msg_1", status: "completed", content: [...] }
+            <span class="note">
+              If you're now subscribed live you receive this and it <b>replaces</b> the synthesised item with OpenAI's
+              authoritative one. If you only reconstructed a history slice that lacks it, the synthesised item stands.
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <section class="sec">
+        <h2>When does a client actually land mid-stream?</h2>
+        <p class="intro">
+          Each of these delivers the streamed text message but can miss the earlier <code>output_item.added</code>.
+          Exactly how often each fires depends on Ably's rewind / history window — confirming which ones really
+          reproduce is the first task before building the repair.
+        </p>
+        <div class="cards">
+          <div class="card">
+            <h3>Second tab / device, mid-reply</h3>
+            <p><span class="when">live join</span><br />You open the chat in another tab — or another participant joins — while the assistant is still typing, attaching after the envelope was already published.</p>
+          </div>
+          <div class="card">
+            <h3>Reconnect after a blip</h3>
+            <p><span class="when">resume</span><br />A client drops mid-stream and re-attaches; the resume window covers the in-flight streamed message but not the earlier discrete envelope.</p>
+          </div>
+          <div class="card">
+            <h3>History pagination boundary</h3>
+            <p><span class="when">hydrate</span><br />Loading history a page at a time, the page boundary falls between the envelope and the streamed message — so a page has the text without its envelope.</p>
+          </div>
+          <div class="card">
+            <h3>Retention / compaction</h3>
+            <p><span class="when">long-lived</span><br />Over time the channel expires or compacts the one-shot envelope message while the streamed message persists.</p>
+          </div>
+        </div>
+        <div class="note-row">
+          <b>Not this:</b> a normal refresh that replays full history <em>including</em> the envelope rebuilds fine —
+          which is why the demo's refresh / history test already passes. The gap is specifically joining where the
+          envelope is out of reach.
+        </div>
+      </section>
+
+      <section class="sec">
+        <h2>Is fabricating the <code>output_item.added</code> honest?</h2>
+        <p class="intro">
+          The synthesised item is a real <code>ResponseOutputMessage</code>. Every <b>required</b> field is set to
+          something true for "a streamed assistant text message, mid-flight" — no cast needed, nothing left undefined.
+          And the reducer only ever reads <code>type</code> and <code>content</code>, so reconstruction doesn't even
+          depend on the rest.
+        </p>
+        <table class="fields">
+          <tr><th>Field</th><th>We set</th><th>Honest?</th></tr>
+          <tr><td class="f">id</td><td>the real <code>item_id</code> (the stream's id)</td><td class="ok2">✓ real value</td></tr>
+          <tr><td class="f">type</td><td><code>"message"</code></td><td class="ok2">✓ fixed literal — the text stream only ever wraps a message item</td></tr>
+          <tr><td class="f">role</td><td><code>"assistant"</code></td><td class="ok2">✓ fixed literal — output messages are always assistant</td></tr>
+          <tr><td class="f">status</td><td><code>"in_progress"</code></td><td class="ok2">✓ true while streaming; the reducer ignores it, and a later <code>output_item.done</code> upgrades it to <code>"completed"</code></td></tr>
+          <tr><td class="f">content</td><td><code>[]</code></td><td class="ok2">✓ filled by the real deltas as they fold in</td></tr>
+          <tr><td class="f">phase?</td><td>omitted</td><td class="warn2">⚠ the one lossy bit — optional, and absent for our text models (gpt-4.1). Newer models (gpt-5.x) may set it, and OpenAI warns that dropping it on resend can degrade follow-ups. Self-heals if the real <code>output_item.done</code> arrives.</td></tr>
+        </table>
+        <div class="note-row">
+          <b>Self-healing:</b> the fabrication is a placeholder. The moment the authoritative
+          <code>response.output_item.done</code> folds in, it <b>replaces</b> the synthesised item wholesale (carrying
+          the real status and any <code>phase</code>). The fabricated values only persist when reconstructing a history
+          slice that has the deltas but neither envelope — and even then the visible <em>text</em> is correct; only
+          <code>status</code> / <code>phase</code> are approximate.
+        </div>
+      </section>
+
+      <div class="takeaway">
+        <h2>The takeaway</h2>
+        <ul>
+          <li><b>Scenario 1</b> (present from the start): the <code>output_item.added</code> envelope arrives first, so every part &amp; delta finds its item. Message builds fine — this is also what full history replay gives you.</li>
+          <li><b>Scenario 2</b> (join mid-stream, no repair): the late client's decoder reconstructs the streamed part &amp; deltas, but the <code>output_item.added</code> envelope was a <em>separate, earlier</em> event it never saw. Every lookup <b class="miss" style="color:var(--red)">MISSES</b> → the message silently never renders.</li>
+          <li><b>Scenario 3</b> (join mid-stream, <code>decodeLifecycle</code>): the decoder's <code>onStreamStart</code> hook <b class="synth" style="color:var(--amber)">synthesises</b> the one missing <code>output_item.added</code> and prepends it. Now the item exists before everything else → it all lands.</li>
+          <li><b>Why only the envelope?</b> The <code>content_part.added</code> is the stream's declared <em>start</em>, so the decoder's own <code>buildStart</code> already rebuilds it. You only fill the gap nothing else covers: the item envelope. (Synthesising the content part too would create a duplicate empty part.)</li>
+        </ul>
+      </div>
+    </div>
+
+    <script>
+      // --- event sequences per scenario -----------------------------------
+      const ID = "msg_1";
+      const TEXT = ["Hello, ", "world", "!"];
+
+      function evItemAdded(synthetic) {
+        return { t: "output_item.added", id: ID, synthetic: !!synthetic, kind: "envelope" };
+      }
+      function evPartAdded() { return { t: "content_part.added", id: ID, kind: "start" }; }
+      function evDelta(d) { return { t: "output_text.delta", id: ID, delta: d, kind: "delta" }; }
+      function evTextDone() { return { t: "output_text.done", id: ID, text: TEXT.join(""), kind: "end" }; }
+      function evItemDone() { return { t: "output_item.done", id: ID, kind: "envelope" }; }
+
+      const full = [
+        evItemAdded(false),
+        evPartAdded(),
+        ...TEXT.map(evDelta),
+        evTextDone(),
+        evItemDone(),
+      ];
+
+      // A late joiner: the streamed message machinery rebuilds the stream's
+      // start (content_part.added) + accumulated deltas + done, but NOT the
+      // separately-published output_item.added envelope.
+      const broken = [
+        evPartAdded(),
+        ...TEXT.map(evDelta),
+        evTextDone(),
+      ];
+
+      // decodeLifecycle.onStreamStart prepends the missing envelope.
+      const repaired = [
+        evItemAdded(true),
+        evPartAdded(),
+        ...TEXT.map(evDelta),
+        evTextDone(),
+      ];
+
+      const SCENARIOS = [
+        { key: "full", t: "t1", tag: "1 · Present from the start  ✅",
+          desc: "Subscribed before the reply began (or full history replay). Every event arrives, in order." },
+        { key: "broken", t: "t2", tag: "2 · Join mid-stream — no repair  ❌",
+          desc: "A second tab opens while the reply is streaming. The envelope event is already gone." },
+        { key: "repaired", t: "t3", tag: "3 · Join mid-stream — decodeLifecycle  ✅",
+          desc: "Same mid-stream join, but the codec synthesises the missing envelope." },
+      ];
+      const SEQS = { full, broken, repaired };
+
+      // --- reducer model (mirrors src/openai/codec/reducer.ts) ------------
+      function freshState() { return { byItemId: {} }; }
+
+      // returns { miss, kind, html } describing what this event did
+      function apply(state, ev) {
+        switch (ev.t) {
+          case "output_item.added": {
+            state.byItemId[ev.id] = { content: [] };
+            return {
+              kind: ev.synthetic ? "synth" : "ok",
+              html: (ev.synthetic
+                  ? `<b class="synth">SYNTHESISED</b> by <span class="mono">decodeLifecycle.onStreamStart</span>: `
+                  : "") +
+                `creates the message item and stores it as <span class="mono">byItemId["${ev.id}"]</span>. ` +
+                `From now on, lookups for <span class="mono">${ev.id}</span> will <b class="hit">hit</b>.`,
+            };
+          }
+          case "content_part.added": {
+            const item = state.byItemId[ev.id];
+            if (!item) return { kind: "miss", html:
+              `<span class="mono">byItemId["${ev.id}"]</span> is <b class="miss">undefined</b> → the content part is <b class="miss">dropped</b>. No place to put text.` };
+            item.content.push({ type: "output_text", text: "" });
+            return { kind: "ok", html:
+              `finds the item and adds an empty <span class="mono">output_text</span> part to hold the streamed text.` };
+          }
+          case "output_text.delta": {
+            const item = state.byItemId[ev.id];
+            if (!item) return { kind: "miss", html:
+              `<span class="mono">byItemId["${ev.id}"]</span> is <b class="miss">undefined</b> → this delta (<span class="mono">"${ev.delta}"</span>) is <b class="miss">silently dropped</b>.` };
+            let part = item.content[item.content.length - 1];
+            if (!part || part.type !== "output_text") { part = { type: "output_text", text: "" }; item.content.push(part); }
+            part.text += ev.delta;
+            return { kind: "ok", html:
+              `appends <span class="mono">"${ev.delta}"</span> to the item's text. <b class="hit">hit</b>.` };
+          }
+          case "output_text.done": {
+            const item = state.byItemId[ev.id];
+            if (!item) return { kind: "miss", html:
+              `no item <span class="mono">${ev.id}</span> → the final text is <b class="miss">dropped</b> too.` };
+            let part = item.content[item.content.length - 1];
+            if (!part || part.type !== "output_text") { part = { type: "output_text", text: "" }; item.content.push(part); }
+            part.text = ev.text;
+            return { kind: "ok", html: `finalises the text to <span class="mono">"${ev.text}"</span>.` };
+          }
+          case "output_item.done": {
+            const item = state.byItemId[ev.id];
+            if (!item) return { kind: "miss", html: `no item <span class="mono">${ev.id}</span> to finalise — nothing happens.` };
+            item.done = true;
+            return { kind: "ok", html: `marks the item complete.` };
+          }
+        }
+        return { kind: "ok", html: "" };
+      }
+
+      function renderedText(state) {
+        const item = state.byItemId[ID];
+        if (!item) return null;
+        return item.content.filter((p) => p.type === "output_text").map((p) => p.text).join("");
+      }
+
+      // --- UI -------------------------------------------------------------
+      let scenario = "full";
+      let step = 0; // number of events applied
+      let autoTimer = null;
+
+      const $ = (id) => document.getElementById(id);
+      const eventsEl = $("events"), mapEl = $("map"), renderEl = $("render"),
+            captionEl = $("caption"), outcomeEl = $("outcome"), stepEl = $("stepcount");
+
+      function buildScenarioButtons() {
+        const c = $("scenarios");
+        c.innerHTML = "";
+        SCENARIOS.forEach((s) => {
+          const b = document.createElement("button");
+          b.className = "scenario" + (s.key === scenario ? " active" : "");
+          b.innerHTML = `<div class="tag ${s.t}">${s.tag}</div><div class="desc">${s.desc}</div>`;
+          b.onclick = () => { scenario = s.key; reset(); buildScenarioButtons(); };
+          c.appendChild(b);
+        });
+      }
+
+      function evLabel(ev) {
+        let extra = "";
+        if (ev.delta !== undefined) extra = ` <span class="ph">delta:</span> <span class="v">"${ev.delta}"</span>`;
+        else if (ev.text !== undefined) extra = ` <span class="ph">text:</span> <span class="v">"${ev.text}"</span>`;
+        else extra = ` <span class="ph">item_id:</span> <span class="v">"${ev.id}"</span>`;
+        return `<span class="k">${ev.t}</span>${extra}`;
+      }
+
+      function recompute() {
+        const seq = SEQS[scenario];
+        // recompute state up to `step`
+        const state = freshState();
+        let last = null;
+        for (let i = 0; i < step; i++) last = apply(state, seq[i]);
+
+        // events list
+        eventsEl.innerHTML = "";
+        seq.forEach((ev, i) => {
+          const d = document.createElement("div");
+          let cls = "ev";
+          if (ev.synthetic) cls += " synthetic";
+          if (i < step - 1) cls += " done";
+          else if (i === step - 1) cls += " current";
+          else cls += " pending";
+          d.className = cls;
+          let badge = "";
+          if (ev.synthetic) badge = `<span class="badge synth">SYNTH</span>`;
+          else if (i === step - 1 && last) badge = `<span class="badge ${last.kind === "miss" ? "miss" : "hit"}">${last.kind === "miss" ? "MISS" : "OK"}</span>`;
+          else if (ev.kind === "envelope") badge = `<span class="badge envelope">envelope</span>`;
+          d.innerHTML = evLabel(ev) + badge;
+          eventsEl.appendChild(d);
+        });
+
+        // byItemId map
+        const item = state.byItemId[ID];
+        if (item) {
+          mapEl.className = "map has";
+          const parts = item.content.length ? item.content.map((p) => `{ output_text: "${p.text}" }`).join(", ") : "—";
+          mapEl.innerHTML = `{ <span class="key">"${ID}"</span>: { content: [ ${parts} ] } }`;
+        } else {
+          mapEl.className = "map empty";
+          mapEl.innerHTML = "{ }  ← empty (no item for &quot;" + ID + "&quot;)";
+        }
+
+        // rendered message
+        const txt = renderedText(state);
+        if (txt) {
+          renderEl.className = "render";
+          const streaming = step < seq.length;
+          renderEl.innerHTML = txt + (streaming ? `<span class="cursor"></span>` : "");
+        } else {
+          renderEl.className = "render empty";
+          renderEl.textContent = step === 0 ? "nothing rendered yet" : "nothing — the message item was never created";
+        }
+
+        // caption
+        if (step === 0) {
+          captionEl.className = "caption";
+          captionEl.innerHTML = `Press <b>Step ▶</b> to feed the first event into the reducer.`;
+        } else {
+          const ev = seq[step - 1];
+          captionEl.className = "caption " + (last.kind === "miss" ? "miss" : last.kind === "synth" ? "synth" : "hit");
+          captionEl.innerHTML = `<span class="mono">${ev.t}</span> — ${last.html}`;
+        }
+
+        // outcome (only at the end)
+        outcomeEl.textContent = "";
+        outcomeEl.className = "outcome";
+        if (step === seq.length) {
+          if (txt && txt === TEXT.join("")) { outcomeEl.className = "outcome ok"; outcomeEl.textContent = "✅ Message reconstructed correctly: \"" + txt + "\""; }
+          else { outcomeEl.className = "outcome bad"; outcomeEl.textContent = "❌ Stream ended but no message was reconstructed — the user sees nothing."; }
+        }
+
+        stepEl.textContent = `step ${step} / ${seq.length}`;
+        $("prev").disabled = step === 0;
+        $("next").disabled = step === seq.length;
+      }
+
+      function reset() { stopAuto(); step = 0; recompute(); }
+      function nextStep() { const seq = SEQS[scenario]; if (step < seq.length) { step++; recompute(); } if (step === seq.length) stopAuto(); }
+      function prevStep() { if (step > 0) { step--; recompute(); } }
+      function stopAuto() { if (autoTimer) { clearInterval(autoTimer); autoTimer = null; $("auto").textContent = "Auto-play"; } }
+      function toggleAuto() {
+        if (autoTimer) { stopAuto(); return; }
+        if (step === SEQS[scenario].length) reset();
+        $("auto").textContent = "⏸ Pause";
+        autoTimer = setInterval(nextStep, 900);
+      }
+
+      $("next").onclick = nextStep;
+      $("prev").onclick = prevStep;
+      $("reset").onclick = reset;
+      $("auto").onclick = toggleAuto;
+
+      buildScenarioButtons();
+      recompute();
+    </script>
+  </body>
+</html>

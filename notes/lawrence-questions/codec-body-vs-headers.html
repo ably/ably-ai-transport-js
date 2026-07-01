@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Codec wire layout — body vs headers</title>
+    <style>
+      :root {
+        --bg: #0d1117;
+        --panel: #161b22;
+        --panel-2: #1c232c;
+        --border: #30363d;
+        --text: #e6edf3;
+        --muted: #9da7b3;
+        --body: #f0883e; /* orange — message data (body) */
+        --body-bg: rgba(240, 136, 62, 0.12);
+        --hdr: #58a6ff; /* blue — extras.ai.codec (headers) */
+        --hdr-bg: rgba(88, 166, 255, 0.12);
+        --transport: #8b949e; /* grey — extras.ai.transport */
+        --transport-bg: rgba(139, 148, 158, 0.1);
+        --ok: #3fb950;
+        --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+        padding: 0 0 80px;
+      }
+      header.page {
+        padding: 40px 32px 28px;
+        border-bottom: 1px solid var(--border);
+        background: linear-gradient(180deg, #11161d, var(--bg));
+      }
+      header.page h1 { margin: 0 0 6px; font-size: 26px; letter-spacing: -0.3px; }
+      header.page p { margin: 0; color: var(--muted); max-width: 760px; }
+      main { max-width: 1140px; margin: 0 auto; padding: 0 32px; }
+      section { margin-top: 44px; }
+      h2 {
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 1.4px;
+        color: var(--muted);
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 8px;
+        margin: 0 0 20px;
+      }
+      .rule {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+      }
+      .rule .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 18px 20px;
+      }
+      .rule .card.body { border-left: 3px solid var(--body); }
+      .rule .card.hdr { border-left: 3px solid var(--hdr); }
+      .rule .card h3 { margin: 0 0 6px; font-size: 16px; }
+      .rule .card .where { font-family: var(--mono); font-size: 12.5px; }
+      .rule .card.body .where { color: var(--body); }
+      .rule .card.hdr .where { color: var(--hdr); }
+      .rule .card p { margin: 10px 0 0; color: var(--muted); font-size: 14px; }
+
+      .legend { display: flex; gap: 18px; flex-wrap: wrap; margin: 14px 0 0; font-size: 13px; }
+      .legend span { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); }
+      .swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+      .sw-body { background: var(--body); }
+      .sw-hdr { background: var(--hdr); }
+      .sw-transport { background: var(--transport); }
+
+      .examples { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+      @media (max-width: 900px) { .examples { grid-template-columns: 1fr; } .rule { grid-template-columns: 1fr; } }
+
+      .msg {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .msg .title {
+        padding: 14px 18px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .msg .title .kind { font-family: var(--mono); font-size: 13.5px; color: var(--text); font-weight: 600; }
+      .msg .title .tag {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.6px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        color: var(--muted);
+      }
+      .msg .title .tag.codec-openai { color: #d2a8ff; border-color: rgba(210, 168, 255, 0.4); }
+      .msg .title .tag.codec-vercel { color: #7ee787; border-color: rgba(126, 231, 135, 0.4); }
+      .msg .note { padding: 10px 18px; color: var(--muted); font-size: 13px; border-bottom: 1px solid var(--border); background: var(--panel-2); }
+      .msg pre {
+        margin: 0;
+        padding: 16px 18px;
+        font-family: var(--mono);
+        font-size: 12.5px;
+        line-height: 1.7;
+        overflow-x: auto;
+        flex: 1;
+      }
+      .k { color: var(--muted); }
+      .blk-body { background: var(--body-bg); border-left: 2px solid var(--body); padding: 2px 8px; border-radius: 3px; display: block; }
+      .blk-hdr { background: var(--hdr-bg); border-left: 2px solid var(--hdr); padding: 2px 8px; border-radius: 3px; display: block; }
+      .blk-transport { background: var(--transport-bg); border-left: 2px solid var(--transport); padding: 2px 8px; border-radius: 3px; display: block; opacity: 0.85; }
+      .lbl { color: var(--text); font-weight: 600; }
+      .lbl-body { color: var(--body); }
+      .lbl-hdr { color: var(--hdr); }
+      .lbl-transport { color: var(--transport); }
+      .str { color: #a5d6ff; }
+      .empty { color: var(--muted); font-style: italic; }
+
+      table.matrix { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+      table.matrix th, table.matrix td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+      table.matrix th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; }
+      table.matrix td code { font-family: var(--mono); font-size: 12.5px; color: var(--text); }
+      .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+      .pill.body { background: var(--body-bg); color: var(--body); border: 1px solid rgba(240,136,62,0.35); }
+      .pill.hdr { background: var(--hdr-bg); color: var(--hdr); border: 1px solid rgba(88,166,255,0.35); }
+      .pill.none { background: rgba(139,148,158,0.1); color: var(--muted); border: 1px solid var(--border); }
+
+      .takeaway {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--ok);
+        border-radius: 10px;
+        padding: 20px 22px;
+      }
+      .takeaway p { margin: 0 0 12px; }
+      .takeaway p:last-child { margin-bottom: 0; }
+      .takeaway b { color: var(--text); }
+      code.inline { font-family: var(--mono); font-size: 12.5px; background: var(--panel-2); padding: 1px 6px; border-radius: 4px; color: #d2a8ff; }
+      .question {
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-left: 3px solid #d2a8ff;
+        border-radius: 10px;
+        padding: 16px 20px;
+        margin: 22px 0 4px;
+        max-width: 820px;
+      }
+      .question .qlabel { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #d2a8ff; margin: 0 0 6px; }
+      .question p { margin: 0; color: var(--text); font-size: 15px; line-height: 1.55; }
+      .question .ctx { margin-top: 8px; color: var(--muted); font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <header class="page">
+      <h1>Codec wire layout: body vs headers</h1>
+      <p>
+        How the OpenAI and Vercel codecs decide what goes in an Ably message's <b>data (body)</b> versus its
+        <b>codec headers (<code class="inline">extras.ai.codec</code>)</b> — and why they look different while
+        following the same rule.
+      </p>
+      <div class="question">
+        <p class="qlabel">Lawrence's question</p>
+        <p>
+          "Why do some events (e.g. <code class="inline">response.completed</code> and
+          <code class="inline">response.output_item.done</code>) have the full event in their JSON body, and others
+          (e.g. <code class="inline">response.content_part.done</code>) just store a subset of the event's properties,
+          and do so in the Ably message <code class="inline">extras</code>? Is this consistent with what the Vercel
+          codec does?"
+        </p>
+        <p class="ctx">Asked while reviewing the OpenAI Responses codec (AIT-742) against the Vercel codec. This page is the answer.</p>
+      </div>
+      <div class="legend">
+        <span><i class="swatch sw-body"></i> <code class="inline">data</code> — message body (the payload)</span>
+        <span><i class="swatch sw-hdr"></i> <code class="inline">extras.ai.codec</code> — codec headers (metadata)</span>
+        <span><i class="swatch sw-transport"></i> <code class="inline">extras.ai.transport</code> — transport tier (shown greyed; same on every message)</span>
+      </div>
+    </header>
+
+    <main>
+      <!-- THE RULE -->
+      <section>
+        <h2>The one rule both codecs follow</h2>
+        <div class="rule">
+          <div class="card body">
+            <h3>Principal payload → body</h3>
+            <div class="where">data</div>
+            <p>The event's <b>content</b> — the thing the reducer folds into conversation state. The full provider
+              object, a streamed text fragment, a tool's output, a file URL.</p>
+          </div>
+          <div class="card hdr">
+            <h3>Metadata → headers</h3>
+            <div class="where">extras.ai.codec</div>
+            <p>Small bits used for <b>dispatch, positioning, or reconstruction</b>: the <code class="inline">kind</code>
+              discriminator, ids, indices, flags. Usually scalars, but structured bits can ride as a JSON-stringified
+              header (e.g. <code class="inline">providerMetadata</code>).</p>
+          </div>
+        </div>
+        <p style="color: var(--muted); margin-top: 16px;">
+          The split axis is <b>payload vs metadata</b> — <i>not</i> scalar vs object. Each codec applies this rule to
+          its own wire types, which is why they end up looking different.
+        </p>
+      </section>
+
+      <!-- OPENAI -->
+      <section>
+        <h2>OpenAI Responses codec</h2>
+        <div class="examples">
+          <!-- response.completed -->
+          <div class="msg">
+            <div class="title">
+              <span class="kind">response.completed</span>
+              <span class="tag codec-openai">OpenAI</span>
+              <span class="tag">whole object → body</span>
+            </div>
+            <div class="note">The whole <code>Response</code> snapshot <i>is</i> the payload — nothing to decompose, so it all sits in the body. Same shape for <code>response.created / in_progress / output_item.added / output_item.done</code>.</div>
+            <pre>
+name: <span class="str">"ai-output"</span>
+
+<span class="blk-hdr"><span class="lbl-hdr">extras.ai.codec</span> {
+  <span class="k">kind:</span>   <span class="str">"response.completed"</span>
+  <span class="k">stream:</span> <span class="str">"false"</span>
+}</span>
+<span class="blk-body"><span class="lbl-body">data</span> {
+  <span class="k">id:</span>     <span class="str">"resp_8f2…"</span>,
+  <span class="k">object:</span> <span class="str">"response"</span>,
+  <span class="k">status:</span> <span class="str">"completed"</span>,
+  <span class="k">output:</span> [ { <span class="k">type:</span> <span class="str">"message"</span>, … } ],
+  <span class="k">usage:</span>  { <span class="k">input_tokens:</span> 42, … },
+  …                       <span class="k">// full snapshot</span>
+}</span>
+<span class="blk-transport"><span class="lbl-transport">extras.ai.transport</span> { run-id, invocation-id,
+  codec-message-id, role, … }</span></pre>
+          </div>
+
+          <!-- content_part.done -->
+          <div class="msg">
+            <div class="title">
+              <span class="kind">response.content_part.done</span>
+              <span class="tag codec-openai">OpenAI</span>
+              <span class="tag">subset → headers, no body</span>
+            </div>
+            <div class="note">A boundary marker the reducer <b>ignores</b>. Declared only so the agent can republish it from history without tripping the "unsupported event" throw. Only its position scalars need to survive.</div>
+            <pre>
+name: <span class="str">"ai-output"</span>
+
+<span class="blk-hdr"><span class="lbl-hdr">extras.ai.codec</span> {
+  <span class="k">kind:</span>          <span class="str">"response.content_part.done"</span>
+  <span class="k">stream:</span>        <span class="str">"false"</span>
+  <span class="k">item_id:</span>       <span class="str">"msg_abc"</span>
+  <span class="k">output_index:</span>  <span class="str">"0"</span>
+  <span class="k">content_index:</span> <span class="str">"0"</span>
+}</span>
+<span class="blk-body"><span class="lbl-body">data</span> <span class="empty">""  (empty — no payload)</span></span>
+<span class="blk-transport"><span class="lbl-transport">extras.ai.transport</span> { run-id, invocation-id,
+  codec-message-id, role, … }</span></pre>
+          </div>
+
+          <!-- text stream delta -->
+          <div class="msg">
+            <div class="title">
+              <span class="kind">text (stream delta)</span>
+              <span class="tag codec-openai">OpenAI</span>
+              <span class="tag">fragment → body, position → headers</span>
+            </div>
+            <div class="note">The one streamed family. Each append carries only the new text fragment in the body; the positional metadata (<code>output_index / content_index / part</code>) rides on headers so it survives alongside the stream.</div>
+            <pre>
+name: <span class="str">"ai-output"</span>
+
+<span class="blk-hdr"><span class="lbl-hdr">extras.ai.codec</span> {
+  <span class="k">kind:</span>          <span class="str">"text"</span>
+  <span class="k">stream:</span>        <span class="str">"true"</span>
+  <span class="k">status:</span>        <span class="str">"streaming"</span>
+  <span class="k">stream-id:</span>     <span class="str">"msg_abc"</span>   <span class="k">// = item_id</span>
+  <span class="k">item_id:</span>       <span class="str">"msg_abc"</span>
+  <span class="k">output_index:</span>  <span class="str">"0"</span>
+  <span class="k">content_index:</span> <span class="str">"0"</span>
+}</span>
+<span class="blk-body"><span class="lbl-body">data</span> <span class="str">"Hello"</span>   <span class="k">// just this delta's text</span></span>
+<span class="blk-transport"><span class="lbl-transport">extras.ai.transport</span> { run-id, invocation-id, … }</span></pre>
+          </div>
+
+          <!-- placeholder balance card: why -->
+          <div class="msg">
+            <div class="title">
+              <span class="kind">Why whole-object-in-body here?</span>
+              <span class="tag codec-openai">OpenAI</span>
+            </div>
+            <div class="note">The shape of the OpenAI wire types drives it.</div>
+            <pre style="white-space: normal; font-family: inherit; font-size: 13.5px; color: var(--muted); line-height: 1.7;">
+<span style="color: var(--text); font-weight:600;">TMessage = a turn's raw OpenAI items.</span>
+The reducer wants those <code style="font-family: var(--mono); color: var(--hdr);">Response</code> / <code style="font-family: var(--mono); color: var(--hdr);">ResponseOutputItem</code>
+objects back <i>whole</i>, and the transport never
+dispatches or positions on anything <i>inside</i> them.
+
+So there is no flat metadata worth promoting to
+headers — the object is the payload, and it goes
+in the body intact.
+
+The only OpenAI event that is pure metadata
+(<code style="font-family: var(--mono); color: var(--hdr);">content_part.done</code>) is exactly the one that
+goes headers-only.</pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- VERCEL -->
+      <section>
+        <h2>Vercel AI SDK codec</h2>
+        <div class="examples">
+          <!-- tool-output-available -->
+          <div class="msg">
+            <div class="title">
+              <span class="kind">tool-output-available</span>
+              <span class="tag codec-vercel">Vercel</span>
+              <span class="tag">split: ids → headers, output → body</span>
+            </div>
+            <div class="note">Vercel chunks are flat bags of named fields, and the transport keys off individual ones — so each event is <b>decomposed</b>: identifiers/flags to headers, the variable content to the body.</div>
+            <pre>
+name: <span class="str">"ai-output"</span>
+
+<span class="blk-hdr"><span class="lbl-hdr">extras.ai.codec</span> {
+  <span class="k">kind:</span>             <span class="str">"tool-output-available"</span>
+  <span class="k">stream:</span>           <span class="str">"false"</span>
+  <span class="k">toolCallId:</span>       <span class="str">"call_1"</span>
+  <span class="k">dynamic:</span>          <span class="str">"false"</span>
+  <span class="k">providerExecuted:</span> <span class="str">"false"</span>
+  <span class="k">preliminary:</span>      <span class="str">"false"</span>
+}</span>
+<span class="blk-body"><span class="lbl-body">data</span> {
+  <span class="k">output:</span> { <span class="k">temperature:</span> 14, <span class="k">unit:</span> <span class="str">"C"</span> }
+}</span>
+<span class="blk-transport"><span class="lbl-transport">extras.ai.transport</span> { run-id, invocation-id, … }</span></pre>
+          </div>
+
+          <!-- tool-approval-request -->
+          <div class="msg">
+            <div class="title">
+              <span class="kind">tool-approval-request</span>
+              <span class="tag codec-vercel">Vercel</span>
+              <span class="tag">scalars only → headers, no body</span>
+            </div>
+            <div class="note">The Vercel twin of <code>content_part.done</code>: the whole event <i>is</i> a couple of scalar identifiers, nothing downstream reads more, so it's headers-only with an empty body.</div>
+            <pre>
+name: <span class="str">"ai-output"</span>
+
+<span class="blk-hdr"><span class="lbl-hdr">extras.ai.codec</span> {
+  <span class="k">kind:</span>       <span class="str">"tool-approval-request"</span>
+  <span class="k">stream:</span>     <span class="str">"false"</span>
+  <span class="k">toolCallId:</span> <span class="str">"call_1"</span>
+  <span class="k">approvalId:</span> <span class="str">"appr_1"</span>
+}</span>
+<span class="blk-body"><span class="lbl-body">data</span> <span class="empty">""  (empty — no payload)</span></span>
+<span class="blk-transport"><span class="lbl-transport">extras.ai.transport</span> { run-id, invocation-id, … }</span></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- MATRIX -->
+      <section>
+        <h2>The same decision, side by side</h2>
+        <table class="matrix">
+          <thead>
+            <tr>
+              <th>Event</th>
+              <th>Codec</th>
+              <th>What it carries</th>
+              <th>Body</th>
+              <th>Headers</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>response.completed</code></td>
+              <td>OpenAI</td>
+              <td>whole <code>Response</code> snapshot (the payload)</td>
+              <td><span class="pill body">full object</span></td>
+              <td><span class="pill hdr">kind only</span></td>
+            </tr>
+            <tr>
+              <td><code>response.output_item.done</code></td>
+              <td>OpenAI</td>
+              <td>whole <code>ResponseOutputItem</code> (the payload)</td>
+              <td><span class="pill body">full object</span></td>
+              <td><span class="pill hdr">kind only</span></td>
+            </tr>
+            <tr>
+              <td><code>text</code> (stream)</td>
+              <td>OpenAI</td>
+              <td>text fragment + position</td>
+              <td><span class="pill body">delta text</span></td>
+              <td><span class="pill hdr">id + indices</span></td>
+            </tr>
+            <tr>
+              <td><code>response.content_part.done</code></td>
+              <td>OpenAI</td>
+              <td>position scalars only (reducer ignores it)</td>
+              <td><span class="pill none">empty</span></td>
+              <td><span class="pill hdr">subset</span></td>
+            </tr>
+            <tr>
+              <td><code>tool-output-available</code></td>
+              <td>Vercel</td>
+              <td>tool output + ids/flags</td>
+              <td><span class="pill body">output</span></td>
+              <td><span class="pill hdr">ids + flags</span></td>
+            </tr>
+            <tr>
+              <td><code>file</code></td>
+              <td>Vercel</td>
+              <td>file URL + media type</td>
+              <td><span class="pill body">url</span></td>
+              <td><span class="pill hdr">mediaType + meta</span></td>
+            </tr>
+            <tr>
+              <td><code>tool-approval-request</code></td>
+              <td>Vercel</td>
+              <td>identifier scalars only</td>
+              <td><span class="pill none">empty</span></td>
+              <td><span class="pill hdr">ids</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- TAKEAWAY -->
+      <section>
+        <h2>So are they consistent?</h2>
+        <div class="takeaway">
+          <p><b>Yes — same rule, different-shaped inputs.</b> Both put the principal payload in the body and metadata
+            in <code class="inline">extras.ai.codec</code>. Header-only events exist in both (<code class="inline">content_part.done</code>
+            ↔ <code class="inline">tool-approval-request</code>) for the same reason: their whole meaning is a few scalars.</p>
+          <p><b>The one honest divergence:</b> Vercel <i>always</i> decomposes a chunk into typed fields + a small
+            content body, because its chunks are flat and the transport reads individual fields. OpenAI sometimes ships
+            a provider object <i>whole</i> in the body, because <code class="inline">TMessage</code> is "a turn's raw
+            OpenAI items" — the object <i>is</i> the atom, and nothing keys off its internals.</p>
+          <p>That's a consequence of the two providers' wire types, not a contradiction of the framework — both
+            <code class="inline">data</code> and <code class="inline">fields</code> are first-class knobs the descriptor
+            model offers, and each codec reaches for whichever fits its types.</p>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

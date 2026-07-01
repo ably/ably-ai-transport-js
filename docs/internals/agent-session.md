@@ -95,7 +95,7 @@ The agent reads ancestor history by paging run.view back: `while (run.view.hasOl
 
 ### Shared run read-model
 
-`run` exposes the same `BaseRun` [read-model](glossary.md#run-read-model-baserun) the client's run does - `runId`, `status`, `error`, and `messages` (this run's own turn: its triggering input plus its streamed output) - read live off the Tree via getter accessors rather than snapshotted. The agent run (`AgentRun`) adds `view` and `located` on top; the client run (`ClientRun`) adds the send handle and the `started` promise. Sharing one base keeps the two run surfaces consistent.
+`run` exposes the same `BaseRun` [read-model](glossary.md#run-read-model-baserun) the client's run does - `runId`, `status`, `error`, and `messages` (this run's whole contribution: its originating input plus all of its output across every suspend/resume segment) - read live off the Tree via getter accessors rather than snapshotted. The agent run (`AgentRun`) adds `view` and `located` on top; the client run (`ClientRun`) adds the send handle and the `started` promise. Sharing one base keeps the two run surfaces consistent.
 
 ## Cancel routing
 

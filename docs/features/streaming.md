@@ -51,7 +51,7 @@ await session.connect();
 const run = session.createRun(invocation, { signal: req.signal });
 
 // Drain run.view to reconstruct the conversation so far (this also folds in the
-// triggering input that start() waits for); run.messages is only this run's own turn.
+// triggering input that start() waits for); run.messages is only this run, not the whole conversation.
 while (run.view.hasOlder()) await run.view.loadOlder();
 const conversation = run.view.getMessages().map((m) => m.message);
 await run.start();

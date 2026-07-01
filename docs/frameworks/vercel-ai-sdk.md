@@ -111,7 +111,7 @@ const run = session.createRun(invocation, { signal: req.signal });
 // Replay the conversation from the channel — the user messages were already
 // published by the client, so the agent reads them back rather than republishing.
 // Draining run.view yields the full multi-turn conversation and folds in the
-// triggering input start() waits for; run.messages is only this run's own turn.
+// triggering input start() waits for; run.messages is only this run, not the whole conversation.
 while (run.view.hasOlder()) await run.view.loadOlder();
 const conversation = run.view.getMessages().map((m) => m.message);
 await run.start();

@@ -55,7 +55,7 @@ await run.end(outcome);
 if (outcome.reason === 'complete') await appendMessages(invocation.sessionName, run.messages);
 ```
 
-`run.messages` is this run's own turn (its triggering input plus its streamed output) - the exact unit to persist. A run the store hasn't caught up on yet is still read from the channel by the next reader, so nothing is dropped in the window between a run ending and its store write landing.
+`run.messages` is this run's whole contribution — its originating input plus all of its output across every suspend/resume segment (including tool results), deduped - the exact unit to persist once the run completes. Because it spans the whole run, persisting a run that suspended for a client-executed or approval-gated tool captures the input, the tool call, and the resolved output as one lossless unit. A run the store hasn't caught up on yet is still read from the channel by the next reader, so nothing is dropped in the window between a run ending and its store write landing.
 
 ## Client side
 

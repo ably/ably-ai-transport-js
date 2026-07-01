@@ -12,11 +12,16 @@ the seed with the live channel: it takes the newest stored message as the
 with no duplicate. Reload the page and the conversation comes back from the
 store, stitched onto whatever the channel has streamed since.
 
-This is a deliberately minimal, linear chat (text turns only, no branch
-navigation or tools) so the seam reconciliation is the sole pager of the view —
-the precondition the single-overlap compose relies on. For the full feature set
-(branching, tools, multi-tab) see the `use-chat` demo. Each fresh visit opens a
-new channel (`?channel=<name>` pins a specific one).
+This is a linear chat (no branch navigation, editing, or regenerate) so the seam
+reconciliation is the sole pager of the view — the precondition the
+single-overlap compose relies on. It still exercises the full tool surface: a
+server tool (getWeather), a client-executed tool that **suspends and resumes**
+the run (getLocation), and an approval-gated tool (getWeatherForecast). Because a
+run's `run.messages` spans the whole suspend/resume run, the agent's single
+persist at completion is lossless, and after a reload an approved tool-call
+message still shows as approved. For branch navigation, editing, and regenerate,
+see the sibling `use-chat` demo. Each fresh visit opens a new channel
+(`?channel=<name>` pins a specific one).
 
 ## Prerequisites
 

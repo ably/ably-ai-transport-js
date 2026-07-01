@@ -5,20 +5,32 @@
  * This is the database-hydration demo: the agent is the sole writer. It
  * hydrates the model context the same way the client does — seeding the prior
  * conversation from the store and reconciling only the live tail from the
- * channel (the seam walk), rather than replaying the whole channel. After the
- * stream finishes, the run's whole turn is appended to the in-memory store
- * (keyed by the channel name) so a later client (or the next run) can seed from
- * it and reconcile with the live channel. The demo is text-only — no tools — so
- * a run always runs to completion rather than suspending for a tool or approval.
+ * channel (the seam walk), rather than replaying the whole channel.
+ *
+ * It supports the same tool patterns as the sibling `use-chat` demo:
+ * - Server-executed tools (getWeather): streamText runs them inline.
+ * - Client-executed tools (getLocation): the run SUSPENDS after the tool call;
+ *   the client executes the tool and sends a continuation under the same runId,
+ *   which resumes the run. `run.messages` spans the whole suspend/resume run, so
+ *   a single persist at completion captures the input, the tool call, and the
+ *   final answer with no loss.
+ * - Approval-gated tools (getWeatherForecast): the run SUSPENDS at
+ *   `approval-requested`; the user approves, a continuation resumes the run, and
+ *   the tool-call message stays mutable (shown as approved) after hydration.
+ *
+ * A suspended run is never persisted — only the terminal (complete) run is
+ * appended to the in-memory store (keyed by the channel name), so a later client
+ * (or the next run) can seed from it and reconcile with the live channel.
  */
 
 import { after } from 'next/server';
-import { streamText, convertToModelMessages } from 'ai';
+import { streamText, convertToModelMessages, stepCountIs } from 'ai';
 import Ably from 'ably';
 import { createAgentSession, vercelRunOutcome } from '@ably/ai-transport/vercel';
 import type { InvocationData } from '@ably/ai-transport';
 import { Invocation } from '@ably/ai-transport';
 import { createModel } from './model';
+import { tools } from './tools';
 import { appendMessages, loadMessages } from '../../lib/message-store';
 
 export async function POST(req: Request) {
@@ -67,17 +79,20 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model: createModel(),
-    system: 'You are a helpful assistant. Reply concisely.',
+    system: `You are a helpful assistant. When the user asks about weather, use the getWeather tool. If they don't specify a location, call getLocation first to get their coordinates, then call getWeather with a description of that location. When the user asks about a weather forecast or upcoming weather, use getWeatherForecast.`,
     messages: await convertToModelMessages(conversation),
+    tools,
     abortSignal: run.abortSignal,
+    stopWhen: stepCountIs(10),
   });
 
   after(async () => {
     const pipeResult = await run.pipe(result.toUIMessageStream());
     const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
     if (outcome.reason === 'suspend') {
-      // Text-only (no tools), so a run never actually suspends — handled for
-      // type completeness; a suspended run is never persisted.
+      // A client-executed or approval-gated tool suspends the run; the client
+      // resumes it with a continuation under the same runId. A suspended run is
+      // never persisted — only the terminal (complete) run is.
       await run.suspend();
     } else {
       // End the run first, then persist. run.end publishes the completion

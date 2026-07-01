@@ -2,7 +2,7 @@
 
 import { ChatTransportProvider } from '@ably/ai-transport/vercel/react';
 import type { UIMessage } from 'ai';
-import { SeededChat } from './components/seeded-chat';
+import { Chat } from './components/chat';
 import { Providers, useAblyReady } from './providers';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
@@ -15,7 +15,7 @@ const CHANNEL_NAMESPACE = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ai:
  * fetched before mount so `useChat` reads it synchronously at init. The agent
  * persists every completed run, so no per-request flag is needed.
  */
-function SeededChatWhenLoaded({ channelName }: { channelName: string }) {
+function SeededChatWhenLoaded({ channelName, clientId }: { channelName: string; clientId?: string }) {
   const [seed, setSeed] = useState<UIMessage[] | null>(null);
 
   useEffect(() => {
@@ -45,22 +45,28 @@ function SeededChatWhenLoaded({ channelName }: { channelName: string }) {
 
   return (
     <ChatTransportProvider channelName={channelName}>
-      <SeededChat
+      <Chat
         chatId={channelName}
+        clientId={clientId}
         seed={seed}
       />
     </ChatTransportProvider>
   );
 }
 
-function ChatWhenReady({ channelName }: { channelName: string }) {
+function ChatWhenReady({ channelName, clientId }: { channelName: string; clientId?: string }) {
   const ready = useAblyReady();
 
   if (!ready) {
     return <div className="flex h-dvh items-center justify-center text-sm text-zinc-600">Connecting...</div>;
   }
 
-  return <SeededChatWhenLoaded channelName={channelName} />;
+  return (
+    <SeededChatWhenLoaded
+      channelName={channelName}
+      clientId={clientId}
+    />
+  );
 }
 
 function ChatPage() {
@@ -84,7 +90,10 @@ function ChatPage() {
 
   return (
     <Providers clientId={clientId}>
-      <ChatWhenReady channelName={channelName} />
+      <ChatWhenReady
+        channelName={channelName}
+        clientId={clientId}
+      />
     </Providers>
   );
 }

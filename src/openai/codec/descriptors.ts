@@ -148,9 +148,21 @@ export const outputs = ({
     //
     // Ignored for now:
     //  reasoning (GPT-5.x): the reasoning *item* still rides output_item.*; only
-    //  the streamed summary / raw reasoning text is dropped. TODO: stream it —
-    //  unlike function-call args it fits the stream model (reasoning_summary_part.added
-    //  carries a top-level item_id), modulo multiple summary parts per item.
+    //  the streamed summary / raw reasoning text is dropped.
+    //  TODO(AIT-742): stream the summary (render the model's "thinking"). To
+    //  reproduce these events: the /responses request must opt in with
+    //  `reasoning: { summary: 'auto' }` (off by default — the demo doesn't set
+    //  it), AND the prompt must make the model actually reason — a trivial prompt
+    //  yields ~0 reasoning tokens and an empty summary. Reliable repro against
+    //  gpt-5.5: "12 balls, one a different weight; find it and whether it's
+    //  heavier/lighter in exactly 3 weighings." That emits, per reasoning item,
+    //  ONE OR MORE summary parts, each a reasoning_summary_part.added →
+    //  reasoning_summary_text.delta* → reasoning_summary_text.done — all sharing
+    //  one item_id, distinguished only by a numeric summary_index. So streaming
+    //  them needs a stream id composed of item_id + summary_index: the same "the
+    //  id isn't a single top-level string" blocker as the function-call arg
+    //  deltas below (whose id nests under item.id). One core change — deriving a
+    //  stream id from a nested/composite key — unblocks both.
     ignore('response.reasoning_summary_part.added'),
     ignore('response.reasoning_summary_part.done'),
     ignore('response.reasoning_summary_text.delta'),

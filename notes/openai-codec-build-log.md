@@ -113,17 +113,30 @@ suggestion-chip lifecycle). Reviewed with `/code-review-all`.
   (function calls ride the item envelopes; arg deltas are `ignore`d for now —
   not yet streamed; the tool result is the codec's own `function_call_output`
   output event).
-- **Stream tool-call arguments (follow-up from this increment).** The
-  `function_call_arguments.*` deltas are `ignore`d today because they can't key
-  the `stream(...)` model — their start (`output_item.added`) nests the id under
-  `item.id`, so no top-level id is shared across start/delta/end (findings §A).
-  Streaming them (the realtime goal) needs the **core stream model to resolve the
-  stream id from a nested path**, not just a top-level chunk key — a generic core
-  change that also helps any future provider whose stream nests the id. Once done:
-  drop the two `ignore('response.function_call_arguments.*')` entries and add a
-  `function_call_arguments` stream family (start `output_item.added`, delta/done
-  the arg events), with the reducer appending deltas onto the in-progress
-  `function_call` item's `arguments`.
+- **Stream the ignored deltas — one core change unblocks two of them.** Two
+  entries in the `ignore` set are ignored for the _same_ reason: their stream id
+  isn't a single top-level string key, which is all the `stream(...)` model can
+  key on today.
+  - **tool-call arguments** (`function_call_arguments.*`): the id is **nested** —
+    the start (`output_item.added`) carries it under `item.id`, not a top-level
+    field (findings §A).
+  - **reasoning summaries** (`reasoning_summary_*`): the id is **composite** — a
+    reasoning item emits one or more summary parts, each a
+    `reasoning_summary_part.added` → `reasoning_summary_text.delta*` → `.done`,
+    all sharing one `item_id` and distinguished only by a numeric `summary_index`,
+    so the stream id must be `item_id + summary_index`.
+
+  The fix is one generic core enhancement: let a stream family **derive its id
+  from a nested/composite key** rather than a single top-level string. Then drop
+  the relevant `ignore(...)` entries and add stream families — a
+  `function_call_arguments` family (reducer appends deltas onto the in-progress
+  `function_call` item's `arguments`) and a `reasoning` family (rendering the
+  model's "thinking"). To reproduce reasoning-summary events for testing: opt the
+  `/responses` request into `reasoning: { summary: 'auto' }` (the demo doesn't by
+  default) AND use a reasoning-heavy prompt — a trivial one yields ~0 reasoning
+  tokens and an empty summary; the 12-ball weighing puzzle against `gpt-5.5` is a
+  reliable repro (see the note at the `ignore` entries in `descriptors.ts`).
+
 - **Client-side tools + approvals** (suspend/resume): add `ToolResult` /
   `ToolApprovalResponse` to `OpenAIInput` — now clean on the type side thanks to
   the conditional factories above — plus the `openaiRunOutcome` mapper.
@@ -230,10 +243,11 @@ client-side tool surface. The remaining work, smallest/most-foundational first:
    client tool result / approval and a later invocation resumes it), so it is
    where the full `openaiRunOutcome` mapper — including its `suspend` arm — earns
    its place. Brings the OpenAI demo to full feature parity.
-3. **Stream tool-call arguments (the `ignore` follow-up).** The core stream-model
-   change (resolve the stream id from a nested path) that lets the
-   `function_call_arguments.*` deltas leave the `ignore` set and stream as a real
-   family — see the Deferred entry. Realtime win; not parity-blocking.
+3. **Stream the ignored deltas (the `ignore` follow-up).** One core stream-model
+   change — deriving a stream id from a nested/composite key — lets both the
+   `function_call_arguments.*` (nested id) and `reasoning_summary_*` (composite
+   `item_id + summary_index`) deltas leave the `ignore` set and stream as real
+   families. See the Deferred entry. Realtime win; not parity-blocking.
 
 Independent cleanups that can land any time: **option C** (codec passes its own
 factory set — removes the `defineCodec` cast + phantom methods); and **reverting

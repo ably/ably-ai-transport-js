@@ -36,8 +36,8 @@ Committed increments (on branch `AIT-742-openai-codec`):
 - `f40e9dc` — **demos**: the OpenAI Responses text-only `useClientSession` demo.
 
 Latest increment — **server-side function calls, the `ignore` escape hatch,
-demo UI parity, and reasoning-model robustness** (partly committed on branch,
-the reasoning-robustness + `gpt-5.5` default still uncommitted):
+demo UI parity, and reasoning-model robustness** (all committed on branch
+`AIT-742-openai-codec`, unpushed):
 
 - **codec**: a `function_call_output` output event (`OpenAIOutput` widened to
   `ResponseStreamEvent | FunctionCallOutputEvent`) + descriptor entry + reducer
@@ -227,23 +227,62 @@ suggestion-chip lifecycle). Reviewed with `/code-review-all`.
 
 ## Next step, with a suggested order
 
-Text **and server-side function calls** are complete end-to-end (codec +
-transport + demo), and the demo has UI parity with the Vercel demo bar the
-client-side tool surface. The remaining work, smallest/most-foundational first:
+**Scope of this first iteration:** text streaming **+ server-side function
+calls**. Client-side tools / approvals are deliberately out (they're first-class
+in the Vercel AI SDK but not in OpenAI Responses) — a later iteration.
 
-1. **`decodeLifecycle` mid-stream-join repair (small, self-contained).** Lets a
-   client that joins while a reply is streaming reconstruct the in-flight message
-   item. Independent of tools; the demo can already trigger the gap (open a second
-   tab mid-stream). A good warm-up that also hardens what's shipped.
-2. **Client-side tools + approvals (the remaining Vercel-parity gap).** Add
-   `ToolResult` / `ToolApprovalResponse` to `OpenAIInput` (clean now — the
-   conditional factories from `dc8ee25` mean the codec only exposes the factories
-   whose variants it declares), wire suspend/resume, and add the approval/tool-card
-   UI. This is where the run genuinely suspends (the agent goes away awaiting a
-   client tool result / approval and a later invocation resumes it), so it is
-   where the full `openaiRunOutcome` mapper — including its `suspend` arm — earns
-   its place. Brings the OpenAI demo to full feature parity.
-3. **Stream the ignored deltas (the `ignore` follow-up).** One core stream-model
+**Shippability verdict:** the functional core is credible and well-tested (unit
+
+- real-Ably integration + demo e2e, robust across reasoning/non-reasoning
+  models). Two things gate a _credible_ early-preview first pass — `decodeLifecycle`
+  and verifying multi-turn on a reasoning model — with error-detail forwarding and
+  the spike revert as the cleanup tail. Then it's shippable as text + server tools.
+
+1. **`decodeLifecycle` mid-stream-join repair (main correctness gap, small).**
+   Lets a client that joins/refreshes while a reply is streaming reconstruct the
+   in-flight message item (synthesise the `output_item.added` lead-in). Full-stream
+   and post-completion refresh already work; the hole is specifically mid-stream
+   join. The Vercel codec has the pattern to mirror. The demo can trigger the gap
+   (open a second tab mid-stream).
+2. **Verify multi-turn on a reasoning model (unverified risk — needs a real key).**
+   Defaulting to `gpt-5.5` means we resend prior items to `/responses`, and
+   reasoning items have special input rules. Two facets:
+   - **Facet A — the server-side tool loop (sharpest; core scenario, untested).**
+     `agent-stream.ts` collects only the `function_call` from a response and
+     re-appends `[function_call, function_call_output]` for the next `/responses`
+     call — it drops the **reasoning item** that preceded the call. OpenAI's
+     reasoning-model tool loop expects the reasoning item(s) fed back alongside
+     the call, so this may 400 ("function call without its reasoning item") or, at
+     best, make the model re-reason. Never run against a real reasoning model (e2e
+     uses the mock; the text reasoning tests had no tool call). **Repro:** weather
+     prompt on `gpt-5.5`. **Fix if needed:** in the loop, re-append the response's
+     reasoning item(s) too — the idiomatic pattern is "append all output items,
+     then the tool outputs," not just the function call.
+   - **Facet B — cross-turn (regenerate/edit/second message).** `loadConversation`
+     → `toResponsesInput` resends prior assistant turns' stored reasoning items.
+     Pairing (reasoning + its message, in order) is preserved, so this is likelier
+     fine, but bare-reasoning-item acceptance in a stateless input array under
+     `store: true` (no `previous_response_id` / `encrypted_content`) is unverified.
+     **Fix if needed:** strip reasoning items in `toResponsesInput` for cross-turn
+     context (prior-turn reasoning usually isn't needed) — or keep them if accepted.
+
+   Note we can't use `previous_response_id` chaining (the transport reconstructs
+   the conversation from the Ably channel, not OpenAI's server-side response chain),
+   so resending the input array — and getting reasoning-item input rules right — is
+   inherent to the design.
+
+3. **Run-end error forwarding (`openaiRunOutcome`) — polish.** Errored runs end
+   generic (`{ reason: 'error' }`); the original error / in-band `response.failed`
+   detail isn't surfaced. Fine for preview; nicer to forward.
+
+Later iterations (beyond the first pass):
+
+4. **Client-side tools + approvals (full Vercel-parity).** Add `ToolResult` /
+   `ToolApprovalResponse` to `OpenAIInput` (clean now — the conditional factories
+   from `dc8ee25` mean the codec only exposes the factories whose variants it
+   declares), wire suspend/resume, add the approval/tool-card UI, and the full
+   `openaiRunOutcome` mapper (incl. its `suspend` arm).
+5. **Stream the ignored deltas (the `ignore` follow-up).** One core stream-model
    change — deriving a stream id from a nested/composite key — lets both the
    `function_call_arguments.*` (nested id) and `reasoning_summary_*` (composite
    `item_id + summary_index`) deltas leave the `ignore` set and stream as real

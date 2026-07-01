@@ -35,13 +35,35 @@ Committed increments (on branch `AIT-742-openai-codec`):
 - `36a4d33` — **OpenAI**: the **`regenerate`** signal on the `ai-input` wire.
 - `f40e9dc` — **demos**: the OpenAI Responses text-only `useClientSession` demo.
 
-The codec **round-trips text both directions** at the codec level, and now also
-**drives the generic transport end-to-end** through a real demo
-(`createAgentSession` / `createSessionHooks` parameterized by `ResponsesCodec`)
-against real OpenAI. Reviewed with `/code-review-all` (14 concerns) and green:
-typecheck, lint, full unit suite (SDK + demo), build, and codec-level
-integration roundtrips over real Ably. The demo's Playwright e2e is wired (mock
-model + sandbox app) but was not run in the last pass.
+Latest increment — **server-side function calls, the `ignore` escape hatch, and
+demo UI parity** (staged for commit, no SHA yet):
+
+- **codec**: a `function_call_output` output event (`OpenAIOutput` widened to
+  `ResponseStreamEvent | FunctionCallOutputEvent`) + descriptor entry + reducer
+  arm. The `function_call` itself needs no new codec code — it is a
+  `ResponseOutputItem`, so it already rides `output_item.added`/`output_item.done`
+  (the `done` carrying complete arguments).
+- **core**: a third output-descriptor construct, `ignore(type)` — the escape
+  hatch for provider events a pass-through codec doesn't yet stream. The encoder
+  drops listed types and throws on anything else; the OpenAI table `ignore`s the
+  `function_call_arguments.*` deltas for now (see the decision note).
+- **demo**: a `getWeather` server tool (`tools.ts`), the agentic loop
+  (`agent-stream.ts`: model turn → run tools → emit `function_call_output` →
+  continue, all in one run, no suspend) piping the **raw** `/responses` stream
+  (the old `supported-events.ts` filter is deleted — the codec's `ignore` set
+  replaces it), the mock model emitting a function call for weather prompts, a
+  `WeatherCard` rendered via a `toRenderItems` call/output pairing helper, and
+  **suggestion chips** (`useDemoProgress` + `SuggestionChips`) for UI parity with
+  the Vercel demo — clickable prompt chips plus gesture hints that drop off as
+  each step is demonstrated, kept in sync across clients via the tree.
+
+The codec **round-trips text and server-side tool calls both directions** at the
+codec level, and **drives the generic transport end-to-end** through the demo
+against real OpenAI. All green: typecheck, lint, format, the full unit suites
+(SDK + demo), the build, codec-level integration roundtrips over real Ably
+(including the tool-call roundtrip), and the demo's Playwright e2e (11/11, mock
+model + sandbox app — including the server-side weather card and the
+suggestion-chip lifecycle). Reviewed with `/code-review-all`.
 
 ## What exists today
 
@@ -62,12 +84,14 @@ model + sandbox app) but was not run in the last pass.
   variant, so a codec whose `TInput` omits the tool variants (this one) is
   assignable to the generic `Codec`. The demo was the first transport-level
   consumer and surfaced this — see the decision note below.
-- **Demo** `demo/openai/react/use-client-session/`: full parity-minus-tools with
-  the Vercel demo — streamed text, branch navigation, edit, regenerate, history
-  rebuild on refresh, multi-client presence, debug pane. Backend filters the
-  `/responses` stream to the codec's supported event types before `run.pipe`
-  (the codec throws on the rest). Deterministic mock model for e2e; real model
-  (default `gpt-4.1`, non-reasoning) behind `OPENAI_API_KEY`.
+- **Demo** `demo/openai/react/use-client-session/`: parity with the Vercel demo
+  modulo client-side tools — streamed text, a **server-side tool call**
+  (`getWeather` → weather card), **suggestion chips**, branch navigation, edit,
+  regenerate, history rebuild on refresh, multi-client presence, debug pane.
+  Backend pipes the raw `/responses` stream to `run.pipe`; the codec carries what
+  it models and drops its `ignore` set (see below), throwing on anything else.
+  Deterministic mock model for e2e; real model (default `gpt-4.1`, non-reasoning)
+  behind `OPENAI_API_KEY`.
 
 ## Deferred — all marked `TODO(AIT-742)` in code
 
@@ -77,11 +101,22 @@ model + sandbox app) but was not run in the last pass.
   (incl. history hydration / refresh) works without it; this is the smallest
   remaining codec-correctness item, and the demo can hit it (a second tab opened
   while a reply is streaming).
-- **Function calls / server-side tools**: descriptor entries + reducer arms for
-  `function_call` + `function_call_arguments` (discrete events, not a stream
-  family — findings §A), and the backend agentic loop (execute tool → append
-  `function_call_output` → continue). The spike's `toRenderItems` `call_id`
-  pairing helper (§4) is the model for rendering.
+- ~~**Function calls / server-side tools**~~ — **done** (this increment). See the
+  decision note below; the chosen wire shape differs from the original plan
+  (function calls ride the item envelopes; arg deltas are `ignore`d for now —
+  not yet streamed; the tool result is the codec's own `function_call_output`
+  output event).
+- **Stream tool-call arguments (follow-up from this increment).** The
+  `function_call_arguments.*` deltas are `ignore`d today because they can't key
+  the `stream(...)` model — their start (`output_item.added`) nests the id under
+  `item.id`, so no top-level id is shared across start/delta/end (findings §A).
+  Streaming them (the realtime goal) needs the **core stream model to resolve the
+  stream id from a nested path**, not just a top-level chunk key — a generic core
+  change that also helps any future provider whose stream nests the id. Once done:
+  drop the two `ignore('response.function_call_arguments.*')` entries and add a
+  `function_call_arguments` stream family (start `output_item.added`, delta/done
+  the arg events), with the reducer appending deltas onto the in-progress
+  `function_call` item's `arguments`.
 - **Client-side tools + approvals** (suspend/resume): add `ToolResult` /
   `ToolApprovalResponse` to `OpenAIInput` — now clean on the type side thanks to
   the conditional factories above — plus the `openaiRunOutcome` mapper.
@@ -104,10 +139,14 @@ model + sandbox app) but was not run in the last pass.
 - **`item_id`-keyed reducer.** The reducer mirrors OpenAI's `accumulateResponse`
   but keys on `item_id`, not the SDK's positional `output_index` (which the wire
   strips from streamed deltas). Codec-side only; no core change. [findings §B]
-- **Function-call args are discrete events, not a stream family.** A `stream(...)`
-  needs one top-level string `idField` on all three phases; the natural start
-  (`output_item.added`) nests the id under `item.id`, so it can't satisfy it.
-  [findings §A — this is the one place the abstraction strained]
+- **Function-call args can't (yet) be a stream family.** A `stream(...)` needs
+  one top-level string `idField` on all three phases; the natural start
+  (`output_item.added`) nests the id under `item.id`, so it can't satisfy it
+  [findings §A — the one place the abstraction strained]. The spike floated
+  modelling them as discrete per-delta events; we instead **`ignore` them for
+  now** (the complete args arrive on `output_item.done`, so nothing is lost but
+  the incremental typing). Streaming them properly means teaching the stream
+  model to key on a nested id — tracked, not done.
 - **`TMessage = OpenAITurn`** (a turn's items). A **user turn is assumed to be a
   single input message** (documented on the type and at both use sites); a
   role-discriminated `TMessage` is a possible future tightening (not done — it
@@ -119,14 +158,39 @@ model + sandbox app) but was not run in the last pass.
   in the types, so a `// CAST:` bridges them. Tightening `OpenAIItem` to a
   curated subset would remove it but **relocate** the cast into the reducer (and
   worsen its narrowing). **Open: understand/resolve this properly.**
-- **The codec keeps throwing on unrecognised output types** (deliberate — a real
-  safety net). A subset-codec over the pass-through `ResponseStreamEvent` union
-  will therefore see events it can't encode (reasoning, annotations, …), so the
-  **agent/demo must filter the stream to supported event types before
-  `run.pipe`** rather than the codec silently dropping them. The demo does this
-  in `supported-events.ts`, keeping a hand-maintained mirror of the descriptor
-  table's output kinds (it can't introspect them today; see the cleanup idea —
-  export the supported set, or a predicate, from the codec).
+- **Function-call wire shape (resolved, uncommitted).** Three sub-decisions:
+  (1) the **`function_call` rides the existing item envelopes** —
+  `output_item.added` (pending, args empty) → `output_item.done` (complete
+  args). A `function_call` is a `ResponseOutputItem`, so the codec already
+  encodes/decodes/folds it; no new descriptor or reducer arm. (2) **Streamed
+  argument deltas (`response.function_call_arguments.*`) are not yet streamed** —
+  we _want_ to stream them (realtime service), but they don't fit the current
+  `stream(...)` model (findings §A: the start boundary nests the id under
+  `item.id`, so there's no top-level id shared across start/delta/end). Until the
+  stream model can key on a nested id, they go in the codec's `ignore` set (the
+  output table's escape hatch): dropped on encode, with the complete args still
+  arriving on `output_item.done` so the turn stays correct meanwhile. Not a
+  "don't care" — a tracked gap. (3) The
+  **server-executed tool's result is the codec's own `function_call_output`
+  output event** — OpenAI never streams tool output (it is model _input_ on the
+  next turn), so the agent publishes it explicitly; it folds onto the assistant
+  turn beside the call, so the turn round-trips a complete call+output pair for
+  rendering (paired by `call_id`) and for a follow-up `/responses` request. The
+  run does not suspend — the agentic loop runs the tool and continues in place.
+- **Unrecognised output events: throw by default, `ignore` as the escape hatch.**
+  The encoder throws on an output event with no descriptor (a real safety net —
+  an unexpected event is never dropped unnoticed). A pass-through codec over the
+  `ResponseStreamEvent` union will see events it doesn't model, so the output
+  descriptor table has a third construct — `ignore(type)` — naming the events the
+  codec deliberately drops _for now_ because it hasn't yet built a streaming path
+  for them (today: the `function_call_arguments.*` deltas). Anything neither
+  described nor ignored still throws. This lets the agent pipe the raw
+  `/responses` stream with no pre-filter — the old `supported-events.ts` mirror
+  is gone. The aim remains to stream everything we can, so entries leave the
+  `ignore` set as their streaming is built (e.g. teaching the stream model a
+  nested id would let the arg deltas stream). `ignore` lives on the output
+  table, not the codec config, so each entry sits with its justifying comment
+  next to the events it relates to.
 - **Partial codecs vs `Codec` (resolved, `dc8ee25`).** `defineCodec` returns a
   `DefinedCodec`, which the transport consumes as a `Codec`. That assignability
   only held for a _full_ codec (every well-known input variant present) until the
@@ -136,28 +200,17 @@ model + sandbox app) but was not run in the last pass.
   typing those factories present only when `TInput` carries the variant. **Open:**
   option C above removes the residual cast + phantom methods.
 
-## Next step: tool calls (recommended), with a suggested order
+## Next step, with a suggested order
 
-The text path is complete end-to-end (codec + transport + demo). The headline
-gap is **tool calls**, which the spike already de-risked (findings §A pinned the
-function-call wire shape; §4 the `call_id` render pairing). Suggested sequencing,
-smallest/most-foundational first:
+Text **and server-side function calls** are complete end-to-end (codec +
+transport + demo), and the demo has UI parity with the Vercel demo bar the
+client-side tool surface. The remaining work, smallest/most-foundational first:
 
 1. **`decodeLifecycle` mid-stream-join repair (small, self-contained).** Lets a
    client that joins while a reply is streaming reconstruct the in-flight message
    item. Independent of tools; the demo can already trigger the gap (open a second
    tab mid-stream). A good warm-up that also hardens what's shipped.
-2. **Server-side function calls (the big one).** Add `function_call` +
-   `function_call_arguments` descriptor entries (discrete events per §A) and the
-   reducer arms; build the backend agentic loop (execute the tool, append a
-   `function_call_output` input, re-run `/responses`, continue) and surface tool
-   items in the demo via the spike's `call_id`-pairing approach. The run does
-   **not** suspend here — the agent executes the tool and continues the same run
-   in place — so this needs no `suspend` outcome; the only run-end nuance over
-   text is distinguishing `response.failed` / `response.incomplete` from
-   `complete`, which is the general run-end-error-forwarding refinement (it
-   applies to the text path already), not something tools uniquely require.
-3. **Client-side tools + approvals (parity with the Vercel demo).** Add
+2. **Client-side tools + approvals (the remaining Vercel-parity gap).** Add
    `ToolResult` / `ToolApprovalResponse` to `OpenAIInput` (clean now — the
    conditional factories from `dc8ee25` mean the codec only exposes the factories
    whose variants it declares), wire suspend/resume, and add the approval/tool-card
@@ -165,11 +218,15 @@ smallest/most-foundational first:
    client tool result / approval and a later invocation resumes it), so it is
    where the full `openaiRunOutcome` mapper — including its `suspend` arm — earns
    its place. Brings the OpenAI demo to full feature parity.
+3. **Stream tool-call arguments (the `ignore` follow-up).** The core stream-model
+   change (resolve the stream id from a nested path) that lets the
+   `function_call_arguments.*` deltas leave the `ignore` set and stream as a real
+   family — see the Deferred entry. Realtime win; not parity-blocking.
 
 Independent cleanups that can land any time: **option C** (codec passes its own
-factory set — removes the `defineCodec` cast + phantom methods); exporting the
-codec's supported output-event set so the demo filter stops mirroring the
-descriptor table by hand; and **reverting the spike** before release.
+factory set — removes the `defineCodec` cast + phantom methods); and **reverting
+the spike** before release. (The demo's hand-maintained supported-event filter
+is already gone — replaced by the codec's `ignore` construct + throw-on-unknown.)
 
 Open type questions to resolve alongside tools: the **output↔input union cast**
 in `toResponsesInput` (a `function_call_output` is input-only, so tools make the

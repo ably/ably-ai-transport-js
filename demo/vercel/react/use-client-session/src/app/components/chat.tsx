@@ -12,6 +12,7 @@ import { MessageList } from './message-list';
 import { SuggestionChips } from './suggestion-chips';
 import type { CallbackLogEntry, ClientToolLogEntry } from './debug-pane';
 import { DebugPane } from './debug-pane';
+import { ChecklistWidget } from './checklist-widget';
 import { SessionHooks } from '../providers';
 import { clientColor } from '../lib/client-color';
 import { AvatarStack } from './avatar-stack';
@@ -198,6 +199,7 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
           onToolApprove={handleToolApprove}
           onToolDeny={handleToolDeny}
         />
+        <ChecklistWidget session={session} />
         <div className="border-t border-zinc-800">
           <SuggestionChips
             steps={unfinishedSteps}

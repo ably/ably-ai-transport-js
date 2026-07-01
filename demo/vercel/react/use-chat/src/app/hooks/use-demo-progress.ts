@@ -7,6 +7,7 @@
  * - server-weather: a turn called getWeather without preceding getLocation
  * - client-weather: a turn called getLocation
  * - approval-forecast: a turn produced a getWeatherForecast output (approved)
+ * - checklist: a turn produced an updateChecklist output (LiveObjects)
  * - multi-tab: more than one distinct Run.clientId appears across visible Runs
  * - regenerate: any assistant message belongs to a Run with siblings
  * - edit: any user message belongs to a Run with siblings
@@ -24,6 +25,7 @@ export type DemoStepId =
   | 'server-weather'
   | 'client-weather'
   | 'approval-forecast'
+  | 'checklist'
   | 'multi-tab'
   | 'edit'
   | 'regenerate'
@@ -67,6 +69,13 @@ const ALL_STEPS: DemoStep[] = [
     tag: 'Approval-gated tool',
     label: `"what's the weather forecast for London?"`,
     prompt: `what's the weather forecast for London?`,
+  },
+  {
+    id: 'checklist',
+    type: 'prompt',
+    tag: 'LiveObjects checklist',
+    label: `"Write me a short blog post about Ably — outline it, draft it, then tidy it up."`,
+    prompt: `Write me a short blog post about Ably — outline it, draft it, then tidy it up.`,
   },
   {
     id: 'multi-tab',
@@ -132,6 +141,9 @@ export function useDemoProgress(
       }
       if (turnOutputs.has('getWeatherForecast')) {
         completed.add('approval-forecast');
+      }
+      if (turnOutputs.has('updateChecklist')) {
+        completed.add('checklist');
       }
     }
 

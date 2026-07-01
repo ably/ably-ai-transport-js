@@ -30,10 +30,15 @@ export async function GET(req: Request) {
   // Pinned `?channel=` names must sit within this namespace to be authorised.
   const namespace = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ai:';
 
+  // The checklist state lives in LiveObjects, so the token must also permit
+  // the object operations — without them the server grants the channel's
+  // object modes as an empty subset and object reads/writes fail.
+  const capability = ['publish', 'subscribe', 'presence', 'history', 'object-subscribe', 'object-publish'];
+
   const token = jwt.sign(
     {
       'x-ably-clientId': clientId,
-      'x-ably-capability': JSON.stringify({ [`${namespace}*`]: ['publish', 'subscribe', 'presence', 'history'] }),
+      'x-ably-capability': JSON.stringify({ [`${namespace}*`]: capability }),
     },
     keySecret,
     {

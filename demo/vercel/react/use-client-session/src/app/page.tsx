@@ -1,6 +1,7 @@
 'use client';
 
 import { Providers, useAblyReady, SessionHooks } from './providers';
+import { OBJECT_MODES } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import { Chat } from './components/chat';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -22,6 +23,7 @@ function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; 
     <ClientSessionProvider
       channelName={channelName}
       codec={UIMessageCodec}
+      channelModes={OBJECT_MODES}
     >
       <Chat
         chatId={channelName}

@@ -12,6 +12,9 @@
  *   then a weather sentence on the continuation
  * - `... weather forecast for <place>?` -> `getWeatherForecast` (approval,
  *   suspends), then a forecast sentence (or an acknowledgement if denied)
+ * - `plan` / `checklist` / `outline`    -> `updateChecklist` (server tool)
+ *   several times: plans the steps, then flips each to active then done in
+ *   LiveObjects, then an "all done" sentence
  * - `... a long story about a dragon`   -> a long, slowly streamed, abort-aware
  *   reply for the cancel test
  *
@@ -64,6 +67,18 @@ function hasToolResultFor(prompt: ModelPrompt, toolName: string): boolean {
     }
   }
   return false;
+}
+
+/** Count how many messages carry a tool result for the named tool. */
+function countToolResultsFor(prompt: ModelPrompt, toolName: string): number {
+  let count = 0;
+  for (const message of prompt) {
+    if (message.role !== 'assistant' && message.role !== 'tool') continue;
+    for (const part of message.content) {
+      if (part.type === 'tool-result' && part.toolName === toolName) count++;
+    }
+  }
+  return count;
 }
 
 /** True if any assistant message already proposed a call to the named tool. */
@@ -125,6 +140,26 @@ function planResponse(prompt: ModelPrompt): ResponsePlan {
     return { kind: 'tool', toolName: 'getLocation', input: { highAccuracy: false } };
   }
 
+  // Checklist: plan a multi-step task, then flip each step active -> done, one
+  // per turn, driven by how many updateChecklist results have accumulated so
+  // far. streamText loops these server-tool calls within a single run, so the
+  // client watches the LiveObjects checklist progress live. "outline" catches
+  // the multi-step suggestion-chip prompt, which reads naturally without
+  // "plan" or "checklist".
+  if (lower.includes('checklist') || lower.includes('plan') || lower.includes('outline')) {
+    const done = countToolResultsFor(prompt, 'updateChecklist');
+    if (done === 0) {
+      return { kind: 'tool', toolName: 'updateChecklist', input: { plan: CHECKLIST_STEPS, start: [1] } };
+    }
+    if (done < CHECKLIST_STEPS.length) {
+      return { kind: 'tool', toolName: 'updateChecklist', input: { complete: [done], start: [done + 1] } };
+    }
+    if (done === CHECKLIST_STEPS.length) {
+      return { kind: 'tool', toolName: 'updateChecklist', input: { complete: [done] } };
+    }
+    return { kind: 'text', text: 'All done — I worked through the checklist.' };
+  }
+
   // "reply with the word X" / "reply with just the word X".
   const wordMatch = /\bword\s+([A-Za-z0-9]+)/i.exec(text);
   if (wordMatch) return { kind: 'text', text: wordMatch[1] };
@@ -144,6 +179,8 @@ function planResponse(prompt: ModelPrompt): ResponsePlan {
 
   return { kind: 'text', text: 'Done.' };
 }
+
+const CHECKLIST_STEPS = ['Gather the requirements', 'Draft the outline', 'Write the summary'];
 
 const LONG_STORY =
   'Once upon a time, in a kingdom of glass towers, there lived a dragon who hoarded ' +

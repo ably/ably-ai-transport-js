@@ -1,6 +1,9 @@
 'use client';
 
 import { ChatTransportProvider } from '@ably/ai-transport/vercel/react';
+// OBJECT_MODES is not re-exported from the vercel/react entry point, so import
+// it from the package root.
+import { OBJECT_MODES } from '@ably/ai-transport';
 import { Chat } from './chat';
 import { Providers, useAblyReady } from './providers';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -17,7 +20,10 @@ function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; 
   }
 
   return (
-    <ChatTransportProvider channelName={channelName}>
+    <ChatTransportProvider
+      channelName={channelName}
+      channelModes={OBJECT_MODES}
+    >
       <Chat
         chatId={channelName}
         clientId={clientId}

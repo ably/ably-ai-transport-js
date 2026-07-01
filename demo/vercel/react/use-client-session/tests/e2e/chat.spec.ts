@@ -129,6 +129,28 @@ test.describe('use-client-session demo - chat behaviour', () => {
     expect(text.length).toBeGreaterThan(0);
   });
 
+  // checks: agent maintains a LiveObjects checklist; the panel renders the
+  // steps and their live progress, and restores them from object sync on
+  // reload (before history loads).
+  test('checklist: agent progress renders live and survives reload', async ({ page }, testInfo) => {
+    await page.goto(freshChannelUrl(testInfo.title));
+    await sendPrompt(page, 'Plan and work through a short checklist for me.');
+
+    // Scope assertions to the checklist widget (a labelled region) so a chat
+    // bubble echoing the step text (e.g. the tool-call args) can't satisfy them.
+    const widget = page.getByRole('region', { name: 'Agent tasks' });
+    await expect(widget.getByText('Gather the requirements')).toBeVisible({ timeout: 15_000 });
+    await expect(widget.getByText('Draft the outline')).toBeVisible();
+    await expect(widget.getByText('Write the summary')).toBeVisible();
+    // The agent flips every step to done, so progress reaches 3 / 3.
+    await expect(widget.getByText('3 / 3')).toBeVisible({ timeout: 15_000 });
+
+    // Reload: the checklist comes back from LiveObjects sync on attach.
+    await page.reload();
+    await expect(widget.getByText('Write the summary')).toBeVisible({ timeout: 15_000 });
+    await expect(widget.getByText('3 / 3')).toBeVisible();
+  });
+
   // checks: regen R1 -> R1'; P1 stays visible, R shows N/2, P1 has no counter.
   test('regenerate: original user prompt stays visible AND assistant shows branch nav (1|2 / 2)', async ({
     page,

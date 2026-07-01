@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import * as Ably from 'ably';
+import { LiveObjects } from 'ably/liveobjects';
 import { AblyProvider } from 'ably/react';
 
 const AblyReadyContext = createContext(false);
@@ -30,6 +31,9 @@ export function Providers({ clientId, children }: { clientId?: string; children:
           callback(message, null);
         }
       },
+      // The checklist state lives in LiveObjects, which is an ably-js plugin —
+      // without it, `session.object` throws.
+      plugins: { LiveObjects },
       ...(endpoint ? { endpoint } : {}),
     });
     setClient(ably);

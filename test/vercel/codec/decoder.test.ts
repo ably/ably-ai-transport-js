@@ -362,6 +362,74 @@ describe('Vercel decoder', () => {
     });
   });
 
+  // -- tool-input dynamic flag ----------------------------------------------
+  //
+  // The `dynamic` header distinguishes a dynamic tool from a statically-declared
+  // one; it must reach the decoded `tool-input-start` chunk so the reducer can
+  // reconstruct the right part representation. Absent → static (no `dynamic` on
+  // the chunk); present `true` → dynamic.
+
+  describe('tool-input dynamic flag', () => {
+    it('carries dynamic: true onto the streamed tool-input-start chunk', () => {
+      const decoder = createDecoder();
+      const { outputs } = decoder.decode(
+        withHeaders(
+          { action: 'message.create', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
+          {
+            [HEADER_STREAM]: 'true',
+            [HEADER_STATUS]: 'streaming',
+            [HEADER_STREAM_ID]: 'tc-1',
+            [HEADER_RUN_ID]: 'run-1',
+            kind: 'tool-input',
+            toolCallId: 'tc-1',
+            toolName: 'search',
+            dynamic: 'true',
+          },
+        ),
+      );
+      const startChunk = outputs.find((e) => e.type === 'tool-input-start');
+      expect(startChunk).toEqual(expect.objectContaining({ type: 'tool-input-start', dynamic: true }));
+    });
+
+    it('carries dynamic: true onto the discrete tool-input-start chunk', () => {
+      const decoder = createDecoder();
+      const { outputs } = decoder.decode(
+        withHeaders(
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: '{"q":"x"}' },
+          {
+            [HEADER_STREAM]: 'false',
+            [HEADER_RUN_ID]: 'run-1',
+            kind: 'tool-input',
+            toolCallId: 'tc-1',
+            toolName: 'search',
+            dynamic: 'true',
+          },
+        ),
+      );
+      const startChunk = outputs.find((e) => e.type === 'tool-input-start');
+      expect(startChunk).toEqual(expect.objectContaining({ type: 'tool-input-start', dynamic: true }));
+    });
+
+    it('leaves dynamic off the tool-input-start chunk for a static tool (no dynamic header)', () => {
+      const decoder = createDecoder();
+      const { outputs } = decoder.decode(
+        withHeaders(
+          { action: 'message.create', name: EVENT_AI_OUTPUT, data: '{"q":"x"}' },
+          {
+            [HEADER_STREAM]: 'false',
+            [HEADER_RUN_ID]: 'run-1',
+            kind: 'tool-input',
+            toolCallId: 'tc-1',
+            toolName: 'search',
+          },
+        ),
+      );
+      const startChunk = outputs.find((e) => e.type === 'tool-input-start');
+      expect(startChunk).toBeDefined();
+      expect(startChunk && 'dynamic' in startChunk).toBe(false);
+    });
+  });
+
   // -- tool lifecycle events ------------------------------------------------
 
   describe('tool lifecycle events', () => {

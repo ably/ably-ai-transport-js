@@ -6,13 +6,13 @@ The SDK is codec-parameterized: a generic transport core handles streaming, runs
 
 ## Entry points
 
-| Import path                       | What it provides                                                                           |
-| --------------------------------- | ------------------------------------------------------------------------------------------ |
-| `@ably/ai-transport`              | Generic transport, codec interfaces, utilities. Framework-agnostic.                        |
-| `@ably/ai-transport/react`        | React hooks for the generic transport (`useClientSession()`, `useView()`, etc.)            |
-| `@ably/ai-transport/vercel`       | Vercel AI SDK integration - `UIMessageCodec` and pre-bound transport factories             |
-| `@ably/ai-transport/vercel/react` | Vercel-specific React hooks - `useChatTransport()` for `useChat()`, `useMessageSync()`     |
-| `@ably/ai-transport/openai`       | OpenAI Responses codec - `ResponsesCodec` (early preview; text prompts + streamed replies) |
+| Import path                       | What it provides                                                                                                      |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `@ably/ai-transport`              | Generic transport, codec interfaces, utilities. Framework-agnostic.                                                   |
+| `@ably/ai-transport/react`        | React hooks for the generic transport (`useClientSession()`, `useView()`, etc.)                                       |
+| `@ably/ai-transport/vercel`       | Vercel AI SDK integration - `UIMessageCodec` and pre-bound transport factories                                        |
+| `@ably/ai-transport/vercel/react` | Vercel-specific React hooks - `useChatTransport()` for `useChat()`, `useMessageSync()`                                |
+| `@ably/ai-transport/openai`       | OpenAI Responses codec - `ResponsesCodec` (early preview; text prompts, streamed replies, server-side function calls) |
 
 Peer dependencies: `ably` (required), `ai` (for Vercel entry points), `openai` (for the OpenAI entry point), `react` (for React entry points).
 
@@ -28,4 +28,4 @@ Peer dependencies: `ably` (required), `ai` (for Vercel entry points), `openai` (
 
 ## Status
 
-This SDK is pre-release (v0.1.0). The Vercel AI SDK is the most complete framework integration today; an OpenAI Responses codec is in early preview (text prompts and streamed assistant replies). The generic transport and codec interfaces support custom integrations, and more framework codecs are planned.
+This SDK is pre-release (v0.1.0). The Vercel AI SDK is the most complete framework integration today; an OpenAI Responses codec is in early preview (text prompts, streamed assistant replies, and server-side function calls). The generic transport and codec interfaces support custom integrations, and more framework codecs are planned.

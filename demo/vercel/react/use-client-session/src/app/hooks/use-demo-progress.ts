@@ -18,7 +18,7 @@
 
 import { useMemo } from 'react';
 import type * as Ably from 'ably';
-import type { DynamicToolUIPart, UIMessage } from 'ai';
+import { getToolName, isToolUIPart, type UIMessage } from 'ai';
 import { EVENT_CANCEL } from '@ably/ai-transport';
 
 export type DemoStepId =
@@ -128,11 +128,11 @@ export function useDemoProgress(
         if (m.role === 'user') break;
         if (m.role !== 'assistant') continue;
         for (const part of m.parts) {
-          if (part.type !== 'dynamic-tool') continue;
-          const toolPart = part as DynamicToolUIPart;
-          turnTools.add(toolPart.toolName);
-          if (toolPart.state === 'output-available') {
-            turnOutputs.add(toolPart.toolName);
+          if (!isToolUIPart(part)) continue;
+          const toolName = getToolName(part);
+          turnTools.add(toolName);
+          if (part.state === 'output-available') {
+            turnOutputs.add(toolName);
           }
         }
       }

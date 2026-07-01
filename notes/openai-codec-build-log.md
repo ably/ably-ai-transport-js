@@ -35,8 +35,9 @@ Committed increments (on branch `AIT-742-openai-codec`):
 - `36a4d33` — **OpenAI**: the **`regenerate`** signal on the `ai-input` wire.
 - `f40e9dc` — **demos**: the OpenAI Responses text-only `useClientSession` demo.
 
-Latest increment — **server-side function calls, the `ignore` escape hatch, and
-demo UI parity** (staged for commit, no SHA yet):
+Latest increment — **server-side function calls, the `ignore` escape hatch,
+demo UI parity, and reasoning-model robustness** (partly committed on branch,
+the reasoning-robustness + `gpt-5.5` default still uncommitted):
 
 - **codec**: a `function_call_output` output event (`OpenAIOutput` widened to
   `ResponseStreamEvent | FunctionCallOutputEvent`) + descriptor entry + reducer
@@ -45,8 +46,14 @@ demo UI parity** (staged for commit, no SHA yet):
   (the `done` carrying complete arguments).
 - **core**: a third output-descriptor construct, `ignore(type)` — the escape
   hatch for provider events a pass-through codec doesn't yet stream. The encoder
-  drops listed types and throws on anything else; the OpenAI table `ignore`s the
-  `function_call_arguments.*` deltas for now (see the decision note).
+  drops listed types and throws on anything else (see the decision note).
+- **reasoning-model robustness**: the OpenAI `ignore` set covers a reasoning
+  model's streamed summary / raw reasoning text, refusals, and text annotations
+  as well as the `function_call_arguments.*` deltas, so a reasoning model
+  (`gpt-5.5`, now the demo default) streams its answer without tripping the
+  safety net. An **exhaustive inventory** of every not-yet-modelled
+  `ResponseStreamEvent` (which are ignored vs which still throw) is documented at
+  the `ignore` entries in `descriptors.ts`, authoritative against `openai@6.44.0`.
 - **demo**: a `getWeather` server tool (`tools.ts`), the agentic loop
   (`agent-stream.ts`: model turn → run tools → emit `function_call_output` →
   continue, all in one run, no suspend) piping the **raw** `/responses` stream
@@ -90,8 +97,8 @@ suggestion-chip lifecycle). Reviewed with `/code-review-all`.
   regenerate, history rebuild on refresh, multi-client presence, debug pane.
   Backend pipes the raw `/responses` stream to `run.pipe`; the codec carries what
   it models and drops its `ignore` set (see below), throwing on anything else.
-  Deterministic mock model for e2e; real model (default `gpt-4.1`, non-reasoning)
-  behind `OPENAI_API_KEY`.
+  Deterministic mock model for e2e; real model (default `gpt-5.5`, a reasoning
+  model whose reasoning-summary events are ignored) behind `OPENAI_API_KEY`.
 
 ## Deferred — all marked `TODO(AIT-742)` in code
 
@@ -183,8 +190,13 @@ suggestion-chip lifecycle). Reviewed with `/code-review-all`.
   `ResponseStreamEvent` union will see events it doesn't model, so the output
   descriptor table has a third construct — `ignore(type)` — naming the events the
   codec deliberately drops _for now_ because it hasn't yet built a streaming path
-  for them (today: the `function_call_arguments.*` deltas). Anything neither
-  described nor ignored still throws. This lets the agent pipe the raw
+  for them (today: a reasoning model's streamed summary / raw reasoning text,
+  refusals, text annotations, and the `function_call_arguments.*` deltas — the
+  set that lets a `gpt-5.x` reasoning model stream its answer unbroken). Anything
+  neither described nor ignored still throws — that stays true for opt-in hosted
+  tools / modalities (web/file search, code interpreter, image gen, MCP, audio,
+  custom tools). `descriptors.ts` documents the **exhaustive** inventory (ignored
+  vs still-throwing) against `openai@6.44.0`. This lets the agent pipe the raw
   `/responses` stream with no pre-filter — the old `supported-events.ts` mirror
   is gone. The aim remains to stream everything we can, so entries leave the
   `ignore` set as their streaming is built (e.g. teaching the stream model a

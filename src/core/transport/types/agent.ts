@@ -25,7 +25,7 @@ export interface AgentSessionOptions<
 > {
   /**
    * The Ably Realtime client. The caller owns its lifecycle —
-   * `session.close()` does not close the client.
+   * the session's `detach()` / `end()` do not close the client.
    */
   client: Ably.Realtime;
   /**
@@ -705,15 +705,15 @@ export interface AgentSession<TOutput extends CodecOutputEvent, TProjection, TMe
    * close its open step (if any) then publish `ai-run-end{cancelled}` — so a
    * forgotten `run.end()` (a fire-and-forget turn) still closes every observer's
    * stream rather than leaving it stuck `streaming` — then do everything
-   * {@link close} does (detach + abort). The onion mirrors `run.end()` one layer
+   * {@link detach} does (abort + channel detach). The onion mirrors `run.end()` one layer
    * up: `session.end -> run.end -> step.end`, the step-end preceding the run-end
    * on the wire via `run.end`'s existing auto-close.
    *
    * An open run ends `{cancelled}` — not `complete` (would falsely mark an
    * unfinished turn done), not `suspend` (hangs observers with no resumer;
-   * preserve-for-resume is {@link close}'s job), not `error`. Use this as the
+   * preserve-for-resume is {@link detach}'s job), not `error`. Use this as the
    * normal teardown for a non-durable agent. A durable in-flight activity uses
-   * {@link close} instead, to hand a still-open run off to the next activity
+   * {@link detach} instead, to hand a still-open run off to the next activity
    * WITHOUT terminating it. Resolves once the terminals are published and the
    * detach completes. Idempotent.
    */
@@ -731,5 +731,5 @@ export interface AgentSession<TOutput extends CodecOutputEvent, TProjection, TMe
    * a failure (e.g. the channel is already FAILED) is swallowed
    * and does not reject. Idempotent.
    */
-  close(): Promise<void>;
+  detach(): Promise<void>;
 }

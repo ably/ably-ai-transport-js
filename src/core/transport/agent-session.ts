@@ -392,18 +392,18 @@ class DefaultAgentSession<
       reg.controller.abort();
     }
 
-    // Then do everything close() does (detach + abort any run that survived the
-    // loop, e.g. one created after this snapshot — close() is idempotent here).
-    await this.close();
+    // Then do everything detach() does (abort + detach any run that survived the
+    // loop, e.g. one created after this snapshot — detach() is idempotent here).
+    await this.detach();
 
     this._logger?.debug('DefaultAgentSession.end(); session ended');
   }
 
   // Spec: AIT-ST11
-  async close(): Promise<void> {
+  async detach(): Promise<void> {
     if (this._state === SessionState.CLOSED) return;
     this._state = SessionState.CLOSED;
-    this._logger?.trace('DefaultAgentSession.close();');
+    this._logger?.trace('DefaultAgentSession.detach();');
     if (this._connectPromise) {
       this._channel.unsubscribe(this._channelListener);
     }
@@ -424,7 +424,7 @@ class DefaultAgentSession<
 
     await bestEffortDetach(this._channel, this._connectPromise, this._logger, 'DefaultAgentSession');
 
-    this._logger?.debug('DefaultAgentSession.close(); session closed');
+    this._logger?.debug('DefaultAgentSession.detach(); session detached');
   }
 
   // -------------------------------------------------------------------------

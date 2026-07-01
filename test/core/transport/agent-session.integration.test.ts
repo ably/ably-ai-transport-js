@@ -188,7 +188,7 @@ describe('AgentSession integration', () => {
   let session: AgentSessionT | undefined;
 
   afterEach(async () => {
-    await session?.close();
+    await session?.detach();
     session = undefined;
     closeAllClients();
   });
@@ -1372,7 +1372,7 @@ describe('AgentSession integration', () => {
       const whole = await fullRun.view.loadUntil(() => false);
       expect(whole.map((message) => message.message.id)).toEqual(['user-turn-1', 'asst-turn-1', 'user-turn-2']);
     } finally {
-      await writerAgent.close();
+      await writerAgent.detach();
       await clientSession.close();
     }
   });

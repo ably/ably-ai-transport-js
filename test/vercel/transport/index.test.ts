@@ -119,7 +119,7 @@ describe('Vercel createAgentSession', () => {
     const run = createRunFromOpts(session, { runId: 'test-run' });
     expect(run.runId).toBe('test-run');
 
-    await session.close();
+    await session.detach();
   });
 
   it('passes through options to the core factory', async () => {
@@ -131,6 +131,6 @@ describe('Vercel createAgentSession', () => {
     const run = createRunFromOpts(session, { runId: 'run-2' });
     expect(run.runId).toBe('run-2');
 
-    await session.close();
+    await session.detach();
   });
 });

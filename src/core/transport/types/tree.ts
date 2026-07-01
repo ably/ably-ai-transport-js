@@ -3,7 +3,7 @@
 import type * as Ably from 'ably';
 
 import type { CodecOutputEvent } from '../../codec/types.js';
-import type { RunEndReason, RunStatus } from './shared.js';
+import type { RunEndReason, RunStatus, StepEndReason } from './shared.js';
 
 // ---------------------------------------------------------------------------
 // Run lifecycle events
@@ -109,6 +109,149 @@ export type RunLifecycleEvent =
       ));
 
 // ---------------------------------------------------------------------------
+// Step lifecycle events
+// ---------------------------------------------------------------------------
+
+/**
+ * A structured event describing a step attempt starting or ending within a
+ * run. A step is a re-attemptable unit of agent execution; the `type`
+ * discriminator (`step-start` / `step-end`) is the in-memory domain
+ * vocabulary, distinct from the wire message names (`ai-step-start` /
+ * `ai-step-end`) it is decoded from.
+ *
+ * Both arms carry the run-id and the step-id (stable across retry attempts). An
+ * attempt's identity is the channel serial of its `step-start` (its
+ * `start-serial`): a `step-start` carries that as its own `serial`, and a
+ * `step-end` back-references it. The canonical attempt for a step-id is the one
+ * whose `step-start` has the latest `serial`; the Tree folds only the canonical
+ * attempt's output into the run's projection.
+ *
+ * Both arms also carry the invocation correlation (`invocationId`) and the
+ * three concentric client-identity scopes (`runClientId` ⊃ `invocationClientId`
+ * ⊃ `stepClientId`), each an empty string when the wire didn't carry it. The
+ * Tree reads `stepClientId` off the canonical step-start into the
+ * {@link StepInfo} read-model; the others are carried for consumers correlating
+ * step events to a run / invocation / participant.
+ */
+export type StepLifecycleEvent =
+  | {
+      /** A step attempt began. */
+      type: 'step-start';
+      /** The run this step belongs to. */
+      runId: string;
+      /** The step's id — stable across retry attempts of the same step. */
+      stepId: string;
+      /**
+       * The invocation-id this step was published under (wire `invocation-id`).
+       * Correlates the step to the invocation that drove it. Empty string if the
+       * wire didn't carry one.
+       */
+      invocationId: string;
+      /**
+       * The run owner's clientId (wire `run-client-id`) — the outermost
+       * client-identity scope, constant for the run's lifetime. Empty string if
+       * the wire didn't carry one.
+       */
+      runClientId: string;
+      /**
+       * The clientId of the input that drove the current invocation (wire
+       * `input-client-id`) — the middle client-identity scope. Empty string if
+       * the wire didn't carry one.
+       */
+      invocationClientId: string;
+      /**
+       * The clientId of the participant whose most-recently-incorporated input
+       * shapes this step (wire `step-client-id`) — the innermost client-identity
+       * scope. Sticky across steps that incorporate no fresh input. Empty string
+       * if the wire didn't carry one.
+       */
+      stepClientId: string;
+      /**
+       * Ably channel serial of the step-start message — the attempt's identity
+       * (its `start-serial`) — or `undefined` for an optimistic local event.
+       * Determines the canonical attempt: the latest serial for a given step-id
+       * wins. An undefined serial sorts lowest (an optimistic seed), and the
+       * concrete-serial echo promotes it.
+       */
+      serial: string | undefined;
+      /** Ably server timestamp (epoch ms); absent for an optimistic local event. */
+      timestamp?: number;
+    }
+  | {
+      /** A step attempt ended. */
+      type: 'step-end';
+      /** The run this step belongs to. */
+      runId: string;
+      /** The step's id, matching the corresponding `step-start`. */
+      stepId: string;
+      /**
+       * The serial of the `step-start` this end closes (wire `start-serial`) —
+       * the attempt's identity. Matches that `step-start`'s own `serial`.
+       */
+      startSerial: string;
+      /**
+       * The invocation-id this step was published under (wire `invocation-id`).
+       * Matches the corresponding `step-start`. Empty string if the wire didn't
+       * carry one.
+       */
+      invocationId: string;
+      /**
+       * The run owner's clientId (wire `run-client-id`). Matches the
+       * corresponding `step-start`. Empty string if the wire didn't carry one.
+       */
+      runClientId: string;
+      /**
+       * The clientId of the input that drove the current invocation (wire
+       * `input-client-id`). Matches the corresponding `step-start`. Empty string
+       * if the wire didn't carry one.
+       */
+      invocationClientId: string;
+      /**
+       * The step's client (wire `step-client-id`), matching the corresponding
+       * `step-start`. Empty string if the wire didn't carry one.
+       */
+      stepClientId: string;
+      /**
+       * Ably channel serial of the step-end message, or `undefined` for an
+       * optimistic local event.
+       */
+      serial: string | undefined;
+      /** Ably server timestamp (epoch ms); absent for an optimistic local event. */
+      timestamp?: number;
+      /** Why the step attempt ended. */
+      reason: StepEndReason;
+    };
+
+/**
+ * A read-model summary of one step within a run, exposed via
+ * {@link RunNode.steps}. Reflects the step's **canonical** attempt — the one
+ * whose `ai-step-start` has the latest serial.
+ */
+export interface StepInfo {
+  /** The step's id. */
+  stepId: string;
+  /**
+   * The canonical attempt's status: `'active'` while its `ai-step-start` has
+   * been seen but no matching `ai-step-end` (including a crashed attempt never
+   * retried — the run-level terminal is the signal for that), else the
+   * canonical attempt's end reason.
+   */
+  status: 'active' | StepEndReason;
+  /** How many distinct start-serials (physical attempts) of this step have been observed. */
+  attemptCount: number;
+  /**
+   * The clientId of the participant whose most-recently-incorporated input
+   * shapes this step, read from the canonical attempt's `ai-step-start`
+   * `step-client-id` header (the innermost of the three concentric
+   * client-identity scopes). Empty string when the canonical step-start carried
+   * none, or `undefined` until a step-start has been observed (a step seen only
+   * via an out-of-order step-end). Sticky across steps that incorporate no fresh
+   * input, so consecutive steps of a single-input turn share one value.
+   */
+  stepClientId: string | undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Conversation tree (branching history)
 // ---------------------------------------------------------------------------
 
@@ -210,6 +353,16 @@ export interface RunNode<TProjection> {
   startSerial: string | undefined;
   /** Ably serial of the run-end lifecycle event, if observed. */
   endSerial: string | undefined;
+  /**
+   * The steps observed within this Run, in first-observed order, each
+   * summarising its canonical attempt (see {@link StepInfo}). Output is
+   * intrinsic to a step, so a Run that produced any output has at least one
+   * (the implicit step a bare `run.pipe` opens lazily on its first output
+   * chunk); empty only for a Run that emitted no output. Superseded
+   * non-canonical attempts are counted in {@link StepInfo.attemptCount} but not
+   * surfaced individually — their output is dropped from {@link projection}.
+   */
+  steps: readonly StepInfo[];
 }
 
 /**
@@ -289,10 +442,25 @@ export interface OutputEvent<TOutput extends CodecOutputEvent> {
    */
   serial: string | undefined;
   /**
+   * The `step-id` of the step that published these outputs, or `undefined`
+   * when the carrying message belonged to no step (pre-intrinsic-step history
+   * output, or an inputs-only fold). Set from the output's `step-id` header.
+   */
+  stepId?: string;
+  /**
+   * The `start-serial` of the step attempt that published these outputs (the
+   * serial of its `ai-step-start`), or `undefined` when the message belonged to
+   * no step. Set from the output's `start-serial` header. Lets consumers
+   * attribute live output to a step attempt; the Tree itself uses it to gate
+   * superseded attempts.
+   */
+  startSerial?: string;
+  /**
    * The decoded agent outputs from this message, in wire order. Empty when
    * the folded message carried only inputs (e.g. an optimistic user
-   * message); the event still fires so consumers can observe that the Run's
-   * projection changed.
+   * message), or when the event is a projection-changed signal emitted after
+   * a step supersede refold; the event still fires so consumers can observe
+   * that the Run's projection changed.
    */
   events: TOutput[];
 }

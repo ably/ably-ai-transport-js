@@ -9,10 +9,17 @@
 
 import type * as Ably from 'ably';
 
-import { EVENT_RUN_END, EVENT_RUN_RESUME, EVENT_RUN_START, EVENT_RUN_SUSPEND } from '../../constants.js';
+import {
+  EVENT_RUN_END,
+  EVENT_RUN_RESUME,
+  EVENT_RUN_START,
+  EVENT_RUN_SUSPEND,
+  EVENT_STEP_END,
+  EVENT_STEP_START,
+} from '../../constants.js';
 import type { Logger } from '../../logger.js';
-import { buildLifecycleHeaders } from './headers.js';
-import type { RunEndReason } from './types.js';
+import { buildLifecycleHeaders, buildStepHeaders } from './headers.js';
+import type { RunEndReason, StepEndReason } from './types.js';
 
 /**
  * Per-invocation metadata carried on a run's opening lifecycle event. A
@@ -34,6 +41,25 @@ interface StartRunMetadata {
   inputCodecMessageId?: string;
   /** When true, publish `ai-run-resume` (re-entry) instead of `ai-run-start`. */
   continuation?: boolean;
+}
+
+/**
+ * The invocation correlation and the three concentric client-identity scopes
+ * (`run-client-id` ⊃ `invocationClientId` ⊃ `stepClientId`) stamped on a step's
+ * `ai-step-start` / `ai-step-end`. Carried verbatim onto the wire by
+ * {@link RunManager.startStep} / {@link RunManager.endStep}; the publisher
+ * (the agent run) owns resolving them. Each field is optional and omitted from
+ * the wire when unset.
+ */
+export interface StepClientScopes {
+  /** The invocation-id the step is published under (correlation). */
+  invocationId?: string;
+  /** The run owner's clientId (the outermost client scope). */
+  runClientId?: string;
+  /** The current invocation's input publisher (stamped as `input-client-id`, the middle scope). */
+  invocationClientId?: string;
+  /** The step's client (the innermost scope; the participant whose incorporated input shapes the step). */
+  stepClientId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -77,6 +103,39 @@ export interface RunManager {
     inputClientId?: string,
     inputCodecMessageId?: string,
     error?: Ably.ErrorInfo,
+  ): Promise<void>;
+  /**
+   * Publish `ai-step-start` to open a step attempt within a run. Carries
+   * `step-id` plus the step's invocation correlation and the three concentric
+   * client-identity scopes ({@link StepClientScopes}). The published message's
+   * channel serial IS the attempt's identity (its `start-serial`), returned to
+   * the caller to back-reference on the step's output and `ai-step-end`. A retry
+   * of a step publishes a fresh start with the same `stepId` and a new serial;
+   * the latest-serial start is the canonical attempt.
+   * @param runId - The run the step belongs to.
+   * @param stepId - The step's id (stable across retry attempts).
+   * @param scopes - The step's invocation + client-identity scopes, stamped on the wire.
+   * @returns The published `ai-step-start`'s channel serial (the `start-serial`),
+   *   or `undefined` when the publish returned no serial.
+   */
+  startStep(runId: string, stepId: string, scopes?: StepClientScopes): Promise<string | undefined>;
+  /**
+   * Publish `ai-step-end` to close a step attempt, back-referencing the
+   * attempt's `start-serial` and stamping `step-reason` plus the same invocation
+   * correlation and client-identity scopes ({@link StepClientScopes}) as the
+   * matching `ai-step-start`.
+   * @param runId - The run the step belongs to.
+   * @param stepId - The step's id.
+   * @param startSerial - The attempt's `start-serial` (its `ai-step-start`'s serial).
+   * @param reason - Why the step attempt ended.
+   * @param scopes - The step's invocation + client-identity scopes, stamped on the wire.
+   */
+  endStep(
+    runId: string,
+    stepId: string,
+    startSerial: string,
+    reason: StepEndReason,
+    scopes?: StepClientScopes,
   ): Promise<void>;
   /** Get the clientId that owns a run. */
   getClientId(runId: string): string | undefined;
@@ -214,6 +273,31 @@ class DefaultRunManager implements RunManager {
     const headers = buildLifecycleHeaders({ runId, runClientId: resolvedClientId, ...attribution });
     await this._channel.publish({ name: eventName, extras: { ai: { transport: headers } } });
     this._activeRuns.delete(runId);
+  }
+
+  async startStep(runId: string, stepId: string, scopes?: StepClientScopes): Promise<string | undefined> {
+    this._logger?.trace('DefaultRunManager.startStep();', { runId, stepId });
+    const headers = buildStepHeaders({ runId, stepId, ...scopes });
+    const result = await this._channel.publish({ name: EVENT_STEP_START, extras: { ai: { transport: headers } } });
+    // The step-start's own channel serial is the attempt's identity (its
+    // `start-serial`); the caller back-references it on the step's output and
+    // `ai-step-end`. May be undefined if the publish returned no serial.
+    const startSerial = result.serials[0] ?? undefined;
+    this._logger?.debug('DefaultRunManager.startStep(); step started', { runId, stepId, startSerial });
+    return startSerial;
+  }
+
+  async endStep(
+    runId: string,
+    stepId: string,
+    startSerial: string,
+    reason: StepEndReason,
+    scopes?: StepClientScopes,
+  ): Promise<void> {
+    this._logger?.trace('DefaultRunManager.endStep();', { runId, stepId, startSerial, reason });
+    const headers = buildStepHeaders({ runId, stepId, startSerial, reason, ...scopes });
+    await this._channel.publish({ name: EVENT_STEP_END, extras: { ai: { transport: headers } } });
+    this._logger?.debug('DefaultRunManager.endStep(); step ended', { runId, stepId, startSerial, reason });
   }
 
   getClientId(runId: string): string | undefined {

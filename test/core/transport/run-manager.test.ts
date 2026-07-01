@@ -6,6 +6,8 @@ import {
   EVENT_RUN_RESUME,
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
+  EVENT_STEP_END,
+  EVENT_STEP_START,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
   HEADER_FORK_OF,
@@ -17,6 +19,10 @@ import {
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_START_SERIAL,
+  HEADER_STEP_CLIENT_ID,
+  HEADER_STEP_ID,
+  HEADER_STEP_REASON,
 } from '../../../src/constants.js';
 import type { RunManager } from '../../../src/core/transport/run-manager.js';
 import { createRunManager } from '../../../src/core/transport/run-manager.js';
@@ -34,8 +40,11 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
   const mock: MockChannel = {
     publishCalls: [],
     // eslint-disable-next-line @typescript-eslint/require-await -- mock returns resolved promise
-    publish: vi.fn(async (msg: Ably.Message) => {
+    publish: vi.fn(async (msg: Ably.Message): Promise<Ably.PublishResult> => {
       mock.publishCalls.push(msg);
+      // A deterministic per-publish serial so startStep can return the
+      // step-start's serial (the attempt's `start-serial`).
+      return { serials: [`serial-${String(mock.publishCalls.length)}`] };
     }),
   };
   // CAST: Tests only use publish — other RealtimeChannel members are unused.
@@ -387,6 +396,83 @@ describe('RunManager', () => {
 
       expect(controller1.signal.aborted).toBe(true);
       expect(controller2.signal.aborted).toBe(true);
+    });
+  });
+
+  describe('startStep', () => {
+    it('publishes ai-step-start with run-id and step-id (no start-serial back-ref) and returns its serial', async () => {
+      const startSerial = await manager.startStep('run-1', 'step-0');
+
+      expect(channel.publishCalls).toHaveLength(1);
+      const [msg] = channel.publishCalls;
+      expect(msg?.name).toBe(EVENT_STEP_START);
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- narrowed by expect above
+      const headers = headersOf(msg!);
+      expect(headers[HEADER_RUN_ID]).toBe('run-1');
+      expect(headers[HEADER_STEP_ID]).toBe('step-0');
+      // A step-start carries no back-ref — its own serial is the identity.
+      expect(headers[HEADER_START_SERIAL]).toBeUndefined();
+      expect(headers[HEADER_STEP_REASON]).toBeUndefined();
+      // The publish ACK serial is returned as the attempt's start-serial.
+      expect(startSerial).toBe('serial-1');
+    });
+
+    it('returns undefined when the publish yields no serial', async () => {
+      // A publish that returns no serial (empty serials array) — startStep then
+      // has no `start-serial` to return.
+      const noSerialResult: Ably.PublishResult = { serials: [] };
+      channel.publish.mockResolvedValueOnce(noSerialResult);
+      const startSerial = await manager.startStep('run-1', 'step-0');
+      expect(startSerial).toBeUndefined();
+    });
+
+    it('forwards the invocation correlation and the three client-identity scopes onto the wire', async () => {
+      await manager.startStep('run-1', 'step-0', {
+        invocationId: 'inv-1',
+        runClientId: 'owner',
+        invocationClientId: 'invoker',
+        stepClientId: 'stepper',
+      });
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- single publish
+      const headers = headersOf(channel.publishCalls.at(0)!);
+      expect(headers[HEADER_INVOCATION_ID]).toBe('inv-1');
+      expect(headers[HEADER_RUN_CLIENT_ID]).toBe('owner');
+      expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('invoker');
+      expect(headers[HEADER_STEP_CLIENT_ID]).toBe('stepper');
+    });
+  });
+
+  describe('endStep', () => {
+    it('publishes ai-step-end stamping the start-serial back-ref and the step-reason', async () => {
+      await manager.endStep('run-1', 'step-0', 'serial-1', 'failed');
+
+      expect(channel.publishCalls).toHaveLength(1);
+      const [msg] = channel.publishCalls;
+      expect(msg?.name).toBe(EVENT_STEP_END);
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- narrowed by expect above
+      const headers = headersOf(msg!);
+      expect(headers[HEADER_RUN_ID]).toBe('run-1');
+      expect(headers[HEADER_STEP_ID]).toBe('step-0');
+      expect(headers[HEADER_START_SERIAL]).toBe('serial-1');
+      expect(headers[HEADER_STEP_REASON]).toBe('failed');
+    });
+
+    it('forwards the client-identity scopes alongside the step-reason', async () => {
+      await manager.endStep('run-1', 'step-0', 'serial-1', 'complete', {
+        invocationId: 'inv-1',
+        runClientId: 'owner',
+        invocationClientId: 'invoker',
+        stepClientId: 'stepper',
+      });
+
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- single publish
+      const headers = headersOf(channel.publishCalls.at(0)!);
+      expect(headers[HEADER_STEP_REASON]).toBe('complete');
+      expect(headers[HEADER_INVOCATION_ID]).toBe('inv-1');
+      expect(headers[HEADER_RUN_CLIENT_ID]).toBe('owner');
+      expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('invoker');
+      expect(headers[HEADER_STEP_CLIENT_ID]).toBe('stepper');
     });
   });
 });

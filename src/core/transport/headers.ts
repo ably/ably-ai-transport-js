@@ -13,6 +13,8 @@ import {
   EVENT_RUN_RESUME,
   EVENT_RUN_START,
   EVENT_RUN_SUSPEND,
+  EVENT_STEP_END,
+  EVENT_STEP_START,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
@@ -27,9 +29,13 @@ import {
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_START_SERIAL,
+  HEADER_STEP_CLIENT_ID,
+  HEADER_STEP_ID,
+  HEADER_STEP_REASON,
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
-import type { RunEndReason, RunLifecycleEvent } from './types.js';
+import type { RunEndReason, RunLifecycleEvent, StepEndReason, StepLifecycleEvent } from './types.js';
 
 /**
  * Build the standard transport header set for a message.
@@ -59,6 +65,17 @@ import type { RunEndReason, RunLifecycleEvent } from './types.js';
  *   publishes for the invocation (run lifecycle + outputs), mirroring
  *   `inputClientId`, so the client can correlate any of those events back to
  *   the originating input by the id it owned at send time.
+ * @param opts.stepId - The owning step's id, when the output is published within
+ *   a `RunStep`. See {@link HEADER_STEP_ID}.
+ * @param opts.startSerial - The owning step attempt's `start-serial` (the channel
+ *   serial of its `ai-step-start`), back-referenced on the output so it
+ *   attributes to the right attempt. See {@link HEADER_START_SERIAL}.
+ * @param opts.stepClientId - The owning step's client (the innermost of the
+ *   three concentric client-identity scopes; stamped as `step-client-id`).
+ *   Stamped on every output of the step (initial + appends + close) so an
+ *   output self-attributes to its step's participant even if that attempt's
+ *   `ai-step-start` never arrived — mirroring the `step-id` / `start-serial`
+ *   invariant.
  * @returns A headers record with the transport headers set.
  */
 export const buildTransportHeaders = (opts: {
@@ -73,6 +90,9 @@ export const buildTransportHeaders = (opts: {
   inputClientId?: string;
   inputCodecMessageId?: string;
   inputEventId?: string;
+  stepId?: string;
+  startSerial?: string;
+  stepClientId?: string;
 }): Record<string, string> => {
   const h: Record<string, string> = {
     [HEADER_ROLE]: opts.role,
@@ -87,6 +107,9 @@ export const buildTransportHeaders = (opts: {
   if (opts.inputClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.inputClientId;
   if (opts.inputCodecMessageId !== undefined) h[HEADER_INPUT_CODEC_MESSAGE_ID] = opts.inputCodecMessageId;
   if (opts.inputEventId) h[HEADER_EVENT_ID] = opts.inputEventId;
+  if (opts.stepId !== undefined) h[HEADER_STEP_ID] = opts.stepId;
+  if (opts.startSerial !== undefined) h[HEADER_START_SERIAL] = opts.startSerial;
+  if (opts.stepClientId !== undefined) h[HEADER_STEP_CLIENT_ID] = opts.stepClientId;
   return h;
 };
 
@@ -256,6 +279,133 @@ export const parseRunLifecycle = (
       };
     }
     return { type: 'end', runId, clientId, serial, invocationId, reason, ...stamped };
+  }
+
+  return undefined;
+};
+
+/**
+ * Build the transport header set for a step-lifecycle event (step-start /
+ * step-end). Mirrors {@link buildLifecycleHeaders} for the step layer.
+ * `run-id` and `step-id` are always present; `step-reason` is stamped on
+ * step-end only. `start-serial` is the back-reference to the serial of the
+ * `ai-step-start` an `ai-step-end` closes — so it is supplied on step-end and
+ * omitted on step-start, whose own channel serial IS the attempt's identity.
+ *
+ * The invocation correlation (`invocation-id`) and the three concentric
+ * client-identity scopes (`run-client-id` ⊃ `input-client-id` ⊃
+ * `step-client-id`) are stamped on BOTH step-start and step-end whenever
+ * supplied, so a consumer can attribute either step event to its run,
+ * invocation, and step participant. An empty-string value still stamps the
+ * header (an unknown owner is conveyed as the empty string, mirroring
+ * `buildLifecycleHeaders`'s `run-client-id`); an omitted (`undefined`) value
+ * is left off entirely.
+ * @param opts - The step header values to include.
+ * @param opts.runId - The run the step belongs to.
+ * @param opts.stepId - The step's id (stable across retry attempts).
+ * @param opts.startSerial - Back-reference to the serial of the `ai-step-start`
+ *   this event closes; set on step-end, omitted on step-start.
+ * @param opts.invocationId - The invocation-id the step is published under (correlation).
+ * @param opts.runClientId - The run owner's clientId (the outermost client scope).
+ * @param opts.invocationClientId - The current invocation's input publisher (stamped as `input-client-id`, the middle scope).
+ * @param opts.stepClientId - The step's client (the innermost scope; the participant whose incorporated input shapes the step).
+ * @param opts.reason - Terminal reason; stamped on step-end only.
+ * @returns A headers record with the step headers set.
+ */
+export const buildStepHeaders = (opts: {
+  runId: string;
+  stepId: string;
+  startSerial?: string;
+  invocationId?: string;
+  runClientId?: string;
+  invocationClientId?: string;
+  stepClientId?: string;
+  reason?: StepEndReason;
+}): Record<string, string> => {
+  const h: Record<string, string> = {
+    [HEADER_RUN_ID]: opts.runId,
+    [HEADER_STEP_ID]: opts.stepId,
+  };
+  if (opts.startSerial !== undefined) h[HEADER_START_SERIAL] = opts.startSerial;
+  if (opts.invocationId !== undefined) h[HEADER_INVOCATION_ID] = opts.invocationId;
+  if (opts.runClientId !== undefined) h[HEADER_RUN_CLIENT_ID] = opts.runClientId;
+  // `invocationClientId` rides the existing `input-client-id` wire name: it is
+  // the publisher of the triggering input, which equals the POST issuer's id
+  // only when that issuer published the input event it points at — the common
+  // case. See HEADER_INPUT_CLIENT_ID.
+  if (opts.invocationClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.invocationClientId;
+  if (opts.stepClientId !== undefined) h[HEADER_STEP_CLIENT_ID] = opts.stepClientId;
+  if (opts.reason !== undefined) h[HEADER_STEP_REASON] = opts.reason;
+  return h;
+};
+
+/** The two step-lifecycle Ably message names. */
+type StepLifecycleName = typeof EVENT_STEP_START | typeof EVENT_STEP_END;
+
+/**
+ * Whether an Ably message `name` is one of the step-lifecycle event names
+ * (step-start / step-end). Single source of truth for the classification the
+ * shared decode-and-apply engine uses to route step lifecycle wires away from
+ * the codec decoder, mirroring {@link isRunLifecycleName}. Narrows `name` so
+ * callers can pass it straight to {@link parseStepLifecycle}.
+ * @param name - The inbound Ably message `name`, or undefined.
+ * @returns True when `name` is a step-lifecycle event name.
+ */
+export const isStepLifecycleName = (name: string | undefined): name is StepLifecycleName =>
+  name === EVENT_STEP_START || name === EVENT_STEP_END;
+
+/**
+ * Parse an inbound step-lifecycle Ably message into a {@link StepLifecycleEvent}.
+ *
+ * Mirrors {@link parseRunLifecycle} for the step layer: turns the wire message
+ * `name`, transport headers, and channel serial into the structured event the
+ * Tree consumes. Used by the shared decode-and-apply engine for both the live
+ * loop and history replay so they build the event identically.
+ * @param name - The inbound Ably message `name`.
+ * @param headers - Transport headers from the inbound Ably message.
+ * @param serial - Ably channel serial of the message, or `undefined` for an
+ *   optimistic local event.
+ * @param timestamp - Ably server timestamp (epoch ms), or `undefined` for an
+ *   optimistic local event.
+ * @returns The step-lifecycle event, or `undefined` when `name` is not a
+ *   step-lifecycle name, the message is missing a `run-id` or `step-id`, or a
+ *   step-end is missing its `start-serial` back-reference.
+ */
+export const parseStepLifecycle = (
+  name: string,
+  headers: Record<string, string>,
+  serial: string | undefined,
+  timestamp: number | undefined,
+): StepLifecycleEvent | undefined => {
+  const runId = headers[HEADER_RUN_ID];
+  const stepId = headers[HEADER_STEP_ID];
+  if (!runId || !stepId) return undefined;
+
+  const stamped = timestamp === undefined ? {} : { timestamp };
+  // The invocation correlation + the three concentric client-identity scopes,
+  // each defaulting to the empty string when the wire didn't carry it (mirrors
+  // `parseRunLifecycle`'s clientId/invocationId handling). `invocationClientId`
+  // is read from the `input-client-id` wire name it shares.
+  const clientScopes = {
+    invocationId: headers[HEADER_INVOCATION_ID] ?? '',
+    runClientId: headers[HEADER_RUN_CLIENT_ID] ?? '',
+    invocationClientId: headers[HEADER_INPUT_CLIENT_ID] ?? '',
+    stepClientId: headers[HEADER_STEP_CLIENT_ID] ?? '',
+  };
+
+  if (name === EVENT_STEP_START) {
+    // A step-start's identity is its OWN serial — no `start-serial` back-ref.
+    return { type: 'step-start', runId, stepId, ...clientScopes, serial, ...stamped };
+  }
+
+  if (name === EVENT_STEP_END) {
+    // A step-end back-references its step-start's serial. Without it the event
+    // cannot be attributed to an attempt, so drop it (mirrors run-id/step-id).
+    const startSerial = headers[HEADER_START_SERIAL];
+    if (!startSerial) return undefined;
+    // CAST: agent always writes a valid StepEndReason; default to 'complete' for robustness.
+    const reason = (headers[HEADER_STEP_REASON] ?? 'complete') as StepEndReason;
+    return { type: 'step-end', runId, stepId, startSerial, ...clientScopes, serial, reason, ...stamped };
   }
 
   return undefined;

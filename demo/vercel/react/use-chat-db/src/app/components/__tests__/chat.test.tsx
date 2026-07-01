@@ -52,7 +52,6 @@ vi.mock('ably/react', () => ({
 }));
 
 // Chat must be imported AFTER vi.mock so it picks up the mocked modules.
-// eslint-disable-next-line import/first
 import { Chat } from '../chat';
 
 function userMsg(id: string, text: string): AI.UIMessage {

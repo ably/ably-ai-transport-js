@@ -343,6 +343,9 @@ const rejectReservedFieldKeys = (fields: readonly HeaderField<unknown>[], owner:
  *   family kinds, which drive decode dispatch);
  * - duplicate input `kind`s and duplicate `partType`s within a batch;
  * - field bindings on the driver-reserved `kind` / `partType` header keys.
+ * An ignored output type shares the chunk-`type` namespace, so declaring one
+ * that an event/stream also handles (or listing it twice) trips the same
+ * duplicate-literal check.
  * @param outputs - The assembled output descriptor table.
  * @param inputs - The assembled input descriptor table.
  */
@@ -358,13 +361,17 @@ const validateTables = <TInput, TOutput>(
       reserve(chunkTypes, descriptor.type, owner);
       reserve(wireKinds, descriptor.type, owner);
       rejectReservedFieldKeys(descriptor.fields, owner);
-    } else {
+    } else if (descriptor.construct === 'stream') {
       const owner = `output stream '${descriptor.kind}'`;
       reserve(wireKinds, descriptor.kind, owner);
       for (const phase of [descriptor.start, descriptor.delta, descriptor.end]) {
         reserve(chunkTypes, phase, owner);
       }
       rejectReservedFieldKeys(descriptor.fields, owner);
+    } else {
+      // An ignored type produces no wire output; reserving it in the chunk-type
+      // namespace catches an author both handling and ignoring the same type.
+      reserve(chunkTypes, descriptor.type, `ignored output '${descriptor.type}'`);
     }
   }
 

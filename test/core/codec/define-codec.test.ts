@@ -171,6 +171,62 @@ describe('defineCodec — encoder wiring', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Ignored output types — the `ignore` construct
+//
+// A pass-through codec models only a subset of a large provider union. `ignore`
+// names the events it deliberately drops on encode; any other undescribed event
+// still throws, so a genuinely unexpected event is never dropped unnoticed.
+// ---------------------------------------------------------------------------
+
+type IgnoreOutput = { type: 'kept' } | { type: 'dropped' } | { type: 'surprise' };
+
+const ignoreCodec = defineCodec<NoopInput, IgnoreOutput>()({
+  reducer: {
+    init: (): FixtureProjection => ({ folded: [] }),
+    // The reducer is irrelevant to these encode-side tests.
+    fold: (state: FixtureProjection): FixtureProjection => state,
+    getMessages: (): CodecMessage<NoopInput | QuirkyOutput>[] => [],
+  },
+  output: ({ event, ignore }) => [event('kept'), ignore('dropped')],
+  input: ({ event }) => [event('noop')],
+});
+
+describe('defineCodec — ignored output types', () => {
+  it('publishes a described output type', async () => {
+    const writer = createMockWriter();
+    await ignoreCodec.createEncoder(writer).publishOutput({ type: 'kept' });
+    expect(writer.published).toHaveLength(1);
+  });
+
+  it('drops an ignored output type silently (no publish, no throw)', async () => {
+    const writer = createMockWriter();
+    await ignoreCodec.createEncoder(writer).publishOutput({ type: 'dropped' });
+    expect(writer.published).toHaveLength(0);
+  });
+
+  it('still throws on an output type that is neither described nor ignored', async () => {
+    const writer = createMockWriter();
+    await expect(ignoreCodec.createEncoder(writer).publishOutput({ type: 'surprise' })).rejects.toThrow(
+      /unsupported event type 'surprise'/,
+    );
+  });
+
+  it('rejects a table that both handles and ignores the same type', () => {
+    expect(() =>
+      defineCodec<NoopInput, IgnoreOutput>()({
+        reducer: {
+          init: (): FixtureProjection => ({ folded: [] }),
+          fold: (state: FixtureProjection): FixtureProjection => state,
+          getMessages: (): CodecMessage<NoopInput | QuirkyOutput>[] => [],
+        },
+        output: ({ event, ignore }) => [event('kept'), ignore('kept')],
+        input: ({ event }) => [event('noop')],
+      }),
+    ).toThrow(/dispatch literal 'kept'/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Wire-controlled kind robustness
 //
 // The decode lifecycle policy's onDiscrete is a plain-object Record indexed by

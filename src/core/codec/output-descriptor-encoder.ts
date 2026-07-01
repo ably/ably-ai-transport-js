@@ -39,7 +39,7 @@ export interface OutputDescriptorEncoder<U> {
 /**
  * Build an output encode driver for a descriptor set bound to a wire message name.
  * @template U - The codec's event union.
- * @param descriptors - The descriptor set (events + streamed families).
+ * @param descriptors - The descriptor set (events, streamed families, and ignored types).
  * @param wireName - The Ably message name for this direction (`ai-output` / `ai-input`).
  * @returns An {@link OutputDescriptorEncoder} routing each event through its descriptor.
  */
@@ -49,12 +49,17 @@ export const createOutputDescriptorEncoder = <U extends { type: string }>(
 ): OutputDescriptorEncoder<U> => {
   const { discreteByType, wildcards } = partitionOutputEvents(descriptors);
   const streamByPhase = new Map<string, { descriptor: OutputStreamDescriptor<U>; phase: 'start' | 'delta' | 'end' }>();
+  // Types the codec deliberately drops on encode (see the `ignore` construct):
+  // skipped silently, where any other undescribed type throws.
+  const ignoredTypes = new Set<string>();
 
   for (const descriptor of descriptors) {
     if (descriptor.construct === 'stream') {
       streamByPhase.set(descriptor.start, { descriptor, phase: 'start' });
       streamByPhase.set(descriptor.delta, { descriptor, phase: 'delta' });
       streamByPhase.set(descriptor.end, { descriptor, phase: 'end' });
+    } else if (descriptor.construct === 'ignore') {
+      ignoredTypes.add(descriptor.type);
     }
   }
 
@@ -82,6 +87,10 @@ export const createOutputDescriptorEncoder = <U extends { type: string }>(
 
       const descriptor = discreteByType.get(type) ?? wildcards.find((w) => w.match?.(type));
       if (!descriptor) {
+        // Deliberately-ignored types (the codec listed them) skip silently; any
+        // other undescribed type is a genuine surprise, so reject it loudly
+        // rather than silently dropping content.
+        if (ignoredTypes.has(type)) return;
         throw new Ably.ErrorInfo(`unable to publish; unsupported event type '${type}'`, ErrorCode.InvalidArgument, 400);
       }
 

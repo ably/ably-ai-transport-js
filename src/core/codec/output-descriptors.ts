@@ -236,8 +236,20 @@ export interface OutputStreamDescriptor<U> {
   decodeDiscrete?: (ctx: OutputDecodeContext) => U[];
 }
 
-/** An erased output descriptor — a discrete event or a streamed family. */
-export type OutputDescriptor<U> = OutputEventDescriptor<U> | OutputStreamDescriptor<U>;
+/**
+ * An erased ignore descriptor — a known output `type` the codec deliberately
+ * drops on encode (see {@link OutputBuilder.ignore}). Carries no encode/decode:
+ * the driver skips these types silently instead of throwing.
+ */
+export interface OutputIgnoreDescriptor {
+  /** Discriminator — the construct this descriptor was built with. */
+  construct: 'ignore';
+  /** The output event `type` dropped on encode (never published, never decoded). */
+  type: string;
+}
+
+/** An erased output descriptor — a discrete event, a streamed family, or an ignored type. */
+export type OutputDescriptor<U> = OutputEventDescriptor<U> | OutputStreamDescriptor<U> | OutputIgnoreDescriptor;
 
 // ---------------------------------------------------------------------------
 // Builder factory
@@ -274,6 +286,19 @@ export interface OutputBuilder<U extends { type: string }> {
     kind: string,
     spec: OutputStreamSpec<U, S, D, E>,
   ) => OutputDescriptor<U>;
+  /**
+   * Declare an output `type` the codec deliberately drops on encode — an escape
+   * hatch for a provider event it does not **yet** model as an `event` or
+   * `stream`. The transport aims to carry everything it can (streaming included),
+   * so this is a stopgap, not a "don't care": list a type here only while its
+   * streaming/handling is still unbuilt, with a comment saying why dropping it is
+   * safe for now (e.g. its final value already arrives on another event we do
+   * carry). Any output type that is neither described nor ignored still throws on
+   * encode, so a newly-appearing provider event is never dropped unnoticed.
+   * @param type - The output event `type` literal to drop on encode.
+   * @returns An erased {@link OutputDescriptor}.
+   */
+  ignore: (type: U['type']) => OutputDescriptor<U>;
 }
 
 /**
@@ -304,4 +329,7 @@ export const outputBuilder = <U extends { type: string }>(): OutputBuilder<U> =>
   stream: (kind, spec) =>
     // CAST: see `event` — the narrowed stream spec erases to `OutputDescriptor<U>`.
     ({ construct: 'stream', kind, ...spec }) as unknown as OutputDescriptor<U>,
+  // No spec to erase: an ignore descriptor is just its dispatch type, so it
+  // matches OutputIgnoreDescriptor (a member of the union) with no cast.
+  ignore: (type) => ({ construct: 'ignore', type }),
 });

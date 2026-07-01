@@ -59,7 +59,7 @@ const invocation = Invocation.fromJSON(invocationData);
 const run = session.createRun(invocation);
 
 // Read the conversation the client published to the channel (drain run.view, the
-// one history driver); run.messages is only this turn. The drain also folds in
+// one history driver); run.messages is only this run. The drain also folds in
 // the triggering input that start() waits for.
 while (run.view.hasOlder()) await run.view.loadOlder();
 const history = run.view.getMessages().map((m) => m.message);

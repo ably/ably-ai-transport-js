@@ -115,7 +115,7 @@ export async function POST(req: Request) {
 
   // Drain run.view to read the conversation from the channel (the just-published
   // user input plus prior history); this also folds in the triggering input that
-  // start() waits for. run.messages is only this run's own turn.
+  // start() waits for. run.messages is only this run, not the whole conversation.
   while (run.view.hasOlder()) await run.view.loadOlder();
   const conversation = run.view.getMessages().map((m) => m.message);
   await run.start();

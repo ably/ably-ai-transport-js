@@ -98,6 +98,54 @@ export const HEADER_MSG_REGENERATE = 'msg-regenerate';
 /** Header: reason a run ended (on ai-run-end messages). */
 export const HEADER_RUN_REASON = 'run-reason';
 
+// ---------------------------------------------------------------------------
+// Step lifecycle headers
+// ---------------------------------------------------------------------------
+
+/**
+ * Header: step correlation ID. Identifies one step — a re-attemptable unit of
+ * agent execution — within a run. Stable across retry attempts of the same
+ * step: a retry reuses the `step-id` and opens a fresh `ai-step-start` (whose
+ * channel serial is the attempt's identity — its `start-serial`). Set on
+ * `ai-step-start` / `ai-step-end` and on every agent output published within
+ * the step. Carrying it on outputs (not just step events) is what lets the
+ * client attribute a superseded attempt's output to its step purely from the
+ * message, even when that attempt's own `ai-step-start` never arrived.
+ */
+export const HEADER_STEP_ID = 'step-id';
+
+/**
+ * Header: the channel serial of the step attempt's `ai-step-start` — the
+ * attempt's identity. Set as a back-reference on every `ai-output` and on the
+ * `ai-step-end` of that attempt (an `ai-step-start` carries no `start-serial`:
+ * its own serial IS the value). The canonical attempt for a `step-id` is the
+ * one whose `ai-step-start` has the latest channel serial; output whose
+ * `start-serial` is not that canonical serial is superseded and not
+ * materialised. Every `ai-step-start` has a distinct serial, so a re-streamed
+ * step (a fresh start under the same `step-id`) always supersedes the prior
+ * attempt's output cleanly.
+ */
+export const HEADER_START_SERIAL = 'start-serial';
+
+/** Header: why a step ended (on ai-step-end messages); a {@link StepEndReason}. */
+export const HEADER_STEP_REASON = 'step-reason';
+
+/**
+ * Header: clientId of the participant whose most-recently-incorporated input
+ * shapes the step — the innermost of the three concentric client-identity
+ * scopes (`run-client-id` ⊃ `input-client-id` ⊃ `step-client-id`). Set at
+ * `ai-step-start`, **sticky** across steps that incorporate no fresh input, and
+ * re-derivable from the channel (the latest preceding `ai-step-start`) so the
+ * stickiness survives a fresh-process step under durable execution. Stamped on
+ * `ai-step-start` / `ai-step-end` and on every agent output of the step, so an
+ * output self-attributes to its step's client even when that attempt's
+ * `ai-step-start` never arrived — mirroring the `step-id` / `start-serial`
+ * invariant. The run's FIRST step (no prior step, no explicit value) defaults to
+ * the triggering input's publisher (`input-client-id`); a steer later populates
+ * it with the incorporated input's publisher.
+ */
+export const HEADER_STEP_CLIENT_ID = 'step-client-id';
+
 /**
  * Header: the `codec-message-id` of the input event that triggered the run.
  * The triggering input is the one whose `event-id` matches the invocation's
@@ -159,6 +207,27 @@ export const EVENT_RUN_RESUME = 'ai-run-resume';
 
 /** Message name: server publishes this to signal a run has ended. */
 export const EVENT_RUN_END = 'ai-run-end';
+
+/**
+ * Message name: agent publishes this to open a step — one re-attemptable unit
+ * of execution within a run. Carries `step-id`; its own channel serial is the
+ * attempt's identity (its `start-serial`), so it carries no back-reference. A
+ * retry of a step publishes a fresh `ai-step-start` with the same `step-id` and
+ * a new serial; the latest-serial start is the canonical attempt.
+ *
+ * This transport step is NOT the Vercel codec's `step-start` UIMessage part: a
+ * transport step is a re-attemptable unit of execution that may contain many
+ * model/tool iterations, each of which a codec may surface as its own
+ * `step-start` part. The `ai-` prefix marks the wire (transport) event.
+ */
+export const EVENT_STEP_START = 'ai-step-start';
+
+/**
+ * Message name: agent publishes this to close a step attempt. Carries
+ * `step-id`, `start-serial` (a back-reference to the serial of the
+ * `ai-step-start` it closes), and `step-reason` ("complete" or "failed").
+ */
+export const EVENT_STEP_END = 'ai-step-end';
 
 /**
  * Message name: every agent-published codec event (text, reasoning, tool calls,

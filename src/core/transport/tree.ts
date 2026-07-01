@@ -34,6 +34,8 @@ import {
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
+  HEADER_START_SERIAL,
+  HEADER_STEP_ID,
   HEADER_STREAM,
 } from '../../constants.js';
 import { EventEmitter } from '../../event-emitter.js';
@@ -41,7 +43,17 @@ import type { Logger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
 import { toCodecEvents } from '../codec/codec-event.js';
 import type { CodecEvent, CodecInputEvent, CodecOutputEvent, Reducer } from '../codec/types.js';
-import type { ConversationNode, InputNode, OutputEvent, RunLifecycleEvent, RunNode, Tree } from './types.js';
+import type {
+  ConversationNode,
+  InputNode,
+  OutputEvent,
+  RunLifecycleEvent,
+  RunNode,
+  StepEndReason,
+  StepInfo,
+  StepLifecycleEvent,
+  Tree,
+} from './types.js';
 import { WireLog } from './wire-log.js';
 
 // ---------------------------------------------------------------------------
@@ -56,6 +68,61 @@ import { WireLog } from './wire-log.js';
  * placeholder pending confirmation of the actual cross-region bound.
  */
 export const REORDER_WINDOW_MS = 120_000;
+
+/**
+ * Per-step precedence record on a run node. Tracks the canonical attempt (the
+ * one whose `ai-step-start` has the latest serial — its `start-serial`) and
+ * every attempt seen, so the read-model and the fold gate can be derived. The
+ * canonical attempt's output is the only one folded into the run's projection.
+ */
+interface StepRecord {
+  /**
+   * Whether any `ai-step-start` has been observed for this step. Distinguishes
+   * "no start seen yet" (a step known only from an out-of-order step-end or
+   * output) from a canonical attempt whose `start-serial` happens to be
+   * `undefined` (a serial-less optimistic seed).
+   */
+  started: boolean;
+  /**
+   * The canonical attempt's `start-serial` (the serial of its latest-serial
+   * `ai-step-start`) — the attempt's identity — or `undefined` for a serial-less
+   * optimistic seed (the agent's own pre-echo start) or before any start is
+   * seen. An undefined serial sorts lowest, so any concrete-serial start
+   * promotes/supersedes it.
+   */
+  canonicalStartSerial: string | undefined;
+  /**
+   * The canonical attempt's `step-client-id` (the step's participant), surfaced
+   * on {@link StepInfo.stepClientId}. Set from the canonical `ai-step-start`, so
+   * it tracks the canonical attempt across supersedes. `undefined` until a
+   * `step-start` is seen (a step seen only via an out-of-order step-end).
+   */
+  stepClientId: string | undefined;
+  /**
+   * Every `start-serial` seen for this step — from step-starts (their own
+   * serial) and step-ends (their back-ref). Its size is the read-model attempt
+   * count (distinct physical attempts).
+   */
+  startSerials: Set<string>;
+  /** Terminal reason per `start-serial`, from `ai-step-end`. The read-model status reads the canonical attempt's entry. */
+  endReasonByStartSerial: Map<string, StepEndReason>;
+}
+
+/**
+ * A run node's step-precedence state. Allocated lazily on the first step event
+ * or step-attributed output — run-less input nodes never carry it, so the fold
+ * gate is the identity for them (behaviour-preserving for stepless runs).
+ */
+interface StepState {
+  /** stepId -> its {@link StepRecord}. */
+  steps: Map<string, StepRecord>;
+  /** stepIds in first-observed order, for the {@link RunNode.steps} read-model. */
+  order: string[];
+  /** Output wire serial -> the step/attempt (by `start-serial`) that published it (read from the output's headers). Drives the fold gate. */
+  attribution: Map<string, { stepId: string; startSerial: string }>;
+  /** stepId -> the set of attempt `start-serial`s that have published (attributed) output. Drives the refold-on-supersede trigger. */
+  outputAttempts: Map<string, Set<string>>;
+}
 
 interface InternalNode<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection> {
   node: ConversationNode<TProjection>;
@@ -90,6 +157,14 @@ interface InternalNode<TInput extends CodecInputEvent, TOutput extends CodecOutp
    * this — so a codec needs no seed-replacement logic of its own.
    */
   optimistic: boolean;
+  /**
+   * Step-precedence state — present only on run nodes that have observed a
+   * step event or step-attributed output (lazily allocated). Run-less input
+   * nodes never carry it: the fold gate treats a node with no `stepState` (and
+   * any serial with no attribution entry) as ungated, so stepless runs and
+   * input nodes fold identically to before steps existed.
+   */
+  stepState?: StepState;
 }
 
 /**
@@ -228,6 +303,26 @@ export interface TreeInternal<
   applyRunLifecycle(event: RunLifecycleEvent): void;
 
   /**
+   * Apply a step-lifecycle event (`step-start` / `step-end`) to its run node.
+   *
+   * - `step-start`: records the attempt and, when its serial is the latest for
+   *   the step, makes it the canonical attempt. If that supersedes a different
+   *   attempt whose output is already folded, the run node is refolded so only
+   *   the canonical attempt's output remains in the projection, and a
+   *   projection-changed `output` event (empty `events`) is emitted so the View
+   *   repaints. Creates a bare run node if none exists yet (the run-start /
+   *   output wires backfill its structure), so precedence is correct regardless
+   *   of arrival order.
+   * - `step-end`: records the attempt's terminal reason for the read-model.
+   *
+   * Updates the run node's {@link RunNode.steps} read-model. A `step-end` for an
+   * unknown run is a no-op (mirroring `run-end`); a `step-start` for an unknown
+   * run creates the node.
+   * @param event - The step-lifecycle event payload, including the channel serial.
+   */
+  applyStepLifecycle(event: StepLifecycleEvent): void;
+
+  /**
    * Get the node keyed by `key`, or undefined if `key` names no node. The
    * key is a {@link nodeKey} — a runId (reply run) or an input node's
    * codec-message-id — so the result is a {@link ConversationNode} union:
@@ -358,9 +453,23 @@ export class DefaultTree<
    */
   private readonly _sweepQueue: string[] = [];
 
-  constructor(codec: Reducer<CodecEvent<TInput, TOutput>, TProjection>, logger: Logger) {
+  /**
+   * Window (ms, on the Ably message-timestamp timeline) a structurally complete
+   * run's event log is retained after the node's last activity, before the
+   * sweep may drop it. Defaults to {@link REORDER_WINDOW_MS}; an injected value
+   * raises it for a long-backoff durable agent or lowers it for deterministic
+   * tests (see {@link createTree}).
+   */
+  private readonly _reorderWindowMs: number;
+
+  constructor(
+    codec: Reducer<CodecEvent<TInput, TOutput>, TProjection>,
+    logger: Logger,
+    reorderWindowMs: number = REORDER_WINDOW_MS,
+  ) {
     this._codec = codec;
     this._logger = logger;
+    this._reorderWindowMs = reorderWindowMs;
     this._emitter = new EventEmitter<TreeEventsMap<TOutput>>(logger);
   }
 
@@ -483,6 +592,11 @@ export class DefaultTree<
     serial: string | undefined,
     messageId: string | undefined,
   ): void {
+    // Step precedence gate: a wire whose attempt is a superseded (non-canonical)
+    // step attempt is not folded. A wire with no attribution (every stepless
+    // output, every input-node fold, and an optimistic serial-less seed) is
+    // never gated — the predicate is the identity, so the path is unchanged.
+    if (serial !== undefined && this._isGatedSerial(entry, serial)) return;
     for (const event of events) {
       try {
         entry.node.projection = this._codec.fold(entry.node.projection, event, { serial: serial ?? '', messageId });
@@ -490,6 +604,26 @@ export class DefaultTree<
         this._logger.error('Tree._foldInto(); fold threw', { key: nodeKey(entry.node), messageId, err: error });
       }
     }
+  }
+
+  /**
+   * Whether a wire's serial is a superseded (non-canonical) step attempt and so
+   * must not fold. `true` only when `serial` is attributed to an attempt known
+   * to be non-canonical for its step; `false` for an unattributed serial or a
+   * step with no canonical attempt yet (folded optimistically, refolded out
+   * later) — see {@link StepState}.
+   * @param entry - The node the wire folds into.
+   * @param serial - The wire's Ably serial.
+   * @returns True when the wire is a superseded step attempt and must be skipped.
+   */
+  private _isGatedSerial(entry: InternalNode<TInput, TOutput, TProjection>, serial: string): boolean {
+    const ss = entry.stepState;
+    if (!ss) return false;
+    const attr = ss.attribution.get(serial);
+    if (!attr) return false;
+    const rec = ss.steps.get(attr.stepId);
+    if (rec?.canonicalStartSerial === undefined) return false;
+    return attr.startSerial !== rec.canonicalStartSerial;
   }
 
   /**
@@ -601,6 +735,10 @@ export class DefaultTree<
   private _refold(entry: InternalNode<TInput, TOutput, TProjection>): void {
     let projection = this._codec.init();
     entry.log.replay((event, serial, messageId) => {
+      // Apply the same step-precedence gate as the incremental path so a
+      // rebuild drops superseded attempts' output (the serial is always defined
+      // here — the log only retains serial-bearing wires).
+      if (this._isGatedSerial(entry, serial)) return;
       try {
         projection = this._codec.fold(projection, event, { serial, messageId });
       } catch (error) {
@@ -639,6 +777,18 @@ export class DefaultTree<
    * reorder window has also lapsed. No-op for input nodes (never swept — no
    * floor marker, and their logs are bounded by one user message), for nodes
    * already queued or swept, and while either marker is missing.
+   *
+   * An UNSETTLED step is a second floor alongside `runStartSeen`: a step whose
+   * canonical attempt's `ai-step-start` was observed but whose matching
+   * `ai-step-end` was not (its read-model status is `'active'`). A finite
+   * window cannot cover a durable retry whose backoff exceeds it — if the
+   * structurally-complete run were swept while a step is still open, a
+   * much-later rescheduled `ai-step-start` (same stepId, higher serial) would
+   * hit the swept-log path and the dead attempt's partial output would
+   * over-retain. So refusing to queue while any step is unsettled keeps the log
+   * superseder-ready until {@link applyStepLifecycle} re-queues the node when
+   * that last open step settles. Called from the run-end / run-start lifecycle
+   * paths AND from a step-end (the re-queue trigger).
    * @param entry - The node to consider for sweeping.
    */
   private _maybeQueueSweep(entry: InternalNode<TInput, TOutput, TProjection>): void {
@@ -647,13 +797,48 @@ export class DefaultTree<
     if (entry.log.swept || entry.sweepQueued) return;
     if (!entry.runStartSeen) return;
     if (node.state.status === 'active' || node.state.status === 'suspended') return;
+    if (this._hasUnsettledStep(entry)) return;
     entry.sweepQueued = true;
     this._sweepQueue.push(node.runId);
   }
 
   /**
+   * Whether the node has any step whose canonical attempt has not settled — its
+   * `ai-step-start` is recorded (`started` is set) but no matching `ai-step-end`
+   * reason is, so its read-model status is `'active'`. The same predicate
+   * {@link _updateStepsReadModel} derives a step's `'active'` status from, read
+   * here as the sweep floor. A node with no step state has no step to be
+   * unsettled, so this is `false` for stepless runs (behaviour-preserving).
+   *
+   * A canonical attempt with ANY observed end reason — including `failed` —
+   * counts as settled here, deliberately. A retry after a clean `failed` end is
+   * scheduled while the run is still `active`/`suspended`, so it is the
+   * run-status floor (not this one) that holds the sweep across that retry; once
+   * the workflow drives the run terminal it no longer retries that step, so the
+   * canonical end is final and the run (e.g. a terminal `error`) is free to
+   * sweep. This floor exists for the case the status floor cannot cover: a
+   * canonical attempt with NO observed end whose run was driven terminal by a
+   * separate cleanup, where a much-later rescheduled `ai-step-start` must still
+   * find the dead attempt's log to supersede it.
+   * @param entry - The run node to inspect.
+   * @returns True when at least one observed step is still open.
+   */
+  private _hasUnsettledStep(entry: InternalNode<TInput, TOutput, TProjection>): boolean {
+    const ss = entry.stepState;
+    if (!ss) return false;
+    for (const rec of ss.steps.values()) {
+      if (!rec.started) continue;
+      const settled =
+        rec.canonicalStartSerial !== undefined &&
+        rec.endReasonByStartSerial.get(rec.canonicalStartSerial) !== undefined;
+      if (!settled) return true;
+    }
+    return false;
+  }
+
+  /**
    * Drop the event logs of queued nodes whose retention window has lapsed:
-   * `lastActivityTs + REORDER_WINDOW_MS < _clock`. Drains from the front and
+   * `lastActivityTs + _reorderWindowMs < _clock`. Drains from the front and
    * stops at the first node still inside the window — completion order is
    * time-ordered for live traffic, so this is amortised O(1) per apply, and
    * stopping early only ever over-retains (memory, never correctness). Called
@@ -668,7 +853,7 @@ export class DefaultTree<
         this._sweepQueue.shift();
         continue;
       }
-      if (entry.lastActivityTs + REORDER_WINDOW_MS >= this._clock) return;
+      if (entry.lastActivityTs + this._reorderWindowMs >= this._clock) return;
       this._sweepQueue.shift();
       entry.sweepQueued = false;
       // Drop the decoded payloads (the unbounded cost) but keep each entry's
@@ -1111,13 +1296,38 @@ export class DefaultTree<
 
     this._recordActivity(run, timestamp);
 
+    // Record step attribution from the output's headers BEFORE the fold, so a
+    // refold triggered by this same (out-of-order) wire sees its own attempt and
+    // gates it correctly rather than folding it as stepless. Only agent outputs
+    // carry step-id/start-serial; inputs and stepless outputs leave it unset.
+    const stepId = headers[HEADER_STEP_ID];
+    const startSerial = headers[HEADER_START_SERIAL];
+    if (stepId !== undefined && startSerial !== undefined && serial !== undefined) {
+      this._recordStepAttribution(run, serial, stepId, startSerial);
+    }
+
     // Log the wire and fold it — incrementally onto the tail in the common
     // case, or by refolding the node if this wire arrived out of serial order.
     // `run` may be a reconciled optimistic node: record on whichever entry
-    // owns the fold.
+    // owns the fold. The fold is gated (a superseded attempt's output is logged
+    // but not folded).
     this._recordAndFold(run, all, serial, codecMessageId, version, headers[HEADER_STREAM] === 'true');
 
-    this._emitter.emit('output', { runId: ownerKey, inputCodecMessageId, codecMessageId, serial, events: outputs });
+    // Suppress the `output` emit only for a known-superseded attempt (a
+    // post-retry orphan); stepless output (no attribution) is never suppressed,
+    // so the emit cadence the View and the Vercel run-output-stream depend on is
+    // unchanged.
+    if (serial === undefined || !this._isGatedSerial(run, serial)) {
+      this._emitter.emit('output', {
+        runId: ownerKey,
+        inputCodecMessageId,
+        codecMessageId,
+        serial,
+        events: outputs,
+        ...(stepId !== undefined && { stepId }),
+        ...(startSerial !== undefined && { startSerial }),
+      });
+    }
   }
 
   /**
@@ -1161,6 +1371,232 @@ export class DefaultTree<
     }
     this._emitter.emit('run', event);
     if (this._structuralVersion !== structuralBefore) this._emitter.emit('update');
+  }
+
+  applyStepLifecycle(event: StepLifecycleEvent): void {
+    this._logger.trace('DefaultTree.applyStepLifecycle();', {
+      type: event.type,
+      runId: event.runId,
+      stepId: event.stepId,
+    });
+
+    // A step-start creates the run node if absent (like run-start / output
+    // wires) so precedence is captured regardless of arrival order — a
+    // step-start replayed from a newer history page before the run's other
+    // wires must not be lost, or canonical attribution would be wrong. A
+    // step-end for an unknown run is a no-op, mirroring run-end.
+    const structuralBefore = this._structuralVersion;
+    const entry =
+      event.type === 'step-start' ? this._getOrCreateRunNodeForStep(event.runId) : this._nodeIndex.get(event.runId);
+    if (entry?.node.kind !== 'run') return;
+    const runNode = entry.node;
+    this._recordActivity(entry, event.timestamp);
+
+    const ss = (entry.stepState ??= this._newStepState());
+    let rec = ss.steps.get(event.stepId);
+    if (!rec) {
+      rec = {
+        started: false,
+        canonicalStartSerial: undefined,
+        stepClientId: undefined,
+        startSerials: new Set(),
+        endReasonByStartSerial: new Map(),
+      };
+      ss.steps.set(event.stepId, rec);
+      ss.order.push(event.stepId);
+    }
+
+    // The attempt's identity is its `start-serial`: a step-start's own serial,
+    // a step-end's back-ref. Count it only when defined — a serial-less
+    // optimistic step-start seed has no identity to count yet (its concrete
+    // echo will), so it must not inflate the attempt count.
+    const startSerial = event.type === 'step-start' ? event.serial : event.startSerial;
+    if (startSerial !== undefined) rec.startSerials.add(startSerial);
+
+    if (event.type === 'step-start') {
+      this._applyStepStart(entry, ss, rec, event.stepId, event.serial, event.stepClientId);
+    } else {
+      rec.endReasonByStartSerial.set(event.startSerial, event.reason);
+    }
+
+    this._updateStepsReadModel(runNode, ss);
+
+    // A step lifecycle event may have settled the node's last open step: a
+    // step-end records the canonical attempt's reason, and a reordered
+    // step-start can advance the canonical to an attempt whose step-end was
+    // already observed (end-before-start arrival across publishers). The sweep
+    // floor in `_maybeQueueSweep` refuses to queue a run with any unsettled
+    // step, so a run that went terminal while a step was still open was never
+    // queued; this is the re-queue trigger that makes a now-fully-settled
+    // terminal run sweep-eligible. Idempotent (guarded by `sweepQueued`/`swept`
+    // and the terminal/run-start floors), so it no-ops on a non-terminal or
+    // still-unsettled run regardless of which lifecycle event fired it.
+    this._maybeQueueSweep(entry);
+
+    // Only a freshly-created node bumps the structural version; the common
+    // case (node already exists) changes step content only, repainted via the
+    // supersede's empty-events `output` emit, not the structural channel.
+    if (this._structuralVersion !== structuralBefore) this._emitter.emit('update');
+  }
+
+  /**
+   * Build a fresh, empty {@link StepState}.
+   * @returns A new step-state with empty maps.
+   */
+  private _newStepState(): StepState {
+    return { steps: new Map(), order: [], attribution: new Map(), outputAttempts: new Map() };
+  }
+
+  /**
+   * Apply a `step-start`'s canonical effect: when its serial is the latest seen
+   * for the step, make it the canonical attempt, and if that supersedes a
+   * different attempt whose output is already folded, refold the node to drop
+   * the superseded output. The attempt's identity is its own `serial` (its
+   * `start-serial`).
+   * @param entry - The run node's internal entry.
+   * @param ss - The node's step state.
+   * @param rec - The step's record.
+   * @param stepId - The step id.
+   * @param serial - This `step-start`'s serial — the attempt's `start-serial`
+   *   (undefined for an optimistic seed).
+   * @param stepClientId - This `step-start`'s `step-client-id` (the step's
+   *   participant), recorded on the record when the attempt becomes canonical so
+   *   the read-model tracks the canonical attempt's client across supersedes.
+   */
+  private _applyStepStart(
+    entry: InternalNode<TInput, TOutput, TProjection>,
+    ss: StepState,
+    rec: StepRecord,
+    stepId: string,
+    serial: string | undefined,
+    stepClientId: string,
+  ): void {
+    // Latest-serial wins. An undefined serial sorts lowest (optimistic seed),
+    // so the first start seen sets canonical and any concrete serial promotes
+    // (the same attempt's echo) or supersedes (a later start) it.
+    const isCanonical =
+      !rec.started ||
+      (rec.canonicalStartSerial === undefined && serial !== undefined) ||
+      (rec.canonicalStartSerial !== undefined && serial !== undefined && serial > rec.canonicalStartSerial);
+    rec.started = true;
+    if (!isCanonical) return;
+
+    rec.canonicalStartSerial = serial;
+    rec.stepClientId = stepClientId;
+
+    // Refold only when a different attempt's output is already folded (avoids a
+    // refold on the common first-start-then-stream case, where the only
+    // attributed attempt is the new canonical one). Every `ai-step-start` has a
+    // distinct serial, so a re-stream under the same step-id always lands here
+    // and supersedes the prior attempt's output cleanly.
+    const attributed = ss.outputAttempts.get(stepId);
+    if (attributed && [...attributed].some((s) => s !== serial)) {
+      this._refoldForSupersede(entry);
+    }
+  }
+
+  /**
+   * Rebuild a run node's projection so a superseded attempt's output is dropped
+   * (the gate now excludes it), then repaint via a projection-changed `output`
+   * event (empty `events`). Guarded against a swept log, which can no longer be
+   * rebuilt — there the superseded output is over-retained (a documented,
+   * bounded gap) rather than blanking the projection.
+   * @param entry - The run node whose projection to rebuild.
+   */
+  private _refoldForSupersede(entry: InternalNode<TInput, TOutput, TProjection>): void {
+    if (entry.log.swept) {
+      this._logger.warn(
+        'DefaultTree.applyStepLifecycle(); superseding step-start after log sweep; superseded output over-retained',
+        { key: nodeKey(entry.node) },
+      );
+      return;
+    }
+    this._refold(entry);
+    // Projection-changed repaint over the CONTENT channel: the View's output
+    // handler recomputes getMessages and re-emits its own structural update.
+    // Deliberately not the structural `update` channel (a content-only change).
+    this._emitter.emit('output', {
+      runId: nodeKey(entry.node),
+      inputCodecMessageId: undefined,
+      codecMessageId: undefined,
+      serial: undefined,
+      events: [],
+    });
+  }
+
+  /**
+   * Record which step attempt published an output wire, keyed by the wire's
+   * serial, plus the per-step set of attempt `start-serial`s that have published
+   * output (the refold-on-supersede trigger). Allocates step state lazily.
+   * @param entry - The run node's internal entry.
+   * @param serial - The output wire's serial.
+   * @param stepId - The publishing step's id.
+   * @param startSerial - The publishing attempt's `start-serial`.
+   */
+  private _recordStepAttribution(
+    entry: InternalNode<TInput, TOutput, TProjection>,
+    serial: string,
+    stepId: string,
+    startSerial: string,
+  ): void {
+    const ss = (entry.stepState ??= this._newStepState());
+    ss.attribution.set(serial, { stepId, startSerial });
+    let set = ss.outputAttempts.get(stepId);
+    if (!set) {
+      set = new Set();
+      ss.outputAttempts.set(stepId, set);
+    }
+    set.add(startSerial);
+  }
+
+  /**
+   * Get the run node for a step event, creating a bare one (structure
+   * backfilled by run-start) if absent. Returns undefined only in the
+   * defensive case that the id already names a non-run node.
+   * @param runId - The run id from the step event.
+   * @returns The run node's internal entry, or undefined.
+   */
+  private _getOrCreateRunNodeForStep(runId: string): InternalNode<TInput, TOutput, TProjection> | undefined {
+    const existing = this._nodeIndex.get(runId);
+    if (existing) return existing.node.kind === 'run' ? existing : undefined;
+    const entry = this._buildRunNode({
+      runId,
+      parentCodecMessageId: undefined,
+      forkOf: undefined,
+      regeneratesCodecMessageId: undefined,
+      clientId: '',
+      invocationId: '',
+      startSerial: undefined,
+      runStartSeen: false,
+    });
+    this._insertNode(runId, entry, entry.node.parentCodecMessageId);
+    this._logger.debug('DefaultTree.applyStepLifecycle(); created run node from step event', { runId });
+    return entry;
+  }
+
+  /**
+   * Recompute a run node's {@link RunNode.steps} read-model from its step state.
+   * Each entry reflects the step's canonical attempt status; the attempt count
+   * is the number of distinct `start-serial`s seen (physical attempts).
+   * @param node - The run node to update.
+   * @param ss - The node's step state.
+   */
+  private _updateStepsReadModel(node: RunNode<TProjection>, ss: StepState): void {
+    const steps: StepInfo[] = [];
+    for (const stepId of ss.order) {
+      const rec = ss.steps.get(stepId);
+      if (!rec) continue;
+      // 'active' until the canonical attempt's `ai-step-end` is observed — and
+      // also while its `start-serial` is unknown (a serial-less optimistic seed
+      // whose end reason cannot yet be keyed), or a step seen only via a step-end
+      // / output with no step-start at all.
+      const status: 'active' | StepEndReason =
+        !rec.started || rec.canonicalStartSerial === undefined
+          ? 'active'
+          : (rec.endReasonByStartSerial.get(rec.canonicalStartSerial) ?? 'active');
+      steps.push({ stepId, status, attemptCount: rec.startSerials.size, stepClientId: rec.stepClientId });
+    }
+    node.steps = steps;
   }
 
   /**
@@ -1414,6 +1850,7 @@ export class DefaultTree<
       projection: this._codec.init(),
       startSerial: params.startSerial,
       endSerial: undefined,
+      steps: [],
     };
 
     return this._wrapNode(node, params.runStartSeen);
@@ -1524,6 +1961,10 @@ export class DefaultTree<
  * oplog of Ably messages as a two-node-per-turn forest (input node + reply run).
  * @param codec - Codec used to fold inbound events into per-Run projections.
  * @param logger - Logger for diagnostic output.
+ * @param reorderWindowMs - Event-log retention window in ms; defaults to
+ *   {@link REORDER_WINDOW_MS}. Raise it for a long-backoff durable agent (so a
+ *   late superseding step-start still finds the dead attempt's log), lower it
+ *   for deterministic tests.
  * @returns A new {@link DefaultTree} instance. The session uses DefaultTree
  *   directly for internal methods (applyMessage, applyRunLifecycle,
  *   emitAblyMessage). Public consumers see the narrower {@link Tree} interface.
@@ -1531,4 +1972,6 @@ export class DefaultTree<
 export const createTree = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection>(
   codec: Reducer<CodecEvent<TInput, TOutput>, TProjection>,
   logger: Logger,
-): DefaultTree<TInput, TOutput, TProjection> => new DefaultTree<TInput, TOutput, TProjection>(codec, logger);
+  reorderWindowMs?: number,
+): DefaultTree<TInput, TOutput, TProjection> =>
+  new DefaultTree<TInput, TOutput, TProjection>(codec, logger, reorderWindowMs);

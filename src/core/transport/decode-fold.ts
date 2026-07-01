@@ -23,7 +23,7 @@ import type * as Ably from 'ably';
 import { HEADER_RUN_ID } from '../../constants.js';
 import { getTransportHeaders } from '../../utils.js';
 import type { CodecInputEvent, CodecOutputEvent, Decoder } from '../codec/types.js';
-import { isRunLifecycleName, parseRunLifecycle } from './headers.js';
+import { isRunLifecycleName, isStepLifecycleName, parseRunLifecycle, parseStepLifecycle } from './headers.js';
 import type { TreeInternal } from './tree.js';
 import type { RunLifecycleEvent } from './types.js';
 
@@ -78,6 +78,16 @@ const applyWireMessage = <TInput extends CodecInputEvent, TOutput extends CodecO
     const event = parseRunLifecycle(rawMsg.name, headers, serial, timestamp);
     if (event) tree.applyRunLifecycle(event);
     return event;
+  }
+
+  // Step lifecycle is classified BEFORE the codec decoder so a step wire never
+  // reaches it (step events carry no codec payload). Returns `undefined` like a
+  // codec-decoded message — a live caller has no step-specific side-effect to
+  // run (unlike run-start, which resolves a pending run-id promise).
+  if (isStepLifecycleName(rawMsg.name)) {
+    const event = parseStepLifecycle(rawMsg.name, headers, serial, timestamp);
+    if (event) tree.applyStepLifecycle(event);
+    return undefined;
   }
 
   const { inputs, outputs } = decoder.decode(rawMsg);

@@ -21,6 +21,7 @@ const makeFakeRun = (runId: string): RunNode<unknown> => ({
   projection: undefined,
   startSerial: undefined,
   endSerial: undefined,
+  steps: [],
 });
 
 describe('useTree', () => {

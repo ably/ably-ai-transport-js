@@ -33,6 +33,9 @@ export interface Materialisation<TInput extends CodecInputEvent, TOutput extends
  * binding a new codec decoder to it.
  * @param codec - The codec whose reducer drives the Tree and whose decoder the applier binds.
  * @param logger - Logger for the Tree, or `undefined` to fall back to a silent logger.
+ * @param reorderWindowMs - The Tree's event-log retention window in ms;
+ *   `undefined` falls back to the Tree's default. Threaded from the session so
+ *   a continuity-loss tree swap rebuilds with the same window.
  * @returns The Tree + applier pair.
  */
 export const createMaterialisation = <
@@ -43,8 +46,13 @@ export const createMaterialisation = <
 >(
   codec: Codec<TInput, TOutput, TProjection, TMessage>,
   logger: Logger | undefined,
+  reorderWindowMs?: number,
 ): Materialisation<TInput, TOutput, TProjection> => {
-  const tree = createTree<TInput, TOutput, TProjection>(codec, logger ?? makeLogger({ logLevel: LogLevel.Silent }));
+  const tree = createTree<TInput, TOutput, TProjection>(
+    codec,
+    logger ?? makeLogger({ logLevel: LogLevel.Silent }),
+    reorderWindowMs,
+  );
   const applier = createWireApplier(tree, codec.createDecoder());
   return { tree, applier };
 };

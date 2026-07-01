@@ -184,6 +184,8 @@ class DefaultAgentSession<
   private readonly _channelListener: (msg: Ably.InboundMessage) => void;
   /** Wire-message page size for history fetches; reapplied when the hydrator is recreated on continuity loss. */
   private readonly _historyPageSize: number | undefined;
+  /** Event-log retention window (ms) for the Tree; reapplied when the Tree is recreated on continuity loss. */
+  private readonly _reorderWindowMs: number | undefined;
 
   private _state = SessionState.READY;
   private _connectPromise: Promise<void> | undefined;
@@ -205,7 +207,8 @@ class DefaultAgentSession<
     this._emitter = new EventEmitter<AgentSessionEventsMap>(this._logger ?? makeLogger({ logLevel: LogLevel.Silent }));
     this._runManager = createRunManager(this._channel, this._logger);
     this._historyPageSize = options.historyPageSize;
-    const { tree, applier } = createMaterialisation(this._codec, this._logger);
+    this._reorderWindowMs = options.reorderWindowMs;
+    const { tree, applier } = createMaterialisation(this._codec, this._logger, this._reorderWindowMs);
     this._tree = tree;
     this._applier = applier;
     this._hydrator = this._createHydrator();
@@ -504,7 +507,8 @@ class DefaultAgentSession<
     // Tree's projections, indices, and ably-message listeners to GC. New
     // runs use the fresh Tree; lingering closures on the old Tree from
     // in-flight (now-aborted) lookups are bounded by the abort propagation.
-    const { tree, applier } = createMaterialisation(this._codec, this._logger);
+    // Reapply the configured retention window so the fresh Tree matches.
+    const { tree, applier } = createMaterialisation(this._codec, this._logger, this._reorderWindowMs);
     this._tree = tree;
     this._applier = applier;
     // Rebuild the hydrator against the fresh Tree/applier — this resets its

@@ -530,7 +530,7 @@ describe('useMessageSync', () => {
 
     // CAST: setMessages receives an updater function from useMessageSync.
     const updater = setMessages.mock.calls.at(-1)?.[0] as (prev: AI.UIMessage[]) => AI.UIMessage[];
-    // The overlay carries the same `tool-${name}` representation the codec now
+    // The overlay carries the same `tool-${name}` representation the codec
     // round-trips faithfully, but a step ahead: `addToolResult` has resolved it
     // to `output-available`. The merge keeps the tree's part type and adopts the
     // overlay's resolved state when the overlay is more advanced.

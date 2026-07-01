@@ -28,7 +28,10 @@ export type ToolOutputChunk = Extract<
  * State-independent identity fields of a tool part, carrying its representation
  * in `type`: a dynamic tool is `dynamic-tool` with an explicit `toolName`; a
  * statically-declared tool is `tool-${name}`, whose name is encoded in the type
- * (the AI SDK's `ToolUIPart` shape carries no separate `toolName`).
+ * (the AI SDK's `ToolUIPart` shape carries no separate `toolName`). The
+ * remaining fields (`toolCallId`, `title`, `providerExecuted`) mirror the AI
+ * SDK's tool-part identity fields. Internal — the named return type of
+ * {@link toolBase} and {@link toolIdentity}, not re-exported as public API.
  */
 export type ToolBase =
   | { type: 'dynamic-tool'; toolName: string; toolCallId: string; title?: string; providerExecuted?: boolean }

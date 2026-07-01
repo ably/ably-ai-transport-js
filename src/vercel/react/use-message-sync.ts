@@ -82,6 +82,11 @@ const mergeAssistant = (tree: AI.UIMessage, overlay: AI.UIMessage): AI.UIMessage
     if (RESOLVED_TOOL_STATES.has(part.state)) return part;
     const overlayPart = overlayByCallId.get(part.toolCallId);
     if (!overlayPart || !RESOLVED_TOOL_STATES.has(overlayPart.state)) return part;
+    // Keep the tree part's `type` (its faithful representation) and adopt the
+    // overlay's resolved payload. The codec preserves each side's
+    // representation, so tree and overlay agree on `dynamic-tool` vs
+    // `tool-${name}` for a given tool — the retained `type` matches the
+    // overlay's own `toolName`/no-`toolName` shape.
     // CAST: tool-${name} and dynamic-tool share the discriminated payload schema.
     return { ...overlayPart, type: part.type } as AI.UIMessage['parts'][number];
   });

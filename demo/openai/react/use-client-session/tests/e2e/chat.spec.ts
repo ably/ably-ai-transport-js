@@ -42,10 +42,6 @@ function assistantBubbles(page: Page): Locator {
   return allBubbles(page).filter({ has: page.locator('button[title="Regenerate response"]') });
 }
 
-function bubbleContaining(page: Page, text: string): Locator {
-  return allBubbles(page).filter({ hasText: text });
-}
-
 async function waitForAssistantSettled(page: Page, timeoutMs = 60_000): Promise<void> {
   // Wait until no run is in flight (Stop is gone), no bubble's StatusBadge
   // still says "streaming", and the latest assistant bubble has text.
@@ -118,6 +114,25 @@ test.describe('openai use-client-session demo - text chat behaviour', () => {
     await waitForAssistantSettled(page);
     const text = await bubbleText(assistantBubbles(page).last());
     expect(text.length).toBeGreaterThan(0);
+  });
+
+  test('server-side tool: a weather prompt renders the weather card and a reply', async ({ page }, testInfo) => {
+    await page.goto(channelUrl(freshChannel(testInfo.title)));
+
+    const input = page.getByPlaceholder('Type a message...');
+    await input.waitFor({ state: 'visible' });
+    await input.fill("what's the weather in London?");
+    await input.press('Enter');
+
+    // The agent runs getWeather server-side within the run, streams the result
+    // back as a weather card, then the model replies — no suspend.
+    await waitForAssistantSettled(page);
+
+    // The WeatherCard renders the structured tool output (humidity/wind are
+    // distinctive to it); the trailing text reply names the location.
+    const assistant = assistantBubbles(page).last();
+    await expect(assistant).toContainText('Humidity:', { timeout: 30_000 });
+    await expect(assistant).toContainText('London');
   });
 
   test('regenerate: original user prompt stays visible and the assistant shows branch nav (N / 2)', async ({
@@ -275,9 +290,10 @@ test.describe('openai use-client-session demo - text chat behaviour', () => {
     expect(await bubbleText(assistantBubbles(page).last())).toContain('remembered');
 
     // Reload: nothing is held in app state, so the session must replay channel
-    // history and reconstruct the conversation.
+    // history and reconstruct the conversation. Scope to the assistant bubble —
+    // the prompt echoes the same word, so a plain text match is ambiguous.
     await page.goto(channelUrl(channel));
-    await expect(bubbleContaining(page, 'remembered')).toBeVisible({ timeout: 30_000 });
+    await expect(assistantBubbles(page).filter({ hasText: 'remembered' })).toBeVisible({ timeout: 30_000 });
   });
 
   test('multi-client sync: a second client on the same channel sees the streamed reply', async ({
@@ -288,9 +304,10 @@ test.describe('openai use-client-session demo - text chat behaviour', () => {
     const b = await openClient(browser, channel, 'client-b');
     try {
       await sendPrompt(a.page, 'Say "synced" as your entire reply.');
-      // Client B, which never sent anything, must see both the prompt and the
-      // assistant reply arrive over the shared channel.
-      await expect(bubbleContaining(b.page, 'synced')).toBeVisible({ timeout: 30_000 });
+      // Client B, which never sent anything, must see the assistant reply arrive
+      // over the shared channel. Scope to the assistant bubble — the prompt
+      // (also synced over) echoes the same word, so a plain text match is ambiguous.
+      await expect(assistantBubbles(b.page).filter({ hasText: 'synced' })).toBeVisible({ timeout: 30_000 });
     } finally {
       await a.context.close();
       await b.context.close();

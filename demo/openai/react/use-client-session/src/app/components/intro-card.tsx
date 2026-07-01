@@ -17,6 +17,17 @@ const STEPS: DemoStep[] = [
       'The agent runs the OpenAI Responses API and streams the reply back over Ably via the Responses codec, token by token.',
   },
   {
+    title: 'Server-side tool call',
+    action: (
+      <>
+        Ask for the weather, e.g.{' '}
+        <span className="font-medium text-zinc-100">&ldquo;what&rsquo;s the weather in London?&rdquo;</span>.
+      </>
+    ),
+    demonstrates:
+      'The model calls the getWeather tool, the agent runs it server-side and streams the result back as a weather card, then the model replies — all within one run, no suspend.',
+  },
+  {
     title: 'Multi-client sync',
     action: (
       <>

@@ -3,14 +3,15 @@
 Playwright tests that drive the demo in a browser and assert the user-visible
 behaviour of the Ably AI Transport flow with the OpenAI Responses codec: client
 and agent sessions exchanging AI messages over an Ably channel, rendered in the
-UI — streamed text, branch navigation (edit/regenerate), cancellation, history
-rebuild on refresh, and multi-tab sync.
+UI — streamed text, a server-side tool call (the weather card), branch
+navigation (edit/regenerate), cancellation, history rebuild on refresh, and
+multi-tab sync.
 
 This demo drives a session directly through the lower-level `useClientSession` /
 `useView` hooks (manual `view.send` / `regenerate` / `edit` plus an explicit
 `wakeAgent` POST), with the generic, codec-agnostic transport parameterized by
-the OpenAI `ResponsesCodec`. It is the text-only counterpart of the Vercel
-`use-client-session` demo (no tools yet — see the SDK build log).
+the OpenAI `ResponsesCodec`. Like the Vercel `use-client-session` demo, it covers
+server-side function calls; client-side tools and approvals are not covered yet.
 
 The suite needs no secrets:
 
@@ -51,12 +52,15 @@ Responses API.
 scripted from the last user prompt, wired in by `createResponseStream()` behind
 `MOCK_LLM`:
 
-| Prompt                            | Reply                                      |
-| --------------------------------- | ------------------------------------------ |
-| `Say "X" ...`                     | `X`                                        |
-| `... the word X ...`              | `X`                                        |
-| `... a long story about a dragon` | a long, slowly streamed, abort-aware reply |
-| `... marker X`                    | `Acknowledged the marker X.`               |
-| anything else                     | a short canned reply echoing the prompt    |
+| Prompt                            | Reply                                                      |
+| --------------------------------- | ---------------------------------------------------------- |
+| `Say "X" ...`                     | `X`                                                        |
+| `... the word X ...`              | `X`                                                        |
+| `... weather in <place>?`         | a `getWeather` function call, then a reply once it has run |
+| `... a long story about a dragon` | a long, slowly streamed, abort-aware reply                 |
+| `... marker X`                    | `Acknowledged the marker X.`                               |
+| anything else                     | a short canned reply echoing the prompt                    |
 
-To add a scenario, add a branch to `planReply()` keyed on the prompt.
+To add a scenario, add a branch to `planReply()` keyed on the prompt. A weather
+prompt drives the server-side tool path: the mock emits a `getWeather` call, the
+agentic loop runs the tool and feeds the result back, and the mock then replies.

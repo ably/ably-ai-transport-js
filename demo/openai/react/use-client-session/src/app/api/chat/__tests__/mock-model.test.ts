@@ -2,23 +2,9 @@ import { describe, it, expect } from 'vitest';
 import type { Responses } from 'openai/resources/responses/responses';
 
 import { createMockResponseStream } from '../mock-model';
+import { drain, userInput } from './stream-helpers';
 
 type ResponseStreamEvent = Responses.ResponseStreamEvent;
-
-function userInput(text: string): Responses.ResponseInputItem[] {
-  return [{ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }];
-}
-
-async function drain(stream: ReadableStream<ResponseStreamEvent>): Promise<ResponseStreamEvent[]> {
-  const out: ResponseStreamEvent[] = [];
-  const reader = stream.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    out.push(value);
-  }
-  return out;
-}
 
 const finalText = (events: ResponseStreamEvent[]): string | undefined => {
   const done = events.find((e) => e.type === 'response.output_text.done');
@@ -52,6 +38,56 @@ describe('createMockResponseStream', () => {
       }),
     );
     expect(finalText(events)).toBe('RED');
+  });
+
+  it('emits a getWeather function call for a weather prompt (no result yet)', async () => {
+    const events = await drain(
+      createMockResponseStream({
+        input: userInput("what's the weather in London?"),
+        signal: new AbortController().signal,
+      }),
+    );
+    // A function call rides the item envelopes only — no text, no content part.
+    expect(events.map((e) => e.type)).toEqual(['response.output_item.added', 'response.output_item.done']);
+    const done = events.find((e) => e.type === 'response.output_item.done');
+    const item = done?.type === 'response.output_item.done' ? done.item : undefined;
+    expect(item?.type).toBe('function_call');
+    if (item?.type === 'function_call') {
+      expect(item.name).toBe('getWeather');
+      expect(JSON.parse(item.arguments)).toEqual({ location: 'London' });
+    }
+  });
+
+  it('defaults the getWeather location when the prompt names no place', async () => {
+    const events = await drain(
+      createMockResponseStream({ input: userInput("what's the weather?"), signal: new AbortController().signal }),
+    );
+    const done = events.find((e) => e.type === 'response.output_item.done');
+    const item = done?.type === 'response.output_item.done' ? done.item : undefined;
+    if (item?.type === 'function_call') {
+      expect(JSON.parse(item.arguments)).toEqual({ location: 'London, UK' });
+    } else {
+      throw new Error('expected a function_call');
+    }
+  });
+
+  it('replies with text once the weather tool result is in the input', async () => {
+    const input: Responses.ResponseInputItem[] = [
+      ...userInput("what's the weather in London?"),
+      {
+        type: 'function_call',
+        call_id: 'c1',
+        name: 'getWeather',
+        arguments: '{"location":"London"}',
+        status: 'completed',
+      },
+      { type: 'function_call_output', call_id: 'c1', output: '{"temperature":60}' },
+    ];
+    const events = await drain(createMockResponseStream({ input, signal: new AbortController().signal }));
+    // The loop's second turn: a text reply, no further tool call.
+    expect(events.some((e) => e.type === 'response.output_text.done')).toBe(true);
+    expect(events.some((e) => e.type === 'response.output_item.done' && e.item.type === 'function_call')).toBe(false);
+    expect(finalText(events)).toContain('London');
   });
 
   it('closes early without a text-done when the signal is already aborted', async () => {

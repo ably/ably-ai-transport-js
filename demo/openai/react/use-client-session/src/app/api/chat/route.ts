@@ -8,15 +8,18 @@
  * `run.loadConversation()` returns the LLM-ready conversation as `OpenAITurn[]`,
  * which `toResponsesInput` flattens into the `/responses` `input` array.
  *
- * The model stream is filtered to the codec's supported event types before
- * `run.pipe` — the codec deliberately throws on unrecognised output events, and
- * a real Responses stream can carry events outside the text-only subset (see
- * `supported-events.ts`).
+ * Server-executed tools run inside the agent's output stream
+ * (`createAgentStream`): the run does not suspend — the agentic loop runs each
+ * tool, publishes its `function_call_output`, and continues `/responses` until
+ * the model produces a final reply. The raw `/responses` stream is piped
+ * straight through: the codec carries what it models and silently drops the
+ * events it doesn't yet stream (its `ignore` set), while still throwing on any
+ * genuinely unexpected event.
  *
- * Text-only run outcome: `pipe` reports the terminal reason directly. A model
- * failure delivered in-band (a `response.failed` / `error` event) is not mapped
- * to a run-end error here — TODO(AIT-742): a run-outcome mapper lands with the
- * function-call / tool increments.
+ * Run outcome: `pipe` reports the terminal reason directly. A model failure
+ * delivered in-band (a `response.failed` / `error` event) is not mapped to a
+ * run-end error here — TODO(AIT-742): a run-outcome mapper lands with the
+ * client-side tool / approval increments.
  */
 
 import { after } from 'next/server';
@@ -26,8 +29,7 @@ import type { InvocationData } from '@ably/ai-transport';
 import { Invocation } from '@ably/ai-transport';
 import { ResponsesCodec, toResponsesInput } from '@ably/ai-transport/openai';
 
-import { createResponseStream } from './model';
-import { filterSupportedEvents } from './supported-events';
+import { createAgentStream } from './agent-stream';
 
 export async function POST(req: Request) {
   const data = (await req.json()) as InvocationData;
@@ -61,10 +63,10 @@ export async function POST(req: Request) {
 
   after(async () => {
     try {
-      const modelStream = await createResponseStream({ input, signal: run.abortSignal });
-      // Filter to the codec's supported event types before piping — the codec
-      // throws on anything it can't encode.
-      const stream = modelStream.pipeThrough(filterSupportedEvents());
+      // The agent stream runs the agentic loop (model turn → run tools →
+      // continue) and emits both the model's events and the codec's
+      // function_call_output events. Run termination stays out-of-band.
+      const stream = createAgentStream({ input, signal: run.abortSignal });
       const result = await run.pipe(stream);
       // The ternary only discriminates RunEndParams (its 'error' arm is a
       // separate shape). We don't attach the original failure: pipe's error is

@@ -1,17 +1,20 @@
 /**
  * Model selection for the agent route.
  *
- * Produces a `ReadableStream<ResponseStreamEvent>` for a request: the
+ * Produces a `ReadableStream<ResponseStreamEvent>` for one model turn: the
  * deterministic mock behind `MOCK_LLM` (e2e tests), otherwise a real OpenAI
- * `/responses` stream. The default model is a non-reasoning model (`gpt-4.1`)
- * so the stream carries no reasoning events; the demo filters to the codec's
- * supported event types regardless (see `supported-events.ts`).
+ * `/responses` stream with the server-executed tools advertised. The default
+ * model is a non-reasoning model (`gpt-4.1`), so the stream stays within what
+ * the codec models plus its small ignore set (the function-call argument
+ * deltas); the agent pipes it raw. The agentic loop in `agent-stream.ts` calls
+ * this once per turn, running any tools the model invokes between calls.
  */
 
 import OpenAI from 'openai';
 import type { Responses } from 'openai/resources/responses/responses';
 
 import { createMockResponseStream } from './mock-model';
+import { tools } from './tools';
 
 /** A request for one model turn. */
 export interface ResponseStreamRequest {
@@ -44,7 +47,17 @@ export async function createResponseStream(
   });
   const model = process.env.OPENAI_MODEL ?? 'gpt-4.1';
 
-  const stream = await client.responses.create({ model, input: req.input, stream: true }, { signal: req.signal });
+  const stream = await client.responses.create(
+    {
+      model,
+      input: req.input,
+      // Advertise the server-executed tools; the agentic loop runs any the
+      // model calls and continues the run (see `agent-stream.ts`).
+      tools,
+      stream: true,
+    },
+    { signal: req.signal },
+  );
   return iterableToStream(stream, req.signal);
 }
 

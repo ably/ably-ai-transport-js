@@ -2,7 +2,8 @@
 
 import { useState } from 'react';
 import type { OpenAITurn } from '@ably/ai-transport/openai';
-import { turnText } from '../helpers';
+import { toRenderItems, turnText } from '../helpers';
+import { ToolInvocation } from './tool-invocation';
 import { clientColor } from '../lib/client-color';
 
 interface MessageBubbleProps {
@@ -186,6 +187,7 @@ export function MessageBubble({
   const colors = clientId ? clientColor(clientId) : undefined;
 
   const messageText = turnText(message);
+  const renderParts = toRenderItems(message);
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -199,7 +201,16 @@ export function MessageBubble({
         ) : (
           <>
             <div className={bubbleClasses(isUser, status, colors?.userBg)}>
-              <span>{messageText}</span>
+              {renderParts.map((part, i) =>
+                part.kind === 'text' ? (
+                  <span key={i}>{part.text}</span>
+                ) : (
+                  <ToolInvocation
+                    key={i}
+                    part={part}
+                  />
+                ),
+              )}
               {!isUser && status === 'streaming' && (
                 <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-amber-500/60 animate-pulse rounded-sm align-text-bottom" />
               )}

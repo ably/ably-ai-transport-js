@@ -1,6 +1,6 @@
 # OpenAI Responses `useClientSession` demo
 
-A Next.js chat app built on the SDK's lower-level React hooks (`useClientSession`, `useView`, and friends from `@ably/ai-transport/react`) with the **OpenAI Responses codec** (`ResponsesCodec` from `@ably/ai-transport/openai`). It drives a session directly — the generic, codec-agnostic transport parameterized by the codec, with no OpenAI-specific transport layer. This is the text-only counterpart of the Vercel `use-client-session` demo: branching, regenerate, edit, history, and multi-client sync all come free from the generic layer. Tools are not covered yet.
+A Next.js chat app built on the SDK's lower-level React hooks (`useClientSession`, `useView`, and friends from `@ably/ai-transport/react`) with the **OpenAI Responses codec** (`ResponsesCodec` from `@ably/ai-transport/openai`). It drives a session directly — the generic, codec-agnostic transport parameterized by the codec, with no OpenAI-specific transport layer. Like the Vercel `use-client-session` demo, branching, regenerate, edit, history, and multi-client sync all come free from the generic layer. It also showcases a **server-side function call**: ask for the weather and the agent runs a `getWeather` tool, streams the result back as a weather card, and the model replies — all within one run (no suspend). Client-side tools and approvals are not covered yet.
 
 The session channel name is the `NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE` (default `ai:`) followed by a random slug, e.g. `ai:swift-otter-lantern`; `?channel=<name>` overrides it (the name must sit within the namespace).
 
@@ -31,12 +31,12 @@ pnpm dev
 
 Open the URL the dev server prints.
 
-The default model is `gpt-4.1` — a non-reasoning model, so the Responses stream carries no reasoning events. The demo filters the stream to the codec's supported event types before piping regardless (see `src/app/api/chat/supported-events.ts`); dropped event types are logged once. Override the model with `OPENAI_MODEL`.
+The default model is `gpt-4.1` — a non-reasoning model, so the Responses stream stays within what the codec models plus the small set of events it doesn't yet stream (the function-call argument deltas, listed via the codec's `ignore` construct and dropped on encode). The agent pipes the raw stream; any event that is neither modelled nor ignored would throw, surfacing that we haven't decided how to carry it. Override the model with `OPENAI_MODEL`.
 
 ## How it works
 
-- **Backend** (`src/app/api/chat/route.ts`): the generic `createAgentSession({ client, channelName, codec: ResponsesCodec })`. Per request it `start()`s a run, `loadConversation()`s the `OpenAITurn[]`, flattens it with `toResponsesInput`, opens an OpenAI `/responses` stream, filters it to the codec's supported events, and `pipe`s it to the channel.
-- **Frontend** (`src/app/providers.tsx`, `page.tsx`): the generic `createSessionHooks<OpenAIInput, OpenAIOutput, OpenAIProjection, OpenAITurn>()`, with `<ClientSessionProvider codec={ResponsesCodec}>`. Components render `OpenAITurn` items' text content parts.
+- **Backend** (`src/app/api/chat/route.ts`): the generic `createAgentSession({ client, channelName, codec: ResponsesCodec })`. Per request it `start()`s a run, `loadConversation()`s the `OpenAITurn[]`, flattens it with `toResponsesInput`, and `pipe`s the agent stream (`src/app/api/chat/agent-stream.ts`) to the channel. That stream runs an agentic loop: it opens an OpenAI `/responses` stream and pipes it raw (the codec drops the events it doesn't yet stream), and if the model calls a tool it runs the tool (`src/app/api/chat/tools.ts`), publishes the result as a `function_call_output` event, and continues `/responses` until the model produces a final reply.
+- **Frontend** (`src/app/providers.tsx`, `page.tsx`): the generic `createSessionHooks<OpenAIInput, OpenAIOutput, OpenAIProjection, OpenAITurn>()`, with `<ClientSessionProvider codec={ResponsesCodec}>`. Components render `OpenAITurn` items as text content parts plus tool calls (a `getWeather` call renders as a weather card via `toRenderItems`).
 
 ## Reflecting SDK changes
 

@@ -1,13 +1,16 @@
 /**
  * Deterministic mock model for the e2e tests — no API key, no network.
  *
- * Produces a hand-built `ResponseStreamEvent` stream scripted from the last
- * user prompt, in the same event shape a real `/responses` text stream uses:
- * `output_item.added` (message) → `content_part.added` → `output_text.delta`*
- * → `output_text.done` → `output_item.done`. Response-lifecycle events
- * (`response.created` / `response.completed`) are omitted: the reducer ignores
- * them and the stream's terminal is the item-done, so they add nothing here and
- * keep the mock free of a synthetic `Response` snapshot.
+ * Produces a hand-built `ResponseStreamEvent` stream scripted from the
+ * conversation input, in the same event shape a real `/responses` stream uses.
+ * A text reply streams as `output_item.added` (message) → `content_part.added`
+ * → `output_text.delta`* → `output_text.done` → `output_item.done`. A weather
+ * prompt instead emits a `getWeather` function call as `output_item.added`
+ * (function_call, args empty) → `output_item.done` (function_call, full args):
+ * the agentic loop runs the tool and calls the mock again, now with the tool
+ * result in the input, so the second turn returns a text reply. Response-
+ * lifecycle events (`response.created` / `response.completed`) are omitted: the
+ * reducer ignores them and the stream's terminal is the item-done.
  *
  * Wired in by `createResponseStream()` (model.ts) behind `MOCK_LLM`.
  */
@@ -25,12 +28,23 @@ const LONG_STORY =
   'drifted away on the breeze. The other dragons laughed, but she kept climbing, kept trying, and kept believing ' +
   'that one day a spark would catch. And so the seasons turned, and her patience grew as steadily as her wings.';
 
-interface ReplyPlan {
-  /** The full reply text. */
-  text: string;
-  /** Whether to stream it slowly in many deltas (abort-aware) for the cancel scenario. */
-  slow: boolean;
-}
+type ReplyPlan =
+  | {
+      /** A streamed text reply. */
+      kind: 'text';
+      /** The full reply text. */
+      text: string;
+      /** Whether to stream it slowly in many deltas (abort-aware) for the cancel scenario. */
+      slow: boolean;
+    }
+  | {
+      /** A server-executed function call. */
+      kind: 'tool';
+      /** The tool name to call. */
+      name: string;
+      /** The call's arguments. */
+      args: Record<string, unknown>;
+    };
 
 /** Read the most recent user message's text from the model input. */
 function lastUserText(input: Responses.ResponseInputItem[]): string {
@@ -48,22 +62,45 @@ function lastUserText(input: Responses.ResponseInputItem[]): string {
   return '';
 }
 
-/** Script the reply from the prompt, mirroring the prompts the e2e suite sends. */
-function planReply(prompt: string): ReplyPlan {
+/** Whether a server-side tool result is already present (the loop's 2nd turn). */
+function hasWeatherResult(input: Responses.ResponseInputItem[]): boolean {
+  return input.some((item) => item.type === 'function_call_output');
+}
+
+/** Pull a place name out of a "weather in/for <place>?" prompt, defaulting to London. */
+function extractLocation(text: string): string {
+  const match = /\b(?:in|for|at)\s+([A-Za-z][A-Za-z .,'-]*?)\s*[?.!]?$/.exec(text.trim());
+  return match ? match[1].trim() : 'London, UK';
+}
+
+/** Script the reply from the conversation, mirroring the prompts the e2e suite sends. */
+function planReply(input: Responses.ResponseInputItem[]): ReplyPlan {
+  const prompt = lastUserText(input);
+
   const say = /say\s+"([^"]+)"/i.exec(prompt);
-  if (say) return { text: say[1], slow: false };
+  if (say) return { kind: 'text', text: say[1], slow: false };
 
   const word = /\bword\s+([A-Za-z]+)/i.exec(prompt);
-  if (word) return { text: word[1], slow: false };
+  if (word) return { kind: 'text', text: word[1], slow: false };
+
+  // Weather: call getWeather first; once its result is in the input (the loop's
+  // second turn), reply with a sentence. The WeatherCard renders the structured
+  // tool output alongside this text.
+  if (/\bweather\b/i.test(prompt)) {
+    if (hasWeatherResult(input)) {
+      return { kind: 'text', text: `Here is the current weather for ${extractLocation(prompt)}.`, slow: false };
+    }
+    return { kind: 'tool', name: 'getWeather', args: { location: extractLocation(prompt) } };
+  }
 
   if (/\b(story|dragon)\b/i.test(prompt) || /\blong\b/i.test(prompt)) {
-    return { text: LONG_STORY, slow: true };
+    return { kind: 'text', text: LONG_STORY, slow: true };
   }
 
   const marker = /marker\s+([^\s.]+)/i.exec(prompt);
-  if (marker) return { text: `Acknowledged the marker ${marker[1]}.`, slow: false };
+  if (marker) return { kind: 'text', text: `Acknowledged the marker ${marker[1]}.`, slow: false };
 
-  return { text: `Mock reply to: ${prompt || '(empty prompt)'}`, slow: false };
+  return { kind: 'text', text: `Mock reply to: ${prompt || '(empty prompt)'}`, slow: false };
 }
 
 /** Split text into ~2-word delta pieces, preserving the original spacing. */
@@ -102,7 +139,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
  * signal aborts mid-stream, which the cancel test relies on.
  */
 export function createMockResponseStream(req: ResponseStreamRequest): ReadableStream<ResponseStreamEvent> {
-  const plan = planReply(lastUserText(req.input));
+  const plan = planReply(req.input);
   const { signal } = req;
   const itemId = crypto.randomUUID();
   let seq = 0;
@@ -112,6 +149,39 @@ export function createMockResponseStream(req: ResponseStreamRequest): ReadableSt
     status: Responses.ResponseOutputMessage['status'],
     content: Responses.ResponseOutputMessage['content'],
   ): Responses.ResponseOutputMessage => ({ id: itemId, type: 'message', role: 'assistant', status, content });
+
+  if (plan.kind === 'tool') {
+    const call = (
+      status: Responses.ResponseFunctionToolCall['status'],
+      args: string,
+    ): Responses.ResponseFunctionToolCall => ({
+      id: itemId,
+      type: 'function_call',
+      call_id: `call-${itemId}`,
+      name: plan.name,
+      arguments: args,
+      status,
+    });
+    return new ReadableStream<ResponseStreamEvent>({
+      start(controller) {
+        // A function call rides the item envelopes: added (args empty) then
+        // done (full args). The agentic loop reads the call off `done`.
+        controller.enqueue({
+          type: 'response.output_item.added',
+          item: call('in_progress', ''),
+          output_index: 0,
+          sequence_number: next(),
+        });
+        controller.enqueue({
+          type: 'response.output_item.done',
+          item: call('completed', JSON.stringify(plan.args)),
+          output_index: 0,
+          sequence_number: next(),
+        });
+        controller.close();
+      },
+    });
+  }
 
   return new ReadableStream<ResponseStreamEvent>({
     async start(controller) {

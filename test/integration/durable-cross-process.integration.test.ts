@@ -16,7 +16,7 @@
  * orchestrator would apply. There is no durable flag and no attempt id: a stable
  * `stepId` is what makes a cross-process retry supersede (its re-emitted
  * `ai-step-start` carries a later serial), and the in-flight cancel arm hands a
- * run off via `session.close()` while a separate cleanup activity publishes the
+ * run off via `session.detach()` while a separate cleanup activity publishes the
  * terminal. A separate observer client verifies the wire, and a fresh
  * `ClientSession` hydrates a Tree from channel history to prove channel-as-truth
  * reconstruction.
@@ -242,11 +242,11 @@ const withSession = async <T>(opts: ActivityOptions, body: (session: AgentSessio
     return await body(session);
   } finally {
     // Close the session, then the client. The client close is its OWN finally so
-    // it runs even if `session.close()` rejects. Only close the client this
+    // it runs even if `session.detach()` rejects. Only close the client this
     // activity minted; a caller-supplied client is the caller's to close (the
     // registered cleanup in `afterEach` closes any leftover).
     try {
-      await session.close();
+      await session.detach();
     } finally {
       if (ownsClient) client.close();
     }
@@ -311,7 +311,7 @@ const openActivity = async (invocation: Invocation, opts: ActivityOptions): Prom
  * Run an adopting activity's body against a freshly built + connected session:
  * `adoptRun() + load()`, run `body(run)`, close both in a `finally`. There is no
  * durable flag: the durable behaviour is a USAGE PATTERN — a step/end activity
- * adopts + loads, and the in-flight arm hands off via `session.close()` (no
+ * adopts + loads, and the in-flight arm hands off via `session.detach()` (no
  * terminal) while a separate cleanup activity publishes the run terminal. The
  * owner the adopt seeds off the channel makes output AND the terminal stamp the
  * real `run-client-id`.
@@ -408,7 +408,7 @@ const endActivity = async (args: AdoptArgs, opts: ActivityOptions, outcome: RunE
 
 /**
  * The driver's CANCEL cleanup arm: adopt + load + `run.end({ reason: 'cancelled' })`.
- * The in-flight step arm hands off via `session.close()` (pipe never auto-ends),
+ * The in-flight step arm hands off via `session.detach()` (pipe never auto-ends),
  * so this cleanup activity is the sole publisher of `ai-run-end{cancelled}`. The
  * {@link AdoptArgs} carries the cancel POST's own invocation id and the
  * `ai-cancel` event id as the trigger - formed via {@link adoptArgsFromCancel}.
@@ -867,7 +867,7 @@ describe('durable cross-process matrix', () => {
   // -------------------------------------------------------------------------
   // 4. Cancel. An in-flight step (adopt + load + createStep) is cancelled: it
   //    closes ai-step-end{cancelled} and, because pipe never auto-ends and the
-  //    activity hands off via session.close(), publishes NO run-end. A separate
+  //    activity hands off via session.detach(), publishes NO run-end. A separate
   //    cancel cleanup (fresh client, I_cancel) publishes the SOLE terminal.
   //    Exactly one run-end{cancelled} across BOTH arms. This is the close()-vs-
   //    end() usage pattern, with no run flag.
@@ -888,7 +888,7 @@ describe('durable cross-process matrix', () => {
 
     // The in-flight step: a stalling stream, cancelled from inside produce (which
     // runs after load(), when the session is subscribed and its cancel listener
-    // is live). The activity hands off via session.close() in its finally.
+    // is live). The activity hands off via session.detach() in its finally.
     const inFlight = stepActivity(
       adoptArgs(ids, invocation, inputEventId),
       opts,
@@ -916,7 +916,7 @@ describe('durable cross-process matrix', () => {
     expect(inFlightOutcome).toEqual({ reason: 'cancelled' });
 
     // The step-end{cancelled} bracket fired, but the in-flight arm handed off via
-    // session.close() and published NO run terminal.
+    // session.detach() and published NO run terminal.
     await observer.until((m) => m.some((x) => x.name === EVENT_STEP_END), 'step-end');
     expect(headersOf(mustFindByName(observer.messages, EVENT_STEP_END))[HEADER_STEP_REASON]).toBe('cancelled');
     expect(countOf(observer.messages, EVENT_RUN_END)).toBe(0);
@@ -1043,7 +1043,7 @@ describe('durable cross-process matrix', () => {
     await stepB.start();
     await stepB.pipe(fixtureResult('first step').toUIMessageStream());
     await stepB.end();
-    await sessionB.close();
+    await sessionB.detach();
 
     await observer.until(
       (m) => m.some((x) => x.name === EVENT_STEP_END && headersOf(x)[HEADER_STEP_ID] === 'wf-sticky-1'),

@@ -11,6 +11,7 @@
 import type * as AI from 'ai';
 
 import type { ReducerMeta, ToolApprovalResponse, ToolResult, ToolResultError } from '../../core/codec/index.js';
+import type { ToolPart } from '../tool-part.js';
 import type {
   VercelToolApprovalResponsePayload,
   VercelToolResultErrorPayload,
@@ -23,7 +24,7 @@ import {
   type PendingToolResolution,
   type VercelProjection,
 } from './reducer-state.js';
-import { toolBase, transitionToolPart } from './tool-transitions.js';
+import { toolIdentity, transitionToolPart } from './tool-transitions.js';
 
 /**
  * Fold a user message into the projection, correlating on the wire
@@ -147,9 +148,9 @@ const resolveOrPend = (
 };
 
 /**
- * Apply one tool resolution onto its located `dynamic-tool` part, replacing
- * the part with the transitioned shape — the single application point shared
- * by the direct folds and {@link retryPendingResolutions}.
+ * Apply one tool resolution onto its located tool part, replacing the part with
+ * the transitioned shape — the single application point shared by the direct
+ * folds and {@link retryPendingResolutions}.
  * @param owner - The located owner (message + tracker + part).
  * @param toolCallId - The tool call being resolved.
  * @param resolution - The resolution variant to apply.
@@ -216,7 +217,8 @@ const findOwner = (state: VercelProjection, codecMessageId: string, toolCallId: 
 };
 
 /**
- * Build the next `dynamic-tool` part shape for an approval response.
+ * Build the next tool part shape for an approval response, preserving the
+ * part's representation (`dynamic-tool` vs `tool-${name}`).
  *
  * For `approved=true`, transition to `approval-responded` so the AI SDK's
  * multi-step loop will auto-run the tool on the next step.
@@ -225,19 +227,15 @@ const findOwner = (state: VercelProjection, codecMessageId: string, toolCallId: 
  *
  * For `approved=false`, delegate to `transitionToolPart` with a synthetic
  * `tool-output-denied` chunk so denial mirrors the chunk-driven path.
- * @param part - The existing `dynamic-tool` part being transitioned.
+ * @param part - The existing tool part being transitioned.
  * @param approved - Whether the user approved the tool execution.
  * @param reason - Optional human-readable reason.
- * @returns The replacement `dynamic-tool` part.
+ * @returns The replacement tool part, in the input part's representation.
  */
-const approvalTransition = (
-  part: AI.DynamicToolUIPart,
-  approved: boolean,
-  reason: string | undefined,
-): AI.DynamicToolUIPart => {
+const approvalTransition = (part: ToolPart, approved: boolean, reason: string | undefined): ToolPart => {
   if (approved) {
     return {
-      ...toolBase(part),
+      ...toolIdentity(part),
       state: 'approval-responded',
       input: 'input' in part ? part.input : undefined,
       approval: {

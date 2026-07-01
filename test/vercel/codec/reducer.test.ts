@@ -14,6 +14,7 @@ import type { ReducerMeta } from '../../../src/core/codec/types.js';
 import type { VercelInput, VercelOutput } from '../../../src/vercel/codec/events.js';
 import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
 import { fold as foldEvent, getMessages, init, type VercelProjection } from '../../../src/vercel/codec/reducer.js';
+import { isToolPart, type ToolPart } from '../../../src/vercel/tool-part.js';
 
 const meta = (serial: string, messageId?: string): ReducerMeta =>
   messageId === undefined ? { serial } : { serial, messageId };
@@ -42,20 +43,15 @@ const msgById = (state: VercelProjection, codecMessageId: string): AI.UIMessage 
   state.messages.find((e) => e.codecMessageId === codecMessageId)?.message;
 
 /**
- * Locate the `dynamic-tool` part for a toolCallId within a message.
+ * Locate the tool part for a toolCallId within a message, in either
+ * representation (`dynamic-tool` or `tool-${name}`).
  * @param state - The projection to search.
  * @param codecMessageId - The codec-message-id owning the part.
  * @param toolCallId - The tool call to find.
- * @returns The dynamic-tool part, or undefined.
+ * @returns The tool part, or undefined.
  */
-const toolPartOf = (
-  state: VercelProjection,
-  codecMessageId: string,
-  toolCallId: string,
-): AI.DynamicToolUIPart | undefined =>
-  msgById(state, codecMessageId)?.parts.find(
-    (p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool' && p.toolCallId === toolCallId,
-  );
+const toolPartOf = (state: VercelProjection, codecMessageId: string, toolCallId: string): ToolPart | undefined =>
+  msgById(state, codecMessageId)?.parts.find((p): p is ToolPart => isToolPart(p) && p.toolCallId === toolCallId);
 
 /**
  * Build a baseline projection in which `toolCallId` is in the
@@ -222,10 +218,14 @@ describe('Vercel reducer', () => {
     it('transitions an existing dynamic-tool part on approve and consumes the wire codec-message-id', () => {
       let state = init();
       // Fold a tool-input-available so a dynamic-tool part exists in input-available state.
-      state = fold(state, { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'search' }, meta('s1', 'msg-1'));
       state = fold(
         state,
-        { type: 'tool-input-available', toolCallId: 'tc-1', toolName: 'search', input: { q: 'hi' } },
+        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'search', dynamic: true },
+        meta('s1', 'msg-1'),
+      );
+      state = fold(
+        state,
+        { type: 'tool-input-available', toolCallId: 'tc-1', toolName: 'search', input: { q: 'hi' }, dynamic: true },
         meta('s2', 'msg-1'),
       );
 
@@ -251,10 +251,14 @@ describe('Vercel reducer', () => {
 
     it('transitions to output-denied on deny with reason', () => {
       let state = init();
-      state = fold(state, { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'search' }, meta('s1', 'msg-1'));
       state = fold(
         state,
-        { type: 'tool-input-available', toolCallId: 'tc-1', toolName: 'search', input: {} },
+        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'search', dynamic: true },
+        meta('s1', 'msg-1'),
+      );
+      state = fold(
+        state,
+        { type: 'tool-input-available', toolCallId: 'tc-1', toolName: 'search', input: {}, dynamic: true },
         meta('s2', 'msg-1'),
       );
 
@@ -284,7 +288,11 @@ describe('Vercel reducer', () => {
       expect(state.pendingToolResolutions[0]?.toolCallId).toBe('tc-1');
 
       // Late assistant arrival with the matching tool part — pending entry drains.
-      state = fold(state, { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'search' }, meta('s2', 'msg-1'));
+      state = fold(
+        state,
+        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'search', dynamic: true },
+        meta('s2', 'msg-1'),
+      );
 
       const message = msgById(state, 'msg-1');
       const toolPart = message?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
@@ -300,12 +308,18 @@ describe('Vercel reducer', () => {
       let state = init();
       state = fold(
         state,
-        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'getLocation' },
+        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'getLocation', dynamic: true },
         meta('s1', 'msg-1'),
       );
       state = fold(
         state,
-        { type: 'tool-input-available', toolCallId: 'tc-1', toolName: 'getLocation', input: { highAccuracy: true } },
+        {
+          type: 'tool-input-available',
+          toolCallId: 'tc-1',
+          toolName: 'getLocation',
+          input: { highAccuracy: true },
+          dynamic: true,
+        },
         meta('s2', 'msg-1'),
       );
 
@@ -329,12 +343,12 @@ describe('Vercel reducer', () => {
       let state = init();
       state = fold(
         state,
-        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'getLocation' },
+        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'getLocation', dynamic: true },
         meta('s1', 'msg-1'),
       );
       state = fold(
         state,
-        { type: 'tool-input-available', toolCallId: 'tc-1', toolName: 'getLocation', input: {} },
+        { type: 'tool-input-available', toolCallId: 'tc-1', toolName: 'getLocation', input: {}, dynamic: true },
         meta('s2', 'msg-1'),
       );
 
@@ -366,7 +380,7 @@ describe('Vercel reducer', () => {
       // Late assistant arrival with the matching tool part — pending entry drains.
       state = fold(
         state,
-        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'getLocation' },
+        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'getLocation', dynamic: true },
         meta('s2', 'msg-1'),
       );
 
@@ -591,6 +605,61 @@ describe('Vercel reducer', () => {
       expect(part?.state).toBe('output-error');
       if (part?.state !== 'output-error') throw new Error('expected output-error');
       expect(part.errorText).toBe('boom');
+    });
+  });
+
+  // -- tool-part representation (static vs dynamic) -------------------------
+
+  describe('tool-part representation', () => {
+    it('reconstructs a statically-declared tool as a tool-${name} part and keeps that type across its lifecycle', () => {
+      let state = init();
+      // No `dynamic` flag on the wire → a statically-declared tool.
+      state = fold(
+        state,
+        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'getWeather' },
+        meta('s1', 'msg-1'),
+      );
+      expect(toolPartOf(state, 'msg-1', 'tc-1')?.type).toBe('tool-getWeather');
+
+      state = fold(
+        state,
+        { type: 'tool-input-delta', toolCallId: 'tc-1', inputTextDelta: '{"city":"SF"}' },
+        meta('s2', 'msg-1'),
+      );
+      expect(toolPartOf(state, 'msg-1', 'tc-1')?.type).toBe('tool-getWeather');
+
+      state = fold(
+        state,
+        { type: 'tool-input-available', toolCallId: 'tc-1', toolName: 'getWeather', input: { city: 'SF' } },
+        meta('s3', 'msg-1'),
+      );
+      expect(toolPartOf(state, 'msg-1', 'tc-1')?.type).toBe('tool-getWeather');
+
+      state = fold(
+        state,
+        { type: 'tool-output-available', toolCallId: 'tc-1', output: { temp: 72 } },
+        meta('s4', 'msg-1'),
+      );
+      const part = toolPartOf(state, 'msg-1', 'tc-1');
+      expect(part?.type).toBe('tool-getWeather');
+      expect(part?.state).toBe('output-available');
+      if (part?.state !== 'output-available') throw new Error('expected output-available');
+      expect(part.output).toEqual({ temp: 72 });
+      // A static tool part carries no separate toolName — the name lives in `type`.
+      expect('toolName' in part).toBe(false);
+    });
+
+    it('reconstructs a dynamic tool (dynamic: true) as a dynamic-tool part with an explicit toolName', () => {
+      let state = init();
+      state = fold(
+        state,
+        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'getWeather', dynamic: true },
+        meta('s1', 'msg-1'),
+      );
+      const part = toolPartOf(state, 'msg-1', 'tc-1');
+      expect(part?.type).toBe('dynamic-tool');
+      if (part?.type !== 'dynamic-tool') throw new Error('expected dynamic-tool');
+      expect(part.toolName).toBe('getWeather');
     });
   });
 

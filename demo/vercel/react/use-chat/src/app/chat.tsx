@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { MessageList } from './components/message-list';
 import type { CallbackLogEntry, ClientToolLogEntry } from './components/debug-pane';
 import { DebugPane } from './components/debug-pane';
+import { ChecklistWidget } from './components/checklist-widget';
 import { SuggestionChips } from './components/suggestion-chips';
 import { useClientTools } from './hooks/use-client-tools';
 import { useDemoProgress } from './hooks/use-demo-progress';
@@ -143,6 +144,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
             addToolApprovalResponse({ id: approvalId, approved: false, reason: 'User denied' })
           }
         />
+        <ChecklistWidget session={session} />
         <div className="border-t border-zinc-800">
           <SuggestionChips
             steps={unfinishedSteps}

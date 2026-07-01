@@ -37,6 +37,19 @@ const STEPS: DemoStep[] = [
       'getWeatherForecast pauses at approval-requested. Approve publishes a tool-approval-response event on the channel; the agent resumes and the result lands on the original message.',
   },
   {
+    title: 'LiveObjects checklist',
+    action: (
+      <>
+        Ask:{' '}
+        <span className="font-medium text-zinc-100">
+          &ldquo;write me a short blog post about Ably — outline it, draft it, then tidy it up&rdquo;
+        </span>
+      </>
+    ),
+    demonstrates:
+      'The assistant plans a task checklist in Ably LiveObjects and flips each step to done as it works. The widget below the chat renders the live progress and restores it on reload.',
+  },
+  {
     title: 'Multi-client sync',
     action: (
       <>

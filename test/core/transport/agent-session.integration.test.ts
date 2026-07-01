@@ -1144,4 +1144,180 @@ describe('AgentSession integration', () => {
       await clientSession.close();
     }
   });
+
+  /**
+   * Scenario: a genuine suspend → resume run. The agent streams an assistant
+   * tool call for a client-executed tool and suspends; the client publishes the
+   * tool result as a continuation (same run-id, a wire-only carrier that
+   * introduces no new message); the agent re-enters the run, streams its final
+   * answer, and completes. The whole run lives under one run-id across the two
+   * invocations.
+   *
+   * The resumed invocation's per-invocation trigger anchors on the continuation
+   * carrier (the tool result), not the original prompt. This asserts that the
+   * completed run's `run.messages` — the unit the DB demos persist once at
+   * completion — still leads with the run's original input, followed by all of
+   * its output across both segments, and that persisting that array once
+   * reconstructs the whole run — the resume must not drop the original input.
+   */
+  it('run.messages spans a suspend/resume run: original input then all output', async () => {
+    const { createClientSession } = await import('../../../src/core/transport/client-session.js');
+    const channelName = uniqueChannelName('st-suspend-resume');
+    const serverClient = ablyRealtimeClient();
+    const clientClient = ablyRealtimeClient();
+
+    session = createAgentSession({ client: serverClient, channelName, codec: UIMessageCodec });
+    await session.connect();
+    const agentSession = session;
+
+    const clientSession = createClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+      client: clientClient,
+      channelName,
+      codec: UIMessageCodec,
+    });
+    await clientSession.connect();
+
+    // Resolve once the run's terminal run-end has folded on the agent's own
+    // Tree, so `run.messages` reflects the completed run before it is read.
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- the body IS a Promise executor
+    const awaitRunComplete = (runId: string): Promise<void> =>
+      new Promise<void>((resolve, reject) => {
+        const done = (): boolean => agentSession.tree.getRunNode(runId)?.state.status === 'complete';
+        if (done()) {
+          resolve();
+          return;
+        }
+        const timer = setTimeout(() => {
+          unsub();
+          reject(new Error(`timed out waiting for run ${runId} to complete`));
+        }, 10_000);
+        const unsub = agentSession.tree.on('update', () => {
+          if (done()) {
+            clearTimeout(timer);
+            unsub();
+            resolve();
+          }
+        });
+      });
+
+    // The assistant's first segment: a client-tool call, then suspend.
+    const toolCallStream = (messageId: string, toolCallId: string): ReadableStream<AI.UIMessageChunk> =>
+      new ReadableStream({
+        start: (controller) => {
+          controller.enqueue({ type: 'start', messageId });
+          controller.enqueue({ type: 'start-step' });
+          controller.enqueue({ type: 'tool-input-start', toolCallId, toolName: 'getLocation' });
+          controller.enqueue({ type: 'tool-input-available', toolCallId, toolName: 'getLocation', input: {} });
+          controller.enqueue({ type: 'finish', finishReason: 'tool-calls' });
+          controller.close();
+        },
+      });
+
+    try {
+      // --- Fresh send: the user asks a question that needs a client tool. ---
+      const turn = await clientSession.view.send(
+        UIMessageCodec.createUserMessage({
+          id: 'user-weather',
+          role: 'user',
+          parts: [{ type: 'text', text: 'What is the weather where I am?' }],
+        }),
+      );
+
+      const runId = crypto.randomUUID();
+      const openRun = createRunFromOpts(agentSession, { runId, inputEventId: turn.inputEventId });
+      await openRun.start();
+      await turn.started;
+
+      // Segment 1: stream the tool call and suspend (do NOT end).
+      await openRun.pipe(toolCallStream('asst-tool', 'tc-loc'));
+      await openRun.suspend();
+
+      // The tool result targets the suspended assistant by its wire
+      // codec-message-id (SDK-minted per segment, not the chunk messageId), so
+      // read it from the client view once the tool call folds — exactly as a
+      // client-tool driver does.
+      const toolCallCodecMessageId = await new Promise<string>((resolve, reject) => {
+        const find = (): string | undefined =>
+          clientSession.view
+            .getMessages()
+            .find((m) => m.message.parts.some((p) => p.type === 'dynamic-tool' && p.toolCallId === 'tc-loc'))
+            ?.codecMessageId;
+        const initial = find();
+        if (initial !== undefined) {
+          resolve(initial);
+          return;
+        }
+        const timer = setTimeout(() => {
+          unsub();
+          reject(new Error('timed out waiting for the tool call to fold on the client'));
+        }, 10_000);
+        const unsub = clientSession.tree.on('update', () => {
+          const id = find();
+          if (id !== undefined) {
+            clearTimeout(timer);
+            unsub();
+            resolve(id);
+          }
+        });
+      });
+
+      // --- Continuation: the client publishes the tool result under the same
+      // run-id. This is a wire-only carrier — it introduces no new message; it
+      // folds the location onto the suspended assistant's tool call. ---
+      const contTurn = await clientSession.view.send(
+        [UIMessageCodec.createToolResult(toolCallCodecMessageId, { toolCallId: 'tc-loc', output: { city: 'London' } })],
+        { runId },
+      );
+
+      // The agent re-enters the run for the continuation invocation.
+      const resumedRun = createRunFromOpts(agentSession, { runId, inputEventId: contTurn.inputEventId });
+      await resumedRun.start();
+
+      // Segment 2: the agent's final answer, then complete.
+      await resumedRun.pipe(textResponseStream('asst-answer', 'text-answer', 'It is sunny in London.'));
+      await resumedRun.end({ reason: 'complete' });
+      await awaitRunComplete(runId);
+
+      // The resumed run's `run.messages` is the whole run's contribution: the
+      // ORIGINAL user input (not the continuation's tool-result carrier),
+      // followed by all output across both segments. The resumed run object's
+      // per-invocation anchor points at the tool-result carrier, so the whole
+      // run must anchor on the run node's stable parent — anchoring on the
+      // per-invocation trigger alone would drop the original input.
+      const messages = resumedRun.messages;
+      expect(messages[0]?.role).toBe('user');
+      expect(messages[0]?.id).toBe('user-weather');
+      const roles = messages.map((m) => m.role);
+      expect(roles).toEqual(['user', 'assistant', 'assistant']);
+
+      // The suspended assistant carries the resolved client-tool call; the
+      // resumed assistant carries the final answer.
+      const toolPart = messages
+        .flatMap((m) => m.parts)
+        .find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool' && p.toolCallId === 'tc-loc');
+      expect(toolPart?.toolName).toBe('getLocation');
+      expect(toolPart?.state).toBe('output-available');
+      const answerText = messages
+        .flatMap((m) => m.parts)
+        .find((p): p is AI.TextUIPart => p.type === 'text' && p.text.includes('sunny'));
+      expect(answerText).toBeDefined();
+
+      // Persisting the whole run once at completion is lossless AND idempotent,
+      // the way the DB demos' `appendMessages` store behaves: id-keyed, existing
+      // ids keep their position, new ids append. Model that merge and apply it
+      // twice (a re-persist of the same completed run) — the store must still
+      // equal the run's messages, in order, with no duplicates.
+      const persist = (store: AI.UIMessage[], incoming: AI.UIMessage[]): AI.UIMessage[] => {
+        const byId = new Map(store.map((m) => [m.id, m]));
+        for (const m of incoming) byId.set(m.id, m);
+        return [...byId.values()];
+      };
+      const afterFirst = persist([], messages);
+      const afterSecond = persist(afterFirst, messages);
+      expect(afterFirst.map((m) => m.id)).toEqual(messages.map((m) => m.id));
+      expect(afterSecond).toEqual(afterFirst);
+    } finally {
+      await clientSession.close();
+    }
+  });
 });

@@ -20,7 +20,10 @@ import {
   contentPartAdded,
   created,
   firstInputText,
+  functionCallItem,
+  functionCallOutputEvent,
   itemAdded,
+  itemDone,
   messageItem,
   metaOf,
   stampHeaders,
@@ -77,6 +80,45 @@ describe('OpenAI ResponsesCodec integration', () => {
     const message = messages[0]?.message.items.find((i): i is Responses.ResponseOutputMessage => i.type === 'message');
     const part = message?.content.find((p) => p.type === 'output_text');
     expect(part?.type === 'output_text' ? part.text : '').toBe('Hello, world!');
+  });
+
+  it('tool call roundtrip', async () => {
+    const channelName = uniqueChannelName('openai-tool-roundtrip');
+    const pubChannel = ablyRealtimeClient().channels.get(channelName);
+    const subChannel = ablyRealtimeClient().channels.get(channelName);
+
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+
+    let resolveDone: () => void;
+    const done = new Promise<void>((r) => {
+      resolveDone = r;
+    });
+
+    await subChannel.subscribe((msg) => {
+      const decoded = decoder.decode(msg);
+      for (const event of toCodecEvents(decoded)) projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+      if (decoded.outputs.some((e) => e.type === 'response.completed')) resolveDone();
+    });
+
+    const call = functionCallItem('fc-1', 'call-1', 'getWeather', '{"location":"London"}', 'completed');
+    const encoder = ResponsesCodec.createEncoder(pubChannel, { onMessage: stampHeaders('run-1', 'msg-1') });
+    await encoder.publishOutput(created());
+    await encoder.publishOutput(itemAdded(call));
+    await encoder.publishOutput(itemDone(call));
+    await encoder.publishOutput(functionCallOutputEvent('call-1', '{"temperature":12}'));
+    await encoder.publishOutput(completed());
+    await encoder.close();
+
+    await done;
+
+    const items = ResponsesCodec.getMessages(projection)[0]?.message.items ?? [];
+    expect(items.map((i) => i.type)).toEqual(['function_call', 'function_call_output']);
+    const output = items.find(
+      (i): i is Responses.ResponseInputItem.FunctionCallOutput => i.type === 'function_call_output',
+    );
+    expect(output?.call_id).toBe('call-1');
+    expect(output?.output).toBe('{"temperature":12}');
   });
 
   it('user message roundtrip', async () => {

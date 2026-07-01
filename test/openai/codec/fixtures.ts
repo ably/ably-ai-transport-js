@@ -10,7 +10,7 @@ import type { Responses } from 'openai/resources/responses/responses';
 
 import { HEADER_CODEC_MESSAGE_ID, HEADER_RUN_ID } from '../../../src/constants.js';
 import type { ChannelWriter } from '../../../src/core/codec/index.js';
-import type { OpenAITurn } from '../../../src/openai/codec/index.js';
+import type { OpenAIOutput, OpenAITurn } from '../../../src/openai/codec/index.js';
 import { getTransportHeaders } from '../../../src/utils.js';
 
 // --- minimal domain objects --------------------------------------------------
@@ -32,6 +32,34 @@ export const messageItem = (
   role: 'assistant',
   status: 'in_progress',
   content,
+});
+
+export const functionCallItem = (
+  id: string,
+  callId: string,
+  name: string,
+  args = '',
+  status: Responses.ResponseFunctionToolCall['status'] = 'in_progress',
+): Responses.ResponseFunctionToolCall => ({
+  id,
+  type: 'function_call',
+  call_id: callId,
+  name,
+  arguments: args,
+  status,
+});
+
+// Internal helper for functionCallOutputEvent; the FunctionCallOutput item.
+const functionCallOutput = (callId: string, output: string): Responses.ResponseInputItem.FunctionCallOutput => ({
+  type: 'function_call_output',
+  call_id: callId,
+  output,
+});
+
+// The codec's own output event carrying a server-executed tool's result.
+export const functionCallOutputEvent = (callId: string, output: string): OpenAIOutput => ({
+  type: 'function_call_output',
+  item: functionCallOutput(callId, output),
 });
 
 // --- Responses stream-event builders -----------------------------------------

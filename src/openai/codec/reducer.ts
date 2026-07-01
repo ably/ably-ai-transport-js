@@ -15,11 +15,12 @@
  * that lets the same reduction run on the decoded stream; the logic is
  * otherwise identical to the SDK's.
  *
- * This increment handles streamed assistant text only: the `output_item`
- * message envelope, the `content_part` boundary, and `output_text` deltas.
- * Response-lifecycle and stream-`error` events fold to nothing (run outcome is
- * observed out-of-band). Function calls, reasoning, refusals, and hosted tools
- * are added later by extending this dispatch.
+ * This increment handles streamed assistant text and server-side function
+ * calls: the `output_item` message/function-call envelope, the `content_part`
+ * boundary, `output_text` deltas, and the codec's own `function_call_output`
+ * event. Response-lifecycle and stream-`error` events fold to nothing (run
+ * outcome is observed out-of-band). Reasoning, refusals, and hosted tools are
+ * added later by extending this dispatch.
  *
  * The reducer is stateless and folds unconditionally — the transport delivers
  * each event once, in canonical order (see the core `Reducer` contract).
@@ -112,13 +113,21 @@ const foldOutput = (state: OpenAIProjection, event: OpenAIOutput): void => {
       if (isOutputMessage(item)) trailingOutputText(item).text = event.text;
       return;
     }
+    case 'function_call_output': {
+      // The server-executed tool's result. Append it to the turn so it sits
+      // beside its function_call (paired by call_id when rendered and when fed
+      // back to /responses). Function calls themselves fold via the
+      // output_item arms above — a function_call is a ResponseOutputItem.
+      state.items.push(structuredClone(event.item));
+      return;
+    }
     default: {
       // Everything else folds to nothing in this increment. The response
       // lifecycle (created/completed/failed) and the stream-level `error` carry
       // no item state the reducer needs: run termination — including failure —
       // is observed out-of-band via the transport run-end event, never folded
-      // into items. content_part.done, reasoning, refusals, function calls, and
-      // hosted tools are out of this increment's subset.
+      // into items. content_part.done, reasoning, refusals, and hosted tools
+      // are out of this increment's subset.
       // TODO(AIT-742): a run-outcome mapper will read response.failed / `error`.
       return;
     }

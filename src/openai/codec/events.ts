@@ -6,7 +6,7 @@
  * a turn as a list of OpenAI items (`TMessage`), which are simultaneously the
  * canonical renderable form and valid model input.
  *
- * This increment covers streamed assistant text only; function calls,
+ * This increment covers streamed assistant text and server-side function calls;
  * reasoning, refusals, and hosted tools are added in later increments by
  * extending the descriptor table and reducer, not by changing these bindings.
  */
@@ -16,12 +16,30 @@ import type { Responses } from 'openai/resources/responses/responses';
 import type { Regenerate, UserMessage } from '../../core/codec/index.js';
 
 /**
+ * A server-executed tool's result, published by the agent after it runs the
+ * tool. This is the one output event the codec adds beyond OpenAI's own stream:
+ * a `/responses` stream never carries the function-call *output* — OpenAI
+ * surfaces tool output only as model *input* on the next turn — so the codec
+ * gives it its own output event. The agent emits it between `/responses` calls
+ * in its agentic loop; the reducer folds it onto the assistant turn next to the
+ * `function_call` (paired by `call_id`), so the turn round-trips as a complete
+ * call + output pair for both rendering and a follow-up `/responses` request.
+ */
+export interface FunctionCallOutputEvent {
+  /** Discriminator. Distinct from every `Responses.ResponseStreamEvent` `type`. */
+  type: 'function_call_output';
+  /** The function-call output item to append to the assistant turn. */
+  item: Responses.ResponseInputItem.FunctionCallOutput;
+}
+
+/**
  * `TOutput` — the agent publishes raw Responses stream events on the `ai-output`
  * wire, passed through verbatim (mirroring how the Vercel codec binds
- * `AI.UIMessageChunk`). The descriptor table and reducer handle a subset of the
- * union and ignore the rest.
+ * `AI.UIMessageChunk`), plus the codec's own {@link FunctionCallOutputEvent} for
+ * server-executed tool results. The descriptor table and reducer handle a
+ * subset of the stream-event union and ignore the rest.
  */
-export type OpenAIOutput = Responses.ResponseStreamEvent;
+export type OpenAIOutput = Responses.ResponseStreamEvent | FunctionCallOutputEvent;
 
 /**
  * A single item within a turn. Assistant turns hold {@link Responses.ResponseOutputItem}s

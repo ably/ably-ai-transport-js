@@ -10,6 +10,8 @@ import {
   created,
   failed,
   firstInputText,
+  functionCallItem,
+  functionCallOutputEvent,
   itemAdded,
   itemDone,
   messageItem,
@@ -157,6 +159,43 @@ describe('OpenAI reducer', () => {
     ]);
     expect(firstOutputText(state)).toBe('partial');
     expect(getMessages(state)[0]?.message.items).toHaveLength(1);
+  });
+
+  it('folds a server-side function call and its output into one assistant turn', () => {
+    // The function_call rides the output_item envelopes (added → done, the done
+    // carrying complete arguments); the agent then publishes the tool result as
+    // the codec's own function_call_output event.
+    const call = functionCallItem('fc_1', 'call_1', 'getWeather');
+    const state = foldOutputs([
+      created(),
+      itemAdded(call),
+      itemDone({ ...call, arguments: '{"location":"London"}', status: 'completed' }),
+      functionCallOutputEvent('call_1', '{"temperature":12}'),
+      itemAdded(messageItem('msg_1')),
+      contentPartAdded('msg_1'),
+      textDelta('msg_1', 'It is 12°C in London.'),
+      textDone('msg_1', 'It is 12°C in London.'),
+      completed(),
+    ]);
+
+    const items = getMessages(state)[0]?.message.items ?? [];
+    expect(items.map((i) => i.type)).toEqual(['function_call', 'function_call_output', 'message']);
+    const callItem = items.find((i): i is Responses.ResponseFunctionToolCall => i.type === 'function_call');
+    expect(callItem?.arguments).toBe('{"location":"London"}');
+    const output = items.find(
+      (i): i is Responses.ResponseInputItem.FunctionCallOutput => i.type === 'function_call_output',
+    );
+    expect(output?.call_id).toBe('call_1');
+    expect(output?.output).toBe('{"temperature":12}');
+    expect(firstOutputText(state)).toBe('It is 12°C in London.');
+  });
+
+  it('appends a function_call_output even with no prior function_call folded', () => {
+    // The reducer folds unconditionally; pairing with a call is a render concern.
+    const state = foldOutputs([created(), functionCallOutputEvent('call_x', 'orphan')]);
+    const items = getMessages(state)[0]?.message.items ?? [];
+    expect(items).toHaveLength(1);
+    expect(items[0]?.type).toBe('function_call_output');
   });
 
   it('folds a user-message turn into a user message', () => {

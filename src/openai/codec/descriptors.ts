@@ -9,7 +9,24 @@
  *   stream model requires. The closing `output_text.done` is rebuilt from the
  *   accumulated stream text via `decodeEnd`.
  * - **Lifecycle and the item/content-part envelopes are discrete events.** Each
- *   carries no streamed string and hence no `status` header.
+ *   carries no streamed string and hence no `status` header. A server-side
+ *   **function call** rides these same item envelopes — a `function_call` is a
+ *   `ResponseOutputItem`, so `output_item.added`/`output_item.done` carry it
+ *   with no dedicated descriptor (the `done` envelope holds the complete
+ *   arguments). The function call's *result* is the codec's own
+ *   `function_call_output` event (see below).
+ * - **A small `ignore(...)` set is the escape hatch for events not yet
+ *   streamed.** The aim is to carry everything the transport can, streaming
+ *   included; where we haven't yet built a clean streaming path for a provider
+ *   event, we drop it *for now* rather than let it trip the encoder's
+ *   safety net (any event that is neither described nor ignored throws). The
+ *   streamed function-call argument deltas (`response.function_call_arguments.*`)
+ *   sit here today: they don't fit the current `stream(...)` model — their start
+ *   boundary nests the id under `item.id`, so there's no top-level id shared
+ *   across start/delta/end — and the complete arguments arrive on
+ *   `output_item.done` meanwhile, so dropping the deltas loses only the
+ *   incremental typing, not correctness. Teaching the stream model to key on a
+ *   nested id (so these can stream) would remove them from the ignore set.
  *
  * Input side: the user message is a `batch` that fans the user turn's content
  * parts out into one `ai-input` event per part (one for a plain text prompt),
@@ -17,8 +34,8 @@
  * signal is a wire-only event: it stamps only its `kind` header (the agent
  * reads `target` / `parent` via the input-event lookup) and folds to nothing.
  *
- * Function calls, reasoning, refusals, and hosted tools are added in later
- * increments by adding entries here — the split established now does not change.
+ * Reasoning, refusals, and hosted tools are added in later increments by adding
+ * entries here — the split established now does not change.
  */
 
 import type { Responses } from 'openai/resources/responses/responses';
@@ -38,12 +55,17 @@ const fPart = jsonField<Responses.ResponseContentPartAddedEvent['part'], 'part'>
 
 /**
  * The OpenAI codec's `ai-output` descriptor table.
- * @param builder - The `{ event, stream }` builder curried on {@link OpenAIOutput}.
+ * @param builder - The `{ event, stream, ignore }` builder curried on {@link OpenAIOutput}.
  * @param builder.event - Declare a discrete output event.
  * @param builder.stream - Declare a streamed output family.
+ * @param builder.ignore - Declare a provider event to drop on encode (not yet streamed).
  * @returns The output descriptor table.
  */
-export const outputs = ({ event, stream }: OutputBuilder<OpenAIOutput>): readonly OutputDescriptor<OpenAIOutput>[] => {
+export const outputs = ({
+  event,
+  stream,
+  ignore,
+}: OutputBuilder<OpenAIOutput>): readonly OutputDescriptor<OpenAIOutput>[] => {
   // The response-lifecycle events all carry the full Response snapshot as wire
   // data and share one decode shape.
   // CAST on decode: wire data is JSON parsed at a trust boundary; the Response
@@ -96,11 +118,32 @@ export const outputs = ({ event, stream }: OutputBuilder<OpenAIOutput>): readonl
     event('response.output_item.done', {
       data: { encode: (c) => c.item, decode: (d) => ({ item: d as Responses.ResponseOutputItem }) },
     }),
-    // content_part.done closes the part; the reducer ignores it, but it is
-    // declared so the agent can publish it without an "unsupported event" error.
+    // content_part.done closes the part; the reducer folds it to nothing. It is
+    // declared (rather than left to the codec's ignore policy) so the part
+    // boundary still round-trips as a discrete event on the wire.
     event('response.content_part.done', {
       fields: [strField('item_id'), fOutputIndex, fContentIndex],
     }),
+
+    // --- server-executed tool result (codec's own output event) --------------
+    // Not a Responses stream event: OpenAI surfaces tool output only as model
+    // input on the next turn, so the agent publishes this after running the
+    // tool. The reducer appends the item to the assistant turn alongside the
+    // matching function_call.
+    // CAST on decode: the FunctionCallOutput item rides as JSON wire data (trust
+    // boundary); the shape is asserted via the event the descriptor narrows to.
+    event('function_call_output', {
+      data: { encode: (c) => c.item, decode: (d) => ({ item: d as Responses.ResponseInputItem.FunctionCallOutput }) },
+    }),
+
+    // --- not yet streamed: dropped on encode (see the file header) -----------
+    // We want to stream tool-call arguments; we just don't have a clean path
+    // yet (the deltas can't key the current stream model — their start nests the
+    // id under item.id). Until then, drop the deltas: the complete arguments
+    // still arrive on the function_call's output_item.done, so the turn is
+    // correct, and the agent can pipe the raw /responses stream without a filter.
+    ignore('response.function_call_arguments.delta'),
+    ignore('response.function_call_arguments.done'),
   ];
 };
 

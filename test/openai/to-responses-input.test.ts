@@ -22,15 +22,23 @@ describe('toResponsesInput', () => {
       arguments: '{}',
       status: 'completed',
     };
-    const assistant: OpenAITurn = { role: 'assistant', items: [assistantMessage, call] };
+    // A server-side tool turn carries the call and its output; both are valid
+    // model input, so a follow-up /responses request sees a complete pair.
+    const output: Responses.ResponseInputItem.FunctionCallOutput = {
+      type: 'function_call_output',
+      call_id: 'c1',
+      output: 'sunny',
+    };
+    const assistant: OpenAITurn = { role: 'assistant', items: [call, output, assistantMessage] };
 
     const input = toResponsesInput([user, assistant]);
 
     // No translation: the conversation's items pass through by reference, in order.
-    expect(input).toHaveLength(3);
+    expect(input).toHaveLength(4);
     expect(input[0]).toBe(user.items[0]);
-    expect(input[1]).toBe(assistantMessage);
-    expect(input[2]).toBe(call);
+    expect(input[1]).toBe(call);
+    expect(input[2]).toBe(output);
+    expect(input[3]).toBe(assistantMessage);
   });
 
   it('returns an empty array for an empty conversation', () => {

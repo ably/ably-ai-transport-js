@@ -25,6 +25,8 @@ import {
   created,
   failed,
   firstInputText,
+  functionCallItem,
+  functionCallOutputEvent,
   incomplete,
   inProgress,
   itemAdded,
@@ -131,6 +133,76 @@ describe('OpenAI codec roundtrip (offline)', () => {
     expect(added?.type === 'response.output_item.added' ? added.item.id : '').toBe('msg_1');
     const errorEvent = outputs.find((e) => e.type === 'error');
     expect(errorEvent?.type === 'error' ? errorEvent.message : '').toBe('boom');
+  });
+
+  it('drops the not-yet-streamed function_call_arguments deltas on encode (ignore set)', async () => {
+    const { writer, inbound } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onMessage: stampHeaders('run-x', 'run-1') });
+    // These are on the codec's ignore list — publishing them is a silent no-op.
+    await encoder.publishOutput({
+      type: 'response.function_call_arguments.delta',
+      item_id: 'fc_1',
+      output_index: 0,
+      delta: '{"location":',
+      sequence_number: 0,
+    });
+    await encoder.publishOutput({
+      type: 'response.function_call_arguments.done',
+      item_id: 'fc_1',
+      output_index: 0,
+      name: 'getWeather',
+      arguments: '{"location":"London"}',
+      sequence_number: 0,
+    });
+    await encoder.close();
+    expect(inbound()).toHaveLength(0);
+  });
+
+  it('still throws on an output event that is neither modelled nor ignored (safety net)', async () => {
+    const { writer } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onMessage: stampHeaders('run-x', 'run-1') });
+    // A reasoning event the codec neither encodes nor lists as ignorable: it must
+    // surface loudly rather than being dropped, since output_item.done does not
+    // carry reasoning-summary text.
+    await expect(
+      encoder.publishOutput({
+        type: 'response.reasoning_summary_text.delta',
+        item_id: 'rs_1',
+        output_index: 0,
+        summary_index: 0,
+        delta: 'thinking',
+        sequence_number: 0,
+      }),
+    ).rejects.toThrow(/unsupported event type 'response\.reasoning_summary_text\.delta'/);
+  });
+
+  it('roundtrips a server-side function call and its output through the wire', async () => {
+    const call = functionCallItem('fc_1', 'call_1', 'getWeather', '{"location":"London"}', 'completed');
+    const { inbound } = await roundtrip([
+      created(),
+      itemAdded(call),
+      itemDone(call),
+      functionCallOutputEvent('call_1', '{"temperature":12}'),
+      completed(),
+    ]);
+
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+    for (const msg of inbound) {
+      for (const event of toCodecEvents(decoder.decode(msg))) {
+        projection = ResponsesCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
+      }
+    }
+    const items = ResponsesCodec.getMessages(projection)[0]?.message.items ?? [];
+    expect(items.map((i) => i.type)).toEqual(['function_call', 'function_call_output']);
+    const callItem = items.find((i): i is Responses.ResponseFunctionToolCall => i.type === 'function_call');
+    expect(callItem?.name).toBe('getWeather');
+    expect(callItem?.arguments).toBe('{"location":"London"}');
+    const output = items.find(
+      (i): i is Responses.ResponseInputItem.FunctionCallOutput => i.type === 'function_call_output',
+    );
+    expect(output?.call_id).toBe('call_1');
+    expect(output?.output).toBe('{"temperature":12}');
   });
 
   it('roundtrips a user message on the ai-input wire', async () => {

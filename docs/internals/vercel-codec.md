@@ -104,30 +104,30 @@ The reducer folds every event unconditionally. Ordering, deduplication, and repl
 
 ### Event processing
 
-| Event                                                                 | Reducer action                                                                                                                    |
-| --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `user-message` input                                                  | Append a new entry for its `codecMessageId`, or merge its parts into the existing entry                                           |
-| `regenerate` input                                                    | No-op (wire-only signal)                                                                                                          |
-| `tool-result` / `tool-result-error` / `tool-approval-response` inputs | Transition the target assistant's `dynamic-tool` part, or buffer in `pendingToolResolutions` if the assistant has not yet arrived |
-| `start`                                                               | Ensure the message; set `message.id` from the stream `messageId` and metadata                                                     |
-| `start-step`                                                          | Push a `step-start` part                                                                                                          |
-| `text-start` / `reasoning-start`                                      | Push an empty `text` / `reasoning` part, register the stream                                                                      |
-| `text-delta` / `reasoning-delta`                                      | Append the delta to the registered part                                                                                           |
-| `text-end` / `reasoning-end`                                          | Deregister the stream                                                                                                             |
-| `tool-input-start` / `-delta` / `-available` / `-error`               | Create or transition the `dynamic-tool` part; deltas accumulate JSON and parse incrementally                                      |
-| `tool-output-available` / `tool-output-error`                         | Resolve the owning `dynamic-tool` part by `toolCallId` across the whole projection (drop on miss)                                 |
-| `tool-approval-request` / `tool-output-denied`                        | Transition the part on the stamped `messageId`                                                                                    |
-| `finish-step`                                                         | Clear text/reasoning stream trackers so the next step can reuse stream ids                                                        |
-| `finish` / `message-metadata`                                         | Set final `message.metadata`                                                                                                      |
-| `abort` / `error`                                                     | No projection mutation — run termination is observed via the wire run-end event                                                   |
-| `file` / `source-url` / `source-document`                             | Push the corresponding content part                                                                                               |
-| `data-*`                                                              | Push or replace a data part (by `id`); transient chunks are skipped                                                               |
+| Event                                                                 | Reducer action                                                                                                          |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `user-message` input                                                  | Append a new entry for its `codecMessageId`, or merge its parts into the existing entry                                 |
+| `regenerate` input                                                    | No-op (wire-only signal)                                                                                                |
+| `tool-result` / `tool-result-error` / `tool-approval-response` inputs | Transition the target assistant's tool part, or buffer in `pendingToolResolutions` if the assistant has not yet arrived |
+| `start`                                                               | Ensure the message; set `message.id` from the stream `messageId` and metadata                                           |
+| `start-step`                                                          | Push a `step-start` part                                                                                                |
+| `text-start` / `reasoning-start`                                      | Push an empty `text` / `reasoning` part, register the stream                                                            |
+| `text-delta` / `reasoning-delta`                                      | Append the delta to the registered part                                                                                 |
+| `text-end` / `reasoning-end`                                          | Deregister the stream                                                                                                   |
+| `tool-input-start` / `-delta` / `-available` / `-error`               | Create or transition the tool part; deltas accumulate JSON and parse incrementally                                      |
+| `tool-output-available` / `tool-output-error`                         | Resolve the owning tool part by `toolCallId` across the whole projection (drop on miss)                                 |
+| `tool-approval-request` / `tool-output-denied`                        | Transition the part on the stamped `messageId`                                                                          |
+| `finish-step`                                                         | Clear text/reasoning stream trackers so the next step can reuse stream ids                                              |
+| `finish` / `message-metadata`                                         | Set final `message.metadata`                                                                                            |
+| `abort` / `error`                                                     | No projection mutation — run termination is observed via the wire run-end event                                         |
+| `file` / `source-url` / `source-document`                             | Push the corresponding content part                                                                                     |
+| `data-*`                                                              | Push or replace a data part (by `id`); transient chunks are skipped                                                     |
 
 After every fold, `retryPendingResolutions` (`fold-input.ts`) re-evaluates buffered tool resolutions in case the just-folded event produced the assistant they were waiting on.
 
 ### Tool part transitions
 
-`src/vercel/codec/tool-transitions.ts` holds the shared `dynamic-tool` part state machine, used by both the chunk fold (`foldToolOutput`, `fold-tool-output.ts`) and the client-input folds (`fold-input.ts`). `toolBase()` extracts the state-independent identity fields; `transitionToolPart()` produces the next part shape for a `tool-output-available` / `tool-output-error` / `tool-output-denied` / `tool-approval-request` chunk. Approval responses are handled in `fold-input.ts`'s `approvalTransition`: `approved=true` synthesizes an `approval-responded` part (so the AI SDK auto-runs the tool on the next step), `approved=false` delegates to `transitionToolPart` with a synthetic `tool-output-denied`.
+`src/vercel/codec/tool-transitions.ts` holds the shared tool-part state machine — operating on either representation and preserving it, so a statically-declared tool part (`tool-${name}`) is never rewritten to `dynamic-tool`. It is used by both the chunk fold (`foldToolOutput`, `fold-tool-output.ts`) and the client-input folds (`fold-input.ts`). On part **creation**, `toolBase()` builds the identity base from the chunk's `dynamic` flag — `dynamic-tool` (with an explicit `toolName`) when `dynamic === true`, else a static `tool-${name}` part. On **transition**, `toolIdentity()` preserves the existing part's own `type`, and `transitionToolPart()` produces the next part shape for a `tool-output-available` / `tool-output-error` / `tool-output-denied` / `tool-approval-request` chunk. Approval responses are handled in `fold-input.ts`'s `approvalTransition`: `approved=true` synthesizes an `approval-responded` part (so the AI SDK auto-runs the tool on the next step), `approved=false` delegates to `transitionToolPart` with a synthetic `tool-output-denied`.
 
 ### Field bindings
 

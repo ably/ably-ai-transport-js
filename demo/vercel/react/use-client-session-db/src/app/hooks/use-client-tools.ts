@@ -26,7 +26,7 @@
  */
 
 import { useEffect, useRef } from 'react';
-import type { DynamicToolUIPart, UIMessage } from 'ai';
+import { getToolName, isToolUIPart, type DynamicToolUIPart, type ToolUIPart, type UIMessage } from 'ai';
 import type { ClientView } from '@ably/ai-transport';
 import { UIMessageCodec, type VercelInput } from '@ably/ai-transport/vercel';
 
@@ -95,25 +95,28 @@ export function useClientTools(
         if (hasFollowUpAssistant) continue;
 
         for (const part of msg.parts) {
-          if (part.type !== 'dynamic-tool') continue;
-          const toolPart = part as DynamicToolUIPart;
+          if (!isToolUIPart(part)) continue;
+          // A statically-declared tool arrives as `tool-${name}` (name in the
+          // type); a dynamic one as `dynamic-tool` with `toolName`. `getToolName`
+          // reads the name from either representation.
+          const toolName = getToolName(part);
 
-          if (toolPart.state !== 'input-available') continue;
-          if (!clientTools[toolPart.toolName]) continue;
-          if (handledRef.current.has(toolPart.toolCallId)) continue;
+          if (part.state !== 'input-available') continue;
+          if (!clientTools[toolName]) continue;
+          if (handledRef.current.has(part.toolCallId)) continue;
 
-          handledRef.current.add(toolPart.toolCallId);
+          handledRef.current.add(part.toolCallId);
 
           const startedAt = Date.now();
           onExecute?.({
             time: startedAt,
-            toolName: toolPart.toolName,
-            toolCallId: toolPart.toolCallId,
-            input: toolPart.input,
+            toolName,
+            toolCallId: part.toolCallId,
+            input: part.input,
             status: 'executing',
           });
 
-          executeClientTool(view, api, run.runId, codecMessageId, toolPart, { onExecute, startedAt });
+          executeClientTool(view, api, run.runId, codecMessageId, part, { onExecute, startedAt });
         }
       }
     };
@@ -138,13 +141,14 @@ async function executeClientTool(
   api: string,
   runId: string,
   codecMessageId: string,
-  toolPart: DynamicToolUIPart,
+  toolPart: ToolUIPart | DynamicToolUIPart,
   log?: {
     onExecute?: (entry: ClientToolLogEntry) => void;
     startedAt: number;
   },
 ): Promise<void> {
-  const executor = clientTools[toolPart.toolName];
+  const toolName = getToolName(toolPart);
+  const executor = clientTools[toolName];
   if (!executor) return;
 
   // Compute the resolution input first so executor failure produces a
@@ -156,7 +160,7 @@ async function executeClientTool(
     if (log?.onExecute) {
       log.onExecute({
         time: log.startedAt,
-        toolName: toolPart.toolName,
+        toolName,
         toolCallId: toolPart.toolCallId,
         input: toolPart.input,
         status: 'done',
@@ -172,7 +176,7 @@ async function executeClientTool(
     if (log?.onExecute) {
       log.onExecute({
         time: log.startedAt,
-        toolName: toolPart.toolName,
+        toolName,
         toolCallId: toolPart.toolCallId,
         input: toolPart.input,
         status: 'error',

@@ -21,7 +21,7 @@
  */
 
 import { useEffect, useRef } from 'react';
-import type { ChatAddToolOutputFunction, DynamicToolUIPart, UIMessage } from 'ai';
+import { getToolName, isToolUIPart, type ChatAddToolOutputFunction, type UIMessage } from 'ai';
 import type { ClientToolLogEntry } from '../components/debug-pane';
 
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
@@ -68,39 +68,42 @@ export function useClientTools(
       if (hasFollowUpAssistant) continue;
 
       for (const part of msg.parts) {
-        if (part.type !== 'dynamic-tool') continue;
-        const toolPart = part as DynamicToolUIPart;
+        if (!isToolUIPart(part)) continue;
+        // A statically-declared tool arrives as `tool-${name}` (name in the
+        // type); a dynamic one as `dynamic-tool` with `toolName`. `getToolName`
+        // reads the name from either representation.
+        const toolName = getToolName(part);
 
-        if (toolPart.state !== 'input-available') continue;
-        if (!clientTools[toolPart.toolName]) continue;
-        if (handledRef.current.has(toolPart.toolCallId)) continue;
+        if (part.state !== 'input-available') continue;
+        if (!clientTools[toolName]) continue;
+        if (handledRef.current.has(part.toolCallId)) continue;
 
-        handledRef.current.add(toolPart.toolCallId);
+        handledRef.current.add(part.toolCallId);
 
         const startedAt = Date.now();
         onExecute?.({
           time: startedAt,
-          toolName: toolPart.toolName,
-          toolCallId: toolPart.toolCallId,
-          input: toolPart.input,
+          toolName,
+          toolCallId: part.toolCallId,
+          input: part.input,
           status: 'executing',
         });
 
         // The tool output reaches the conversation via the channel echo (the
         // continuation wire that addToolResult publishes is folded by the
         // codec's reducer).
-        void clientTools[toolPart.toolName](toolPart.input).then((output) => {
+        void clientTools[toolName](part.input).then((output) => {
           onExecute?.({
             time: startedAt,
-            toolName: toolPart.toolName,
-            toolCallId: toolPart.toolCallId,
-            input: toolPart.input,
+            toolName,
+            toolCallId: part.toolCallId,
+            input: part.input,
             status: 'done',
             output,
           });
           addToolResult({
-            tool: toolPart.toolName,
-            toolCallId: toolPart.toolCallId,
+            tool: toolName,
+            toolCallId: part.toolCallId,
             output,
           });
         });

@@ -1,6 +1,6 @@
 'use client';
 
-import type { DynamicToolUIPart } from 'ai';
+import { getToolName, type DynamicToolUIPart, type ToolUIPart } from 'ai';
 
 // ---------------------------------------------------------------------------
 // Weather card — generative UI for the getWeather tool result
@@ -153,7 +153,7 @@ function ToolApprovalCard({
   onApprove,
   onDeny,
 }: {
-  part: DynamicToolUIPart;
+  part: ToolUIPart | DynamicToolUIPart;
   onApprove: () => void;
   onDeny: () => void;
 }) {
@@ -168,7 +168,7 @@ function ToolApprovalCard({
             <span className="text-xs font-medium text-amber-400">Approval Required</span>
           </div>
           <p className="mt-1 text-sm text-zinc-300">
-            <span className="font-mono text-amber-300">{part.toolName}</span>
+            <span className="font-mono text-amber-300">{getToolName(part)}</span>
             {inputSummary && <span className="text-zinc-500"> &mdash; {inputSummary}</span>}
           </p>
         </div>
@@ -196,7 +196,7 @@ function ToolApprovalCard({
 // ---------------------------------------------------------------------------
 
 interface ToolInvocationProps {
-  part: DynamicToolUIPart;
+  part: ToolUIPart | DynamicToolUIPart;
   onApprove: () => void;
   onDeny: () => void;
 }
@@ -207,25 +207,25 @@ export function ToolInvocation({ part, onApprove, onDeny }: ToolInvocationProps)
     case 'input-available':
       return (
         <ToolPending
-          name={part.toolName}
+          name={getToolName(part)}
           input={part.input}
         />
       );
 
     case 'output-available': {
-      if (part.toolName === 'getWeather') {
+      if (getToolName(part) === 'getWeather') {
         return <WeatherCard data={part.output as WeatherData} />;
       }
-      if (part.toolName === 'getWeatherForecast') {
+      if (getToolName(part) === 'getWeatherForecast') {
         return <ForecastCard data={part.output as ForecastData} />;
       }
-      if (part.toolName === 'getLocation') {
+      if (getToolName(part) === 'getLocation') {
         return <LocationResult output={part.output} />;
       }
       // Generic output fallback
       return (
         <div className="rounded-md bg-zinc-800/60 border border-zinc-700/40 px-2.5 py-1.5 text-xs text-zinc-400 my-1">
-          <span className="font-mono">{part.toolName}</span>: {JSON.stringify(part.output)}
+          <span className="font-mono">{getToolName(part)}</span>: {JSON.stringify(part.output)}
         </div>
       );
     }
@@ -233,7 +233,7 @@ export function ToolInvocation({ part, onApprove, onDeny }: ToolInvocationProps)
     case 'output-error':
       return (
         <ToolError
-          name={part.toolName}
+          name={getToolName(part)}
           errorText={part.errorText}
         />
       );
@@ -250,7 +250,7 @@ export function ToolInvocation({ part, onApprove, onDeny }: ToolInvocationProps)
     case 'output-denied':
       return (
         <div className="rounded-md bg-zinc-800/60 border border-zinc-700/40 px-2.5 py-1.5 text-xs text-zinc-500 my-1">
-          <span className="font-mono">{part.toolName}</span> &mdash; denied
+          <span className="font-mono">{getToolName(part)}</span> &mdash; denied
         </div>
       );
 

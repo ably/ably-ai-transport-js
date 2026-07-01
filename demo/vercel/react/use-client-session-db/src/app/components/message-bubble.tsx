@@ -1,6 +1,6 @@
 'use client';
 
-import type { UIMessage, DynamicToolUIPart } from 'ai';
+import { isToolUIPart, type UIMessage } from 'ai';
 import { ToolInvocation } from './tool-invocation';
 import type { BubbleStatus } from './message-list';
 
@@ -47,16 +47,15 @@ export function MessageBubble({ message, status, onToolApprove, onToolDeny }: Me
         <div className={bubbleClasses(isUser, status)}>
           {message.parts.map((part, i) => {
             if (part.type === 'text') return <span key={i}>{part.text}</span>;
-            if (part.type === 'dynamic-tool') {
-              const toolPart = part as DynamicToolUIPart;
+            if (isToolUIPart(part)) {
               // eslint-disable-next-line @typescript-eslint/no-empty-function -- no-op fallback when no approval handler
               const noop = (): void => {};
               return (
                 <ToolInvocation
                   key={i}
-                  part={toolPart}
-                  onApprove={onToolApprove ? () => onToolApprove(toolPart.toolCallId) : noop}
-                  onDeny={onToolDeny ? () => onToolDeny(toolPart.toolCallId) : noop}
+                  part={part}
+                  onApprove={onToolApprove ? () => onToolApprove(part.toolCallId) : noop}
+                  onDeny={onToolDeny ? () => onToolDeny(part.toolCallId) : noop}
                 />
               );
             }

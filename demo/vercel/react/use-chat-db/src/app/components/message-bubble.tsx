@@ -1,6 +1,6 @@
 'use client';
 
-import type { UIMessage, DynamicToolUIPart } from 'ai';
+import { isToolUIPart, type UIMessage } from 'ai';
 import { ToolInvocation } from './tool-invocation';
 
 /** The live state of an assistant response, derived from useChat's status. */
@@ -57,15 +57,14 @@ export function MessageBubble({ message, state, onToolApprove, onToolDeny }: Mes
         <div className={bubbleClasses(isUser, state)}>
           {message.parts.map((part, i) => {
             if (part.type === 'text') return <span key={i}>{part.text}</span>;
-            if (part.type === 'dynamic-tool') {
-              const toolPart = part as DynamicToolUIPart;
+            if (isToolUIPart(part)) {
               // eslint-disable-next-line @typescript-eslint/no-empty-function -- no-op fallback when no approval handler
               const noop = (): void => {};
-              const approvalId = toolPart.approval?.id;
+              const approvalId = part.approval?.id;
               return (
                 <ToolInvocation
                   key={i}
-                  part={toolPart}
+                  part={part}
                   onApprove={onToolApprove && approvalId ? () => onToolApprove(approvalId) : noop}
                   onDeny={onToolDeny && approvalId ? () => onToolDeny(approvalId) : noop}
                 />

@@ -8,17 +8,33 @@
  * channel (the seam walk), rather than replaying the whole channel. After the
  * stream finishes, the run's whole turn is appended to the in-memory store
  * (keyed by the channel name) so a later client (or the next run) can seed from
- * it and reconcile with the live channel. The demo is text-only — no tools — so
- * a run always runs to completion rather than suspending for a tool or approval.
+ * it and reconcile with the live channel.
+ *
+ * The demo exercises tools that suspend and resume the run:
+ * - Server-executed tools (getWeather): streamText executes them inline; the
+ *   run streams straight through to completion.
+ * - Client-executed tools (getLocation): the run suspends after the tool call;
+ *   the client runs browser geolocation, publishes the result, and sends a
+ *   continuation POST that resumes the same run.
+ * - Approval-required tools (getWeatherForecast): the run suspends at
+ *   approval-requested; the client publishes a tool-approval-response and the
+ *   agent resumes, folding the tool output onto the original assistant message.
+ *
+ * Because `run.messages` spans the whole suspend/resume run, persisting once at
+ * completion (`appendMessages(sessionName, run.messages)`) is lossless — the
+ * whole run, tool calls and results included, is stored as one unit. Only a
+ * completed run is stored; a still-suspended run stays on the channel until it
+ * resumes and completes.
  */
 
 import { after } from 'next/server';
-import { streamText, convertToModelMessages } from 'ai';
+import { streamText, convertToModelMessages, stepCountIs } from 'ai';
 import Ably from 'ably';
 import { createAgentSession, vercelRunOutcome } from '@ably/ai-transport/vercel';
 import type { InvocationData } from '@ably/ai-transport';
 import { Invocation } from '@ably/ai-transport';
 import { createModel } from './model';
+import { tools } from './tools';
 import { appendMessages, loadMessages } from '../../lib/message-store';
 
 export async function POST(req: Request) {
@@ -66,17 +82,28 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model: createModel(),
-    system: 'You are a helpful assistant. Reply concisely.',
+    system: `You are a helpful assistant. When the user asks about weather, use the getWeather tool. If they don't specify a location, call getLocation first to get their coordinates, then call getWeather with a description of that location. When the user asks about a weather forecast or upcoming weather, use getWeatherForecast.`,
     messages: await convertToModelMessages(conversation),
+    tools,
     abortSignal: run.abortSignal,
+    // Multi-step: streamText loops inference + server-tool execution within
+    // this call so server-executed tools (getWeather, approved
+    // getWeatherForecast) chain straight into the model's next inference pass
+    // and produce the final response. Client-executed tools (getLocation) and
+    // approval-requested tools still pause this call naturally — streamText
+    // finishes that step with `finishReason: 'tool-calls'`, the run suspends,
+    // and the client publishes a continuation.
+    stopWhen: stepCountIs(10),
   });
 
   after(async () => {
     const pipeResult = await run.pipe(result.toUIMessageStream());
     const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
     if (outcome.reason === 'suspend') {
-      // Text-only (no tools), so a run never actually suspends — handled for
-      // type completeness; a suspended run is never persisted.
+      // The run paused for a client-executed or approval-gated tool. Suspend
+      // it (publishing the suspend signal); the client resolves the tool and
+      // sends a continuation that resumes this run. A suspended run is never
+      // persisted — only the completed whole-run turn is.
       await run.suspend();
     } else {
       // End the run first, then persist. run.end publishes the completion

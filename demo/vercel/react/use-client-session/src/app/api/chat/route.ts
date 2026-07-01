@@ -51,18 +51,18 @@ export async function POST(req: Request) {
   await run.start();
 
   after(async () => {
-    // Steering loop. `run.endable()` is a delta predicate:
-    //   - returns false on the first call (the trigger input is pending),
-    //   - returns false again whenever a new steering message has folded
+    // Steering loop. `run.hasInput()` is a delta predicate:
+    //   - returns true on the first call (the trigger input is pending),
+    //   - returns true again whenever a new steering message has folded
     //     into the Run since the previous call (the user typed `/steer ...`
     //     while we were streaming),
-    //   - returns true only when nothing new has arrived since the previous
+    //   - returns false only when nothing new has arrived since the previous
     //     call AND the trigger has been processed at least once.
     //
     // Each iteration reads `run.messages` LIVE — so any steering message
     // that folded into the Run is included in the LLM context for the next
     // inference pass. The SDK captures the channel cutoff at the moment
-    // endable() returns true; that becomes `input-hwm-serial` on the run's
+    // hasInput() returns false; that becomes `input-hwm-serial` on the run's
     // terminal lifecycle event, letting the client tell whether each steer
     // was consumed.
     //
@@ -70,7 +70,7 @@ export async function POST(req: Request) {
     // step ends the run-iteration as `suspend`, and the next invocation
     // will resume the run via `ai-run-resume`.
     let lastOutcome: Awaited<ReturnType<typeof vercelRunOutcome>> | undefined;
-    while (!run.endable()) {
+    while (run.hasInput()) {
       // Re-load the un-paginated conversation each iteration so any steering
       // message folded into the Tree since the previous pipe is included in
       // the model's context. `run.messages` is only this run's own turn.
@@ -97,14 +97,14 @@ export async function POST(req: Request) {
       const pipeResult = await run.pipe(result.toUIMessageStream());
       lastOutcome = await vercelRunOutcome(pipeResult, result.finishReason);
       // Exit the loop on any non-complete outcome (suspend / cancel / error).
-      // For a `complete` outcome we re-check `endable()` at the top: if a
-      // steering message arrived during this iteration it will return false
+      // For a `complete` outcome we re-check `hasInput()` at the top: if a
+      // steering message arrived during this iteration it will return true
       // again and we run another inference pass that includes the steer in
       // run.messages.
       if (lastOutcome.reason !== 'complete') break;
     }
 
-    // Resolve the terminal lifecycle. If `endable()` returned true with no
+    // Resolve the terminal lifecycle. If `hasInput()` returned false with no
     // pipe ever happening (no triggering input visible), default to
     // complete to avoid leaving the run open.
     const finalOutcome = lastOutcome ?? { reason: 'complete' as const };

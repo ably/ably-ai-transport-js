@@ -901,44 +901,44 @@ describe('AgentSession', () => {
   });
 
   // -------------------------------------------------------------------------
-  // run.endable() — delta predicate for steering loop
+  // run.hasInput() — delta predicate for steering loop
   // -------------------------------------------------------------------------
 
-  describe('endable()', () => {
-    it('returns false before start()', () => {
+  describe('hasInput()', () => {
+    it('returns true before start()', () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
-      expect(run.endable()).toBe(false);
+      expect(run.hasInput()).toBe(true);
     });
 
-    it('returns false after start() until pipe() is called', async () => {
+    it('returns true after start() until pipe() is called', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
       // start() resolves but no pipe() yet — the trigger has not been processed.
-      expect(run.endable()).toBe(false);
+      expect(run.hasInput()).toBe(true);
     });
 
-    it('returns true after start() + pipe() with no steering arriving', async () => {
+    it('returns false after start() + pipe() with no steering arriving', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
       await run.pipe(streamOf({ type: 'text', text: 'hi' }));
-      expect(run.endable()).toBe(true);
+      expect(run.hasInput()).toBe(false);
     });
 
-    it('returns true when the abortSignal has fired', async () => {
+    it('returns false when the abortSignal has fired', async () => {
       const controller = new AbortController();
       const run = createRunFromOpts(session, { runId: 'run-1', signal: controller.signal });
       await run.start();
       controller.abort();
-      // Cancel implies "ready to terminate" — endable() returns true regardless
-      // of pending steering, so the loop exits and the agent calls
+      // Cancel implies "no more input to process" — hasInput() returns false
+      // regardless of pending steering, so the loop exits and the agent calls
       // run.end({ reason: 'cancelled' }).
-      expect(run.endable()).toBe(true);
+      expect(run.hasInput()).toBe(false);
     });
 
-    it("stamps a steer's codec-message-id on the response that ran after endable() drained it", async () => {
+    it("stamps a steer's codec-message-id on the response that ran after hasInput() drained it", async () => {
       // Headline test: trigger id-1 starts the run; pipe(1)'s responses
       // carry no `steer-codec-message-ids` (no steers folded yet); a steer
-      // of id-2 lands; endable() returns false and drains it into
+      // of id-2 lands; hasInput() returns true and drains it into
       // recentlyProcessed; pipe(2)'s responses carry
       // `steer-codec-message-ids = ["id-2"]`.
       // Build a fresh session with a codec whose decoder produces real
@@ -1002,8 +1002,8 @@ describe('AgentSession', () => {
         publisherClientId: 'user-a',
       });
 
-      // endable() drains the steer into recentlyProcessed; loop iterates.
-      expect(run.endable()).toBe(false);
+      // hasInput() drains the steer into recentlyProcessed; loop iterates.
+      expect(run.hasInput()).toBe(true);
 
       // pipe(2)'s assistant encoder defaults include the steer's id.
       await run.pipe(streamOf({ type: 'text', text: 'response-2' }));
@@ -1011,8 +1011,8 @@ describe('AgentSession', () => {
       const headers2 = pipe2Encoder?.opts?.extras?.headers ?? {};
       expect(headers2[HEADER_STEER_CODEC_MESSAGE_IDS]).toBe(JSON.stringify([steerId]));
 
-      // endable() returns true now — nothing further to drain.
-      expect(run.endable()).toBe(true);
+      // hasInput() returns false now — nothing further to drain.
+      expect(run.hasInput()).toBe(false);
 
       await lookupableSession.close();
     });

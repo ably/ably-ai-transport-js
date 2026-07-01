@@ -201,7 +201,7 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
    * The handler is a hint: it lets the agent race the steering arrival
    * against an in-flight model call to decide whether to cancel and
    * restart. The SDK never interrupts a model call itself.
-   * Authoritative visibility of pending steering is via {@link Run.endable}.
+   * Authoritative visibility of pending steering is via {@link Run.hasInput}.
    */
   onSteer?: () => void;
 }
@@ -292,16 +292,16 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
   start(): Promise<void>;
 
   /**
-   * Delta-predicate the agent uses as its loop continuation. Returns `false`
+   * Delta-predicate the agent uses as its loop continuation. Returns `true`
    * when there is pending input the Run has not iterated on — either the
    * original triggering input (on the first call after {@link Run.start})
    * or a new steering message that has folded into the Run's projection
-   * since the previous `endable()` call. Returns `true` only when the
+   * since the previous `hasInput()` call. Returns `false` only when the
    * trigger has been processed at least once AND nothing new has arrived
    * since the previous call.
    *
    * Each call sets the baseline for the next; it is NOT a state query.
-   * Once the run's `abortSignal` has fired, `endable()` returns `true`
+   * Once the run's `abortSignal` has fired, `hasInput()` returns `false`
    * regardless of pending steering — cancel implies the loop should exit.
    *
    * Each call drains the set of steers folded since the previous call
@@ -313,7 +313,7 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
    * The natural loop:
    *
    * ```ts
-   * while (!run.endable()) {
+   * while (run.hasInput()) {
    *   const messages = run.messages;
    *   const stream = await model.stream({ messages });
    *   await run.pipe(stream);
@@ -321,13 +321,13 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
    * await run.end({ reason: 'complete' });
    * ```
    *
-   * Safe to call before {@link Run.start} resolves: returns `false` until
+   * Safe to call before {@link Run.start} resolves: returns `true` until
    * `start()` completes and the trigger has been responded to (any
    * output-producing Run method — `pipe()` today — has run at least once).
-   * @returns `true` when the Run has caught up on all pending input since
-   *   the previous call; `false` otherwise.
+   * @returns `false` when the Run has caught up on all pending input since
+   *   the previous call; `true` otherwise.
    */
-  endable(): boolean;
+  hasInput(): boolean;
 
   /**
    * Pipe a ReadableStream through the encoder to the channel.

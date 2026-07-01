@@ -682,26 +682,26 @@ class DefaultAgentSession<
     });
 
     // ---------------------------------------------------------------------
-    // Steering / endable tracking
+    // Steering / hasInput tracking
     // ---------------------------------------------------------------------
 
     /**
      * Per-Run steer state. Owns the pending/recently-processed sets the
-     * Tree-output listener, `endable()`, and `pipe()` share.
+     * Tree-output listener, `hasInput()`, and `pipe()` share.
      */
     const steerTracker = new RunSteerTracker();
     /**
      * Has the agent published any output for this run yet? Flipped by any
      * output-producing Run method (today: `pipe()`; any future discrete
-     * send would set it the same way). Gates `endable()` so it cannot
-     * return `true` until the trigger has been responded to at least once.
+     * send would set it the same way). Gates `hasInput()` so it cannot
+     * return `false` until the trigger has been responded to at least once.
      */
     let hasProducedOutput = false;
 
     /**
      * Subscription to the Tree's `output` event. Detects input events
      * folded into THIS run's projection (steering messages) and:
-     *   1. records each steer's codec-message-id so the next `endable()` call sees it,
+     *   1. records each steer's codec-message-id so the next `hasInput()` call sees it,
      *   2. fires the `onSteer` callback once per inbound steering message.
      * Bound at construction so cancel routing / cleanup own a single
      * unsubscribe handle (see `deregisterRun`).
@@ -842,32 +842,32 @@ class DefaultAgentSession<
         return view;
       },
 
-      endable: (): boolean => {
+      hasInput: (): boolean => {
         // Delta predicate driving the agent's iteration loop. Drains the
         // pending-steer set on every call; the next `pipe()` stamps the
         // drained ids on its responses as `steer-codec-message-ids`.
         // Identity-based — no serial comparison.
-        if (state === RunState.INITIALIZED) return false;
-        // Cancel implies "ready to terminate". DO NOT drain pending here —
-        // a steer that folded after the abort began propagating must be
-        // reported as not-consumed. Leaving it in pending means it never
-        // lands on a response stamp, so the client sees it as not in any
-        // observed `steer-codec-message-ids` → not-consumed.
-        if (signal.aborted) return true;
+        if (state === RunState.INITIALIZED) return true;
+        // Cancel implies "no more input to process". DO NOT drain pending
+        // here — a steer that folded after the abort began propagating
+        // must be reported as not-consumed. Leaving it in pending means it
+        // never lands on a response stamp, so the client sees it as not in
+        // any observed `steer-codec-message-ids` → not-consumed.
+        if (signal.aborted) return false;
         // The trigger hasn't been responded to yet — no output-producing
         // Run method (pipe, discrete send, ...) has run. A steer arriving
         // before the first response stays in pending until the loop
         // iterates at least once.
-        if (!hasProducedOutput) return false;
+        if (!hasProducedOutput) return true;
         // Did anything fold since the last call? Drain pending → recently
         // processed and signal the loop to iterate.
         if (steerTracker.hasPending()) {
           steerTracker.drainPending();
-          return false;
+          return true;
         }
         // Caught up. The next response (if any) will stamp the accumulated
         // recently-processed set on its assistant messages.
-        return true;
+        return false;
       },
 
       // Spec: AIT-ST4, AIT-ST4a, AIT-ST4b
@@ -1059,8 +1059,8 @@ class DefaultAgentSession<
           );
         }
 
-        // Record that the trigger has been responded to. `endable()`
-        // returns false until any output-producing Run method has run,
+        // Record that the trigger has been responded to. `hasInput()`
+        // returns true until any output-producing Run method has run,
         // gating the loop on actually having done something with the
         // trigger input.
         hasProducedOutput = true;

@@ -313,7 +313,7 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
               // `/steer <text>` targets the latest active Run via
               // activeRun.steer(...) — a follow-up user message inside the
               // running Run rather than a fresh send. The agent's
-              // run.endable() loop picks it up at the next iteration.
+              // run.hasInput() loop picks it up at the next iteration.
               const steerMatch = /^\/steer\s+(.+)$/.exec(text);
               if (steerMatch) {
                 steerActiveRun(steerMatch[1]?.trim() ?? '');

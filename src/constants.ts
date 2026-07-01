@@ -116,7 +116,7 @@ export const HEADER_INPUT_CODEC_MESSAGE_ID = 'input-codec-message-id';
  * since the previous response. Stamped on each pipe's assistant outputs
  * via `defaultHeaders`; omitted when the set is empty. Each steer appears
  * on exactly one response: the response from the pipe that ran after the
- * steer was first observed by `endable()`.
+ * steer was first observed by `hasInput()`.
  *
  * Used by clients to resolve `activeRun.steer(...)` outcomes by membership:
  * accumulate the union across observed responses for the run, then on

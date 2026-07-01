@@ -112,19 +112,19 @@ import { UIMessageCodec } from '@ably/ai-transport/vercel';
 //    list paired with codec-message-ids so we can address the result back to
 //    the transport — the assistant's domain `message.id` is independent of the
 //    codec-message-id and is never used for correlation.
+// `getLocation` is declared statically on the server (in `streamText`'s
+// `tools`), so the codec reconstructs it as a `tool-${name}` part — the name is
+// encoded in the `type`, not a separate `toolName` field. (A tool declared
+// dynamically would instead be `type: 'dynamic-tool'` with `toolName`.)
 const assistant = view
   .getMessages()
   .find(
     ({ message }) =>
       message.role === 'assistant' &&
-      message.parts.some(
-        (p) => p.type === 'dynamic-tool' && p.toolName === 'getLocation' && p.state === 'input-available',
-      ),
+      message.parts.some((p) => p.type === 'tool-getLocation' && p.state === 'input-available'),
   );
 
-const toolPart = assistant?.message.parts.find(
-  (p) => p.type === 'dynamic-tool' && p.toolName === 'getLocation' && p.state === 'input-available',
-);
+const toolPart = assistant?.message.parts.find((p) => p.type === 'tool-getLocation' && p.state === 'input-available');
 
 // 2. Resolve the owning Run so the continuation reuses its runId
 const run = view.runOf(assistant.codecMessageId);

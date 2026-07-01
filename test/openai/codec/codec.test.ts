@@ -135,10 +135,11 @@ describe('OpenAI codec roundtrip (offline)', () => {
     expect(errorEvent?.type === 'error' ? errorEvent.message : '').toBe('boom');
   });
 
-  it('drops the not-yet-streamed function_call_arguments deltas on encode (ignore set)', async () => {
+  it('drops the not-yet-streamed events on encode (ignore set)', async () => {
     const { writer, inbound } = createBridge();
     const encoder = ResponsesCodec.createEncoder(writer, { onMessage: stampHeaders('run-x', 'run-1') });
-    // These are on the codec's ignore list — publishing them is a silent no-op.
+    // A representative event from each ignored family — publishing them is a
+    // silent no-op so the agent can pipe a raw reasoning-model stream.
     await encoder.publishOutput({
       type: 'response.function_call_arguments.delta',
       item_id: 'fc_1',
@@ -147,11 +148,19 @@ describe('OpenAI codec roundtrip (offline)', () => {
       sequence_number: 0,
     });
     await encoder.publishOutput({
-      type: 'response.function_call_arguments.done',
-      item_id: 'fc_1',
+      type: 'response.reasoning_summary_text.delta',
+      item_id: 'rs_1',
       output_index: 0,
-      name: 'getWeather',
-      arguments: '{"location":"London"}',
+      summary_index: 0,
+      delta: 'thinking',
+      sequence_number: 0,
+    });
+    await encoder.publishOutput({
+      type: 'response.refusal.delta',
+      item_id: 'msg_1',
+      output_index: 0,
+      content_index: 0,
+      delta: 'I cannot',
       sequence_number: 0,
     });
     await encoder.close();
@@ -161,19 +170,17 @@ describe('OpenAI codec roundtrip (offline)', () => {
   it('still throws on an output event that is neither modelled nor ignored (safety net)', async () => {
     const { writer } = createBridge();
     const encoder = ResponsesCodec.createEncoder(writer, { onMessage: stampHeaders('run-x', 'run-1') });
-    // A reasoning event the codec neither encodes nor lists as ignorable: it must
-    // surface loudly rather than being dropped, since output_item.done does not
-    // carry reasoning-summary text.
+    // A hosted-tool event (web search) the codec neither encodes nor ignores: it
+    // must surface loudly rather than being dropped, since it signals an opt-in
+    // feature we don't support yet.
     await expect(
       encoder.publishOutput({
-        type: 'response.reasoning_summary_text.delta',
-        item_id: 'rs_1',
+        type: 'response.web_search_call.searching',
+        item_id: 'ws_1',
         output_index: 0,
-        summary_index: 0,
-        delta: 'thinking',
         sequence_number: 0,
       }),
-    ).rejects.toThrow(/unsupported event type 'response\.reasoning_summary_text\.delta'/);
+    ).rejects.toThrow(/unsupported event type 'response\.web_search_call\.searching'/);
   });
 
   it('roundtrips a server-side function call and its output through the wire', async () => {

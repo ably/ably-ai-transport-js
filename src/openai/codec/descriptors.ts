@@ -15,18 +15,16 @@
  *   with no dedicated descriptor (the `done` envelope holds the complete
  *   arguments). The function call's *result* is the codec's own
  *   `function_call_output` event (see below).
- * - **A small `ignore(...)` set is the escape hatch for events not yet
- *   streamed.** The aim is to carry everything the transport can, streaming
- *   included; where we haven't yet built a clean streaming path for a provider
- *   event, we drop it *for now* rather than let it trip the encoder's
- *   safety net (any event that is neither described nor ignored throws). The
- *   streamed function-call argument deltas (`response.function_call_arguments.*`)
- *   sit here today: they don't fit the current `stream(...)` model — their start
- *   boundary nests the id under `item.id`, so there's no top-level id shared
- *   across start/delta/end — and the complete arguments arrive on
- *   `output_item.done` meanwhile, so dropping the deltas loses only the
- *   incremental typing, not correctness. Teaching the stream model to key on a
- *   nested id (so these can stream) would remove them from the ignore set.
+ * - **An `ignore(...)` set is the escape hatch for events not yet streamed.**
+ *   The aim is to carry everything the transport can, streaming included; where
+ *   we haven't yet built a clean path for a provider event, we drop it *for now*
+ *   rather than let it trip the encoder's safety net (any event that is neither
+ *   described nor ignored throws). Today this covers a reasoning model's streamed
+ *   summary / raw reasoning text, refusals, text annotations, and the
+ *   function-call argument deltas — content whose final value we already carry on
+ *   the item's `output_item.done`, or that we don't render yet, so dropping the
+ *   deltas loses only the incremental streaming, not correctness. The exhaustive
+ *   list (and what still throws) is documented at the ignore entries below.
  *
  * Input side: the user message is a `batch` that fans the user turn's content
  * parts out into one `ai-input` event per part (one for a plain text prompt),
@@ -136,14 +134,53 @@ export const outputs = ({
       data: { encode: (c) => c.item, decode: (d) => ({ item: d as Responses.ResponseInputItem.FunctionCallOutput }) },
     }),
 
-    // --- not yet streamed: dropped on encode (see the file header) -----------
-    // We want to stream tool-call arguments; we just don't have a clean path
-    // yet (the deltas can't key the current stream model — their start nests the
-    // id under item.id). Until then, drop the deltas: the complete arguments
-    // still arrive on the function_call's output_item.done, so the turn is
-    // correct, and the agent can pipe the raw /responses stream without a filter.
+    // --- events we don't yet model ------------------------------------------
+    //
+    // TODO(AIT-742): the two lists below are exhaustive against openai@6.44.0's
+    // ResponseStreamEvent union — revisit on a dep bump. Two states:
+    //  • ignore(...)'d here → dropped on encode, never breaks a run. These are
+    //    streamed deltas whose final value we already carry (via the item's
+    //    output_item.done), or content we don't render yet. We WANT to stream
+    //    these — each is a tracked gap, not a decision to discard.
+    //  • everything else → still throws (the encoder's safety net), because it
+    //    only appears once you opt into a hosted tool / modality we don't
+    //    support. Failing loudly beats silently dropping that content.
+    //
+    // Ignored for now:
+    //  reasoning (GPT-5.x): the reasoning *item* still rides output_item.*; only
+    //  the streamed summary / raw reasoning text is dropped. TODO: stream it —
+    //  unlike function-call args it fits the stream model (reasoning_summary_part.added
+    //  carries a top-level item_id), modulo multiple summary parts per item.
+    ignore('response.reasoning_summary_part.added'),
+    ignore('response.reasoning_summary_part.done'),
+    ignore('response.reasoning_summary_text.delta'),
+    ignore('response.reasoning_summary_text.done'),
+    ignore('response.reasoning_text.delta'),
+    ignore('response.reasoning_text.done'),
+    //  refusal: the refusal still renders from the message item's output_item.done.
+    //  TODO: stream it.
+    ignore('response.refusal.delta'),
+    ignore('response.refusal.done'),
+    //  annotations / citations: the text streams regardless. TODO: carry them.
+    ignore('response.output_text.annotation.added'),
+    //  function-call argument deltas: the complete arguments arrive on the
+    //  function_call's output_item.done; they can't key the stream model yet
+    //  (their start, output_item.added, nests the id under item.id). TODO: stream.
     ignore('response.function_call_arguments.delta'),
     ignore('response.function_call_arguments.done'),
+    //
+    // Not modelled → throw (opt-in hosted tools / modalities; add support when we
+    // take each on):
+    //  audio out:        response.audio.delta / .done, response.audio.transcript.delta / .done
+    //  web search:       response.web_search_call.in_progress / .searching / .completed
+    //  file search:      response.file_search_call.in_progress / .searching / .completed
+    //  code interpreter: response.code_interpreter_call.in_progress / .interpreting / .completed,
+    //                    response.code_interpreter_call_code.delta / .done
+    //  image gen:        response.image_generation_call.in_progress / .generating / .partial_image / .completed
+    //  MCP:              response.mcp_call.in_progress / .completed / .failed,
+    //                    response.mcp_call_arguments.delta / .done,
+    //                    response.mcp_list_tools.in_progress / .completed / .failed
+    //  custom tools:     response.custom_tool_call_input.delta / .done
   ];
 };
 

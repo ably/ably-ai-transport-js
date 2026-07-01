@@ -8,6 +8,7 @@
 import type * as AI from 'ai';
 
 import type { CodecMessage } from '../../core/codec/index.js';
+import { isToolPart, type ToolPart } from '../tool-part.js';
 
 // ---------------------------------------------------------------------------
 // Internal tracker state
@@ -86,14 +87,14 @@ export interface PendingToolResolution {
     | { kind: 'tool-approval-response'; approved: boolean; reason?: string };
 }
 
-/** A located `dynamic-tool` part with its owning message and tracker. */
+/** A located tool part (either representation) with its owning message and tracker. */
 export interface OwnerLookup {
   /** The message owning the tool part. */
   message: AI.UIMessage;
   /** The tracker pointing at the part's index. */
   tracker: ToolPartTracker;
-  /** The resolved `dynamic-tool` part itself. */
-  part: AI.DynamicToolUIPart;
+  /** The resolved tool part itself, in whichever representation it was reconstructed. */
+  part: ToolPart;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,20 +151,21 @@ export const ensureTrackers = (state: VercelProjection, messageId: string): Mess
 };
 
 /**
- * Resolve the `dynamic-tool` part tracked for a toolCallId within a message.
+ * Resolve the tool part tracked for a toolCallId within a message, in whichever
+ * representation it was reconstructed (`dynamic-tool` or `tool-${name}`).
  * @param message - The message whose parts to read.
  * @param trackers - The message's tracker maps.
  * @param toolCallId - The tool call to resolve.
- * @returns The tracker and part, or `undefined` if untracked or the part is not a dynamic-tool.
+ * @returns The tracker and part, or `undefined` if untracked or the tracked part is not a tool part.
  */
 export const getToolPart = (
   message: AI.UIMessage,
   trackers: MessageTrackers,
   toolCallId: string,
-): { tracker: ToolPartTracker; part: AI.DynamicToolUIPart } | undefined => {
+): { tracker: ToolPartTracker; part: ToolPart } | undefined => {
   const tracker = trackers.tools.get(toolCallId);
   if (!tracker) return undefined;
   const part = message.parts[tracker.partIndex];
-  if (part?.type !== 'dynamic-tool') return undefined;
+  if (!part || !isToolPart(part)) return undefined;
   return { tracker, part };
 };

@@ -8,7 +8,7 @@ import type * as AI from 'ai';
 
 import { parseJson } from '../../utils.js';
 import { ensureMessage, ensureTrackers, getToolPart, type VercelProjection } from './reducer-state.js';
-import { toolBase } from './tool-transitions.js';
+import { toolBase, toolIdentity } from './tool-transitions.js';
 
 /**
  * Fold a tool-input streaming chunk into the projection.
@@ -45,7 +45,7 @@ export const foldToolInput = (
       const found = getToolPart(message, trackers, chunk.toolCallId);
       if (!found) return state;
       message.parts[found.tracker.partIndex] = {
-        ...toolBase(found.part),
+        ...toolIdentity(found.part),
         state: 'input-streaming',
         input: parsedInput,
       };
@@ -55,7 +55,7 @@ export const foldToolInput = (
       const found = getToolPart(message, trackers, chunk.toolCallId);
       if (!found) return state;
       message.parts[found.tracker.partIndex] = {
-        ...toolBase(found.part),
+        ...toolIdentity(found.part),
         state: 'input-available',
         input: chunk.input,
       };
@@ -65,7 +65,7 @@ export const foldToolInput = (
       const found = getToolPart(message, trackers, chunk.toolCallId);
       if (found) {
         message.parts[found.tracker.partIndex] = {
-          ...toolBase(found.part),
+          ...toolIdentity(found.part),
           state: 'output-error',
           input: chunk.input,
           errorText: chunk.errorText,

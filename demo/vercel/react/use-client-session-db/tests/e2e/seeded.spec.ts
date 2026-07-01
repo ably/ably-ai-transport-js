@@ -24,13 +24,14 @@ function seededChannelUrl(testTitle: string): string {
   return `/?channel=ai:e2e-${slug}-${stamp}`;
 }
 
-// The linear chat renders each message as a `.max-w-[75%]` bubble wrapper.
+// The linear chat renders each message through the shadcn Message primitive,
+// tagged with data-testid="message-bubble".
 function bubbleContaining(page: Page, text: string | RegExp): Locator {
-  return page.locator('div.max-w-\\[75\\%\\]').filter({ hasText: text });
+  return page.locator('[data-testid="message-bubble"]').filter({ hasText: text });
 }
 
 function messages(page: Page): Locator {
-  return page.locator('div.max-w-\\[75\\%\\]');
+  return page.locator('[data-testid="message-bubble"]');
 }
 
 async function send(page: Page, text: string): Promise<void> {

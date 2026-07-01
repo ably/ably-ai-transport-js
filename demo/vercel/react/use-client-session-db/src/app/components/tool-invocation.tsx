@@ -1,6 +1,18 @@
 'use client';
 
-import { getToolName, type DynamicToolUIPart, type ToolUIPart } from 'ai';
+import type { DynamicToolUIPart } from 'ai';
+import { Loader2Icon, ShieldAlertIcon } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import { Marker, MarkerContent, MarkerIcon } from '@/components/ui/marker';
 
 // ---------------------------------------------------------------------------
 // Weather card — generative UI for the getWeather tool result
@@ -16,36 +28,39 @@ interface WeatherData {
 }
 
 const conditionIcon: Record<string, string> = {
-  Sunny: '\u2600\uFE0F',
-  'Partly Cloudy': '\u26C5',
-  Cloudy: '\u2601\uFE0F',
-  Rainy: '\uD83C\uDF27\uFE0F',
-  Thunderstorms: '\u26C8\uFE0F',
-  Snowy: '\u2744\uFE0F',
+  Sunny: '☀️',
+  'Partly Cloudy': '⛅',
+  Cloudy: '☁️',
+  Rainy: '🌧️',
+  Thunderstorms: '⛈️',
+  Snowy: '❄️',
 };
 
 function WeatherCard({ data }: { data: WeatherData }) {
-  const icon = conditionIcon[data.conditions] ?? '\uD83C\uDF24\uFE0F';
+  const icon = conditionIcon[data.conditions] ?? '🌤️';
   const tempC = Math.round(((data.temperature - 32) * 5) / 9);
 
   return (
-    <div className="rounded-lg bg-gradient-to-br from-sky-900/40 to-indigo-900/40 border border-sky-800/30 p-3 my-1 max-w-[280px]">
-      <div className="flex items-start justify-between gap-2">
-        <div>
-          <div className="text-xs text-sky-400/80 font-medium">{data.location}</div>
-          <div className="text-2xl font-semibold text-zinc-100 mt-0.5">
-            {data.temperature}&deg;F
-            <span className="text-sm font-normal text-zinc-400 ml-1">({tempC}&deg;C)</span>
-          </div>
-          <div className="text-sm text-zinc-300 mt-0.5">{data.conditions}</div>
+    <Card
+      size="sm"
+      className="my-1 max-w-[280px]"
+    >
+      <CardHeader>
+        <CardDescription>{data.location}</CardDescription>
+        <CardTitle className="text-2xl">
+          {data.temperature}°F
+          <span className="ml-1 text-sm font-normal text-muted-foreground">({tempC}°C)</span>
+        </CardTitle>
+        <CardAction className="text-3xl">{icon}</CardAction>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-1">
+        <div className="text-muted-foreground">{data.conditions}</div>
+        <div className="flex gap-4 text-xs text-muted-foreground">
+          <span>Humidity: {data.humidity}%</span>
+          <span>Wind: {data.windSpeed} mph</span>
         </div>
-        <div className="text-3xl mt-1">{icon}</div>
-      </div>
-      <div className="flex gap-4 mt-2 text-xs text-zinc-400">
-        <span>Humidity: {data.humidity}%</span>
-        <span>Wind: {data.windSpeed} mph</span>
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -67,31 +82,37 @@ interface ForecastData {
 
 function ForecastCard({ data }: { data: ForecastData }) {
   return (
-    <div className="rounded-lg bg-gradient-to-br from-indigo-900/40 to-purple-900/40 border border-indigo-800/30 p-3 my-1 max-w-[320px]">
-      <div className="text-xs text-indigo-400/80 font-medium mb-2">5-Day Forecast: {data.location}</div>
-      <div className="space-y-1">
+    <Card
+      size="sm"
+      className="my-1 max-w-[360px]"
+    >
+      <CardHeader>
+        <CardTitle className="text-sm">5-day forecast</CardTitle>
+        <CardDescription>{data.location}</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-1">
         {data.forecast.map((day) => {
-          const icon = conditionIcon[day.conditions] ?? '\uD83C\uDF24\uFE0F';
+          const icon = conditionIcon[day.conditions] ?? '🌤️';
           const highC = Math.round(((day.high - 32) * 5) / 9);
           const lowC = Math.round(((day.low - 32) * 5) / 9);
           return (
             <div
               key={day.day}
-              className="flex items-center justify-between text-xs"
+              className="flex items-center gap-3 text-xs"
             >
-              <span className="text-zinc-300 w-8">{day.day}</span>
+              <span className="w-8 text-muted-foreground">{day.day}</span>
               <span className="text-base">{icon}</span>
-              <span className="text-zinc-400 w-24 text-right">
-                {day.high}&deg;/{day.low}&deg;F
-                <span className="text-zinc-600 ml-1">
-                  ({highC}&deg;/{lowC}&deg;C)
+              <span className="ml-auto text-right whitespace-nowrap text-muted-foreground">
+                {day.high}°/{day.low}°F
+                <span className="ml-1 text-muted-foreground/60">
+                  ({highC}°/{lowC}°C)
                 </span>
               </span>
             </div>
           );
         })}
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -104,15 +125,20 @@ function LocationResult({ output }: { output: unknown }) {
   if (!data) return null;
   if (data.error) {
     return (
-      <div className="rounded-md bg-red-950/30 border border-red-900/30 px-2.5 py-1.5 text-xs text-red-400 my-1">
-        Location error: {data.error}
-      </div>
+      <Marker
+        variant="border"
+        className="my-1 text-destructive"
+      >
+        <MarkerContent>Location error: {data.error}</MarkerContent>
+      </Marker>
     );
   }
   return (
-    <div className="rounded-md bg-zinc-800/60 border border-zinc-700/40 px-2.5 py-1.5 text-xs text-zinc-400 my-1">
-      Location: {data.latitude?.toFixed(4)}, {data.longitude?.toFixed(4)}
-    </div>
+    <Marker className="my-1">
+      <MarkerContent>
+        Location: {data.latitude?.toFixed(4)}, {data.longitude?.toFixed(4)}
+      </MarkerContent>
+    </Marker>
   );
 }
 
@@ -122,30 +148,33 @@ function LocationResult({ output }: { output: unknown }) {
 
 function ToolPending({ name, input }: { name: string; input: unknown }) {
   return (
-    <div className="flex items-center gap-2 rounded-md bg-zinc-800/60 border border-zinc-700/40 px-2.5 py-1.5 my-1 text-xs">
-      <span className="inline-block w-2 h-2 rounded-full bg-amber-500/60 animate-pulse" />
-      <span className="text-zinc-400">
-        Calling <span className="font-mono text-zinc-300">{name}</span>
-        {input != null && Object.keys(input as object).length > 0 && (
-          <span className="text-zinc-500 ml-1">({JSON.stringify(input)})</span>
-        )}
-      </span>
-    </div>
+    <Marker className="my-1">
+      <MarkerIcon>
+        <Loader2Icon className="animate-spin" />
+      </MarkerIcon>
+      <MarkerContent className="font-mono">
+        Calling {name}
+        {input != null && Object.keys(input as object).length > 0 && ` (${JSON.stringify(input)})`}
+      </MarkerContent>
+    </Marker>
   );
 }
 
 function ToolError({ name, errorText }: { name: string; errorText: string }) {
   return (
-    <div className="rounded-md bg-red-950/30 border border-red-900/30 px-2.5 py-1.5 text-xs my-1">
-      <span className="text-red-400">
+    <Marker
+      variant="border"
+      className="my-1 text-destructive"
+    >
+      <MarkerContent>
         <span className="font-mono">{name}</span> failed: {errorText}
-      </span>
-    </div>
+      </MarkerContent>
+    </Marker>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Approval card
+// Approval card — rendered for approval-requested tool parts
 // ---------------------------------------------------------------------------
 
 function ToolApprovalCard({
@@ -161,35 +190,39 @@ function ToolApprovalCard({
   const inputSummary = inputObj ? Object.values(inputObj).join(', ') : JSON.stringify(part.input);
 
   return (
-    <div className="my-1 rounded-lg border border-amber-800/50 bg-amber-950/30 p-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-medium text-amber-400">Approval Required</span>
-          </div>
-          <p className="mt-1 text-sm text-zinc-300">
-            <span className="font-mono text-amber-300">{getToolName(part)}</span>
-            {inputSummary && <span className="text-zinc-500"> &mdash; {inputSummary}</span>}
-          </p>
-        </div>
-        {onApprove && onDeny && (
-          <div className="flex shrink-0 gap-2">
-            <button
-              onClick={onApprove}
-              className="rounded-md bg-emerald-900/60 px-3 py-1.5 text-xs font-medium text-emerald-300 transition-colors hover:bg-emerald-900/80"
-            >
-              Approve
-            </button>
-            <button
-              onClick={onDeny}
-              className="rounded-md bg-red-900/60 px-3 py-1.5 text-xs font-medium text-red-300 transition-colors hover:bg-red-900/80"
-            >
-              Deny
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
+    <Card
+      size="sm"
+      data-testid="tool-approval"
+      className="my-1 max-w-[360px]"
+    >
+      <CardHeader>
+        <CardTitle className="flex items-center gap-1.5 text-sm">
+          <ShieldAlertIcon className="size-4 text-muted-foreground" />
+          Approval required
+        </CardTitle>
+        <CardDescription>
+          <span className="font-mono text-foreground">{part.toolName}</span>
+          {inputSummary && <span> — {inputSummary}</span>}
+        </CardDescription>
+      </CardHeader>
+      {onApprove && onDeny && (
+        <CardFooter className="gap-2">
+          <Button
+            size="sm"
+            onClick={onApprove}
+          >
+            Approve
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onDeny}
+          >
+            Deny
+          </Button>
+        </CardFooter>
+      )}
+    </Card>
   );
 }
 
@@ -226,9 +259,11 @@ export function ToolInvocation({ part, onApprove, onDeny }: ToolInvocationProps)
       }
       // Generic output fallback
       return (
-        <div className="rounded-md bg-zinc-800/60 border border-zinc-700/40 px-2.5 py-1.5 text-xs text-zinc-400 my-1">
-          <span className="font-mono">{getToolName(part)}</span>: {JSON.stringify(part.output)}
-        </div>
+        <Marker className="my-1">
+          <MarkerContent className="font-mono">
+            {part.toolName}: {JSON.stringify(part.output)}
+          </MarkerContent>
+        </Marker>
       );
     }
 
@@ -251,9 +286,11 @@ export function ToolInvocation({ part, onApprove, onDeny }: ToolInvocationProps)
 
     case 'output-denied':
       return (
-        <div className="rounded-md bg-zinc-800/60 border border-zinc-700/40 px-2.5 py-1.5 text-xs text-zinc-500 my-1">
-          <span className="font-mono">{getToolName(part)}</span> &mdash; denied
-        </div>
+        <Marker className="my-1 text-muted-foreground">
+          <MarkerContent>
+            <span className="font-mono">{part.toolName}</span> — denied
+          </MarkerContent>
+        </Marker>
       );
 
     default:

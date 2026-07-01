@@ -23,7 +23,11 @@ Element.prototype.scrollIntoView = () => {};
 const { mockSend, mockCancel, mockWakeAgent, runsHolder, viewMessagesHolder, session } = vi.hoisted(() => {
   const runsHolder: { current: RunInfo[] } = { current: [] };
   const viewMessagesHolder: { current: CodecMessage<AI.UIMessage>[] } = { current: [] };
-  const mockSend = vi.fn(async (_events: VercelInput | VercelInput[], _opts?: SendOptions) => ({ runId: 'run-1' }));
+  // Typed via vi.fn's generic (not impl params) so `mock.calls` is typed for the
+  // approval-args assertions without declaring unused parameters.
+  const mockSend = vi.fn<(events: VercelInput | VercelInput[], opts?: SendOptions) => Promise<{ runId: string }>>(
+    async () => ({ runId: 'run-1' }),
+  );
   const mockCancel = vi.fn(async () => {});
   const mockWakeAgent = vi.fn(async () => ({ runId: 'run-1', invocationId: 'inv-1' }));
   const session = {
@@ -35,7 +39,7 @@ const { mockSend, mockCancel, mockWakeAgent, runsHolder, viewMessagesHolder, ses
       getMessages: () => viewMessagesHolder.current,
       runs: () => runsHolder.current,
       runOf: (codecMessageId: string) =>
-        runsHolder.current.find((r) =>
+        runsHolder.current.find(() =>
           viewMessagesHolder.current.some((m) => m.codecMessageId === codecMessageId && m.message.role === 'assistant'),
         ) ?? runsHolder.current.at(-1),
       on: () => () => {},
@@ -79,7 +83,6 @@ vi.mock('../../hooks/use-client-tools', () => ({
 }));
 
 // Chat must be imported AFTER vi.mock so it picks up the mocked modules.
-// eslint-disable-next-line import/first
 import { Chat } from '../chat';
 
 function userMsg(id: string, text: string): AI.UIMessage {
@@ -114,8 +117,7 @@ describe('<Chat> (use-client-session-db)', () => {
     renderedMessages = [];
     vi.stubGlobal(
       'fetch',
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
-      vi.fn(() => Promise.resolve(Response.json({ runId: 'run-1', invocationId: 'inv-1' }))),
+      vi.fn(async () => Response.json({ runId: 'run-1', invocationId: 'inv-1' })),
     );
   });
 

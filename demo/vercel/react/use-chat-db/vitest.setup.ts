@@ -1,37 +1,36 @@
-// jsdom v26 under vitest exposes a `localStorage` global without the standard
-// Storage methods (getItem/setItem/clear are missing), so the DebugPane's
-// localStorage-backed open/closed persistence and its tests fail. Install a
-// minimal in-memory Storage polyfill so Web Storage behaves as in a browser.
-class MemoryStorage implements Storage {
-  private store = new Map<string, string>();
+// jsdom 26 under Node's experimental localStorage does not expose a working
+// Storage (getItem/setItem/clear are absent), so components that read
+// localStorage on mount (e.g. the debug pane's open/closed preference) throw in
+// tests. Install a minimal in-memory Storage when the environment's one is
+// non-functional. No-op when a real localStorage is present.
+function installMemoryStorage(): void {
+  // CAST: trust boundary — Node's experimental `localStorage` global is
+  // loosely typed and may be absent or non-functional, so narrow it to the
+  // Storage shape we probe before deciding whether to install the shim.
+  const probe = globalThis.localStorage as Storage | undefined;
+  if (probe && typeof probe.getItem === 'function') return;
 
-  get length(): number {
-    return this.store.size;
-  }
+  const store = new Map<string, string>();
+  const memoryStorage: Storage = {
+    get length() {
+      return store.size;
+    },
+    clear: () => store.clear(),
+    getItem: (key) => store.get(key) ?? null,
+    key: (index) => Array.from(store.keys())[index] ?? null,
+    removeItem: (key) => {
+      store.delete(key);
+    },
+    setItem: (key, value) => {
+      store.set(key, String(value));
+    },
+  };
 
-  clear(): void {
-    this.store.clear();
-  }
-
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-
-  key(index: number): string | null {
-    return [...this.store.keys()][index] ?? null;
-  }
-
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: memoryStorage,
+    configurable: true,
+    writable: true,
+  });
 }
 
-const storage = new MemoryStorage();
-Object.defineProperty(globalThis, 'localStorage', { value: storage, configurable: true });
-if (typeof window !== 'undefined') {
-  Object.defineProperty(window, 'localStorage', { value: storage, configurable: true });
-}
+installMemoryStorage();

@@ -1,7 +1,14 @@
 'use client';
 
-import { useRef, useEffect } from 'react';
 import type { UIMessage } from 'ai';
+import {
+  MessageScroller,
+  MessageScrollerButton,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerProvider,
+  MessageScrollerViewport,
+} from '@/components/ui/message-scroller';
 import { MessageBubble, type MessageState } from './message-bubble';
 import { IntroCard } from './intro-card';
 
@@ -21,66 +28,67 @@ interface MessageListProps {
 }
 
 export function MessageList({ messages, stateOf, onToolApprove, onToolDeny }: MessageListProps) {
-  const endRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  // Whether the view is "stuck" to the bottom. While true, new content
-  // (including tokens streaming into the last message) keeps the latest output
-  // in view so it stays in sync across tabs. Set false when the user scrolls
-  // up, so we obey the scrollbar instead of yanking it back down.
-  const pinnedToBottomRef = useRef(true);
-
-  // Follow streaming output, not just new messages: this runs on every render
-  // caused by a `messages` change, which includes tokens appended to the last
-  // message. Only auto-scroll while pinned to the bottom.
-  useEffect(() => {
-    if (pinnedToBottomRef.current) {
-      endRef.current?.scrollIntoView({ behavior: 'auto' });
-    }
-  }, [messages]);
-
-  const handleScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-
-    // Re-pin once the user is within a small threshold of the bottom; unpin as
-    // soon as they scroll away. The threshold absorbs sub-pixel rounding and
-    // the scroll event fired by our own auto-scroll.
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    pinnedToBottomRef.current = distanceFromBottom < 80;
-  };
+  // Empty conversation: show the onboarding intro from the top in a plain
+  // scroll container. The MessageScroller anchors to the newest message, which
+  // would otherwise scroll the tall intro off-screen; the scroller below only
+  // mounts once there are messages.
+  if (messages.length === 0) {
+    return (
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <IntroCard />
+      </div>
+    );
+  }
 
   return (
-    <div
-      ref={scrollRef}
-      onScroll={handleScroll}
-      className="flex-1 overflow-y-auto px-4 py-4 space-y-4"
+    // autoScroll keeps the latest output in view while streaming and stops
+    // following as soon as the reader scrolls up. This demo is linear with no
+    // history pagination — the seam walk in useMessageSync loads prior history
+    // once at hydration, so there is no load-older control.
+    <MessageScrollerProvider
+      autoScroll
+      defaultScrollPosition="end"
+      scrollEdgeThreshold={60}
+      scrollPreviousItemPeek={64}
     >
-      <IntroCard />
-      <ul
-        data-testid="messages"
-        className="space-y-4"
-      >
-        {messages.map((message, index) => {
-          const state = stateOf(message, index);
-          return (
-            <li
-              key={message.id}
-              data-testid="message"
-              data-role={message.role}
-              data-id={message.id}
-              data-state={state}
-            >
-              <MessageBubble
-                message={message}
-                state={state}
-                onToolApprove={onToolApprove}
-                onToolDeny={onToolDeny}
-              />
-            </li>
-          );
-        })}
-      </ul>
-      <div ref={endRef} />
-    </div>
+      <MessageScroller className="min-h-0 flex-1">
+        <MessageScrollerViewport className="px-4 py-4">
+          <MessageScrollerContent data-testid="messages">
+            {messages.map((message, index) => {
+              const state = stateOf(message, index);
+              return (
+                // Anchor on the user's own turns (shadcn's convention): sending
+                // pins the new prompt to the top of the viewport while the reply
+                // streams in below it.
+                <MessageScrollerItem
+                  key={message.id}
+                  messageId={message.id}
+                  scrollAnchor={message.role === 'user'}
+                >
+                  <div
+                    data-testid="message"
+                    data-role={message.role}
+                    data-id={message.id}
+                    data-state={state}
+                  >
+                    <MessageBubble
+                      message={message}
+                      state={state}
+                      onToolApprove={onToolApprove}
+                      onToolDeny={onToolDeny}
+                    />
+                  </div>
+                </MessageScrollerItem>
+              );
+            })}
+          </MessageScrollerContent>
+        </MessageScrollerViewport>
+
+        <MessageScrollerButton
+          direction="end"
+          data-testid="scroll-to-latest"
+        />
+      </MessageScroller>
+    </MessageScrollerProvider>
   );
 }

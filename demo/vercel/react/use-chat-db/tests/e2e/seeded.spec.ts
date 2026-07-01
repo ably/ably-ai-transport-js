@@ -167,7 +167,7 @@ test.describe('use-chat database hydration - DB seed reconciliation', () => {
     await approveButton.click();
 
     // After approval the forecast card renders and the run completes.
-    await expect(page.locator('text=/5-Day Forecast/').first()).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('text=/5-day forecast/i').first()).toBeVisible({ timeout: 60_000 });
     await awaitStreamingQuiesce(page);
     await expect(userWith(page, 'forecast for London')).toHaveCount(1);
     const countBeforeReload = await messages(page).count();
@@ -179,7 +179,7 @@ test.describe('use-chat database hydration - DB seed reconciliation', () => {
     // and no Approve/Deny prompt reappears.
     await page.goto(url);
     await expect(userWith(page, 'forecast for London')).toHaveCount(1, { timeout: 60_000 });
-    await expect(page.locator('text=/5-Day Forecast/').first()).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('text=/5-day forecast/i').first()).toBeVisible({ timeout: 60_000 });
     await page.waitForTimeout(3000);
     await expect(page.getByRole('button', { name: /Approve/i })).toHaveCount(0);
     await expect(messages(page)).toHaveCount(countBeforeReload);

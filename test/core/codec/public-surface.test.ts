@@ -13,6 +13,11 @@ import type {
   OutputDescriptor,
   OutputEventSpec,
   OutputStreamSpec,
+  RunStep,
+  StepEndParams,
+  StepEndReason,
+  StepInfo,
+  StepOptions,
 } from '../../../src/index.js';
 import * as pkg from '../../../src/index.js';
 
@@ -51,5 +56,25 @@ describe('public codec-authoring surface', () => {
     expectTypeOf<DataCodec<Output>>().not.toBeNever();
     expectTypeOf<LifecyclePolicy<Output>>().not.toBeNever();
     expectTypeOf<CodecEvent<Input, Output>>().not.toBeNever();
+  });
+
+  // The step vocabulary is reachable on the public `Run.createStep` /
+  // `RunNode.steps` surface, so its supporting types must be importable from the
+  // entry point — a consumer cannot deep-import internal modules of a published
+  // package.
+  it('exports the step types', () => {
+    interface Output {
+      type: 'note';
+      text: string;
+    }
+    expectTypeOf<RunStep<Output>>().not.toBeNever();
+    expectTypeOf<StepOptions>().not.toBeNever();
+    expectTypeOf<StepEndParams>().not.toBeNever();
+    expectTypeOf<StepInfo>().not.toBeNever();
+    expectTypeOf<StepEndReason>().toEqualTypeOf<'complete' | 'failed' | 'cancelled'>();
+    // The client-identity scope is part of the read-model and the step-options
+    // seam, so both must carry it on the public surface.
+    expectTypeOf<StepInfo>().toHaveProperty('stepClientId').toEqualTypeOf<string | undefined>();
+    expectTypeOf<StepOptions>().toHaveProperty('stepClientId').toEqualTypeOf<string | undefined>();
   });
 });

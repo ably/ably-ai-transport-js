@@ -58,11 +58,17 @@ export type VercelRunOutcome =
 
 /**
  * Derive the {@link VercelRunOutcome} for a Vercel `streamText` response that
- * was piped through `Run.pipe`. Preserves transport-level outcomes
- * (`'cancelled'`, `'error'`) from the pipe result; when the pipe completed
- * naturally, awaits Vercel's `finishReason` and returns `'suspend'` for
- * `'tool-calls'` (the LLM requested tools the SDK did not auto-execute, so the
- * run should suspend rather than end), or `'complete'` otherwise.
+ * was piped through `Run.pipe` or `RunStep.pipe`. Preserves transport-level
+ * outcomes (`'cancelled'`, `'error'`) from the pipe result; when the pipe
+ * completed naturally, awaits Vercel's `finishReason` and returns `'suspend'`
+ * for `'tool-calls'` (the LLM requested tools the SDK did not auto-execute, so
+ * the run should suspend rather than end), or `'complete'` otherwise.
+ *
+ * Inside a `RunStep`, a stream that errors makes `pipeResult.reason ===
+ * 'error'`, which both marks the step `failed` and yields an `'error'` outcome
+ * here — so a `vercelRunOutcome(...) -> run.end(outcome)` flow keeps surfacing
+ * the failure with no `try`/`catch`. `Run.pipe` surfaces the same `'error'`
+ * outcome (its implicit step closes `failed`).
  *
  * Surfaces the failure for both error shapes so the caller can forward it to
  * `Run.end(reason, error)`: a stream that threw (`pipeResult.error`) and a

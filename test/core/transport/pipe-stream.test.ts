@@ -363,4 +363,81 @@ describe('pipeStream', () => {
       expect(encoder.appendedOpts).toEqual([undefined]);
     });
   });
+
+  describe('beforeFirstWrite hook', () => {
+    it('fires once, before the first output, and is awaited', async () => {
+      const callOrder: string[] = [];
+      // eslint-disable-next-line @typescript-eslint/unbound-method, @typescript-eslint/require-await -- vi mock
+      vi.mocked(encoder.publishOutput).mockImplementation(async (output: TestEvent) => {
+        callOrder.push(`publish:${output.text ?? ''}`);
+      });
+      const beforeFirstWrite = vi.fn(async () => {
+        await Promise.resolve();
+        callOrder.push('beforeFirstWrite');
+      });
+
+      await pipeStream(
+        streamOf({ type: 'text', text: 'a' }, { type: 'text', text: 'b' }),
+        encoder,
+        noSignal,
+        undefined,
+        undefined,
+        undefined,
+        beforeFirstWrite,
+      );
+
+      expect(beforeFirstWrite).toHaveBeenCalledTimes(1);
+      // Fires before the first publish; never re-fires for the second output.
+      expect(callOrder).toEqual(['beforeFirstWrite', 'publish:a', 'publish:b']);
+    });
+
+    it('never fires for an empty stream', async () => {
+      const beforeFirstWrite = vi.fn(async () => {
+        await Promise.resolve();
+      });
+
+      const result = await pipeStream(streamOf(), encoder, noSignal, undefined, undefined, undefined, beforeFirstWrite);
+
+      expect(result.reason).toBe('complete');
+      expect(beforeFirstWrite).not.toHaveBeenCalled();
+    });
+
+    it('never fires when the stream errors before any output', async () => {
+      const beforeFirstWrite = vi.fn(async () => {
+        await Promise.resolve();
+      });
+      const stream = errorStream([], new Error('upstream broke'));
+
+      const result = await pipeStream(stream, encoder, noSignal, undefined, undefined, undefined, beforeFirstWrite);
+
+      expect(result.reason).toBe('error');
+      expect(beforeFirstWrite).not.toHaveBeenCalled();
+    });
+
+    it('never fires when cancelled before any output', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      const beforeFirstWrite = vi.fn(async () => {
+        await Promise.resolve();
+      });
+      const stream = new ReadableStream<TestEvent>({
+        start: () => {
+          /* paused */
+        },
+      });
+
+      const result = await pipeStream(
+        stream,
+        encoder,
+        controller.signal,
+        undefined,
+        undefined,
+        undefined,
+        beforeFirstWrite,
+      );
+
+      expect(result.reason).toBe('cancelled');
+      expect(beforeFirstWrite).not.toHaveBeenCalled();
+    });
+  });
 });

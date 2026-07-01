@@ -14,11 +14,18 @@ it one message at a time, and renders `stored history ⧺ live tail` with no
 duplicate. Reload the page and the conversation comes back from the store,
 stitched onto whatever the channel has streamed since.
 
-This is a deliberately minimal, linear chat (text turns only, no branch
-navigation or tools) so the seam walk is the sole pager of the view — the
-precondition the single-overlap compose relies on. For the full feature set
-(branching, tools, multi-tab) see the `use-client-session` demo. Each fresh
-visit opens a new channel (`?channel=<name>` pins a specific one).
+This is a deliberately **linear** chat — no branch navigation, no edit, no
+regenerate — so the seam walk is the sole pager of the view, the precondition
+the single-overlap compose relies on. It otherwise carries the full tool set of
+the sibling `use-client-session` demo: a server-executed tool (getWeather), a
+client-executed tool (getLocation) that **suspends** the run while the browser
+resolves it and then **resumes**, and an approval-gated tool
+(getWeatherForecast). Because `run.messages` spans the whole suspend/resume run,
+the agent's single persist at completion is lossless — the entire tool turn
+(call + result) is stored as one unit, so after a reload an approved tool-call
+message is rehydrated from the store still showing as approved. For the
+branching UI see the `use-client-session` demo. Each fresh visit opens a new
+channel (`?channel=<name>` pins a specific one).
 
 ## Prerequisites
 

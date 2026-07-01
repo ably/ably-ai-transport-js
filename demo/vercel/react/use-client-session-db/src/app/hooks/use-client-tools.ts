@@ -1,0 +1,187 @@
+/**
+ * useClientTools - automatically executes client-side tools when they appear
+ * in the conversation.
+ *
+ * Watches the client view's messages for tool parts in `input-available` state
+ * that match a registered client tool. Executes the tool, then publishes a
+ * `tool-result` (or `tool-result-error`) TInput on the channel via
+ * `view.send`. The codec's reducer folds the result onto the assistant message
+ * addressed by `codecMessageId` (matched by `toolCallId` within that message).
+ * That result resumes the suspended run, which the agent later persists to the
+ * database as one whole suspend/resume turn.
+ *
+ * It reads `view.getMessages()` (the SDK's `CodecMessage[]`, each carrying its
+ * `codecMessageId`) directly, so it works independently of the linear
+ * `UIMessage[]` list the seam-walk renders.
+ *
+ * Skips tool calls that already have a follow-up assistant message - those
+ * were resolved in a previous session and don't need re-execution.
+ * Only executes for runs initiated by this client (matches owningRun.clientId).
+ *
+ * Each execution is reported via the optional `onExecute` callback — once with
+ * status `executing` when the tool fires here (after the targeting gate), then
+ * again with status `done` (and output) or `error` once the executor settles.
+ * This is driven by the actual execution path, so it reflects which client
+ * truly ran the tool — something a multi-client channel cannot otherwise show.
+ */
+
+import { useEffect, useRef } from 'react';
+import type { DynamicToolUIPart, UIMessage } from 'ai';
+import type { ClientView } from '@ably/ai-transport';
+import { UIMessageCodec, type VercelInput } from '@ably/ai-transport/vercel';
+
+import { wakeAgent } from '../helpers';
+import type { ClientToolLogEntry } from '../components/debug-pane';
+
+type ClientToolExecutor = (input: unknown) => Promise<unknown>;
+
+const clientTools: Record<string, ClientToolExecutor> = {
+  getLocation: async (input) => {
+    const { highAccuracy } = (input ?? {}) as { highAccuracy?: boolean };
+    return new Promise<unknown>((resolve) => {
+      if (!navigator.geolocation) {
+        resolve({ error: 'Geolocation is not supported by this browser' });
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          resolve({
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+          });
+        },
+        (error) => {
+          resolve({ error: error.message });
+        },
+        { enableHighAccuracy: highAccuracy, timeout: 30000 },
+      );
+    });
+  },
+};
+
+export function useClientTools(
+  view: ClientView<VercelInput, UIMessage>,
+  clientId: string | undefined,
+  api: string,
+  onExecute?: (entry: ClientToolLogEntry) => void,
+) {
+  // Track which tool calls we've already handled to avoid re-executing
+  const handledRef = useRef(new Set<string>());
+
+  useEffect(() => {
+    const sync = (): void => {
+      // Correlate on the codec-message-id, never the domain `message.id`: the
+      // run lookup and the tool result's target both key on the SDK's
+      // client-minted id, which the domain id may not equal.
+      const messages = view.getMessages();
+      if (messages.length === 0) return;
+
+      for (let i = 0; i < messages.length; i++) {
+        const { codecMessageId, message: msg } = messages[i];
+        if (msg.role !== 'assistant') continue;
+
+        // Only execute client tools for runs initiated by this client.
+        // Other clients on the same channel see the tool call but should
+        // not execute it - only the requesting client has the context
+        // (e.g. browser geolocation) to provide the result.
+        const run = view.runOf(codecMessageId);
+        if (!run) continue;
+        if (run.clientId && run.clientId !== clientId) continue;
+
+        // If there's a later assistant message, this tool call was already
+        // resolved in a previous session - skip to prevent re-execution
+        // on page refresh.
+        const hasFollowUpAssistant = messages.slice(i + 1).some((m) => m.message.role === 'assistant');
+        if (hasFollowUpAssistant) continue;
+
+        for (const part of msg.parts) {
+          if (part.type !== 'dynamic-tool') continue;
+          const toolPart = part as DynamicToolUIPart;
+
+          if (toolPart.state !== 'input-available') continue;
+          if (!clientTools[toolPart.toolName]) continue;
+          if (handledRef.current.has(toolPart.toolCallId)) continue;
+
+          handledRef.current.add(toolPart.toolCallId);
+
+          const startedAt = Date.now();
+          onExecute?.({
+            time: startedAt,
+            toolName: toolPart.toolName,
+            toolCallId: toolPart.toolCallId,
+            input: toolPart.input,
+            status: 'executing',
+          });
+
+          executeClientTool(view, api, run.runId, codecMessageId, toolPart, { onExecute, startedAt });
+        }
+      }
+    };
+
+    // Run once for the current state, then on every view update (streamed
+    // tool-call chunks arrive via 'update', run-state via 'run').
+    sync();
+    const offUpdate = view.on('update', sync);
+    const offRun = view.on('run', sync);
+    return () => {
+      offUpdate();
+      offRun();
+    };
+  }, [view, clientId, api, onExecute]);
+}
+
+// The tool result targets the suspended assistant message via
+// `codecMessageId`; the continuation reuses that run's runId so the
+// agent picks the result up off the channel and resumes generation.
+async function executeClientTool(
+  view: ClientView<VercelInput, UIMessage>,
+  api: string,
+  runId: string,
+  codecMessageId: string,
+  toolPart: DynamicToolUIPart,
+  log?: {
+    onExecute?: (entry: ClientToolLogEntry) => void;
+    startedAt: number;
+  },
+): Promise<void> {
+  const executor = clientTools[toolPart.toolName];
+  if (!executor) return;
+
+  // Compute the resolution input first so executor failure produces a
+  // tool-result-error without entangling the publish/wake error handling.
+  let input: VercelInput;
+  try {
+    const output = await executor(toolPart.input);
+    input = UIMessageCodec.createToolResult(codecMessageId, { toolCallId: toolPart.toolCallId, output });
+    if (log?.onExecute) {
+      log.onExecute({
+        time: log.startedAt,
+        toolName: toolPart.toolName,
+        toolCallId: toolPart.toolCallId,
+        input: toolPart.input,
+        status: 'done',
+        output,
+      });
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Client tool execution failed';
+    input = UIMessageCodec.createToolResultError(codecMessageId, {
+      toolCallId: toolPart.toolCallId,
+      message,
+    });
+    if (log?.onExecute) {
+      log.onExecute({
+        time: log.startedAt,
+        toolName: toolPart.toolName,
+        toolCallId: toolPart.toolCallId,
+        input: toolPart.input,
+        status: 'error',
+        error: message,
+      });
+    }
+  }
+
+  // Publish the resolution, then wake the agent so it picks it up and resumes.
+  const run = await view.send([input], { runId });
+  await wakeAgent(api, run);
+}

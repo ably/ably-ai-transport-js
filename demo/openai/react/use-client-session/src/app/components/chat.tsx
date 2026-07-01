@@ -9,6 +9,8 @@ import { userTurn, wakeAgent } from '../helpers';
 import { MessageList } from './message-list';
 import type { CallbackLogEntry } from './debug-pane';
 import { DebugPane } from './debug-pane';
+import { SuggestionChips } from './suggestion-chips';
+import { useDemoProgress } from '../hooks/use-demo-progress';
 import { SessionHooks } from '../providers';
 import { clientColor } from '../lib/client-color';
 import { AvatarStack } from './avatar-stack';
@@ -109,8 +111,16 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
 
   const ablyMessages = useAblyMessages();
 
+  // Derive which intro-card steps are still unfinished from the tree, so the
+  // suggestion chips stay in sync across clients via channel history.
+  const unfinishedSteps = useDemoProgress(messages, branchSelection, runOf, ablyMessages);
+
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+  const handleSelectPrompt = useCallback((prompt: string) => {
+    setInput(prompt);
+    inputRef.current?.focus();
+  }, []);
 
   return (
     <div className="flex h-dvh">
@@ -134,6 +144,10 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
           }
         />
         <div className="border-t border-zinc-800">
+          <SuggestionChips
+            steps={unfinishedSteps}
+            onSelectPrompt={handleSelectPrompt}
+          />
           <InputBar
             value={input}
             onChange={setInput}

@@ -135,6 +135,30 @@ test.describe('openai use-client-session demo - text chat behaviour', () => {
     await expect(assistant).toContainText('London');
   });
 
+  test('suggestion chip: prefills the weather prompt, and the step drops off once demonstrated', async ({
+    page,
+  }, testInfo) => {
+    await page.goto(channelUrl(freshChannel(testInfo.title)));
+
+    const input = page.getByPlaceholder('Type a message...');
+    await input.waitFor({ state: 'visible' });
+
+    // The "Server tool" chip is offered until the getWeather tool has run.
+    const chip = page.getByRole('button', { name: /Server tool/ });
+    await expect(chip).toBeVisible();
+
+    // Clicking it prefills the input (it does not auto-send).
+    await chip.click();
+    await expect(input).toHaveValue("what's the weather in Tokyo?");
+
+    await input.press('Enter');
+    await waitForAssistantSettled(page);
+    await expect(assistantBubbles(page).last()).toContainText('Humidity:', { timeout: 30_000 });
+
+    // The completed step drops off the chip row.
+    await expect(chip).toHaveCount(0);
+  });
+
   test('regenerate: original user prompt stays visible and the assistant shows branch nav (N / 2)', async ({
     page,
   }, testInfo) => {

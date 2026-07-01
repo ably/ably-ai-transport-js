@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ClientRun, RunInfo, RunStatus } from '@ably/ai-transport';
-import type { UIMessage, DynamicToolUIPart } from 'ai';
+import { isToolUIPart, type UIMessage } from 'ai';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import { useMessagesWithSeed } from '@ably/ai-transport/vercel/react';
 
@@ -201,8 +201,8 @@ export function Chat({ chatId, clientId, seed, api }: ChatProps) {
     (toolCallId: string): string | undefined => {
       for (const { codecMessageId, message } of view.getMessages()) {
         for (const part of message.parts) {
-          if (part.type !== 'dynamic-tool') continue;
-          if ((part as DynamicToolUIPart).toolCallId === toolCallId) return codecMessageId;
+          if (!isToolUIPart(part)) continue;
+          if (part.toolCallId === toolCallId) return codecMessageId;
         }
       }
       return undefined;

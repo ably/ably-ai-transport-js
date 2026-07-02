@@ -2389,6 +2389,113 @@ describe('Tree', () => {
       expect(handler).toHaveBeenCalledTimes(1);
       expect(handler).toHaveBeenNthCalledWith(1, expect.objectContaining({ type: 'resume', runId: 'R1' }));
     });
+
+    // The wire race: the previous invocation's suspend publish loses to the
+    // next invocation's resume publish in wire order (concurrent Temporal
+    // activities publishing to the same run). Applying the retired suspend
+    // afterwards would wrongly flip a legitimately-active run back to
+    // `suspended`. Guarded by the tree via lastResumeInvocationId matching.
+    it('run-suspend from a retired invocation (after a newer resume) is skipped', () => {
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: 'inv-1',
+        serial: 's1',
+      });
+      tree.applyRunLifecycle({
+        type: 'resume',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: 'inv-2',
+        serial: 's5',
+      });
+      // Late-arriving suspend from the retired invocation-1. Must be
+      // ignored — inv-2 has already taken over.
+      tree.applyRunLifecycle({
+        type: 'suspend',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: 'inv-1',
+        serial: 's6',
+      });
+      expect(tree.getRunNode('R1')?.state.status).toBe('active');
+    });
+
+    // The active invocation's own suspend still applies — the guard filters
+    // only retired invocations, not the current one publishing legitimately.
+    it("run-suspend from the current active invocation applies (matches the run's latest resume)", () => {
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: 'inv-1',
+        serial: 's1',
+      });
+      tree.applyRunLifecycle({
+        type: 'resume',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: 'inv-2',
+        serial: 's5',
+      });
+      tree.applyRunLifecycle({
+        type: 'suspend',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: 'inv-2',
+        serial: 's6',
+      });
+      expect(tree.getRunNode('R1')?.state.status).toBe('suspended');
+    });
+
+    // Before any resume the guard has nothing to compare against, so a first
+    // suspend applies unconditionally — the pre-existing behaviour.
+    it('run-suspend before any resume applies as before (no retired invocation to compare)', () => {
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: 'inv-1',
+        serial: 's1',
+      });
+      tree.applyRunLifecycle({
+        type: 'suspend',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: 'inv-1',
+        serial: 's5',
+      });
+      expect(tree.getRunNode('R1')?.state.status).toBe('suspended');
+    });
+
+    // A suspend with an empty invocation-id can't be attributed to a specific
+    // invocation, so the retired-invocation guard doesn't fire and the
+    // suspend applies (matches the pre-existing behaviour for empty ids).
+    it('run-suspend with an empty invocation-id applies even after a resume', () => {
+      tree.applyRunLifecycle({
+        type: 'start',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: 'inv-1',
+        serial: 's1',
+      });
+      tree.applyRunLifecycle({
+        type: 'resume',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: 'inv-2',
+        serial: 's5',
+      });
+      tree.applyRunLifecycle({
+        type: 'suspend',
+        runId: 'R1',
+        clientId: 'client-a',
+        invocationId: '',
+        serial: 's6',
+      });
+      expect(tree.getRunNode('R1')?.state.status).toBe('suspended');
+    });
   });
 
   // -------------------------------------------------------------------------

@@ -47,6 +47,7 @@ const runNode = (
   state: { status: 'complete' },
   projection: { ids },
   invocationId: '',
+  lastResumeInvocationId: undefined,
   startSerial: undefined,
   endSerial: undefined,
   steps: [],

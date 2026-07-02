@@ -20,6 +20,7 @@ import { init, type OpenAIProjection } from '../../../src/openai/codec/reducer.j
 import { getCodecHeaders, getTransportHeaders } from '../../../src/utils.js';
 import {
   completed,
+  contentPartAdded,
   contentPartDone,
   createBridge,
   created,
@@ -35,8 +36,13 @@ import {
   metaOf,
   queued,
   reasoningSummaryRun,
+  refusalDelta,
+  refusalDone,
+  refusalPartAdded,
   stampHeaders,
   streamError,
+  textDelta,
+  textDone,
   textRun,
   userTurn,
 } from './fixtures.js';
@@ -63,7 +69,8 @@ describe('OpenAI codec roundtrip (offline)', () => {
     const streamCreate = inbound.find((m) => m.action === 'message.create' && transportOf(m)[HEADER_STREAM] === 'true');
     expect(streamCreate).toBeDefined();
     expect(streamCreate && transportOf(streamCreate)[HEADER_STATUS]).toBe('streaming');
-    expect(streamCreate && transportOf(streamCreate)[HEADER_STREAM_ID]).toBe('msg_1');
+    // The output_text stream id composes item_id + content_index.
+    expect(streamCreate && transportOf(streamCreate)[HEADER_STREAM_ID]).toBe('msg_1:0');
 
     const appends = inbound.filter((m) => m.action === 'message.append' && m.serial === streamCreate?.serial);
     expect(appends.length).toBeGreaterThanOrEqual(2);
@@ -113,6 +120,41 @@ describe('OpenAI codec roundtrip (offline)', () => {
       (i): i is Responses.ResponseReasoningItem => i.type === 'reasoning',
     );
     expect(item?.summary).toEqual([{ type: 'summary_text', text: 'Thinking…' }]);
+  });
+
+  it('routes output_text and refusal on the shared content_part.added start, keyed by content_index', async () => {
+    const { inbound } = await roundtrip([
+      created(),
+      itemAdded(messageItem('msg_1')),
+      contentPartAdded('msg_1', 0), // opens output_text at content[0]
+      refusalPartAdded('msg_1', 1), // opens refusal at content[1]
+      textDelta('msg_1', 'hello', 0),
+      refusalDelta('msg_1', 'no', 1),
+      textDone('msg_1', 'hello', 0),
+      refusalDone('msg_1', 'no', 1),
+      completed(),
+    ]);
+
+    // Two distinct streams opened from one shared start type, under composite ids.
+    const streamIds = inbound
+      .filter((m) => m.action === 'message.create' && transportOf(m)[HEADER_STREAM] === 'true')
+      .map((m) => transportOf(m)[HEADER_STREAM_ID]);
+    expect(streamIds).toEqual(['msg_1:0', 'msg_1:1']);
+
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+    for (const msg of inbound) {
+      for (const event of toCodecEvents(decoder.decode(msg))) {
+        projection = ResponsesCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
+      }
+    }
+    const message = ResponsesCodec.getMessages(projection)[0]?.message.items.find(
+      (i): i is Responses.ResponseOutputMessage => i.type === 'message',
+    );
+    expect(message?.content).toEqual([
+      { type: 'output_text', text: 'hello', annotations: [] },
+      { type: 'refusal', refusal: 'no' },
+    ]);
   });
 
   it('roundtrips each discrete lifecycle/structural event through encode + decode', async () => {
@@ -170,19 +212,19 @@ describe('OpenAI codec roundtrip (offline)', () => {
       sequence_number: 0,
     });
     await encoder.publishOutput({
-      type: 'response.reasoning_text.delta',
-      item_id: 'rs_1',
+      type: 'response.function_call_arguments.done',
+      item_id: 'fc_1',
       output_index: 0,
-      content_index: 0,
-      delta: 'thinking',
+      arguments: '{"location":"London"}',
+      name: 'getWeather',
       sequence_number: 0,
     });
     await encoder.publishOutput({
-      type: 'response.refusal.delta',
-      item_id: 'msg_1',
+      type: 'response.reasoning_summary_part.done',
+      item_id: 'rs_1',
       output_index: 0,
-      content_index: 0,
-      delta: 'I cannot',
+      summary_index: 0,
+      part: { type: 'summary_text', text: 'thinking' },
       sequence_number: 0,
     });
     await encoder.close();

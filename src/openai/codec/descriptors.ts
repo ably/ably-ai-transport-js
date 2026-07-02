@@ -1,12 +1,14 @@
 /**
- * Declarative descriptor tables for the OpenAI Responses codec (text increment).
+ * Declarative descriptor tables for the OpenAI Responses codec.
  *
  * Output side:
- * - **Assistant text is the one streamed family.** `response.content_part.added`
- *   → `response.output_text.delta` → `response.output_text.done` map onto a
- *   `stream(...)` with `streamId: { field: 'item_id' }` and `deltaField: 'delta'` — both
- *   top-level string properties present on all three phases, which is what the
- *   stream model requires. The closing `output_text.done` is rebuilt from the
+ * - **Content-part streams.** `response.content_part.added` opens three streamed
+ *   families, told apart by the added part's type: `output_text` and `refusal`
+ *   (on a message) and `reasoning_text` (on a reasoning item). Each fills
+ *   `content[content_index]` of its item, so its stream id composes
+ *   `item_id + content_index` and its decoded delta carries both. A reasoning
+ *   model's streamed summary is a fourth family (`reasoning_summary_text`, keyed
+ *   `item_id + summary_index`). Each family rebuilds its closing `*.done` from the
  *   accumulated stream text via `decodeEnd`.
  * - **Lifecycle and the item/content-part envelopes are discrete events.** Each
  *   carries no streamed string and hence no `status` header. A server-side
@@ -19,12 +21,11 @@
  *   The aim is to carry everything the transport can, streaming included; where
  *   we haven't yet built a clean path for a provider event, we drop it *for now*
  *   rather than let it trip the encoder's safety net (any event that is neither
- *   described nor ignored throws). Today this covers a reasoning model's streamed
- *   summary / raw reasoning text, refusals, text annotations, and the
- *   function-call argument deltas — content whose final value we already carry on
- *   the item's `output_item.done`, or that we don't render yet, so dropping the
- *   deltas loses only the incremental streaming, not correctness. The exhaustive
- *   list (and what still throws) is documented at the ignore entries below.
+ *   described nor ignored throws). Today this covers the content-part `*.done`
+ *   boundaries, text annotations, and the function-call argument deltas — content
+ *   whose final value we already carry, or that we don't render yet, so dropping
+ *   it loses only the incremental streaming, not correctness. The exhaustive list
+ *   (and what still throws) is documented at the ignore entries below.
  *
  * Input side: the user message is a `batch` that fans the user turn's content
  * parts out into one `ai-input` event per part (one for a plain text prompt),
@@ -32,8 +33,8 @@
  * signal is a wire-only event: it stamps only its `kind` header (the agent
  * reads `target` / `parent` via the input-event lookup) and folds to nothing.
  *
- * Reasoning, refusals, and hosted tools are added in later increments by adding
- * entries here — the split established now does not change.
+ * Hosted tools are added in later increments by adding entries here — the split
+ * established now does not change.
  */
 
 import type { Responses } from 'openai/resources/responses/responses';
@@ -58,6 +59,12 @@ const fPart = jsonField<Responses.ResponseContentPartAddedEvent['part'], 'part'>
 const fSummaryIndex = jsonField<number, 'summary_index'>('summary_index');
 const fSummaryPart = jsonField<Responses.ResponseReasoningSummaryPartAddedEvent.Part, 'part'>('part');
 
+// Per-slot stream id for the content-part families: item_id + content_index.
+// Purely the transport uniqueness handle — the reducer never parses it (it routes
+// on the re-stamped item_id / content_index fields).
+const composeItemContent = (c: { item_id: string; content_index: number }): string =>
+  `${c.item_id}:${String(c.content_index)}`;
+
 /**
  * The OpenAI codec's `ai-output` descriptor table.
  * @param builder - The `{ event, stream, ignore }` builder curried on {@link OpenAIOutput}.
@@ -81,25 +88,70 @@ export const outputs = ({
     event(type, { data: { encode: (c) => c.response, decode: (d) => ({ response: d as Responses.Response }) } });
 
   return [
-    // --- assistant text: the one streamed family -----------------------------
-    stream('text', {
+    // --- content-part streams: assistant text, refusal, reasoning text -------
+    // Three families share the content_part.added start, told apart by the added
+    // part's type; each fills content[content_index] of its item, so the stream id
+    // composes item_id + content_index and the decoded delta carries both for the
+    // reducer to target the exact slot.
+    stream('output_text', {
       start: 'response.content_part.added',
       delta: 'response.output_text.delta',
       end: 'response.output_text.done',
-      streamId: { field: 'item_id' },
+      startWhen: (c) => c.part.type === 'output_text',
+      streamId: composeItemContent,
       deltaField: 'delta',
       fields: [fItemId, fOutputIndex, fContentIndex, fPart],
-      deltaFields: [fItemId],
-      // The end chunk carries output_index/content_index on its closing headers;
-      // the text is the accumulated stream. (item_id rides the codec headers.)
-      decodeEnd: ({ streamId, accumulated, closingCodecHeaders }) => [
+      deltaFields: [fItemId, fContentIndex],
+      decodeEnd: ({ accumulated, closingCodecHeaders }) => [
         {
           type: 'response.output_text.done',
-          item_id: streamId,
+          item_id: fItemId.read(closingCodecHeaders) ?? '',
           output_index: fOutputIndex.read(closingCodecHeaders) ?? 0,
           content_index: fContentIndex.read(closingCodecHeaders) ?? 0,
           text: accumulated,
           logprobs: [],
+          sequence_number: 0,
+        },
+      ],
+    }),
+
+    stream('refusal', {
+      start: 'response.content_part.added',
+      delta: 'response.refusal.delta',
+      end: 'response.refusal.done',
+      startWhen: (c) => c.part.type === 'refusal',
+      streamId: composeItemContent,
+      deltaField: 'delta',
+      fields: [fItemId, fOutputIndex, fContentIndex, fPart],
+      deltaFields: [fItemId, fContentIndex],
+      decodeEnd: ({ accumulated, closingCodecHeaders }) => [
+        {
+          type: 'response.refusal.done',
+          item_id: fItemId.read(closingCodecHeaders) ?? '',
+          output_index: fOutputIndex.read(closingCodecHeaders) ?? 0,
+          content_index: fContentIndex.read(closingCodecHeaders) ?? 0,
+          refusal: accumulated,
+          sequence_number: 0,
+        },
+      ],
+    }),
+
+    stream('reasoning_text', {
+      start: 'response.content_part.added',
+      delta: 'response.reasoning_text.delta',
+      end: 'response.reasoning_text.done',
+      startWhen: (c) => c.part.type === 'reasoning_text',
+      streamId: composeItemContent,
+      deltaField: 'delta',
+      fields: [fItemId, fOutputIndex, fContentIndex, fPart],
+      deltaFields: [fItemId, fContentIndex],
+      decodeEnd: ({ accumulated, closingCodecHeaders }) => [
+        {
+          type: 'response.reasoning_text.done',
+          item_id: fItemId.read(closingCodecHeaders) ?? '',
+          output_index: fOutputIndex.read(closingCodecHeaders) ?? 0,
+          content_index: fContentIndex.read(closingCodecHeaders) ?? 0,
+          text: accumulated,
           sequence_number: 0,
         },
       ],
@@ -190,15 +242,11 @@ export const outputs = ({
     //  it), AND the prompt must make the model actually reason (a trivial prompt
     //  yields ~0 reasoning tokens and an empty summary).
     ignore('response.reasoning_summary_part.done'),
-    //  raw reasoning text (as opposed to the summary): not streamed yet.
-    //  TODO(AIT-742): add a reasoning_text family (content_index-keyed, shares
-    //  content_part.added — folds into the reasoning item's content[]).
-    ignore('response.reasoning_text.delta'),
-    ignore('response.reasoning_text.done'),
-    //  refusal: the refusal still renders from the message item's output_item.done.
-    //  TODO: stream it.
-    ignore('response.refusal.delta'),
-    ignore('response.refusal.done'),
+    //  content_part.added parts we don't stream: it opens the output_text /
+    //  refusal / reasoning_text streams (above); any other part.type has no
+    //  stream family, so the stream declines and this discrete-boundary close is
+    //  dropped (the streamed text is already folded). Its sibling
+    //  reasoning_summary_part.done is dropped for the same reason.
     //  annotations / citations: the text streams regardless. TODO: carry them.
     ignore('response.output_text.annotation.added'),
     //  function-call argument deltas: the complete arguments arrive on the

@@ -15,14 +15,15 @@
  * that lets the same reduction run on the decoded stream; the logic is
  * otherwise identical to the SDK's.
  *
- * This handles streamed assistant text, a reasoning model's streamed summary,
- * and server-side function calls: the `output_item` message/function-call/
- * reasoning envelope, the `content_part` boundary, `output_text` deltas, the
- * `reasoning_summary_text` stream (folded into the reasoning item's `summary`),
- * and the codec's own `function_call_output` event. Response-lifecycle and
- * stream-`error` events fold to nothing (run outcome is observed out-of-band).
- * Raw reasoning text, refusals, and hosted tools are added later by extending
- * this dispatch.
+ * This handles streamed assistant text, refusals, a reasoning model's streamed
+ * summary and raw reasoning text, and server-side function calls: the
+ * `output_item` message/function-call/reasoning envelope, the content-part
+ * streams (`output_text` / `refusal` on the message, `reasoning_text` on the
+ * reasoning item — each keyed by `content_index`), the `reasoning_summary_text`
+ * stream (folded into the reasoning item's `summary`), and the codec's own
+ * `function_call_output` event. Response-lifecycle and stream-`error` events
+ * fold to nothing (run outcome is observed out-of-band). Hosted tools are added
+ * later by extending this dispatch.
  *
  * The reducer is stateless and folds unconditionally — the transport delivers
  * each event once, in canonical order (see the core `Reducer` contract).
@@ -82,17 +83,53 @@ const summaryAt = (item: Responses.ResponseReasoningItem, index: number): Respon
 };
 
 /**
- * Return the message item's trailing `output_text` part, creating one if the
- * latest part is not already an `output_text` part. This increment assumes a
- * single text part per message; keying on `content_index` would generalise this.
+ * Return the message's `output_text` part at `content[index]`, creating it in
+ * place if the slot is absent or holds a different part type. Content parts
+ * arrive in `content_index` order (each opened by its `content_part.added`), so
+ * the slot is either present or the next one.
  * @param message - The output message to read or extend.
- * @returns The `output_text` part to append delta text into.
+ * @param index - The `content_index` the streamed part fills.
+ * @returns The `output_text` part to write delta text into.
  */
-const trailingOutputText = (message: Responses.ResponseOutputMessage): Responses.ResponseOutputText => {
-  const tail = message.content.at(-1);
-  if (tail?.type === 'output_text') return tail;
+const outputTextAt = (message: Responses.ResponseOutputMessage, index: number): Responses.ResponseOutputText => {
+  const existing = message.content[index];
+  if (existing?.type === 'output_text') return existing;
   const part: Responses.ResponseOutputText = { type: 'output_text', text: '', annotations: [] };
-  message.content.push(part);
+  message.content[index] = part;
+  return part;
+};
+
+/**
+ * Return the message's `refusal` part at `content[index]`, creating it in place
+ * if absent or a different part type.
+ * @param message - The output message to read or extend.
+ * @param index - The `content_index` the refusal fills.
+ * @returns The `refusal` part to write text into.
+ */
+const refusalAt = (message: Responses.ResponseOutputMessage, index: number): Responses.ResponseOutputRefusal => {
+  const existing = message.content[index];
+  if (existing?.type === 'refusal') return existing;
+  const part: Responses.ResponseOutputRefusal = { type: 'refusal', refusal: '' };
+  message.content[index] = part;
+  return part;
+};
+
+/**
+ * Return the reasoning item's `reasoning_text` part at `content[index]`,
+ * creating the `content` array and/or the slot if absent.
+ * @param item - The reasoning item to read or extend.
+ * @param index - The `content_index` the reasoning text fills.
+ * @returns The reasoning-text part to write text into.
+ */
+const reasoningTextAt = (
+  item: Responses.ResponseReasoningItem,
+  index: number,
+): Responses.ResponseReasoningItem.Content => {
+  const content = (item.content ??= []);
+  const existing = content[index];
+  if (existing?.type === 'reasoning_text') return existing;
+  const part: Responses.ResponseReasoningItem.Content = { type: 'reasoning_text', text: '' };
+  content[index] = part;
   return part;
 };
 
@@ -122,19 +159,44 @@ const foldOutput = (state: OpenAIProjection, event: OpenAIOutput): void => {
     }
     case 'response.content_part.added': {
       const item = state.byItemId.get(event.item_id);
-      if (isOutputMessage(item) && event.part.type === 'output_text') {
-        item.content.push(structuredClone(event.part));
+      const part = event.part;
+      // Seed the slot at content_index with the added part: text/refusal parts
+      // on a message, reasoning-text parts on a reasoning item.
+      if (isOutputMessage(item) && (part.type === 'output_text' || part.type === 'refusal')) {
+        item.content[event.content_index] = structuredClone(part);
+      } else if (isReasoningItem(item) && part.type === 'reasoning_text') {
+        (item.content ??= [])[event.content_index] = structuredClone(part);
       }
       return;
     }
     case 'response.output_text.delta': {
       const item = state.byItemId.get(event.item_id);
-      if (isOutputMessage(item)) trailingOutputText(item).text += event.delta;
+      if (isOutputMessage(item)) outputTextAt(item, event.content_index).text += event.delta;
       return;
     }
     case 'response.output_text.done': {
       const item = state.byItemId.get(event.item_id);
-      if (isOutputMessage(item)) trailingOutputText(item).text = event.text;
+      if (isOutputMessage(item)) outputTextAt(item, event.content_index).text = event.text;
+      return;
+    }
+    case 'response.refusal.delta': {
+      const item = state.byItemId.get(event.item_id);
+      if (isOutputMessage(item)) refusalAt(item, event.content_index).refusal += event.delta;
+      return;
+    }
+    case 'response.refusal.done': {
+      const item = state.byItemId.get(event.item_id);
+      if (isOutputMessage(item)) refusalAt(item, event.content_index).refusal = event.refusal;
+      return;
+    }
+    case 'response.reasoning_text.delta': {
+      const item = state.byItemId.get(event.item_id);
+      if (isReasoningItem(item)) reasoningTextAt(item, event.content_index).text += event.delta;
+      return;
+    }
+    case 'response.reasoning_text.done': {
+      const item = state.byItemId.get(event.item_id);
+      if (isReasoningItem(item)) reasoningTextAt(item, event.content_index).text = event.text;
       return;
     }
     case 'response.reasoning_summary_part.added': {
@@ -165,9 +227,8 @@ const foldOutput = (state: OpenAIProjection, event: OpenAIOutput): void => {
       // (created/completed/failed) and the stream-level `error` carry no item
       // state the reducer needs: run termination — including failure — is
       // observed out-of-band via the transport run-end event, never folded into
-      // items. content_part.done and the reasoning-summary-part boundary are
-      // dropped (the text is folded from their streams); raw reasoning text,
-      // refusals, and hosted tools are not modelled yet.
+      // items. The content-part / summary-part `*.done` boundaries are dropped
+      // (their text is folded from the streams); hosted tools are not modelled yet.
       // TODO(AIT-742): a run-outcome mapper will read response.failed / `error`.
       return;
     }

@@ -19,6 +19,12 @@ import {
   reasoningSummaryPartAdded,
   reasoningSummaryTextDelta,
   reasoningSummaryTextDone,
+  reasoningTextDelta,
+  reasoningTextDone,
+  reasoningTextPartAdded,
+  refusalDelta,
+  refusalDone,
+  refusalPartAdded,
   streamError,
   textDelta,
   textDone,
@@ -48,6 +54,9 @@ const firstOutputText = (state: OpenAIProjection): string => {
 
 const firstReasoningItem = (state: OpenAIProjection): Responses.ResponseReasoningItem | undefined =>
   getMessages(state)[0]?.message.items.find((i): i is Responses.ResponseReasoningItem => i.type === 'reasoning');
+
+const firstMessage = (state: OpenAIProjection): Responses.ResponseOutputMessage | undefined =>
+  getMessages(state)[0]?.message.items.find((i): i is Responses.ResponseOutputMessage => i.type === 'message');
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -110,6 +119,49 @@ describe('OpenAI reducer', () => {
       { type: 'summary_text', text: 'first' },
       { type: 'summary_text', text: 'second' },
     ]);
+  });
+
+  it('keys output_text parts by content_index (multi-part message)', () => {
+    // Two text parts on one message: each delta must land in its own slot, not be
+    // merged into a single trailing part — the content_index-keyed fix.
+    const state = foldOutputs([
+      itemAdded(messageItem('msg_1')),
+      contentPartAdded('msg_1', 0),
+      contentPartAdded('msg_1', 1),
+      textDelta('msg_1', 'first', 0),
+      textDelta('msg_1', 'second', 1),
+      textDone('msg_1', 'first', 0),
+      textDone('msg_1', 'second', 1),
+    ]);
+
+    expect(firstMessage(state)?.content).toEqual([
+      { type: 'output_text', text: 'first', annotations: [] },
+      { type: 'output_text', text: 'second', annotations: [] },
+    ]);
+  });
+
+  it('folds a streamed refusal into the message content', () => {
+    const state = foldOutputs([
+      itemAdded(messageItem('msg_1')),
+      refusalPartAdded('msg_1', 0),
+      refusalDelta('msg_1', 'I can'),
+      refusalDelta('msg_1', 'not help'),
+      refusalDone('msg_1', 'I cannot help'),
+    ]);
+
+    expect(firstMessage(state)?.content).toEqual([{ type: 'refusal', refusal: 'I cannot help' }]);
+  });
+
+  it('folds streamed reasoning text into the reasoning item content', () => {
+    const state = foldOutputs([
+      itemAdded(reasoningItem('rs_1')),
+      reasoningTextPartAdded('rs_1', 0),
+      reasoningTextDelta('rs_1', 'be'),
+      reasoningTextDelta('rs_1', 'cause'),
+      reasoningTextDone('rs_1', 'because'),
+    ]);
+
+    expect(firstReasoningItem(state)?.content).toEqual([{ type: 'reasoning_text', text: 'because' }]);
   });
 
   it('lazily creates the output_text part if content_part.added is missing', () => {

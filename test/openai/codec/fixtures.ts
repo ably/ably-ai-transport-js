@@ -111,11 +111,11 @@ export const itemDone = (item: Responses.ResponseOutputItem, outputIndex = 0): R
   output_index: outputIndex,
   sequence_number: 0,
 });
-export const contentPartAdded = (itemId: string, outputIndex = 0): Responses.ResponseStreamEvent => ({
+export const contentPartAdded = (itemId: string, contentIndex = 0, outputIndex = 0): Responses.ResponseStreamEvent => ({
   type: 'response.content_part.added',
   item_id: itemId,
   output_index: outputIndex,
-  content_index: 0,
+  content_index: contentIndex,
   part: { type: 'output_text', text: '', annotations: [] },
   sequence_number: 0,
 });
@@ -127,22 +127,107 @@ export const contentPartDone = (itemId: string, outputIndex = 0): Responses.Resp
   part: { type: 'output_text', text: '', annotations: [] },
   sequence_number: 0,
 });
-export const textDelta = (itemId: string, delta: string, outputIndex = 0): Responses.ResponseStreamEvent => ({
+export const textDelta = (
+  itemId: string,
+  delta: string,
+  contentIndex = 0,
+  outputIndex = 0,
+): Responses.ResponseStreamEvent => ({
   type: 'response.output_text.delta',
   item_id: itemId,
   output_index: outputIndex,
-  content_index: 0,
+  content_index: contentIndex,
   delta,
   logprobs: [],
   sequence_number: 0,
 });
-export const textDone = (itemId: string, text: string, outputIndex = 0): Responses.ResponseStreamEvent => ({
+export const textDone = (
+  itemId: string,
+  text: string,
+  contentIndex = 0,
+  outputIndex = 0,
+): Responses.ResponseStreamEvent => ({
   type: 'response.output_text.done',
   item_id: itemId,
   output_index: outputIndex,
-  content_index: 0,
+  content_index: contentIndex,
   text,
   logprobs: [],
+  sequence_number: 0,
+});
+
+// content_part.added opening a refusal / reasoning-text slot (the discriminated
+// starts for the refusal / reasoning_text families).
+export const refusalPartAdded = (itemId: string, contentIndex = 0, outputIndex = 0): Responses.ResponseStreamEvent => ({
+  type: 'response.content_part.added',
+  item_id: itemId,
+  output_index: outputIndex,
+  content_index: contentIndex,
+  part: { type: 'refusal', refusal: '' },
+  sequence_number: 0,
+});
+export const refusalDelta = (
+  itemId: string,
+  delta: string,
+  contentIndex = 0,
+  outputIndex = 0,
+): Responses.ResponseStreamEvent => ({
+  type: 'response.refusal.delta',
+  item_id: itemId,
+  output_index: outputIndex,
+  content_index: contentIndex,
+  delta,
+  sequence_number: 0,
+});
+export const refusalDone = (
+  itemId: string,
+  refusal: string,
+  contentIndex = 0,
+  outputIndex = 0,
+): Responses.ResponseStreamEvent => ({
+  type: 'response.refusal.done',
+  item_id: itemId,
+  output_index: outputIndex,
+  content_index: contentIndex,
+  refusal,
+  sequence_number: 0,
+});
+export const reasoningTextPartAdded = (
+  itemId: string,
+  contentIndex = 0,
+  outputIndex = 0,
+): Responses.ResponseStreamEvent => ({
+  type: 'response.content_part.added',
+  item_id: itemId,
+  output_index: outputIndex,
+  content_index: contentIndex,
+  part: { type: 'reasoning_text', text: '' },
+  sequence_number: 0,
+});
+export const reasoningTextDelta = (
+  itemId: string,
+  delta: string,
+  contentIndex = 0,
+  outputIndex = 0,
+): Responses.ResponseStreamEvent => ({
+  type: 'response.reasoning_text.delta',
+  item_id: itemId,
+  output_index: outputIndex,
+  content_index: contentIndex,
+  delta,
+  sequence_number: 0,
+});
+export const reasoningTextDone = (
+  itemId: string,
+  text: string,
+  contentIndex = 0,
+  outputIndex = 0,
+): Responses.ResponseStreamEvent => ({
+  type: 'response.reasoning_text.done',
+  item_id: itemId,
+  output_index: outputIndex,
+  content_index: contentIndex,
+  text,
   sequence_number: 0,
 });
 

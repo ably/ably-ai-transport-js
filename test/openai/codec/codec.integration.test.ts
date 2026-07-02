@@ -30,6 +30,9 @@ import {
   reasoningSummaryPartAdded,
   reasoningSummaryTextDelta,
   reasoningSummaryTextDone,
+  refusalDelta,
+  refusalDone,
+  refusalPartAdded,
   stampHeaders,
   textDelta,
   textDone,
@@ -162,6 +165,50 @@ describe('OpenAI ResponsesCodec integration', () => {
       (i): i is Responses.ResponseReasoningItem => i.type === 'reasoning',
     );
     expect(item?.summary).toEqual([{ type: 'summary_text', text: 'Thinking…' }]);
+  });
+
+  it('content-part discrimination roundtrip (output_text + refusal)', async () => {
+    const channelName = uniqueChannelName('openai-content-part-roundtrip');
+    const pubChannel = ablyRealtimeClient().channels.get(channelName);
+    const subChannel = ablyRealtimeClient().channels.get(channelName);
+
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+
+    let resolveDone: () => void;
+    const done = new Promise<void>((r) => {
+      resolveDone = r;
+    });
+
+    await subChannel.subscribe((msg) => {
+      const decoded = decoder.decode(msg);
+      for (const event of toCodecEvents(decoded)) projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+      if (decoded.outputs.some((e) => e.type === 'response.completed')) resolveDone();
+    });
+
+    const itemId = 'msg-1';
+    const encoder = ResponsesCodec.createEncoder(pubChannel, { onMessage: stampHeaders('run-1', 'msg-1') });
+    await encoder.publishOutput(created());
+    await encoder.publishOutput(itemAdded(messageItem(itemId)));
+    // Two content parts opened from the same content_part.added start type.
+    await encoder.publishOutput(contentPartAdded(itemId, 0));
+    await encoder.publishOutput(refusalPartAdded(itemId, 1));
+    void encoder.publishOutput(textDelta(itemId, 'hello', 0));
+    void encoder.publishOutput(refusalDelta(itemId, 'no', 1));
+    await encoder.publishOutput(textDone(itemId, 'hello', 0));
+    await encoder.publishOutput(refusalDone(itemId, 'no', 1));
+    await encoder.publishOutput(completed());
+    await encoder.close();
+
+    await done;
+
+    const message = ResponsesCodec.getMessages(projection)[0]?.message.items.find(
+      (i): i is Responses.ResponseOutputMessage => i.type === 'message',
+    );
+    expect(message?.content).toEqual([
+      { type: 'output_text', text: 'hello', annotations: [] },
+      { type: 'refusal', refusal: 'no' },
+    ]);
   });
 
   it('user message roundtrip', async () => {

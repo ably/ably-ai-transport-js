@@ -139,6 +139,13 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: pnpm run build (lib)
         run: pnpm run build
+      # The shared-frontend workspace-linked package is a peer install-target
+      # for every demo that consumes it. Installing here (rather than gating on
+      # matrix.demo) is a no-op for demos that don't link it in, and keeps the
+      # matrix rows uniform.
+      - name: pnpm install (shared-frontend)
+        run: pnpm install --frozen-lockfile
+        working-directory: demo/shared-frontend
       - name: pnpm install (demo)
         run: pnpm install --frozen-lockfile
         working-directory: ${{ matrix.demo }}
@@ -184,6 +191,13 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: pnpm run build (lib)
         run: pnpm run build
+      # The shared-frontend workspace-linked package is a peer install-target
+      # for every demo that consumes it. Installing here (rather than gating on
+      # matrix.demo) is a no-op for demos that don't link it in, and keeps the
+      # matrix rows uniform.
+      - name: pnpm install (shared-frontend)
+        run: pnpm install --frozen-lockfile
+        working-directory: demo/shared-frontend
       - name: pnpm install (demo)
         run: pnpm install --frozen-lockfile
         working-directory: ${{ matrix.demo }}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { userMessage } from '../helpers';
+import { userMessage } from '../index';
 
 describe('userMessage', () => {
   it('creates a UIMessage with role "user"', () => {

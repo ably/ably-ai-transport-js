@@ -4,7 +4,7 @@ import { useRef, useEffect } from 'react';
 import type { UIMessage } from 'ai';
 import type { BranchHandle, CodecMessage, RunInfo } from '@ably/ai-transport';
 import { MessageBubble } from './message-bubble';
-import { IntroCard } from './intro-card';
+import { IntroCard, type DemoStep } from './intro-card';
 
 interface ViewLookupApi {
   branchSelection: (codecMessageId: string) => BranchHandle<UIMessage>;
@@ -24,6 +24,13 @@ interface MessageListProps {
   onEdit: (codecMessageId: string, newText: string) => void;
   onToolApprove?: (codecMessageId: string, toolCallId: string) => void;
   onToolDeny?: (codecMessageId: string, toolCallId: string) => void;
+  /**
+   * Custom demo-scenario list shown by the pinned {@link IntroCard} when the
+   * conversation is empty. Defaults to the shared UI's baseline list; each
+   * demo can pass its own to swap in scenarios (e.g. the LiveObjects
+   * checklist demo adds its own row).
+   */
+  demoSteps?: readonly DemoStep[];
 }
 
 export function MessageList({
@@ -36,6 +43,7 @@ export function MessageList({
   onEdit,
   onToolApprove,
   onToolDeny,
+  demoSteps,
 }: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -75,7 +83,7 @@ export function MessageList({
       onScroll={handleScroll}
       className="flex-1 overflow-y-auto px-4 py-4 space-y-4"
     >
-      <IntroCard />
+      <IntroCard steps={demoSteps} />
       {hasOlder && (
         <div className="text-center">
           <button

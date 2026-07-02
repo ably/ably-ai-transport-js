@@ -339,11 +339,11 @@ const rejectReservedFieldKeys = (fields: readonly HeaderField<unknown>[], owner:
  *
  * - duplicate wire `kind`s (discrete event types + stream family kinds, which
  *   drive decode dispatch);
- * - duplicate encode-dispatch dispositions — a stream delta/end phase, a discrete
- *   event, or an ignored type must each be uniquely owned. A stream `start` type
- *   is exempt: it may be shared across families (resolved by `startWhen`) and may
- *   double as a discrete event/ignore (its decline target); its only forbidden
- *   overlap is being another family's delta/end phase;
+ * - duplicate encode-dispatch dispositions — a stream delta/end phase or a
+ *   discrete event must each be uniquely owned. A stream `start` type is exempt:
+ *   it may be shared across families (resolved by `startWhen`) and may double as a
+ *   discrete event (its decline target); its only forbidden overlap is being
+ *   another family's delta/end phase;
  * - duplicate input `kind`s and duplicate `partType`s within a batch;
  * - field bindings on the driver-reserved `kind` / `partType` header keys.
  * @param outputs - The assembled output descriptor table.
@@ -357,12 +357,12 @@ const validateTables = <TInput, TOutput>(
   // Encode dispatch. A wire `type` has one encode disposition, with one
   // deliberate exception: a stream `start` type may be **shared** across families
   // (the encoder resolves it at encode time by each family's `startWhen`) and may
-  // also back a discrete `event`/`ignore` — a start whose discriminators all
-  // decline falls through to discrete dispatch. So starts are collected apart
-  // from the "sole disposition" literals — a stream delta/end phase, a discrete
-  // event, an ignored type — which must each be uniquely owned. The one overlap a
-  // start must NOT have (being another family's delta/end, which the start-first
-  // dispatch would shadow) is checked after the loop.
+  // also back a discrete `event` — a start whose discriminators all decline falls
+  // through to discrete dispatch. So starts are collected apart from the "sole
+  // disposition" literals — a stream delta/end phase or a discrete event — which
+  // must each be uniquely owned. The one overlap a start must NOT have (being
+  // another family's delta/end, which the start-first dispatch would shadow) is
+  // checked after the loop.
   const soleDispatch = new Map<string, { owner: string; isContinuation: boolean }>();
   const startTypes = new Map<string, string>();
   const reserveDispatch = (literal: string, owner: string, isContinuation: boolean): void => {
@@ -392,16 +392,12 @@ const validateTables = <TInput, TOutput>(
       // overlaps are legal); its one illegal overlap is checked below.
       startTypes.set(descriptor.start, owner);
       rejectReservedFieldKeys(descriptor.fields, owner);
-    } else {
-      // An ignored type produces no wire output; reserving it as a sole
-      // disposition catches an author both handling and ignoring the same type.
-      reserveDispatch(descriptor.type, `ignored output '${descriptor.type}'`, false);
     }
   }
 
   // A stream start that is also some family's delta/end phase would never route
   // as that continuation (the encoder tries the start path first), so forbid it.
-  // Overlap with a discrete event/ignore (a decline target) is legal and skipped.
+  // Overlap with a discrete event (a decline target) is legal and skipped.
   for (const [start, startOwner] of startTypes) {
     const holder = soleDispatch.get(start);
     if (holder?.isContinuation === true) {

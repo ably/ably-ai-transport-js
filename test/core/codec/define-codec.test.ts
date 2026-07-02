@@ -171,58 +171,40 @@ describe('defineCodec — encoder wiring', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Ignored output types — the `ignore` construct
+// Undescribed output types
 //
-// A pass-through codec models only a subset of a large provider union. `ignore`
-// names the events it deliberately drops on encode; any other undescribed event
-// still throws, so a genuinely unexpected event is never dropped unnoticed.
+// A codec models only a subset of a large provider union. An output event with
+// no descriptor throws on encode rather than being silently dropped, so a
+// genuinely unexpected event is never lost unnoticed. A codec whose provider
+// streams a superset of what it models filters unsupported events agent-side
+// before publishing.
 // ---------------------------------------------------------------------------
 
-type IgnoreOutput = { type: 'kept' } | { type: 'dropped' } | { type: 'surprise' };
+type PassthroughOutput = { type: 'kept' } | { type: 'surprise' };
 
-const ignoreCodec = defineCodec<NoopInput, IgnoreOutput>()({
+const passthroughCodec = defineCodec<NoopInput, PassthroughOutput>()({
   reducer: {
     init: (): FixtureProjection => ({ folded: [] }),
     // The reducer is irrelevant to these encode-side tests.
     fold: (state: FixtureProjection): FixtureProjection => state,
     getMessages: (): CodecMessage<NoopInput | QuirkyOutput>[] => [],
   },
-  output: ({ event, ignore }) => [event('kept'), ignore('dropped')],
+  output: ({ event }) => [event('kept')],
   input: ({ event }) => [event('noop')],
 });
 
-describe('defineCodec — ignored output types', () => {
+describe('defineCodec — undescribed output types', () => {
   it('publishes a described output type', async () => {
     const writer = createMockWriter();
-    await ignoreCodec.createEncoder(writer).publishOutput({ type: 'kept' });
+    await passthroughCodec.createEncoder(writer).publishOutput({ type: 'kept' });
     expect(writer.published).toHaveLength(1);
   });
 
-  it('drops an ignored output type silently (no publish, no throw)', async () => {
+  it('throws on an output type with no descriptor', async () => {
     const writer = createMockWriter();
-    await ignoreCodec.createEncoder(writer).publishOutput({ type: 'dropped' });
-    expect(writer.published).toHaveLength(0);
-  });
-
-  it('still throws on an output type that is neither described nor ignored', async () => {
-    const writer = createMockWriter();
-    await expect(ignoreCodec.createEncoder(writer).publishOutput({ type: 'surprise' })).rejects.toThrow(
+    await expect(passthroughCodec.createEncoder(writer).publishOutput({ type: 'surprise' })).rejects.toThrow(
       /unsupported event type 'surprise'/,
     );
-  });
-
-  it('rejects a table that both handles and ignores the same type', () => {
-    expect(() =>
-      defineCodec<NoopInput, IgnoreOutput>()({
-        reducer: {
-          init: (): FixtureProjection => ({ folded: [] }),
-          fold: (state: FixtureProjection): FixtureProjection => state,
-          getMessages: (): CodecMessage<NoopInput | QuirkyOutput>[] => [],
-        },
-        output: ({ event, ignore }) => [event('kept'), ignore('kept')],
-        input: ({ event }) => [event('noop')],
-      }),
-    ).toThrow(/dispatch literal 'kept'/);
   });
 });
 

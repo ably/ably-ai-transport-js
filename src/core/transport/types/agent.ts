@@ -320,6 +320,23 @@ export interface RunStep<TOutput extends CodecOutputEvent> {
    */
   pipe(stream: ReadableStream<TOutput>, options?: PipeOptions<TOutput>): Promise<StreamResult>;
   /**
+   * Publish a single discrete output as one assistant message on the channel,
+   * stamped with this step's `step-id` and its attempt's `start-serial`.
+   *
+   * Use this when you have a chunk to publish already — a tool result, a
+   * data payload, a metadata event — rather than a streamed source. Each
+   * `send` mints its own `codec-message-id`, so N calls produce N assistant
+   * messages, not one. For streamed output from a long-running source (e.g.
+   * an LLM token stream), use {@link RunStep.pipe}.
+   *
+   * The step must be active (started, not ended). Rejects otherwise. A
+   * publish failure is thrown — there is no `{ reason: 'error' }` return
+   * shape, because there is no stream to abort halfway through.
+   * @param output - The single codec output to publish.
+   * @throws InvalidArgument if the step is not active.
+   */
+  send(output: TOutput): Promise<void>;
+  /**
    * Publish `ai-step-end`, closing the step. Idempotent — a second call is a
    * no-op. Omit `params` to derive the reason from the step's piped output
    * (`failed` if any {@link RunStep.pipe} errored, else `complete`), so the

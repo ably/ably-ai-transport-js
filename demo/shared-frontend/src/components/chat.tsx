@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { ClientRun } from '@ably/ai-transport';
 import type { UIMessage } from 'ai';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
@@ -12,7 +12,7 @@ import { MessageList } from './message-list';
 import { SuggestionChips } from './suggestion-chips';
 import type { CallbackLogEntry, ClientToolLogEntry } from './debug-pane';
 import { DebugPane } from './debug-pane';
-import { ChecklistWidget } from './checklist-widget';
+import type { DemoStep } from './intro-card';
 import { SessionHooks } from '../providers';
 import { clientColor } from '../lib/client-color';
 import { AvatarStack } from './avatar-stack';
@@ -25,9 +25,21 @@ interface ChatProps {
   historyLimit?: number;
   /** Agent endpoint the demo POSTs invocations to, to wake the serverless agent. */
   api: string;
+  /**
+   * Optional slot rendered between the message list and the input bar — the
+   * anchor for a demo-specific widget (e.g. the LiveObjects checklist widget
+   * in the use-client-session demo). Left undefined by default so demos that
+   * don't need one contribute nothing to the DOM.
+   */
+  extraSlot?: ReactNode;
+  /**
+   * Custom scenarios for the intro card when the conversation is empty.
+   * Forwarded to {@link MessageList}. Defaults to the shared baseline list.
+   */
+  demoSteps?: readonly DemoStep[];
 }
 
-export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
+export function Chat({ chatId, clientId, historyLimit, api, extraSlot, demoSteps }: ChatProps) {
   const { session } = useClientSession();
 
   const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
@@ -198,8 +210,9 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
           }
           onToolApprove={handleToolApprove}
           onToolDeny={handleToolDeny}
+          demoSteps={demoSteps}
         />
-        <ChecklistWidget session={session} />
+        {extraSlot}
         <div className="border-t border-zinc-800">
           <SuggestionChips
             steps={unfinishedSteps}

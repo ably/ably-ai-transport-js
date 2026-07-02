@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { generateChannelSlug, generateClientName } from '../lib/channel-name';
+import { generateChannelSlug, generateClientName } from '../index';
 
 describe('generateClientName', () => {
   it('returns two lowercase words joined by a single hyphen', () => {

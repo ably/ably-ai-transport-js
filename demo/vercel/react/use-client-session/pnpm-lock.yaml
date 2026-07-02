@@ -207,6 +207,9 @@ importers:
 
   .:
     dependencies:
+      '@ably-ai-demos/frontend':
+        specifier: file:../../../shared-frontend
+        version: file:../../../shared-frontend(@ably/ai-transport@+)(ably@2.23.0(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(ai@6.0.185(zod@4.4.3))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@ably/ai-transport':
         specifier: link:../../../..
         version: link:../../../..
@@ -240,6 +243,9 @@ importers:
       zod:
         specifier: ^4
         version: 4.4.3
+    dependenciesMeta:
+      '@ably-ai-demos/frontend':
+        injected: true
     devDependencies:
       '@playwright/test':
         specifier: 1.60.0
@@ -282,6 +288,15 @@ importers:
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@25.9.0)(jsdom@26.1.0)(vite@8.0.13(@types/node@25.9.0)(jiti@2.7.0))
 
 packages:
+
+  '@ably-ai-demos/frontend@file:../../../shared-frontend':
+    resolution: {directory: ../../../shared-frontend, type: directory}
+    peerDependencies:
+      '@ably/ai-transport': '*'
+      ably: ^2
+      ai: ^6
+      react: ^18.0.0 || ^19.0.0
+      react-dom: ^18.0.0 || ^19.0.0
 
   '@ably/msgpack-js@0.4.1':
     resolution: {integrity: sha512-Sjxj6SOr17hExAVrsycN7u6oV4PhZcK7Z2S8dM71CH/butgO47cSo/TL6FJPCXUyDAzKkOWjMUpJGyZkEpyu4Q==}
@@ -2968,6 +2983,14 @@ packages:
     resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
 
 snapshots:
+
+  '@ably-ai-demos/frontend@file:../../../shared-frontend(@ably/ai-transport@+)(ably@2.23.0(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(ai@6.0.185(zod@4.4.3))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)':
+    dependencies:
+      '@ably/ai-transport': link:../../../..
+      ably: 2.23.0(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      ai: 6.0.185(zod@4.4.3)
+      react: 19.2.6
+      react-dom: 19.2.6(react@19.2.6)
 
   '@ably/msgpack-js@0.4.1':
     dependencies:

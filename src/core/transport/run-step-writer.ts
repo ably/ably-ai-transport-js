@@ -334,20 +334,90 @@ export const createRunStepWriter = <
   };
 
   /**
+   * Build the per-message encoder for one assistant-message publish under a
+   * step. Each publish is its own message (a fresh `codecMessageId`), so
+   * `pipe` and `send` both call this per invocation — the encoder itself is
+   * short-lived, not a per-step long-lived object. Extracted so `doPipe` and
+   * `doSend` share one path for header composition and the composed
+   * `onMessage` that stamps the step attempt's `start-serial` (live via
+   * {@link StartSerialRef} because the value is known only after
+   * `ai-step-start` publishes, which for `run.pipe`'s lazy implicit step is
+   * AFTER this encoder is created).
+   * @param step - The step to stamp the message under.
+   * @param step.stepId - The step's id, stamped on the message.
+   * @param step.startSerialRef - Holds the step attempt's `start-serial`, stamped on the message once known.
+   * @param step.stepClientId - The step's resolved client, stamped as `step-client-id`.
+   * @param opts - Per-publish overrides.
+   * @param opts.parent - Override for the assistant message's structural parent (from `PipeOptions.parent`).
+   * @param opts.forkOf - Override for the assistant message's `forkOf` anchor (from `PipeOptions.forkOf`).
+   * @returns The encoder (single message; caller must publish then `close()`).
+   */
+  const createMessageEncoder = (
+    step: { stepId: string; startSerialRef: StartSerialRef; stepClientId: string },
+    opts?: { parent?: string; forkOf?: string },
+  ) => {
+    const runId = ctx.getRunId();
+    const anchors = ctx.getAnchors();
+    const runOwnerClientId = runManager.getClientId(runId);
+
+    const codecMessageId = crypto.randomUUID();
+    // The default headers carry no attempt identity: `start-serial` is known
+    // only after the step-start publishes (for the lazy implicit step, inside
+    // `onFirstOutput` — after this encoder is created), so it is injected
+    // per-message by the composed `onMessage` rather than baked in here.
+    const defaultHeaders = buildTransportHeaders({
+      role: 'assistant',
+      runId,
+      codecMessageId,
+      runClientId: runOwnerClientId,
+      // The assistant message's parent: an explicit per-publish override from
+      // the caller, else the reply run's structural-parent fallback computed
+      // once at run-start (`parentFallback`). Owning the default here means
+      // agent routes don't have to thread the parent to keep tree threading
+      // correct.
+      parent: opts?.parent ?? anchors.parentFallback,
+      forkOf: opts?.forkOf ?? anchors.forkOf,
+      invocationId,
+      inputClientId: anchors.inputClientId,
+      inputCodecMessageId: anchors.inputCodecMessageId,
+      // Echo `msg-regenerate` on the assistant message so a client receiving
+      // the assistant chunk before `ai-run-start` can still populate
+      // `RunNode.regeneratesCodecMessageId` from headers.
+      regenerates: anchors.regenerates,
+      stepId: step.stepId,
+      stepClientId: step.stepClientId,
+    });
+    // Compose the encoder's `onMessage`: stamp the step attempt's `start-serial`
+    // (once known) on the transport tier of every outbound message, THEN run the
+    // developer's hook. Reads the ref live so it captures the value the lazy
+    // implicit-step open sets before the first output is published.
+    const stampStartSerial = (message: Ably.Message): void => {
+      const startSerial = step.startSerialRef.value;
+      if (startSerial === undefined) return;
+      // CAST: the encoder always builds `extras.ai.transport` before invoking
+      // this hook (Ably SDK types `extras` as `any`); narrow to the tier we own.
+      const transport = (message.extras as { ai: { transport: Record<string, string> } }).ai.transport;
+      transport[HEADER_START_SERIAL] = startSerial;
+    };
+    return codec.createEncoder(channel, {
+      extras: { headers: defaultHeaders },
+      onMessage: (message: Ably.Message): void => {
+        stampStartSerial(message);
+        onMessage?.(message);
+      },
+      messageId: codecMessageId,
+    });
+  };
+
+  /**
    * Pipe a stream through a fresh encoder to the channel, always within a step
    * bracket. Shared by {@link RunStepWriter.pipe} (an implicit step opened
    * LAZILY at first output via `step.onFirstOutput`) and {@link RunStep.pipe}
    * (an explicit step the caller already opened eagerly, so it omits
-   * `onFirstOutput`). Stamps the step's `step-id` on every output's default
-   * headers and its attempt's `start-serial` per-message via a composed encoder
-   * `onMessage` hook (the start-serial is known only after the step-start
-   * publishes, which for the lazy implicit step happens inside `onFirstOutput`,
-   * after the encoder is created). Builds the assistant message's default
-   * headers from the run's resolved structural anchors, pipes, and surfaces a
-   * stream error via `onError`. It does NOT end the run on cancel — the run
-   * terminal is the outer layer's responsibility (`run.end()`, or
-   * `session.end()` for an open run at teardown); a cancelled pipe closes only
-   * its own step bracket (the caller's close-iff-opened / `step.end()`).
+   * `onFirstOutput`). It does NOT end the run on cancel — the run terminal is
+   * the outer layer's responsibility (`run.end()`, or `session.end()` for an
+   * open run at teardown); a cancelled pipe closes only its own step bracket
+   * (the caller's close-iff-opened / `step.end()`).
    * @param stream - The output stream to pipe.
    * @param streamOpts - Per-stream overrides.
    * @param step - The step to stamp output under.
@@ -371,59 +441,7 @@ export const createRunStepWriter = <
     ctx.assertPublishable('pipe');
 
     const runId = ctx.getRunId();
-    const anchors = ctx.getAnchors();
-    const runOwnerClientId = runManager.getClientId(runId);
-
-    // The assistant message's parent: an explicit per-stream `streamOpts.parent`
-    // from the caller, else the reply run's structural-parent fallback computed
-    // once at run-start (`parentFallback`). Owning the default here means agent
-    // routes don't have to thread the parent to keep tree threading correct.
-    const assistantParent = streamOpts?.parent ?? anchors.parentFallback;
-    const assistantForkOf = streamOpts?.forkOf ?? anchors.forkOf;
-    // Echo `msg-regenerate` on the assistant message so a client receiving the
-    // assistant chunk before `ai-run-start` can still populate
-    // `RunNode.regeneratesCodecMessageId` from headers.
-    const assistantRegenerates = anchors.regenerates;
-
-    const codecMessageId = crypto.randomUUID();
-    // The default headers carry no attempt identity: `start-serial` is known
-    // only after the step-start publishes (for the lazy implicit step, inside
-    // `onFirstOutput` below — after this encoder is created), so it is injected
-    // per-message by the composed `onMessage` rather than baked in here.
-    const defaultHeaders = buildTransportHeaders({
-      role: 'assistant',
-      runId,
-      codecMessageId,
-      runClientId: runOwnerClientId,
-      parent: assistantParent,
-      forkOf: assistantForkOf,
-      invocationId,
-      inputClientId: anchors.inputClientId,
-      inputCodecMessageId: anchors.inputCodecMessageId,
-      regenerates: assistantRegenerates,
-      stepId: step.stepId,
-      stepClientId: step.stepClientId,
-    });
-    // Compose the encoder's `onMessage`: stamp the step attempt's `start-serial`
-    // (once known) on the transport tier of every outbound message, THEN run the
-    // developer's hook. Reads the ref live so it captures the value the lazy
-    // implicit-step open sets before the first output is published.
-    const stampStartSerial = (message: Ably.Message): void => {
-      const startSerial = step.startSerialRef.value;
-      if (startSerial === undefined) return;
-      // CAST: the encoder always builds `extras.ai.transport` before invoking
-      // this hook (Ably SDK types `extras` as `any`); narrow to the tier we own.
-      const transport = (message.extras as { ai: { transport: Record<string, string> } }).ai.transport;
-      transport[HEADER_START_SERIAL] = startSerial;
-    };
-    const encoder = codec.createEncoder(channel, {
-      extras: { headers: defaultHeaders },
-      onMessage: (message: Ably.Message): void => {
-        stampStartSerial(message);
-        onMessage?.(message);
-      },
-      messageId: codecMessageId,
-    });
+    const encoder = createMessageEncoder(step, { parent: streamOpts?.parent, forkOf: streamOpts?.forkOf });
 
     const result = await pipeStream(
       stream,
@@ -448,6 +466,36 @@ export const createRunStepWriter = <
 
     logger?.debug('Run.pipe(); stream finished', { runId, reason: result.reason });
     return result;
+  };
+
+  /**
+   * Publish a single discrete output as one assistant message. Reuses the same
+   * per-message encoder path as {@link doPipe} but skips the pipe-stream loop
+   * — there is no stream to iterate, no cancellation-race machinery, and no
+   * `resolveWriteOptions` per-output hook (a single call would use it at most
+   * once).
+   * @param output - The single codec output to publish.
+   * @param step - The step to stamp output under.
+   * @param step.stepId - The step's id, stamped on the output.
+   * @param step.startSerialRef - Holds the step attempt's `start-serial`, stamped on the output.
+   * @param step.stepClientId - The step's resolved client, stamped as `step-client-id`.
+   */
+  const doSend = async (
+    output: TOutput,
+    step: { stepId: string; startSerialRef: StartSerialRef; stepClientId: string },
+  ): Promise<void> => {
+    await ctx.requireConnected('send');
+    ctx.assertPublishable('pipe');
+
+    const encoder = createMessageEncoder(step);
+
+    try {
+      await encoder.publishOutput(output);
+    } finally {
+      await encoder.close();
+    }
+
+    logger?.debug('RunStep.send(); output sent', { runId: ctx.getRunId(), stepId: step.stepId });
   };
 
   // Spec: AIT-ST6, AIT-ST6a, AIT-ST6b, AIT-ST6b1, AIT-ST6b2, AIT-ST6b3, AIT-ST6c
@@ -632,6 +680,25 @@ export const createRunStepWriter = <
         // `cancelled` rather than the derived `complete`.
         if (result.reason === 'cancelled') pipeState.cancelled = true;
         return result;
+      },
+      send: async (output: TOutput): Promise<void> => {
+        if (state !== 'active') {
+          throw new Ably.ErrorInfo(
+            'unable to send step; the step is not active — call start() first and do not send after end()',
+            ErrorCode.InvalidArgument,
+            400,
+          );
+        }
+        try {
+          await doSend(output, { stepId, startSerialRef, stepClientId });
+        } catch (error) {
+          // A publish throw marks the step failed so a subsequent `end()` with
+          // no reason still settles `failed` (mirrors pipe's error-tracking) —
+          // callers that catch the throw and then call end() get consistent
+          // step-terminal semantics.
+          pipeState.errored = true;
+          throw error;
+        }
       },
       end: async (params?: StepEndParams): Promise<void> => {
         // Derive the reason from piped output when not given, so a step closed

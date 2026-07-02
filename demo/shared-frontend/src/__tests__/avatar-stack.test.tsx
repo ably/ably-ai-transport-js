@@ -17,7 +17,7 @@ vi.mock('ably/react', () => ({
 
 // Imported after vi.mock so it picks up the mocked presence hooks.
 // eslint-disable-next-line import/first
-import { AvatarStack } from '../components/avatar-stack';
+import { AvatarStack } from '../index';
 
 afterEach(() => {
   cleanup();

@@ -16,7 +16,21 @@ export function useAblyReady() {
   return useContext(AblyReadyContext);
 }
 
-export function Providers({ clientId, children }: { clientId?: string; children: ReactNode }) {
+/**
+ * Set up the Ably client + provider that the shared UI needs. `liveObjects`
+ * opts the client into the LiveObjects plugin — required by any demo that
+ * uses `session.object(...)` (the checklist demo does; the Temporal demo
+ * doesn't).
+ */
+export function Providers({
+  clientId,
+  liveObjects = false,
+  children,
+}: {
+  clientId?: string;
+  liveObjects?: boolean;
+  children: ReactNode;
+}) {
   const [client, setClient] = useState<Ably.Realtime | null>(null);
 
   useEffect(() => {
@@ -36,16 +50,17 @@ export function Providers({ clientId, children }: { clientId?: string; children:
           callback(message, null);
         }
       },
-      // The checklist state lives in LiveObjects, which is an ably-js plugin —
-      // without it, `session.object` throws.
-      plugins: { LiveObjects },
+      // LiveObjects is an ably-js plugin — enable it only for demos that call
+      // `session.object(...)`. Loading it unconditionally has no functional
+      // cost but pulls extra bytes into the browser bundle.
+      ...(liveObjects ? { plugins: { LiveObjects } } : {}),
       ...(endpoint ? { endpoint } : {}),
     });
     setClient(ably);
     return () => {
       ably.close();
     };
-  }, [clientId]);
+  }, [clientId, liveObjects]);
 
   if (!client) {
     return <AblyReadyContext.Provider value={false}>{children}</AblyReadyContext.Provider>;

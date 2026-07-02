@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@ably/ai-transport": "link:../../../..",
+    "@ably-ai-demos/frontend": "file:../../../shared-frontend",
     "@ai-sdk/anthropic": "^3",
     "@ai-sdk/openai": "^3",
     "@ai-sdk/react": "^3.0.161",
@@ -39,6 +40,11 @@
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^4"
+  },
+  "dependenciesMeta": {
+    "@ably-ai-demos/frontend": {
+      "injected": true
+    }
   },
   "packageManager": "pnpm@11.3.0",
   "devEngines": {

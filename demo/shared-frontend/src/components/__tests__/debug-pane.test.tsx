@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import type { UIMessage } from 'ai';
 import type { CodecMessage } from '@ably/ai-transport';
-import { DebugPane } from '../debug-pane';
+import { DebugPane } from '../../index';
 
 const PANE_OPEN_STORAGE_KEY = 'ait-demo:debug-pane-open';
 

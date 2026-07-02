@@ -89,7 +89,13 @@
       table.cat td { padding: 9px 11px; border-bottom: 1px solid var(--border); vertical-align: top; }
       table.cat td.ev { font-family: var(--mono); color: var(--text); white-space: nowrap; font-size: 12.5px; }
       table.cat td.ev .pre { color: #5a626e; }
-      table.cat td.co { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+      table.cat td.co { font-family: var(--mono); font-size: 11.5px; white-space: normal; line-height: 1.7; }
+      table.cat td.co .sep { color: #5a626e; }
+      table.cat td.co .nest { text-decoration: underline dotted #ef6b6b; text-underline-offset: 2px; }
+      table.cat td.co .u { color: var(--green); font-weight: 700; margin-left: 2px; }
+      table.cat td.co .x { color: #6b7280; margin-left: 2px; }
+      table.cat td.co .w { color: var(--amber); font-weight: 700; margin-left: 2px; }
+      table.cat td.co.dropped { opacity: 0.38; }
       table.cat td.does { color: #cfd5df; }
       table.cat td.does b { color: var(--text); font-weight: 600; }
       .disp { font-family: var(--mono); font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); white-space: nowrap; }
@@ -113,6 +119,9 @@
       .seqrow.text { border-left-color: var(--cyan); background: #0f1c2288; }
       .seqrow.life { color: var(--muted); }
       .seqrow .co { font-size: 11px; }
+      .seqrow .co .s { color: #4b5563; margin: 0 2px; }
+      .tlkey { font-size: 11px; color: #7f8895; margin: 0 14px 12px; line-height: 1.6; }
+      .tlkey b { color: #cfd5df; font-weight: 600; }
       .built { font-family: var(--mono); font-size: 12px; line-height: 1.85; padding: 6px 14px 14px; white-space: pre-wrap; }
       .built .kw { color: var(--purple); } .built .lit { color: #7f8895; } .built .prop { color: var(--muted); }
 
@@ -190,7 +199,7 @@
           <div class="tline"><span class="code">      <span class="prop">type</span>: <span class="lit">"message"</span></span><span class="ann">← the item kind lives in its <span class="prop">type</span> field</span></div>
           <div class="tline"><span class="code">      <span class="prop">id</span>: <span class="lit">"msg_…"</span></span><span class="ann">← streaming events refer to this as <span class="badge b-id">item_id</span></span></div>
           <div class="tline"><span class="code">      <span class="prop">role</span>: <span class="lit">"assistant"</span></span></div>
-          <div class="tline"><span class="code">      <span class="prop">content</span>: <span class="brace">[</span></span><span class="ann">the parts — each part's position is its <span class="badge b-ci">content_index</span></span></div>
+          <div class="tline"><span class="code">      <span class="prop">content</span>: <span class="brace">[</span></span><span class="ann">content parts — each part's position is its <span class="badge b-ci">content_index</span></span></div>
           <div class="tline"><span class="code">        <span class="brace">{</span></span><span class="ann"><span class="c-ci">content[0]</span></span></div>
           <div class="tline"><span class="code">          <span class="prop">type</span>: <span class="lit">"output_text"</span></span></div>
           <div class="tline"><span class="code">          <span class="prop">text</span>: <span class="lit">"It's sunny."</span></span></div>
@@ -206,10 +215,10 @@
           <div class="tline"><span class="code">    <span class="brace">{</span></span><span class="ann"><span class="c-oi">output[1]</span></span></div>
           <div class="tline"><span class="code">      <span class="prop">type</span>: <span class="lit">"reasoning"</span></span></div>
           <div class="tline"><span class="code">      <span class="prop">id</span>: <span class="lit">"rs_…"</span></span><span class="ann">← <span class="badge b-id">item_id</span></span></div>
-          <div class="tline"><span class="code">      <span class="prop">summary</span>: <span class="brace">[</span></span><span class="ann">the streamed "thinking" — position is <span class="badge b-si">summary_index</span></span></div>
+          <div class="tline"><span class="code">      <span class="prop">summary</span>: <span class="brace">[</span></span><span class="ann">summary parts (the streamed "thinking") — position is <span class="badge b-si">summary_index</span></span></div>
           <div class="tline"><span class="code">        <span class="brace">{</span> <span class="prop">type</span>: <span class="lit">"summary_text"</span>, <span class="prop">text</span> <span class="brace">}</span></span></div>
           <div class="tline"><span class="code">      <span class="brace">]</span></span></div>
-          <div class="tline"><span class="code">      <span class="prop">content</span>: <span class="brace">[</span></span><span class="ann">raw reasoning — position is <span class="badge b-ci">content_index</span></span></div>
+          <div class="tline"><span class="code">      <span class="prop">content</span>: <span class="brace">[</span></span><span class="ann">reasoning-text parts (raw reasoning) — position is <span class="badge b-ci">content_index</span></span></div>
           <div class="tline"><span class="code">        <span class="brace">{</span> <span class="prop">type</span>: <span class="lit">"reasoning_text"</span>, <span class="prop">text</span> <span class="brace">}</span></span></div>
           <div class="tline"><span class="code">      <span class="brace">]</span></span></div>
           <div class="tline"><span class="code">    <span class="brace">}</span></span></div>
@@ -282,9 +291,11 @@
           </div>
           <div class="coord seq">
             <div class="cn c-seq">sequence_number</div>
-            <div class="ck">wire: <code>sequence_number</code> (number)</div>
-            <p>A single monotonic counter across <b>all</b> events in the response, regardless of item. The canonical
-              ordering; the only coordinate that's global rather than per-node.</p>
+            <div class="ck">raw event only: <code>sequence_number</code> (number)</div>
+            <p>A single monotonic counter OpenAI stamps on <b>every</b> raw event — the raw stream's ordering. But our
+              transport orders by the <b>Ably message serial</b> instead, so the codec <b>drops it entirely</b> (it even
+              hardcodes <code>0</code> when rebuilding an event). Listed only because you'll see it on every raw event; it
+              never reaches the codec's routing.</p>
           </div>
         </div>
       </section>
@@ -294,80 +305,101 @@
         <div class="h"><span class="n">3</span><span class="t">The event catalogue — what each event does to the tree</span></div>
         <p class="intro">
           Grouped by tier: whole-response lifecycle, the item envelope, the content-part envelope, then the streaming families
-          that fill parts. <b>Coordinates</b> = the addressing fields the event carries. <b>Codec</b> = how our OpenAI codec
-          handles it today (<span class="disp stream">stream</span> family · <span class="disp event">discrete event</span> ·
-          <span class="disp ignore">ignore</span> not-yet-streamed · <span class="disp codec">codec-only</span> ·
-          <span class="disp throw">throws</span> until supported).
+          that fill parts. <b>Two separate columns</b>: <em>what it means</em> is the event's effect in the OpenAI
+          protocol (what it represents / does to the Response); <em>what our codec does</em> is what <em>we</em> do with it,
+          tagged with a disposition badge — <span class="disp stream">stream</span> family ·
+          <span class="disp event">discrete event</span> · <span class="disp ignore">ignore</span> (dropped, not-yet-streamed) ·
+          <span class="disp codec">codec-only</span> · <span class="disp throw">throws</span> (unsupported). They diverge sharply
+          for the dropped ones — e.g. <code>annotation.added</code> <em>means</em> "attach a citation," but our codec
+          <em>does</em> nothing with it yet.
+        </p>
+        <p class="intro" style="margin-bottom:18px">
+          <b>Reading the coordinates column:</b> these are the <em>literal fields on the event object</em> — exactly what the
+          codec reads to place the event. A plain name (<span class="c-oi">output_index</span>,
+          <span class="c-id">item_id</span>) is a <b>top-level</b> property. A <b>dotted</b> name
+          (<span class="c-id nest">item.id</span>, underlined) is <b>nested</b>: the event carries the whole
+          <code>item</code> object and the id sits <em>inside</em> it, at <code>event.item.id</code> — not a top-level
+          <code>event.item_id</code>. That one difference is why the item envelope can't drive a stream (companion doc). Colours
+          match the shape/legend throughout.
+        </p>
+        <p class="intro" style="margin-bottom:18px">
+          <b>The mark after each coordinate says what the codec does with it:</b>
+          <span style="color:var(--green);font-weight:700">✓</span> the codec reads it ·
+          <span style="color:#6b7280;font-weight:700">–</span> carried but not needed, harmlessly ignored ·
+          <span style="color:var(--amber);font-weight:700">⚠</span> carried but ignored — a <b>current limitation</b> (the codec
+          <em>should</em> target it, but the streamed delta drops all indices, so the reducer falls back to the item's trailing
+          part and assumes one text part per message). A <b>dimmed</b> coordinates cell means the whole event is dropped
+          (<span class="disp ignore">ignore</span>) or errors (<span class="disp throw">throws</span>), so none of it is used.
         </p>
 
         <div class="tier">
           <div class="th">Whole-response lifecycle <span class="scope">— scope: the Response; carries the full snapshot as data</span></div>
           <table class="cat">
-            <tr><th style="width:26%">event</th><th style="width:14%">coordinates</th><th>what it does</th><th style="width:11%">codec</th></tr>
-            <tr><td class="ev"><span class="pre">response.</span>created</td><td class="co c-seq">seq</td><td class="does">Opens the <b>Response</b> (<code>status: in_progress</code>). Full snapshot in data.</td><td><span class="disp event">event</span></td></tr>
-            <tr><td class="ev"><span class="pre">response.</span>in_progress / queued</td><td class="co c-seq">seq</td><td class="does">Status heartbeats. No structural change.</td><td><span class="disp event">event</span></td></tr>
-            <tr><td class="ev"><span class="pre">response.</span>completed / incomplete / failed</td><td class="co c-seq">seq</td><td class="does"><b>Terminal.</b> Carries the final <code>Response</code>. Run outcome is read out-of-band; the reducer folds these to nothing.</td><td><span class="disp event">event</span></td></tr>
-            <tr><td class="ev">error <span class="cmt">(stream-level)</span></td><td class="co c-seq">seq</td><td class="does">Stream aborted with an error message. Not folded into items.</td><td><span class="disp event">event</span></td></tr>
+            <tr><th style="width:22%">event</th><th style="width:15%">coordinates carried <span style="font-weight:400;text-transform:none;color:#6b7280">(each marked ✓ / – / ⚠ — see key)</span></th><th>what it means <span style="font-weight:400;text-transform:none;color:#6b7280">(OpenAI)</span></th><th style="width:27%">what our codec does</th></tr>
+            <tr><td class="ev"><span class="pre">response.</span>created</td><td class="co"><span class="cmt">none — the whole Response, sent as data</span></td><td class="does">Opens the <b>Response</b> (<code>status: in_progress</code>); carries the full snapshot.</td><td class="does"><span class="disp event">event</span> carried, but <b>folded to nothing</b> — run state is tracked out-of-band.</td></tr>
+            <tr><td class="ev"><span class="pre">response.</span>in_progress / queued</td><td class="co"><span class="cmt">none — the whole Response, sent as data</span></td><td class="does">Status heartbeats — no structural change.</td><td class="does"><span class="disp event">event</span> folded to nothing.</td></tr>
+            <tr><td class="ev"><span class="pre">response.</span>completed / incomplete / failed</td><td class="co"><span class="cmt">none — the whole Response, sent as data</span></td><td class="does"><b>Terminal</b> — carries the final <code>Response</code>.</td><td class="does"><span class="disp event">event</span> folded to nothing; run outcome read out-of-band (TODO: map <code>response.failed</code>).</td></tr>
+            <tr><td class="ev">error <span class="cmt">(stream-level)</span></td><td class="co"><span class="cmt">none — an error message, sent as data</span></td><td class="does">Stream aborted with an error message.</td><td class="does"><span class="disp event">event</span> folded to nothing; not surfaced as item state.</td></tr>
           </table>
         </div>
 
         <div class="tier">
           <div class="th">Item envelope <span class="scope">— scope: one item in output[]; carried by <span class="c-oi">output_index</span> + the item's <span class="c-id">id</span></span></div>
           <table class="cat">
-            <tr><th style="width:26%">event</th><th style="width:14%">coordinates</th><th>what it does</th><th style="width:11%">codec</th></tr>
-            <tr><td class="ev"><span class="pre">response.</span>output_item.added</td><td class="co"><span class="c-oi">output_index</span> + <span class="c-id">item.id</span> <span class="cmt">(nested)</span></td><td class="does"><b>Creates the item</b> at <code>output[<span class="c-oi">output_index</span>]</code> — a stub message / reasoning / function_call. This is the envelope the mid-stream-join repair synthesises.</td><td><span class="disp event">event</span></td></tr>
-            <tr><td class="ev"><span class="pre">response.</span>output_item.done</td><td class="co"><span class="c-oi">output_index</span> + <span class="c-id">item.id</span></td><td class="does"><b>Finalises the item</b> — replaces the stub with the complete item (full text, full <code>arguments</code>, status). The whole-value backstop for anything streamed inside it.</td><td><span class="disp event">event</span></td></tr>
+            <tr><th style="width:22%">event</th><th style="width:15%">coordinates carried <span style="font-weight:400;text-transform:none;color:#6b7280">(each marked ✓ / – / ⚠ — see key)</span></th><th>what it means <span style="font-weight:400;text-transform:none;color:#6b7280">(OpenAI)</span></th><th style="width:27%">what our codec does</th></tr>
+            <tr><td class="ev"><span class="pre">response.</span>output_item.added</td><td class="co"><span class="c-oi">output_index</span><span class="x">–</span><span class="sep">, </span><span class="c-id nest">item.id</span><span class="u">✓</span></td><td class="does"><b>Creates an item</b> at <code>output[<span class="c-oi">output_index</span>]</code> — a stub message / reasoning / function_call.</td><td class="does"><span class="disp event">event</span> creates/tracks the item by <code>item.id</code> (<code>byItemId</code>). The envelope the mid-stream-join repair synthesises.</td></tr>
+            <tr><td class="ev"><span class="pre">response.</span>output_item.done</td><td class="co"><span class="c-oi">output_index</span><span class="x">–</span><span class="sep">, </span><span class="c-id nest">item.id</span><span class="u">✓</span></td><td class="does"><b>Finalises the item</b> — the complete item (full text, full <code>arguments</code>, status).</td><td class="does"><span class="disp event">event</span> replaces the tracked item by <code>item.id</code>. The whole-value backstop for anything streamed inside it.</td></tr>
           </table>
         </div>
 
         <div class="tier">
           <div class="th">Content-part envelope <span class="scope">— scope: one part in a message/reasoning item; <span class="c-id">item_id</span> + <span class="c-oi">output_index</span> + <span class="c-ci">content_index</span></span></div>
           <table class="cat">
-            <tr><th style="width:26%">event</th><th style="width:14%">coordinates</th><th>what it does</th><th style="width:11%">codec</th></tr>
-            <tr><td class="ev"><span class="pre">response.</span>content_part.added</td><td class="co"><span class="c-id">item_id</span> <span class="c-oi">oi</span> <span class="c-ci">ci</span></td><td class="does"><b>Adds an empty part</b> to <code>content[<span class="c-ci">content_index</span>]</code> (output_text / refusal). Doubles as the <b>start</b> of the text stream — it's the first event carrying <code>item_id</code> top-level.</td><td><span class="disp stream">stream start</span></td></tr>
-            <tr><td class="ev"><span class="pre">response.</span>content_part.done</td><td class="co"><span class="c-id">item_id</span> <span class="c-oi">oi</span> <span class="c-ci">ci</span></td><td class="does">Closes the part. Folds to nothing, but kept as a discrete event so the boundary round-trips.</td><td><span class="disp event">event</span></td></tr>
+            <tr><th style="width:22%">event</th><th style="width:15%">coordinates carried <span style="font-weight:400;text-transform:none;color:#6b7280">(each marked ✓ / – / ⚠ — see key)</span></th><th>what it means <span style="font-weight:400;text-transform:none;color:#6b7280">(OpenAI)</span></th><th style="width:27%">what our codec does</th></tr>
+            <tr><td class="ev"><span class="pre">response.</span>content_part.added</td><td class="co"><span class="c-id">item_id</span><span class="u">✓</span><span class="sep">, </span><span class="c-oi">output_index</span><span class="x">–</span><span class="sep">, </span><span class="c-ci">content_index</span><span class="w">⚠</span></td><td class="does"><b>Adds an empty part</b> (output_text / refusal) to the item's <code>content[]</code> at <code><span class="c-ci">content_index</span></code>.</td><td class="does"><span class="disp stream">stream start</span> opens the text stream; <b>appends</b> the part by <code>item_id</code> — does <b>not</b> honour <code>content_index</code> (<span style="color:var(--amber)">⚠</span>), so it relies on parts arriving in order.</td></tr>
+            <tr><td class="ev"><span class="pre">response.</span>content_part.done</td><td class="co"><span class="c-id">item_id</span><span class="x">–</span><span class="sep">, </span><span class="c-oi">output_index</span><span class="x">–</span><span class="sep">, </span><span class="c-ci">content_index</span><span class="x">–</span></td><td class="does">Closes the content part.</td><td class="does"><span class="disp event">event</span> folded to nothing (kept so the boundary round-trips).</td></tr>
           </table>
         </div>
 
         <div class="tier">
           <div class="th">Content streaming families <span class="scope">— scope: fills a part with incremental text</span></div>
           <table class="cat">
-            <tr><th style="width:26%">event</th><th style="width:14%">coordinates</th><th>what it does</th><th style="width:11%">codec</th></tr>
-            <tr><td class="ev"><span class="pre">response.</span>output_text.delta</td><td class="co"><span class="c-id">item_id</span> <span class="c-oi">oi</span> <span class="c-ci">ci</span></td><td class="does">Appends a text fragment to the message's <code>output_text</code> part.</td><td><span class="disp stream">stream Δ</span></td></tr>
-            <tr><td class="ev"><span class="pre">response.</span>output_text.done</td><td class="co"><span class="c-id">item_id</span> <span class="c-oi">oi</span> <span class="c-ci">ci</span></td><td class="does">Finalises that part's <code>text</code>.</td><td><span class="disp stream">stream end</span></td></tr>
-            <tr><td class="ev"><span class="pre">response.</span>output_text.annotation.added</td><td class="co"><span class="c-id">item_id</span> <span class="c-oi">oi</span> <span class="c-ci">ci</span> <span class="c-ai">ai</span></td><td class="does">Attaches a citation to <code>annotations[<span class="c-ai">annotation_index</span>]</code> of the text part. Text streams regardless.</td><td><span class="disp ignore">ignore</span></td></tr>
-            <tr><td class="ev"><span class="pre">response.</span>refusal.delta / .done</td><td class="co"><span class="c-id">item_id</span> <span class="c-oi">oi</span> <span class="c-ci">ci</span></td><td class="does">Streams a refusal part (same slot shape as text). Final value still on <code>output_item.done</code>.</td><td><span class="disp ignore">ignore</span></td></tr>
+            <tr><th style="width:22%">event</th><th style="width:15%">coordinates carried <span style="font-weight:400;text-transform:none;color:#6b7280">(each marked ✓ / – / ⚠ — see key)</span></th><th>what it means <span style="font-weight:400;text-transform:none;color:#6b7280">(OpenAI)</span></th><th style="width:27%">what our codec does</th></tr>
+            <tr><td class="ev"><span class="pre">response.</span>output_text.delta</td><td class="co"><span class="c-id">item_id</span><span class="u">✓</span><span class="sep">, </span><span class="c-oi">output_index</span><span class="x">–</span><span class="sep">, </span><span class="c-ci">content_index</span><span class="w">⚠</span></td><td class="does">A fragment of the part's text.</td><td class="does"><span class="disp stream">stream Δ</span> appended to the item's <b>trailing</b> <code>output_text</code> part by <code>item_id</code>; <code>content_index</code> isn't on a delta (<span style="color:var(--amber)">⚠</span>) → assumes one text part per message.</td></tr>
+            <tr><td class="ev"><span class="pre">response.</span>output_text.done</td><td class="co"><span class="c-id">item_id</span><span class="u">✓</span><span class="sep">, </span><span class="c-oi">output_index</span><span class="x">–</span><span class="sep">, </span><span class="c-ci">content_index</span><span class="w">⚠</span></td><td class="does">The part's finalised text.</td><td class="does"><span class="disp stream">stream end</span> sets the trailing part's <code>text</code> by <code>item_id</code>; <code>content_index</code> not honoured (<span style="color:var(--amber)">⚠</span>).</td></tr>
+            <tr><td class="ev"><span class="pre">response.</span>output_text.annotation.added</td><td class="co dropped"><span class="c-id">item_id</span><span class="sep">, </span><span class="c-oi">output_index</span><span class="sep">, </span><span class="c-ci">content_index</span><span class="sep">, </span><span class="c-ai">annotation_index</span></td><td class="does">Attaches a citation to the text part's <code>annotations[]</code> at <code><span class="c-ai">annotation_index</span></code>.</td><td class="does"><span class="disp ignore">ignore</span> <b>dropped</b> — annotations not carried yet; text streams regardless.</td></tr>
+            <tr><td class="ev"><span class="pre">response.</span>refusal.delta / .done</td><td class="co dropped"><span class="c-id">item_id</span><span class="sep">, </span><span class="c-oi">output_index</span><span class="sep">, </span><span class="c-ci">content_index</span></td><td class="does">Streams a refusal part (same slot shape as text).</td><td class="does"><span class="disp ignore">ignore</span> <b>dropped</b> — the final value still arrives on <code>output_item.done</code>.</td></tr>
           </table>
         </div>
 
         <div class="tier">
           <div class="th">Function-call arguments <span class="scope">— scope: the function_call item; <span class="c-id">item_id</span> + <span class="c-oi">output_index</span> (no content_index)</span></div>
           <table class="cat">
-            <tr><th style="width:26%">event</th><th style="width:14%">coordinates</th><th>what it does</th><th style="width:11%">codec</th></tr>
-            <tr><td class="ev"><span class="pre">response.</span>function_call_arguments.delta</td><td class="co"><span class="c-id">item_id</span> <span class="c-oi">oi</span></td><td class="does">Appends a fragment of the JSON <code>arguments</code> string onto the function_call item.</td><td><span class="disp ignore">ignore</span></td></tr>
-            <tr><td class="ev"><span class="pre">response.</span>function_call_arguments.done</td><td class="co"><span class="c-id">item_id</span> <span class="c-oi">oi</span> <span class="cmt">+ name</span></td><td class="does">Finalises <code>arguments</code>. The complete args also arrive on <code>output_item.done</code> — which is why dropping the deltas loses only the incremental streaming.</td><td><span class="disp ignore">ignore</span></td></tr>
+            <tr><th style="width:22%">event</th><th style="width:15%">coordinates carried <span style="font-weight:400;text-transform:none;color:#6b7280">(each marked ✓ / – / ⚠ — see key)</span></th><th>what it means <span style="font-weight:400;text-transform:none;color:#6b7280">(OpenAI)</span></th><th style="width:27%">what our codec does</th></tr>
+            <tr><td class="ev"><span class="pre">response.</span>function_call_arguments.delta</td><td class="co dropped"><span class="c-id">item_id</span><span class="sep">, </span><span class="c-oi">output_index</span></td><td class="does">A fragment of the JSON <code>arguments</code> string.</td><td class="does"><span class="disp ignore">ignore</span> <b>dropped</b> — the full <code>arguments</code> arrive on <code>output_item.done</code>.</td></tr>
+            <tr><td class="ev"><span class="pre">response.</span>function_call_arguments.done</td><td class="co dropped"><span class="c-id">item_id</span><span class="sep">, </span><span class="c-oi">output_index</span></td><td class="does">The finalised <code>arguments</code> string (+ <code>name</code>).</td><td class="does"><span class="disp ignore">ignore</span> <b>dropped</b> — <code>output_item.done</code> carries the complete args, so only the incremental streaming is lost.</td></tr>
           </table>
         </div>
 
         <div class="tier">
           <div class="th">Reasoning families <span class="scope">— scope: the reasoning item; <span class="c-id">item_id</span> + <span class="c-oi">output_index</span> + (<span class="c-si">summary_index</span> or <span class="c-ci">content_index</span>)</span></div>
           <table class="cat">
-            <tr><th style="width:26%">event</th><th style="width:14%">coordinates</th><th>what it does</th><th style="width:11%">codec</th></tr>
-            <tr><td class="ev"><span class="pre">response.</span>reasoning_summary_part.added / .done</td><td class="co"><span class="c-id">item_id</span> <span class="c-oi">oi</span> <span class="c-si">si</span></td><td class="does">Opens/closes a summary part in <code>summary[<span class="c-si">summary_index</span>]</code>.</td><td><span class="disp ignore">ignore</span></td></tr>
-            <tr><td class="ev"><span class="pre">response.</span>reasoning_summary_text.delta / .done</td><td class="co"><span class="c-id">item_id</span> <span class="c-oi">oi</span> <span class="c-si">si</span></td><td class="does">Streams the "thinking" text into that summary part.</td><td><span class="disp ignore">ignore</span></td></tr>
-            <tr><td class="ev"><span class="pre">response.</span>reasoning_text.delta / .done</td><td class="co"><span class="c-id">item_id</span> <span class="c-oi">oi</span> <span class="c-ci">ci</span></td><td class="does">Streams raw reasoning into the reasoning item's <code>content[]</code> (distinct from the summary).</td><td><span class="disp ignore">ignore</span></td></tr>
+            <tr><th style="width:22%">event</th><th style="width:15%">coordinates carried <span style="font-weight:400;text-transform:none;color:#6b7280">(each marked ✓ / – / ⚠ — see key)</span></th><th>what it means <span style="font-weight:400;text-transform:none;color:#6b7280">(OpenAI)</span></th><th style="width:27%">what our codec does</th></tr>
+            <tr><td class="ev"><span class="pre">response.</span>reasoning_summary_part.added / .done</td><td class="co dropped"><span class="c-id">item_id</span><span class="sep">, </span><span class="c-oi">output_index</span><span class="sep">, </span><span class="c-si">summary_index</span></td><td class="does">Opens/closes a summary part at <code>summary[<span class="c-si">summary_index</span>]</code> of the reasoning item.</td><td class="does"><span class="disp ignore">ignore</span> <b>dropped</b> — reasoning summary not streamed yet.</td></tr>
+            <tr><td class="ev"><span class="pre">response.</span>reasoning_summary_text.delta / .done</td><td class="co dropped"><span class="c-id">item_id</span><span class="sep">, </span><span class="c-oi">output_index</span><span class="sep">, </span><span class="c-si">summary_index</span></td><td class="does">Streams the "thinking" text into a summary part.</td><td class="does"><span class="disp ignore">ignore</span> <b>dropped</b>.</td></tr>
+            <tr><td class="ev"><span class="pre">response.</span>reasoning_text.delta / .done</td><td class="co dropped"><span class="c-id">item_id</span><span class="sep">, </span><span class="c-oi">output_index</span><span class="sep">, </span><span class="c-ci">content_index</span></td><td class="does">Streams raw reasoning into the reasoning item's <code>content[]</code> (distinct from the summary).</td><td class="does"><span class="disp ignore">ignore</span> <b>dropped</b>.</td></tr>
           </table>
         </div>
 
         <div class="tier">
           <div class="th">Hosted tools &amp; modalities <span class="scope">— scope: opt-in only; each on its own item</span></div>
           <table class="cat">
-            <tr><th style="width:26%">family</th><th style="width:14%">coordinates</th><th>what it does</th><th style="width:11%">codec</th></tr>
-            <tr><td class="ev">web_search / file_search_call.*</td><td class="co"><span class="c-oi">oi</span> + item_id</td><td class="does">Hosted retrieval tool lifecycle (in_progress → searching → completed).</td><td><span class="disp throw">throws</span></td></tr>
-            <tr><td class="ev">code_interpreter_call(_code).*</td><td class="co"><span class="c-oi">oi</span> + item_id</td><td class="does">Code-interpreter lifecycle + streamed code.</td><td><span class="disp throw">throws</span></td></tr>
-            <tr><td class="ev">image_generation_call.*</td><td class="co"><span class="c-oi">oi</span> + item_id</td><td class="does">Image-gen lifecycle incl. partial_image frames.</td><td><span class="disp throw">throws</span></td></tr>
-            <tr><td class="ev">mcp_call(_arguments) / mcp_list_tools.*</td><td class="co"><span class="c-oi">oi</span> + item_id</td><td class="does">MCP tool call + arg streaming + tool listing.</td><td><span class="disp throw">throws</span></td></tr>
-            <tr><td class="ev">custom_tool_call_input.* · audio(.transcript).*</td><td class="co"><span class="c-oi">oi</span> + item_id</td><td class="does">Custom-tool input streaming; audio output + transcript.</td><td><span class="disp throw">throws</span></td></tr>
+            <tr><th style="width:22%">family</th><th style="width:15%">coordinates carried <span style="font-weight:400;text-transform:none;color:#6b7280">(each marked ✓ / – / ⚠ — see key)</span></th><th>what it means <span style="font-weight:400;text-transform:none;color:#6b7280">(OpenAI)</span></th><th style="width:27%">what our codec does</th></tr>
+            <tr><td class="ev">web_search / file_search_call.*</td><td class="co dropped"><span class="c-oi">output_index</span><span class="sep">, </span><span class="c-id">item_id</span></td><td class="does">Hosted retrieval tool lifecycle (in_progress → searching → completed).</td><td class="does"><span class="disp throw">throws</span> not supported yet.</td></tr>
+            <tr><td class="ev">code_interpreter_call(_code).*</td><td class="co dropped"><span class="c-oi">output_index</span><span class="sep">, </span><span class="c-id">item_id</span></td><td class="does">Code-interpreter lifecycle + streamed code.</td><td class="does"><span class="disp throw">throws</span> not supported yet.</td></tr>
+            <tr><td class="ev">image_generation_call.*</td><td class="co dropped"><span class="c-oi">output_index</span><span class="sep">, </span><span class="c-id">item_id</span></td><td class="does">Image-gen lifecycle incl. partial_image frames.</td><td class="does"><span class="disp throw">throws</span> not supported yet.</td></tr>
+            <tr><td class="ev">mcp_call(_arguments) / mcp_list_tools.*</td><td class="co dropped"><span class="c-oi">output_index</span><span class="sep">, </span><span class="c-id">item_id</span></td><td class="does">MCP tool call + arg streaming + tool listing.</td><td class="does"><span class="disp throw">throws</span> not supported yet.</td></tr>
+            <tr><td class="ev">custom_tool_call_input.* · audio(.transcript).*</td><td class="co dropped"><span class="c-oi">output_index</span><span class="sep">, </span><span class="c-id">item_id</span></td><td class="does">Custom-tool input streaming; audio output + transcript.</td><td class="does"><span class="disp throw">throws</span> not supported yet.</td></tr>
           </table>
         </div>
 
@@ -384,36 +416,43 @@
       <section class="sec">
         <div class="h"><span class="n">4</span><span class="t">A worked run — reasoning, then a tool call, then the answer</span></div>
         <p class="intro">
-          A reasoning model answering a weather question with <code class="inl">reasoning.summary: 'auto'</code>. Read the wire order
-          (left, by <span class="c-seq">sequence_number</span>) against the tree it grows (right). Notice how the coordinates on each
-          event point straight at a slot in the tree.
+          A reasoning model answering a weather question with <code class="inl">reasoning.summary: 'auto'</code>. Read the raw
+          OpenAI stream's order (left, by its <span class="c-seq">sequence_number</span>) against the tree it grows (right). Notice how the coordinates on each
+          event point straight at a slot in the tree. Coordinates are shown in full as <code class="inl">name=value</code>; the key is below the heading.
         </p>
         <div class="tl">
           <div class="tlpanel">
-            <h3>Wire events, in sequence_number order</h3>
+            <h3>Raw OpenAI events, in sequence_number order</h3>
+            <div class="tlkey">
+              coordinate values shown as <b>name=value</b>: <span class="c-oi">output_index</span>,
+              <span class="c-ci">content_index</span>, <span class="c-si">summary_index</span>. Bare coloured tokens are
+              <b>ids</b>: <span class="c-id">item id</span> (<span class="c-id">rs_</span> reasoning ·
+              <span class="c-id">fc_</span> function-call · <span class="c-id">msg_</span> message) and
+              <span class="c-cid">call_id</span>. The left number is the raw <span class="c-seq">sequence_number</span>.
+            </div>
             <div class="seqrow life"><span class="sq">0</span><span class="evn"><span class="pre">response.</span>created</span></div>
 
-            <div class="seqrow reason"><span class="sq">1</span><span class="evn"><span class="pre">…</span>output_item.added <span class="co"><span class="c-oi">oi=0</span> <span class="c-id">rs_1</span></span></span></div>
-            <div class="seqrow reason"><span class="sq">2</span><span class="evn"><span class="pre">…</span>reasoning_summary_part.added <span class="co"><span class="c-oi">0</span> <span class="c-id">rs_1</span> <span class="c-si">si=0</span></span></span></div>
-            <div class="seqrow reason"><span class="sq">3</span><span class="evn"><span class="pre">…</span>reasoning_summary_text.delta <span class="co"><span class="c-id">rs_1</span> <span class="c-si">0</span> "I need…"</span></span></div>
-            <div class="seqrow reason"><span class="sq">4</span><span class="evn"><span class="pre">…</span>reasoning_summary_text.done <span class="co"><span class="c-id">rs_1</span> <span class="c-si">0</span></span></span></div>
-            <div class="seqrow reason"><span class="sq">5</span><span class="evn"><span class="pre">…</span>output_item.done <span class="co"><span class="c-oi">0</span> <span class="c-id">rs_1</span></span></span></div>
+            <div class="seqrow reason"><span class="sq">1</span><span class="evn"><span class="pre">…</span>output_item.added <span class="co"><span class="c-oi">output_index=0</span><span class="s">·</span><span class="c-id">rs_1</span></span></span></div>
+            <div class="seqrow reason"><span class="sq">2</span><span class="evn"><span class="pre">…</span>reasoning_summary_part.added <span class="co"><span class="c-oi">output_index=0</span><span class="s">·</span><span class="c-id">rs_1</span><span class="s">·</span><span class="c-si">summary_index=0</span></span></span></div>
+            <div class="seqrow reason"><span class="sq">3</span><span class="evn"><span class="pre">…</span>reasoning_summary_text.delta <span class="co"><span class="c-id">rs_1</span><span class="s">·</span><span class="c-si">summary_index=0</span><span class="s">·</span>"I need…"</span></span></div>
+            <div class="seqrow reason"><span class="sq">4</span><span class="evn"><span class="pre">…</span>reasoning_summary_text.done <span class="co"><span class="c-id">rs_1</span><span class="s">·</span><span class="c-si">summary_index=0</span></span></span></div>
+            <div class="seqrow reason"><span class="sq">5</span><span class="evn"><span class="pre">…</span>output_item.done <span class="co"><span class="c-oi">output_index=0</span><span class="s">·</span><span class="c-id">rs_1</span></span></span></div>
 
-            <div class="seqrow fc"><span class="sq">6</span><span class="evn"><span class="pre">…</span>output_item.added <span class="co"><span class="c-oi">oi=1</span> <span class="c-id">fc_1</span> <span class="c-cid">call_9</span></span></span></div>
-            <div class="seqrow fc"><span class="sq">7</span><span class="evn"><span class="pre">…</span>function_call_arguments.delta <span class="co"><span class="c-id">fc_1</span> <span class="c-oi">1</span> '{"ci'</span></span></div>
-            <div class="seqrow fc"><span class="sq">8</span><span class="evn"><span class="pre">…</span>function_call_arguments.delta <span class="co"><span class="c-id">fc_1</span> <span class="c-oi">1</span> 'ty":"SF"}'</span></span></div>
-            <div class="seqrow fc"><span class="sq">9</span><span class="evn"><span class="pre">…</span>function_call_arguments.done <span class="co"><span class="c-id">fc_1</span> <span class="c-oi">1</span></span></span></div>
-            <div class="seqrow fc"><span class="sq">10</span><span class="evn"><span class="pre">…</span>output_item.done <span class="co"><span class="c-oi">1</span> <span class="c-id">fc_1</span></span></span></div>
+            <div class="seqrow fc"><span class="sq">6</span><span class="evn"><span class="pre">…</span>output_item.added <span class="co"><span class="c-oi">output_index=1</span><span class="s">·</span><span class="c-id">fc_1</span><span class="s">·</span><span class="c-cid">call_9</span></span></span></div>
+            <div class="seqrow fc"><span class="sq">7</span><span class="evn"><span class="pre">…</span>function_call_arguments.delta <span class="co"><span class="c-id">fc_1</span><span class="s">·</span><span class="c-oi">output_index=1</span><span class="s">·</span>'{"ci'</span></span></div>
+            <div class="seqrow fc"><span class="sq">8</span><span class="evn"><span class="pre">…</span>function_call_arguments.delta <span class="co"><span class="c-id">fc_1</span><span class="s">·</span><span class="c-oi">output_index=1</span><span class="s">·</span>'ty":"SF"}'</span></span></div>
+            <div class="seqrow fc"><span class="sq">9</span><span class="evn"><span class="pre">…</span>function_call_arguments.done <span class="co"><span class="c-id">fc_1</span><span class="s">·</span><span class="c-oi">output_index=1</span></span></span></div>
+            <div class="seqrow fc"><span class="sq">10</span><span class="evn"><span class="pre">…</span>output_item.done <span class="co"><span class="c-oi">output_index=1</span><span class="s">·</span><span class="c-id">fc_1</span></span></span></div>
 
             <div class="seqrow life"><span class="sq">*</span><span class="evn"><span class="cmt"># agent runs getWeather → new /responses call; output_index resets to 0</span></span></div>
 
-            <div class="seqrow text"><span class="sq">0</span><span class="evn"><span class="pre">…</span>output_item.added <span class="co"><span class="c-oi">oi=0</span> <span class="c-id">msg_2</span></span></span></div>
-            <div class="seqrow text"><span class="sq">1</span><span class="evn"><span class="pre">…</span>content_part.added <span class="co"><span class="c-id">msg_2</span> <span class="c-oi">0</span> <span class="c-ci">ci=0</span></span></span></div>
-            <div class="seqrow text"><span class="sq">2</span><span class="evn"><span class="pre">…</span>output_text.delta <span class="co"><span class="c-id">msg_2</span> <span class="c-oi">0</span> <span class="c-ci">0</span> "It's "</span></span></div>
-            <div class="seqrow text"><span class="sq">3</span><span class="evn"><span class="pre">…</span>output_text.delta <span class="co"><span class="c-id">msg_2</span> <span class="c-oi">0</span> <span class="c-ci">0</span> "sunny."</span></span></div>
-            <div class="seqrow text"><span class="sq">4</span><span class="evn"><span class="pre">…</span>output_text.done <span class="co"><span class="c-id">msg_2</span> <span class="c-oi">0</span> <span class="c-ci">0</span></span></span></div>
-            <div class="seqrow text"><span class="sq">5</span><span class="evn"><span class="pre">…</span>content_part.done <span class="co"><span class="c-id">msg_2</span> <span class="c-oi">0</span> <span class="c-ci">0</span></span></span></div>
-            <div class="seqrow text"><span class="sq">6</span><span class="evn"><span class="pre">…</span>output_item.done <span class="co"><span class="c-oi">0</span> <span class="c-id">msg_2</span></span></span></div>
+            <div class="seqrow text"><span class="sq">0</span><span class="evn"><span class="pre">…</span>output_item.added <span class="co"><span class="c-oi">output_index=0</span><span class="s">·</span><span class="c-id">msg_2</span></span></span></div>
+            <div class="seqrow text"><span class="sq">1</span><span class="evn"><span class="pre">…</span>content_part.added <span class="co"><span class="c-id">msg_2</span><span class="s">·</span><span class="c-oi">output_index=0</span><span class="s">·</span><span class="c-ci">content_index=0</span></span></span></div>
+            <div class="seqrow text"><span class="sq">2</span><span class="evn"><span class="pre">…</span>output_text.delta <span class="co"><span class="c-id">msg_2</span><span class="s">·</span><span class="c-oi">output_index=0</span><span class="s">·</span><span class="c-ci">content_index=0</span><span class="s">·</span>"It's "</span></span></div>
+            <div class="seqrow text"><span class="sq">3</span><span class="evn"><span class="pre">…</span>output_text.delta <span class="co"><span class="c-id">msg_2</span><span class="s">·</span><span class="c-oi">output_index=0</span><span class="s">·</span><span class="c-ci">content_index=0</span><span class="s">·</span>"sunny."</span></span></div>
+            <div class="seqrow text"><span class="sq">4</span><span class="evn"><span class="pre">…</span>output_text.done <span class="co"><span class="c-id">msg_2</span><span class="s">·</span><span class="c-oi">output_index=0</span><span class="s">·</span><span class="c-ci">content_index=0</span></span></span></div>
+            <div class="seqrow text"><span class="sq">5</span><span class="evn"><span class="pre">…</span>content_part.done <span class="co"><span class="c-id">msg_2</span><span class="s">·</span><span class="c-oi">output_index=0</span><span class="s">·</span><span class="c-ci">content_index=0</span></span></span></div>
+            <div class="seqrow text"><span class="sq">6</span><span class="evn"><span class="pre">…</span>output_item.done <span class="co"><span class="c-oi">output_index=0</span><span class="s">·</span><span class="c-id">msg_2</span></span></span></div>
             <div class="seqrow life"><span class="sq">7</span><span class="evn"><span class="pre">response.</span>completed</span></div>
           </div>
 

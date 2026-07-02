@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Transport data model — the grounding note</title>
+    <style>
+      :root {
+        --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --border: #2a2f3a;
+        --text: #e6e9ef; --muted: #9aa3b0; --accent: #6ea8fe; --green: #46c08a;
+        --amber: #e3a008; --red: #ef6b6b; --purple: #d2a8ff; --cyan: #8fd3e8; --pink: #f6a5c0;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.6 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 30px 20px 80px; }
+      .wrap { max-width: 1080px; margin: 0 auto; }
+      h1 { font-size: 24px; margin: 0 0 8px; letter-spacing: -0.01em; }
+      p.lede { color: var(--muted); margin: 0 0 6px; max-width: 900px; font-size: 15.5px; }
+      code, .mono { font-family: var(--mono); }
+      code.inl { font-size: 12.5px; background: #11151c; padding: 1px 6px; border-radius: 4px; color: #d6b36b; border: 1px solid var(--border); }
+      .sec { margin-top: 40px; }
+      .sec > .h { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; }
+      .sec > .h .n { font-family: var(--mono); font-size: 13px; color: var(--accent); border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; }
+      .sec > .h .t { font-size: 18px; font-weight: 700; }
+      .sec > p.intro { color: var(--muted); margin: 0 0 16px; max-width: 940px; }
+
+      /* nesting diagram */
+      .layer { border: 1px solid var(--border); border-radius: 12px; margin: 0 0 2px; padding: 13px 16px; background: var(--panel); position: relative; }
+      .layer .lname { font-weight: 700; font-size: 15px; }
+      .layer .lname .kw { font-family: var(--mono); font-size: 13px; color: var(--purple); }
+      .layer .ldesc { color: var(--muted); font-size: 13px; margin-top: 3px; }
+      .layer .tag { position: absolute; right: 14px; top: 13px; font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border); }
+      .nest1 { margin-left: 26px; } .nest2 { margin-left: 52px; } .nest3 { margin-left: 78px; } .nest4 { margin-left: 104px; }
+      .layer.tree { border-left: 3px solid var(--accent); }
+      .layer.node { border-left: 3px solid var(--green); }
+      .layer.proj { border-left: 3px solid var(--amber); }
+      .layer.msg { border-left: 3px solid var(--purple); }
+      .layer.item { border-left: 3px solid var(--cyan); }
+      .b-green { color: var(--green); border-color: #2c4a3b; background: #10231b; }
+      .b-purple { color: var(--purple); border-color: #3d2f52; background: #171029; }
+      .b-cyan { color: var(--cyan); border-color: #2c4a52; background: #0f1c22; }
+
+      /* id table */
+      table.ids { width: 100%; border-collapse: collapse; font-size: 13px; }
+      table.ids th, table.ids td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+      table.ids th { color: var(--muted); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; }
+      table.ids td.f { font-family: var(--mono); white-space: nowrap; font-size: 12.5px; }
+      table.ids .who { font-size: 12.5px; }
+      table.ids td b { color: var(--text); }
+      .cid { color: var(--purple); } .rid { color: var(--green); } .iid { color: var(--cyan); } .mid { color: var(--muted); }
+
+      /* N=1 vs N>1 */
+      .cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+      @media (max-width: 840px) { .cmp { grid-template-columns: 1fr; } }
+      .cbox { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); overflow: hidden; }
+      .cbox .head { padding: 12px 15px; border-bottom: 1px solid var(--border); }
+      .cbox.one .head { background: #10231b; border-bottom-color: #2c4a3b; }
+      .cbox.many .head { background: #171029; border-bottom-color: #3d2f52; }
+      .cbox .head .tt { font-weight: 700; font-size: 15px; }
+      .cbox .head .st { font-size: 12px; color: var(--muted); margin-top: 2px; }
+      .cbox .body { padding: 4px 15px 14px; }
+      .cbox pre { font-family: var(--mono); font-size: 12px; line-height: 1.7; color: #cfd5df; white-space: pre-wrap; margin: 12px 0; }
+      .cbox pre .kw { color: var(--purple); } .cbox pre .lit { color: #c9a978; } .cbox pre .cm { color: #5a626e; }
+      .cbox p { font-size: 13px; color: #cfd5df; margin: 0 0 9px; }
+      .cbox p:last-child { margin-bottom: 0; }
+
+      .callout { margin-top: 16px; border-left: 3px solid var(--accent); background: var(--panel2); border-radius: 0 8px 8px 0; padding: 13px 16px; font-size: 13.5px; color: #d3d9e2; }
+      .callout b { color: #fff; }
+      .callout code { font-family: var(--mono); font-size: 12.5px; color: #d6b36b; }
+      .steps { counter-reset: s; margin: 10px 0 0; padding: 0; list-style: none; }
+      .steps li { position: relative; padding: 8px 0 8px 34px; font-size: 13.5px; color: #d3d9e2; border-bottom: 1px solid var(--border); }
+      .steps li:last-child { border-bottom: none; }
+      .steps li::before { counter-increment: s; content: counter(s); position: absolute; left: 0; top: 7px; width: 22px; height: 22px; border-radius: 6px; background: #11151c; border: 1px solid var(--border); color: var(--accent); font: 700 12px var(--mono); display: flex; align-items: center; justify-content: center; }
+      .steps li code { font-family: var(--mono); font-size: 12.5px; color: #d6b36b; }
+
+      /* suspend/resume timeline + node diagram */
+      .sr { display: grid; grid-template-columns: 1.05fr 1fr; gap: 16px; align-items: start; }
+      @media (max-width: 860px) { .sr { grid-template-columns: 1fr; } }
+      .srtl { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); padding: 6px 16px 14px; }
+      .srtl h3, .srnode h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 12px 0 10px; }
+      .phase { position: relative; padding: 0 0 15px 26px; border-left: 2px solid var(--border); margin-left: 8px; }
+      .phase:last-child { border-left-color: transparent; padding-bottom: 0; }
+      .phase::before { content: ""; position: absolute; left: -7px; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--panel); border: 2px solid var(--muted); }
+      .phase.p-run::before { border-color: var(--cyan); } .phase.p-susp::before { border-color: var(--amber); }
+      .phase.p-tool::before { border-color: var(--purple); } .phase.p-res::before { border-color: var(--green); }
+      .phase .pt { font-weight: 700; font-size: 13.5px; }
+      .phase .pt .st { font-family: var(--mono); font-size: 11px; font-weight: 400; color: var(--muted); margin-left: 7px; }
+      .phase .pd { font-size: 12.5px; color: #cfd5df; margin-top: 3px; }
+      .phase .pd code { font-family: var(--mono); font-size: 11.5px; color: #d6b36b; }
+      .srnode { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); padding: 6px 16px 16px; }
+      .ndbox { border: 1px solid var(--green); border-left-width: 3px; border-radius: 10px; background: #0f1a15; padding: 11px 13px; }
+      .ndbox .ndh { font-family: var(--mono); font-size: 12px; color: var(--green); margin-bottom: 10px; }
+      .msgcard { border: 1px solid var(--border); border-left: 3px solid var(--purple); border-radius: 8px; background: var(--panel2); padding: 9px 11px; margin-bottom: 9px; }
+      .msgcard:last-child { margin-bottom: 0; }
+      .msgcard .mh { font-family: var(--mono); font-size: 11.5px; color: var(--purple); }
+      .msgcard .ml { font-size: 12px; color: #cfd5df; margin-top: 5px; line-height: 1.5; }
+      .msgcard .ml .amend { color: var(--amber); font-weight: 600; }
+      .msgcard.newmsg { border-left-color: var(--green); }
+      .msgcard.newmsg .mh { color: var(--green); }
+      .tldr { margin-top: 40px; border: 1px solid var(--border); border-left: 3px solid var(--green); border-radius: 12px; padding: 18px 20px; background: var(--panel); }
+      .tldr h2 { color: var(--green); font-size: 13px; text-transform: uppercase; letter-spacing: 0.07em; margin: 0 0 10px; }
+      .tldr p { margin: 0; font-size: 15px; color: #e6e9ef; }
+      .tldr code { font-family: var(--mono); font-size: 13px; color: #d6b36b; }
+      .footref { margin-top: 30px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--border); padding-top: 14px; }
+      .footref code { font-family: var(--mono); color: #d6b36b; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Transport data model — the grounding note</h1>
+      <p class="lede">
+        One mental model underneath all the codec/event detail. Four nested levels, a handful of ids, and one seam that lets
+        a single codec hold either one message per turn (OpenAI today) or many (Vercel). Read this when the event docs make you
+        feel lost — it's the map they hang off.
+      </p>
+
+      <!-- 1. HIERARCHY -->
+      <section class="sec">
+        <div class="h"><span class="n">1</span><span class="t">The four levels</span></div>
+        <p class="intro">
+          Every client rebuilds the conversation as this nesting. The generic transport owns the top two levels; the codec owns
+          the bottom two. Read top-to-bottom: each level contains the one below.
+        </p>
+        <div class="layer tree">
+          <div class="lname">Tree</div>
+          <div class="ldesc">The whole conversation — every node, from live messages and history. One per client session. Single source of truth.</div>
+          <span class="tag">generic transport</span>
+        </div>
+        <div class="layer node nest1">
+          <div class="lname">Node</div>
+          <div class="ldesc">One conversation step. An <b>assistant reply</b> (a <b>run</b>, keyed by <span class="rid">runId</span>) or a <b>user input</b> (keyed by <span class="cid">codecMessageId</span>). Owns exactly one Projection.</div>
+          <span class="tag">generic transport</span>
+        </div>
+        <div class="layer proj nest2">
+          <div class="lname">Projection <span class="kw">= codec's TProjection</span></div>
+          <div class="ldesc">The codec's private accumulator for that node. Built by <code style="font-family:var(--mono);font-size:12px">init()</code> then repeated <code style="font-family:var(--mono);font-size:12px">fold(state, event, meta)</code>. <b>Internal — not public API.</b></div>
+          <span class="tag">codec (internal)</span>
+        </div>
+        <div class="layer msg nest3">
+          <div class="lname">Message(s) <span class="kw">= CodecMessage&lt;TMessage&gt;</span></div>
+          <div class="ldesc">What <code style="font-family:var(--mono);font-size:12px">getMessages(projection)</code> returns — a <b>list</b>, each tagged with a <span class="cid">codecMessageId</span>. <b>OpenAI: exactly one.</b> <b>Vercel: one or many.</b> This is the public surface.</div>
+          <span class="tag b-purple">public API</span>
+        </div>
+        <div class="layer item nest4">
+          <div class="lname">Items / parts <span class="kw">= TMessage</span></div>
+          <div class="ldesc">The message's content. OpenAI: a turn's ordered items (reasoning, function_call, function_call_output, message), each named by its <span class="iid">item_id</span>. Vercel: a UIMessage's parts.</div>
+          <span class="tag b-cyan">codec domain type</span>
+        </div>
+        <div class="callout">
+          <b>The one place people go wrong:</b> there is no single global projection. Each node has its own. So "everything squashes
+          into one message" is only ever true <em>within one node</em> — and only for codecs (like OpenAI) that choose one message
+          per node. Separate replies are separate nodes with separate projections, always.
+        </div>
+      </section>
+
+      <!-- 2. THE IDS -->
+      <section class="sec">
+        <div class="h"><span class="n">2</span><span class="t">Who mints each id, and what it routes</span></div>
+        <p class="intro">
+          Four identifiers do all the routing. The trick is that they live at different levels and are minted by different parties —
+          keeping them straight dissolves most of the confusion.
+        </p>
+        <table class="ids">
+          <tr><th style="width:16%">id</th><th style="width:16%">minted by</th><th style="width:16%">scope / uniqueness</th><th>what it routes</th></tr>
+          <tr>
+            <td class="f rid">runId</td>
+            <td class="who">the <b>agent</b>, when a run starts</td>
+            <td class="who">one per assistant reply</td>
+            <td>Keys a <b>run node</b> in the Tree. Every output event of that reply routes to this node's projection.</td>
+          </tr>
+          <tr>
+            <td class="f cid">codecMessageId</td>
+            <td class="who">the message's <b>author</b>: the <b>client</b> for a user input; the <b>agent</b> per <code>run.pipe()</code> (<code>crypto.randomUUID()</code>) for an assistant reply. A codec may override it per-message on the wire (Vercel stamps a fresh one per <code>start</code> chunk).</td>
+            <td class="who">one per <b>authored message</b></td>
+            <td>Correlates a message across its lifecycle. Keys a user-input node; <b>and</b> distinguishes multiple messages <em>within</em> one run's projection (the Vercel case). Reaches the reducer as <code>meta.messageId</code>. <b>Not</b> the triggering user message's id — that rides separately as <span class="cid">inputCodecMessageId</span> for parent threading.</td>
+          </tr>
+          <tr>
+            <td class="f iid">item_id</td>
+            <td class="who"><b>OpenAI</b> (<code>msg_…</code>, <code>fc_…</code>, <code>rs_…</code>)</td>
+            <td class="who"><b>globally unique</b> (never resets)</td>
+            <td>Names one item <em>inside</em> a turn. The reducer's <code>byItemId</code> key — how streamed deltas find their item. (<span class="mid">output_index</span> is positional and resets per call, so it is <b>never</b> used for identity.)</td>
+          </tr>
+          <tr>
+            <td class="f mid">message.id</td>
+            <td class="who">the source (OpenAI / AI SDK / caller)</td>
+            <td class="who">provider-defined</td>
+            <td><b>Nothing.</b> Preserved verbatim for display, never an identity key. Correlation is always by <span class="cid">codecMessageId</span>.</td>
+          </tr>
+        </table>
+      </section>
+
+      <!-- 3. N=1 vs N>1 -->
+      <section class="sec">
+        <div class="h"><span class="n">3</span><span class="t">The seam: one message per node, or many</span></div>
+        <p class="intro">
+          The <em>only</em> structural difference between the OpenAI and Vercel codecs is how many messages a projection holds. The
+          transport contract is identical for both — <code class="inl">getMessages</code> returns a list, and <code class="inl">fold</code>
+          gets <code class="inl">meta.messageId</code> per event. OpenAI is the N=1 case; Vercel is the N&gt;1 case.
+        </p>
+        <div class="cmp">
+          <div class="cbox one">
+            <div class="head"><div class="tt">OpenAI — N = 1</div><div class="st">one run = one turn = one codecMessageId</div></div>
+            <div class="body">
+              <pre><span class="kw">OpenAIProjection</span> {
+  role
+  items[]              <span class="cm">// the turn's items</span>
+  byItemId: Map        <span class="cm">// item_id → item</span>
+  codecMessageId       <span class="cm">// a single scalar</span>
+}
+getMessages() → <span class="lit">[ one turn ]</span></pre>
+              <p>The agent merges the whole agentic loop (all the <code>/responses</code> calls) into <b>one</b> output stream and
+                calls <code>run.pipe</code> <b>once</b> → one <code>crypto.randomUUID()</code> stamped on every item → one message.
+                Correct today, because a run genuinely <em>is</em> one assistant turn.</p>
+            </div>
+          </div>
+          <div class="cbox many">
+            <div class="head"><div class="tt">Vercel — N &gt; 1</div><div class="st">a run may carry several codecMessageIds</div></div>
+            <div class="body">
+              <pre><span class="kw">VercelProjection</span> {
+  messages: CodecMessage[]   <span class="cm">// a LIST…</span>
+  trackers: Map              <span class="cm">// …keyed by codecMessageId</span>
+  pendingToolResolutions[]
+}
+getMessages() → <span class="lit">[ msg_a, msg_b, … ]</span></pre>
+              <p>The piped AI-SDK stream carries <b>multiple <code>start</code> chunks</b>, and the codec stamps a distinct
+                <code>messageId</code> per <code>start</code> — so one pipe emits several codecMessageIds. Each event routes to
+                <code>ensureMessage(state, codecMessageId)</code> (find-or-create, then write). "Correlates strictly on codecMessageId."</p>
+            </div>
+          </div>
+        </div>
+        <div class="callout">
+          <b>OpenAI's single message is the N=1 specialisation of the same shape — not a shortcut that blocks the future.</b>
+          If OpenAI ever needs multiple messages per run (say, modelling <code>commentary</code> vs <code>final_answer</code> as
+          separate messages), the trigger is "the agent stamps more than one codecMessageId in a run," and the reducer grows into
+          the Vercel shape. Because <code>OpenAIProjection</code> is internal and <code>getMessages</code> already returns the
+          list-shaped public type, that change breaks nothing downstream and needs no core change.
+        </div>
+      </section>
+
+      <!-- 3b. SUSPEND/RESUME = the concrete N>1 trigger -->
+      <section class="sec">
+        <div class="h"><span class="n">3b</span><span class="t">Client-side tools: the concrete way one node gets many messages</span></div>
+        <p class="intro">
+          A client-side tool call is the cleanest real example of N&gt;1. The whole thing stays in <b>one run node</b> (the run is
+          reused across suspend/resume — same <span class="rid">runId</span>), but two different operations happen inside it: the
+          tool <em>result</em> <b>amends</b> the assistant that made the call, and the <em>resumed</em> output adds a <b>new</b>
+          message. So the node's projection ends up holding several messages.
+        </p>
+        <div class="sr">
+          <div class="srtl">
+            <h3>What happens, in order — one node throughout</h3>
+            <div class="phase p-run">
+              <div class="pt">Assistant streams<span class="st">ai-run-start · pipe #1</span></div>
+              <div class="pd">Agent mints <span class="cid">codecMessageId_A</span> (<code>crypto.randomUUID()</code>), streams text + a tool-call part, then stops for the client.</div>
+            </div>
+            <div class="phase p-susp">
+              <div class="pt">Run suspends<span class="st">ai-run-suspend</span></div>
+              <div class="pd">RunNode state → SUSPENDED, but <b>stays live</b> so a resume under the same <span class="rid">runId</span> continues it. No new node.</div>
+            </div>
+            <div class="phase p-tool">
+              <div class="pt">Client runs the tool, submits the result<span class="st">continuation</span></div>
+              <div class="pd">A <b>run-bearing</b> wire (routes by <span class="rid">runId</span> to the <b>same node</b>), targeting <span class="cid">codecMessageId_A</span> via <code>createToolResult(A, …)</code>. It <span class="amend" style="color:var(--amber)">amends</span> message A's tool part — not a new message.</div>
+            </div>
+            <div class="phase p-res">
+              <div class="pt">Run resumes, streams the answer<span class="st">ai-run-resume · pipe #2</span></div>
+              <div class="pd">A fresh invocation → a fresh <code>pipe()</code> → <b>new</b> <span class="cid">codecMessageId_B</span> → a <b>second</b> assistant message, in the same node.</div>
+            </div>
+          </div>
+          <div class="srnode">
+            <h3>The resulting projection</h3>
+            <div class="ndbox">
+              <div class="ndh">Run node · <span class="rid">runId</span> (one node)</div>
+              <div class="msgcard">
+                <div class="mh">message A · <span class="cid">codecMessageId_A</span></div>
+                <div class="ml">text + tool-call part<br /><span class="amend">↳ amended in place</span> by the tool result (part → output-available)</div>
+              </div>
+              <div class="msgcard newmsg">
+                <div class="mh">message B · <span class="cid">codecMessageId_B</span></div>
+                <div class="ml">the continuation — the model's final answer after seeing the tool output</div>
+              </div>
+            </div>
+            <div class="callout" style="margin-top:14px">
+              <b>Two operations, don't conflate them:</b> the tool <b>result</b> <em>amends</em> an existing message (matched by
+              <code>codecMessageId</code> + <code>toolCallId</code>); the <b>resume</b> <em>adds</em> a message. Both land in the one
+              run node — so the projection is N&gt;1.
+            </div>
+          </div>
+        </div>
+        <div class="callout">
+          <b>Why OpenAI parks client-side tools — and what it is <em>not</em>.</b> It is <em>not</em> parked because of the N&gt;1
+          projection. It's parked because <b>client-side tools aren't a first-class concept in the OpenAI Responses API</b> the way
+          they are in the Vercel AI SDK — Responses has no built-in "pause, hand this tool to the client, resume with its result"
+          notion. So the real, unsolved work is <b>designing how to model client tools on top of Responses at all</b> (what the
+          suspend point is, how a result re-enters the input, approvals, the run-outcome mapping). The projection going N&gt;1 is a
+          <em>downstream mechanical consequence</em> that falls out once that design exists — a small, Vercel-templated change
+          (next section), not the blocker.
+        </div>
+      </section>
+
+      <!-- 4. THE MIGRATION -->
+      <section class="sec">
+        <div class="h"><span class="n">4</span><span class="t">If we ever need OpenAI N&gt;1 — the exact change</span></div>
+        <p class="intro">
+          Not something to build now — but knowing it's small is the point. It's a self-contained, codec-side edit with Vercel as a
+          line-for-line template. Three steps:
+        </p>
+        <ol class="steps">
+          <li>Change <code>OpenAIProjection</code> from a single turn to a <b>list of turns keyed by codecMessageId</b> (mirror <code>VercelProjection.messages</code> + a per-turn <code>byItemId</code>).</li>
+          <li>In <code>fold</code>, route each event to the turn for <code>meta.messageId</code> via an <code>ensureTurn(codecMessageId)</code> helper — instead of writing to the one turn. <em>(The reducer already reads <code>meta.messageId</code>; today it just collapses it into the scalar <code>state.codecMessageId</code>.)</em></li>
+          <li>Have <code>getMessages</code> return one <code>CodecMessage</code> per distinct codecMessageId, instead of a single-element list.</li>
+        </ol>
+        <div class="callout">
+          No core change. No public-API break (only the internal projection shape moves). A complete reference implementation
+          (Vercel) sits right next to it. <code>item_id</code> stays the intra-turn key throughout — globally unique, so it can't
+          collide even across turns.
+        </div>
+      </section>
+
+      <div class="tldr">
+        <h2>The one sentence to hold onto</h2>
+        <p>
+          <code>Tree → Node → Projection → Message(s) → items</code>: nodes segregate replies (by <code>runId</code>) and inputs
+          (by <code>codecMessageId</code>); a projection holds one message (OpenAI) or many (Vercel) keyed by
+          <code>codecMessageId</code>; items are identified by globally-unique <code>item_id</code>, never by position — and moving
+          OpenAI from one-message to many is a localised, non-breaking codec change with Vercel as the template.
+        </p>
+      </div>
+
+      <div class="footref">
+        Grounded in: <code>src/core/transport/tree.ts</code> (per-node projection, node keying by runId/codecMessageId, <code>_foldInto</code>,
+        and <code>applyMessage</code>/<code>applyRunLifecycle</code>: continuation tool-resolutions route by runId; suspend keeps the run live for resume),
+        <code>src/core/transport/agent-session.ts</code> (the agent mints <code>codecMessageId = crypto.randomUUID()</code> per <code>run.pipe()</code>),
+        <code>src/core/transport/run-manager.ts</code> (suspend/resume under one runId),
+        <code>src/core/codec/types.ts</code> (<code>CodecMessage</code>, <code>ReducerMeta.messageId</code>, <code>createToolResult(codecMessageId, …)</code>, <code>getMessages</code> returns a list),
+        <code>src/vercel/codec/reducer-state.ts</code> (the N&gt;1 projection, <code>ensureMessage</code>, <code>PendingToolResolution.targetCodecMessageId</code>),
+        <code>src/openai/codec/reducer.ts</code> (the N=1 projection + <code>byItemId</code>). Companions:
+        <code>openai-streaming-events-cheatsheet.html</code>, <code>streaming-fncall-args-and-reasoning.html</code>.
+      </div>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,12 @@
+.next/
+node_modules/
+.env.local
+next-env.d.ts
+tsconfig.tsbuildinfo
+
+# Playwright e2e output
+test-results/
+playwright-report/
+
+# Temporal dev-server SQLite persistence
+*.db

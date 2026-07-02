@@ -2,6 +2,7 @@
 allowBuilds:
   # Bundler used by vite; installs the platform-specific binary helper.
   esbuild: true
+  protobufjs: true
   # Rust-based module resolver used by eslint-plugin-import-x.
   unrs-resolver: true
 

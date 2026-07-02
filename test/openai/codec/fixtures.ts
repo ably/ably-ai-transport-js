@@ -146,6 +146,73 @@ export const textDone = (itemId: string, text: string, outputIndex = 0): Respons
   sequence_number: 0,
 });
 
+export const reasoningItem = (
+  id: string,
+  summary: Responses.ResponseReasoningItem['summary'] = [],
+): Responses.ResponseReasoningItem => ({
+  id,
+  type: 'reasoning',
+  summary,
+});
+
+export const reasoningSummaryPartAdded = (
+  itemId: string,
+  summaryIndex = 0,
+  text = '',
+  outputIndex = 0,
+): Responses.ResponseStreamEvent => ({
+  type: 'response.reasoning_summary_part.added',
+  item_id: itemId,
+  output_index: outputIndex,
+  summary_index: summaryIndex,
+  part: { type: 'summary_text', text },
+  sequence_number: 0,
+});
+export const reasoningSummaryTextDelta = (
+  itemId: string,
+  delta: string,
+  summaryIndex = 0,
+  outputIndex = 0,
+): Responses.ResponseStreamEvent => ({
+  type: 'response.reasoning_summary_text.delta',
+  item_id: itemId,
+  output_index: outputIndex,
+  summary_index: summaryIndex,
+  delta,
+  sequence_number: 0,
+});
+export const reasoningSummaryTextDone = (
+  itemId: string,
+  text: string,
+  summaryIndex = 0,
+  outputIndex = 0,
+): Responses.ResponseStreamEvent => ({
+  type: 'response.reasoning_summary_text.done',
+  item_id: itemId,
+  output_index: outputIndex,
+  summary_index: summaryIndex,
+  text,
+  sequence_number: 0,
+});
+
+/**
+ * A reasoning item that streams one summary part: item added → part added →
+ * deltas → summary text done → item done.
+ * @param itemId - The reasoning item / stream id.
+ * @param text - The final summary text.
+ * @returns The ordered event stream.
+ */
+export const reasoningSummaryRun = (itemId: string, text: string): Responses.ResponseStreamEvent[] => {
+  const fragments = ['Think', 'ing…'];
+  return [
+    itemAdded(reasoningItem(itemId)),
+    reasoningSummaryPartAdded(itemId, 0),
+    ...fragments.map((f) => reasoningSummaryTextDelta(itemId, f, 0)),
+    reasoningSummaryTextDone(itemId, text, 0),
+    itemDone(reasoningItem(itemId, [{ type: 'summary_text', text }])),
+  ];
+};
+
 /**
  * A full streamed-text response: created → item → content part → deltas →
  * text done → item done → completed.

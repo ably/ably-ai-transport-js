@@ -15,6 +15,10 @@ import {
   itemAdded,
   itemDone,
   messageItem,
+  reasoningItem,
+  reasoningSummaryPartAdded,
+  reasoningSummaryTextDelta,
+  reasoningSummaryTextDone,
   streamError,
   textDelta,
   textDone,
@@ -41,6 +45,9 @@ const firstOutputText = (state: OpenAIProjection): string => {
   const part = message?.content.find((p) => p.type === 'output_text');
   return part?.type === 'output_text' ? part.text : '';
 };
+
+const firstReasoningItem = (state: OpenAIProjection): Responses.ResponseReasoningItem | undefined =>
+  getMessages(state)[0]?.message.items.find((i): i is Responses.ResponseReasoningItem => i.type === 'reasoning');
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -70,6 +77,39 @@ describe('OpenAI reducer', () => {
     expect(messages[0]?.codecMessageId).toBe('run-1');
     expect(messages[0]?.message.role).toBe('assistant');
     expect(firstOutputText(state)).toBe('Hello, world!');
+  });
+
+  it('folds a streamed reasoning summary into the reasoning item', () => {
+    const state = foldOutputs([
+      created(),
+      itemAdded(reasoningItem('rs_1')),
+      reasoningSummaryPartAdded('rs_1', 0),
+      reasoningSummaryTextDelta('rs_1', 'Think'),
+      reasoningSummaryTextDelta('rs_1', 'ing'),
+      reasoningSummaryTextDone('rs_1', 'Thinking'),
+      completed(),
+    ]);
+
+    expect(firstReasoningItem(state)?.summary).toEqual([{ type: 'summary_text', text: 'Thinking' }]);
+  });
+
+  it('keys reasoning summary parts by summary_index (concurrent parts of one item)', () => {
+    // One reasoning item emits two summary parts; each delta must land in its own
+    // slot, not the trailing one — the composite item_id + summary_index keying.
+    const state = foldOutputs([
+      itemAdded(reasoningItem('rs_1')),
+      reasoningSummaryPartAdded('rs_1', 0),
+      reasoningSummaryPartAdded('rs_1', 1),
+      reasoningSummaryTextDelta('rs_1', 'first', 0),
+      reasoningSummaryTextDelta('rs_1', 'second', 1),
+      reasoningSummaryTextDone('rs_1', 'first', 0),
+      reasoningSummaryTextDone('rs_1', 'second', 1),
+    ]);
+
+    expect(firstReasoningItem(state)?.summary).toEqual([
+      { type: 'summary_text', text: 'first' },
+      { type: 'summary_text', text: 'second' },
+    ]);
   });
 
   it('lazily creates the output_text part if content_part.added is missing', () => {

@@ -34,6 +34,7 @@ import {
   messageItem,
   metaOf,
   queued,
+  reasoningSummaryRun,
   stampHeaders,
   streamError,
   textRun,
@@ -93,6 +94,27 @@ describe('OpenAI codec roundtrip (offline)', () => {
     expect(part?.type === 'output_text' ? part.text : '').toBe('Hello, world!');
   });
 
+  it('streams a reasoning summary under a composite stream id and folds it back', async () => {
+    const { inbound } = await roundtrip(reasoningSummaryRun('rs_1', 'Thinking…'));
+
+    // Cap 1 (compose): the transport stream id is item_id + summary_index.
+    const streamCreate = inbound.find((m) => m.action === 'message.create' && transportOf(m)[HEADER_STREAM] === 'true');
+    expect(streamCreate && transportOf(streamCreate)[HEADER_STREAM_ID]).toBe('rs_1:0');
+
+    // Decode + fold: the summary text lands in the reasoning item's summary[0].
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+    for (const msg of inbound) {
+      for (const event of toCodecEvents(decoder.decode(msg))) {
+        projection = ResponsesCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
+      }
+    }
+    const item = ResponsesCodec.getMessages(projection)[0]?.message.items.find(
+      (i): i is Responses.ResponseReasoningItem => i.type === 'reasoning',
+    );
+    expect(item?.summary).toEqual([{ type: 'summary_text', text: 'Thinking…' }]);
+  });
+
   it('roundtrips each discrete lifecycle/structural event through encode + decode', async () => {
     const item = messageItem('msg_1', [{ type: 'output_text', text: 'done', annotations: [] }]);
     const { outputs } = await roundtrip([
@@ -148,10 +170,10 @@ describe('OpenAI codec roundtrip (offline)', () => {
       sequence_number: 0,
     });
     await encoder.publishOutput({
-      type: 'response.reasoning_summary_text.delta',
+      type: 'response.reasoning_text.delta',
       item_id: 'rs_1',
       output_index: 0,
-      summary_index: 0,
+      content_index: 0,
       delta: 'thinking',
       sequence_number: 0,
     });

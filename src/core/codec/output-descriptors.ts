@@ -173,11 +173,17 @@ export interface OutputStreamSpec<
   /** The end chunk `type` literal. */
   end: E;
   /**
-   * How the transport stream id (the Ably `stream-id` header) is derived. `{ field }`
-   * names a single top-level string key present on all three phases. The id is an
-   * opaque uniqueness handle for the wire message — never parsed by the reducer.
+   * How the transport stream id (the Ably `stream-id` header) is derived, on
+   * encode. `{ field }` names a single top-level string key present on all three
+   * phases; a function derives the id from the chunk — to compose several fields
+   * (`item_id + content_index`) or relocate (read a different place per phase).
+   * Either way the id is an opaque uniqueness handle for the wire message — never
+   * parsed by the reducer, which recovers a chunk's real fields via {@link fields}
+   * / {@link deltaFields}.
    */
-  streamId: { field: StringKeyOf<ResolveType<U, S>> & StringKeyOf<ResolveType<U, D>> & StringKeyOf<ResolveType<U, E>> };
+  streamId:
+    | { field: StringKeyOf<ResolveType<U, S>> & StringKeyOf<ResolveType<U, D>> & StringKeyOf<ResolveType<U, E>> }
+    | ((chunk: ResolveType<U, S> | ResolveType<U, D> | ResolveType<U, E>) => string);
   /** The string-valued delta chunk key carrying the appended fragment. */
   deltaField: StringKeyOf<ResolveType<U, D>>;
   /**
@@ -262,8 +268,8 @@ export interface OutputStreamDescriptor<U> {
   delta: string;
   /** The end chunk `type`. */
   end: string;
-  /** How the transport stream id is derived (a `{ field }` naming a top-level string key). */
-  streamId: { field: string };
+  /** How the transport stream id is derived — a `{ field }` naming a top-level string key, or an extractor. */
+  streamId: { field: string } | ((chunk: U) => string);
   /** The delta chunk key carrying the appended fragment. */
   deltaField: string;
   /** Declared header fields (start/end). */

@@ -15,12 +15,14 @@
  * that lets the same reduction run on the decoded stream; the logic is
  * otherwise identical to the SDK's.
  *
- * This increment handles streamed assistant text and server-side function
- * calls: the `output_item` message/function-call envelope, the `content_part`
- * boundary, `output_text` deltas, and the codec's own `function_call_output`
- * event. Response-lifecycle and stream-`error` events fold to nothing (run
- * outcome is observed out-of-band). Reasoning, refusals, and hosted tools are
- * added later by extending this dispatch.
+ * This handles streamed assistant text, a reasoning model's streamed summary,
+ * and server-side function calls: the `output_item` message/function-call/
+ * reasoning envelope, the `content_part` boundary, `output_text` deltas, the
+ * `reasoning_summary_text` stream (folded into the reasoning item's `summary`),
+ * and the codec's own `function_call_output` event. Response-lifecycle and
+ * stream-`error` events fold to nothing (run outcome is observed out-of-band).
+ * Raw reasoning text, refusals, and hosted tools are added later by extending
+ * this dispatch.
  *
  * The reducer is stateless and folds unconditionally — the transport delivers
  * each event once, in canonical order (see the core `Reducer` contract).
@@ -56,6 +58,28 @@ export const init = (): OpenAIProjection => ({
 
 const isOutputMessage = (item: Responses.ResponseOutputItem | undefined): item is Responses.ResponseOutputMessage =>
   item?.type === 'message';
+
+const isReasoningItem = (item: Responses.ResponseOutputItem | undefined): item is Responses.ResponseReasoningItem =>
+  item?.type === 'reasoning';
+
+/**
+ * Return the reasoning item's summary part at `index`, growing the `summary`
+ * array with empty parts up to it if needed. The reasoning summary streams as
+ * one or more indexed parts sharing the item; the stream targets `summary[index]`.
+ * @param item - The reasoning item to read or extend.
+ * @param index - The `summary_index` the streamed part fills.
+ * @returns The summary part to write text into.
+ */
+const summaryAt = (item: Responses.ResponseReasoningItem, index: number): Responses.ResponseReasoningItem.Summary => {
+  for (let i = item.summary.length; i <= index; i++) {
+    item.summary.push({ type: 'summary_text', text: '' });
+  }
+  // The loop guarantees index is in range; `?? …` narrows off the array's
+  // `T | undefined` index type without a non-null assertion.
+  const part = item.summary[index] ?? { type: 'summary_text', text: '' };
+  item.summary[index] = part;
+  return part;
+};
 
 /**
  * Return the message item's trailing `output_text` part, creating one if the
@@ -113,6 +137,21 @@ const foldOutput = (state: OpenAIProjection, event: OpenAIOutput): void => {
       if (isOutputMessage(item)) trailingOutputText(item).text = event.text;
       return;
     }
+    case 'response.reasoning_summary_part.added': {
+      const item = state.byItemId.get(event.item_id);
+      if (isReasoningItem(item)) summaryAt(item, event.summary_index).text = event.part.text;
+      return;
+    }
+    case 'response.reasoning_summary_text.delta': {
+      const item = state.byItemId.get(event.item_id);
+      if (isReasoningItem(item)) summaryAt(item, event.summary_index).text += event.delta;
+      return;
+    }
+    case 'response.reasoning_summary_text.done': {
+      const item = state.byItemId.get(event.item_id);
+      if (isReasoningItem(item)) summaryAt(item, event.summary_index).text = event.text;
+      return;
+    }
     case 'function_call_output': {
       // The server-executed tool's result. Append it to the turn so it sits
       // beside its function_call (paired by call_id when rendered and when fed
@@ -122,12 +161,13 @@ const foldOutput = (state: OpenAIProjection, event: OpenAIOutput): void => {
       return;
     }
     default: {
-      // Everything else folds to nothing in this increment. The response
-      // lifecycle (created/completed/failed) and the stream-level `error` carry
-      // no item state the reducer needs: run termination — including failure —
-      // is observed out-of-band via the transport run-end event, never folded
-      // into items. content_part.done, reasoning, refusals, and hosted tools
-      // are out of this increment's subset.
+      // Everything else folds to nothing. The response lifecycle
+      // (created/completed/failed) and the stream-level `error` carry no item
+      // state the reducer needs: run termination — including failure — is
+      // observed out-of-band via the transport run-end event, never folded into
+      // items. content_part.done and the reasoning-summary-part boundary are
+      // dropped (the text is folded from their streams); raw reasoning text,
+      // refusals, and hosted tools are not modelled yet.
       // TODO(AIT-742): a run-outcome mapper will read response.failed / `error`.
       return;
     }

@@ -26,6 +26,10 @@ import {
   itemDone,
   messageItem,
   metaOf,
+  reasoningItem,
+  reasoningSummaryPartAdded,
+  reasoningSummaryTextDelta,
+  reasoningSummaryTextDone,
   stampHeaders,
   textDelta,
   textDone,
@@ -119,6 +123,45 @@ describe('OpenAI ResponsesCodec integration', () => {
     );
     expect(output?.call_id).toBe('call-1');
     expect(output?.output).toBe('{"temperature":12}');
+  });
+
+  it('reasoning summary roundtrip', async () => {
+    const channelName = uniqueChannelName('openai-reasoning-summary-roundtrip');
+    const pubChannel = ablyRealtimeClient().channels.get(channelName);
+    const subChannel = ablyRealtimeClient().channels.get(channelName);
+
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+
+    let resolveDone: () => void;
+    const done = new Promise<void>((r) => {
+      resolveDone = r;
+    });
+
+    await subChannel.subscribe((msg) => {
+      const decoded = decoder.decode(msg);
+      for (const event of toCodecEvents(decoded)) projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+      if (decoded.outputs.some((e) => e.type === 'response.completed')) resolveDone();
+    });
+
+    const itemId = 'rs-1';
+    const encoder = ResponsesCodec.createEncoder(pubChannel, { onMessage: stampHeaders('run-1', 'msg-1') });
+    await encoder.publishOutput(created());
+    await encoder.publishOutput(itemAdded(reasoningItem(itemId)));
+    await encoder.publishOutput(reasoningSummaryPartAdded(itemId, 0));
+    void encoder.publishOutput(reasoningSummaryTextDelta(itemId, 'Think', 0));
+    void encoder.publishOutput(reasoningSummaryTextDelta(itemId, 'ing…', 0));
+    await encoder.publishOutput(reasoningSummaryTextDone(itemId, 'Thinking…', 0));
+    await encoder.publishOutput(itemDone(reasoningItem(itemId, [{ type: 'summary_text', text: 'Thinking…' }])));
+    await encoder.publishOutput(completed());
+    await encoder.close();
+
+    await done;
+
+    const item = ResponsesCodec.getMessages(projection)[0]?.message.items.find(
+      (i): i is Responses.ResponseReasoningItem => i.type === 'reasoning',
+    );
+    expect(item?.summary).toEqual([{ type: 'summary_text', text: 'Thinking…' }]);
   });
 
   it('user message roundtrip', async () => {

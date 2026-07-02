@@ -53,6 +53,10 @@ const fItemId = strField('item_id');
 const fOutputIndex = jsonField<number, 'output_index'>('output_index');
 const fContentIndex = jsonField<number, 'content_index'>('content_index');
 const fPart = jsonField<Responses.ResponseContentPartAddedEvent['part'], 'part'>('part');
+// Reasoning-summary stream: the slot is one summary part, keyed by item_id +
+// summary_index (a single item emits one or more indexed summary parts).
+const fSummaryIndex = jsonField<number, 'summary_index'>('summary_index');
+const fSummaryPart = jsonField<Responses.ResponseReasoningSummaryPartAddedEvent.Part, 'part'>('part');
 
 /**
  * The OpenAI codec's `ai-output` descriptor table.
@@ -96,6 +100,33 @@ export const outputs = ({
           content_index: fContentIndex.read(closingCodecHeaders) ?? 0,
           text: accumulated,
           logprobs: [],
+          sequence_number: 0,
+        },
+      ],
+    }),
+
+    // --- reasoning summary text: a reasoning model's streamed "thinking" ------
+    // Each reasoning item emits one or more summary parts, all sharing item_id
+    // and distinguished by summary_index — so the stream id is composed from the
+    // two. The reasoning item itself rides the output_item envelopes; this stream
+    // fills its summary[summary_index].text.
+    stream('reasoning_summary_text', {
+      start: 'response.reasoning_summary_part.added',
+      delta: 'response.reasoning_summary_text.delta',
+      end: 'response.reasoning_summary_text.done',
+      streamId: (c) => `${c.item_id}:${String(c.summary_index)}`,
+      deltaField: 'delta',
+      fields: [fItemId, fOutputIndex, fSummaryIndex, fSummaryPart],
+      deltaFields: [fItemId, fSummaryIndex],
+      // item_id/summary_index ride the re-stamped headers; text is the accumulated
+      // stream. (The composite stream id is transport-only, never read here.)
+      decodeEnd: ({ accumulated, closingCodecHeaders }) => [
+        {
+          type: 'response.reasoning_summary_text.done',
+          item_id: fItemId.read(closingCodecHeaders) ?? '',
+          output_index: fOutputIndex.read(closingCodecHeaders) ?? 0,
+          summary_index: fSummaryIndex.read(closingCodecHeaders) ?? 0,
+          text: accumulated,
           sequence_number: 0,
         },
       ],
@@ -151,26 +182,17 @@ export const outputs = ({
     //    support. Failing loudly beats silently dropping that content.
     //
     // Ignored for now:
-    //  reasoning (GPT-5.x): the reasoning *item* still rides output_item.*; only
-    //  the streamed summary / raw reasoning text is dropped.
-    //  TODO(AIT-742): stream the summary (render the model's "thinking"). To
-    //  reproduce these events: the /responses request must opt in with
+    //  reasoning summary part boundary: the summary *text* streams via the
+    //  reasoning_summary_text family above; this per-part close carries no state
+    //  the reducer needs (the text is already folded), so it is dropped. To
+    //  reproduce reasoning-summary events: the /responses request must opt in with
     //  `reasoning: { summary: 'auto' }` (off by default — the demo doesn't set
-    //  it), AND the prompt must make the model actually reason — a trivial prompt
-    //  yields ~0 reasoning tokens and an empty summary. Reliable repro against
-    //  gpt-5.5: "12 balls, one a different weight; find it and whether it's
-    //  heavier/lighter in exactly 3 weighings." That emits, per reasoning item,
-    //  ONE OR MORE summary parts, each a reasoning_summary_part.added →
-    //  reasoning_summary_text.delta* → reasoning_summary_text.done — all sharing
-    //  one item_id, distinguished only by a numeric summary_index. So streaming
-    //  them needs a stream id composed of item_id + summary_index: the same "the
-    //  id isn't a single top-level string" blocker as the function-call arg
-    //  deltas below (whose id nests under item.id). One core change — deriving a
-    //  stream id from a nested/composite key — unblocks both.
-    ignore('response.reasoning_summary_part.added'),
+    //  it), AND the prompt must make the model actually reason (a trivial prompt
+    //  yields ~0 reasoning tokens and an empty summary).
     ignore('response.reasoning_summary_part.done'),
-    ignore('response.reasoning_summary_text.delta'),
-    ignore('response.reasoning_summary_text.done'),
+    //  raw reasoning text (as opposed to the summary): not streamed yet.
+    //  TODO(AIT-742): add a reasoning_text family (content_index-keyed, shares
+    //  content_part.added — folds into the reasoning item's content[]).
     ignore('response.reasoning_text.delta'),
     ignore('response.reasoning_text.done'),
     //  refusal: the refusal still renders from the message item's output_item.done.

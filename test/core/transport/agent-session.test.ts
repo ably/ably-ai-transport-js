@@ -2073,6 +2073,96 @@ describe('AgentSession', () => {
         expect(starts[2]?.[HEADER_STEP_CLIENT_ID]).toBe('user-c');
       });
     });
+
+    describe('send() — discrete publish', () => {
+      it('publishes one output via encoder.publishOutput, stamped with the step-id and start-serial', async () => {
+        const run = createRunFromOpts(session, { runId: 'run-1' });
+        await run.start();
+
+        const step = run.createStep();
+        const stepId = step.stepId;
+        await step.start();
+        await step.send({ type: 'text', text: 'hi' });
+        await step.end();
+
+        // send() calls encoder.publishOutput once — no stream loop, no pipe
+        // machinery. The mock records the call.
+        const enc = codec.lastEncoder();
+        expect(enc?.publishCalls).toHaveLength(1);
+        expect(enc?.publishCalls[0]?.direction).toBe('output');
+        expect(enc?.publishCalls[0]?.event).toEqual({ type: 'text', text: 'hi' });
+
+        // Default headers carry step-id (stamped up front); the writer's
+        // composed onMessage stamps start-serial on each output (from the
+        // step-start's channel serial, which the mock ACKs as 'serial-1').
+        const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
+        expect(headers['step-id']).toBe(stepId);
+        expect(enc?.outputTransport[0]?.['start-serial']).toBe('serial-1');
+      });
+
+      it('mints a fresh codec-message-id per send call (N calls, N messages)', async () => {
+        const run = createRunFromOpts(session, { runId: 'run-1' });
+        await run.start();
+
+        const step = run.createStep();
+        await step.start();
+        await step.send({ type: 'text', text: 'a' });
+        await step.send({ type: 'text', text: 'b' });
+        await step.end();
+
+        // Two publishes, two encoder invocations, two distinct message-ids —
+        // each send is its own discrete assistant message.
+        expect(codec.encoders).toHaveLength(2);
+        const firstId = codec.encoderCalls[0]?.opts?.messageId;
+        const secondId = codec.encoderCalls[1]?.opts?.messageId;
+        expect(firstId).toBeTypeOf('string');
+        expect(secondId).toBeTypeOf('string');
+        expect(firstId).not.toBe(secondId);
+      });
+
+      it('throws before start() and after end() (same active-state gate as pipe)', async () => {
+        const run = createRunFromOpts(session, { runId: 'run-1' });
+        await run.start();
+
+        const step = run.createStep();
+        await expect(step.send({ type: 'text', text: 'x' })).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+
+        await step.start();
+        await step.end();
+        await expect(step.send({ type: 'text', text: 'x' })).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      });
+
+      it('a publish error propagates as a throw and marks the step failed (end() with no reason settles failed)', async () => {
+        // Fresh codec whose encoders all reject publishOutput. `step.end()`
+        // publishes ai-step-end via the RUN MANAGER (channel.publish), not
+        // through the encoder, so it still succeeds against this codec.
+        const failingCh = createMockChannel();
+        const failingCodec = createMockCodec({
+          encoderFactory: () => createMockEncoder(new Error('publish blew up')),
+        });
+        const failingSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+          client: createMockClient(failingCh),
+          channelName: 'failing-channel',
+          codec: failingCodec,
+        });
+        await failingSession.connect();
+        try {
+          const run = createRunFromOpts(failingSession, { runId: 'run-1' });
+          await run.start();
+
+          const step = run.createStep();
+          await step.start();
+          await expect(step.send({ type: 'text', text: 'nope' })).rejects.toThrow('publish blew up');
+          // end() with no reason picks 'failed' because send tracked the error.
+          await step.end();
+
+          const ends = stepHeadersOf(failingCh, 'ai-step-end');
+          expect(ends[0]?.['step-reason']).toBe('failed');
+        } finally {
+          await failingSession.detach();
+        }
+      });
+    });
   });
 
   // -------------------------------------------------------------------------

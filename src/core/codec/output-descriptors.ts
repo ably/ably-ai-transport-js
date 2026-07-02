@@ -114,6 +114,16 @@ export interface OutputStreamEndContext {
   closingCodecHeaders: Record<string, string>;
 }
 
+/** Context passed to a stream descriptor's `decodeDelta` escape hatch. */
+export interface OutputStreamDeltaContext {
+  /** The opaque transport stream id (the `stream-id` header) — never parsed for routing. */
+  streamId: string;
+  /** This delta's appended text fragment. */
+  delta: string;
+  /** The stream's persistent (start) codec headers, re-stamped on every append. */
+  codecHeaders: Record<string, string>;
+}
+
 // ---------------------------------------------------------------------------
 // Data codec
 // ---------------------------------------------------------------------------
@@ -176,12 +186,28 @@ export interface OutputStreamSpec<
    * {@link FieldFor}); a field may bind a property carried by either phase.
    */
   fields: readonly (FieldFor<ResolveType<U, S>> | FieldFor<ResolveType<U, E>>)[];
+  /**
+   * The header fields the *delta* chunk carries — its own field set, distinct
+   * from the start/end {@link fields} (e.g. a `content_part.added` start carries
+   * `part`, but the real text delta does not). Their values are stream-invariant
+   * coordinates (`item_id`, `content_index`) re-stamped on every append, so the
+   * decoder reconstructs each delta from them. Omit when the delta needs no
+   * fields beyond {@link deltaField}, or when {@link decodeDelta} takes over.
+   */
+  deltaFields?: readonly FieldFor<ResolveType<U, D>>[];
   /** Escape-hatch override for the stream-close step only (e.g. close-or-discrete fallback). */
   onEnd?: (
     chunk: ResolveType<U, E>,
     core: EscapeHatchCore,
     ctx: OutputEncodeHatchContext<ResolveType<U, E>>,
   ) => Promise<void>;
+  /**
+   * Escape-hatch override for the delta-chunk rebuild — for a delta whose real
+   * fields can't be read straight from a header key (e.g. a value nested inside
+   * a carried envelope). Receives the transport stream id, the fragment, and the
+   * re-stamped start headers. Takes precedence over {@link deltaFields}.
+   */
+  decodeDelta?: (ctx: OutputStreamDeltaContext) => ResolveType<U, D>[];
   /** Escape-hatch override for the end-chunk rebuild (e.g. input from accumulated text). */
   decodeEnd?: (ctx: OutputStreamEndContext) => ResolveType<U, E>[];
   /**
@@ -230,10 +256,14 @@ export interface OutputStreamDescriptor<U> {
   streamId: { field: string };
   /** The delta chunk key carrying the appended fragment. */
   deltaField: string;
-  /** Declared header fields. */
+  /** Declared header fields (start/end). */
   fields: readonly HeaderField<unknown>[];
+  /** Declared header fields the delta chunk carries, if any. */
+  deltaFields?: readonly HeaderField<unknown>[];
   /** Escape-hatch close override, if any. */
   onEnd?: (chunk: U, core: EscapeHatchCore, ctx: OutputEncodeHatchContext<U>) => Promise<void>;
+  /** Escape-hatch delta-rebuild override, if any. */
+  decodeDelta?: (ctx: OutputStreamDeltaContext) => U[];
   /** Escape-hatch end-rebuild override, if any. */
   decodeEnd?: (ctx: OutputStreamEndContext) => U[];
   /** Escape-hatch non-streamed decode, if any. */

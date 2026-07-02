@@ -47,6 +47,9 @@ import type { OpenAIInput, OpenAIOutput, OpenAITurn } from './events.js';
 const asString = (data: unknown): string => (typeof data === 'string' ? data : '');
 
 // Header fields used to reconstruct the text stream's content-part position.
+// `item_id` is a declared field (re-stamped on every append) so the decoded
+// start and deltas carry it for routing — the transport stream id is opaque.
+const fItemId = strField('item_id');
 const fOutputIndex = jsonField<number, 'output_index'>('output_index');
 const fContentIndex = jsonField<number, 'content_index'>('content_index');
 const fPart = jsonField<Responses.ResponseContentPartAddedEvent['part'], 'part'>('part');
@@ -81,9 +84,10 @@ export const outputs = ({
       end: 'response.output_text.done',
       streamId: { field: 'item_id' },
       deltaField: 'delta',
-      fields: [fOutputIndex, fContentIndex, fPart],
+      fields: [fItemId, fOutputIndex, fContentIndex, fPart],
+      deltaFields: [fItemId],
       // The end chunk carries output_index/content_index on its closing headers;
-      // the text is the accumulated stream. (item_id is the stream id.)
+      // the text is the accumulated stream. (item_id rides the codec headers.)
       decodeEnd: ({ streamId, accumulated, closingCodecHeaders }) => [
         {
           type: 'response.output_text.done',

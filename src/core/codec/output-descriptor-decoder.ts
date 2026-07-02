@@ -97,15 +97,22 @@ export const createOutputDescriptorDecoder = <U extends { type: string }>(
     buildStart: (tracker) => {
       const desc = familyOf(tracker);
       if (!desc) return [];
-      const bag = readFields(desc.fields, tracker.codecHeaders);
-      bag[desc.streamId.field] = tracker.streamId;
-      return [rebuild(desc.start, bag)];
+      // The id-bearing chunk property is a declared field, reconstructed from the
+      // re-stamped start headers — not the opaque transport stream id.
+      return [rebuild(desc.start, readFields(desc.fields, tracker.codecHeaders))];
     },
 
     buildDelta: (tracker, delta) => {
       const desc = familyOf(tracker);
       if (!desc) return [];
-      const bag: Record<string, unknown> = { [desc.streamId.field]: tracker.streamId, [desc.deltaField]: delta };
+      if (desc.decodeDelta) {
+        return desc.decodeDelta({ streamId: tracker.streamId, delta, codecHeaders: tracker.codecHeaders });
+      }
+      // The delta's real fields (its routing coordinates) are stream-invariant, so
+      // they ride the re-stamped start headers; add the fragment on top. The stream
+      // id is never echoed onto the chunk — the reducer routes on these fields.
+      const bag = readFields(desc.deltaFields ?? [], tracker.codecHeaders);
+      bag[desc.deltaField] = delta;
       return [rebuild(desc.delta, bag)];
     },
 
@@ -120,9 +127,7 @@ export const createOutputDescriptorDecoder = <U extends { type: string }>(
           closingCodecHeaders,
         });
       }
-      const bag = readFields(desc.fields, closingCodecHeaders);
-      bag[desc.streamId.field] = tracker.streamId;
-      return [rebuild(desc.end, bag)];
+      return [rebuild(desc.end, readFields(desc.fields, closingCodecHeaders))];
     },
 
     decodeDiscrete: (codecKind, codecHeaders, transportHeaders, data) => {

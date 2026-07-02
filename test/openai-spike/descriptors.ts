@@ -34,6 +34,7 @@ import type { Response, ResponseContentPartAddedEvent, ResponseOutputItem } from
 const asString = (data: unknown): string => (typeof data === 'string' ? data : '');
 
 // Numeric / object header fields used by the text stream reconstruction.
+const fItemId = strField('item_id');
 const fOutputIndex = jsonField<number, 'output_index'>('output_index');
 const fContentIndex = jsonField<number, 'content_index'>('content_index');
 const fPart = jsonField<ResponseContentPartAddedEvent['part'], 'part'>('part');
@@ -46,7 +47,8 @@ export const outputs = ({ event, stream }: OutputBuilder<OpenAIOutput>): readonl
     end: 'response.output_text.done',
     streamId: { field: 'item_id' },
     deltaField: 'delta',
-    fields: [fOutputIndex, fContentIndex, fPart],
+    fields: [fItemId, fOutputIndex, fContentIndex, fPart],
+    deltaFields: [fItemId],
     // The end chunk's `text` is the accumulated stream; indices come off the
     // closing headers. (item_id is the stream id.)
     decodeEnd: ({ streamId, accumulated, closingCodecHeaders, codecHeaders }) => [

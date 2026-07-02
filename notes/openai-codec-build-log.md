@@ -96,8 +96,9 @@ So "stream the ignored deltas" is **no longer a later, not-parity-blocking polis
 item** (as the Deferred entry and Next-step §5 originally framed it). It's a **core
 codec-interface question** — three generic `stream()` capabilities — that gates a
 credible tool-call story and fixes a latent text-correctness gap. The target and
-the gap analysis are worked out in a design-doc cluster; the API shape is the next
-phase.
+the gap analysis are worked out in a design-doc cluster; **the API shape is now
+designed** (`notes/openai-codec-streaming-api-design.md`) and awaiting review
+before implementation.
 
 **Design docs, under `notes/lawrence-questions/`** — the human-facing _why_ and the
 target:
@@ -106,8 +107,12 @@ slot-reveal start policy, the three capabilities — start here),
 `stream-construct-explainer.html` (how `stream()` works today),
 `streaming-fncall-args-and-reasoning.html` (why today's model blocks these),
 `openai-streaming-events-cheatsheet.html`, `data-model-grounding.html`.
-The agent-facing _how_ (the API-design brief) is
-`notes/openai-codec-streaming-api-brief.md`.
+The agent-facing _how_ is the API-design **brief**
+(`notes/openai-codec-streaming-api-brief.md`) and the resulting **design**
+(`notes/openai-codec-streaming-api-design.md`) — the concrete `stream()` /
+descriptor surface changes (`streamId` extractor, `deltaFields` + `decodeDelta`,
+`startWhen`), the `function_call_arguments` walk-through, and the rejected
+alternatives.
 
 ## What exists today
 
@@ -174,9 +179,17 @@ The agent-facing _how_ (the API-design brief) is
   unblock **five** families — add multi-part `output_text`, `refusal`, and
   `reasoning_text` to the two below — under the "stream everything" bar. All three
   are **`src/core/codec` changes**, consumed by the OpenAI codec via new
-  descriptors (not OpenAI-only). The worked-out target, gap analysis, and open
-  API-shape questions live in the design-doc cluster (`streaming-target-model.html`
-  is the target) and the API brief `notes/openai-codec-streaming-api-brief.md`.
+  descriptors (not OpenAI-only). The worked-out target and gap analysis live in the
+  design-doc cluster (`streaming-target-model.html` is the target) and the API brief
+  (`notes/openai-codec-streaming-api-brief.md`); the concrete surface — the
+  once-open API-shape questions now resolved — is
+  `notes/openai-codec-streaming-api-design.md`: `streamId` (`{ field }` | extractor)
+  replaces `idField`; Cap 2 is declarative `deltaFields` plus a `decodeDelta`
+  escape hatch (dropping the id-echo, `item_id` becoming a field); Cap 3 is a
+  `startWhen` discriminator with a decline→`event()` fall-through. The
+  `function_call_arguments` family carries its `function_call` envelope in a start
+  header and reconstructs `item_id` via `decodeDelta`, so the reducer never parses
+  the transport stream id.
 
   Then drop the relevant `ignore(...)` entries and add the stream families. To
   reproduce reasoning-summary events for testing: opt the
@@ -337,8 +350,12 @@ Later iterations (beyond the first pass):
    the "Scope update" (Mike's standup: don't ship half-baked tool-call support)
    from a later, not-parity-blocking item to a **core codec-interface question** —
    the priority ordering here is stale as a result and needs a rethink. Target:
-   `streaming-target-model.html`; API shape: `openai-codec-streaming-api-brief.md`;
-   then implement. See the Deferred entry.
+   `streaming-target-model.html`; API brief: `openai-codec-streaming-api-brief.md`;
+   **API design (done, awaiting review): `openai-codec-streaming-api-design.md`** —
+   implement in its §11 order (`reasoning_summary_text` first to prove Caps 1+2,
+   then the shared-start `content_part.added` families, then
+   `function_call_arguments`), starting with the core Caps 1–3 + the mechanical
+   Vercel migration as groundwork. See the Deferred entry.
 
 Independent cleanups that can land any time: **option C** (codec passes its own
 factory set — removes the `defineCodec` cast + phantom methods); and **reverting

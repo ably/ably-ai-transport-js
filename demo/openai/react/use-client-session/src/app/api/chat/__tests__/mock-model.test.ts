@@ -47,8 +47,15 @@ describe('createMockResponseStream', () => {
         signal: new AbortController().signal,
       }),
     );
-    // A function call rides the item envelopes only — no text, no content part.
-    expect(events.map((e) => e.type)).toEqual(['response.output_item.added', 'response.output_item.done']);
+    // A function call opens on output_item.added, streams its arguments, then
+    // finalises — no text, no content part.
+    expect(events.map((e) => e.type)).toEqual([
+      'response.output_item.added',
+      'response.function_call_arguments.delta',
+      'response.function_call_arguments.delta',
+      'response.function_call_arguments.done',
+      'response.output_item.done',
+    ]);
     const done = events.find((e) => e.type === 'response.output_item.done');
     const item = done?.type === 'response.output_item.done' ? done.item : undefined;
     expect(item?.type).toBe('function_call');

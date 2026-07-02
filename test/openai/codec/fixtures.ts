@@ -280,6 +280,52 @@ export const reasoningSummaryTextDone = (
   sequence_number: 0,
 });
 
+export const fnArgsDelta = (itemId: string, delta: string, outputIndex = 0): Responses.ResponseStreamEvent => ({
+  type: 'response.function_call_arguments.delta',
+  item_id: itemId,
+  output_index: outputIndex,
+  delta,
+  sequence_number: 0,
+});
+export const fnArgsDone = (
+  itemId: string,
+  args: string,
+  name: string,
+  outputIndex = 0,
+): Responses.ResponseStreamEvent => ({
+  type: 'response.function_call_arguments.done',
+  item_id: itemId,
+  output_index: outputIndex,
+  arguments: args,
+  name,
+  sequence_number: 0,
+});
+
+/**
+ * A function call that streams its arguments: item added (args empty) → arg
+ * deltas → arg done → item done (full args).
+ * @param itemId - The function-call item / stream id.
+ * @param callId - The call id (pairs with the tool output).
+ * @param name - The function name.
+ * @param args - The final arguments JSON string.
+ * @returns The ordered event stream.
+ */
+export const functionCallArgsRun = (
+  itemId: string,
+  callId: string,
+  name: string,
+  args: string,
+): Responses.ResponseStreamEvent[] => {
+  const mid = Math.ceil(args.length / 2);
+  return [
+    itemAdded(functionCallItem(itemId, callId, name, '', 'in_progress')),
+    fnArgsDelta(itemId, args.slice(0, mid)),
+    fnArgsDelta(itemId, args.slice(mid)),
+    fnArgsDone(itemId, args, name),
+    itemDone(functionCallItem(itemId, callId, name, args, 'completed')),
+  ];
+};
+
 /**
  * A reasoning item that streams one summary part: item added → part added →
  * deltas → summary text done → item done.

@@ -20,10 +20,11 @@
  * `output_item` message/function-call/reasoning envelope, the content-part
  * streams (`output_text` / `refusal` on the message, `reasoning_text` on the
  * reasoning item — each keyed by `content_index`), the `reasoning_summary_text`
- * stream (folded into the reasoning item's `summary`), and the codec's own
- * `function_call_output` event. Response-lifecycle and stream-`error` events
- * fold to nothing (run outcome is observed out-of-band). Hosted tools are added
- * later by extending this dispatch.
+ * stream (folded into the reasoning item's `summary`), the
+ * `function_call_arguments` stream (folded into the function-call item's
+ * `arguments`), and the codec's own `function_call_output` event.
+ * Response-lifecycle and stream-`error` events fold to nothing (run outcome is
+ * observed out-of-band). Hosted tools are added later by extending this dispatch.
  *
  * The reducer is stateless and folds unconditionally — the transport delivers
  * each event once, in canonical order (see the core `Reducer` contract).
@@ -62,6 +63,9 @@ const isOutputMessage = (item: Responses.ResponseOutputItem | undefined): item i
 
 const isReasoningItem = (item: Responses.ResponseOutputItem | undefined): item is Responses.ResponseReasoningItem =>
   item?.type === 'reasoning';
+
+const isFunctionCall = (item: Responses.ResponseOutputItem | undefined): item is Responses.ResponseFunctionToolCall =>
+  item?.type === 'function_call';
 
 /**
  * Return the reasoning item's summary part at `index`, growing the `summary`
@@ -212,6 +216,18 @@ const foldOutput = (state: OpenAIProjection, event: OpenAIOutput): void => {
     case 'response.reasoning_summary_text.done': {
       const item = state.byItemId.get(event.item_id);
       if (isReasoningItem(item)) summaryAt(item, event.summary_index).text = event.text;
+      return;
+    }
+    case 'response.function_call_arguments.delta': {
+      const item = state.byItemId.get(event.item_id);
+      if (isFunctionCall(item)) item.arguments += event.delta;
+      return;
+    }
+    case 'response.function_call_arguments.done': {
+      const item = state.byItemId.get(event.item_id);
+      // The complete arguments; the authoritative item also arrives on
+      // output_item.done, which replaces the whole item.
+      if (isFunctionCall(item)) item.arguments = event.arguments;
       return;
     }
     case 'function_call_output': {

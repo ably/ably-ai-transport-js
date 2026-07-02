@@ -26,6 +26,7 @@ import {
   created,
   failed,
   firstInputText,
+  functionCallArgsRun,
   functionCallItem,
   functionCallOutputEvent,
   incomplete,
@@ -157,6 +158,46 @@ describe('OpenAI codec roundtrip (offline)', () => {
     ]);
   });
 
+  it('streams function-call arguments under the item id and folds them back', async () => {
+    const { inbound } = await roundtrip([
+      created(),
+      ...functionCallArgsRun('fc_1', 'call_1', 'getWeather', '{"location":"London"}'),
+      completed(),
+    ]);
+
+    // Cap 1 (relocate): the stream id is the item id (item.id on the start,
+    // item_id on the deltas).
+    const streamCreate = inbound.find((m) => m.action === 'message.create' && transportOf(m)[HEADER_STREAM] === 'true');
+    expect(streamCreate && transportOf(streamCreate)[HEADER_STREAM_ID]).toBe('fc_1');
+
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+    for (const msg of inbound) {
+      for (const event of toCodecEvents(decoder.decode(msg))) {
+        projection = ResponsesCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
+      }
+    }
+    const item = ResponsesCodec.getMessages(projection)[0]?.message.items.find(
+      (i): i is Responses.ResponseFunctionToolCall => i.type === 'function_call',
+    );
+    expect(item?.arguments).toBe('{"location":"London"}');
+    // The envelope (call_id / name) survived via the carried item + output_item.done.
+    expect(item?.call_id).toBe('call_1');
+    expect(item?.name).toBe('getWeather');
+  });
+
+  it('declines to stream a non-function-call output_item.added (discrete envelope)', async () => {
+    const { inbound } = await roundtrip([created(), itemAdded(messageItem('msg_1')), completed()]);
+
+    // A message item is not a function_call, so its output_item.added is a plain
+    // discrete envelope, not a stream start.
+    expect(inbound.filter((m) => transportOf(m)[HEADER_STREAM] === 'true')).toHaveLength(0);
+    const discreteKinds = inbound
+      .filter((m) => transportOf(m)[HEADER_STREAM] === 'false')
+      .map((m) => getCodecHeaders(m).kind);
+    expect(discreteKinds).toContain('response.output_item.added');
+  });
+
   it('roundtrips each discrete lifecycle/structural event through encode + decode', async () => {
     const item = messageItem('msg_1', [{ type: 'output_text', text: 'done', annotations: [] }]);
     const { outputs } = await roundtrip([
@@ -205,18 +246,12 @@ describe('OpenAI codec roundtrip (offline)', () => {
     // A representative event from each ignored family — publishing them is a
     // silent no-op so the agent can pipe a raw reasoning-model stream.
     await encoder.publishOutput({
-      type: 'response.function_call_arguments.delta',
-      item_id: 'fc_1',
+      type: 'response.output_text.annotation.added',
+      item_id: 'msg_1',
       output_index: 0,
-      delta: '{"location":',
-      sequence_number: 0,
-    });
-    await encoder.publishOutput({
-      type: 'response.function_call_arguments.done',
-      item_id: 'fc_1',
-      output_index: 0,
-      arguments: '{"location":"London"}',
-      name: 'getWeather',
+      content_index: 0,
+      annotation_index: 0,
+      annotation: {},
       sequence_number: 0,
     });
     await encoder.publishOutput({

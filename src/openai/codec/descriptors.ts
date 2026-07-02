@@ -10,22 +10,24 @@
  *   model's streamed summary is a fourth family (`reasoning_summary_text`, keyed
  *   `item_id + summary_index`). Each family rebuilds its closing `*.done` from the
  *   accumulated stream text via `decodeEnd`.
- * - **Lifecycle and the item/content-part envelopes are discrete events.** Each
- *   carries no streamed string and hence no `status` header. A server-side
- *   **function call** rides these same item envelopes — a `function_call` is a
- *   `ResponseOutputItem`, so `output_item.added`/`output_item.done` carry it
- *   with no dedicated descriptor (the `done` envelope holds the complete
- *   arguments). The function call's *result* is the codec's own
+ * - **A server-side function call streams its arguments.** The
+ *   `function_call_arguments` family opens on `output_item.added` (claimed only
+ *   for a `function_call`; message/reasoning items decline to the discrete
+ *   `output_item.added` event), carries the item envelope on the start header,
+ *   and streams the `arguments` text. The complete item still arrives on the
+ *   discrete `output_item.done`, and the call's *result* is the codec's own
  *   `function_call_output` event (see below).
+ * - **Lifecycle and the item/content-part boundaries are discrete events.** Each
+ *   carries no streamed string and hence no `status` header.
  * - **An `ignore(...)` set is the escape hatch for events not yet streamed.**
  *   The aim is to carry everything the transport can, streaming included; where
  *   we haven't yet built a clean path for a provider event, we drop it *for now*
  *   rather than let it trip the encoder's safety net (any event that is neither
  *   described nor ignored throws). Today this covers the content-part `*.done`
- *   boundaries, text annotations, and the function-call argument deltas — content
- *   whose final value we already carry, or that we don't render yet, so dropping
- *   it loses only the incremental streaming, not correctness. The exhaustive list
- *   (and what still throws) is documented at the ignore entries below.
+ *   boundaries and text annotations — content whose final value we already carry,
+ *   or that we don't render yet, so dropping it loses only the incremental
+ *   streaming, not correctness. The exhaustive list (and what still throws) is
+ *   documented at the ignore entries below.
  *
  * Input side: the user message is a `batch` that fans the user turn's content
  * parts out into one `ai-input` event per part (one for a plain text prompt),
@@ -37,11 +39,13 @@
  * established now does not change.
  */
 
+import * as Ably from 'ably';
 import type { Responses } from 'openai/resources/responses/responses';
 
 import { HEADER_ROLE } from '../../constants.js';
 import type { InputBuilder, InputDescriptor, OutputBuilder, OutputDescriptor } from '../../core/codec/index.js';
 import { jsonField, strField } from '../../core/codec/index.js';
+import { ErrorCode } from '../../errors.js';
 import type { OpenAIInput, OpenAIOutput, OpenAITurn } from './events.js';
 
 // Coerce arbitrary wire data to a string, defaulting to empty.
@@ -64,6 +68,11 @@ const fSummaryPart = jsonField<Responses.ResponseReasoningSummaryPartAddedEvent.
 // on the re-stamped item_id / content_index fields).
 const composeItemContent = (c: { item_id: string; content_index: number }): string =>
   `${c.item_id}:${String(c.content_index)}`;
+
+// The function_call item envelope, carried on the fn-args stream start (its slot
+// is the item's own `arguments`, so there is no *_part.added opener). Re-stamped
+// on every append, it is the decode-side source of item_id / call_id / name.
+const fItem = jsonField<Responses.ResponseOutputItem, 'item'>('item');
 
 /**
  * The OpenAI codec's `ai-output` descriptor table.
@@ -184,6 +193,58 @@ export const outputs = ({
       ],
     }),
 
+    // --- function-call arguments: the streamed tool-call input ----------------
+    // A function_call has no *_part.added opener — its slot is the item's own
+    // `arguments`, born with the item — so the stream starts on output_item.added
+    // (shared with message/reasoning items; claimed only for a function_call via
+    // startWhen, other item types decline to the discrete output_item.added
+    // event). The id sits nested at item.id on the start but top-level item_id on
+    // the deltas (relocate), so it is derived per phase. The fc item rides the
+    // start header (fItem), re-stamped on every append, so the decoder rebuilds
+    // item_id / name from it — the reducer never parses the transport stream id.
+    stream('function_call_arguments', {
+      start: 'response.output_item.added',
+      delta: 'response.function_call_arguments.delta',
+      end: 'response.function_call_arguments.done',
+      startWhen: (c) => c.item.type === 'function_call',
+      streamId: (c) => {
+        if (c.type !== 'response.output_item.added') return c.item_id;
+        const id = c.item.id;
+        if (id === undefined) {
+          throw new Ably.ErrorInfo(
+            'unable to stream function-call arguments; item has no id',
+            ErrorCode.InvalidArgument,
+            400,
+          );
+        }
+        return id;
+      },
+      deltaField: 'delta',
+      fields: [fItem, fOutputIndex],
+      decodeDelta: ({ delta, codecHeaders }) => [
+        {
+          type: 'response.function_call_arguments.delta',
+          item_id: fItem.read(codecHeaders)?.id ?? '',
+          output_index: fOutputIndex.read(codecHeaders) ?? 0,
+          delta,
+          sequence_number: 0,
+        },
+      ],
+      decodeEnd: ({ accumulated, closingCodecHeaders }) => {
+        const item = fItem.read(closingCodecHeaders);
+        return [
+          {
+            type: 'response.function_call_arguments.done',
+            item_id: item?.id ?? '',
+            output_index: fOutputIndex.read(closingCodecHeaders) ?? 0,
+            arguments: accumulated,
+            name: item?.type === 'function_call' ? item.name : '',
+            sequence_number: 0,
+          },
+        ];
+      },
+    }),
+
     // --- response lifecycle (discrete; Response snapshot rides as wire data) --
     responseEvent('response.created'),
     responseEvent('response.in_progress'),
@@ -249,11 +310,6 @@ export const outputs = ({
     //  reasoning_summary_part.done is dropped for the same reason.
     //  annotations / citations: the text streams regardless. TODO: carry them.
     ignore('response.output_text.annotation.added'),
-    //  function-call argument deltas: the complete arguments arrive on the
-    //  function_call's output_item.done; they can't key the stream model yet
-    //  (their start, output_item.added, nests the id under item.id). TODO: stream.
-    ignore('response.function_call_arguments.delta'),
-    ignore('response.function_call_arguments.done'),
     //
     // Not modelled → throw (opt-in hosted tools / modalities; add support when we
     // take each on):

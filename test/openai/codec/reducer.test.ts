@@ -10,6 +10,8 @@ import {
   created,
   failed,
   firstInputText,
+  fnArgsDelta,
+  fnArgsDone,
   functionCallItem,
   functionCallOutputEvent,
   itemAdded,
@@ -162,6 +164,21 @@ describe('OpenAI reducer', () => {
     ]);
 
     expect(firstReasoningItem(state)?.content).toEqual([{ type: 'reasoning_text', text: 'because' }]);
+  });
+
+  it('folds streamed function-call arguments into the call item', () => {
+    const state = foldOutputs([
+      itemAdded(functionCallItem('fc_1', 'call_1', 'getWeather', '', 'in_progress')),
+      fnArgsDelta('fc_1', '{"loc'),
+      fnArgsDelta('fc_1', 'ation":"London"}'),
+      fnArgsDone('fc_1', '{"location":"London"}', 'getWeather'),
+    ]);
+
+    const item = getMessages(state)[0]?.message.items.find(
+      (i): i is Responses.ResponseFunctionToolCall => i.type === 'function_call',
+    );
+    expect(item?.arguments).toBe('{"location":"London"}');
+    expect(item?.call_id).toBe('call_1');
   });
 
   it('lazily creates the output_text part if content_part.added is missing', () => {

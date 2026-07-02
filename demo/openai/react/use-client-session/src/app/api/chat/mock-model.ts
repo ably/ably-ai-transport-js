@@ -6,9 +6,10 @@
  * A text reply streams as `output_item.added` (message) → `content_part.added`
  * → `output_text.delta`* → `output_text.done` → `output_item.done`. A weather
  * prompt instead emits a `getWeather` function call as `output_item.added`
- * (function_call, args empty) → `output_item.done` (function_call, full args):
- * the agentic loop runs the tool and calls the mock again, now with the tool
- * result in the input, so the second turn returns a text reply. Response-
+ * (function_call, args empty) → `function_call_arguments.delta`* → `.done` →
+ * `output_item.done` (function_call, full args): the agentic loop runs the tool
+ * and calls the mock again, now with the tool result in the input, so the second
+ * turn returns a text reply. Response-
  * lifecycle events (`response.created` / `response.completed`) are omitted: the
  * reducer ignores them and the stream's terminal is the item-done.
  *
@@ -162,19 +163,42 @@ export function createMockResponseStream(req: ResponseStreamRequest): ReadableSt
       arguments: args,
       status,
     });
+    const args = JSON.stringify(plan.args);
+    // Split the arguments into a couple of fragments so the mock streams them the
+    // way a real model does (output_item.added → arg deltas → arg done → item done).
+    const mid = Math.ceil(args.length / 2);
+    const argFragments = [args.slice(0, mid), args.slice(mid)];
     return new ReadableStream<ResponseStreamEvent>({
       start(controller) {
-        // A function call rides the item envelopes: added (args empty) then
-        // done (full args). The agentic loop reads the call off `done`.
+        // output_item.added opens the function_call_arguments stream (args empty);
+        // the deltas stream the arguments; the done finalises them; output_item.done
+        // carries the complete item. The agentic loop reads the call off `done`.
         controller.enqueue({
           type: 'response.output_item.added',
           item: call('in_progress', ''),
           output_index: 0,
           sequence_number: next(),
         });
+        for (const delta of argFragments) {
+          controller.enqueue({
+            type: 'response.function_call_arguments.delta',
+            item_id: itemId,
+            output_index: 0,
+            delta,
+            sequence_number: next(),
+          });
+        }
+        controller.enqueue({
+          type: 'response.function_call_arguments.done',
+          item_id: itemId,
+          output_index: 0,
+          arguments: args,
+          name: plan.name,
+          sequence_number: next(),
+        });
         controller.enqueue({
           type: 'response.output_item.done',
-          item: call('completed', JSON.stringify(plan.args)),
+          item: call('completed', args),
           output_index: 0,
           sequence_number: next(),
         });

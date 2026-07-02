@@ -20,6 +20,7 @@ import {
   contentPartAdded,
   created,
   firstInputText,
+  functionCallArgsRun,
   functionCallItem,
   functionCallOutputEvent,
   itemAdded,
@@ -209,6 +210,44 @@ describe('OpenAI ResponsesCodec integration', () => {
       { type: 'output_text', text: 'hello', annotations: [] },
       { type: 'refusal', refusal: 'no' },
     ]);
+  });
+
+  it('function-call arguments roundtrip', async () => {
+    const channelName = uniqueChannelName('openai-fn-args-roundtrip');
+    const pubChannel = ablyRealtimeClient().channels.get(channelName);
+    const subChannel = ablyRealtimeClient().channels.get(channelName);
+
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+
+    let resolveDone: () => void;
+    const done = new Promise<void>((r) => {
+      resolveDone = r;
+    });
+
+    await subChannel.subscribe((msg) => {
+      const decoded = decoder.decode(msg);
+      for (const event of toCodecEvents(decoded)) projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+      if (decoded.outputs.some((e) => e.type === 'response.completed')) resolveDone();
+    });
+
+    const encoder = ResponsesCodec.createEncoder(pubChannel, { onMessage: stampHeaders('run-1', 'msg-1') });
+    await encoder.publishOutput(created());
+    // output_item.added opens the stream, the arg deltas/done fill it, and
+    // output_item.done carries the complete item.
+    for (const event of functionCallArgsRun('fc-1', 'call-1', 'getWeather', '{"location":"London"}')) {
+      await encoder.publishOutput(event);
+    }
+    await encoder.publishOutput(completed());
+    await encoder.close();
+
+    await done;
+
+    const item = ResponsesCodec.getMessages(projection)[0]?.message.items.find(
+      (i): i is Responses.ResponseFunctionToolCall => i.type === 'function_call',
+    );
+    expect(item?.arguments).toBe('{"location":"London"}');
+    expect(item?.call_id).toBe('call-1');
   });
 
   it('user message roundtrip', async () => {

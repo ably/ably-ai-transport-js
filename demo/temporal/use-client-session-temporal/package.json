@@ -1,0 +1,62 @@
+{
+  "name": "vercel-use-client-session-temporal-demo",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "dev:worker": "tsx watch src/worker/index.ts",
+    "build": "tsc --noEmit && next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "lint": "next lint",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ably/ai-transport": "link:../../..",
+    "@ably-ai-demos/frontend": "file:../../shared-frontend",
+    "@ai-sdk/anthropic": "^3",
+    "@ai-sdk/openai": "^3",
+    "@ai-sdk/react": "^3.0.161",
+    "@temporalio/activity": "^1",
+    "@temporalio/client": "^1",
+    "@temporalio/worker": "^1",
+    "@temporalio/workflow": "^1",
+    "ably": "^2.23.0",
+    "ai": "^6",
+    "jsonwebtoken": "^9",
+    "next": "^16",
+    "react": "^19",
+    "react-dom": "^19",
+    "zod": "^4"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@temporalio/testing": "^1",
+    "@testing-library/react": "^16",
+    "@types/jsonwebtoken": "^9",
+    "@types/node": "^25",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "dotenv": "^17.4.2",
+    "eslint": "^9",
+    "eslint-config-next": "^16",
+    "jsdom": "^26",
+    "tailwindcss": "^4",
+    "tsx": "^4",
+    "typescript": "^5",
+    "vitest": "^4"
+  },
+  "dependenciesMeta": {
+    "@ably-ai-demos/frontend": {
+      "injected": true
+    }
+  },
+  "packageManager": "pnpm@11.3.0",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "11.3.0",
+      "onFail": "download"
+    }
+  }
+}

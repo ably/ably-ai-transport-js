@@ -97,4 +97,32 @@ describe('toRenderItems', () => {
   it('renders a plain text turn as a single text part', () => {
     expect(toRenderItems(userTurn('hi there'))).toEqual([{ kind: 'text', text: 'hi there' }]);
   });
+
+  it('renders a reasoning item as a reasoning part (its summary parts joined) before the reply', () => {
+    const turn: OpenAITurn = {
+      role: 'assistant',
+      items: [
+        {
+          id: 'rs_1',
+          type: 'reasoning',
+          summary: [
+            { type: 'summary_text', text: 'First thought.' },
+            { type: 'summary_text', text: 'Second thought.' },
+          ],
+        },
+        {
+          id: 'msg_1',
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'The answer.', annotations: [] }],
+        },
+      ],
+    };
+
+    expect(toRenderItems(turn)).toEqual([
+      { kind: 'reasoning', text: 'First thought.\n\nSecond thought.' },
+      { kind: 'text', text: 'The answer.' },
+    ]);
+  });
 });

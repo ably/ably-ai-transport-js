@@ -51,6 +51,12 @@ export type RenderPart =
       text: string;
     }
   | {
+      /** A reasoning model's streamed summary — its "thinking". */
+      kind: 'reasoning';
+      /** The summary text (the reasoning item's summary parts joined). */
+      text: string;
+    }
+  | {
       /** A server-side tool call. */
       kind: 'tool';
       /** The tool call's id, correlating the call with its output. */
@@ -87,6 +93,10 @@ export function toRenderItems(turn: OpenAITurn): RenderPart[] {
         args: item.arguments,
         output: outputByCallId.get(item.call_id),
       });
+    } else if (item.type === 'reasoning') {
+      // The streamed summary (its parts joined) — the model's "thinking".
+      const text = item.summary.map((s) => s.text).join('\n\n');
+      if (text) parts.push({ kind: 'reasoning', text });
     } else if (item.type === 'message') {
       const text = messageItemText(item);
       if (text) parts.push({ kind: 'text', text });

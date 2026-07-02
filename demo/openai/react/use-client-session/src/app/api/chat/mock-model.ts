@@ -37,6 +37,8 @@ type ReplyPlan =
       text: string;
       /** Whether to stream it slowly in many deltas (abort-aware) for the cancel scenario. */
       slow: boolean;
+      /** Optional reasoning-summary "thinking" streamed as a reasoning item before the reply. */
+      reasoning?: string;
     }
   | {
       /** A server-executed function call. */
@@ -96,6 +98,18 @@ function planReply(input: Responses.ResponseInputItem[]): ReplyPlan {
 
   if (/\b(story|dragon)\b/i.test(prompt) || /\blong\b/i.test(prompt)) {
     return { kind: 'text', text: LONG_STORY, slow: true };
+  }
+
+  // A "think"/"reason" prompt streams a reasoning summary before the reply, so
+  // the demo shows the model's "thinking" (the real model needs no keyword —
+  // reasoning: { summary: 'auto' } is set on the request).
+  if (/\b(think|reason)\b/i.test(prompt)) {
+    return {
+      kind: 'text',
+      text: 'Weighing three groups of four narrows it to one suspect in three moves.',
+      slow: false,
+      reasoning: 'Split the 12 balls into three groups of four and compare two groups on the balance.',
+    };
   }
 
   const marker = /marker\s+([^\s.]+)/i.exec(prompt);
@@ -209,6 +223,56 @@ export function createMockResponseStream(req: ResponseStreamRequest): ReadableSt
 
   return new ReadableStream<ResponseStreamEvent>({
     async start(controller) {
+      // Optional reasoning summary streamed as a reasoning item before the reply
+      // (its own item id, so it folds beside the message). The summary streams as
+      // reasoning_summary_part.added -> reasoning_summary_text.delta* -> .done.
+      if (plan.reasoning !== undefined) {
+        const reasoningId = crypto.randomUUID();
+        const reasoning = (summary: Responses.ResponseReasoningItem['summary']): Responses.ResponseReasoningItem => ({
+          id: reasoningId,
+          type: 'reasoning',
+          summary,
+        });
+        controller.enqueue({
+          type: 'response.output_item.added',
+          item: reasoning([]),
+          output_index: 0,
+          sequence_number: next(),
+        });
+        controller.enqueue({
+          type: 'response.reasoning_summary_part.added',
+          item_id: reasoningId,
+          output_index: 0,
+          summary_index: 0,
+          part: { type: 'summary_text', text: '' },
+          sequence_number: next(),
+        });
+        for (const delta of chunkWords(plan.reasoning)) {
+          controller.enqueue({
+            type: 'response.reasoning_summary_text.delta',
+            item_id: reasoningId,
+            output_index: 0,
+            summary_index: 0,
+            delta,
+            sequence_number: next(),
+          });
+        }
+        controller.enqueue({
+          type: 'response.reasoning_summary_text.done',
+          item_id: reasoningId,
+          output_index: 0,
+          summary_index: 0,
+          text: plan.reasoning,
+          sequence_number: next(),
+        });
+        controller.enqueue({
+          type: 'response.output_item.done',
+          item: reasoning([{ type: 'summary_text', text: plan.reasoning }]),
+          output_index: 0,
+          sequence_number: next(),
+        });
+      }
+
       controller.enqueue({
         type: 'response.output_item.added',
         item: message('in_progress', []),

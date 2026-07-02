@@ -30,6 +30,22 @@ describe('createMockResponseStream', () => {
     expect(finalText(events)).toBe('hello');
   });
 
+  it('streams a reasoning summary before the reply for a "think" prompt', async () => {
+    const events = await drain(
+      createMockResponseStream({ input: userInput('think through the 12-ball puzzle'), signal: new AbortController().signal }),
+    );
+    const types = events.map((e) => e.type);
+    // A reasoning item's summary streams (added -> deltas -> done) ahead of the
+    // message reply.
+    expect(types).toContain('response.reasoning_summary_part.added');
+    expect(types).toContain('response.reasoning_summary_text.delta');
+    expect(types).toContain('response.reasoning_summary_text.done');
+    expect(types.indexOf('response.reasoning_summary_text.done')).toBeLessThan(
+      types.indexOf('response.output_text.delta'),
+    );
+    expect(finalText(events)).toContain('three groups of four');
+  });
+
   it('scripts a `the word X` prompt to reply with X', async () => {
     const events = await drain(
       createMockResponseStream({

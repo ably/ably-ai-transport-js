@@ -116,6 +116,22 @@ test.describe('openai use-client-session demo - text chat behaviour', () => {
     expect(text.length).toBeGreaterThan(0);
   });
 
+  test('reasoning: a reasoning prompt streams a thinking summary before the reply', async ({ page }, testInfo) => {
+    await page.goto(channelUrl(freshChannel(testInfo.title)));
+
+    const input = page.getByPlaceholder('Type a message...');
+    await input.waitFor({ state: 'visible' });
+    await input.fill('think through the 12-ball puzzle');
+    await input.press('Enter');
+
+    await waitForAssistantSettled(page);
+    // The mock streams a reasoning summary as a reasoning item; the bubble shows
+    // it as a muted "thinking" block, distinct from the answer text.
+    const assistant = assistantBubbles(page).last();
+    await expect(assistant).toContainText('💭 thinking');
+    await expect(assistant).toContainText('Split the 12 balls');
+  });
+
   test('server-side tool: a weather prompt renders the weather card and a reply', async ({ page }, testInfo) => {
     await page.goto(channelUrl(freshChannel(testInfo.title)));
 

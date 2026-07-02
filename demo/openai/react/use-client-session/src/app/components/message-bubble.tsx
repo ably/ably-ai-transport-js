@@ -85,6 +85,17 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+// A reasoning model's streamed summary ("thinking"), shown muted above the
+// answer it precedes.
+function ReasoningBlock({ text }: { text: string }) {
+  return (
+    <div className="mb-1.5 rounded-md border border-zinc-800 bg-zinc-950/40 px-2.5 py-1.5 text-xs italic text-zinc-500 whitespace-pre-wrap">
+      <span className="mr-1 select-none not-italic text-zinc-600">💭 thinking</span>
+      {text}
+    </div>
+  );
+}
+
 function bubbleClasses(isUser: boolean, status: string | undefined, userBgClass?: string): string {
   const base = 'rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap';
 
@@ -204,6 +215,11 @@ export function MessageBubble({
               {renderParts.map((part, i) =>
                 part.kind === 'text' ? (
                   <span key={i}>{part.text}</span>
+                ) : part.kind === 'reasoning' ? (
+                  <ReasoningBlock
+                    key={i}
+                    text={part.text}
+                  />
                 ) : (
                   <ToolInvocation
                     key={i}

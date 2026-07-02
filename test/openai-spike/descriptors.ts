@@ -44,7 +44,7 @@ export const outputs = ({ event, stream }: OutputBuilder<OpenAIOutput>): readonl
     start: 'response.content_part.added',
     delta: 'response.output_text.delta',
     end: 'response.output_text.done',
-    idField: 'item_id',
+    streamId: { field: 'item_id' },
     deltaField: 'delta',
     fields: [fOutputIndex, fContentIndex, fPart],
     // The end chunk's `text` is the accumulated stream; indices come off the

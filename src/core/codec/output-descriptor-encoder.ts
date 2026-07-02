@@ -71,8 +71,8 @@ export const createOutputDescriptorEncoder = <U extends { type: string }>(
       if (streamEntry) {
         const { descriptor, phase } = streamEntry;
         const h: HeaderBuilder<U> = (c, keys) => writeFields(descriptor.fields, descriptor.kind, c, keys);
-        // CAST: idField/deltaField are string-valued chunk keys by construction.
-        const streamId = prop(chunk, descriptor.idField) as string;
+        // CAST: streamId.field/deltaField are string-valued chunk keys by construction.
+        const streamId = prop(chunk, descriptor.streamId.field) as string;
         if (phase === 'start') {
           await core.startStream(streamId, { name: wireName, data: '', codecHeaders: h(chunk) }, ctx.opts);
         } else if (phase === 'delta') {

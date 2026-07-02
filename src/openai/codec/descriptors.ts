@@ -4,7 +4,7 @@
  * Output side:
  * - **Assistant text is the one streamed family.** `response.content_part.added`
  *   → `response.output_text.delta` → `response.output_text.done` map onto a
- *   `stream(...)` with `idField: 'item_id'` and `deltaField: 'delta'` — both
+ *   `stream(...)` with `streamId: { field: 'item_id' }` and `deltaField: 'delta'` — both
  *   top-level string properties present on all three phases, which is what the
  *   stream model requires. The closing `output_text.done` is rebuilt from the
  *   accumulated stream text via `decodeEnd`.
@@ -79,7 +79,7 @@ export const outputs = ({
       start: 'response.content_part.added',
       delta: 'response.output_text.delta',
       end: 'response.output_text.done',
-      idField: 'item_id',
+      streamId: { field: 'item_id' },
       deltaField: 'delta',
       fields: [fOutputIndex, fContentIndex, fPart],
       // The end chunk carries output_index/content_index on its closing headers;

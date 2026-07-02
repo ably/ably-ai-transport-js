@@ -98,14 +98,14 @@ export const createOutputDescriptorDecoder = <U extends { type: string }>(
       const desc = familyOf(tracker);
       if (!desc) return [];
       const bag = readFields(desc.fields, tracker.codecHeaders);
-      bag[desc.idField] = tracker.streamId;
+      bag[desc.streamId.field] = tracker.streamId;
       return [rebuild(desc.start, bag)];
     },
 
     buildDelta: (tracker, delta) => {
       const desc = familyOf(tracker);
       if (!desc) return [];
-      const bag: Record<string, unknown> = { [desc.idField]: tracker.streamId, [desc.deltaField]: delta };
+      const bag: Record<string, unknown> = { [desc.streamId.field]: tracker.streamId, [desc.deltaField]: delta };
       return [rebuild(desc.delta, bag)];
     },
 
@@ -121,7 +121,7 @@ export const createOutputDescriptorDecoder = <U extends { type: string }>(
         });
       }
       const bag = readFields(desc.fields, closingCodecHeaders);
-      bag[desc.idField] = tracker.streamId;
+      bag[desc.streamId.field] = tracker.streamId;
       return [rebuild(desc.end, bag)];
     },
 

@@ -15,3 +15,5 @@ export { createAgentSession, createChatTransport, createClientSession } from './
 // Vercel-shaped helpers
 export type { VercelRunOutcome } from './run-end-reason.js';
 export { vercelRunOutcome } from './run-end-reason.js';
+export type { PendingToolCall } from './tool-registry.js';
+export { approvedPendingToolCalls, pendingToolCalls, stripToolExecutes } from './tool-registry.js';

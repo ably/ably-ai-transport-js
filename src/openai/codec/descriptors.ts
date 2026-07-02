@@ -17,17 +17,17 @@
  *   and streams the `arguments` text. The complete item still arrives on the
  *   discrete `output_item.done`, and the call's *result* is the codec's own
  *   `function_call_output` event (see below).
- * - **Lifecycle and the item/content-part boundaries are discrete events.** Each
- *   carries no streamed string and hence no `status` header.
- * - **An `ignore(...)` set is the escape hatch for events not yet streamed.**
- *   The aim is to carry everything the transport can, streaming included; where
- *   we haven't yet built a clean path for a provider event, we drop it *for now*
- *   rather than let it trip the encoder's safety net (any event that is neither
- *   described nor ignored throws). Today this covers the content-part `*.done`
- *   boundaries and text annotations — content whose final value we already carry,
- *   or that we don't render yet, so dropping it loses only the incremental
- *   streaming, not correctness. The exhaustive list (and what still throws) is
- *   documented at the ignore entries below.
+ * - **Lifecycle and the item / part-close boundaries are discrete events.** Each
+ *   carries no streamed string and hence no `status` header. The `*_part.done`
+ *   closes (content and reasoning-summary) fold to nothing but are declared so the
+ *   part boundary round-trips on the wire.
+ * - **No `ignore` set.** Every event OpenAI streams by default is modelled here —
+ *   as a stream, a discrete boundary, or lifecycle. The events that appear only
+ *   once you opt into a hosted tool / modality the codec doesn't support (web /
+ *   file search, code interpreter, image gen, MCP, audio, custom tools, and the
+ *   `output_text` annotations those tools cite) are neither described nor ignored,
+ *   so the encoder's safety net throws on them — failing loudly beats silently
+ *   dropping content. The exhaustive inventory is at the tail of the table below.
  *
  * Input side: the user message is a `batch` that fans the user turn's content
  * parts out into one `ai-input` event per part (one for a plain text prompt),
@@ -76,17 +76,12 @@ const fItem = jsonField<Responses.ResponseOutputItem, 'item'>('item');
 
 /**
  * The OpenAI codec's `ai-output` descriptor table.
- * @param builder - The `{ event, stream, ignore }` builder curried on {@link OpenAIOutput}.
+ * @param builder - The `{ event, stream }` builder curried on {@link OpenAIOutput}.
  * @param builder.event - Declare a discrete output event.
  * @param builder.stream - Declare a streamed output family.
- * @param builder.ignore - Declare a provider event to drop on encode (not yet streamed).
  * @returns The output descriptor table.
  */
-export const outputs = ({
-  event,
-  stream,
-  ignore,
-}: OutputBuilder<OpenAIOutput>): readonly OutputDescriptor<OpenAIOutput>[] => {
+export const outputs = ({ event, stream }: OutputBuilder<OpenAIOutput>): readonly OutputDescriptor<OpenAIOutput>[] => {
   // The response-lifecycle events all carry the full Response snapshot as wire
   // data and share one decode shape.
   // CAST on decode: wire data is JSON parsed at a trust boundary; the Response
@@ -171,6 +166,14 @@ export const outputs = ({
     // and distinguished by summary_index — so the stream id is composed from the
     // two. The reasoning item itself rides the output_item envelopes; this stream
     // fills its summary[summary_index].text.
+    //
+    // Provoking summary events (non-obvious) for testing against a real model:
+    // the /responses request must opt in with `reasoning: { summary: 'auto' }`
+    // (off by default — the demo doesn't set it), AND the prompt must make the
+    // model actually reason — a trivial prompt yields ~0 reasoning tokens and an
+    // empty summary. Reliable repro against gpt-5.5: the 12-ball weighing puzzle
+    // ("12 balls, one a different weight; find it and whether it's heavier or
+    // lighter in exactly 3 weighings").
     stream('reasoning_summary_text', {
       start: 'response.reasoning_summary_part.added',
       delta: 'response.reasoning_summary_text.delta',
@@ -270,10 +273,16 @@ export const outputs = ({
       data: { encode: (c) => c.item, decode: (d) => ({ item: d as Responses.ResponseOutputItem }) },
     }),
     // content_part.done closes the part; the reducer folds it to nothing. It is
-    // declared (rather than left to the codec's ignore policy) so the part
-    // boundary still round-trips as a discrete event on the wire.
+    // declared (rather than dropped) so the part boundary still round-trips as a
+    // discrete event on the wire.
     event('response.content_part.done', {
       fields: [strField('item_id'), fOutputIndex, fContentIndex],
+    }),
+    // The summary-array twin of content_part.done: it closes a summary part after
+    // its reasoning_summary_text stream ends. Likewise folds to nothing and is
+    // declared so the boundary round-trips.
+    event('response.reasoning_summary_part.done', {
+      fields: [fItemId, fOutputIndex, fSummaryIndex],
     }),
 
     // --- server-executed tool result (codec's own output event) --------------
@@ -287,37 +296,19 @@ export const outputs = ({
       data: { encode: (c) => c.item, decode: (d) => ({ item: d as Responses.ResponseInputItem.FunctionCallOutput }) },
     }),
 
-    // --- events we don't yet model ------------------------------------------
+    // --- not modelled → throw (opt-in hosted tools / modalities) --------------
     //
-    // TODO(AIT-742): the two lists below are exhaustive against openai@6.44.0's
-    // ResponseStreamEvent union — revisit on a dep bump. Two states:
-    //  • ignore(...)'d here → dropped on encode, never breaks a run. These are
-    //    streamed deltas whose final value we already carry (via the item's
-    //    output_item.done), or content we don't render yet. We WANT to stream
-    //    these — each is a tracked gap, not a decision to discard.
-    //  • everything else → still throws (the encoder's safety net), because it
-    //    only appears once you opt into a hosted tool / modality we don't
-    //    support. Failing loudly beats silently dropping that content.
-    //
-    // Ignored for now:
-    //  reasoning summary part boundary: the summary *text* streams via the
-    //  reasoning_summary_text family above; this per-part close carries no state
-    //  the reducer needs (the text is already folded), so it is dropped. To
-    //  reproduce reasoning-summary events: the /responses request must opt in with
-    //  `reasoning: { summary: 'auto' }` (off by default — the demo doesn't set
-    //  it), AND the prompt must make the model actually reason (a trivial prompt
-    //  yields ~0 reasoning tokens and an empty summary).
-    ignore('response.reasoning_summary_part.done'),
-    //  content_part.added parts we don't stream: it opens the output_text /
-    //  refusal / reasoning_text streams (above); any other part.type has no
-    //  stream family, so the stream declines and this discrete-boundary close is
-    //  dropped (the streamed text is already folded). Its sibling
-    //  reasoning_summary_part.done is dropped for the same reason.
-    //  annotations / citations: the text streams regardless. TODO: carry them.
-    ignore('response.output_text.annotation.added'),
-    //
-    // Not modelled → throw (opt-in hosted tools / modalities; add support when we
-    // take each on):
+    // TODO(AIT-742): this inventory is exhaustive against openai@6.44.0's
+    // ResponseStreamEvent union — revisit on a dep bump. Every event OpenAI
+    // streams by default is modelled above (as a stream, a discrete boundary, or
+    // lifecycle). The events below appear only once you opt into a hosted tool or
+    // modality the codec doesn't support, so they are neither described nor
+    // ignored: the encoder's safety net throws on them, which beats silently
+    // dropping that content. Add support (a stream / event + reducer arm) when we
+    // take each on.
+    //  text annotations: response.output_text.annotation.added — citations
+    //                    (url / file / container-file / file-path) produced by the
+    //                    retrieval tools below, so it only appears alongside them.
     //  audio out:        response.audio.delta / .done, response.audio.transcript.delta / .done
     //  web search:       response.web_search_call.in_progress / .searching / .completed
     //  file search:      response.file_search_call.in_progress / .searching / .completed

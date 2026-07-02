@@ -38,6 +38,7 @@ import {
   metaOf,
   queued,
   reasoningItem,
+  reasoningSummaryPartDone,
   reasoningSummaryRun,
   reasoningTextDelta,
   reasoningTextDone,
@@ -250,6 +251,7 @@ describe('OpenAI codec roundtrip (offline)', () => {
       itemAdded(item),
       itemDone(item),
       contentPartDone('msg_1'),
+      reasoningSummaryPartDone('rs_1'),
       incomplete(),
       failed('nope'),
       streamError('boom'),
@@ -264,6 +266,7 @@ describe('OpenAI codec roundtrip (offline)', () => {
       'response.output_item.added',
       'response.output_item.done',
       'response.content_part.done',
+      'response.reasoning_summary_part.done',
       'response.incomplete',
       'response.failed',
       'error',
@@ -283,38 +286,12 @@ describe('OpenAI codec roundtrip (offline)', () => {
     expect(errorEvent?.type === 'error' ? errorEvent.message : '').toBe('boom');
   });
 
-  it('drops the not-yet-streamed events on encode (ignore set)', async () => {
-    const { writer, inbound } = createBridge();
-    const encoder = ResponsesCodec.createEncoder(writer, { onMessage: stampHeaders('run-x', 'run-1') });
-    // A representative event from each ignored family — publishing them is a
-    // silent no-op so the agent can pipe a raw reasoning-model stream.
-    await encoder.publishOutput({
-      type: 'response.output_text.annotation.added',
-      item_id: 'msg_1',
-      output_index: 0,
-      content_index: 0,
-      annotation_index: 0,
-      annotation: {},
-      sequence_number: 0,
-    });
-    await encoder.publishOutput({
-      type: 'response.reasoning_summary_part.done',
-      item_id: 'rs_1',
-      output_index: 0,
-      summary_index: 0,
-      part: { type: 'summary_text', text: 'thinking' },
-      sequence_number: 0,
-    });
-    await encoder.close();
-    expect(inbound()).toHaveLength(0);
-  });
-
-  it('still throws on an output event that is neither modelled nor ignored (safety net)', async () => {
+  it('throws on an unmodelled output event (safety net)', async () => {
     const { writer } = createBridge();
     const encoder = ResponsesCodec.createEncoder(writer, { onMessage: stampHeaders('run-x', 'run-1') });
-    // A hosted-tool event (web search) the codec neither encodes nor ignores: it
-    // must surface loudly rather than being dropped, since it signals an opt-in
-    // feature we don't support yet.
+    // A hosted-tool event (web search) the codec doesn't model: it must surface
+    // loudly rather than being dropped, since it signals an opt-in feature we
+    // don't support yet.
     await expect(
       encoder.publishOutput({
         type: 'response.web_search_call.searching',
@@ -323,6 +300,20 @@ describe('OpenAI codec roundtrip (offline)', () => {
         sequence_number: 0,
       }),
     ).rejects.toThrow(/unsupported event type 'response\.web_search_call\.searching'/);
+
+    // output_text annotations are citations produced by the retrieval tools, so
+    // they only appear alongside those opt-in tools and throw the same way.
+    await expect(
+      encoder.publishOutput({
+        type: 'response.output_text.annotation.added',
+        item_id: 'msg_1',
+        output_index: 0,
+        content_index: 0,
+        annotation_index: 0,
+        annotation: {},
+        sequence_number: 0,
+      }),
+    ).rejects.toThrow(/unsupported event type 'response\.output_text\.annotation\.added'/);
   });
 
   it('roundtrips a server-side function call and its output through the wire', async () => {

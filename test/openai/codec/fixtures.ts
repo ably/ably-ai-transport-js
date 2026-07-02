@@ -253,6 +253,19 @@ export const reasoningSummaryPartAdded = (
   part: { type: 'summary_text', text },
   sequence_number: 0,
 });
+export const reasoningSummaryPartDone = (
+  itemId: string,
+  summaryIndex = 0,
+  text = '',
+  outputIndex = 0,
+): Responses.ResponseStreamEvent => ({
+  type: 'response.reasoning_summary_part.done',
+  item_id: itemId,
+  output_index: outputIndex,
+  summary_index: summaryIndex,
+  part: { type: 'summary_text', text },
+  sequence_number: 0,
+});
 export const reasoningSummaryTextDelta = (
   itemId: string,
   delta: string,

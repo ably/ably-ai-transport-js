@@ -72,6 +72,47 @@ against real OpenAI. All green: typecheck, lint, format, the full unit suites
 model + sandbox app — including the server-side weather card and the
 suggestion-chip lifecycle). Reviewed with `/code-review-all`.
 
+### Streaming families increment — **DONE** (this session, `AIT-742-openai-codec`)
+
+The three core `stream()` capabilities and all **five** OpenAI streamed families
+are now **built** — every previously-`ignore`d family streams, and the `ignore`
+construct is gone. Commits `da27b4ff`…`ed4c0376`:
+
+- **Design** — `da27b4ff` `openai-codec-streaming-api-design.md` (the resolved
+  surface + the `function_call_arguments` walk-through + rejected alternatives).
+- **Groundwork (core)** — `9e1bce06` `streamId` (`{ field }` | extractor) replaces
+  `idField`; `c5f0cf1e` `deltaFields` + `decodeDelta`, dropping the id-echo so a
+  decoded delta carries its real fields; `279fc45e` `startWhen` discriminated start
+  + dispatch split; `70b10908` `defineCodec` validation permits families sharing a
+  start type.
+- **Families (OpenAI)** — `55a569bd` `reasoning_summary_text`; `05eaad02`
+  `output_text` / `refusal` / `reasoning_text` (shared `content_part.added`,
+  discriminated by `part.type`, `content_index`-keyed reducer — fixes the latent
+  single-part `output_text` bug); `a50ec250` `function_call_arguments` (relocate
+  id + guard, `output_item.added` discriminated start with decline→`event()`, the
+  fc item envelope carried on the start header, `decodeDelta`).
+- **Review + fixes** — `203ee9a3` fixes a reasoning stream-id collision (a reasoning
+  item's summary[] and content[] both 0-index off one `item_id`; the summary id is
+  namespaced, with a **`TODO(AIT-742)`** to decide the stream-id uniqueness contract
+  — per-encoder vs per-family) plus family-review items.
+- **Ignore removal** — `b2355083` models `reasoning_summary_part.done` as a discrete
+  boundary (twin of `content_part.done`) and lets tool-citation annotations throw,
+  emptying the ignore set; `b8284e55` removes the now-unused `ignore` construct
+  (encoder throws on undescribed; **codecs filter agent-side**).
+- **Demo** — `ed4c0376` streams + renders the reasoning "thinking"
+  (`reasoning: { summary: 'auto' }` on the request + a muted reasoning block; a mock
+  reasoning path for a "think" prompt).
+
+Every event OpenAI streams **by default** is now modelled (a stream, a declared
+boundary, or lifecycle); only opt-in hosted-tool / modality events throw. Two full
+`/code-review-all` passes (groundwork + families) — all findings addressed. Green:
+typecheck, lint, prettier, **1271 SDK unit tests**, **6 codec integration roundtrips
+over real Ably** (text, tool, reasoning summary, content-part discrimination,
+fn-args, user message), demo **51 unit + 11/11 e2e** (the reasoning e2e added this
+session runs when the demo dev-server port is free). Commit boundaries are
+provisional — intended to be reworked so the pure-core groundwork lands isolated
+ahead of the OpenAI families before shipping.
+
 ## Scope update — the streaming model is now in scope (standup, 2026-07)
 
 The "shippable as text + server tools" verdict further down was written **before**
@@ -96,9 +137,9 @@ So "stream the ignored deltas" is **no longer a later, not-parity-blocking polis
 item** (as the Deferred entry and Next-step §5 originally framed it). It's a **core
 codec-interface question** — three generic `stream()` capabilities — that gates a
 credible tool-call story and fixes a latent text-correctness gap. The target and
-the gap analysis are worked out in a design-doc cluster; **the API shape is now
-designed** (`notes/openai-codec-streaming-api-design.md`) and awaiting review
-before implementation.
+the gap analysis are worked out in a design-doc cluster; the API shape was designed
+(`notes/openai-codec-streaming-api-design.md`) and is now **implemented and merged
+on this branch** — see the "Streaming families increment — DONE" section above.
 
 **Design docs, under `notes/lawrence-questions/`** — the human-facing _why_ and the
 target:
@@ -119,8 +160,9 @@ alternatives.
 - **Entry point** `@ably/ai-transport/openai` → `ResponsesCodec` (+ types
   `OpenAIInput`/`OpenAIOutput`/`OpenAIItem`/`OpenAITurn`/`OpenAIProjection`) and
   `toResponsesInput`. `openai` is an optional peer dependency.
-- **Output**: response lifecycle + `output_text` streaming + the `output_item`
-  message envelope + `content_part` boundary → folded into an `OpenAITurn`.
+- **Output**: response lifecycle + the streamed families (`output_text`,
+  `refusal`, `reasoning_text`, `reasoning_summary_text`, `function_call_arguments`)
+  + the `output_item` / `*_part.done` boundaries → folded into an `OpenAITurn`.
 - **Input**: the `user-message` `batch` fans a turn's `input_text` content parts
   out into one `ai-input` event each (reducer merges them by codec-message-id),
   plus the **`regenerate`** wire-only signal (kind-only; `target`/`parent` ride
@@ -136,67 +178,39 @@ alternatives.
 - **Demo** `demo/openai/react/use-client-session/`: parity with the Vercel demo
   modulo client-side tools — streamed text, a **server-side tool call**
   (`getWeather` → weather card), **suggestion chips**, branch navigation, edit,
-  regenerate, history rebuild on refresh, multi-client presence, debug pane.
-  Backend pipes the raw `/responses` stream to `run.pipe`; the codec carries what
-  it models and drops its `ignore` set (see below), throwing on anything else.
-  Deterministic mock model for e2e; real model (default `gpt-5.5`, a reasoning
-  model whose reasoning-summary events are ignored) behind `OPENAI_API_KEY`.
+  regenerate, history rebuild on refresh, multi-client presence, debug pane, and
+  a reasoning model's streamed "thinking" (`reasoning: { summary: 'auto' }` → a
+  muted reasoning block). Backend pipes the raw `/responses` stream to `run.pipe`;
+  the codec models the full default surface and throws on unsupported opt-in
+  events. Deterministic mock model for e2e (with a "think"-prompt reasoning path);
+  real model (default `gpt-5.5`) behind `OPENAI_API_KEY`.
 
 ## Deferred — all marked `TODO(AIT-742)` in code
 
-- **`decodeLifecycle`** (mid-stream-join repair): synthesise the
-  `output_item.added` message-item lead-in when a text stream starts mid-flight,
-  so a client joining mid-stream reconstructs the item. The full-stream path
-  (incl. history hydration / refresh) works without it; this is the smallest
-  remaining codec-correctness item, and the demo can hit it (a second tab opened
-  while a reply is streaming).
-- ~~**Function calls / server-side tools**~~ — **done** (this increment). See the
-  decision note below; the chosen wire shape differs from the original plan
-  (function calls ride the item envelopes; arg deltas are `ignore`d for now —
-  not yet streamed; the tool result is the codec's own `function_call_output`
-  output event).
-- **Stream the ignored deltas — three core `stream()` capabilities (scope grew;
-  see "Scope update").** Started as "one core change unblocks two of them"; the
-  design work found it's broader (below). The two originally-noted families are
-  ignored for the _same_ reason: their stream id isn't a single top-level string
-  key, which is all the `stream(...)` model can key on today.
-  - **tool-call arguments** (`function_call_arguments.*`): the id is **nested** —
-    the start (`output_item.added`) carries it under `item.id`, not a top-level
-    field (findings §A).
-  - **reasoning summaries** (`reasoning_summary_*`): the id is **composite** — a
-    reasoning item emits one or more summary parts, each a
-    `reasoning_summary_part.added` → `reasoning_summary_text.delta*` → `.done`,
-    all sharing one `item_id` and distinguished only by a numeric `summary_index`,
-    so the stream id must be `item_id + summary_index`.
-
-  **The fix grew past "one change, two families."** The design settled on **three
-  generic `stream()` capabilities** — (1) a **derived** stream id (composite
-  `item_id + index`, or a nested `item.id`); (2) decoded **deltas that carry their
-  real fields** (so the reducer targets the right slot, not just "the trailing
-  part"); (3) a **slot-reveal / discriminated start** (a stream starts on the event
-  that first reveals its slot; shared starts like `content_part.added` /
-  `output_item.added` are resolved by a payload discriminator). Together they
-  unblock **five** families — add multi-part `output_text`, `refusal`, and
-  `reasoning_text` to the two below — under the "stream everything" bar. All three
-  are **`src/core/codec` changes**, consumed by the OpenAI codec via new
-  descriptors (not OpenAI-only). The worked-out target and gap analysis live in the
-  design-doc cluster (`streaming-target-model.html` is the target) and the API brief
-  (`notes/openai-codec-streaming-api-brief.md`); the concrete surface — the
-  once-open API-shape questions now resolved — is
-  `notes/openai-codec-streaming-api-design.md`: `streamId` (`{ field }` | extractor)
-  replaces `idField`; Cap 2 is declarative `deltaFields` plus a `decodeDelta`
-  escape hatch (dropping the id-echo, `item_id` becoming a field); Cap 3 is a
-  `startWhen` discriminator with a decline→`event()` fall-through. The
-  `function_call_arguments` family carries its `function_call` envelope in a start
-  header and reconstructs `item_id` via `decodeDelta`, so the reducer never parses
-  the transport stream id.
-
-  Then drop the relevant `ignore(...)` entries and add the stream families. To
-  reproduce reasoning-summary events for testing: opt the
-  `/responses` request into `reasoning: { summary: 'auto' }` (the demo doesn't by
-  default) AND use a reasoning-heavy prompt — a trivial one yields ~0 reasoning
-  tokens and an empty summary; the 12-ball weighing puzzle against `gpt-5.5` is a
-  reliable repro (see the note at the `ignore` entries in `descriptors.ts`).
+- **`decodeLifecycle`** (mid-stream-join repair): when a client joins mid-flight
+  it missed the stream's opener, so the reducer has no item to fold deltas into —
+  synthesise the lead-in on stream start. **Now per-family** (not just text): each
+  streamed family needs the right lead-in item reconstructed from the stream's
+  `kind` + re-stamped headers — an `output_item.added` message for
+  `output_text`/`refusal`, a reasoning item for `reasoning_text`/
+  `reasoning_summary_text`, a function_call item for `function_call_arguments`
+  (plus the `content_part.added` / `reasoning_summary_part.added` opener the
+  content/summary families also missed). The Vercel codec's `decodeLifecycle`
+  (`onStreamStart`) is the pattern to mirror. The full-stream path (incl. history
+  hydration / refresh) works without it; this is the smallest remaining
+  codec-correctness item, and the demo can hit it (a second tab opened while a
+  reply is streaming).
+- ~~**Function calls / server-side tools**~~ — **done**. Function calls ride the
+  item envelopes; their **arguments now stream** via the `function_call_arguments`
+  family (the streaming increment — the earlier "arg deltas are ignored" note is
+  superseded); the tool result is the codec's own `function_call_output` output
+  event.
+- ~~**Stream the ignored deltas — three core `stream()` capabilities**~~ —
+  **DONE** this session (three caps + all five families; the `ignore` construct
+  removed). See "Streaming families increment — DONE" in Status. One follow-up
+  it left: the **`TODO(AIT-742)` on the reasoning-summary stream id** — decide the
+  stream-id uniqueness contract (per-encoder vs per-family scoping) rather than the
+  ad-hoc summary-dimension namespace.
 
 - **Client-side tools + approvals** (suspend/resume): add `ToolResult` /
   `ToolApprovalResponse` to `OpenAIInput` — now clean on the type side thanks to
@@ -243,40 +257,33 @@ alternatives.
   (1) the **`function_call` rides the existing item envelopes** —
   `output_item.added` (pending, args empty) → `output_item.done` (complete
   args). A `function_call` is a `ResponseOutputItem`, so the codec already
-  encodes/decodes/folds it; no new descriptor or reducer arm. (2) **Streamed
-  argument deltas (`response.function_call_arguments.*`) are not yet streamed** —
-  we _want_ to stream them (realtime service), but they don't fit the current
-  `stream(...)` model (findings §A: the start boundary nests the id under
-  `item.id`, so there's no top-level id shared across start/delta/end). Until the
-  stream model can key on a nested id, they go in the codec's `ignore` set (the
-  output table's escape hatch): dropped on encode, with the complete args still
-  arriving on `output_item.done` so the turn stays correct meanwhile. Not a
-  "don't care" — a tracked gap. (3) The
+  encodes/decodes/folds it; no new descriptor or reducer arm. (2) **Arguments now
+  stream** via the `function_call_arguments` family (the streaming increment):
+  `output_item.added` opens the stream — claimed for a `function_call` by
+  `startWhen`, with the item envelope carried on the start header — and
+  `function_call_arguments.delta`/`.done` fill the args; the discrete
+  `output_item.done` still carries the authoritative complete item. (This was
+  earlier deferred — arg deltas `ignore`d — because the id nests under `item.id`;
+  the derived `streamId` extractor now handles that relocate.) (3) The
   **server-executed tool's result is the codec's own `function_call_output`
   output event** — OpenAI never streams tool output (it is model _input_ on the
   next turn), so the agent publishes it explicitly; it folds onto the assistant
   turn beside the call, so the turn round-trips a complete call+output pair for
   rendering (paired by `call_id`) and for a follow-up `/responses` request. The
   run does not suspend — the agentic loop runs the tool and continues in place.
-- **Unrecognised output events: throw by default, `ignore` as the escape hatch.**
-  The encoder throws on an output event with no descriptor (a real safety net —
-  an unexpected event is never dropped unnoticed). A pass-through codec over the
-  `ResponseStreamEvent` union will see events it doesn't model, so the output
-  descriptor table has a third construct — `ignore(type)` — naming the events the
-  codec deliberately drops _for now_ because it hasn't yet built a streaming path
-  for them (today: a reasoning model's streamed summary / raw reasoning text,
-  refusals, text annotations, and the `function_call_arguments.*` deltas — the
-  set that lets a `gpt-5.x` reasoning model stream its answer unbroken). Anything
-  neither described nor ignored still throws — that stays true for opt-in hosted
-  tools / modalities (web/file search, code interpreter, image gen, MCP, audio,
-  custom tools). `descriptors.ts` documents the **exhaustive** inventory (ignored
-  vs still-throwing) against `openai@6.44.0`. This lets the agent pipe the raw
-  `/responses` stream with no pre-filter — the old `supported-events.ts` mirror
-  is gone. The aim remains to stream everything we can, so entries leave the
-  `ignore` set as their streaming is built (e.g. teaching the stream model a
-  nested id would let the arg deltas stream). `ignore` lives on the output
-  table, not the codec config, so each entry sits with its justifying comment
-  next to the events it relates to.
+- **Unrecognised output events: throw (no `ignore` construct).** The encoder
+  throws on an output event with no descriptor — a real safety net so an
+  unexpected event is never dropped unnoticed. The codec now models **every event
+  OpenAI streams by default** (as a stream, a declared `*_part.done` boundary, or
+  lifecycle), so there is no `ignore` set and the `ignore` construct was removed
+  (`b8284e55`). The events that still throw appear only when you opt into a hosted
+  tool / modality the codec doesn't support (web/file search, code interpreter,
+  image gen, MCP, audio, custom tools, and the `output_text` annotations those
+  tools cite); `descriptors.ts` documents that exhaustive inventory against
+  `openai@6.44.0`. A codec whose provider streams a superset of what it models is
+  expected to filter unsupported events **agent-side** before publishing — the
+  demo pipes the raw `/responses` stream and needs no filter because its default
+  surface is fully modelled (the old `supported-events.ts` mirror stays gone).
 - **Partial codecs vs `Codec` (resolved, `dc8ee25`).** `defineCodec` returns a
   `DefinedCodec`, which the transport consumes as a `Codec`. That assignability
   only held for a _full_ codec (every well-known input variant present) until the
@@ -288,9 +295,16 @@ alternatives.
 
 ## Next step, with a suggested order
 
-**Scope of this first iteration:** text streaming **+ server-side function
-calls**. Client-side tools / approvals are deliberately out (they're first-class
-in the Vercel AI SDK but not in OpenAI Responses) — a later iteration.
+**Scope of this first iteration:** streaming of **all five default families**
+(text, refusal, reasoning summary + text, function-call arguments) **+
+server-side function calls**. Client-side tools / approvals are deliberately out
+(they're first-class in the Vercel AI SDK but not in OpenAI Responses) — a later
+iteration.
+
+**Now that reasoning is streamed, item #2 Facet A below (the tool loop dropping
+the reasoning item on the next `/responses` call) is a live, sharp gate** — a
+reasoning model that both reasons and calls a tool exercises it, and it needs a
+real key to verify. That plus `decodeLifecycle` are the top two gates.
 
 **Shippability verdict:** the functional core is credible and well-tested (unit
 
@@ -299,12 +313,17 @@ in the Vercel AI SDK but not in OpenAI Responses) — a later iteration.
   and verifying multi-turn on a reasoning model — with error-detail forwarding and
   the spike revert as the cleanup tail. Then it's shippable as text + server tools.
 
-1. **`decodeLifecycle` mid-stream-join repair (main correctness gap, small).**
+1. **`decodeLifecycle` mid-stream-join repair (main correctness gap).**
    Lets a client that joins/refreshes while a reply is streaming reconstruct the
-   in-flight message item (synthesise the `output_item.added` lead-in). Full-stream
-   and post-completion refresh already work; the hole is specifically mid-stream
-   join. The Vercel codec has the pattern to mirror. The demo can trigger the gap
-   (open a second tab mid-stream).
+   in-flight item it missed the opener for (synthesise the lead-in on stream
+   start). **Now per-family** since the streaming increment: the lead-in item
+   depends on the stream's `kind` — a message for `output_text`/`refusal`, a
+   reasoning item for `reasoning_text`/`reasoning_summary_text`, a function_call
+   for `function_call_arguments` — plus the missed `*_part.added` opener for the
+   content/summary families. Don't scope it to text only. The Vercel codec's
+   `decodeLifecycle` `onStreamStart` is the pattern to mirror. Full-stream and
+   post-completion refresh already work; the hole is specifically mid-stream join.
+   The demo can trigger it (open a second tab mid-stream).
 2. **Verify multi-turn on a reasoning model (unverified risk — needs a real key).**
    Defaulting to `gpt-5.5` means we resend prior items to `/responses`, and
    reasoning items have special input rules. Two facets:
@@ -343,19 +362,11 @@ Later iterations (beyond the first pass):
    from `dc8ee25` mean the codec only exposes the factories whose variants it
    declares), wire suspend/resume, add the approval/tool-card UI, and the full
    `openaiRunOutcome` mapper (incl. its `suspend` arm).
-5. **Stream everything OpenAI streams (the `ignore` follow-up — scope grew).**
-   No longer "one change / two families": **three generic `stream()` capabilities**
-   (derived id · delta fields · slot-reveal/discriminated start) unblock **five**
-   families and fix the half-baked single-part `output_text`. **Reclassified** by
-   the "Scope update" (Mike's standup: don't ship half-baked tool-call support)
-   from a later, not-parity-blocking item to a **core codec-interface question** —
-   the priority ordering here is stale as a result and needs a rethink. Target:
-   `streaming-target-model.html`; API brief: `openai-codec-streaming-api-brief.md`;
-   **API design (done, awaiting review): `openai-codec-streaming-api-design.md`** —
-   implement in its §11 order (`reasoning_summary_text` first to prove Caps 1+2,
-   then the shared-start `content_part.added` families, then
-   `function_call_arguments`), starting with the core Caps 1–3 + the mechanical
-   Vercel migration as groundwork. See the Deferred entry.
+5. ~~**Stream everything OpenAI streams**~~ — **DONE** this session (see "Streaming
+   families increment — DONE" in Status). All five families stream; the `ignore`
+   construct is gone. Remaining follow-up: the **`TODO(AIT-742)`** on the
+   reasoning-summary stream id — decide the stream-id uniqueness contract
+   (per-encoder vs per-family), a small, self-contained core question.
 
 Independent cleanups that can land any time: **option C** (codec passes its own
 factory set — removes the `defineCodec` cast + phantom methods); and **reverting

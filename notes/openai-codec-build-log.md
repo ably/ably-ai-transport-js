@@ -72,6 +72,43 @@ against real OpenAI. All green: typecheck, lint, format, the full unit suites
 model + sandbox app — including the server-side weather card and the
 suggestion-chip lifecycle). Reviewed with `/code-review-all`.
 
+## Scope update — the streaming model is now in scope (standup, 2026-07)
+
+The "shippable as text + server tools" verdict further down was written **before**
+a standup that reframed the priority. Mike's point: **if we can't stream tool-call
+inputs, that isn't something to defer quietly — we need to understand why, and
+decide whether the codec _interface_ has to change.** A tool call whose arguments
+only land at `output_item.done` (no incremental streaming) is half-baked tool
+support for a realtime product, and we don't want to ship that.
+
+Digging into it turned up more than the tool-call gap:
+
+- **Streaming tool-call inputs needs a core `stream()` change, not a codec tweak** —
+  and the same change unblocks reasoning summaries, refusals, and raw reasoning.
+  The bar became: **stream everything OpenAI can stream; if we can't, the model is
+  wrong.**
+- **Our `output_text` support is itself half-baked.** It assumes _one text part per
+  message_ and can't target a specific `content[content_index]` — the very same
+  "single top-level stream id" limitation, hiding in the one family we _do_ stream.
+  It works today only because a message currently has one text part.
+
+So "stream the ignored deltas" is **no longer a later, not-parity-blocking polish
+item** (as the Deferred entry and Next-step §5 originally framed it). It's a **core
+codec-interface question** — three generic `stream()` capabilities — that gates a
+credible tool-call story and fixes a latent text-correctness gap. The target and
+the gap analysis are worked out in a design-doc cluster; the API shape is the next
+phase.
+
+**Design docs, under `notes/lawrence-questions/`** — the human-facing _why_ and the
+target:
+`streaming-target-model.html` (the agreed target: five stream families, the
+slot-reveal start policy, the three capabilities — start here),
+`stream-construct-explainer.html` (how `stream()` works today),
+`streaming-fncall-args-and-reasoning.html` (why today's model blocks these),
+`openai-streaming-events-cheatsheet.html`, `data-model-grounding.html`.
+The agent-facing _how_ (the API-design brief) is
+`notes/openai-codec-streaming-api-brief.md`.
+
 ## What exists today
 
 - **Entry point** `@ably/ai-transport/openai` → `ResponsesCodec` (+ types
@@ -113,10 +150,11 @@ suggestion-chip lifecycle). Reviewed with `/code-review-all`.
   (function calls ride the item envelopes; arg deltas are `ignore`d for now —
   not yet streamed; the tool result is the codec's own `function_call_output`
   output event).
-- **Stream the ignored deltas — one core change unblocks two of them.** Two
-  entries in the `ignore` set are ignored for the _same_ reason: their stream id
-  isn't a single top-level string key, which is all the `stream(...)` model can
-  key on today.
+- **Stream the ignored deltas — three core `stream()` capabilities (scope grew;
+  see "Scope update").** Started as "one core change unblocks two of them"; the
+  design work found it's broader (below). The two originally-noted families are
+  ignored for the _same_ reason: their stream id isn't a single top-level string
+  key, which is all the `stream(...)` model can key on today.
   - **tool-call arguments** (`function_call_arguments.*`): the id is **nested** —
     the start (`output_item.added`) carries it under `item.id`, not a top-level
     field (findings §A).
@@ -126,12 +164,22 @@ suggestion-chip lifecycle). Reviewed with `/code-review-all`.
     all sharing one `item_id` and distinguished only by a numeric `summary_index`,
     so the stream id must be `item_id + summary_index`.
 
-  The fix is one generic core enhancement: let a stream family **derive its id
-  from a nested/composite key** rather than a single top-level string. Then drop
-  the relevant `ignore(...)` entries and add stream families — a
-  `function_call_arguments` family (reducer appends deltas onto the in-progress
-  `function_call` item's `arguments`) and a `reasoning` family (rendering the
-  model's "thinking"). To reproduce reasoning-summary events for testing: opt the
+  **The fix grew past "one change, two families."** The design settled on **three
+  generic `stream()` capabilities** — (1) a **derived** stream id (composite
+  `item_id + index`, or a nested `item.id`); (2) decoded **deltas that carry their
+  real fields** (so the reducer targets the right slot, not just "the trailing
+  part"); (3) a **slot-reveal / discriminated start** (a stream starts on the event
+  that first reveals its slot; shared starts like `content_part.added` /
+  `output_item.added` are resolved by a payload discriminator). Together they
+  unblock **five** families — add multi-part `output_text`, `refusal`, and
+  `reasoning_text` to the two below — under the "stream everything" bar. All three
+  are **`src/core/codec` changes**, consumed by the OpenAI codec via new
+  descriptors (not OpenAI-only). The worked-out target, gap analysis, and open
+  API-shape questions live in the design-doc cluster (`streaming-target-model.html`
+  is the target) and the API brief `notes/openai-codec-streaming-api-brief.md`.
+
+  Then drop the relevant `ignore(...)` entries and add the stream families. To
+  reproduce reasoning-summary events for testing: opt the
   `/responses` request into `reasoning: { summary: 'auto' }` (the demo doesn't by
   default) AND use a reasoning-heavy prompt — a trivial one yields ~0 reasoning
   tokens and an empty summary; the 12-ball weighing puzzle against `gpt-5.5` is a
@@ -282,11 +330,15 @@ Later iterations (beyond the first pass):
    from `dc8ee25` mean the codec only exposes the factories whose variants it
    declares), wire suspend/resume, add the approval/tool-card UI, and the full
    `openaiRunOutcome` mapper (incl. its `suspend` arm).
-5. **Stream the ignored deltas (the `ignore` follow-up).** One core stream-model
-   change — deriving a stream id from a nested/composite key — lets both the
-   `function_call_arguments.*` (nested id) and `reasoning_summary_*` (composite
-   `item_id + summary_index`) deltas leave the `ignore` set and stream as real
-   families. See the Deferred entry. Realtime win; not parity-blocking.
+5. **Stream everything OpenAI streams (the `ignore` follow-up — scope grew).**
+   No longer "one change / two families": **three generic `stream()` capabilities**
+   (derived id · delta fields · slot-reveal/discriminated start) unblock **five**
+   families and fix the half-baked single-part `output_text`. **Reclassified** by
+   the "Scope update" (Mike's standup: don't ship half-baked tool-call support)
+   from a later, not-parity-blocking item to a **core codec-interface question** —
+   the priority ordering here is stale as a result and needs a rethink. Target:
+   `streaming-target-model.html`; API shape: `openai-codec-streaming-api-brief.md`;
+   then implement. See the Deferred entry.
 
 Independent cleanups that can land any time: **option C** (codec passes its own
 factory set — removes the `defineCodec` cast + phantom methods); and **reverting

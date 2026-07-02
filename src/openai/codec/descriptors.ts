@@ -35,8 +35,8 @@
  * signal is a wire-only event: it stamps only its `kind` header (the agent
  * reads `target` / `parent` via the input-event lookup) and folds to nothing.
  *
- * Hosted tools are added in later increments by adding entries here — the split
- * established now does not change.
+ * Hosted tools are added by adding entries here; the codec/transport split is
+ * unaffected.
  */
 
 import * as Ably from 'ably';
@@ -175,7 +175,12 @@ export const outputs = ({
       start: 'response.reasoning_summary_part.added',
       delta: 'response.reasoning_summary_text.delta',
       end: 'response.reasoning_summary_text.done',
-      streamId: (c) => `${c.item_id}:${String(c.summary_index)}`,
+      // A reasoning item has two indexed dimensions — summary[] and content[]
+      // (reasoning_text) — both 0-based, so the summary stream id is namespaced
+      // to avoid clashing with a reasoning_text content slot on the same item.
+      // TODO(AIT-742): decide the stream-id uniqueness contract (per-encoder vs
+      // per-family scoping) rather than namespacing ad hoc here.
+      streamId: (c) => `${c.item_id}:summary:${String(c.summary_index)}`,
       deltaField: 'delta',
       fields: [fItemId, fOutputIndex, fSummaryIndex, fSummaryPart],
       deltaFields: [fItemId, fSummaryIndex],

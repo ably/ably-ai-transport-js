@@ -179,7 +179,8 @@ export interface OutputStreamSpec<
    * (`item_id + content_index`) or relocate (read a different place per phase).
    * Either way the id is an opaque uniqueness handle for the wire message — never
    * parsed by the reducer, which recovers a chunk's real fields via {@link fields}
-   * / {@link deltaFields}.
+   * / {@link deltaFields}. An extractor may throw (e.g. an `Ably.ErrorInfo`) to
+   * reject a chunk whose id it cannot derive; the throw surfaces from the encode call.
    */
   streamId:
     | { field: StringKeyOf<ResolveType<U, S>> & StringKeyOf<ResolveType<U, D>> & StringKeyOf<ResolveType<U, E>> }

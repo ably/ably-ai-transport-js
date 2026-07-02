@@ -14,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 
 import { EVENT_AI_INPUT, HEADER_ROLE, HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../../src/constants.js';
 import { toCodecEvents } from '../../../src/core/codec/codec-event.js';
+import { ErrorCode } from '../../../src/errors.js';
 import type { OpenAIOutput } from '../../../src/openai/codec/index.js';
 import { ResponsesCodec } from '../../../src/openai/codec/index.js';
 import { init, type OpenAIProjection } from '../../../src/openai/codec/reducer.js';
@@ -36,7 +37,11 @@ import {
   messageItem,
   metaOf,
   queued,
+  reasoningItem,
   reasoningSummaryRun,
+  reasoningTextDelta,
+  reasoningTextDone,
+  reasoningTextPartAdded,
   refusalDelta,
   refusalDone,
   refusalPartAdded,
@@ -105,9 +110,10 @@ describe('OpenAI codec roundtrip (offline)', () => {
   it('streams a reasoning summary under a composite stream id and folds it back', async () => {
     const { inbound } = await roundtrip(reasoningSummaryRun('rs_1', 'Thinking…'));
 
-    // Cap 1 (compose): the transport stream id is item_id + summary_index.
+    // Composite, summary-namespaced stream id (item_id + summary dimension +
+    // summary_index) so it can't clash with a reasoning_text content slot.
     const streamCreate = inbound.find((m) => m.action === 'message.create' && transportOf(m)[HEADER_STREAM] === 'true');
-    expect(streamCreate && transportOf(streamCreate)[HEADER_STREAM_ID]).toBe('rs_1:0');
+    expect(streamCreate && transportOf(streamCreate)[HEADER_STREAM_ID]).toBe('rs_1:summary:0');
 
     // Decode + fold: the summary text lands in the reasoning item's summary[0].
     const decoder = ResponsesCodec.createDecoder();
@@ -196,6 +202,43 @@ describe('OpenAI codec roundtrip (offline)', () => {
       .filter((m) => transportOf(m)[HEADER_STREAM] === 'false')
       .map((m) => getCodecHeaders(m).kind);
     expect(discreteKinds).toContain('response.output_item.added');
+  });
+
+  it('streams reasoning text on a reasoning item under a composite id and folds it', async () => {
+    const { inbound } = await roundtrip([
+      created(),
+      itemAdded(reasoningItem('rs_1')),
+      reasoningTextPartAdded('rs_1', 0),
+      reasoningTextDelta('rs_1', 'be', 0),
+      reasoningTextDelta('rs_1', 'cause', 0),
+      reasoningTextDone('rs_1', 'because', 0),
+      completed(),
+    ]);
+
+    const streamCreate = inbound.find((m) => m.action === 'message.create' && transportOf(m)[HEADER_STREAM] === 'true');
+    expect(streamCreate && transportOf(streamCreate)[HEADER_STREAM_ID]).toBe('rs_1:0');
+
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+    for (const msg of inbound) {
+      for (const event of toCodecEvents(decoder.decode(msg))) {
+        projection = ResponsesCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
+      }
+    }
+    const item = ResponsesCodec.getMessages(projection)[0]?.message.items.find(
+      (i): i is Responses.ResponseReasoningItem => i.type === 'reasoning',
+    );
+    expect(item?.content).toEqual([{ type: 'reasoning_text', text: 'because' }]);
+  });
+
+  it('rejects a function-call output_item.added that carries no item id', async () => {
+    const { writer } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onMessage: stampHeaders('run-x', 'run-1') });
+    // The item id is the stream's slot key; a streamed function_call without one
+    // is malformed wire data and is rejected at the encode boundary.
+    await expect(
+      encoder.publishOutput(itemAdded({ type: 'function_call', call_id: 'c1', name: 'getWeather', arguments: '' })),
+    ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
   });
 
   it('roundtrips each discrete lifecycle/structural event through encode + decode', async () => {

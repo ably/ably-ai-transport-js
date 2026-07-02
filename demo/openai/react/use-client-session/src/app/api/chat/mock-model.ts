@@ -9,9 +9,9 @@
  * (function_call, args empty) → `function_call_arguments.delta`* → `.done` →
  * `output_item.done` (function_call, full args): the agentic loop runs the tool
  * and calls the mock again, now with the tool result in the input, so the second
- * turn returns a text reply. Response-
- * lifecycle events (`response.created` / `response.completed`) are omitted: the
- * reducer ignores them and the stream's terminal is the item-done.
+ * turn returns a text reply. Response-lifecycle events (`response.created` /
+ * `response.completed`) are omitted: the reducer ignores them and the stream's
+ * terminal is the item-done.
  *
  * Wired in by `createResponseStream()` (model.ts) behind `MOCK_LLM`.
  */
@@ -163,11 +163,11 @@ export function createMockResponseStream(req: ResponseStreamRequest): ReadableSt
       arguments: args,
       status,
     });
-    const args = JSON.stringify(plan.args);
+    const argsJson = JSON.stringify(plan.args);
     // Split the arguments into a couple of fragments so the mock streams them the
     // way a real model does (output_item.added → arg deltas → arg done → item done).
-    const mid = Math.ceil(args.length / 2);
-    const argFragments = [args.slice(0, mid), args.slice(mid)];
+    const mid = Math.ceil(argsJson.length / 2);
+    const argFragments = [argsJson.slice(0, mid), argsJson.slice(mid)];
     return new ReadableStream<ResponseStreamEvent>({
       start(controller) {
         // output_item.added opens the function_call_arguments stream (args empty);
@@ -192,13 +192,13 @@ export function createMockResponseStream(req: ResponseStreamRequest): ReadableSt
           type: 'response.function_call_arguments.done',
           item_id: itemId,
           output_index: 0,
-          arguments: args,
+          arguments: argsJson,
           name: plan.name,
           sequence_number: next(),
         });
         controller.enqueue({
           type: 'response.output_item.done',
-          item: call('completed', args),
+          item: call('completed', argsJson),
           output_index: 0,
           sequence_number: next(),
         });

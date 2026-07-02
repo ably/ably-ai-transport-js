@@ -1,10 +1,12 @@
 /**
  * OpenAI ResponsesCodec integration test.
  *
- * Validates the encode -> publish -> subscribe -> decode -> fold roundtrip for
- * streamed assistant text over a real Ably channel (sandbox by default). Proves
- * the wire format and Ably message append semantics work end-to-end for the
- * text increment, without transport machinery.
+ * Validates the encode -> publish -> subscribe -> decode -> fold roundtrip over a
+ * real Ably channel (sandbox by default) for the streamed families — assistant
+ * text, a reasoning summary, content-part discrimination (output_text + refusal),
+ * and function-call arguments — plus the server-side tool call and the
+ * user-message input path. Proves the wire format and Ably message append
+ * semantics work end-to-end, without transport machinery.
  */
 
 import type { Responses } from 'openai/resources/responses/responses';

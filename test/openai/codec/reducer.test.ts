@@ -181,6 +181,19 @@ describe('OpenAI reducer', () => {
     expect(item?.call_id).toBe('call_1');
   });
 
+  it('drops a reasoning-summary delta routed to a non-reasoning item', () => {
+    // The item is a message, not a reasoning item, so the summary fold is a no-op
+    // (the isReasoningItem guard), leaving the message untouched.
+    const state = foldOutputs([itemAdded(messageItem('msg_1')), reasoningSummaryTextDelta('msg_1', 'oops')]);
+    expect(firstMessage(state)?.content).toEqual([]);
+  });
+
+  it('drops function-call arguments routed to a non-function-call item', () => {
+    // arguments only apply to a function_call; on a message the fold is a no-op.
+    const state = foldOutputs([itemAdded(messageItem('msg_1')), fnArgsDelta('msg_1', '{"x":1}')]);
+    expect(firstMessage(state)?.content).toEqual([]);
+  });
+
   it('lazily creates the output_text part if content_part.added is missing', () => {
     // A delta arriving without its content_part.added (e.g. a future mid-stream
     // join before decodeLifecycle lands) still accumulates onto a synthesised part.

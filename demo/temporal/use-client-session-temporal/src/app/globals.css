@@ -1,0 +1,12 @@
+@import 'tailwindcss';
+
+/*
+ * Point Tailwind's content scanner at the shared frontend package too.
+ * Without this, only class usage inside this demo's src/ would generate
+ * utilities and every className coming from @ably-ai-demos/frontend would
+ * resolve to no rule.
+ */
+@source '../../../../shared-frontend/src';
+
+/* Shared custom styles (non-utility). */
+@import '@ably-ai-demos/frontend/styles/base.css';

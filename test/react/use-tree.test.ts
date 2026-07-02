@@ -17,6 +17,7 @@ const makeFakeRun = (runId: string): RunNode<unknown> => ({
   regeneratesCodecMessageId: undefined,
   clientId: '',
   invocationId: '',
+  lastResumeInvocationId: undefined,
   state: { status: 'complete' },
   projection: undefined,
   startSerial: undefined,

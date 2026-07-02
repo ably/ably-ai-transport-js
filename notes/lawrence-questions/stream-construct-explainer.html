@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>The stream() codec construct — what it actually compiles to</title>
+    <style>
+      :root {
+        --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --border: #2a2f3a;
+        --text: #e6e9ef; --muted: #9aa3b0; --accent: #6ea8fe; --green: #46c08a;
+        --amber: #e3a008; --red: #ef6b6b; --purple: #d2a8ff; --cyan: #8fd3e8; --pink: #f6a5c0;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.6 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 30px 20px 80px; }
+      .wrap { max-width: 1080px; margin: 0 auto; }
+      h1 { font-size: 24px; margin: 0 0 8px; letter-spacing: -0.01em; }
+      p.lede { color: var(--muted); margin: 0 0 6px; max-width: 900px; font-size: 15.5px; }
+      code, .mono { font-family: var(--mono); }
+      code.inl { font-size: 12.5px; background: #11151c; padding: 1px 6px; border-radius: 4px; color: #d6b36b; border: 1px solid var(--border); }
+      .sec { margin-top: 40px; }
+      .sec > .h { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; }
+      .sec > .h .n { font-family: var(--mono); font-size: 13px; color: var(--accent); border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; }
+      .sec > .h .t { font-size: 18px; font-weight: 700; }
+      .sec > p.intro { color: var(--muted); margin: 0 0 16px; max-width: 940px; }
+      b.g { color: var(--green); } b.c { color: var(--cyan); } b.a { color: var(--amber); }
+
+      .two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+      @media (max-width: 820px) { .two { grid-template-columns: 1fr; } }
+      .card { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); overflow: hidden; }
+      .card .hd { padding: 12px 15px; border-bottom: 1px solid var(--border); font-weight: 700; font-size: 14px; }
+      .card.disc .hd { background: #1c2029; }
+      .card.strm .hd { background: #0f1c22; border-bottom-color: #28525f; color: var(--cyan); }
+      .card .bd { padding: 13px 15px; font-size: 13.5px; color: #cfd5df; }
+      .card .bd code { font-family: var(--mono); font-size: 12px; color: #d6b36b; }
+      .card .bd p { margin: 0 0 9px; } .card .bd p:last-child { margin: 0; }
+
+      pre.code { font-family: var(--mono); font-size: 12.5px; line-height: 1.75; background: #11151c; border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; overflow-x: auto; color: #cfd5df; }
+      pre.code .kw { color: var(--purple); } pre.code .str { color: #c9a978; } pre.code .cm { color: #5a626e; }
+      pre.code .id { color: var(--green); font-weight: 700; } pre.code .dl { color: var(--amber); font-weight: 700; } pre.code .fl { color: var(--cyan); }
+
+      .anno { border-left: 3px solid var(--accent); background: var(--panel2); border-radius: 0 8px 8px 0; padding: 6px 14px; margin-top: 10px; }
+      .anno div { font-size: 13px; padding: 5px 0; border-bottom: 1px solid var(--border); color: #cfd5df; }
+      .anno div:last-child { border-bottom: none; }
+      .anno .k { font-family: var(--mono); font-weight: 700; }
+      .anno .k.id { color: var(--green); } .anno .k.dl { color: var(--amber); } .anno .k.fl { color: var(--cyan); } .anno .k.se { color: var(--purple); }
+
+      /* encode timeline */
+      .flow { font-family: var(--mono); font-size: 12.5px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); overflow: hidden; }
+      .flow .frow { display: grid; grid-template-columns: 1.15fr 1.3fr; gap: 0; border-bottom: 1px solid var(--border); }
+      .flow .frow:last-child { border-bottom: none; }
+      .flow .fhd { display: grid; grid-template-columns: 1.15fr 1.3fr; background: var(--panel2); font-weight: 700; }
+      .flow .fhd > div, .flow .frow > div { padding: 9px 13px; }
+      .flow .frow > .ev { border-right: 1px solid var(--border); color: var(--text); }
+      .flow .frow > .op { border-right: 1px solid var(--border); color: var(--cyan); }
+      .flow .fhd > div:first-child, .flow .frow > div:first-child { border-right: 1px solid var(--border); }
+      .flow .op .fn { color: var(--accent); font-weight: 700; }
+      .flow .msgstate { color: var(--muted); }
+      .flow .grow { color: var(--green); }
+      .flow .frow.start { background: #0f1c2255; } .flow .frow.end { background: #10231b55; }
+
+      table.mir { width: 100%; border-collapse: collapse; font-size: 13px; }
+      table.mir th, table.mir td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+      table.mir th { color: var(--muted); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; }
+      table.mir td.m { font-family: var(--mono); font-size: 12px; color: var(--cyan); white-space: nowrap; }
+      table.mir td.e { font-family: var(--mono); font-size: 12px; color: #d6b36b; white-space: nowrap; }
+      table.mir td.d { color: #cfd5df; }
+
+      .callout { margin-top: 16px; border-left: 3px solid var(--amber); background: var(--panel2); border-radius: 0 8px 8px 0; padding: 13px 16px; font-size: 13.5px; color: #d3d9e2; }
+      .callout.blue { border-left-color: var(--accent); }
+      .callout b { color: #fff; } .callout code { font-family: var(--mono); font-size: 12.5px; color: #d6b36b; }
+      ul.tight { margin: 8px 0 0; padding-left: 20px; } ul.tight li { margin-bottom: 8px; color: #d3d9e2; }
+      ul.tight code { font-family: var(--mono); font-size: 12.5px; color: #d6b36b; }
+
+      .verdict { margin-top: 40px; border: 1px solid var(--border); border-left: 3px solid var(--green); border-radius: 12px; padding: 18px 20px; background: var(--panel); }
+      .verdict h2 { color: var(--green); font-size: 13px; text-transform: uppercase; letter-spacing: 0.07em; margin: 0 0 10px; }
+      .verdict p { margin: 0 0 10px; font-size: 15px; } .verdict p:last-child { margin: 0; }
+      .verdict code { font-family: var(--mono); font-size: 13px; color: #d6b36b; }
+      .footref { margin-top: 30px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--border); padding-top: 14px; }
+      .footref code { font-family: var(--mono); color: #d6b36b; }
+      a { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>The <code style="font-family:var(--mono);font-size:20px;color:var(--cyan)">stream()</code> codec construct — what it actually compiles to</h1>
+      <p class="lede">
+        When a codec declares a <code class="inl">stream(...)</code> family it isn't "marking some events as streamable" — it's
+        wiring three of its event types onto <b>one Ably message that grows over time</b>. This is the foundation the streaming
+        limitations and <code class="inl">decodeLifecycle</code> both hang off. Here's exactly what you're making happen.
+      </p>
+
+      <!-- 1 -->
+      <section class="sec">
+        <div class="h"><span class="n">1</span><span class="t">Two ways to put data on a channel</span></div>
+        <p class="intro">Everything a codec emits becomes one of these two shapes on the Ably channel:</p>
+        <div class="two">
+          <div class="card disc">
+            <div class="hd">Discrete — what <code style="font-family:var(--mono);font-size:12px">event()</code> declares</div>
+            <div class="bd">
+              <p>You <code>publish</code> a complete, immutable message. It has its own <code>serial</code> (Ably's unique id) and never changes.</p>
+              <p>One event → one message. Used for lifecycle, the item/part <em>envelopes</em>, the tool result — anything that isn't incremental text.</p>
+            </div>
+          </div>
+          <div class="card strm">
+            <div class="hd">Streamed — what <code style="font-family:var(--mono);font-size:12px">stream()</code> declares</div>
+            <div class="bd">
+              <p>You publish <b>one</b> message, then <b class="c">append</b> fragments to <em>that same message</em> over time. Ably natively supports mutating a published message (append/update, keyed by its <code>serial</code>).</p>
+              <p>The message grows in place; subscribers watch it get longer. Used for the one thing that's genuinely incremental: streamed assistant text.</p>
+            </div>
+          </div>
+        </div>
+        <div class="callout blue"><b><code>stream()</code> in one sentence:</b> "these three event types of mine — a <b class="c">start</b>, a <b class="a">delta</b>, an <b class="g">end</b> — are not three messages; they're the birth, growth, and death of a single growing message."</div>
+      </section>
+
+      <!-- 2 -->
+      <section class="sec">
+        <div class="h"><span class="n">2</span><span class="t">What you declare when you call it</span></div>
+        <p class="intro">You hand it three of your codec's event <code class="inl">type</code>s and tell it which fields carry the identity and the growing text:</p>
+        <pre class="code"><span class="kw">stream</span>(<span class="str">'text'</span>, {                              <span class="cm">// the family id — the wire "kind"</span>
+  start: <span class="str">'response.content_part.added'</span>,       <span class="cm">// the birth event</span>
+  delta: <span class="str">'response.output_text.delta'</span>,        <span class="cm">// a growth increment</span>
+  end:   <span class="str">'response.output_text.done'</span>,         <span class="cm">// the death event</span>
+  idField:    <span class="id">'item_id'</span>,     <span class="cm">// which field names *this* stream</span>
+  deltaField: <span class="dl">'delta'</span>,       <span class="cm">// which field holds the growth increment</span>
+  fields: [<span class="fl">fOutputIndex</span>, <span class="fl">fContentIndex</span>, <span class="fl">fPart</span>],  <span class="cm">// extra props to carry on start/end</span>
+})</pre>
+        <div class="anno">
+          <div><span class="k">start / delta / end</span> — three <em>distinct</em> event types. Their only structural job is to mark the three phases of one stream.</div>
+          <div><span class="k id">idField</span> — the property whose value <b>is the stream's identity</b>. It becomes the Ably message's handle (and the <code>stream-id</code> header). Must be one top-level string, present on all three phases.</div>
+          <div><span class="k dl">deltaField</span> — the property on the <em>delta</em> event holding the text fragment to append.</div>
+          <div><span class="k fl">fields</span> — any other properties to auto-carry as headers on the start/end (e.g. <code>output_index</code>, <code>content_index</code>, <code>part</code>). See §5 for how they serialise.</div>
+        </div>
+      </section>
+
+      <!-- 3 -->
+      <section class="sec">
+        <div class="h"><span class="n">3</span><span class="t">Encode: the three ops it compiles to</span></div>
+        <p class="intro">
+          At encode time (<code class="inl">encoder.ts</code>) each phase becomes one channel operation. Watch the single message
+          <b class="c">S</b> grow:
+        </p>
+        <div class="flow">
+          <div class="fhd"><div>your event</div><div>channel operation → message S</div></div>
+          <div class="frow start"><div class="ev">content_part.added <span style="color:var(--green)">item_id=m1</span></div><div class="op"><span class="fn">startStream</span> → <span class="msgstate">publish S · data:"" · status:streaming · stream-id:m1</span></div></div>
+          <div class="frow"><div class="ev">output_text.delta "Hel"</div><div class="op"><span class="fn">appendStream</span> → <span class="grow">append "Hel"</span> · <span class="msgstate">S = "Hel"</span></div></div>
+          <div class="frow"><div class="ev">output_text.delta "lo wor"</div><div class="op"><span class="fn">appendStream</span> → <span class="grow">append "lo wor"</span> · <span class="msgstate">S = "Hello wor"</span></div></div>
+          <div class="frow"><div class="ev">output_text.delta "ld"</div><div class="op"><span class="fn">appendStream</span> → <span class="grow">append "ld"</span> · <span class="msgstate">S = "Hello world"</span></div></div>
+          <div class="frow end"><div class="ev">output_text.done</div><div class="op"><span class="fn">closeStream</span> → <span class="msgstate">append · status:complete</span> · flush</div></div>
+        </div>
+        <ul class="tight">
+          <li><b><code>startStream(streamId, …)</code></b> publishes one message and Ably returns its <code>serial</code> — the permanent handle. The encoder remembers <code>streamId → serial</code> and starts an <code>accumulated</code> string. The <code>fields</code> are stamped as codec headers here.</li>
+          <li><b><code>appendStream(streamId, fragment)</code></b> appends to that serial (<code>appendMessage({ serial, data: fragment })</code>), adding to <code>accumulated</code>. Fire-and-forget (batched, flushed on close). <b>Every append re-stamps the start's headers</b> — Ably replaces the whole <code>extras</code> object per append, so they'd vanish otherwise.</li>
+          <li><b><code>closeStream(streamId, …)</code></b> appends a final fragment flipping <code>status:complete</code>, then awaits all pending appends.</li>
+        </ul>
+        <div class="callout">The result on the channel is <b>one message that grew from <code>""</code> to <code>"Hello world"</code></b> — carrying a <code>status</code> header that walked <code>streaming → complete</code>. Not five messages: <b>one</b>.</div>
+      </section>
+
+      <!-- 4 -->
+      <section class="sec">
+        <div class="h"><span class="n">4</span><span class="t">Decode: the exact mirror image</span></div>
+        <p class="intro">
+          The <code class="inl">DecoderCore</code> (<code class="inl">decoder.ts</code>) is <code class="inl">stream()</code> run
+          backwards: it maps Ably message <em>actions</em> back into your codec's <em>events</em>, via the descriptor's
+          build hooks. An append literally becomes a delta:
+        </p>
+        <table class="mir">
+          <tr><th style="width:32%">inbound Ably action</th><th style="width:26%">decoder hook</th><th>your event</th></tr>
+          <tr><td class="m">message.create (streamed)</td><td class="d">buildStart</td><td class="e">content_part.added</td></tr>
+          <tr><td class="m">message.append</td><td class="d">buildDelta(tracker, fragment)</td><td class="e">output_text.delta</td></tr>
+          <tr><td class="m">message.append · status:complete</td><td class="d">buildEnd</td><td class="e">output_text.done</td></tr>
+          <tr><td class="m">message.create (not streamed)</td><td class="d">decodeDiscrete</td><td class="e">output_item.added, …</td></tr>
+        </table>
+        <p class="intro" style="margin-top:14px">
+          The append's own <code class="inl">data</code> <em>is</em> the fragment: <code class="inl">buildDelta</code> emits
+          <code class="inl">{ item_id: streamId, delta: fragment }</code> straight to the reducer. So the reducer replays the
+          same <b class="c">start</b> → <b class="a">delta*</b> → <b class="g">end</b> shape it would have seen live.
+        </p>
+        <div class="callout"><b>Automatic rebuild vs. the <code>decodeEnd</code> override — why some hooks are default and some are custom.</b>
+          Each build step is <b>automatic by default</b>: reconstruct the chunk from the declared <code>fields</code> + the stream
+          id (+ the fragment, for a delta). That suffices whenever a chunk is fully described by its headers — which
+          <b>start</b> and <b>delta</b> always are (start has no text yet; a delta <em>is</em> the fragment). The <b>end</b> is
+          the exception: <code>output_text.done</code> must carry the <b>full accumulated text</b>, which lives in the stream
+          tracker (<code>accumulated</code>), <em>not</em> in any header — so the field-rebuild can't produce it. That's why the
+          codec supplies <code>decodeEnd</code>: an escape hatch handed <code>{ streamId, accumulated, closingHeaders }</code> to
+          build the real end chunk. <code>buildEnd</code> is just the driver step — <em>"use <code>decodeEnd</code> if the codec
+          gave one, else do the automatic rebuild."</em> The rule everywhere: <b>automatic from headers; a hook only where the
+          headers can't express the chunk</b> (the end's accumulated text; or <code>decodeDiscrete</code>, for when a streamed
+          family arrives as a plain message via history compaction).</div>
+
+        <div class="callout blue"><b>The load-bearing guarantee of the entire codec — internalise this one.</b>
+          <b>However a client arrives at a run — subscribed from the very first token, opening a second tab mid-reply,
+          reconnecting after a dropped connection, or hydrating the whole conversation from history long after it finished — the
+          reducer is handed the <em>same</em> coherent stream of events, semantically equivalent to what the agent originally
+          emitted.</b> Where the wire physically cannot reproduce an event (a discrete envelope a late joiner never received),
+          the codec <b>synthesises</b> it (<code>decodeLifecycle</code>) so the sequence stays whole. The reducer therefore
+          <b>never branches on "how did I get here?"</b> — there is no live-path vs history-path vs mid-join-path logic in it. It
+          folds <em>one</em> contract, and every possible arrival route is engineered — by the encode/decode inversion, by the
+          stream tracker, by synthesis — to deliver exactly that contract. That is the whole reason the two-layer split exists.</div>
+        <div class="callout"><b>But it's a reconstruction, not a byte-replay</b> — three ways it differs, each of which explains a real bit of the codec:
+          <ul class="tight" style="margin-top:6px">
+            <li><b>Lossy fields.</b> Only declared <code>fields</code> survive; a rebuilt <code>output_text.done</code> has <code>sequence_number: 0</code>, and deltas carry no <code>output_index</code>/<code>content_index</code>. → why the reducer keys on the stable <code>item_id</code>.</li>
+            <li><b>Re-chunking.</b> A late joiner / history read gets the message as its <em>accumulated value</em> in one update, which the decoder expands into start + <em>one big</em> delta + end. The reducer folds to the same item whether it saw 50 fragments or 1. → why mid-stream join "just works" for text.</li>
+            <li><b>Missing discretes.</b> The <code>output_item.added</code> envelope is a separate message a late joiner may miss. → why <code>decodeLifecycle</code> synthesises it.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- 5 -->
+      <section class="sec">
+        <div class="h"><span class="n">5</span><span class="t">How <code style="font-family:var(--mono);font-size:16px;color:var(--cyan)">fields</code> actually get onto the wire</span></div>
+        <p class="intro">
+          You don't hand-stamp <code class="inl">output_index</code> etc. — you <em>declare</em> them, and the driver reads them off
+          the chunk automatically. A <code class="inl">HeaderField</code>'s key does double duty: it's <b>both</b> the wire header
+          name <b>and</b> the chunk property it reads.
+        </p>
+        <pre class="code"><span class="cm">// fields.ts — one binding fixes the header key AND the property name</span>
+<span class="kw">const</span> <span class="fl">fOutputIndex</span> = <span class="kw">jsonField</span>&lt;number, <span class="str">'output_index'</span>&gt;(<span class="str">'output_index'</span>);
+
+<span class="cm">// field-bag.ts — encode: read chunk[key], write header[key]</span>
+<span class="kw">for</span> (<span class="kw">const</span> field <span class="kw">of</span> fields) field.<span class="kw">write</span>(rec, chunk[field.key]);   <span class="cm">// writeFields</span>
+<span class="cm">// decode is the inverse: read header[key], JSON.parse, put back on the chunk (readFields)</span></pre>
+        <ul class="tight">
+          <li>The <code>fields</code> are read off the <b>start</b> chunk at <code>startStream</code> (and the <b>end</b> chunk at <code>closeStream</code>) — <em>not</em> off each delta. So their values are the start's, frozen.</li>
+          <li>Because appends re-stamp the start headers, those frozen values ride on <b>every append</b> — so <code>output_index</code>, <code>content_index</code>, and <code>part</code> are physically present on every fragment. (<code>part</code> is a snapshot: its <code>type</code> is real, but its <code>text</code> stays <code>""</code> — the growing text lives in the message data, not the header.)</li>
+          <li><b>Yet <code>buildDelta</code> ignores them</b> — it only rebuilds <code>{ idField, deltaField }</code>. The <code>fields</code> feed <code>buildStart</code>/<code>buildEnd</code> only. So the info is on the wire; the <code>stream()</code> decode path just doesn't wire it into deltas. <span style="color:var(--amber)">(That's where the limitations live — not in the wire.)</span></li>
+        </ul>
+      </section>
+
+      <!-- 6 -->
+      <section class="sec">
+        <div class="h"><span class="n">6</span><span class="t">The constraint that falls straight out of this</span></div>
+        <p class="intro">Everything hangs on one thing: <b>a stream is one Ably message, identified by one <code class="inl">serial</code>, keyed by one <code class="inl">idField</code> string.</b> And a decoded delta is nothing but <code class="inl">(streamId, fragment)</code>. So a stream's identity must be:</p>
+        <ul class="tight">
+          <li><b>one string</b> — no composites (one message = one id);</li>
+          <li><b>present on the start event</b> — to open the message and stamp <code>stream-id</code>;</li>
+          <li><b>recoverable on every delta</b> — so each fragment routes to the right message;</li>
+          <li><b>unique</b> — so concurrent/repeated streams don't collide on one serial.</li>
+        </ul>
+        <div class="callout">Every streaming limitation is the <em>same</em> failure of that one requirement — the real identity isn't expressible as a single top-level string:
+          <ul class="tight" style="margin-top:6px">
+            <li><b>function-call args</b> — the id is nested (<code>item.id</code>) on the only possible start event;</li>
+            <li><b>reasoning summaries</b> — <code>item_id</code> isn't unique (many summary parts per item → needs <code>+ summary_index</code>);</li>
+            <li><b>multiple text parts in one message</b> — <code>item_id</code> again isn't unique (needs <code>+ content_index</code>).</li>
+          </ul>
+          The single-part text case works only because <code>item_id</code> alone happens to suffice. See the companion doc
+          <code>streaming-fncall-args-and-reasoning.html</code> for the full treatment.
+        </div>
+      </section>
+
+      <div class="verdict">
+        <h2>The whole thing in three lines</h2>
+        <p><b>Encode:</b> <code>stream()</code> turns a start/delta/end trio into <code>publish-once → append-the-deltas → close</code> — one Ably message that grows, threaded by <code>idField</code>.</p>
+        <p><b>Decode:</b> the DecoderCore runs it backwards — create/append/append-complete become start/delta/end events — so the reducer folds the same event contract on both sides of the wire.</p>
+        <p><b>Consequence:</b> because it's one message keyed by one string, a stream's identity must be a single top-level id present on start and every delta — and that single requirement is the root of every streaming limitation.</p>
+      </div>
+
+      <div class="footref">
+        Grounded in: <code>src/core/codec/encoder.ts</code> (<code>startStream</code>/<code>appendStream</code>/<code>closeStream</code>, persistent-header re-stamping),
+        <code>decoder.ts</code> (action → hook dispatch, <code>buildDelta</code>, the version guard, first-contact/prefix-match re-chunking),
+        <code>output-descriptors.ts</code> + <code>output-descriptor-{encoder,decoder}.ts</code> (the <code>stream</code> spec and build hooks),
+        <code>field-bag.ts</code> / <code>fields.ts</code> (<code>writeFields</code>/<code>readFields</code>, the key-is-header-and-property binding).
+        Companions: <code>openai-streaming-events-cheatsheet.html</code>, <code>streaming-fncall-args-and-reasoning.html</code>, <code>decode-lifecycle-mid-stream-join.html</code>.
+      </div>
+    </div>
+  </body>
+</html>

@@ -48,41 +48,71 @@ export const createOutputDescriptorEncoder = <U extends { type: string }>(
   wireName: string,
 ): OutputDescriptorEncoder<U> => {
   const { discreteByType, wildcards } = partitionOutputEvents(descriptors);
-  const streamByPhase = new Map<string, { descriptor: OutputStreamDescriptor<U>; phase: 'start' | 'delta' | 'end' }>();
+  // A start type may be shared across families (resolved by `startWhen`), so it
+  // maps to a list of candidates; delta/end types are unique per family (1:1).
+  const streamStartsByType = new Map<string, OutputStreamDescriptor<U>[]>();
+  const streamContByType = new Map<string, { descriptor: OutputStreamDescriptor<U>; phase: 'delta' | 'end' }>();
   // Types the codec deliberately drops on encode (see the `ignore` construct):
   // skipped silently, where any other undescribed type throws.
   const ignoredTypes = new Set<string>();
 
   for (const descriptor of descriptors) {
     if (descriptor.construct === 'stream') {
-      streamByPhase.set(descriptor.start, { descriptor, phase: 'start' });
-      streamByPhase.set(descriptor.delta, { descriptor, phase: 'delta' });
-      streamByPhase.set(descriptor.end, { descriptor, phase: 'end' });
+      const starts = streamStartsByType.get(descriptor.start) ?? [];
+      starts.push(descriptor);
+      streamStartsByType.set(descriptor.start, starts);
+      streamContByType.set(descriptor.delta, { descriptor, phase: 'delta' });
+      streamContByType.set(descriptor.end, { descriptor, phase: 'end' });
     } else if (descriptor.construct === 'ignore') {
       ignoredTypes.add(descriptor.type);
     }
   }
 
+  // Encode one phase of a resolved stream family — shared by the start-dispatch
+  // and continuation-dispatch paths so they can't drift.
+  const encodeStreamPhase = async (
+    descriptor: OutputStreamDescriptor<U>,
+    phase: 'start' | 'delta' | 'end',
+    chunk: U,
+    core: EncoderCore,
+    ctx: OutputEncodeContext,
+  ): Promise<void> => {
+    const h: HeaderBuilder<U> = (c, keys) => writeFields(descriptor.fields, descriptor.kind, c, keys);
+    // CAST: streamId.field/deltaField are string-valued chunk keys by construction.
+    const streamId = prop(chunk, descriptor.streamId.field) as string;
+    if (phase === 'start') {
+      await core.startStream(streamId, { name: wireName, data: '', codecHeaders: h(chunk) }, ctx.opts);
+    } else if (phase === 'delta') {
+      core.appendStream(streamId, prop(chunk, descriptor.deltaField) as string);
+    } else if (descriptor.onEnd) {
+      await descriptor.onEnd(chunk, core, { h, name: wireName, messageId: ctx.messageId, opts: ctx.opts });
+    } else {
+      await core.closeStream(streamId, { name: wireName, data: '', codecHeaders: h(chunk) });
+    }
+  };
+
   return {
     encode: async (chunk, core, ctx) => {
       const { type } = chunk;
 
-      const streamEntry = streamByPhase.get(type);
-      if (streamEntry) {
-        const { descriptor, phase } = streamEntry;
-        const h: HeaderBuilder<U> = (c, keys) => writeFields(descriptor.fields, descriptor.kind, c, keys);
-        // CAST: streamId.field/deltaField are string-valued chunk keys by construction.
-        const streamId = prop(chunk, descriptor.streamId.field) as string;
-        if (phase === 'start') {
-          await core.startStream(streamId, { name: wireName, data: '', codecHeaders: h(chunk) }, ctx.opts);
-        } else if (phase === 'delta') {
-          core.appendStream(streamId, prop(chunk, descriptor.deltaField) as string);
-        } else if (descriptor.onEnd) {
-          await descriptor.onEnd(chunk, core, { h, name: wireName, messageId: ctx.messageId, opts: ctx.opts });
-        } else {
-          await core.closeStream(streamId, { name: wireName, data: '', codecHeaders: h(chunk) });
+      // Stream dispatch. A start type may be shared across families, resolved by
+      // each family's `startWhen` discriminator; a chunk of a start type that
+      // matches no family is not a stream event and falls through to discrete
+      // dispatch (its `event()` descriptor handles it). Delta/end types are unique.
+      const startCandidates = streamStartsByType.get(type);
+      if (startCandidates) {
+        const descriptor = startCandidates.find((d) => d.startWhen?.(chunk) ?? true);
+        if (descriptor) {
+          await encodeStreamPhase(descriptor, 'start', chunk, core, ctx);
+          return;
         }
-        return;
+        // Declined: no family claims this start chunk — fall through to discrete.
+      } else {
+        const cont = streamContByType.get(type);
+        if (cont) {
+          await encodeStreamPhase(cont.descriptor, cont.phase, chunk, core, ctx);
+          return;
+        }
       }
 
       const descriptor = discreteByType.get(type) ?? wildcards.find((w) => w.match?.(type));

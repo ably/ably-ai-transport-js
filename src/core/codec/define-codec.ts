@@ -337,15 +337,15 @@ const rejectReservedFieldKeys = (fields: readonly HeaderField<unknown>[], owner:
  * `defineCodec` call. Catches author mistakes the drivers would otherwise
  * surface as silent last-wins routing or encode/decode asymmetry:
  *
- * - duplicate dispatch literals within a namespace — the domain chunk `type`
- *   namespace (discrete event types + stream phase types, which drive encode
- *   dispatch) and the wire `kind` namespace (discrete event types + stream
- *   family kinds, which drive decode dispatch);
+ * - duplicate wire `kind`s (discrete event types + stream family kinds, which
+ *   drive decode dispatch);
+ * - duplicate encode-dispatch dispositions — a stream delta/end phase, a discrete
+ *   event, or an ignored type must each be uniquely owned. A stream `start` type
+ *   is exempt: it may be shared across families (resolved by `startWhen`) and may
+ *   double as a discrete event/ignore (its decline target); its only forbidden
+ *   overlap is being another family's delta/end phase;
  * - duplicate input `kind`s and duplicate `partType`s within a batch;
  * - field bindings on the driver-reserved `kind` / `partType` header keys.
- * An ignored output type shares the chunk-`type` namespace, so declaring one
- * that an event/stream also handles (or listing it twice) trips the same
- * duplicate-literal check.
  * @param outputs - The assembled output descriptor table.
  * @param inputs - The assembled input descriptor table.
  */
@@ -353,25 +353,63 @@ const validateTables = <TInput, TOutput>(
   outputs: readonly OutputDescriptor<TOutput>[],
   inputs: readonly InputDescriptor<TInput>[],
 ): void => {
-  const chunkTypes = new Map<string, string>();
   const wireKinds = new Map<string, string>();
+  // Encode dispatch. A wire `type` has one encode disposition, with one
+  // deliberate exception: a stream `start` type may be **shared** across families
+  // (the encoder resolves it at encode time by each family's `startWhen`) and may
+  // also back a discrete `event`/`ignore` — a start whose discriminators all
+  // decline falls through to discrete dispatch. So starts are collected apart
+  // from the "sole disposition" literals — a stream delta/end phase, a discrete
+  // event, an ignored type — which must each be uniquely owned. The one overlap a
+  // start must NOT have (being another family's delta/end, which the start-first
+  // dispatch would shadow) is checked after the loop.
+  const soleDispatch = new Map<string, { owner: string; isContinuation: boolean }>();
+  const startTypes = new Map<string, string>();
+  const reserveDispatch = (literal: string, owner: string, isContinuation: boolean): void => {
+    const holder = soleDispatch.get(literal);
+    if (holder !== undefined) {
+      throw new Ably.ErrorInfo(
+        `unable to define codec; dispatch literal '${literal}' is declared by both ${holder.owner} and ${owner}`,
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+    soleDispatch.set(literal, { owner, isContinuation });
+  };
+
   for (const descriptor of outputs) {
     if (descriptor.construct === 'event') {
       const owner = `output event '${descriptor.type}'`;
-      reserve(chunkTypes, descriptor.type, owner);
       reserve(wireKinds, descriptor.type, owner);
+      reserveDispatch(descriptor.type, owner, false);
       rejectReservedFieldKeys(descriptor.fields, owner);
     } else if (descriptor.construct === 'stream') {
       const owner = `output stream '${descriptor.kind}'`;
       reserve(wireKinds, descriptor.kind, owner);
-      for (const phase of [descriptor.start, descriptor.delta, descriptor.end]) {
-        reserve(chunkTypes, phase, owner);
-      }
+      reserveDispatch(descriptor.delta, owner, true);
+      reserveDispatch(descriptor.end, owner, true);
+      // A start is not reserved for exclusive ownership (shared / decline-target
+      // overlaps are legal); its one illegal overlap is checked below.
+      startTypes.set(descriptor.start, owner);
       rejectReservedFieldKeys(descriptor.fields, owner);
     } else {
-      // An ignored type produces no wire output; reserving it in the chunk-type
-      // namespace catches an author both handling and ignoring the same type.
-      reserve(chunkTypes, descriptor.type, `ignored output '${descriptor.type}'`);
+      // An ignored type produces no wire output; reserving it as a sole
+      // disposition catches an author both handling and ignoring the same type.
+      reserveDispatch(descriptor.type, `ignored output '${descriptor.type}'`, false);
+    }
+  }
+
+  // A stream start that is also some family's delta/end phase would never route
+  // as that continuation (the encoder tries the start path first), so forbid it.
+  // Overlap with a discrete event/ignore (a decline target) is legal and skipped.
+  for (const [start, startOwner] of startTypes) {
+    const holder = soleDispatch.get(start);
+    if (holder?.isContinuation === true) {
+      throw new Ably.ErrorInfo(
+        `unable to define codec; stream start '${start}' (${startOwner}) collides with the delta/end phase of ${holder.owner}`,
+        ErrorCode.InvalidArgument,
+        400,
+      );
     }
   }
 

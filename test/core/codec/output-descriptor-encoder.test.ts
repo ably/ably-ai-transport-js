@@ -67,7 +67,7 @@ const makeCore = () => {
 
 const ctx = { messageId: undefined, opts: undefined };
 
-describe('output descriptor encoder — discriminated start (Cap 3)', () => {
+describe('output descriptor encoder — discriminated start', () => {
   it('resolves a shared start type to the family named by startWhen', async () => {
     const { core, startStream, publishDiscrete } = makeCore();
     await encoder.encode({ type: 'part.added', item_id: 'm1', part: { type: 'text' } }, core, ctx);

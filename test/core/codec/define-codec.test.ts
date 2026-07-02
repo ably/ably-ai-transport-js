@@ -299,9 +299,11 @@ describe('defineCodec — wire-controlled kind robustness', () => {
 
 type NoteOutput =
   | { type: 'note'; text: string; kind?: string }
-  | { type: 'note-start'; id: string }
+  | { type: 'note-start'; id: string; variant?: 'a' | 'b' }
   | { type: 'note-delta'; id: string; delta: string }
-  | { type: 'note-end'; id: string };
+  | { type: 'note-end'; id: string }
+  | { type: 'note-delta-b'; id: string; delta: string }
+  | { type: 'note-end-b'; id: string };
 
 interface PingInput {
   kind: 'ping';
@@ -382,10 +384,67 @@ describe('defineCodec — table validation', () => {
     ).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
   });
 
-  it('throws when two streams share a phase literal', () => {
+  it('throws when two streams share a delta/end phase literal', () => {
+    // Two identical streams share their delta/end phases (a delta/end must be
+    // uniquely owned); the shared start is allowed, but the delta collision is not.
     expect(() =>
       defineWith(
         ({ stream }) => [stream('notes-a', noteStream), stream('notes-b', noteStream)],
+        ({ event }) => [event('ping')],
+      ),
+    ).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
+  });
+
+  it('accepts two streams sharing a start type discriminated by startWhen', () => {
+    const streamA = {
+      start: 'note-start',
+      delta: 'note-delta',
+      end: 'note-end',
+      streamId: { field: 'id' },
+      deltaField: 'delta',
+      fields: [],
+      startWhen: (c: Extract<NoteOutput, { type: 'note-start' }>) => c.variant === 'a',
+    } as const;
+    const streamB = {
+      start: 'note-start',
+      delta: 'note-delta-b',
+      end: 'note-end-b',
+      streamId: { field: 'id' },
+      deltaField: 'delta',
+      fields: [],
+      startWhen: (c: Extract<NoteOutput, { type: 'note-start' }>) => c.variant === 'b',
+    } as const;
+    expect(() =>
+      defineWith(
+        ({ stream }) => [stream('notes-a', streamA), stream('notes-b', streamB)],
+        ({ event }) => [event('ping')],
+      ),
+    ).not.toThrow();
+  });
+
+  it('accepts a stream start type that also backs a discrete event (its decline target)', () => {
+    expect(() =>
+      defineWith(
+        ({ event, stream }) => [event('note-start'), stream('notes', noteStream)],
+        ({ event }) => [event('ping')],
+      ),
+    ).not.toThrow();
+  });
+
+  it("throws when a stream start collides with another stream's delta/end phase", () => {
+    // `note-delta` is streamC's start but noteStream's delta — the start-first
+    // dispatch would shadow the continuation, so this must be rejected.
+    const streamC = {
+      start: 'note-delta',
+      delta: 'note-delta-b',
+      end: 'note-end-b',
+      streamId: { field: 'id' },
+      deltaField: 'delta',
+      fields: [],
+    } as const;
+    expect(() =>
+      defineWith(
+        ({ stream }) => [stream('notes', noteStream), stream('notes-c', streamC)],
         ({ event }) => [event('ping')],
       ),
     ).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);

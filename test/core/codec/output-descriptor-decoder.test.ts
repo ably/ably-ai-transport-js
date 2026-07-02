@@ -31,7 +31,7 @@ const trackerWith = (kind: string, streamId: string, codecHeaders: Record<string
   closed: false,
 });
 
-describe('output descriptor decoder — delta reconstruction (Cap 2)', () => {
+describe('output descriptor decoder — delta reconstruction', () => {
   it('rebuilds the delta from deltaFields, not the start fields', () => {
     const decoder = createOutputDescriptorDecoder<U>([
       stream('x', {
@@ -111,5 +111,23 @@ describe('output descriptor decoder — delta reconstruction (Cap 2)', () => {
     expect(decoder.buildDelta(tracker, 'abc')).toEqual([
       { type: 'x-delta', item_id: 'm2', content_index: 99, delta: 'ABC' },
     ]);
+  });
+
+  it('rebuilds a delta carrying only the fragment when deltaFields is omitted', () => {
+    const decoder = createOutputDescriptorDecoder<U>([
+      stream('z', {
+        start: 'x-start',
+        delta: 'x-delta',
+        end: 'x-end',
+        streamId: { field: 'item_id' },
+        deltaField: 'delta',
+        fields: [fItemId],
+        // deltaFields omitted — the delta needs no fields beyond the fragment.
+      }),
+    ]);
+
+    // No deltaFields and no id echo: the rebuilt delta carries only deltaField.
+    const tracker = trackerWith('z', 'm9', { item_id: 'm9' });
+    expect(decoder.buildDelta(tracker, 'Yo')).toEqual([{ type: 'x-delta', delta: 'Yo' }]);
   });
 });

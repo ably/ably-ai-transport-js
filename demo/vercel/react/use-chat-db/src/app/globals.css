@@ -139,3 +139,27 @@
   -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 1.5rem), transparent);
   mask-image: linear-gradient(to bottom, black calc(100% - 1.5rem), transparent);
 }
+
+/* ---------------------------------------------------------------------------
+ * `shimmer` — an animated text shimmer for live status (e.g. "Thinking…"),
+ * another utility the installed shadcn/tailwind.css (4.11) does not ship.
+ * Uses the theme's muted/foreground tokens so it reads in light and dark.
+ * ------------------------------------------------------------------------- */
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--muted-foreground) 35%,
+    var(--foreground) 50%,
+    var(--muted-foreground) 65%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 1.6s linear infinite;
+}

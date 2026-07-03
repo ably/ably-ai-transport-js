@@ -390,7 +390,8 @@ const validateTables = <TInput, TOutput>(
       reserve(wireKinds, descriptor.type, owner);
       reserveDispatch(descriptor.type, owner, false);
       rejectReservedFieldKeys(descriptor.fields, owner);
-    } else if (descriptor.construct === 'stream') {
+    } else {
+      // The only other construct is 'stream' (the union is event | stream).
       const owner = `output stream '${descriptor.kind}'`;
       reserve(wireKinds, descriptor.kind, owner);
       reserveDispatch(descriptor.delta, owner, true);

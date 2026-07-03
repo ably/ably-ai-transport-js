@@ -349,6 +349,16 @@ export interface RunNode<TProjection> {
    * invocation-id.
    */
   invocationId: string;
+  /**
+   * The most recent `ai-run-resume` event's invocation-id — the invocation
+   * that last (re-)took ownership of the run. Populated on every resume
+   * regardless of the state transition, so a `_applyRunSuspend` can ignore a
+   * suspend published by a now-retired invocation (typical race: the previous
+   * invocation's suspend publish loses to the next invocation's resume publish
+   * in wire order, and applying it afterwards would wrongly flip the run
+   * back to `suspended`). `undefined` if the run has not been resumed yet.
+   */
+  lastResumeInvocationId: string | undefined;
   /** Ably serial of the first observed message tagged with this run-id. Absent for optimistic Runs. */
   startSerial: string | undefined;
   /** Ably serial of the run-end lifecycle event, if observed. */

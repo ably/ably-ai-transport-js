@@ -1,10 +1,14 @@
-interface DemoStep {
+export interface DemoStep {
   title: string;
   action: React.ReactNode;
   demonstrates: string;
 }
 
-const STEPS: DemoStep[] = [
+// Baseline scenarios common to every demo built on ClientSession over Ably.
+// A concrete demo passes its own `steps` prop composed of these plus any
+// demo-specific additions (e.g. the checklist scenario for the LiveObjects
+// demo). Kept in the shared UI so demos don't each re-author the same text.
+export const COMMON_DEMO_STEPS: readonly DemoStep[] = [
   {
     title: 'Server-side tool call',
     action: (
@@ -35,19 +39,6 @@ const STEPS: DemoStep[] = [
     ),
     demonstrates:
       'getWeatherForecast pauses at approval-requested. Approve publishes a tool-approval-response event on the channel; the agent resumes and the result lands on the original message.',
-  },
-  {
-    title: 'LiveObjects checklist',
-    action: (
-      <>
-        Ask:{' '}
-        <span className="font-medium text-zinc-100">
-          &ldquo;write me a short blog post about Ably — outline it, draft it, then tidy it up&rdquo;
-        </span>
-      </>
-    ),
-    demonstrates:
-      'The assistant plans a task checklist in Ably LiveObjects and flips each step to done as it works. The widget below the chat renders the live progress and restores it on reload.',
   },
   {
     title: 'Multi-client sync',
@@ -99,7 +90,7 @@ const STEPS: DemoStep[] = [
   },
 ];
 
-export function IntroCard() {
+export function IntroCard({ steps = COMMON_DEMO_STEPS }: { steps?: readonly DemoStep[] } = {}) {
   return (
     <div className="mx-auto max-w-2xl space-y-6 py-8">
       <header className="space-y-2">
@@ -114,7 +105,7 @@ export function IntroCard() {
       </header>
 
       <ol className="space-y-4">
-        {STEPS.map((step, i) => (
+        {steps.map((step, i) => (
           <li
             key={step.title}
             className="flex gap-3"

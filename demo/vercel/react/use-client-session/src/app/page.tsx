@@ -1,16 +1,44 @@
 'use client';
 
-import { Providers, useAblyReady, SessionHooks } from './providers';
+import {
+  Providers,
+  useAblyReady,
+  SessionHooks,
+  Chat,
+  COMMON_DEMO_STEPS,
+  generateChannelSlug,
+  generateClientName,
+  type DemoStep,
+} from '@ably-ai-demos/frontend';
 import { OBJECT_MODES } from '@ably/ai-transport/react';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
-import { Chat } from './components/chat';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
-import { generateChannelSlug, generateClientName } from './lib/channel-name';
+import { ChecklistSlot } from './components/checklist-slot';
 
 const { ClientSessionProvider } = SessionHooks;
 
 const CHANNEL_NAMESPACE = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ai:';
+
+// Base scenarios plus the LiveObjects checklist entry this demo demonstrates.
+// The base list is shared across demos; the checklist row is specific here.
+const DEMO_STEPS: readonly DemoStep[] = [
+  ...COMMON_DEMO_STEPS.slice(0, 3),
+  {
+    title: 'LiveObjects checklist',
+    action: (
+      <>
+        Ask:{' '}
+        <span className="font-medium text-zinc-100">
+          &ldquo;write me a short blog post about Ably — outline it, draft it, then tidy it up&rdquo;
+        </span>
+      </>
+    ),
+    demonstrates:
+      'The assistant plans a task checklist in Ably LiveObjects and flips each step to done as it works. The widget below the chat renders the live progress and restores it on reload.',
+  },
+  ...COMMON_DEMO_STEPS.slice(3),
+];
 
 function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; clientId?: string; limit?: number }) {
   const ready = useAblyReady();
@@ -30,6 +58,8 @@ function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; 
         clientId={clientId}
         historyLimit={limit}
         api="api/chat"
+        extraSlot={<ChecklistSlot />}
+        demoSteps={DEMO_STEPS}
       />
     </ClientSessionProvider>
   );
@@ -56,7 +86,10 @@ function ChatPage() {
   }, [paramChannel, paramClientId, channelName, clientId, router, searchParams]);
 
   return (
-    <Providers clientId={clientId}>
+    <Providers
+      clientId={clientId}
+      liveObjects
+    >
       <ChatWhenReady
         channelName={channelName}
         clientId={clientId}

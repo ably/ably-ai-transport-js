@@ -1679,31 +1679,53 @@ export class DefaultTree<
    * Run live so a resume under the same runId resumes it. Status/endSerial are
    * content, not structure, so this never mutates `_structuralVersion`; the
    * caller owns the emits.
+   *
+   * Retired-invocation guard: skip the suspend when a later invocation has
+   * already resumed this run (`lastResumeInvocationId` is set and doesn't
+   * match the incoming event's invocation-id). This suppresses the race
+   * where the previous invocation's suspend publish loses to the next
+   * invocation's resume publish in wire order, so applying the suspend
+   * afterwards would wrongly flip a legitimately-active run back to
+   * `suspended`.
    * @param event - The run-suspend lifecycle event.
    */
   private _applyRunSuspend(event: RunLifecycleEvent & { type: 'suspend' }): void {
     const run = this._nodeIndex.get(event.runId);
-    if (run?.node.kind === 'run') {
-      run.node.state = { status: 'suspended' };
-      run.node.endSerial = event.serial;
-      this._recordActivity(run, event.timestamp);
+    if (run?.node.kind !== 'run') return;
+    if (
+      run.node.lastResumeInvocationId !== undefined &&
+      event.invocationId !== '' &&
+      run.node.lastResumeInvocationId !== event.invocationId
+    ) {
+      return;
     }
+    run.node.state = { status: 'suspended' };
+    run.node.endSerial = event.serial;
+    this._recordActivity(run, event.timestamp);
   }
 
   /**
    * Apply a run-resume lifecycle event: re-enter an already-started run by
    * flipping a suspended run back to 'active'. Pure re-entry — it carries no
    * parent/forkOf and does not promote startSerial (the original run-start owns
-   * the run's structure). Only a suspended run resumes: a no-op when the run
-   * isn't known (e.g. a resume replayed from a newer history page before its
-   * run-start) and a no-op for an already-active or terminal
-   * (complete/cancelled/error) run — a stray resume must never resurrect a run
-   * that has ended. The caller owns the emits.
+   * the run's structure). Only a suspended run flips status: a no-op state
+   * transition when the run isn't known (e.g. a resume replayed from a newer
+   * history page before its run-start) and a no-op for an already-active or
+   * terminal (complete/cancelled/error) run — a stray resume must never
+   * resurrect a run that has ended.
+   *
+   * Regardless of whether the state transitions, the resume's invocation-id
+   * is recorded as `lastResumeInvocationId` so `_applyRunSuspend` can filter
+   * out a retired invocation's late suspend. The caller owns the emits.
    * @param event - The run-resume lifecycle event.
    */
   private _applyRunResume(event: RunLifecycleEvent & { type: 'resume' }): void {
     const run = this._nodeIndex.get(event.runId);
-    if (run?.node.kind === 'run' && run.node.state.status === 'suspended') {
+    if (run?.node.kind !== 'run') return;
+    if (event.invocationId !== '') {
+      run.node.lastResumeInvocationId = event.invocationId;
+    }
+    if (run.node.state.status === 'suspended') {
       run.node.state = { status: 'active' };
       this._recordActivity(run, event.timestamp);
     }
@@ -1846,6 +1868,7 @@ export class DefaultTree<
       regeneratesCodecMessageId: params.regeneratesCodecMessageId,
       clientId: params.clientId,
       invocationId: params.invocationId,
+      lastResumeInvocationId: undefined,
       state: { status: 'active' },
       projection: this._codec.init(),
       startSerial: params.startSerial,

@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import type { UIMessage } from 'ai';
-import { MessageBubble } from '../message-bubble';
+import { MessageBubble } from '../../index';
 
 // MessageBubble is a pure renderer: the list glue (MessageList) derives the
 // per-message step attribution from the View's `run.steps` and passes it as the

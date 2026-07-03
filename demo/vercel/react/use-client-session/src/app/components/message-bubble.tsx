@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import type { UIMessage, DynamicToolUIPart } from 'ai';
+import { isToolUIPart, type UIMessage } from 'ai';
 import { ChevronLeftIcon, ChevronRightIcon, Loader2Icon } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Bubble, BubbleContent } from '@/components/ui/bubble';
@@ -216,7 +216,7 @@ export function MessageBubble({
     .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
     .map((p) => p.text)
     .join('');
-  const hasToolParts = message.parts.some((p) => p.type === 'dynamic-tool');
+  const hasToolParts = message.parts.some((p) => isToolUIPart(p));
   // Assistant turn that is streaming but has produced no text or tool activity
   // yet — show a quiet loader instead of an empty row (no blinking caret).
   const showThinking = !isUser && status === 'streaming' && messageText.trim() === '' && !hasToolParts;
@@ -251,8 +251,8 @@ export function MessageBubble({
                     // The assistant reply is markdown; render it through Response
                     // (Streamdown) so lists, code, and emphasis format correctly.
                     if (part.type === 'text') return <Response key={i}>{part.text}</Response>;
-                    if (part.type === 'dynamic-tool') {
-                      const toolPart = part as DynamicToolUIPart;
+                    if (isToolUIPart(part)) {
+                      const toolPart = part;
                       return (
                         <ToolInvocation
                           key={i}
@@ -330,10 +330,9 @@ export function MessageBubble({
                     value={runId.slice(0, 8)}
                   />
                   {stepId && (
-                    <Badge
+                    <InfoBadge
                       label="step"
                       value={stepId.slice(0, 8) + (stepCount > 1 ? ` +${stepCount - 1}` : '')}
-                      color="bg-zinc-900 text-zinc-500"
                     />
                   )}
                   {status && !isUser && <StatusBadge status={status} />}

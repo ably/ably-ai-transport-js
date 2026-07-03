@@ -205,6 +205,7 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
           onToolApprove={handleToolApprove}
           onToolDeny={handleToolDeny}
         />
+        <ChecklistWidget session={session} />
         <div className="border-t border-border">
           <SuggestionChips
             steps={unfinishedSteps}

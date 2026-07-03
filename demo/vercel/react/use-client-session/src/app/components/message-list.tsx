@@ -147,6 +147,10 @@ export function MessageList({
               // Translate the literal Run lifecycle state to the bubble's
               // rendering vocabulary: `'active'` → `'streaming'`.
               const bubbleStatus = run?.status === 'active' ? 'streaming' : run?.status;
+              // Surface the message's step alongside its run: the latest step id
+              // (with a +N count when the run ran several).
+              const steps = run?.steps ?? [];
+              const lastStep = steps[steps.length - 1];
               return (
                 // Anchor on the user's own turns (shadcn's convention): sending
                 // pins the new prompt to the top of the viewport while the reply
@@ -161,6 +165,8 @@ export function MessageList({
                     codecMessageId={codecMessageId}
                     clientId={run?.clientId || undefined}
                     runId={run?.runId}
+                    stepId={lastStep?.stepId}
+                    stepCount={steps.length}
                     status={bubbleStatus}
                     errorMessage={run?.error?.message}
                     hasSiblings={branch.hasSiblings}

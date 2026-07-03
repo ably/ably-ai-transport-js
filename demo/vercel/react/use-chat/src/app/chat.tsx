@@ -149,6 +149,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
             addToolApprovalResponse({ id: approvalId, approved: false, reason: 'User denied' })
           }
         />
+        <ChecklistWidget session={session} />
         <div className="border-t border-border">
           <SuggestionChips
             steps={unfinishedSteps}

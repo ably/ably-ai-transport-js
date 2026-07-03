@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ClientRun, RunStatus } from '@ably/ai-transport';
-import type { UIMessage, DynamicToolUIPart } from 'ai';
+import { isToolUIPart, type UIMessage } from 'ai';
 import { UIMessageCodec } from '@ably/ai-transport/vercel';
 import { useMessagesWithSeed } from '@ably/ai-transport/vercel/react';
 import { ArrowUpIcon, ExternalLinkIcon, SquareIcon } from 'lucide-react';

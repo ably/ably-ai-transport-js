@@ -269,7 +269,7 @@ export function MessageBubble({
                   {showThinking && (
                     <span className="inline-flex items-center gap-1.5 text-muted-foreground">
                       <Loader2Icon className="size-3.5 animate-spin" />
-                      Thinking…
+                      <span className="shimmer">Thinking…</span>
                     </span>
                   )}
                 </BubbleContent>

@@ -65,7 +65,8 @@ A codec no longer calls the tracker from hand-written decoder hooks. Instead it 
 ```typescript
 interface LifecyclePolicy<TOutput> {
   // keyed on the discrete codec `kind`; runs a tracker side effect and returns lead-in events to prepend.
-  // LifecycleDiscreteContext carries the inbound codec headers (e.g. to recover a stream's message id).
+  // LifecycleDiscreteContext carries the inbound codec headers (e.g. to recover a stream's message id)
+  // and the pre-decode message data (identity a codec carries in the payload, not the headers).
   onDiscrete?: Record<string, (runId: string, ctx: LifecycleDiscreteContext) => TOutput[]>;
   // lead-in prepended to a stream's start events (the mid-stream-join pre-roll)
   onStreamStart?: (runId: string, tracker: StreamTrackerState) => TOutput[];

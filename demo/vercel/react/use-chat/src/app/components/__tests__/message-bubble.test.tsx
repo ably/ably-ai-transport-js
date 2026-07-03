@@ -23,6 +23,8 @@ describe('<MessageBubble> thinking indicator', () => {
         message={assistant([])}
         clientId={undefined}
         runId={undefined}
+        stepId={undefined}
+        stepCount={0}
         status="streaming"
       />,
     );
@@ -36,6 +38,8 @@ describe('<MessageBubble> thinking indicator', () => {
         message={assistant([{ type: 'text', text: 'partial' }])}
         clientId={undefined}
         runId={undefined}
+        stepId={undefined}
+        stepCount={0}
         status="streaming"
       />,
     );
@@ -59,6 +63,8 @@ describe('<MessageBubble> thinking indicator', () => {
         message={assistant([toolPart])}
         clientId={undefined}
         runId={undefined}
+        stepId={undefined}
+        stepCount={0}
         status="streaming"
       />,
     );

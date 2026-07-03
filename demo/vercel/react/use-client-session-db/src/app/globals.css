@@ -152,12 +152,7 @@
   }
 }
 .shimmer {
-  background: linear-gradient(
-    90deg,
-    var(--muted-foreground) 35%,
-    var(--foreground) 50%,
-    var(--muted-foreground) 65%
-  );
+  background: linear-gradient(90deg, var(--muted-foreground) 35%, var(--foreground) 50%, var(--muted-foreground) 65%);
   background-size: 200% 100%;
   -webkit-background-clip: text;
   background-clip: text;

@@ -4,11 +4,12 @@
  * Produces a `ReadableStream<ResponseStreamEvent>` for one model turn: the
  * deterministic mock behind `MOCK_LLM` (e2e tests), otherwise a real OpenAI
  * `/responses` stream with the server-executed tools advertised. The default
- * model is `gpt-5.5` (a reasoning model, per OpenAI's current guidance); the
- * request opts into `reasoning: { summary: 'auto' }` so the model's summarised
- * "thinking" streams too (the codec's reasoning_summary_text family carries it).
- * The agentic loop in `agent-stream.ts` calls this once per turn, running any
- * tools the model invokes between calls.
+ * model is `gpt-5.5` (OpenAI's recommended default as of early July 2026).
+ * Setting `SHOW_REASONING` opts the request into `reasoning: { summary: 'auto' }` so the
+ * model's summarised "thinking" streams too (the codec's reasoning_summary_text
+ * family carries it); it is off by default so casual users of the demo don't burn
+ * reasoning tokens on every turn. The agentic loop in `agent-stream.ts` calls
+ * this once per turn, running any tools the model invokes between calls.
  */
 
 import OpenAI from 'openai';
@@ -55,11 +56,10 @@ export async function createResponseStream(
       // Advertise the server-executed tools; the agentic loop runs any the
       // model calls and continues the run (see `agent-stream.ts`).
       tools,
-      // Ask a reasoning model to stream its summarised "thinking"; the codec's
-      // reasoning_summary_text family carries it to the client. Off by default,
-      // and a trivial prompt yields an empty summary — a reasoning-heavy prompt
-      // is needed to see it.
-      reasoning: { summary: 'auto' },
+      // Opt into summarised reasoning (see the module comment for why it is
+      // gated); even on, a trivial prompt yields an empty summary — a
+      // reasoning-heavy prompt is needed to see it.
+      ...(process.env.SHOW_REASONING ? { reasoning: { summary: 'auto' } } : {}),
       stream: true,
     },
     { signal: req.signal },

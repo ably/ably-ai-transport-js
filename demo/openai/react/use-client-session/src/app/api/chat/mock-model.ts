@@ -101,8 +101,9 @@ function planReply(input: Responses.ResponseInputItem[]): ReplyPlan {
   }
 
   // A "think"/"reason" prompt streams a reasoning summary before the reply, so
-  // the demo shows the model's "thinking" (the real model needs no keyword —
-  // reasoning: { summary: 'auto' } is set on the request).
+  // the demo shows the model's "thinking". Always on for the mock — it burns no
+  // real tokens; the real model gates the same behaviour behind SHOW_REASONING
+  // (and needs no keyword).
   if (/\b(think|reason)\b/i.test(prompt)) {
     return {
       kind: 'text',

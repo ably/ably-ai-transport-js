@@ -32,7 +32,10 @@ describe('createMockResponseStream', () => {
 
   it('streams a reasoning summary before the reply for a "think" prompt', async () => {
     const events = await drain(
-      createMockResponseStream({ input: userInput('think through the 12-ball puzzle'), signal: new AbortController().signal }),
+      createMockResponseStream({
+        input: userInput('think through the 12-ball puzzle'),
+        signal: new AbortController().signal,
+      }),
     );
     const types = events.map((e) => e.type);
     // A reasoning item's summary streams (added -> deltas -> done) ahead of the

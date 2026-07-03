@@ -1162,43 +1162,48 @@ test.describe('use-chat demo - chat behaviour', () => {
     await expect.poll(async () => branchCounter(assistantBubbles(page).nth(2))).toBe('2 / 2');
   });
 
-  // checks: "Load older" works after a refresh.
+  // checks: after a refresh, limit=1 shows the newest reply and "Load older"
+  // pages back through the full conversation one message at a time.
   test('exploratory: pagination — Load older messages button is functional after a refresh', async ({
     page,
   }, testInfo) => {
-    // Smoke test the pagination control. We don't pin exact counts
-    // before/after because `useView({ limit })` is plumbed through a
-    // message-count-based fetcher that doesn't always withhold all
-    // older runs at a tiny limit; the meaningful check is that the
-    // "Load older" button surfaces (when there's older history) and
-    // clicking it doesn't error out.
+    // Build a two-turn conversation: [u:PAGE1, a:PAGE1, u:PAGE2, a:PAGE2].
+    // Open directly with limit=1 so the refresh below re-reads the same URL.
     await page.goto(freshChannelUrl(testInfo.title) + '&limit=1');
-
     await sendPrompt(page, 'Reply with the word PAGE1 and nothing else');
     await sendPrompt(page, 'Reply with the word PAGE2 and nothing else');
 
-    const url = page.url();
-    await page.goto(url);
+    // Refresh. `useView({ limit: 1 })` reveals exactly one older codecMessage
+    // (loadOlder paginates by codecMessage, not Run), so the newest visible
+    // message is the PAGE2 assistant reply — no user bubble is on the visible
+    // chain until "Load older" reveals earlier codecMessages one at a time.
+    await page.goto(page.url());
+    await expect.poll(async () => assistantBubbles(page).count(), { timeout: 30_000 }).toBe(1);
+    await expect.poll(async () => userBubbles(page).count()).toBe(0);
+    await expect.poll(async () => bubbleText(assistantBubbles(page).first())).toMatch(/PAGE2/);
 
-    // PAGE2 is always visible (most recent run).
-    await expect.poll(async () => userBubbles(page).count(), { timeout: 30_000 }).toBeGreaterThanOrEqual(1);
-    const bodyTextBeforeLoad = await page.evaluate(() => document.body.innerText);
-    expect(bodyTextBeforeLoad).toMatch(/PAGE2/);
+    // Older history remains, so the control is offered. The same button reads
+    // "Loading..." mid-fetch, so track that state to settle loads cleanly.
+    const loadOlder = page.getByRole('button', { name: /Load older messages/i });
+    const loadingButton = page.getByRole('button', { name: /Loading/i });
+    await expect(loadOlder).toBeVisible();
 
-    // Make older history reachable: keep clicking Load older until
-    // both prompts are visible (or the button disappears).
-    const startCount = await userBubbles(page).count();
-    for (let i = 0; i < 5 && (await userBubbles(page).count()) < 2; i++) {
-      const loadOlder = page.getByRole('button', { name: /Load older messages/i });
+    // Page back through history one click at a time until the whole conversation
+    // is visible again. Each click reveals exactly one older codecMessage.
+    for (let i = 0; i < 8; i++) {
+      await expect(loadingButton).toHaveCount(0); // let any in-flight load settle
+      if ((await userBubbles(page).count()) >= 2) break;
       if ((await loadOlder.count()) === 0) break;
+      const before = await allBubbles(page).count();
       await loadOlder.click();
-      await page.waitForTimeout(1000);
+      await expect.poll(async () => allBubbles(page).count()).toBe(before + 1);
     }
-    expect(await userBubbles(page).count()).toBeGreaterThan(startCount === 2 ? 1 : 1);
 
-    const bodyTextAfter = await page.evaluate(() => document.body.innerText);
-    expect(bodyTextAfter).toMatch(/PAGE1/);
-    expect(bodyTextAfter).toMatch(/PAGE2/);
+    // The full two-turn conversation is back in view — both prompts and both
+    // replies, with PAGE1 (the oldest turn) reached via "Load older".
+    await expect.poll(async () => userBubbles(page).count()).toBe(2);
+    await expect.poll(async () => assistantBubbles(page).count()).toBe(2);
+    await expect.poll(async () => bubbleContaining(page, 'PAGE1').count()).toBeGreaterThanOrEqual(1);
   });
 
   // checks: regenerating an earlier prompt's reply hides the later follow-up

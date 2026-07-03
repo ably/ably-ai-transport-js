@@ -270,6 +270,38 @@ describe('defineCodec — wire-controlled kind robustness', () => {
       { type: 'quirky', kind: 'decoded' },
     ]);
   });
+
+  it('passes the payload data to an onDiscrete repair (identity a codec carries off-header)', () => {
+    // A codec may key its repair on identity in the payload rather than the
+    // headers, so the context exposes the pre-decode wire data.
+    const dataCodec = defineCodec<NoopInput, QuirkyOutput>()({
+      reducer: {
+        init: (): FixtureProjection => ({ folded: [] }),
+        fold: (state: FixtureProjection): FixtureProjection => state,
+        getMessages: (): CodecMessage<NoopInput | QuirkyOutput>[] => [],
+      },
+      output: ({ event }) => [event('quirky', { data: { encode: () => '', decode: () => ({ kind: 'decoded' }) } })],
+      input: ({ event }) => [event('noop')],
+      decodeLifecycle: () => ({
+        onDiscrete: {
+          quirky: (_runId, ctx) => [{ type: 'quirky', kind: `saw:${JSON.stringify(ctx.data)}` }],
+        },
+      }),
+    });
+
+    const decoder = dataCodec.createDecoder();
+    const message = {
+      serial: 's1',
+      action: 'message.create',
+      name: EVENT_AI_OUTPUT,
+      data: { id: 'item-1' },
+      extras: { ai: { codec: { kind: 'quirky' }, transport: {} } },
+      // CAST: minimal InboundMessage stub — only the fields the decoder reads.
+    } as Ably.InboundMessage;
+
+    const { outputs } = decoder.decode(message);
+    expect(outputs[0]).toEqual({ type: 'quirky', kind: 'saw:{"id":"item-1"}' });
+  });
 });
 
 // ---------------------------------------------------------------------------

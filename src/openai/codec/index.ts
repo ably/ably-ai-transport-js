@@ -6,10 +6,10 @@
  * tables. `defineCodec` builds the generic encoder/decoder and merges the
  * well-known input factories internally.
  *
- * This increment supports streamed assistant text, a plain user message, and
- * server-side function calls; reasoning, refusals, hosted tools, client-side
- * tools, and mid-stream-join repair (`decodeLifecycle`) are added in later
- * increments.
+ * It streams assistant text, refusals, reasoning (summary and raw text) and
+ * function-call arguments, handles a plain user message and server-side
+ * function calls, and repairs mid-stream joins via `decodeLifecycle`.
+ * Client-side tools and hosted tools are added in later increments.
  *
  * ```ts
  * import { ResponsesCodec } from '@ably/ai-transport/openai';
@@ -20,6 +20,7 @@
  */
 
 import { defineCodec } from '../../core/codec/index.js';
+import { createResponsesDecodeLifecycle } from './decode-lifecycle.js';
 import { inputs, outputs } from './descriptors.js';
 import type { OpenAIInput, OpenAIOutput } from './events.js';
 import { fold, getMessages, init } from './reducer.js';
@@ -34,6 +35,7 @@ export const ResponsesCodec = defineCodec<OpenAIInput, OpenAIOutput>()({
   reducer: { init, fold, getMessages },
   output: outputs,
   input: inputs,
+  decodeLifecycle: createResponsesDecodeLifecycle,
 });
 
 export type { OpenAIInput, OpenAIItem, OpenAIOutput, OpenAITurn } from './events.js';

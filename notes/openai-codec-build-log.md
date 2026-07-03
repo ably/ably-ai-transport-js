@@ -83,8 +83,8 @@ construct is gone. Commits `da27b4ff`…`ed4c0376`:
 - **Groundwork (core)** — `9e1bce06` `streamId` (`{ field }` | extractor) replaces
   `idField`; `c5f0cf1e` `deltaFields` + `decodeDelta`, dropping the id-echo so a
   decoded delta carries its real fields; `279fc45e` `startWhen` discriminated start
-  + dispatch split; `70b10908` `defineCodec` validation permits families sharing a
-  start type.
+  - dispatch split; `70b10908` `defineCodec` validation permits families sharing a
+    start type.
 - **Families (OpenAI)** — `55a569bd` `reasoning_summary_text`; `05eaad02`
   `output_text` / `refusal` / `reasoning_text` (shared `content_part.added`,
   discriminated by `part.type`, `content_index`-keyed reducer — fixes the latent
@@ -112,6 +112,68 @@ fn-args, user message), demo **51 unit + 11/11 e2e** (the reasoning e2e added th
 session runs when the demo dev-server port is free). Commit boundaries are
 provisional — intended to be reworked so the pure-core groundwork lands isolated
 ahead of the OpenAI families before shipping.
+
+### `decodeLifecycle` increment — built (Approach B), with a **pinned** idempotency follow-up
+
+Mid-stream-join repair is **implemented and green** (a self-contained commit on
+`AIT-742-openai-codec`), but a design question surfaced during review is
+**deliberately parked** for later — the code works for the common paths and the
+follow-up is a simplification + one edge-case fix, not a blocker. Marked
+`TODO(AIT-742)` in `reducer.ts` and `decode-lifecycle.ts`.
+
+**What was built (Approach B — keep the reducer pure):**
+
+- `src/openai/codec/decode-lifecycle.ts` — `onStreamStart` synthesises the missing
+  `output_item.added` owner (message vs reasoning, chosen from the stream's `part`
+  header) so a joiner's streamed deltas have an item to fold into. It keeps a
+  **per-run `seen` set** and observes the real `output_item.added` via `onDiscrete`
+  so it synthesises only when the owner is genuinely absent (never a duplicate in
+  the forward order). `function_call_arguments` is skipped — its own `buildStart`
+  reconstructs the real item.
+- **core** — `LifecycleDiscreteContext` gained a `data` field so `onDiscrete` can
+  read the owner id, which nests at `item.id` in the payload (not a header).
+- `src/openai/codec/fields.ts` — the codec's header-field bindings, extracted from
+  `descriptors.ts` (mirrors `src/vercel/codec/fields.ts`) so the descriptors and the
+  repair share one source and can't drift. Prompted by review feedback.
+- Tests: mid-join owner synthesis (text / refusal / reasoning / summary), the
+  fn-args no-repair case, sibling-stream single-introduction, present-at-start
+  no-double; plus a core test that `onDiscrete` receives `data`.
+- Explainer: `notes/lawrence-questions/decode-lifecycle-contract.html` (the contract,
+  the two hooks, the lifetimes).
+
+**The pinned question (my confusion, recorded honestly).** `/code-review-all`
+(correctness) found — and a throwaway test confirmed — that Approach B does **not**
+prevent a duplicate in the **reverse delivery order**: join mid-stream (we synthesise
+the owner), then paginate history back across the envelope so the **real**
+`output_item.added` decodes _after_ the synthetic one. The repair can't retract an
+event it already emitted, and the reducer's `output_item.added` does an
+**unconditional `push`**, so two adds for one id ⇒ a duplicate item.
+
+I initially argued Approach B (pure reducer + `seen` tracking) was _required_ by the
+reducer contract, and rejected the alternative — a reducer idempotency guard — as
+"dedup in the reducer, which the contract forbids." **That framing was wrong**, and
+the review + a look at Vercel settled it:
+
+- The contract (`types.ts`) forbids the reducer from doing **serial/replay dedup**
+  ("no serial high-water-mark; don't skip already-seen events") — so the transport
+  can refold a node from `init` safely. It does **not** forbid **idempotent entity
+  creation**.
+- **Vercel's reducer is already idempotent on creation**: its `start` fold calls
+  `ensureMessage` = **find-or-create by id**. A duplicate `start` just finds the
+  existing message. That's why Vercel has no equivalent bug — and it's fully within
+  the contract (find-or-create is the convergent operation refold-from-`init` needs).
+- **OpenAI's `output_item.added` push is the outlier** — the one create-arm in either
+  codec that isn't find-or-create.
+
+**Resolution (parked, `TODO(AIT-742)`):** make `output_item.added` find-or-create by
+item id, exactly like `ensureMessage`. That closes the reverse-order duplicate **and**
+makes the `seen` set, the `onDiscrete` tracking, and the core `data` addition
+unnecessary — a net simplification that also brings OpenAI in line with Vercel. Left
+for after the broader-PR direction call so the current increment stays self-contained.
+
+Separately deferred (flagged by the docs reviewer, not in this commit): `docs/index.md`
+understates the codec's current capabilities, and `docs/internals/lifecycle-tracker.md`
+doesn't mention the new context `data` field (moot if the follow-up removes `data`).
 
 ## Scope update — the streaming model is now in scope (standup, 2026-07)
 
@@ -162,7 +224,7 @@ alternatives.
   `toResponsesInput`. `openai` is an optional peer dependency.
 - **Output**: response lifecycle + the streamed families (`output_text`,
   `refusal`, `reasoning_text`, `reasoning_summary_text`, `function_call_arguments`)
-  + the `output_item` / `*_part.done` boundaries → folded into an `OpenAITurn`.
+  - the `output_item` / `*_part.done` boundaries → folded into an `OpenAITurn`.
 - **Input**: the `user-message` `batch` fans a turn's `input_text` content parts
   out into one `ai-input` event each (reducer merges them by codec-message-id),
   plus the **`regenerate`** wire-only signal (kind-only; `target`/`parent` ride
@@ -187,19 +249,10 @@ alternatives.
 
 ## Deferred — all marked `TODO(AIT-742)` in code
 
-- **`decodeLifecycle`** (mid-stream-join repair): when a client joins mid-flight
-  it missed the stream's opener, so the reducer has no item to fold deltas into —
-  synthesise the lead-in on stream start. **Now per-family** (not just text): each
-  streamed family needs the right lead-in item reconstructed from the stream's
-  `kind` + re-stamped headers — an `output_item.added` message for
-  `output_text`/`refusal`, a reasoning item for `reasoning_text`/
-  `reasoning_summary_text`, a function_call item for `function_call_arguments`
-  (plus the `content_part.added` / `reasoning_summary_part.added` opener the
-  content/summary families also missed). The Vercel codec's `decodeLifecycle`
-  (`onStreamStart`) is the pattern to mirror. The full-stream path (incl. history
-  hydration / refresh) works without it; this is the smallest remaining
-  codec-correctness item, and the demo can hit it (a second tab opened while a
-  reply is streaming).
+- ~~**`decodeLifecycle`** (mid-stream-join repair)~~ — **built (Approach B)**; one
+  **pinned** follow-up remains (the find-or-create idempotency fix). See the
+  "`decodeLifecycle` increment" subsection under Status for the full write-up,
+  including the reverse-delivery-order duplicate the follow-up closes.
 - ~~**Function calls / server-side tools**~~ — **done**. Function calls ride the
   item envelopes; their **arguments now stream** via the `function_call_arguments`
   family (the streaming increment — the earlier "arg deltas are ignored" note is
@@ -313,17 +366,13 @@ real key to verify. That plus `decodeLifecycle` are the top two gates.
   and verifying multi-turn on a reasoning model — with error-detail forwarding and
   the spike revert as the cleanup tail. Then it's shippable as text + server tools.
 
-1. **`decodeLifecycle` mid-stream-join repair (main correctness gap).**
-   Lets a client that joins/refreshes while a reply is streaming reconstruct the
-   in-flight item it missed the opener for (synthesise the lead-in on stream
-   start). **Now per-family** since the streaming increment: the lead-in item
-   depends on the stream's `kind` — a message for `output_text`/`refusal`, a
-   reasoning item for `reasoning_text`/`reasoning_summary_text`, a function_call
-   for `function_call_arguments` — plus the missed `*_part.added` opener for the
-   content/summary families. Don't scope it to text only. The Vercel codec's
-   `decodeLifecycle` `onStreamStart` is the pattern to mirror. Full-stream and
-   post-completion refresh already work; the hole is specifically mid-stream join.
-   The demo can trigger it (open a second tab mid-stream).
+1. **`decodeLifecycle` mid-stream-join repair — BUILT (Approach B); one pinned fix.**
+   Synthesises the missing owner on stream start so a joiner's deltas fold; per
+   family (message / reasoning), fn-args skipped. **Pinned follow-up
+   (`TODO(AIT-742)`):** make the reducer's `output_item.added` find-or-create by id
+   (like Vercel's `ensureMessage`) — closes a reverse-delivery-order duplicate and
+   lets the `seen` set / `onDiscrete` / core `data` addition be removed. Full
+   write-up in the "`decodeLifecycle` increment" subsection under Status.
 2. **Verify multi-turn on a reasoning model (unverified risk — needs a real key).**
    Defaulting to `gpt-5.5` means we resend prior items to `/responses`, and
    reasoning items have special input rules. Two facets:

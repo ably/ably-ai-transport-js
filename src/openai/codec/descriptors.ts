@@ -44,35 +44,21 @@ import type { Responses } from 'openai/resources/responses/responses';
 
 import { HEADER_ROLE } from '../../constants.js';
 import type { InputBuilder, InputDescriptor, OutputBuilder, OutputDescriptor } from '../../core/codec/index.js';
-import { jsonField, strField } from '../../core/codec/index.js';
 import { ErrorCode } from '../../errors.js';
 import type { OpenAIInput, OpenAIOutput, OpenAITurn } from './events.js';
+import {
+  composeItemContent,
+  fContentIndex,
+  fItem,
+  fItemId,
+  fOutputIndex,
+  fPart,
+  fSummaryIndex,
+  fSummaryPart,
+} from './fields.js';
 
 // Coerce arbitrary wire data to a string, defaulting to empty.
 const asString = (data: unknown): string => (typeof data === 'string' ? data : '');
-
-// Header fields used to reconstruct the text stream's content-part position.
-// `item_id` is a declared field (re-stamped on every append) so the decoded
-// start and deltas carry it for routing — the transport stream id is opaque.
-const fItemId = strField('item_id');
-const fOutputIndex = jsonField<number, 'output_index'>('output_index');
-const fContentIndex = jsonField<number, 'content_index'>('content_index');
-const fPart = jsonField<Responses.ResponseContentPartAddedEvent['part'], 'part'>('part');
-// Reasoning-summary stream: the slot is one summary part, keyed by item_id +
-// summary_index (a single item emits one or more indexed summary parts).
-const fSummaryIndex = jsonField<number, 'summary_index'>('summary_index');
-const fSummaryPart = jsonField<Responses.ResponseReasoningSummaryPartAddedEvent.Part, 'part'>('part');
-
-// Per-slot stream id for the content-part families: item_id + content_index.
-// Purely the transport uniqueness handle — the reducer never parses it (it routes
-// on the re-stamped item_id / content_index fields).
-const composeItemContent = (c: { item_id: string; content_index: number }): string =>
-  `${c.item_id}:${String(c.content_index)}`;
-
-// The function_call item envelope, carried on the fn-args stream start (its slot
-// is the item's own `arguments`, so there is no *_part.added opener). Re-stamped
-// on every append, it is the decode-side source of item_id / call_id / name.
-const fItem = jsonField<Responses.ResponseOutputItem, 'item'>('item');
 
 /**
  * The OpenAI codec's `ai-output` descriptor table.
@@ -265,6 +251,18 @@ export const outputs = ({ event, stream }: OutputBuilder<OpenAIOutput>): readonl
     }),
 
     // --- item / content-part envelopes (discrete) ----------------------------
+    // The item is a structured object (a message with content parts, a reasoning
+    // item, or a function call), not flat scalars, so it rides whole as JSON wire
+    // `data` rather than as header fields. `output_index` / `sequence_number` are
+    // dropped: the reducer keys on the item's own id, and Ably serials order the
+    // wire, so neither is read on decode or resent to /responses.
+    //
+    // `output_item.added` is emitted as this discrete event only for message and
+    // reasoning items. A function_call's `output_item.added` is instead the START
+    // of the `function_call_arguments` stream (claimed via that family's
+    // `startWhen`), so it never reaches here. `output_item.done`, by contrast, is
+    // discrete for every item type — including a function call, whose authoritative
+    // complete item arrives here after its argument stream ends.
     // CAST on decode: the output item rides as JSON wire data (trust boundary).
     event('response.output_item.added', {
       data: { encode: (c) => c.item, decode: (d) => ({ item: d as Responses.ResponseOutputItem }) },
@@ -276,7 +274,7 @@ export const outputs = ({ event, stream }: OutputBuilder<OpenAIOutput>): readonl
     // declared (rather than dropped) so the part boundary still round-trips as a
     // discrete event on the wire.
     event('response.content_part.done', {
-      fields: [strField('item_id'), fOutputIndex, fContentIndex],
+      fields: [fItemId, fOutputIndex, fContentIndex],
     }),
     // The summary-array twin of content_part.done: it closes a summary part after
     // its reasoning_summary_text stream ends. Likewise folds to nothing and is

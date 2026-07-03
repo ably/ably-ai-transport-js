@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1"
+    />
+    <title>decodeLifecycle — the contract, the hooks, the lifetimes</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --panel2: #1e222b;
+        --border: #2a2f3a;
+        --text: #e6e9ef;
+        --muted: #9aa3b0;
+        --accent: #6ea8fe;
+        --green: #46c08a;
+        --amber: #e3a008;
+        --red: #ef6b6b;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font:
+          15px/1.6 system-ui,
+          -apple-system,
+          Segoe UI,
+          Roboto,
+          sans-serif;
+        padding: 28px 20px 80px;
+      }
+      .wrap {
+        max-width: 940px;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 23px;
+        margin: 0 0 6px;
+      }
+      h2 {
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        color: var(--accent);
+        margin: 34px 0 12px;
+        border-bottom: 1px solid var(--border);
+        padding-bottom: 6px;
+      }
+      h3 {
+        font-size: 15px;
+        margin: 20px 0 6px;
+      }
+      p {
+        margin: 0 0 12px;
+      }
+      p.lede {
+        color: var(--muted);
+        margin: 0 0 8px;
+        max-width: 760px;
+      }
+      a {
+        color: var(--accent);
+      }
+      code {
+        font-family: var(--mono);
+        font-size: 13px;
+        background: var(--panel2);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        padding: 1px 5px;
+      }
+      pre {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 14px 16px;
+        overflow: auto;
+        font-family: var(--mono);
+        font-size: 12.5px;
+        line-height: 1.5;
+      }
+      pre code {
+        background: none;
+        border: 0;
+        padding: 0;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 14px 16px;
+        margin: 12px 0;
+      }
+      .cards {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+      @media (max-width: 760px) {
+        .cards {
+          grid-template-columns: 1fr;
+        }
+      }
+      .tag {
+        display: inline-block;
+        font-family: var(--mono);
+        font-size: 11.5px;
+        font-weight: 700;
+        padding: 1px 7px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+      }
+      .tag.d {
+        color: var(--amber);
+        border-color: #4a3a10;
+        background: #221a08;
+      }
+      .tag.s {
+        color: var(--green);
+        border-color: #144030;
+        background: #0d211a;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        margin: 10px 0 4px;
+        font-size: 13.5px;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--border);
+        vertical-align: top;
+      }
+      th {
+        color: var(--muted);
+        font-weight: 600;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      td code {
+        white-space: nowrap;
+      }
+      .flow {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        line-height: 1.7;
+        white-space: pre;
+        color: var(--muted);
+      }
+      .flow b {
+        color: var(--accent);
+        font-weight: 600;
+      }
+      .flow .g {
+        color: var(--green);
+      }
+      .note {
+        border-left: 3px solid var(--accent);
+        padding: 4px 0 4px 14px;
+        margin: 14px 0;
+        color: var(--muted);
+      }
+      .k {
+        color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>decodeLifecycle — the contract, the hooks, the lifetimes</h1>
+      <p class="lede">
+        What <code>decodeLifecycle</code> is, what its two hooks (<code>onDiscrete</code> and
+        <code>onStreamStart</code>) mean, and — the part that's easy to get wrong — how long the state they hold lives
+        and how often it's created. Grounded in the OpenAI codec, but the contract is generic (core owns it; Vercel and
+        OpenAI both implement it).
+      </p>
+
+      <h2>1 · The one-sentence purpose</h2>
+      <p>
+        A decoder turns Ably wire messages into codec events, which a <em>reducer</em> folds into the rendered
+        conversation. The reducer's contract (documented on <code>Reducer</code> in
+        <code>src/core/codec/types.ts</code>) is strict: it is handed each event
+        <b>exactly once, in canonical order</b>, and it <b>must not</b> dedupe or skip —
+        <em>"ordering, deduplication and replay are the transport's responsibility, not the reducer's."</em>
+      </p>
+      <p>
+        That works only if the event stream the reducer receives is <em>well-formed</em> — every event that later events
+        depend on actually arrives, and nothing arrives twice. <code>decodeLifecycle</code> is the small policy that
+        <b>keeps the stream well-formed when a client joins mid-flight</b> (a second tab, a reconnect, a history-page
+        boundary): it reconstructs the lead-in events the joiner missed, without ever injecting a duplicate. It is the
+        decoder's job — so the reducer stays dumb.
+      </p>
+
+      <h2>2 · The shape: a policy is two hooks</h2>
+      <p>
+        <code>decodeLifecycle</code> in <code>defineCodec</code> is a <em>factory</em> that returns a
+        <code>LifecyclePolicy</code> — an object with (optionally) two hooks:
+      </p>
+      <pre><code>decodeLifecycle: () =&gt; ({
+  onDiscrete: { &lt;codecKind&gt;: (runId, ctx) =&gt; TOutput[] },   // keyed by the wire "kind"
+  onStreamStart: (runId, tracker) =&gt; TOutput[],
+})</code></pre>
+      <p>
+        Both hooks do the same two things: perform a <b>side effect</b> on the policy's own state, and
+        <b>return lead-in events to prepend</b>. The generic decoder <em>always</em> runs the real descriptor decode
+        afterwards and appends its output — so a hook can only <em>add</em> events in front of a decode, never replace
+        it (see <code>LifecyclePolicy</code>'s JSDoc in <code>src/core/codec/define-codec.ts</code>).
+      </p>
+
+      <div class="cards">
+        <div class="card">
+          <p><span class="tag d">onStreamStart</span></p>
+          <p class="muted">
+            Fires when the decoder first meets a <b>streamed</b> ai-output message — the once-per-stream "start". That's
+            both a genuine live start <em>and</em> a mid-stream join (the platform hands a late subscriber the in-flight
+            streamed message as one full-contents update, which is still a "start" to a fresh decoder).
+          </p>
+          <p class="muted">
+            Gets <code>(runId, tracker)</code>. The <code>tracker</code> holds the stream's current
+            <code>codecHeaders</code> (re-stamped on every append) and accumulated text. In OpenAI we read the owner
+            <code>item_id</code> / part type off those headers to synthesise the missing
+            <code>output_item.added</code> envelope.
+          </p>
+        </div>
+        <div class="card">
+          <p><span class="tag s">onDiscrete</span></p>
+          <p class="muted">
+            A <b>map keyed by the wire <code>kind</code></b> header. When a <b>discrete</b> (non-streamed) ai-output
+            message decodes and its <code>kind</code> matches a key, that entry fires. In OpenAI we register
+            <code>response.output_item.added</code> (to <em>notice</em> the real envelope) and the terminal response
+            events (to free state).
+          </p>
+          <p class="muted">
+            Gets <code>(runId, ctx)</code> where <code>ctx</code> carries the inbound <code>codecHeaders</code> and the
+            pre-decode <code>data</code>. Ours returns no lead-in (<code>[]</code>) — it's used purely for its side
+            effect: recording which owner items it has seen.
+          </p>
+        </div>
+      </div>
+
+      <div class="note">
+        Why the wire <code>kind</code> is the key: every codec event carries a <code>kind</code> header that the decoder
+        dispatches on (a discrete event's <code>type</code>, or a stream family's id). <code>onDiscrete</code> is looked
+        up by that same key — and safely, via <code>Object.hasOwn</code>, so a hostile wire <code>kind</code> like
+        <code>"toString"</code> can't reach through the prototype chain.
+      </div>
+
+      <h2>3 · What the OpenAI policy actually does</h2>
+      <p>
+        A streamed reply is several separate Ably messages: a discrete <code>output_item.added</code> that
+        <em>creates</em> the item, then a separate streamed message (<code>content_part.added</code> → deltas →
+        <code>*.done</code>) that fills it. Every fill event looks the item up by <code>item_id</code> and
+        <b>silently does nothing if it's missing</b>. A joiner who missed the discrete envelope would drop the whole
+        reply.
+      </p>
+      <div class="flow">
+        <b>onStreamStart(runId, tracker)</b>
+        itemId = fItemId.read(tracker.codecHeaders) if no itemId -> []
+        <span class="muted"># function_call_arguments: id nests in the item, no owner to add</span> if seen(runId,
+        itemId) -> []
+        <span class="muted"># already introduced (real OR a sibling stream's synth) — no duplicate</span> owner =
+        message | reasoning item, chosen from the part type mark seen(runId, itemId) return [<span class="g"
+          >output_item.added(owner)</span
+        >] <span class="muted"># prepended; buildStart's content_part.added + deltas follow</span>
+
+        <b>onDiscrete["response.output_item.added"](runId, ctx)</b>
+        seen(runId, itemId-from-ctx.data).add() ; return []
+        <span class="muted"># the REAL envelope arrived — record it</span>
+
+        <b>onDiscrete["response.completed" | ".incomplete" | ".failed"](runId)</b>
+        forget everything for runId ; return [] <span class="muted"># run over — free the per-run set</span>
+      </div>
+      <p>
+        The <code>seen</code> set is the whole trick: synthesise the envelope only when it's genuinely absent, so a
+        client that <em>did</em> see the real one (present at the start, or a full history replay) never gets a second
+        copy. That's what keeps the reducer's "exactly once" promise intact.
+      </p>
+
+      <h2>4 · Lifetimes — the part you asked about</h2>
+      <p>
+        The factory closes over a <code>Map&lt;runId, Set&lt;itemId&gt;&gt;</code> (the <code>seen</code> state). So the
+        obvious worry is right to ask: how often is that Map created, and how long does it live?
+      </p>
+      <table>
+        <tr>
+          <th>Thing</th>
+          <th>Created</th>
+          <th>Count</th>
+          <th>Lives for</th>
+        </tr>
+        <tr>
+          <td>The <code>LifecyclePolicy</code> + its <code>seen</code> Map</td>
+          <td>Once, inside <code>createDecoder()</code> — the factory is called exactly once per decoder</td>
+          <td>1 per decoder</td>
+          <td>The decoder's whole life</td>
+        </tr>
+        <tr>
+          <td>The decoder</td>
+          <td>Per <em>materialisation</em>, in <code>createMaterialisation()</code></td>
+          <td>1 per materialisation</td>
+          <td>
+            <code>ClientSession</code> builds one for its whole life; <code>AgentSession</code> discards and rebuilds it
+            (and its per-run <code>seen</code> state) on Tree reset
+          </td>
+        </tr>
+        <tr>
+          <td>A <code>seen</code> entry (one run's <code>Set</code>)</td>
+          <td>Lazily, first time a run's event is decoded</td>
+          <td>1 per run</td>
+          <td>Until that run's terminal <code>response.*</code> event clears it</td>
+        </tr>
+      </table>
+      <p>
+        So: <b>one policy per materialisation</b> (a <code>ClientSession</code>'s lasts the whole session), shared by
+        every message it decodes — both the live subscription and history hydration go through the same decoder, so its
+        <code>seen</code> state must be scoped <em>per run</em> (item ids are only unique within a response) and cleared
+        as runs finish, or it would grow unbounded over a long-lived session. That per-run keying + terminal clearing is
+        exactly what the policy does.
+      </p>
+
+      <div class="note">
+        <b>Decode-once, fold-many.</b> The hooks run at <em>decode</em> time — once per wire message (<code
+          >decoder.decode()</code
+        >
+        in <code>applyWireMessage</code>). The Tree stores the resulting events and <em>re-folds</em> them through the
+        reducer when a late message forces a node to rebuild. Refolds replay the already-decoded events; they do
+        <b>not</b> re-run the decoder or the lifecycle hooks. So the <code>seen</code>
+        state is consulted once per wire message, never on a refold — the synthesised lead-in is baked into the stored
+        event list the first time.
+      </div>
+
+      <h2>5 · The invariant, restated</h2>
+      <p>
+        Everything above serves one line of the reducer contract: the reducer is handed a clean, exactly-once,
+        canonical-order stream and folds it blindly. <code>decodeLifecycle</code> is where the decoder earns that
+        promise for mid-stream joiners —
+        <b
+          >reconstruct what's missing, never duplicate what's present, hold only per-run state and let it go when the
+          run ends.</b
+        >
+        Approaches that instead teach the <em>reducer</em> to tolerate duplicates or to fabricate missing parents would
+        move this responsibility across the layer boundary the contract draws — which is why the repair lives here.
+      </p>
+
+      <h3 class="muted">Where this lives in code</h3>
+      <p class="muted">
+        Contract &amp; hooks: <code>src/core/codec/{types.ts, define-codec.ts}</code> · OpenAI policy:
+        <code>src/openai/codec/decode-lifecycle.ts</code> · creation path: <code>createDecoder()</code> →
+        <code>createMaterialisation()</code> → <code>ClientSession</code> ctor · decode-once/refold:
+        <code>src/core/transport/decode-fold.ts</code>. Vercel's equivalent (run-level <code>start</code> /
+        <code>start-step</code> phases via a <code>LifecycleTracker</code>):
+        <code>src/vercel/codec/decode-lifecycle.ts</code>.
+      </p>
+    </div>
+  </body>
+</html>

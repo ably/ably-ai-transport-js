@@ -63,6 +63,13 @@ export type { OutputBuilder } from './output-descriptors.js';
 export interface LifecycleDiscreteContext {
   /** The inbound codec-tier headers (e.g. to recover a stream's message id). */
   codecHeaders: Record<string, string>;
+  /**
+   * The inbound message data, before descriptor decode. A repair function may
+   * read identity a codec carries in the payload rather than the headers (e.g.
+   * an item envelope whose id it must track), so it isn't limited to what the
+   * headers expose. Untyped wire data (`unknown`) — narrow at the trust boundary.
+   */
+  data: unknown;
 }
 
 /**
@@ -235,7 +242,7 @@ const decodeDiscretePayload = <TInput extends { kind: string }, TOutput>(
     // resolve through Object.prototype and corrupt the decode.
     const onDiscrete = lifecycle?.onDiscrete;
     const repair = onDiscrete !== undefined && Object.hasOwn(onDiscrete, codecKind) ? onDiscrete[codecKind] : undefined;
-    const pre = repair?.(runId, { codecHeaders }) ?? [];
+    const pre = repair?.(runId, { codecHeaders, data: payload.data }) ?? [];
     return [...pre, ...outputDecoder.decodeDiscrete(codecKind, codecHeaders, transportHeaders, payload.data)];
   }
 

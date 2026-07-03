@@ -145,6 +145,15 @@ const reasoningTextAt = (
 const foldOutput = (state: OpenAIProjection, event: OpenAIOutput): void => {
   switch (event.type) {
     case 'response.output_item.added': {
+      // TODO(AIT-742): make this find-or-create by item id (as the Vercel reducer's
+      // `ensureMessage` does) rather than an unconditional push. The decode-lifecycle
+      // mid-stream-join repair can legitimately yield two `output_item.added` events
+      // for one id — a synthesised owner plus the real one — when they arrive in the
+      // reverse order (join mid-stream, then paginate history back across the
+      // envelope); this push then produces a duplicate item. A find-or-create absorbs
+      // it (like Vercel) and would let the decode-lifecycle seen-set / `onDiscrete`
+      // tracking and the `LifecycleDiscreteContext.data` core addition be removed.
+      // Parked pending broader PR direction — see notes/openai-codec-build-log.md.
       const item = structuredClone(event.item);
       state.items.push(item);
       if (item.id !== undefined) state.byItemId.set(item.id, item);

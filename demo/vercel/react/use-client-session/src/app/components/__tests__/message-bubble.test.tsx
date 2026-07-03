@@ -23,6 +23,8 @@ function renderBubble(message: AI.UIMessage) {
       codecMessageId="a1"
       clientId={undefined}
       runId={undefined}
+      stepId={undefined}
+      stepCount={0}
       status="streaming"
       hasSiblings={false}
       siblingCount={0}

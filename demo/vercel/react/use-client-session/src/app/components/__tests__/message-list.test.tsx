@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, cleanup } from '@testing-library/react';
+import { render, screen, cleanup } from '@testing-library/react';
 import type * as AI from 'ai';
 import type { BranchHandle, CodecMessage } from '@ably/ai-transport';
 
@@ -77,5 +77,11 @@ describe('MessageList history auto-loading', () => {
     renderList({ hasOlder: false, loading: false, onLoadOlder });
 
     expect(onLoadOlder).not.toHaveBeenCalled();
+  });
+
+  it('keeps the walkthrough intro visible once messages exist', () => {
+    renderList({ hasOlder: false, loading: false, onLoadOlder: vi.fn() });
+
+    expect(screen.getByText('ClientSession over Ably')).toBeTruthy();
   });
 });

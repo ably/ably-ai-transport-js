@@ -63,3 +63,52 @@ describe('<MessageBubble> thinking indicator', () => {
     expect(screen.queryByText(/Thinking/)).toBeNull();
   });
 });
+
+describe('<MessageBubble> debug badges', () => {
+  it('renders the run, step, and status badges once the owning run is known', () => {
+    render(
+      <MessageBubble
+        message={assistant([{ type: 'text', text: 'the reply' }])}
+        codecMessageId="a1"
+        clientId="galaxy-saffron"
+        runId="2195f39c-1111-2222-3333-444444444444"
+        stepId="7bd73ec9-5555-6666-7777-888888888888"
+        stepCount={1}
+        status="complete"
+        hasSiblings={false}
+        siblingCount={0}
+        selectedIndex={0}
+        onSelectSibling={() => {}}
+      />,
+    );
+
+    // The debug badges render only once the message's owning Run is known.
+    expect(screen.getByText('run')).toBeTruthy();
+    expect(screen.getByText('2195f39c')).toBeTruthy();
+    expect(screen.getByText('step')).toBeTruthy();
+    expect(screen.getByText('7bd73ec9')).toBeTruthy();
+    expect(screen.getByText('status')).toBeTruthy();
+    expect(screen.getByText('complete')).toBeTruthy();
+  });
+
+  it('omits the debug badges when the message has no owning run', () => {
+    render(
+      <MessageBubble
+        message={assistant([{ type: 'text', text: 'the reply' }])}
+        codecMessageId="a1"
+        clientId={undefined}
+        runId={undefined}
+        stepId={undefined}
+        stepCount={0}
+        status={undefined}
+        hasSiblings={false}
+        siblingCount={0}
+        selectedIndex={0}
+        onSelectSibling={() => {}}
+      />,
+    );
+
+    expect(screen.queryByText('run')).toBeNull();
+    expect(screen.queryByText('status')).toBeNull();
+  });
+});

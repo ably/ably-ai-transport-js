@@ -1,20 +1,10 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import type * as AI from 'ai';
 import type { BranchHandle, CodecMessage } from '@ably/ai-transport';
 
 // jsdom lacks scrollIntoView; the MessageScroller calls it as the list grows.
 Element.prototype.scrollIntoView = () => {};
-
-// MessageList has no onReachStart hook — it watches the scroller's visibility
-// state and asks for an older page once the oldest message becomes visible.
-// Drive that visibility deterministically by stubbing the hook, leaving the
-// rest of the vendored scroller intact.
-let visibleMessageIds: string[] = [];
-vi.mock('@/components/ui/message-scroller', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/components/ui/message-scroller')>();
-  return { ...actual, useMessageScrollerVisibility: () => ({ visibleMessageIds }) };
-});
 
 import { MessageList } from '../message-list';
 
@@ -46,35 +36,53 @@ function renderList(opts: { hasOlder: boolean; loading: boolean; onLoadOlder: ()
   );
 }
 
-describe('MessageList history auto-loading', () => {
-  beforeEach(() => {
-    visibleMessageIds = [];
-  });
+// Position the scroller's viewport and fire a scroll event, the way a reader
+// scrolling the transcript does.
+function scrollViewportTo(container: HTMLElement, top: number) {
+  const viewport = container.querySelector('[data-slot="message-scroller-viewport"]');
+  expect(viewport).toBeTruthy();
+  if (!viewport) return;
+  viewport.scrollTop = top;
+  fireEvent.scroll(viewport);
+}
 
+describe('MessageList history loading', () => {
   afterEach(() => {
     cleanup();
   });
 
-  it('requests an older page when the oldest message scrolls into view', () => {
-    visibleMessageIds = ['m1'];
+  it('requests an older page when the reader scrolls to the very top', () => {
     const onLoadOlder = vi.fn();
-    renderList({ hasOlder: true, loading: false, onLoadOlder });
+    const { container } = renderList({ hasOlder: true, loading: false, onLoadOlder });
+
+    scrollViewportTo(container, 0);
 
     expect(onLoadOlder).toHaveBeenCalledTimes(1);
   });
 
-  it('does not request while an older page is already loading', () => {
-    visibleMessageIds = ['m1'];
+  it('does not request while the reader is below the top edge', () => {
     const onLoadOlder = vi.fn();
-    renderList({ hasOlder: true, loading: true, onLoadOlder });
+    const { container } = renderList({ hasOlder: true, loading: false, onLoadOlder });
+
+    scrollViewportTo(container, 400);
+
+    expect(onLoadOlder).not.toHaveBeenCalled();
+  });
+
+  it('does not request while an older page is already loading', () => {
+    const onLoadOlder = vi.fn();
+    const { container } = renderList({ hasOlder: true, loading: true, onLoadOlder });
+
+    scrollViewportTo(container, 0);
 
     expect(onLoadOlder).not.toHaveBeenCalled();
   });
 
   it('does not request when there is no older history', () => {
-    visibleMessageIds = ['m1'];
     const onLoadOlder = vi.fn();
-    renderList({ hasOlder: false, loading: false, onLoadOlder });
+    const { container } = renderList({ hasOlder: false, loading: false, onLoadOlder });
+
+    scrollViewportTo(container, 0);
 
     expect(onLoadOlder).not.toHaveBeenCalled();
   });

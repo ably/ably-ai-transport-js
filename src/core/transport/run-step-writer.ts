@@ -118,9 +118,9 @@ export interface RunStepWriterContext<
    * Throw if the run is not open for publishing — and, for `step`, if it has
    * already ended. The run object owns the open/terminal policy; the writer only
    * gates on it.
-   * @param verb - The calling verb, selecting the error message ('pipe' | 'step').
+   * @param verb - The calling verb, selecting the error message ('pipe' | 'step' | 'send').
    */
-  assertPublishable(verb: 'pipe' | 'step'): void;
+  assertPublishable(verb: 'pipe' | 'step' | 'send'): void;
   /** The run's resolved structural anchors, read live at publish time. */
   getAnchors(): StepWriterAnchors;
 }
@@ -485,7 +485,7 @@ export const createRunStepWriter = <
     step: { stepId: string; startSerialRef: StartSerialRef; stepClientId: string },
   ): Promise<void> => {
     await ctx.requireConnected('send');
-    ctx.assertPublishable('pipe');
+    ctx.assertPublishable('send');
 
     const encoder = createMessageEncoder(step);
 

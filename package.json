@@ -67,7 +67,8 @@
     "dist/**",
     "src/**",
     "react/**",
-    "vercel/**"
+    "vercel/**",
+    "temporal/**"
   ],
   "repository": {
     "type": "git",

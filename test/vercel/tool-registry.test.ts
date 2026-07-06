@@ -246,4 +246,32 @@ describe('approvedPendingToolCalls', () => {
   it('returns [] when the messages array is empty', () => {
     expect(approvedPendingToolCalls([])).toEqual([]);
   });
+
+  it('excludes denied approval-responded parts — approved: false is NOT dispatched to the tool-execute path', () => {
+    const messages = [
+      msg({
+        role: 'assistant',
+        parts: [
+          {
+            type: 'dynamic-tool',
+            toolCallId: 'denied',
+            toolName: 'x',
+            state: 'approval-responded',
+            input: { location: 'London, UK' },
+            approval: { id: 'ap-1', approved: false },
+          },
+          {
+            type: 'dynamic-tool',
+            toolCallId: 'approved',
+            toolName: 'y',
+            state: 'approval-responded',
+            input: {},
+            approval: { id: 'ap-2', approved: true },
+          },
+        ],
+      }),
+    ];
+
+    expect(approvedPendingToolCalls(messages).map((p) => p.toolCallId)).toEqual(['approved']);
+  });
 });

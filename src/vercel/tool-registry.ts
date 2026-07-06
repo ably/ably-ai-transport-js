@@ -39,12 +39,10 @@ import { isToolPart } from './tool-part.js';
 export const stripToolExecutes = <T extends Record<string, AI.Tool>>(tools: T): T => {
   const stripped: Record<string, AI.Tool> = {};
   for (const [name, tool] of Object.entries(tools)) {
-    // CAST: `Tool` shape isn't spread-friendly against its inferred generics;
-    // Record-of-unknown lets us drop `execute` while preserving everything else,
-    // then narrow back to the caller's declared registry shape below.
-    const { execute: _drop, ...rest } = tool as { execute?: unknown } & Record<string, unknown>;
-    void _drop;
-    stripped[name] = rest as AI.Tool;
+    // Build the copy by filtering entries rather than destructure-and-rest —
+    // the latter needs a rename discard for `execute` that reads as noise.
+    // CAST: narrow back to the caller's declared registry shape.
+    stripped[name] = Object.fromEntries(Object.entries(tool).filter(([k]) => k !== 'execute')) as AI.Tool;
   }
   return stripped as T;
 };
@@ -98,7 +96,9 @@ export const pendingToolCalls = (messages: readonly AI.UIMessage[]): PendingTool
 /**
  * Inspect the last assistant message and return tool calls the user has just
  * approved but that have not yet been executed — parts in `approval-responded`
- * state.
+ * state whose `approval.approved` is `true`. Parts where the user denied the
+ * request (`approved: false`) are excluded; the AI SDK carries the same
+ * `approval-responded` state for both outcomes.
  *
  * The typical caller is the workflow driving a follow-up invocation that was
  * triggered by a `tool-approval-response`: before calling `streamText` again,
@@ -125,6 +125,10 @@ const _toolCallsInState = (
     if (!isToolPart(part)) continue;
     if (part.state !== state) continue;
     if (part.input === undefined) continue;
+    // `approval-responded` carries both approvals AND denials — the SDK reuses
+    // the same state name for either outcome. A denied call must NOT be
+    // dispatched to the tool-execute path, so gate on the boolean.
+    if (state === 'approval-responded' && part.approval?.approved !== true) continue;
     result.push({
       toolCallId: part.toolCallId,
       toolName: getToolName(part),

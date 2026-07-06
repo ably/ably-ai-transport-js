@@ -1001,12 +1001,13 @@ class DefaultAgentSession<
      * run opens.
      * @param verb - The calling verb, selecting the error message.
      */
-    const assertPublishable = (verb: 'pipe' | 'step'): void => {
-      const action = verb === 'pipe' ? 'pipe stream' : 'run step';
+    const assertPublishable = (verb: 'pipe' | 'step' | 'send'): void => {
+      const action = verb === 'pipe' ? 'pipe stream' : verb === 'step' ? 'run step' : 'send output';
       if (!open) {
         // Name the public method the developer calls — run.pipe() for a stream,
-        // run.createStep() for a step (there is no run.step()).
-        const method = verb === 'pipe' ? 'pipe' : 'createStep';
+        // run.createStep() for a step (there is no run.step()), step.send() for
+        // a discrete send.
+        const method = verb === 'pipe' ? 'pipe' : verb === 'step' ? 'createStep' : 'send';
         throw new Ably.ErrorInfo(
           `unable to ${action}; load() or start() must be called before ${method}() (run ${runId})`,
           ErrorCode.InvalidArgument,

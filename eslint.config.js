@@ -44,6 +44,7 @@ export default [
       '.claude/worktrees/**',
       'react/**',
       'vercel/**',
+      'temporal/**',
     ],
   },
   ...fixupConfigRules(

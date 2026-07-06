@@ -3,10 +3,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   bestEffortDetach,
+  ConnectGuard,
   continuityLostError,
   handleWireMessage,
   isContinuityLost,
-  requireConnected,
   subscribeAndAttach,
   wrapMessageProcessingError,
 } from '../../../src/core/transport/session-support.js';
@@ -24,33 +24,117 @@ const silentLogger = makeLogger({ logLevel: LogLevel.Silent });
 // eslint-disable-next-line @typescript-eslint/no-empty-function -- listener identity only
 const noopListener = (): void => {};
 
-describe('requireConnected', () => {
-  it('returns the connect promise when connected', async () => {
-    const connectPromise = Promise.resolve();
-    await expect(requireConnected(connectPromise, 'send')).resolves.toBeUndefined();
+const subscribeError = (): Ably.ErrorInfo =>
+  new Ably.ErrorInfo('attach timed out', ErrorCode.SessionSubscriptionError, 500);
+
+describe('ConnectGuard', () => {
+  it('reports not attempted until connect() is called', () => {
+    const guard = new ConnectGuard();
+    expect(guard.attempted).toBe(false);
   });
 
-  it('rejects with InvalidArgument when not connected', async () => {
-    await expect(requireConnected(undefined, 'send')).rejects.toBeErrorInfo({
+  it('runs the attempt once and shares the promise across concurrent connect() calls', async () => {
+    const guard = new ConnectGuard();
+    const attempt = vi.fn<() => Promise<void>>().mockReturnValue(Promise.resolve());
+
+    const first = guard.connect(attempt);
+    const second = guard.connect(attempt);
+
+    expect(second).toBe(first);
+    await expect(first).resolves.toBeUndefined();
+    expect(attempt).toHaveBeenCalledOnce();
+    expect(guard.attempted).toBe(true);
+  });
+
+  it('resolves requireConnected() once connected', async () => {
+    const guard = new ConnectGuard();
+    await guard.connect(vi.fn<() => Promise<void>>().mockReturnValue(Promise.resolve()));
+    await expect(guard.requireConnected('send')).resolves.toBeUndefined();
+  });
+
+  it('rejects requireConnected() with InvalidArgument when connect() was never called', async () => {
+    const guard = new ConnectGuard();
+    await expect(guard.requireConnected('send')).rejects.toBeErrorInfo({
       code: ErrorCode.InvalidArgument,
       statusCode: 400,
       message: 'unable to send; connect() must be called before send()',
     });
   });
+
+  it('does not cache a failed attempt: a later connect() retries and can succeed', async () => {
+    const guard = new ConnectGuard();
+    const attempt = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(subscribeError())
+      .mockReturnValueOnce(Promise.resolve());
+
+    await expect(guard.connect(attempt)).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSubscriptionError);
+    // Stays attempted after a failure, so close() still tears down the
+    // subscription the failed attempt's subscribe() may have registered.
+    expect(guard.attempted).toBe(true);
+
+    // The next connect() retries against a (recovered) channel.
+    await expect(guard.connect(attempt)).resolves.toBeUndefined();
+    expect(attempt).toHaveBeenCalledTimes(2);
+    await expect(guard.requireConnected('send')).resolves.toBeUndefined();
+  });
+
+  it('surfaces the real failure wrapped in reconnect guidance from requireConnected() after a failed connect', async () => {
+    const guard = new ConnectGuard();
+    const cause = subscribeError();
+    await expect(guard.connect(vi.fn<() => Promise<void>>().mockRejectedValue(cause))).rejects.toBe(cause);
+    await expect(guard.requireConnected('send')).rejects.toBeErrorInfo({
+      code: ErrorCode.SessionSubscriptionError,
+      statusCode: 500,
+      message: 'unable to send; connect() failed, call connect() again to retry; attach timed out',
+      cause,
+    });
+  });
+
+  it('surfaces the wrapped guidance to a write racing an in-flight connect that then fails', async () => {
+    const guard = new ConnectGuard();
+    const cause = subscribeError();
+    const { promise: attemptPromise, reject: rejectAttempt } = Promise.withResolvers<undefined>();
+
+    const connectPromise = guard.connect(vi.fn<() => Promise<void>>().mockReturnValue(attemptPromise));
+    // A write started while the connect is still in flight.
+    const guarded = guard.requireConnected('send');
+    rejectAttempt(cause);
+
+    await expect(connectPromise).rejects.toBe(cause);
+    await expect(guarded).rejects.toBeErrorInfo({
+      code: ErrorCode.SessionSubscriptionError,
+      statusCode: 500,
+      message: 'unable to send; connect() failed, call connect() again to retry; attach timed out',
+      cause,
+    });
+  });
+
+  it('wraps a non-ErrorInfo attempt failure as a SessionSubscriptionError', async () => {
+    const guard = new ConnectGuard();
+    await expect(guard.connect(vi.fn<() => Promise<void>>().mockRejectedValue(new Error('boom')))).rejects.toThrow(
+      'boom',
+    );
+    await expect(guard.requireConnected('send')).rejects.toBeErrorInfo({
+      code: ErrorCode.SessionSubscriptionError,
+      statusCode: 500,
+      message: 'unable to send; connect() failed, call connect() again to retry; boom',
+    });
+  });
 });
 
 describe('bestEffortDetach', () => {
-  it('does not detach when there is no connect promise', async () => {
+  it('does not detach when connect() was not attempted', async () => {
     const detach = vi.fn();
     const channel = { detach } as unknown as Ably.RealtimeChannel;
-    await bestEffortDetach(channel, undefined, undefined, 'ClientSession');
+    await bestEffortDetach(channel, false, undefined, 'ClientSession');
     expect(detach).not.toHaveBeenCalled();
   });
 
-  it('detaches when connected', async () => {
+  it('detaches when connect() was attempted', async () => {
     const detach = vi.fn();
     const channel = { detach } as unknown as Ably.RealtimeChannel;
-    await bestEffortDetach(channel, Promise.resolve(), undefined, 'ClientSession');
+    await bestEffortDetach(channel, true, undefined, 'ClientSession');
     expect(detach).toHaveBeenCalledOnce();
   });
 
@@ -63,7 +147,7 @@ describe('bestEffortDetach', () => {
     };
     const logger = makeLogger({ logLevel: LogLevel.Debug, logHandler });
 
-    await expect(bestEffortDetach(channel, Promise.resolve(), logger, 'DefaultAgentSession')).resolves.toBeUndefined();
+    await expect(bestEffortDetach(channel, true, logger, 'DefaultAgentSession')).resolves.toBeUndefined();
     expect(logged.some((l) => l.level === LogLevel.Debug && l.message.includes('DefaultAgentSession.close();'))).toBe(
       true,
     );
@@ -110,7 +194,7 @@ describe('subscribeAndAttach', () => {
   it('subscribes the listener, attaches the channel, and resolves on success', async () => {
     const subscribe = vi.fn<() => Promise<void>>().mockReturnValue(Promise.resolve());
     const attach = vi.fn<() => Promise<void>>().mockReturnValue(Promise.resolve());
-    const channel = { subscribe, attach } as unknown as Ably.RealtimeChannel;
+    const channel = { subscribe, attach, unsubscribe: vi.fn() } as unknown as Ably.RealtimeChannel;
     const onError = vi.fn();
 
     await expect(
@@ -128,7 +212,7 @@ describe('subscribeAndAttach', () => {
     const cause = new Ably.ErrorInfo('attach refused', 40160, 401);
     const subscribe = vi.fn<() => Promise<void>>().mockRejectedValue(cause);
     const attach = vi.fn<() => Promise<void>>().mockReturnValue(Promise.resolve());
-    const channel = { subscribe, attach } as unknown as Ably.RealtimeChannel;
+    const channel = { subscribe, attach, unsubscribe: vi.fn() } as unknown as Ably.RealtimeChannel;
     const onError = vi.fn();
 
     const rejection = subscribeAndAttach(channel, noopListener, silentLogger, 'DefaultAgentSession', onError);
@@ -149,7 +233,7 @@ describe('subscribeAndAttach', () => {
     const cause = new Ably.ErrorInfo('attach timed out', 90007, 500);
     const subscribe = vi.fn<() => Promise<void>>().mockReturnValue(Promise.resolve());
     const attach = vi.fn<() => Promise<void>>().mockRejectedValue(cause);
-    const channel = { subscribe, attach } as unknown as Ably.RealtimeChannel;
+    const channel = { subscribe, attach, unsubscribe: vi.fn() } as unknown as Ably.RealtimeChannel;
     const onError = vi.fn();
 
     const rejection = subscribeAndAttach(channel, noopListener, silentLogger, 'DefaultClientSession', onError);
@@ -161,6 +245,23 @@ describe('subscribeAndAttach', () => {
     });
     const surfaced = onError.mock.calls[0]?.[0] as Ably.ErrorInfo;
     await expect(rejection.catch((error: unknown) => error)).resolves.toBe(surfaced);
+  });
+
+  it('unsubscribes the listener before subscribing so a retry does not double-register it', async () => {
+    const unsubscribe = vi.fn();
+    const subscribe = vi.fn<() => Promise<void>>().mockReturnValue(Promise.resolve());
+    const attach = vi.fn<() => Promise<void>>().mockReturnValue(Promise.resolve());
+    const channel = { subscribe, attach, unsubscribe } as unknown as Ably.RealtimeChannel;
+
+    await subscribeAndAttach(channel, noopListener, silentLogger, 'DefaultClientSession', vi.fn());
+
+    expect(unsubscribe).toHaveBeenCalledWith(noopListener);
+    // The unsubscribe runs before the (re-)subscribe. Default to 0 so an
+    // uncalled mock fails the greater-than-0 check rather than throwing.
+    const [unsubOrder = 0] = unsubscribe.mock.invocationCallOrder;
+    const [subOrder = 0] = subscribe.mock.invocationCallOrder;
+    expect(unsubOrder).toBeGreaterThan(0);
+    expect(unsubOrder).toBeLessThan(subOrder);
   });
 });
 

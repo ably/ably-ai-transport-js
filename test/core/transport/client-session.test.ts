@@ -573,6 +573,42 @@ describe('ClientSession', () => {
       await expect(s.connect()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSubscriptionError);
       await s.close();
     });
+
+    it('recovers from a failed initial attach: reconnect retries and sends succeed', async () => {
+      const ch = createMockChannel();
+      // The initial attach fails; the channel then recovers so the retry attaches.
+      (ch.attach as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Ably.ErrorInfo('attach timed out', 90007, 500));
+      const codec = createMockCodec();
+      const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec,
+      });
+      s.on('error', () => {
+        /* consume the surfaced subscribe/attach error */
+      });
+
+      // The initial attach fails, poisoning nothing.
+      await expect(s.connect()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSubscriptionError);
+
+      // A send while disconnected surfaces the real failure wrapped in guidance
+      // to reconnect — not a permanently-cached rejection.
+      await expect(s.view.send({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfo({
+        code: ErrorCode.SessionSubscriptionError,
+        message:
+          'unable to send; connect() failed, call connect() again to retry; unable to subscribe and attach channel; attach timed out',
+      });
+
+      // Reconnecting retries the attach against the recovered channel.
+      await expect(s.connect()).resolves.toBeUndefined();
+      expect(ch.attach).toHaveBeenCalledTimes(2);
+
+      // Sends now succeed and reach the encoder.
+      await expect(s.view.send({ kind: 'user-message', text: 'hi' })).resolves.toBeDefined();
+      expect(codec.lastEncoder()?.publishCalls).toContainEqual(expect.objectContaining({ direction: 'input' }));
+
+      await s.close();
+    });
   });
 
   // -------------------------------------------------------------------------

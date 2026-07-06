@@ -49,11 +49,11 @@ import { createRunManager } from './run-manager.js';
 import { createRunStepWriter, stepEndReasonFor } from './run-step-writer.js';
 import {
   bestEffortDetach,
+  ConnectGuard,
   continuityLostError,
   handleWireMessage,
   isContinuityLost,
   noopUnsubscribe,
-  requireConnected,
   SessionState,
   subscribeAndAttach,
 } from './session-support.js';
@@ -217,7 +217,9 @@ class DefaultAgentSession<
   private readonly _reorderWindowMs: number | undefined;
 
   private _state = SessionState.READY;
-  private _connectPromise: Promise<void> | undefined;
+  // The guard owns the single-flight connect promise and its retry-after-failure
+  // semantics; subscription is established lazily on connect().
+  private readonly _connectGuard = new ConnectGuard();
   private _hasAttachedOnce: boolean;
   private readonly _onChannelStateChange: Ably.channelEventCallback;
 
@@ -302,23 +304,19 @@ class DefaultAgentSession<
     if (this._state === SessionState.CLOSED) {
       return Promise.reject(new Ably.ErrorInfo('unable to connect; session is closed', ErrorCode.SessionClosed, 400));
     }
-    if (this._connectPromise) return this._connectPromise;
 
     this._logger?.trace('DefaultAgentSession.connect();');
     // Subscribe unfiltered (before attach, per RTL7g — subscribe implicitly
     // attaches the channel). Unfiltered so the Tree folds every post-attach
     // message regardless of name (cancel control messages are dispatched
-    // separately by the channel listener after the Tree fold).
-    this._connectPromise = subscribeAndAttach(
-      this._channel,
-      this._channelListener,
-      this._logger,
-      'DefaultAgentSession',
-      (error) => {
+    // separately by the channel listener after the Tree fold). The guard runs
+    // the attempt at most once concurrently and retries a failed one on the next
+    // call.
+    return this._connectGuard.connect(async () =>
+      subscribeAndAttach(this._channel, this._channelListener, this._logger, 'DefaultAgentSession', (error) => {
         this._emitter.emit('error', error);
-      },
+      }),
     );
-    return this._connectPromise;
   }
 
   /**
@@ -404,7 +402,7 @@ class DefaultAgentSession<
     if (this._state === SessionState.CLOSED) return;
     this._state = SessionState.CLOSED;
     this._logger?.trace('DefaultAgentSession.detach();');
-    if (this._connectPromise) {
+    if (this._connectGuard.attempted) {
       this._channel.unsubscribe(this._channelListener);
     }
     this._channel.off(this._onChannelStateChange);
@@ -422,7 +420,7 @@ class DefaultAgentSession<
     this._emitter.off();
     this._runManager.close();
 
-    await bestEffortDetach(this._channel, this._connectPromise, this._logger, 'DefaultAgentSession');
+    await bestEffortDetach(this._channel, this._connectGuard.attempted, this._logger, 'DefaultAgentSession');
 
     this._logger?.debug('DefaultAgentSession.detach(); session detached');
   }
@@ -673,7 +671,7 @@ class DefaultAgentSession<
   // -------------------------------------------------------------------------
 
   private async _requireConnected(method: string): Promise<void> {
-    return requireConnected(this._connectPromise, method);
+    return this._connectGuard.requireConnected(method);
   }
 
   // -------------------------------------------------------------------------

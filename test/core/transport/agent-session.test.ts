@@ -2918,8 +2918,10 @@ describe('AgentSession', () => {
 
     it('is idempotent', async () => {
       await session.detach();
+      const unsubscribeCalls = channel.unsubscribe.mock.calls.length;
       await session.detach();
-      expect(channel.unsubscribe).toHaveBeenCalledTimes(1);
+      // The second detach() is a no-op: no further unsubscribe or detach.
+      expect(channel.unsubscribe).toHaveBeenCalledTimes(unsubscribeCalls);
       expect(channel.detach).toHaveBeenCalledTimes(1);
     });
 

@@ -6,6 +6,7 @@ import { Bubble, BubbleContent } from '@/components/ui/bubble';
 import { Message, MessageContent } from '@/components/ui/message';
 import { Response } from '@/components/ui/response';
 import { ToolInvocation } from './tool-invocation';
+import { cn } from '@/lib/utils';
 
 /** The live state of an assistant response, derived from useChat's status. */
 export type MessageState = 'streaming' | 'completed' | 'error' | undefined;
@@ -44,20 +45,43 @@ export function MessageBubble({ message, state, onToolApprove, onToolDeny }: Mes
   // yet — show a quiet loader instead of an empty row.
   const showThinking = !isUser && state === 'streaming' && messageText.trim() === '' && !hasToolParts;
 
+  // The assistant's boxed bubble carries a state-tinted border: amber while
+  // streaming, green once completed, red on error. The classes target the
+  // Bubble's content slot (the element its variants paint), so they must carry
+  // the same `*:data-[slot=…]` prefix to override.
+  const assistantBorder =
+    state === 'streaming'
+      ? '*:data-[slot=bubble-content]:border-amber-900/40'
+      : state === 'completed'
+        ? '*:data-[slot=bubble-content]:border-emerald-900/40'
+        : state === 'error'
+          ? '*:data-[slot=bubble-content]:border-red-900/40'
+          : '*:data-[slot=bubble-content]:border-zinc-800';
+
   return (
     <Message align={isUser ? 'end' : 'start'}>
-      <MessageContent>
-        {/* shadcn chat convention: the user's own messages sit in a filled
-            bubble; the assistant's reply is a ghost bubble that reads as plain
-            prose. */}
+      {/* Shrink-wrap the turn so the bubble hugs its content, capped at 75%. */}
+      <MessageContent className="w-fit max-w-[75%] gap-1.5">
+        {/* The user's turn is a filled bubble; the assistant reply is a boxed
+            bubble whose border reflects the response state. */}
         <Bubble
-          variant={isUser ? 'default' : 'ghost'}
+          variant={isUser ? 'default' : 'outline'}
           align={isUser ? 'end' : 'start'}
+          className={cn(
+            'w-full max-w-full',
+            isUser
+              ? ['*:data-[slot=bubble-content]:bg-zinc-800', '*:data-[slot=bubble-content]:text-zinc-100']
+              : [
+                  '*:data-[slot=bubble-content]:bg-zinc-900',
+                  '*:data-[slot=bubble-content]:text-zinc-300',
+                  assistantBorder,
+                ],
+          )}
         >
           {isUser ? (
-            <BubbleContent className="whitespace-pre-wrap">{messageText}</BubbleContent>
+            <BubbleContent className="w-full whitespace-pre-wrap">{messageText}</BubbleContent>
           ) : (
-            <BubbleContent>
+            <BubbleContent className="w-full">
               {message.parts.map((part, i) => {
                 // The assistant reply is markdown; render it through Response
                 // (Streamdown) so lists, code, and emphasis format correctly.

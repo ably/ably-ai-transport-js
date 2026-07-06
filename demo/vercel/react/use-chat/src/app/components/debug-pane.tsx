@@ -5,7 +5,6 @@ import type { UIMessage } from 'ai';
 import type { CodecMessage } from '@ably/ai-transport';
 import type * as Ably from 'ably';
 import { ChevronLeftIcon } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -101,13 +100,13 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
         return (
           <div
             key={idx}
-            className="rounded-md border border-border bg-muted/50 p-2 font-mono text-[11px]"
+            className="rounded-md border border-zinc-800 bg-zinc-900/50 p-2 font-mono text-[11px]"
           >
-            <div className="mb-1 flex flex-wrap items-center gap-1.5 text-muted-foreground">
-              <span>#{idx}</span>
+            <div className="mb-1 flex flex-wrap items-center gap-1.5 text-zinc-500">
+              <span className="text-zinc-600">#{idx}</span>
               <span>{entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : ''}</span>
-              <Badge variant="secondary">{entry.name ?? '(unnamed)'}</Badge>
-              <Badge variant="outline">{String(entry.action ?? 'message.create')}</Badge>
+              <span className="text-emerald-500">{entry.name ?? '(unnamed)'}</span>
+              <span className="text-amber-500">{String(entry.action ?? 'message.create')}</span>
             </div>
             {AI_TIERS.map((tier) => {
               const tierHeaders = tiers[tier];
@@ -117,22 +116,22 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
                   key={tier}
                   className="mb-1 ml-2 flex flex-col gap-0.5"
                 >
-                  <div className="text-muted-foreground">extras.ai.{tier}</div>
+                  <div className="text-zinc-700">extras.ai.{tier}</div>
                   {Object.entries(tierHeaders).map(([k, v]) => (
                     <div
                       key={k}
-                      className="ml-2 text-muted-foreground"
+                      className="ml-2 text-zinc-600"
                     >
-                      <span>{k}</span>
+                      <span className="text-zinc-500">{k}</span>
                       <span>: </span>
-                      <span className="text-foreground">{v}</span>
+                      <span className="text-zinc-400">{v}</span>
                     </div>
                   ))}
                 </div>
               );
             })}
             {entry.data !== undefined && entry.data !== null && (
-              <div className="mt-1 break-all whitespace-pre-wrap text-muted-foreground">
+              <div className="mt-1 break-all whitespace-pre-wrap text-zinc-600">
                 {typeof entry.data === 'string' ? entry.data : JSON.stringify(entry.data, null, 2)}
               </div>
             )}
@@ -157,20 +156,42 @@ function UIMessagesTab({ messages, status }: { messages: UIMessage[]; status: st
       ref={scrollRef}
       className="flex-1 overflow-y-auto p-3"
     >
-      <div className="mb-3 flex items-center gap-2">
-        <span className="text-[10px] text-muted-foreground">useChat status</span>
-        <Badge variant="secondary">{status}</Badge>
+      <div className="mb-3 flex gap-2">
+        <div className="rounded-md border border-zinc-800 bg-zinc-900/50 px-2 py-1.5 text-[10px]">
+          <span className="text-zinc-600">useChat status: </span>
+          <span
+            className={`font-mono ${
+              status === 'streaming' ? 'text-emerald-400' : status === 'submitted' ? 'text-amber-400' : 'text-zinc-600'
+            }`}
+          >
+            {status}
+          </span>
+        </div>
       </div>
       {messages.length === 0 ? (
         <p className="mt-8 text-center text-xs text-muted-foreground">Messages will appear here as JSON.</p>
       ) : (
-        <pre className="font-mono text-[11px] leading-4 break-all whitespace-pre-wrap text-muted-foreground">
+        <pre className="font-mono text-[11px] leading-4 break-all whitespace-pre-wrap text-zinc-500">
           {JSON.stringify(messages, null, 2)}
         </pre>
       )}
     </div>
   );
 }
+
+const callbackTypeColors: Record<string, string> = {
+  onToolCall: 'text-blue-400',
+  onFinish: 'text-emerald-400',
+  onData: 'text-purple-400',
+  onError: 'text-red-400',
+};
+
+const statusColors: Record<string, string> = {
+  ready: 'text-zinc-500',
+  submitted: 'text-amber-400',
+  streaming: 'text-emerald-400',
+  error: 'text-red-400',
+};
 
 function LifecycleTab({
   callbackLog,
@@ -211,15 +232,15 @@ function LifecycleTab({
       {statusLog.length === 0 ? (
         <p className="text-center text-xs text-muted-foreground">No status changes yet.</p>
       ) : (
-        <div className="flex flex-wrap items-center gap-1 rounded-md border border-border bg-muted/50 p-2 font-mono text-[11px]">
+        <div className="flex flex-wrap items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900/50 p-2 font-mono text-[11px]">
           {statusLog.map((entry, idx) => (
             <span
               key={idx}
               className="flex items-center gap-1"
             >
-              {idx > 0 && <span className="text-muted-foreground">→</span>}
-              <span className={entry.status === 'error' ? 'text-destructive' : 'text-foreground'}>{entry.status}</span>
-              {entry.error && <span className="break-all text-destructive">({entry.error})</span>}
+              {idx > 0 && <span className="text-zinc-700">→</span>}
+              <span className={statusColors[entry.status] ?? 'text-zinc-500'}>{entry.status}</span>
+              {entry.error && <span className="break-all text-red-300">({entry.error})</span>}
             </span>
           ))}
         </div>
@@ -235,13 +256,13 @@ function LifecycleTab({
         callbackLog.map((entry, idx) => (
           <div
             key={idx}
-            className="rounded-md border border-border bg-muted/50 p-2 font-mono text-[11px]"
+            className="rounded-md border border-zinc-800 bg-zinc-900/50 p-2 font-mono text-[11px]"
           >
             <div className="mb-1 flex items-center gap-2">
-              <span className="text-muted-foreground">{new Date(entry.time).toLocaleTimeString()}</span>
-              <Badge variant={entry.type === 'onError' ? 'destructive' : 'secondary'}>{entry.type}</Badge>
+              <span className="text-zinc-400">{new Date(entry.time).toLocaleTimeString()}</span>
+              <span className={callbackTypeColors[entry.type] ?? 'text-zinc-400'}>{entry.type}</span>
             </div>
-            <div className="break-all whitespace-pre-wrap text-foreground">{entry.summary}</div>
+            <div className="break-all whitespace-pre-wrap text-indigo-300">{entry.summary}</div>
           </div>
         ))
       )}
@@ -258,17 +279,17 @@ function LifecycleTab({
         clientToolLog.map((entry) => (
           <div
             key={entry.toolCallId}
-            className="rounded-md border border-border bg-muted/50 p-2 font-mono text-[11px]"
+            className="rounded-md border border-zinc-800 bg-zinc-900/50 p-2 font-mono text-[11px]"
           >
             <div className="mb-1 flex items-center gap-2">
-              <span className="text-muted-foreground">{new Date(entry.time).toLocaleTimeString()}</span>
-              <span className="text-foreground">{entry.toolName}</span>
-              <Badge variant="secondary">{entry.status}</Badge>
+              <span className="text-zinc-400">{new Date(entry.time).toLocaleTimeString()}</span>
+              <span className="text-blue-400">{entry.toolName}</span>
+              <span className={entry.status === 'done' ? 'text-emerald-400' : 'text-amber-400'}>{entry.status}</span>
             </div>
-            <div className="break-all text-muted-foreground">id: {entry.toolCallId}</div>
-            <div className="break-all whitespace-pre-wrap text-muted-foreground">in: {JSON.stringify(entry.input)}</div>
+            <div className="break-all text-zinc-600">id: {entry.toolCallId}</div>
+            <div className="break-all whitespace-pre-wrap text-zinc-500">in: {JSON.stringify(entry.input)}</div>
             {entry.status === 'done' && (
-              <div className="break-all whitespace-pre-wrap text-foreground">out: {JSON.stringify(entry.output)}</div>
+              <div className="break-all whitespace-pre-wrap text-indigo-300">out: {JSON.stringify(entry.output)}</div>
             )}
           </div>
         ))

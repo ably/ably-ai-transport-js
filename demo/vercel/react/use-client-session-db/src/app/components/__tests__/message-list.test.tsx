@@ -45,6 +45,18 @@ describe('MessageList (linear DB demo)', () => {
     expect(screen.getAllByTestId('message-bubble')).toHaveLength(2);
   });
 
+  it('keeps the walkthrough intro visible once messages exist', () => {
+    const messages = [msg('m1', 'user', [{ type: 'text', text: 'first' }])];
+    render(
+      <MessageList
+        messages={messages}
+        statusOf={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText('ClientSession over Ably — database hydration')).toBeTruthy();
+  });
+
   it('drives the thinking loader from statusOf for the streaming assistant turn', () => {
     const messages = [msg('m1', 'user', [{ type: 'text', text: 'q' }]), msg('m2', 'assistant', [])];
     render(

@@ -348,10 +348,13 @@ const rejectReservedFieldKeys = (fields: readonly HeaderField<unknown>[], owner:
  * `defineCodec` call. Catches author mistakes the drivers would otherwise
  * surface as silent last-wins routing or encode/decode asymmetry:
  *
- * - duplicate dispatch literals within a namespace — the domain chunk `type`
- *   namespace (discrete event types + stream phase types, which drive encode
- *   dispatch) and the wire `kind` namespace (discrete event types + stream
- *   family kinds, which drive decode dispatch);
+ * - duplicate wire `kind`s (discrete event types + stream family kinds, which
+ *   drive decode dispatch);
+ * - duplicate encode-dispatch chunk types — a stream delta/end phase or a
+ *   discrete event must each be claimed by exactly one descriptor. A stream
+ *   `start` chunk type is exempt: it may be shared across families (resolved
+ *   by `startWhen`) and may double as a discrete event (its decline target);
+ *   its only forbidden overlap is being another family's delta/end phase;
  * - duplicate input `kind`s and duplicate `partType`s within a batch;
  * - field bindings on the driver-reserved `kind` / `partType` header keys.
  * @param outputs - The assembled output descriptor table.
@@ -361,21 +364,62 @@ const validateTables = <TInput, TOutput>(
   outputs: readonly OutputDescriptor<TOutput>[],
   inputs: readonly InputDescriptor<TInput>[],
 ): void => {
-  const chunkTypes = new Map<string, string>();
   const wireKinds = new Map<string, string>();
+  // Encode dispatch. A chunk `type` is claimed by exactly one descriptor, with
+  // one deliberate exception: a stream `start` chunk type may be **shared**
+  // across families (the encoder resolves it at encode time by each family's
+  // `startWhen`) and may also back a discrete `event` — a start whose
+  // discriminators all decline falls through to discrete dispatch. So starts
+  // are collected apart from the "sole claim" chunk types — a stream delta/end
+  // phase, a discrete event — which must each be claimed by exactly one
+  // descriptor. The one overlap a start must NOT have (being another family's
+  // delta/end, which the start-first dispatch would shadow) is checked after
+  // the loop.
+  const soleChunkTypes = new Map<string, { owner: string; isDeltaOrEnd: boolean }>();
+  const startChunkTypes = new Map<string, string>();
+  const reserveSoleChunkType = (literal: string, owner: string, { isDeltaOrEnd }: { isDeltaOrEnd: boolean }): void => {
+    const holder = soleChunkTypes.get(literal);
+    if (holder !== undefined) {
+      throw new Ably.ErrorInfo(
+        `unable to define codec; dispatch literal '${literal}' is declared by both ${holder.owner} and ${owner}`,
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+    soleChunkTypes.set(literal, { owner, isDeltaOrEnd });
+  };
+
   for (const descriptor of outputs) {
     if (descriptor.construct === 'event') {
       const owner = `output event '${descriptor.type}'`;
-      reserve(chunkTypes, descriptor.type, owner);
+      reserveSoleChunkType(descriptor.type, owner, { isDeltaOrEnd: false });
       reserve(wireKinds, descriptor.type, owner);
       rejectReservedFieldKeys(descriptor.fields, owner);
     } else {
       const owner = `output stream '${descriptor.kind}'`;
       reserve(wireKinds, descriptor.kind, owner);
-      for (const phase of [descriptor.start, descriptor.delta, descriptor.end]) {
-        reserve(chunkTypes, phase, owner);
-      }
+
+      // A start is not reserved for exclusive ownership (shared / decline-target
+      // overlaps are legal); its one illegal overlap is checked below.
+      startChunkTypes.set(descriptor.start, owner);
+
+      reserveSoleChunkType(descriptor.delta, owner, { isDeltaOrEnd: true });
+      reserveSoleChunkType(descriptor.end, owner, { isDeltaOrEnd: true });
       rejectReservedFieldKeys(descriptor.fields, owner);
+    }
+  }
+
+  // A stream start that is also some family's delta/end phase would never route
+  // to that delta/end (the encoder tries the start path first), so forbid it.
+  // Overlap with a discrete event (a decline target) is legal and skipped.
+  for (const [start, startOwner] of startChunkTypes) {
+    const holder = soleChunkTypes.get(start);
+    if (holder?.isDeltaOrEnd === true) {
+      throw new Ably.ErrorInfo(
+        `unable to define codec; stream start '${start}' (${startOwner}) collides with the delta/end phase of ${holder.owner}`,
+        ErrorCode.InvalidArgument,
+        400,
+      );
     }
   }
 

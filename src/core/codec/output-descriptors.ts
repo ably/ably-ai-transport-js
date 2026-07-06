@@ -207,6 +207,16 @@ export interface OutputStreamSpec<
    * {@link FieldFor}); a field may bind a property carried by either phase.
    */
   fields: readonly (FieldFor<ResolveType<U, S>> | FieldFor<ResolveType<U, E>>)[];
+  /**
+   * Payload discriminator resolving a *shared* start event to this family. When
+   * more than one family shares a `start` type (e.g. several part kinds opened by
+   * one `content_part.added`), the encoder starts the first family whose
+   * `startWhen` returns true. Default: always true — an unshared start. When no
+   * family's `startWhen` matches a chunk of a shared start type, the chunk is not
+   * a stream start: the encoder falls through to the discrete `event()` descriptor
+   * for that type (`stream()` publishes nothing).
+   */
+  startWhen?: (chunk: ResolveType<U, S>) => boolean;
   /** Escape-hatch override for the stream-close step only (e.g. close-or-discrete fallback). */
   onEnd?: (
     chunk: ResolveType<U, E>,
@@ -271,6 +281,8 @@ export interface OutputStreamDescriptor<U> {
   deltaField: string;
   /** Declared header fields (start/end). */
   fields: readonly HeaderField<unknown>[];
+  /** Payload discriminator resolving a shared start event to this family, if any. */
+  startWhen?: (chunk: U) => boolean;
   /** Escape-hatch close override, if any. */
   onEnd?: (chunk: U, core: EscapeHatchCore, ctx: OutputEncodeHatchContext<U>) => Promise<void>;
   /** How the delta chunk is rebuilt on decode, when the family customises it beyond a fragment-only delta. */

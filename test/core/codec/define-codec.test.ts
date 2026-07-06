@@ -4,8 +4,23 @@ import { describe, expect, it, vi } from 'vitest';
 import { EVENT_AI_INPUT, EVENT_AI_OUTPUT } from '../../../src/constants.js';
 import { defineCodec } from '../../../src/core/codec/define-codec.js';
 import { strField } from '../../../src/core/codec/fields.js';
-import type { ChannelWriter, CodecEvent, CodecMessage, ReducerMeta } from '../../../src/core/codec/types.js';
+import type {
+  ChannelWriter,
+  CodecEvent,
+  CodecInputEvent,
+  CodecMessage,
+  ReducerMeta,
+} from '../../../src/core/codec/types.js';
+import type { WellKnownInputFactories } from '../../../src/core/codec/well-known-inputs.js';
 import { ErrorCode } from '../../../src/errors.js';
+
+// These fixtures exercise descriptor routing and validation, not the well-known
+// input factories, and their input unions carry no well-known variants — so
+// they expose only the two mandatory factories `defineCodec` requires.
+const mandatoryFactories = <TInput extends CodecInputEvent>(base: WellKnownInputFactories<TInput>) => ({
+  createUserMessage: base.createUserMessage,
+  createRegenerate: base.createRegenerate,
+});
 
 // ---------------------------------------------------------------------------
 // Fixture codec
@@ -53,6 +68,7 @@ const codec = defineCodec<NoopInput, QuirkyOutput>()({
   ],
   // A single event with no fields/data rebuilds to the { kind, codecMessageId, payload } envelope.
   input: ({ event }) => [event('noop')],
+  factories: mandatoryFactories,
 });
 
 const aiMessage = (name: string, codecHeaders: Record<string, string>): Ably.InboundMessage =>
@@ -188,6 +204,7 @@ describe('defineCodec — wire-controlled kind robustness', () => {
     },
     output: ({ event }) => [event('quirky', { data: { encode: () => '', decode: () => ({ kind: 'decoded' }) } })],
     input: ({ event }) => [event('noop')],
+    factories: mandatoryFactories,
     decodeLifecycle: () => ({
       onDiscrete: { quirky: () => [{ type: 'quirky', kind: 'lead-in' }] },
     }),
@@ -278,6 +295,7 @@ const defineWith = (
     },
     output,
     input,
+    factories: mandatoryFactories,
   });
 
 const noteStream = {
@@ -405,5 +423,27 @@ describe('defineCodec — reducer wiring', () => {
       { codecMessageId: 'cm-0', message: output },
       { codecMessageId: 'cm-1', message: input },
     ]);
+  });
+});
+
+describe('defineCodec — factory spread', () => {
+  // The `codec` fixture's `factories` builder returns only the two mandatory
+  // factories (mandatoryFactories). These assertions pin the spread contract at
+  // the layer that implements it: defineCodec spreads exactly the subset the
+  // builder returns — the mandatory factories are present and real, and the tool
+  // factories the builder omitted are absent at runtime, not merely type-hidden.
+  it('exposes the mandatory factories the builder returned', () => {
+    expect(typeof codec.createUserMessage).toBe('function');
+    expect(codec.createRegenerate('assistant-1', 'user-1')).toEqual({
+      kind: 'regenerate',
+      target: 'assistant-1',
+      parent: 'user-1',
+    });
+  });
+
+  it('does not spread the tool factories the builder omitted', () => {
+    expect(codec.createToolResult).toBeUndefined();
+    expect(codec.createToolResultError).toBeUndefined();
+    expect(codec.createToolApprovalResponse).toBeUndefined();
   });
 });

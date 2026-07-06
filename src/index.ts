@@ -61,6 +61,7 @@ export type {
   DecoderCoreOptions,
   DefineCodecConfig,
   DefinedCodec,
+  DefinedCodecFactories,
   Encoder,
   EncoderCore,
   EncoderCoreOptions,

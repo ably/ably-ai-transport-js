@@ -4,9 +4,9 @@
  * Assembled by `defineCodec` from the codec's parts: the reducer
  * (`init`/`fold`/`getMessages`), the declarative output and input descriptor
  * tables (`outputs` / `inputs`, each a builder function `defineCodec` injects
- * the direction-scoped builder into), and the decode lifecycle policy.
- * `defineCodec` builds the generic encoder/decoder and merges the well-known
- * input factories internally.
+ * the direction-scoped builder into), the well-known input factories it exposes
+ * (`factories`), and the decode lifecycle policy. `defineCodec` builds the
+ * generic encoder/decoder from these.
  *
  * ```ts
  * import { UIMessageCodec } from '@ably/ai-transport/vercel';
@@ -35,6 +35,9 @@ export const UIMessageCodec = defineCodec<VercelInput, VercelOutput>()({
   reducer: { init, fold, getMessages },
   output: outputs,
   input: inputs,
+  // Full codec: its TInput carries every well-known variant, so it exposes the
+  // complete factory set unchanged.
+  factories: (base) => base,
   decodeLifecycle: createVercelDecodeLifecycle,
 });
 

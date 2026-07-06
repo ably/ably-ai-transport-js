@@ -1,6 +1,6 @@
 # Vercel codec
 
-The Vercel codec (`src/vercel/codec/`) implements the [Codec interface](codec-interface.md) for the Vercel AI SDK, mapping between `UIMessageChunk` outputs / `UIMessage` objects and Ably channel operations. `UIMessageCodec` (`index.ts`) is **assembled by `defineCodec`** rather than hand-written — there are no separate encoder/decoder classes. `defineCodec` is given the reducer (`init` / `fold` / `getMessages` from `reducer.ts`), the declarative output and input descriptor tables (`outputs` from `outputs.ts`, `inputs` from `inputs.ts`), and a decode lifecycle factory (`createVercelDecodeLifecycle` from `decode-lifecycle.ts`); it builds the generic encoder/decoder and merges the core's well-known input factories (`createUserMessage`, `createRegenerate`, `createToolResult`, `createToolResultError`, `createToolApprovalResponse`) internally. It is typed `Codec<VercelInput, VercelOutput, VercelProjection, UIMessage>`.
+The Vercel codec (`src/vercel/codec/`) implements the [Codec interface](codec-interface.md) for the Vercel AI SDK, mapping between `UIMessageChunk` outputs / `UIMessage` objects and Ably channel operations. `UIMessageCodec` (`index.ts`) is **assembled by `defineCodec`** rather than hand-written — there are no separate encoder/decoder classes. `defineCodec` is given the reducer (`init` / `fold` / `getMessages` from `reducer.ts`), the declarative output and input descriptor tables (`outputs` from `outputs.ts`, `inputs` from `inputs.ts`), a `factories` selector, and a decode lifecycle factory (`createVercelDecodeLifecycle` from `decode-lifecycle.ts`); it builds the generic encoder/decoder. Because Vercel's `VercelInput` carries every well-known variant, its `factories` selector returns the core's full factory set unchanged (`createUserMessage`, `createRegenerate`, `createToolResult`, `createToolResultError`, `createToolApprovalResponse`). It is typed `Codec<VercelInput, VercelOutput, VercelProjection, UIMessage>`.
 
 ```ts
 export const UIMessageCodec = defineCodec<VercelInput, VercelOutput>()({
@@ -8,6 +8,7 @@ export const UIMessageCodec = defineCodec<VercelInput, VercelOutput>()({
   reducer: { init, fold, getMessages }, // reducer.ts
   output: outputs, // outputs.ts
   input: inputs, // inputs.ts
+  factories: (base) => base, // full codec: expose every well-known factory
   decodeLifecycle: createVercelDecodeLifecycle, // decode-lifecycle.ts
 });
 ```

@@ -2,11 +2,12 @@
  * `defineCodec` — composition packaging for a codec.
  *
  * A codec author supplies only its **parts** — a reducer, a per-direction
- * descriptor table (the `output` and `input` builder functions), an optional
- * decode lifecycle policy, and an optional agent identifier — and `defineCodec`
- * assembles a fully-formed {@link Codec}: the generic encoder/decoder skeletons
- * (built here, codec-agnostic), the reducer methods, and the well-known input
- * factories (merged internally).
+ * descriptor table (the `output` and `input` builder functions), a `factories`
+ * selector naming which well-known input factories the codec exposes, an
+ * optional decode lifecycle policy, and an optional agent identifier — and
+ * `defineCodec` assembles a fully-formed {@link Codec}: the generic
+ * encoder/decoder skeletons (built here, codec-agnostic), the reducer methods,
+ * and the factory subset the `factories` selector returns.
  *
  * Both directions are declarative descriptor tables driven by the generic
  * encode/decode drivers. `defineCodec` hands each table a direction-scoped
@@ -48,7 +49,7 @@ import type {
   StreamTrackerState,
   WriteOptions,
 } from './types.js';
-import { type WellKnownInputFactories, wellKnownInputs } from './well-known-inputs.js';
+import { type DefinedCodecFactories, type WellKnownInputFactories, wellKnownInputs } from './well-known-inputs.js';
 
 // Re-exported so codec descriptor tables (e.g. the Vercel `inputs.ts` / `outputs.ts`)
 // can type their builder parameter without reaching into the descriptor modules directly.
@@ -134,6 +135,17 @@ export interface DefineCodecConfig<
    */
   input: (b: InputBuilder<TInput>) => readonly InputDescriptor<TInput>[];
   /**
+   * Selects the well-known input factories this codec exposes. Receives the
+   * full set of factory bodies (payload-typed to `TInput`) and returns the
+   * subset the codec supports: `createUserMessage` and `createRegenerate` are
+   * mandatory, and each tool factory may be included only when `TInput` carries
+   * the matching variant — the return type {@link DefinedCodecFactories}
+   * forbids exposing a factory the codec's `TInput` cannot represent. A full
+   * codec returns the set unchanged; a text-only codec returns just the two
+   * mandatory factories.
+   */
+  factories: (base: WellKnownInputFactories<TInput>) => DefinedCodecFactories<TInput>;
+  /**
    * Factory for a fresh decode lifecycle policy per decoder instance (the
    * policy's closures capture a fresh, per-decoder lifecycle tracker). Omit
    * for a codec with no mid-stream-join repair.
@@ -143,13 +155,16 @@ export interface DefineCodecConfig<
 
 /**
  * A codec assembled by {@link defineCodec}: a conforming {@link Codec} whose
- * well-known input factories are typed concretely by {@link WellKnownInputFactories}
- * (so `createToolResult` etc. are callable without a guard). The factory methods
- * are sourced from `WellKnownInputFactories` rather than `Codec` because the
- * former types them against `UserMessageOf<TInput>` / `ToolResultPayloadOf<TInput>`
- * — equal to the codec's `TMessage` / payloads for every real codec, but not
- * provably so to the generic type system. At a concrete call site a
- * `DefinedCodec` is assignable to the corresponding `Codec`.
+ * well-known input factory properties are typed by {@link DefinedCodecFactories}
+ * — `createUserMessage`/`createRegenerate` always present, and each tool factory
+ * present only when `TInput` carries the matching variant. Their payload types
+ * come from {@link WellKnownInputFactories} (against `UserMessageOf<TInput>` /
+ * `ToolResultPayloadOf<TInput>` — equal to the codec's `TMessage` / payloads for
+ * every real codec, but not provably so to the generic type system). At a
+ * concrete call site a `DefinedCodec` is assignable to the corresponding
+ * `Codec` — including for a partial codec, because a tool factory `TInput`
+ * cannot represent is typed absent, so a text-only codec satisfies `Codec`'s
+ * optional tool factories rather than over-promising them.
  */
 export type DefinedCodec<
   TInput extends CodecInputEvent,
@@ -157,7 +172,7 @@ export type DefinedCodec<
   TProjection,
   TMessage,
 > = Omit<Codec<TInput, TOutput, TProjection, TMessage>, keyof WellKnownInputFactories<TInput>> &
-  WellKnownInputFactories<TInput>;
+  DefinedCodecFactories<TInput>;
 
 // ---------------------------------------------------------------------------
 // Generic encoder
@@ -427,6 +442,10 @@ export const defineCodec =
           // here would be unreachable surface.
           createDecoderCore(buildHooks(outputDecoder, inputDecoder, decodeLifecycle?.()), {}),
         ),
-      ...wellKnownInputs<TInput>(),
+      // The codec's factories selector picks, from the full well-known set, the
+      // subset its TInput supports; spreading its result means a partial codec
+      // carries only the factories it exposes — so there is no cast here and no
+      // runtime factory the typed surface denies.
+      ...config.factories(wellKnownInputs<TInput>()),
     };
   };

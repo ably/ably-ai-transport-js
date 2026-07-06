@@ -67,7 +67,9 @@ async function waitForAssistantSettled(page: Page, timeoutMs = 60_000): Promise<
       { timeout: timeoutMs },
     )
     .toBeGreaterThan(0);
-  await page.waitForTimeout(500);
+  // No fixed settle buffer: the three waits above establish that the run has
+  // completed and rendered, and Playwright auto-waits on the actionability of
+  // whatever the caller does next — so a sleep here would only add flake surface.
 }
 
 async function sendPrompt(page: Page, text: string): Promise<void> {
@@ -1166,12 +1168,15 @@ test.describe('use-chat demo - chat behaviour', () => {
   test('exploratory: pagination — Load older messages button is functional after a refresh', async ({
     page,
   }, testInfo) => {
-    // Smoke test the pagination control. We don't pin exact counts
-    // before/after because `useView({ limit })` is plumbed through a
-    // message-count-based fetcher that doesn't always withhold all
-    // older runs at a tiny limit; the meaningful check is that the
-    // "Load older" button surfaces (when there's older history) and
-    // clicking it doesn't error out.
+    // Smoke test the pagination control at a tiny limit. After a refresh the
+    // conversation rebuilds from channel history and `useView({ limit: 1 })`
+    // reveals a single newest message; "Load older" pages the rest in. The newest
+    // message may be either the latest user prompt or its assistant reply
+    // (fold/persist ordering isn't fixed), so we don't assert on it directly —
+    // instead we poll-click "Load older" until BOTH prompts are visible. Every
+    // prompt's text is carried by its persisted user message ("Reply with the
+    // word PAGEn ..."), so this converges regardless of which message surfaced
+    // first, and waits on settled state rather than racing the async fold.
     await page.goto(freshChannelUrl(testInfo.title) + '&limit=1');
 
     await sendPrompt(page, 'Reply with the word PAGE1 and nothing else');
@@ -1180,21 +1185,21 @@ test.describe('use-chat demo - chat behaviour', () => {
     const url = page.url();
     await page.goto(url);
 
-    // PAGE2 is always visible (most recent run).
-    await expect.poll(async () => userBubbles(page).count(), { timeout: 30_000 }).toBeGreaterThanOrEqual(1);
-    const bodyTextBeforeLoad = await page.evaluate(() => document.body.innerText);
-    expect(bodyTextBeforeLoad).toMatch(/PAGE2/);
-
-    // Make older history reachable: keep clicking Load older until
-    // both prompts are visible (or the button disappears).
-    const startCount = await userBubbles(page).count();
-    for (let i = 0; i < 5 && (await userBubbles(page).count()) < 2; i++) {
-      const loadOlder = page.getByRole('button', { name: /Load older messages/i });
-      if ((await loadOlder.count()) === 0) break;
-      await loadOlder.click();
-      await page.waitForTimeout(1000);
-    }
-    expect(await userBubbles(page).count()).toBeGreaterThan(startCount === 2 ? 1 : 1);
+    // Reveal older history: click "Load older" until both prompts are visible,
+    // or the button disappears (history exhausted). Polling waits on the settled
+    // window after each async fold instead of a fixed sleep.
+    await expect
+      .poll(
+        async () => {
+          const body = await page.evaluate(() => document.body.innerText);
+          if (/PAGE1/.test(body) && /PAGE2/.test(body)) return true;
+          const loadOlder = page.getByRole('button', { name: /Load older messages/i });
+          if ((await loadOlder.count()) > 0) await loadOlder.first().click();
+          return false;
+        },
+        { timeout: 30_000 },
+      )
+      .toBe(true);
 
     const bodyTextAfter = await page.evaluate(() => document.body.innerText);
     expect(bodyTextAfter).toMatch(/PAGE1/);

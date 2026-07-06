@@ -55,6 +55,12 @@ export const noopUnsubscribe = (): void => {};
  * makes that guarantee hold. On success logs at debug; on failure builds a
  * `SessionSubscriptionError`, logs at error, hands it to `onError`, and rejects
  * with it.
+ *
+ * Retry-safe: `subscribe()` registers the listener synchronously, before the
+ * implicit attach it triggers can fail, so a failed attempt leaves the listener
+ * registered. This unsubscribes the listener first (a no-op on the first
+ * attempt) so a `connect()` retry after a failure registers it exactly once
+ * rather than accumulating duplicate deliveries.
  * @param channel - The session's channel.
  * @param listener - The message listener to subscribe (also the unsubscribe handle on close).
  * @param logger - Logger for the success/failure lines, or `undefined`.
@@ -72,6 +78,9 @@ export const subscribeAndAttach = async (
   onError: (error: Ably.ErrorInfo) => void,
 ): Promise<void> => {
   try {
+    // Drop any registration a prior failed attempt left behind before
+    // re-subscribing, so retries don't double-register the listener.
+    channel.unsubscribe(listener);
     await channel.subscribe(listener);
     // Force the attach: subscribe's implicit attach can resolve with the channel
     // still INITIALIZED, but the write guard needs it ATTACHED/ATTACHING. attach()
@@ -126,42 +135,122 @@ export const handleWireMessage = (process: () => void, onError: (error: Ably.Err
 };
 
 /**
- * Resolve a session's connect guard: return the in-flight/settled connect
- * promise, or reject with `InvalidArgument` when `connect()` has not been
- * called. Callers `await` the result before any write.
- * @param connectPromise - The session's connect promise, or `undefined` when not yet connected.
- * @param method - The method name being guarded, for the error message.
- * @returns The connect promise.
- * @throws {Ably.ErrorInfo} `InvalidArgument` when `connectPromise` is `undefined`.
+ * Single-flight connection guard shared by both sessions. Owns the connect
+ * promise and the last connect failure so the client and agent sessions cannot
+ * drift on the retry-after-failure semantics or the write-guard error shapes.
+ *
+ * A successful or in-flight connect is cached and returned to every caller, so
+ * `connect()` is idempotent. A FAILED connect is deliberately NOT cached: the
+ * promise is cleared so a subsequent `connect()` retries the subscribe/attach
+ * against a channel that may since have recovered. The failure is retained so a
+ * write awaited through {@link ConnectGuard.requireConnected} surfaces the real
+ * cause rather than a stale rejection, and tells the caller to reconnect.
  */
-export const requireConnected = async (connectPromise: Promise<void> | undefined, method: string): Promise<void> => {
-  if (!connectPromise) {
+export class ConnectGuard {
+  /** The in-flight or successfully-settled connect promise; cleared on failure. */
+  private _promise: Promise<void> | undefined;
+  /** The most recent connect failure, retained after the promise is cleared. */
+  private _lastError: Ably.ErrorInfo | undefined;
+  /** Whether `connect()` has ever started an attempt (stays true after a failure). */
+  private _attempted = false;
+
+  /**
+   * Whether `connect()` has ever been called. Stays true after a failed attempt
+   * (which clears the connect promise), so `close()` can gate the
+   * unsubscribe/detach that the attempt's `subscribe()` set up even when the
+   * attach that followed it failed.
+   * @returns True once a connect attempt has started.
+   */
+  get attempted(): boolean {
+    return this._attempted;
+  }
+
+  /**
+   * Return the in-flight/successful connect promise, or start a fresh attempt
+   * via `attempt`. Single-flight: concurrent and repeat calls share one attempt.
+   * A rejected attempt is not cached (the next call retries) but its rejection
+   * still propagates, so the caller of `connect()` observes the failure.
+   * @param attempt - Runs the subscribe/attach; invoked only when no attempt is held.
+   * @returns The shared connect promise.
+   */
+  // eslint-disable-next-line @typescript-eslint/promise-function-async -- return the cached promise by reference, not a fresh wrapper
+  connect(attempt: () => Promise<void>): Promise<void> {
+    if (this._promise) return this._promise;
+    this._attempted = true;
+    this._promise = this._attempt(attempt);
+    return this._promise;
+  }
+
+  private async _attempt(attempt: () => Promise<void>): Promise<void> {
+    try {
+      await attempt();
+      this._lastError = undefined;
+    } catch (error) {
+      // Do not cache the rejection: clear the promise so a later connect()
+      // retries, and keep the cause so requireConnected() can surface it.
+      this._promise = undefined;
+      this._lastError =
+        errorCause(error) ?? new Ably.ErrorInfo(errorMessage(error), ErrorCode.SessionSubscriptionError, 500);
+      throw error;
+    }
+  }
+
+  /**
+   * The write guard: `await` this before any write. Resolves once connected.
+   * Rejects with `InvalidArgument` when `connect()` has never been called; when a
+   * prior `connect()` failed, rejects with the real failure (as `cause`) wrapped
+   * in guidance to call `connect()` again.
+   * @param method - The method name being guarded, for the error message.
+   * @returns A promise that resolves once connected.
+   * @throws {Ably.ErrorInfo} `InvalidArgument` when never connected, or the
+   *   wrapped connect failure when a prior attempt failed.
+   */
+  async requireConnected(method: string): Promise<void> {
+    const promise = this._promise;
+    if (promise) {
+      try {
+        await promise;
+        return;
+      } catch {
+        // The attempt rejected; _attempt() recorded _lastError before this
+        // propagated, so fall through to surface the wrapped guidance.
+      }
+    }
+    if (this._lastError) {
+      throw new Ably.ErrorInfo(
+        `unable to ${method}; connect() failed, call connect() again to retry; ${this._lastError.message}`,
+        this._lastError.code,
+        this._lastError.statusCode,
+        this._lastError,
+      );
+    }
     throw new Ably.ErrorInfo(
       `unable to ${method}; connect() must be called before ${method}()`,
       ErrorCode.InvalidArgument,
       400,
     );
   }
-  return connectPromise;
-};
+}
 
 /**
  * Detach the session's channel on close, best-effort. `connect()` subscribes
  * (which implicitly attaches), so a detach is only attempted when `connect()`
- * ran. A detach failure (e.g. the channel is already FAILED) must not throw out
- * of `close()`, so it is swallowed and logged at debug.
+ * ran — including a failed attempt, whose `subscribe()` may have registered the
+ * listener before the attach that followed it failed. A detach failure (e.g. the
+ * channel is already FAILED) must not throw out of `close()`, so it is swallowed
+ * and logged at debug.
  * @param channel - The session's channel.
- * @param connectPromise - The session's connect promise; detach is skipped when `undefined`.
+ * @param attempted - Whether `connect()` ran; detach is skipped when `false`.
  * @param logger - Logger for the swallowed-failure debug line, or `undefined`.
  * @param component - The owning class name, used as the log message prefix.
  */
 export const bestEffortDetach = async (
   channel: Ably.RealtimeChannel,
-  connectPromise: Promise<void> | undefined,
+  attempted: boolean,
   logger: Logger | undefined,
   component: string,
 ): Promise<void> => {
-  if (connectPromise === undefined) return;
+  if (!attempted) return;
   try {
     await channel.detach();
   } catch (error) {

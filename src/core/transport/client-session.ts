@@ -44,11 +44,11 @@ import { Invocation } from './invocation.js';
 import { createMaterialisation } from './materialisation.js';
 import {
   bestEffortDetach,
+  ConnectGuard,
   continuityLostError,
   handleWireMessage,
   isContinuityLost,
   noopUnsubscribe,
-  requireConnected,
   SessionState,
   subscribeAndAttach,
 } from './session-support.js';
@@ -133,8 +133,9 @@ class DefaultClientSession<
   readonly tree: Tree<TOutput, TProjection>;
   readonly view: ClientView<TInput, TMessage>;
 
-  // Channel subscription is established lazily on connect()
-  private _connectPromise: Promise<void> | undefined;
+  // Channel subscription is established lazily on connect(); the guard owns the
+  // single-flight connect promise and its retry-after-failure semantics.
+  private readonly _connectGuard = new ConnectGuard();
   private readonly _onMessage: (msg: Ably.InboundMessage) => void;
 
   private _state = SessionState.READY;
@@ -246,20 +247,16 @@ class DefaultClientSession<
     if (this._state === SessionState.CLOSED) {
       return Promise.reject(new Ably.ErrorInfo('unable to connect; session is closed', ErrorCode.SessionClosed, 400));
     }
-    if (this._connectPromise) return this._connectPromise;
 
     this._logger.trace('DefaultClientSession.connect();');
-    // Subscribe before attach (RTL7g) — subscribe implicitly attaches the channel.
-    this._connectPromise = subscribeAndAttach(
-      this._channel,
-      this._onMessage,
-      this._logger,
-      'DefaultClientSession',
-      (error) => {
+    // Subscribe before attach (RTL7g) — subscribe implicitly attaches the
+    // channel. The guard runs the attempt at most once concurrently and retries
+    // a failed one on the next call.
+    return this._connectGuard.connect(async () =>
+      subscribeAndAttach(this._channel, this._onMessage, this._logger, 'DefaultClientSession', (error) => {
         this._emitter.emit('error', error);
-      },
+      }),
     );
-    return this._connectPromise;
   }
 
   /**
@@ -279,7 +276,7 @@ class DefaultClientSession<
   }
 
   private async _requireConnected(method: string): Promise<void> {
-    return requireConnected(this._connectPromise, method);
+    return this._connectGuard.requireConnected(method);
   }
 
   // ---------------------------------------------------------------------------
@@ -746,7 +743,7 @@ class DefaultClientSession<
     this._state = SessionState.CLOSED;
     this._logger.info('ClientSession.close();');
 
-    if (this._connectPromise) {
+    if (this._connectGuard.attempted) {
       this._channel.unsubscribe(this._onMessage);
     }
     this._channel.off(this._onChannelStateChange);
@@ -773,7 +770,7 @@ class DefaultClientSession<
       // Swallow: encoder close is best-effort during teardown
     }
 
-    await bestEffortDetach(this._channel, this._connectPromise, this._logger, 'ClientSession');
+    await bestEffortDetach(this._channel, this._connectGuard.attempted, this._logger, 'ClientSession');
   }
 }
 

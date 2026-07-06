@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import type { UIEvent } from 'react';
 import { Loader2Icon } from 'lucide-react';
 import type { UIMessage } from 'ai';
 import type { BranchHandle, CodecMessage, RunInfo } from '@ably/ai-transport';
@@ -11,7 +11,6 @@ import {
   MessageScrollerItem,
   MessageScrollerProvider,
   MessageScrollerViewport,
-  useMessageScrollerVisibility,
 } from '@/components/ui/message-scroller';
 import { Button } from '@/components/ui/button';
 import { MessageBubble } from './message-bubble';
@@ -47,31 +46,6 @@ interface MessageListProps {
   onToolDeny?: (codecMessageId: string, toolCallId: string) => void;
 }
 
-// Reaching the top of the conversation triggers history pagination. The
-// MessageScroller has no onReachStart hook, so watch its visibility state:
-// once the oldest visible message scrolls into view, ask for an older page.
-// `loading` gates re-entrancy, and the oldest id changes after a prepend, so
-// the same page is never requested twice.
-function AutoLoadOlder({
-  oldestId,
-  hasOlder,
-  loading,
-  onLoadOlder,
-}: {
-  oldestId: string | undefined;
-  hasOlder: boolean;
-  loading: boolean;
-  onLoadOlder: () => void;
-}) {
-  const { visibleMessageIds } = useMessageScrollerVisibility();
-  useEffect(() => {
-    if (hasOlder && !loading && oldestId && visibleMessageIds.includes(oldestId)) {
-      onLoadOlder();
-    }
-  }, [visibleMessageIds, oldestId, hasOlder, loading, onLoadOlder]);
-  return null;
-}
-
 export function MessageList({
   messages,
   hasOlder,
@@ -83,7 +57,17 @@ export function MessageList({
   onToolApprove,
   onToolDeny,
 }: MessageListProps) {
-  const oldestId = messages[0]?.codecMessageId;
+  // History pagination triggers only at the very top of the scrollback: the
+  // reader has to scroll right up past the intro's start before the next page
+  // is requested (never on open, and never while merely approaching the oldest
+  // message). `loading` gates re-entrancy, and preserveScrollOnPrepend anchors
+  // the reading position when the page lands, moving the viewport back off the
+  // top edge.
+  const handleScroll = (event: UIEvent<HTMLDivElement>) => {
+    if (hasOlder && !loading && event.currentTarget.scrollTop < 60) {
+      onLoadOlder();
+    }
+  };
 
   // Empty conversation: show the onboarding intro from the top in a plain
   // scroll container. The MessageScroller anchors to the newest message, which
@@ -117,6 +101,7 @@ export function MessageList({
         <MessageScrollerViewport
           preserveScrollOnPrepend
           className="px-4 py-4"
+          onScroll={handleScroll}
         >
           <MessageScrollerContent>
             {/* The demo walkthrough stays at the top of the scrollback, above
@@ -192,12 +177,6 @@ export function MessageList({
         <MessageScrollerButton
           direction="end"
           data-testid="scroll-to-latest"
-        />
-        <AutoLoadOlder
-          oldestId={oldestId}
-          hasOlder={hasOlder}
-          loading={loading}
-          onLoadOlder={onLoadOlder}
         />
       </MessageScroller>
     </MessageScrollerProvider>

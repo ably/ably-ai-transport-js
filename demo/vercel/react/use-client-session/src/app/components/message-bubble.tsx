@@ -12,6 +12,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ToolInvocation } from './tool-invocation';
 import { clientColor } from '../lib/client-color';
+import { cn } from '@/lib/utils';
 
 interface MessageBubbleProps {
   message: UIMessage;
@@ -90,36 +91,34 @@ function BranchNavigator({
   );
 }
 
-function InfoBadge({
-  label,
-  value,
-  variant = 'secondary',
-  className,
-}: {
-  label: string;
-  value: string;
-  variant?: 'secondary' | 'destructive';
-  className?: string;
-}) {
+function InfoBadge({ label, value, className }: { label: string; value: string; className?: string }) {
   return (
     <Badge
-      variant={variant}
-      className={className}
+      variant="secondary"
+      className={cn('rounded-sm bg-zinc-900 px-1.5 text-[10px] font-normal text-zinc-500', className)}
     >
-      <span className={variant === 'destructive' ? 'opacity-70' : 'text-muted-foreground'}>{label}</span>
+      <span className="text-zinc-600">{label}</span>
       <span>{value}</span>
     </Badge>
   );
 }
 
 function StatusBadge({ status }: { status: string }) {
-  // Only a failed/cancelled run carries a colour (destructive); complete and
-  // streaming deliberately stay neutral so the row doesn't read as an alert.
+  // The status badge carries the run's lifecycle colour: green once complete,
+  // amber while streaming, red when cancelled or failed.
+  const color =
+    status === 'complete'
+      ? 'bg-emerald-950 text-emerald-400'
+      : status === 'streaming'
+        ? 'bg-amber-950 text-amber-400'
+        : status === 'cancelled' || status === 'error'
+          ? 'bg-red-950 text-red-400'
+          : undefined;
   return (
     <InfoBadge
       label="status"
       value={status}
-      variant={status === 'cancelled' || status === 'error' ? 'destructive' : 'secondary'}
+      className={color}
     />
   );
 }
@@ -212,6 +211,19 @@ export function MessageBubble({
   const role = message.role;
   const colors = clientId ? clientColor(clientId) : undefined;
 
+  // The assistant's boxed bubble carries a status-tinted border, mirroring the
+  // status badge: amber while streaming, green once complete, red on failure.
+  // The classes target the Bubble's content slot (the element its variants
+  // paint), so they must carry the same `*:data-[slot=…]` prefix to override.
+  const assistantBorder =
+    status === 'streaming'
+      ? '*:data-[slot=bubble-content]:border-amber-900/40'
+      : status === 'complete'
+        ? '*:data-[slot=bubble-content]:border-emerald-900/40'
+        : status === 'cancelled' || status === 'error'
+          ? '*:data-[slot=bubble-content]:border-red-900/40'
+          : '*:data-[slot=bubble-content]:border-zinc-800';
+
   const messageText = message.parts
     .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
     .map((p) => p.text)
@@ -227,7 +239,9 @@ export function MessageBubble({
       data-testid="message-bubble"
       data-role={role}
     >
-      <MessageContent>
+      {/* Shrink-wrap the turn so the bubble stretches to the badge row's width
+          (never narrower), while long content stays capped at 75%. */}
+      <MessageContent className="w-fit max-w-[75%] gap-1.5">
         {isEditing && onEdit ? (
           <EditForm
             initialText={messageText}
@@ -236,17 +250,30 @@ export function MessageBubble({
           />
         ) : (
           <>
-            {/* shadcn chat convention: the user's own messages sit in a filled
-                bubble; the assistant's reply is a ghost bubble that reads as
-                plain prose. */}
+            {/* The user's turn is a filled bubble tinted with the client's
+                palette colour; the assistant reply is a boxed bubble whose
+                border reflects the run status. */}
             <Bubble
-              variant={isUser ? 'default' : 'ghost'}
+              variant={isUser ? 'default' : 'outline'}
               align={isUser ? 'end' : 'start'}
+              className={cn(
+                'w-full max-w-full',
+                isUser
+                  ? [
+                      colors?.userBubble ?? '*:data-[slot=bubble-content]:bg-zinc-800',
+                      '*:data-[slot=bubble-content]:text-zinc-100',
+                    ]
+                  : [
+                      '*:data-[slot=bubble-content]:bg-zinc-900',
+                      '*:data-[slot=bubble-content]:text-zinc-300',
+                      assistantBorder,
+                    ],
+              )}
             >
               {isUser ? (
-                <BubbleContent className="whitespace-pre-wrap">{messageText}</BubbleContent>
+                <BubbleContent className="w-full whitespace-pre-wrap">{messageText}</BubbleContent>
               ) : (
-                <BubbleContent>
+                <BubbleContent className="w-full">
                   {message.parts.map((part, i) => {
                     // The assistant reply is markdown; render it through Response
                     // (Streamdown) so lists, code, and emphasis format correctly.
@@ -275,7 +302,7 @@ export function MessageBubble({
                 </BubbleContent>
               )}
             </Bubble>
-            <MessageFooter className="mt-1 flex flex-wrap items-center gap-1.5">
+            <MessageFooter className="flex flex-wrap items-center gap-1.5">
               {/* Branch navigator (when the message has siblings) */}
               {hasSiblings && (
                 <BranchNavigator

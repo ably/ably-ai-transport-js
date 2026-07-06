@@ -119,6 +119,9 @@ export function MessageList({
           className="px-4 py-4"
         >
           <MessageScrollerContent>
+            {/* The demo walkthrough stays at the top of the scrollback, above
+                the oldest loaded message, so it remains reachable mid-chat. */}
+            <IntroCard />
             {hasOlder && (
               <div className="text-center">
                 <Button

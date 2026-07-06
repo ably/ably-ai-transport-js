@@ -292,6 +292,8 @@ function InputBar({
           onChange={(e) => onChange(e.target.value)}
           placeholder="Type a message..."
           autoFocus
+          rows={1}
+          className="min-h-0"
           // Enter sends; Shift+Enter inserts a newline (standard composer UX).
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -300,13 +302,13 @@ function InputBar({
             }
           }}
         />
-        <InputGroupAddon align="block-end">
+        <InputGroupAddon align="inline-end">
           {hasAnyRuns ? (
             <InputGroupButton
               type="button"
               variant="destructive"
               size="icon-sm"
-              className="ml-auto rounded-full"
+              className="rounded-full"
               aria-label="Stop"
               onClick={onStop}
             >
@@ -317,7 +319,7 @@ function InputBar({
               type="submit"
               variant="default"
               size="icon-sm"
-              className="ml-auto rounded-full"
+              className="rounded-full"
               aria-label="Send"
               disabled={!value.trim()}
             >

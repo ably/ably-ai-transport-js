@@ -33,19 +33,17 @@ afterAll(async () => {
 });
 
 /**
- * Mock activities. openRun consumes the first outcome from `outcomes` and
- * returns { ids, outcome }; runInferenceStep consumes subsequent outcomes.
- * runToolStep just records the call.
+ * Mock activities. openRun just opens the run and returns its ids (no outcome);
+ * runInferenceStep consumes outcomes from `outcomes` in order — the first call
+ * is the workflow's first inference. runToolStep just records the call.
  */
 function makeWorker(outcomes: InferenceOutcome[]) {
   const calls: string[] = [];
   let outcomeIdx = 0;
   const activities = {
-    openRun: vi.fn(async () => {
+    openRun: vi.fn(async (): Promise<RunIds> => {
       calls.push('openRun');
-      const outcome = outcomes[outcomeIdx++];
-      if (!outcome) throw new Error('openRun called with no outcome mocked');
-      return { ids: runIds, outcome };
+      return runIds;
     }),
     runInferenceStep: vi.fn(async (): Promise<InferenceOutcome> => {
       calls.push('runInferenceStep');
@@ -82,15 +80,14 @@ async function runWorkflow(activities: ReturnType<typeof makeWorker>['activities
 }
 
 describe('chatWorkflow', () => {
-  it('single-turn complete: openRun only', async () => {
+  it('single-turn complete: openRun -> runInferenceStep', async () => {
     const { activities, calls } = makeWorker([{ kind: 'complete' }]);
     await runWorkflow(activities);
-    expect(calls).toEqual(['openRun']);
-    expect(activities.runInferenceStep).not.toHaveBeenCalled();
+    expect(calls).toEqual(['openRun', 'runInferenceStep']);
     expect(activities.runToolStep).not.toHaveBeenCalled();
   });
 
-  it('server-tools loops: openRun -> runToolStep*N -> runInferenceStep', async () => {
+  it('server-tools loops: openRun -> runInferenceStep -> runToolStep*N -> runInferenceStep', async () => {
     const { activities, calls } = makeWorker([
       {
         kind: 'server-tools',
@@ -102,26 +99,26 @@ describe('chatWorkflow', () => {
       { kind: 'complete' },
     ]);
     await runWorkflow(activities);
-    expect(calls).toEqual(['openRun', 'runToolStep', 'runToolStep', 'runInferenceStep']);
+    expect(calls).toEqual(['openRun', 'runInferenceStep', 'runToolStep', 'runToolStep', 'runInferenceStep']);
   });
 
-  it('suspend exits at openRun', async () => {
+  it('suspend exits after the first runInferenceStep', async () => {
     const { activities, calls } = makeWorker([{ kind: 'suspend' }]);
     await runWorkflow(activities);
-    expect(calls).toEqual(['openRun']);
-    expect(activities.runInferenceStep).not.toHaveBeenCalled();
+    expect(calls).toEqual(['openRun', 'runInferenceStep']);
+    expect(activities.runToolStep).not.toHaveBeenCalled();
   });
 
-  it('error exits at openRun', async () => {
+  it('error exits after the first runInferenceStep', async () => {
     const { activities, calls } = makeWorker([{ kind: 'error', errorMessage: 'boom' }]);
     await runWorkflow(activities);
-    expect(calls).toEqual(['openRun']);
+    expect(calls).toEqual(['openRun', 'runInferenceStep']);
   });
 
-  it('cancelled exits at openRun', async () => {
+  it('cancelled exits after the first runInferenceStep', async () => {
     const { activities, calls } = makeWorker([{ kind: 'cancelled' }]);
     await runWorkflow(activities);
-    expect(calls).toEqual(['openRun']);
+    expect(calls).toEqual(['openRun', 'runInferenceStep']);
   });
 
   it('runs cleanupRun when a follow-up activity fails past retries', async () => {
@@ -156,7 +153,27 @@ describe('chatWorkflow', () => {
     });
     await runWorkflow(activities);
     expect(attempt).toBe(2);
-    expect(calls).toEqual(['openRun', 'runToolStep-attempt-1', 'runToolStep-attempt-2', 'runInferenceStep']);
+    expect(calls).toEqual([
+      'openRun',
+      'runInferenceStep',
+      'runToolStep-attempt-1',
+      'runToolStep-attempt-2',
+      'runInferenceStep',
+    ]);
     expect(activities.cleanupRun).not.toHaveBeenCalled();
+  });
+
+  // The split's payoff: openRun returns ids BEFORE any inference runs, so an
+  // inference failure past retries still leaves the workflow holding ids —
+  // cleanupRun ends the run 'error' instead of orphaning an active run.
+  it('runs cleanupRun when the first inference fails past retries', async () => {
+    const { activities, calls } = makeWorker([]);
+    activities.runInferenceStep.mockImplementation(async (): Promise<InferenceOutcome> => {
+      calls.push('runInferenceStep');
+      throw new Error('inference broken');
+    });
+    await expect(runWorkflow(activities)).rejects.toThrow();
+    expect(calls).toContain('openRun');
+    expect(calls).toContain('cleanupRun');
   });
 });

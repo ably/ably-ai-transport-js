@@ -1,8 +1,9 @@
 /**
  * Temporal activities that own every I/O side effect of a chat turn:
- * opening the run + first inference (`openRun`), driving each follow-up
- * inference (`runInferenceStep`), running a single server tool
- * (`runToolStep`), and a workflow-level `cleanupRun` for catch-block cleanup.
+ * opening the run (`openRun` — createRun + start, no inference), driving each
+ * inference (`runInferenceStep`, including the first), running a single server
+ * tool (`runToolStep`), and a workflow-level `cleanupRun` for catch-block
+ * cleanup.
  *
  * Each activity is fresh-process safe: it constructs its own `Ably.Realtime`
  * and `AgentSession`, does its work, publishes its terminal (`ai-run-end` /
@@ -51,7 +52,7 @@ import { createModel } from '../app/api/chat/model.js';
 import { SYSTEM_PROMPT } from '../app/api/chat/prompt.js';
 import { tools } from '../app/api/chat/tools.js';
 import { safeSessionDetach, safeSessionEnd } from './safe-session-end.js';
-import type { InferenceOutcome, OpenRunResult, RunIds, ToolCallInfo } from './shared.js';
+import type { InferenceOutcome, RunIds, ToolCallInfo } from './shared.js';
 
 // Concrete run/session type this file works with — every activity uses the Vercel codec.
 type VercelSession = AgentSession<VercelOutput, VercelProjection, UIMessage>;
@@ -75,7 +76,23 @@ const makeAbly = (): Ably.Realtime =>
     ...(ABLY_ENDPOINT() ? { endpoint: ABLY_ENDPOINT() } : {}),
   });
 
-export async function openRun(input: { invocation: InvocationData; invocationId: string }): Promise<OpenRunResult> {
+// -----------------------------------------------------------------------------
+// openRun — createRun + start, and nothing else. It publishes the opening event
+// (`ai-run-start` for a fresh run, `ai-run-resume` for a continuation) and
+// returns the run's ids. It deliberately does NOT run the first inference: that
+// is a separate `runInferenceStep` the workflow drives, so an inference failure
+// retries the inference alone and never re-opens (re-publishes the opening event
+// for) the run. Keeping the two apart also means openRun's ids reach the
+// workflow before any inference runs, so a later inference failure past retries
+// still has ids to hand `cleanupRun` — the run gets ended 'error' instead of
+// being orphaned active.
+//
+// Retry-safe: the run id is pinned to the Temporal workflowId (see the createRun
+// call), so a fresh-process retry of openRun re-enters the same run — it never
+// opens a second, parallel run.
+// -----------------------------------------------------------------------------
+
+export async function openRun(input: { invocation: InvocationData; invocationId: string }): Promise<RunIds> {
   const cancelSignal = Context.current().cancellationSignal;
   const ably = makeAbly();
   let session: VercelSession | undefined;
@@ -85,6 +102,15 @@ export async function openRun(input: { invocation: InvocationData; invocationId:
 
     const run = session.createRun(Invocation.fromJSON(input.invocation), {
       invocationId: input.invocationId,
+      // Stable run id, straight from the framework: invocationId IS the Temporal
+      // workflowId, constant across activity and workflow retries. A fresh-process
+      // retry of openRun then re-enters the SAME run rather than minting a new
+      // UUID and opening a parallel one — the SDK's durable-execution contract for
+      // RunRuntime.runId. The retry's ai-run-start folds idempotently onto the
+      // existing run node (first startSerial wins). Continuations ignore this:
+      // their run id comes from the trigger's wire headers, so it only pins the
+      // fresh-run case.
+      runId: input.invocationId,
       signal: cancelSignal,
     });
 
@@ -97,19 +123,9 @@ export async function openRun(input: { invocation: InvocationData; invocationId:
     // The trigger event could be received live, or more likely it will be in history.
     // The above calls to load conversation history using view.loadOlder give access
     // to the trigger event from history. This method will block without publishing
-    // the run start until the trigger event is located.
+    // the run start until the trigger event is located — so a retry that fails to
+    // locate the trigger throws before publishing, leaving no orphaned run.
     await run.start();
-
-    const outcome = await _runInferenceStep(run, stepIdFor(input.invocationId));
-
-    await _publishRunTerminal(run, outcome);
-
-    // detach (not end): _publishRunTerminal already ended the run for terminal
-    // outcomes; for `server-tools` the run is deliberately left active so the
-    // follow-up runToolStep + runInferenceStep can adopt it. session.end()
-    // would incorrectly end the still-open run as 'cancelled' in the
-    // server-tools case.
-    await session.detach();
 
     const ids: RunIds = {
       runId: run.runId,
@@ -117,13 +133,16 @@ export async function openRun(input: { invocation: InvocationData; invocationId:
       triggerEventId: input.invocation.inputEventId,
     };
 
-    return { ids, outcome };
+    // detach (not end): the run is deliberately left active so the workflow's
+    // first runInferenceStep can adopt it. session.end() would publish
+    // `ai-run-end` and mark the run terminal.
+    await session.detach();
+
+    return ids;
   } catch (error) {
     // Detach (not end) on error: the activity may be retried by Temporal.
     // Ending would publish `ai-run-end` and mark the run terminal, so a
-    // retry's `run.load()` would reject with "run is terminal (read-only)".
-    // Workflow-level `cleanupRun` marks the run 'error' after retries are
-    // truly exhausted.
+    // retry's `run.start()` would republish onto a terminal run.
     await safeSessionDetach(session);
     throw error;
   } finally {
@@ -156,10 +175,23 @@ async function _publishRunTerminal(run: VercelAgentRun, outcome: InferenceOutcom
 }
 
 // -----------------------------------------------------------------------------
-// runInferenceStep — one LLM inference call, published as one SDK step.
-// Server tools have their `execute` stripped so the AI SDK stops after the
-// call and we drive the tool exec via runToolStep. The activity returns the
-// outcome the workflow routes on.
+// runInferenceStep — one LLM inference call, published as one SDK step. Drives
+// every inference in the turn, first and follow-ups alike: it adopts the run
+// openRun (or a prior step) left active, loads it, runs the model, and returns
+// the outcome the workflow routes on. Server tools have their `execute`
+// stripped so the AI SDK stops after the call and we drive the tool exec via
+// runToolStep.
+//
+// Resume-visibility race: when the turn is a continuation, openRun published
+// `ai-run-resume` on its own session and detached. This fresh session's
+// `run.load()` pages channel history to status-gate the run, and may read the
+// pre-resume `ai-run-suspend` before the `ai-run-resume` has propagated into
+// history — tripping load()'s suspended gate. That gate throws BEFORE the model
+// is called (no wasted inference, no partial output), and Temporal retries this
+// activity; by the retry the resume has folded and load() passes. Merging open
+// + first inference into one session used to sidestep this race entirely; the
+// split trades that for a cheap, self-healing retry so the two concerns stay
+// independently retryable.
 // -----------------------------------------------------------------------------
 
 interface StepInput {

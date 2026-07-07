@@ -1,8 +1,11 @@
 /**
  * The chat workflow. One workflow instance per HTTP POST (workflowId ==
- * invocationId). The workflow opens the run + first inference in one
- * activity, then loops server-tool + follow-up-inference activities until
- * a terminal outcome comes back.
+ * invocationId). The workflow opens the run in one activity (`openRun` —
+ * createRun + start, no inference), runs the first inference as its own
+ * `runInferenceStep`, then loops server-tool + follow-up-inference activities
+ * until a terminal outcome comes back. Splitting open from the first inference
+ * keeps the two independently retryable: an inference failure retries the
+ * inference alone, never re-opening the run.
  *
  * Activities are fully self-contained on the happy path: each publishes its
  * own terminal (`ai-run-end` / `ai-run-suspend`) inline in the session it
@@ -50,14 +53,17 @@ const { cleanupRun } = proxyActivities<typeof activities>({
 export async function chatWorkflow(input: ChatWorkflowInput): Promise<void> {
   let ids: RunIds | undefined;
   try {
-    // openRun opens the run + runs the first inference step + publishes the
-    // terminal (unless outcome is `server-tools`) all in one session.
-    const openResult = await openRun({
+    // openRun creates + starts the run (publishes ai-run-start / ai-run-resume)
+    // without running inference, and returns the run's ids. The run id is now
+    // part of the durable execution state, so it can be resumed on failure or restart.
+    ids = await openRun({
       invocation: input.invocation,
       invocationId: input.invocationId,
     });
-    ids = openResult.ids;
-    let outcome = openResult.outcome;
+
+    // First inference. Every inference — first and follow-ups — goes through the
+    // same adopt-load-infer activity, so the loop below handles them uniformly.
+    let outcome = await runInferenceStep({ ids, invocation: input.invocation });
 
     while (true) {
       // Any terminal outcome — the activity that produced it already
@@ -80,10 +86,12 @@ export async function chatWorkflow(input: ChatWorkflowInput): Promise<void> {
       outcome = await runInferenceStep({ ids, invocation: input.invocation });
     }
   } catch (err) {
-    // Activity retries exhausted (or openRun itself failed). Schedule cleanup
-    // only if we have ids — an openRun failure before minting a runId means
-    // no run exists on the wire to clean up. Swallow the cleanup's own error
-    // so the workflow still surfaces the original failure to Temporal.
+    // Activity retries exhausted. Schedule cleanup only if openRun returned ids
+    // — a failure before that means no run to clean up. Because openRun no
+    // longer runs inference, an inference failure past retries still leaves ids
+    // set, so cleanupRun reliably ends the run 'error' and unsticks the client
+    // instead of orphaning an active run. Swallow the cleanup's own error so the
+    // workflow still surfaces the original failure to Temporal.
     if (ids) {
       try {
         await cleanupRun({

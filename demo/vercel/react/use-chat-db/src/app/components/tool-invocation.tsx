@@ -1,6 +1,6 @@
 'use client';
 
-import type { DynamicToolUIPart } from 'ai';
+import { getToolName, type DynamicToolUIPart, type ToolUIPart } from 'ai';
 import { Loader2Icon, ShieldAlertIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -182,7 +182,7 @@ function ToolApprovalCard({
   onApprove,
   onDeny,
 }: {
-  part: DynamicToolUIPart;
+  part: ToolUIPart | DynamicToolUIPart;
   onApprove?: () => void;
   onDeny?: () => void;
 }) {
@@ -201,7 +201,7 @@ function ToolApprovalCard({
           Approval required
         </CardTitle>
         <CardDescription>
-          <span className="font-mono text-foreground">{part.toolName}</span>
+          <span className="font-mono text-foreground">{getToolName(part)}</span>
           {inputSummary && <span> — {inputSummary}</span>}
         </CardDescription>
       </CardHeader>
@@ -231,7 +231,7 @@ function ToolApprovalCard({
 // ---------------------------------------------------------------------------
 
 interface ToolInvocationProps {
-  part: DynamicToolUIPart;
+  part: ToolUIPart | DynamicToolUIPart;
   onApprove?: () => void;
   onDeny?: () => void;
 }
@@ -261,7 +261,7 @@ export function ToolInvocation({ part, onApprove, onDeny }: ToolInvocationProps)
       return (
         <Marker className="my-1">
           <MarkerContent className="font-mono">
-            {part.toolName}: {JSON.stringify(part.output)}
+            {getToolName(part)}: {JSON.stringify(part.output)}
           </MarkerContent>
         </Marker>
       );
@@ -288,7 +288,7 @@ export function ToolInvocation({ part, onApprove, onDeny }: ToolInvocationProps)
       return (
         <Marker className="my-1 text-muted-foreground">
           <MarkerContent>
-            <span className="font-mono">{part.toolName}</span> — denied
+            <span className="font-mono">{getToolName(part)}</span> — denied
           </MarkerContent>
         </Marker>
       );

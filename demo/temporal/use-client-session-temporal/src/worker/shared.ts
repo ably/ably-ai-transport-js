@@ -10,7 +10,12 @@ import type { InvocationData } from '@ably/ai-transport';
 
 /** Identity of an already-open run — the shape the SDK's `adoptRun` accepts. */
 export interface RunIds {
-  /** The run's authoritative id. Minted by the agent at `openRun`. */
+  /**
+   * The run's authoritative id. Pinned to the Temporal workflowId (== the
+   * invocationId) at `openRun`, so a fresh-process retry re-enters the same run
+   * rather than opening a parallel one. Continuations keep the id from the
+   * trigger's wire headers instead.
+   */
   runId: string;
   /** The run's owner invocation id. Every activity stamps its own activity id on outputs. */
   invocationId: string;
@@ -55,20 +60,6 @@ export type InferenceOutcome =
   | { kind: 'suspend' }
   | { kind: 'cancelled' }
   | { kind: 'error'; errorMessage: string };
-
-/**
- * Result of the combined open + first inference activity. Merging these two
- * into one activity avoids the adoptRun-after-resume race: a fresh session
- * doing adoptRun.load() on a just-resumed run can trip the SDK's
- * suspended-status gate before Ably history has caught up with the
- * ai-run-resume publish. Doing the open and the first inference on the same
- * session means the session's own tree observes the resume before any
- * cross-activity handoff.
- */
-export interface OpenRunResult {
-  ids: RunIds;
-  outcome: InferenceOutcome;
-}
 
 /** Task-queue name shared between worker and client. */
 export const TASK_QUEUE = process.env.TEMPORAL_TASK_QUEUE ?? 'ai-transport-demo';

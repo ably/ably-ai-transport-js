@@ -45,6 +45,18 @@ describe('MessageList (linear DB demo)', () => {
     expect(screen.getAllByTestId('message')).toHaveLength(2);
   });
 
+  it('keeps the walkthrough intro visible once messages exist', () => {
+    const messages = [msg('m1', 'user', [{ type: 'text', text: 'first' }])];
+    render(
+      <MessageList
+        messages={messages}
+        stateOf={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText('useChat over Ably — database hydration')).toBeTruthy();
+  });
+
   it('drives the thinking loader from stateOf for the streaming assistant turn', () => {
     const messages = [msg('m1', 'user', [{ type: 'text', text: 'q' }]), msg('m2', 'assistant', [])];
     render(

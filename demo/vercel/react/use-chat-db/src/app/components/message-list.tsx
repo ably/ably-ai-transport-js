@@ -54,6 +54,9 @@ export function MessageList({ messages, stateOf, onToolApprove, onToolDeny }: Me
       <MessageScroller className="min-h-0 flex-1">
         <MessageScrollerViewport className="px-4 py-4">
           <MessageScrollerContent data-testid="messages">
+            {/* The demo walkthrough stays at the top of the scrollback, above
+                the first message, so it remains reachable mid-chat. */}
+            <IntroCard />
             {messages.map((message, index) => {
               const state = stateOf(message, index);
               return (

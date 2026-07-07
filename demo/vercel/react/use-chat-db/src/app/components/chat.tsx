@@ -177,6 +177,9 @@ export function Chat({ chatId, clientId, seed }: ChatProps): React.ReactElement 
 
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Snap-to-live-edge callback published by the transcript; sending always
+  // jumps to the bottom so the new turn and its streamed reply are in view.
+  const scrollToEndRef = useRef<(() => void) | null>(null);
   const handleSelectPrompt = useCallback((prompt: string) => {
     setInput(prompt);
     inputRef.current?.focus();
@@ -184,6 +187,7 @@ export function Chat({ chatId, clientId, seed }: ChatProps): React.ReactElement 
 
   const handleSend = useCallback(
     (text: string) => {
+      scrollToEndRef.current?.();
       // Linear history: a new run cancels any still-streaming response first, so
       // the seam reconciliation only ever meets complete (or cancelled) runs.
       void (async () => {
@@ -195,8 +199,11 @@ export function Chat({ chatId, clientId, seed }: ChatProps): React.ReactElement 
   );
 
   return (
-    <div className="flex h-dvh">
-      <div className="flex flex-1 flex-col">
+    // The app is a fixed full-viewport shell: clamp any stray overflow so the
+    // page itself never grows scrollbars, and let the main column shrink below
+    // its content's intrinsic width.
+    <div className="flex h-dvh overflow-hidden">
+      <div className="flex min-w-0 flex-1 flex-col">
         <Header
           clientId={clientId}
           channelName={chatId}
@@ -208,6 +215,7 @@ export function Chat({ chatId, clientId, seed }: ChatProps): React.ReactElement 
           onToolDeny={(approvalId) =>
             addToolApprovalResponse({ id: approvalId, approved: false, reason: 'User denied' })
           }
+          scrollToEndRef={scrollToEndRef}
         />
         <div className="border-t border-border">
           <SuggestionChips

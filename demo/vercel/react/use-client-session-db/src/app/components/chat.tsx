@@ -191,6 +191,9 @@ export function Chat({ chatId, clientId, seed, api }: ChatProps) {
 
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Snap-to-live-edge callback published by the transcript; sending always
+  // jumps to the bottom so the new turn and its streamed reply are in view.
+  const scrollToEndRef = useRef<(() => void) | null>(null);
   const handleSelectPrompt = useCallback((prompt: string) => {
     setInput(prompt);
     inputRef.current?.focus();
@@ -263,6 +266,7 @@ export function Chat({ chatId, clientId, seed, api }: ChatProps) {
 
   const handleSend = useCallback(
     (text: string) => {
+      scrollToEndRef.current?.();
       // Linear history: cancel any still-active response before starting a new
       // run, so the seam reconciliation only ever meets complete (or cancelled)
       // runs. Then send over the session view and wake the agent.
@@ -279,8 +283,11 @@ export function Chat({ chatId, clientId, seed, api }: ChatProps) {
   );
 
   return (
-    <div className="flex h-dvh">
-      <div className="flex flex-1 flex-col">
+    // The app is a fixed full-viewport shell: clamp any stray overflow so the
+    // page itself never grows scrollbars, and let the main column shrink below
+    // its content's intrinsic width.
+    <div className="flex h-dvh overflow-hidden">
+      <div className="flex min-w-0 flex-1 flex-col">
         <Header
           clientId={clientId}
           channelName={chatId}
@@ -290,6 +297,7 @@ export function Chat({ chatId, clientId, seed, api }: ChatProps) {
           statusOf={statusOf}
           onToolApprove={handleToolApprove}
           onToolDeny={handleToolDeny}
+          scrollToEndRef={scrollToEndRef}
         />
         <div className="border-t border-border">
           <SuggestionChips

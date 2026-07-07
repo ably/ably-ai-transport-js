@@ -1,20 +1,11 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import type * as AI from 'ai';
 import type { BranchHandle, CodecMessage } from '@ably/ai-transport';
 
-// jsdom lacks scrollIntoView; the MessageScroller calls it as the list grows.
+// jsdom does not implement Element.prototype.scrollIntoView; stub it so any
+// library that calls it during layout is a no-op.
 Element.prototype.scrollIntoView = () => {};
-
-// MessageList has no onReachStart hook — it watches the scroller's visibility
-// state and asks for an older page once the oldest message becomes visible.
-// Drive that visibility deterministically by stubbing the hook, leaving the
-// rest of the vendored scroller intact.
-let visibleMessageIds: string[] = [];
-vi.mock('@/components/ui/message-scroller', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/components/ui/message-scroller')>();
-  return { ...actual, useMessageScrollerVisibility: () => ({ visibleMessageIds }) };
-});
 
 import { MessageList } from '../message-list';
 
@@ -32,49 +23,70 @@ function msg(id: string, role: 'user' | 'assistant', text: string): CodecMessage
 
 const messages = [msg('m1', 'user', 'first'), msg('m2', 'assistant', 'reply')];
 
-function renderList(opts: { hasOlder: boolean; loading: boolean; onLoadOlder: () => void }) {
-  return render(
-    <MessageList
-      messages={messages}
-      hasOlder={opts.hasOlder}
-      loading={opts.loading}
-      view={{ branchSelection: noBranch, runOf: () => undefined }}
-      onLoadOlder={opts.onLoadOlder}
-      onRegenerate={() => {}}
-      onEdit={() => {}}
-    />,
-  );
+function listProps(opts: { hasOlder: boolean; loading: boolean; onLoadOlder: () => void }) {
+  return {
+    messages,
+    hasOlder: opts.hasOlder,
+    loading: opts.loading,
+    view: { branchSelection: noBranch, runOf: () => undefined },
+    onLoadOlder: opts.onLoadOlder,
+    onRegenerate: () => {},
+    onEdit: () => {},
+    scrollToEndRef: { current: null },
+  };
 }
 
-describe('MessageList history auto-loading', () => {
-  beforeEach(() => {
-    visibleMessageIds = [];
-  });
+function renderList(opts: { hasOlder: boolean; loading: boolean; onLoadOlder: () => void }) {
+  return render(<MessageList {...listProps(opts)} />);
+}
 
+// Position the scroller's viewport and fire a scroll event, the way a reader
+// scrolling the transcript does.
+function scrollViewportTo(container: HTMLElement, top: number) {
+  const viewport = container.querySelector('[data-testid="message-viewport"]');
+  expect(viewport).toBeTruthy();
+  if (!viewport) return;
+  viewport.scrollTop = top;
+  fireEvent.scroll(viewport);
+}
+
+describe('MessageList history loading', () => {
   afterEach(() => {
     cleanup();
   });
 
-  it('requests an older page when the oldest message scrolls into view', () => {
-    visibleMessageIds = ['m1'];
+  it('requests an older page when the reader scrolls to the very top', () => {
     const onLoadOlder = vi.fn();
-    renderList({ hasOlder: true, loading: false, onLoadOlder });
+    const { container } = renderList({ hasOlder: true, loading: false, onLoadOlder });
+
+    scrollViewportTo(container, 0);
 
     expect(onLoadOlder).toHaveBeenCalledTimes(1);
   });
 
-  it('does not request while an older page is already loading', () => {
-    visibleMessageIds = ['m1'];
+  it('does not request while the reader is below the top edge', () => {
     const onLoadOlder = vi.fn();
-    renderList({ hasOlder: true, loading: true, onLoadOlder });
+    const { container } = renderList({ hasOlder: true, loading: false, onLoadOlder });
+
+    scrollViewportTo(container, 400);
+
+    expect(onLoadOlder).not.toHaveBeenCalled();
+  });
+
+  it('does not request while an older page is already loading', () => {
+    const onLoadOlder = vi.fn();
+    const { container } = renderList({ hasOlder: true, loading: true, onLoadOlder });
+
+    scrollViewportTo(container, 0);
 
     expect(onLoadOlder).not.toHaveBeenCalled();
   });
 
   it('does not request when there is no older history', () => {
-    visibleMessageIds = ['m1'];
     const onLoadOlder = vi.fn();
-    renderList({ hasOlder: false, loading: false, onLoadOlder });
+    const { container } = renderList({ hasOlder: false, loading: false, onLoadOlder });
+
+    scrollViewportTo(container, 0);
 
     expect(onLoadOlder).not.toHaveBeenCalled();
   });
@@ -83,5 +95,72 @@ describe('MessageList history auto-loading', () => {
     renderList({ hasOlder: false, loading: false, onLoadOlder: vi.fn() });
 
     expect(screen.getByText('useChat over Ably')).toBeTruthy();
+  });
+
+  it('keeps the transcript mounted across a transient empty emission', () => {
+    const props = listProps({ hasOlder: false, loading: false, onLoadOlder: vi.fn() });
+    const { container, rerender } = render(<MessageList {...props} />);
+
+    rerender(
+      <MessageList
+        {...props}
+        messages={[]}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="message-viewport"]')).toBeTruthy();
+  });
+
+  it('follows a tool-part update on an earlier message while pinned', () => {
+    const props = listProps({ hasOlder: false, loading: false, onLoadOlder: vi.fn() });
+    const { container, rerender } = render(<MessageList {...props} />);
+    const viewport = container.querySelector('[data-testid="message-viewport"]');
+    expect(viewport).toBeTruthy();
+    if (!viewport) return;
+
+    // Give the zero-size jsdom viewport real dimensions, then move it off the
+    // bottom WITHOUT a scroll event so the pin is untouched.
+    Object.defineProperty(viewport, 'scrollHeight', { value: 1000, configurable: true });
+    Object.defineProperty(viewport, 'clientHeight', { value: 300, configurable: true });
+    viewport.scrollTop = 50;
+
+    // The newest message is unchanged; an earlier message's parts change (the
+    // shape of an approval's tool output landing) — the view must still follow.
+    const changed = [msg('m1', 'user', 'first, now with output'), messages[1]];
+    rerender(
+      <MessageList
+        {...props}
+        messages={changed}
+      />,
+    );
+
+    expect(viewport.scrollTop).toBe(1000);
+  });
+
+  it('stops following once the reader scrolls away from the bottom', () => {
+    const props = listProps({ hasOlder: false, loading: false, onLoadOlder: vi.fn() });
+    const { container, rerender } = render(<MessageList {...props} />);
+    const viewport = container.querySelector('[data-testid="message-viewport"]');
+    expect(viewport).toBeTruthy();
+    if (!viewport) return;
+
+    // Give the zero-size jsdom viewport real dimensions. Settle at the bottom
+    // first so the pin is engaged, then scroll UP — only a decrease in
+    // scrollTop releases the pin (content growing below never does).
+    Object.defineProperty(viewport, 'scrollHeight', { value: 1000, configurable: true });
+    Object.defineProperty(viewport, 'clientHeight', { value: 300, configurable: true });
+    viewport.scrollTop = 700;
+    fireEvent.scroll(viewport);
+    viewport.scrollTop = 100;
+    fireEvent.scroll(viewport);
+
+    rerender(
+      <MessageList
+        {...props}
+        messages={[...messages]}
+      />,
+    );
+
+    expect(viewport.scrollTop).toBe(100);
   });
 });

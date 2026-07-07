@@ -65,6 +65,9 @@ export function MessageList({ messages, statusOf, onToolApprove, onToolDeny }: M
       <MessageScroller className="min-h-0 flex-1">
         <MessageScrollerViewport className="px-4 py-4">
           <MessageScrollerContent data-testid="messages">
+            {/* The demo walkthrough stays at the top of the scrollback, above
+                the first message, so it remains reachable mid-chat. */}
+            <IntroCard />
             {messages.map((message, index) => (
               // Anchor on the user's own turns (shadcn's convention): sending
               // pins the new prompt to the top of the viewport while the reply

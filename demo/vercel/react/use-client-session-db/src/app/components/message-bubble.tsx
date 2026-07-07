@@ -48,18 +48,19 @@ export function MessageBubble({ message, status, onToolApprove, onToolDeny }: Me
       data-testid="message-bubble"
       data-role={message.role}
     >
-      <MessageContent>
-        {/* shadcn chat convention: the user's own messages sit in a filled
-            bubble; the assistant's reply is a ghost bubble that reads as plain
-            prose. */}
+      {/* Shrink-wrap the turn so the bubble hugs its content, capped at 75%. */}
+      <MessageContent className="w-fit max-w-[75%] gap-1.5">
+        {/* The user's turn is a tinted bubble; the assistant reply is a muted
+            bubble. */}
         <Bubble
-          variant={isUser ? 'default' : 'ghost'}
+          variant={isUser ? 'tinted' : 'muted'}
           align={isUser ? 'end' : 'start'}
+          className="w-full max-w-full"
         >
           {isUser ? (
-            <BubbleContent className="whitespace-pre-wrap">{messageText}</BubbleContent>
+            <BubbleContent className="w-full whitespace-pre-wrap">{messageText}</BubbleContent>
           ) : (
-            <BubbleContent>
+            <BubbleContent className="w-full">
               {message.parts.map((part, i) => {
                 // The assistant reply is markdown; render it through Response
                 // (Streamdown) so lists, code, and emphasis format correctly.

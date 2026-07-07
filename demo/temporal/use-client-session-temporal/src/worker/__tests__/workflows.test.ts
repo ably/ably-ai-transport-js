@@ -137,9 +137,9 @@ describe('chatWorkflow', () => {
   // retryable throw, it publishes `ai-run-end` and the retry fails with
   // "run is terminal (read-only)". The activity must instead detach and
   // let the workflow's retry policy carry through — this test simulates
-  // the intentional-flake pattern (`getStockPrice`: throw once, then
-  // succeed) and asserts the workflow completes through a runToolStep
-  // retry.
+  // the intentional-flake pattern (`getStockPrice`: throw on an odd price,
+  // succeed once it rolls even) and asserts the workflow completes through a
+  // runToolStep retry.
   it('workflow completes when runToolStep fails once and succeeds on retry', async () => {
     const { activities, calls } = makeWorker([
       { kind: 'server-tools', serverToolCalls: [{ toolCallId: 'c1', toolName: 'x', input: {} }] },

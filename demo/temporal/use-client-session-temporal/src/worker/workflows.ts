@@ -32,7 +32,8 @@ import type * as activities from './activities.js';
 
 // Step activities: bounded retries so failures propagate to the workflow's
 // catch instead of hanging forever. runToolStep gets more attempts because
-// the demo's `getStockPrice` intentionally throws on its first attempt.
+// the demo's `getStockPrice` throws on an odd price (~50% of attempts), so it
+// may need several retries before it rolls an even one.
 const { openRun, runInferenceStep } = proxyActivities<typeof activities>({
   startToCloseTimeout: '5 minutes',
   retry: { maximumAttempts: 3 },

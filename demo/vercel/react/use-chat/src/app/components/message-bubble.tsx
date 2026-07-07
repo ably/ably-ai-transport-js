@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { isToolUIPart, type UIMessage } from 'ai';
 import { ChevronLeftIcon, ChevronRightIcon, Loader2Icon } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
@@ -12,6 +12,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { ToolInvocation } from './tool-invocation';
 import { clientColor } from '../lib/client-color';
+import { cn } from '@/lib/utils';
 
 interface MessageBubbleProps {
   message: UIMessage;
@@ -100,7 +101,7 @@ function InfoBadge({
   return (
     <Badge
       variant={variant}
-      className={className}
+      className={cn('rounded-sm px-1.5 text-[10px]', className)}
     >
       <span className={variant === 'destructive' ? 'opacity-70' : 'text-muted-foreground'}>{label}</span>
       <span>{value}</span>
@@ -109,13 +110,15 @@ function InfoBadge({
 }
 
 function StatusBadge({ status }: { status: string }) {
-  // Only a failed/cancelled run carries a colour (destructive); complete and
-  // streaming deliberately stay neutral so the row doesn't read as an alert.
+  // The status badge carries the run's lifecycle colour: the destructive
+  // variant when cancelled or failed, green once complete, amber while
+  // streaming.
   return (
     <InfoBadge
       label="status"
       value={status}
       variant={status === 'cancelled' || status === 'error' ? 'destructive' : 'secondary'}
+      className={status === 'complete' ? 'text-emerald-500' : status === 'streaming' ? 'text-amber-500' : undefined}
     />
   );
 }
@@ -206,6 +209,10 @@ export function MessageBubble({
 
   const role = message.role;
   const colors = clientId ? clientColor(clientId) : undefined;
+  // CAST: CSS custom properties are valid style keys but missing from React's
+  // CSSProperties type. The bubble sets --primary locally so shadcn's tinted
+  // variant derives the client-tinted background from it.
+  const bubbleTheme = colors ? ({ '--primary': colors.primary } as CSSProperties) : undefined;
 
   const messageText = message.parts
     .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
@@ -222,7 +229,9 @@ export function MessageBubble({
       data-testid="message-bubble"
       data-role={role}
     >
-      <MessageContent>
+      {/* Shrink-wrap the turn so the bubble stretches to the badge row's width
+          (never narrower), while long content stays capped at 75%. */}
+      <MessageContent className="w-fit max-w-[75%] gap-1.5">
         {isEditing && onEdit ? (
           <EditForm
             initialText={messageText}
@@ -231,17 +240,20 @@ export function MessageBubble({
           />
         ) : (
           <>
-            {/* shadcn chat convention: the user's own messages sit in a filled
-                bubble; the assistant's reply is a ghost bubble that reads as
-                plain prose. */}
+            {/* The user's turn is a tinted bubble — the client's palette colour
+                becomes the bubble's --primary, and shadcn's tinted variant
+                derives the background from it. The assistant reply is a muted
+                bubble; its status colour lives on the status badge. */}
             <Bubble
-              variant={isUser ? 'default' : 'ghost'}
+              variant={isUser ? 'tinted' : 'muted'}
               align={isUser ? 'end' : 'start'}
+              className="w-full max-w-full"
+              style={isUser ? bubbleTheme : undefined}
             >
               {isUser ? (
-                <BubbleContent className="whitespace-pre-wrap">{messageText}</BubbleContent>
+                <BubbleContent className="w-full whitespace-pre-wrap">{messageText}</BubbleContent>
               ) : (
-                <BubbleContent>
+                <BubbleContent className="w-full">
                   {message.parts.map((part, i) => {
                     // The assistant reply is markdown; render it through Response
                     // (Streamdown) so lists, code, and emphasis format correctly.
@@ -269,7 +281,7 @@ export function MessageBubble({
                 </BubbleContent>
               )}
             </Bubble>
-            <MessageFooter className="mt-1 flex flex-wrap items-center gap-1.5">
+            <MessageFooter className="flex flex-wrap items-center gap-1.5">
               {/* Branch navigator (when the message has siblings) */}
               {hasSiblings && siblingCount !== undefined && selectedIndex !== undefined && onSelectSibling && (
                 <BranchNavigator

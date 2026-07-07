@@ -101,26 +101,22 @@ export const tools: Record<string, Tool> = {
     },
   },
 
-  // Intentionally flaky: throws once per process, then succeeds. This lets the
-  // demo show Temporal's activity retry visibly — the failed attempt appears in
-  // the Web UI, and the retried step's channel output cleanly supersedes the
-  // failed attempt's output under the same stepId (== activityId).
+  // Intentionally flaky: generates a whole-dollar price and throws when it lands
+  // odd (~50% of the time), succeeding only on an even price. This lets the demo
+  // show Temporal's activity retry visibly — a failed odd attempt appears in the
+  // Web UI, and the retried step (which re-rolls the price) cleanly supersedes
+  // the failed attempt's output under the same stepId (== activityId).
   getStockPrice: {
     description: 'Get the current stock price for a ticker symbol.',
     inputSchema: z.object({
       symbol: z.string().describe('The ticker symbol, e.g. "AAPL"'),
     }),
     execute: async ({ symbol }: { symbol: string }) => {
-      const g = globalThis as { __stockPriceAttempted?: boolean };
-      if (!g.__stockPriceAttempted) {
-        g.__stockPriceAttempted = true;
-        throw new Error('stock price service temporarily unavailable — retry me');
+      const priceUSD = Math.round(50 + Math.random() * 500);
+      if (priceUSD % 2 !== 0) {
+        throw new Error(`stock price service returned an odd price (${priceUSD}) — retry me`);
       }
-      g.__stockPriceAttempted = false;
-      return {
-        symbol,
-        priceUSD: Math.round((50 + Math.random() * 500) * 100) / 100,
-      };
+      return { symbol, priceUSD };
     },
   },
 };

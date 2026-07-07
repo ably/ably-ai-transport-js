@@ -121,14 +121,20 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
 
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Snap-to-live-edge callback published by the transcript; sending always
+  // jumps to the bottom so the new turn and its streamed reply are in view.
+  const scrollToEndRef = useRef<(() => void) | null>(null);
   const handleSelectPrompt = useCallback((prompt: string) => {
     setInput(prompt);
     inputRef.current?.focus();
   }, []);
 
   return (
-    <div className="flex h-dvh">
-      <div className="flex flex-1 flex-col">
+    // The app is a fixed full-viewport shell: clamp any stray overflow so the
+    // page itself never grows scrollbars, and let the main column shrink below
+    // its content's intrinsic width.
+    <div className="flex h-dvh overflow-hidden">
+      <div className="flex min-w-0 flex-1 flex-col">
         <Header
           clientId={clientId}
           channelName={chatId}
@@ -148,6 +154,7 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
           onToolDeny={(approvalId) =>
             addToolApprovalResponse({ id: approvalId, approved: false, reason: 'User denied' })
           }
+          scrollToEndRef={scrollToEndRef}
         />
         <ChecklistWidget session={session} />
         <div className="border-t border-border">
@@ -159,7 +166,10 @@ export function Chat({ chatId, clientId, historyLimit }: { chatId: string; clien
             value={input}
             onChange={setInput}
             inputRef={inputRef}
-            onSend={(text) => sendMessage({ text })}
+            onSend={(text) => {
+              scrollToEndRef.current?.();
+              sendMessage({ text });
+            }}
             onStop={stop}
             hasAnyRuns={hasAnyRuns}
           />

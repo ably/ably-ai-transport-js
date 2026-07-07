@@ -13,6 +13,11 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { Marker, MarkerContent, MarkerIcon } from '@/components/ui/marker';
+import { cn } from '@/lib/utils';
+
+// Tool activity renders as bordered rows so programmatic calls stand out from
+// the assistant's prose.
+const toolBoxClasses = 'my-1 rounded-md border bg-muted/50 px-2.5 py-1.5 text-xs';
 
 // ---------------------------------------------------------------------------
 // Weather card — generative UI for the getWeather tool result
@@ -43,10 +48,10 @@ function WeatherCard({ data }: { data: WeatherData }) {
   return (
     <Card
       size="sm"
-      className="my-1 max-w-[280px]"
+      className="my-1 max-w-[280px] bg-transparent bg-gradient-to-br from-sky-900/40 to-indigo-900/40 ring-sky-800/30"
     >
       <CardHeader>
-        <CardDescription>{data.location}</CardDescription>
+        <CardDescription className="text-sky-400/80">{data.location}</CardDescription>
         <CardTitle className="text-2xl">
           {data.temperature}°F
           <span className="ml-1 text-sm font-normal text-muted-foreground">({tempC}°C)</span>
@@ -84,11 +89,11 @@ function ForecastCard({ data }: { data: ForecastData }) {
   return (
     <Card
       size="sm"
-      className="my-1 max-w-[360px]"
+      className="my-1 max-w-[320px] bg-transparent bg-gradient-to-br from-indigo-900/40 to-purple-900/40 ring-indigo-800/30"
     >
       <CardHeader>
         <CardTitle className="text-sm">5-day forecast</CardTitle>
-        <CardDescription>{data.location}</CardDescription>
+        <CardDescription className="text-indigo-400/80">{data.location}</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-1">
         {data.forecast.map((day) => {
@@ -125,16 +130,13 @@ function LocationResult({ output }: { output: unknown }) {
   if (!data) return null;
   if (data.error) {
     return (
-      <Marker
-        variant="border"
-        className="my-1 text-destructive"
-      >
+      <Marker className={cn(toolBoxClasses, 'border-destructive/30 bg-destructive/10 text-destructive')}>
         <MarkerContent>Location error: {data.error}</MarkerContent>
       </Marker>
     );
   }
   return (
-    <Marker className="my-1">
+    <Marker className={toolBoxClasses}>
       <MarkerContent>
         Location: {data.latitude?.toFixed(4)}, {data.longitude?.toFixed(4)}
       </MarkerContent>
@@ -148,13 +150,13 @@ function LocationResult({ output }: { output: unknown }) {
 
 function ToolPending({ name, input }: { name: string; input: unknown }) {
   return (
-    <Marker className="my-1">
+    <Marker className={toolBoxClasses}>
       <MarkerIcon>
         <Loader2Icon className="animate-spin" />
       </MarkerIcon>
-      <MarkerContent className="font-mono">
-        Calling {name}
-        {input != null && Object.keys(input as object).length > 0 && ` (${JSON.stringify(input)})`}
+      <MarkerContent>
+        Calling <span className="font-mono text-foreground">{name}</span>
+        {input != null && Object.keys(input as object).length > 0 && <span> ({JSON.stringify(input)})</span>}
       </MarkerContent>
     </Marker>
   );
@@ -162,10 +164,7 @@ function ToolPending({ name, input }: { name: string; input: unknown }) {
 
 function ToolError({ name, errorText }: { name: string; errorText: string }) {
   return (
-    <Marker
-      variant="border"
-      className="my-1 text-destructive"
-    >
+    <Marker className={cn(toolBoxClasses, 'border-destructive/30 bg-destructive/10 text-destructive')}>
       <MarkerContent>
         <span className="font-mono">{name}</span> failed: {errorText}
       </MarkerContent>
@@ -259,9 +258,9 @@ export function ToolInvocation({ part, onApprove, onDeny }: ToolInvocationProps)
       }
       // Generic output fallback
       return (
-        <Marker className="my-1">
-          <MarkerContent className="font-mono">
-            {getToolName(part)}: {JSON.stringify(part.output)}
+        <Marker className={toolBoxClasses}>
+          <MarkerContent>
+            <span className="font-mono">{getToolName(part)}</span>: {JSON.stringify(part.output)}
           </MarkerContent>
         </Marker>
       );
@@ -286,7 +285,7 @@ export function ToolInvocation({ part, onApprove, onDeny }: ToolInvocationProps)
 
     case 'output-denied':
       return (
-        <Marker className="my-1 text-muted-foreground">
+        <Marker className={toolBoxClasses}>
           <MarkerContent>
             <span className="font-mono">{getToolName(part)}</span> — denied
           </MarkerContent>

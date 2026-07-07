@@ -217,7 +217,6 @@ export function MessageBubble({
               {message.parts.map((part, i) => {
                 if (part.type === 'text') return <span key={i}>{part.text}</span>;
                 if (isToolUIPart(part)) {
-                  // eslint-disable-next-line @typescript-eslint/no-empty-function -- no-op fallback when no approval handler
                   const noop = (): void => {};
                   return (
                     <ToolInvocation

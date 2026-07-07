@@ -15,6 +15,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format:check": "prettier --check .",
     "test": "vitest run"
   },
   "peerDependencies": {
@@ -26,15 +28,21 @@
   },
   "devDependencies": {
     "@ably/ai-transport": "link:../..",
+    "@eslint/js": "^10",
+    "@testing-library/dom": "^10",
     "@testing-library/react": "^16",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "ably": "^2.23.0",
     "ai": "^6",
+    "eslint": "^10",
+    "eslint-plugin-react-hooks": "^7",
     "jsdom": "^26",
+    "prettier": "^3",
     "react": "^19",
     "react-dom": "^19",
     "typescript": "^5",
+    "typescript-eslint": "^8",
     "vitest": "^4"
   }
 }

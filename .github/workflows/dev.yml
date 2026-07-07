@@ -112,6 +112,44 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run test:integration
 
+  demo-shared-frontend:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    name: demo shared-frontend
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.BASE_NODE_VERSION }}
+          cache: pnpm
+      # The shared-frontend links `@ably/ai-transport` from the repo root
+      # (`link:../..`), so typechecking / testing here needs the SDK's `dist/`
+      # (`.d.ts` files) built first.
+      - name: pnpm install (lib)
+        run: pnpm install --frozen-lockfile
+      - name: pnpm run build (lib)
+        run: pnpm run build
+      - name: pnpm install (shared-frontend)
+        run: pnpm install --frozen-lockfile
+        working-directory: demo/shared-frontend
+      - name: pnpm run typecheck (shared-frontend)
+        run: pnpm run typecheck
+        working-directory: demo/shared-frontend
+      - name: pnpm run format:check (shared-frontend)
+        run: pnpm run format:check
+        working-directory: demo/shared-frontend
+      - name: pnpm run lint (shared-frontend)
+        run: pnpm run lint
+        working-directory: demo/shared-frontend
+      - name: pnpm test (shared-frontend)
+        run: pnpm test
+        working-directory: demo/shared-frontend
+
   demo-app:
     runs-on: ubuntu-latest
     permissions:

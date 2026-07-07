@@ -4,3 +4,7 @@ specification/
 .vercel/
 next-env.d.ts
 pnpm-lock.yaml
+# shared-frontend owns its own format:check (see its CI job); its prettier
+# version is pinned inside the package and may drift from the root's, so skip
+# it here to avoid two prettier versions racing on the same file.
+demo/shared-frontend/

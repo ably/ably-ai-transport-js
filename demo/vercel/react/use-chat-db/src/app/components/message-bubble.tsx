@@ -1,6 +1,6 @@
 'use client';
 
-import type { UIMessage } from 'ai';
+import { isToolUIPart, type UIMessage } from 'ai';
 import { Loader2Icon } from 'lucide-react';
 import { Bubble, BubbleContent } from '@/components/ui/bubble';
 import { Message, MessageContent } from '@/components/ui/message';
@@ -39,7 +39,7 @@ export function MessageBubble({ message, state, onToolApprove, onToolDeny }: Mes
     .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
     .map((p) => p.text)
     .join('');
-  const hasToolParts = message.parts.some((p) => p.type === 'dynamic-tool');
+  const hasToolParts = message.parts.some((p) => isToolUIPart(p));
   // Assistant turn that is streaming but has produced no text or tool activity
   // yet — show a quiet loader instead of an empty row.
   const showThinking = !isUser && state === 'streaming' && messageText.trim() === '' && !hasToolParts;
@@ -62,7 +62,7 @@ export function MessageBubble({ message, state, onToolApprove, onToolDeny }: Mes
                 // The assistant reply is markdown; render it through Response
                 // (Streamdown) so lists, code, and emphasis format correctly.
                 if (part.type === 'text') return <Response key={i}>{part.text}</Response>;
-                if (part.type === 'dynamic-tool') {
+                if (isToolUIPart(part)) {
                   const toolPart = part;
                   const approvalId = toolPart.approval?.id;
                   return (

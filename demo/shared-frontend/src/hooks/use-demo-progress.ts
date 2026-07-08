@@ -7,10 +7,17 @@
  * - server-weather: a turn called getWeather without preceding getLocation
  * - client-weather: a turn called getLocation
  * - approval-forecast: a turn produced a getWeatherForecast output (approved)
+ * - retry-stock: a turn produced a getStockPrice output
  * - checklist: a turn produced an updateChecklist output (LiveObjects)
  * - multi-tab: more than one distinct turn-client-id appears in node headers
  * - regenerate: any assistant node has siblings (forked via Regenerate)
  * - edit: any user node has siblings (forked via Edit)
+ *
+ * Demos add scenarios their model supports (e.g. the stock retry) via the
+ * `extraSteps` argument; a step is only offered as a chip if it appears in the
+ * baseline list or `extraSteps`, so a scenario never leaks into a demo whose
+ * model can't drive it. Detection above is universal — an undetected id is
+ * simply ignored by the filter.
  *
  * Steps from the intro card that are NOT tracked here: cancel mid-stream
  * (no clean tree signal) and open Debug pane (local UI state only).
@@ -25,6 +32,7 @@ export type DemoStepId =
   | 'server-weather'
   | 'client-weather'
   | 'approval-forecast'
+  | 'retry-stock'
   | 'checklist'
   | 'multi-tab'
   | 'edit'
@@ -110,6 +118,7 @@ export function useDemoProgress(
   branchSelection: (codecMessageId: string) => BranchHandle<UIMessage>,
   runOf: (codecMessageId: string) => RunInfo | undefined,
   ablyMessages: Ably.InboundMessage[],
+  extraSteps: readonly DemoStep[] = [],
 ): DemoStep[] {
   return useMemo(() => {
     const completed = new Set<DemoStepId>();
@@ -144,6 +153,9 @@ export function useDemoProgress(
       if (turnOutputs.has('getWeatherForecast')) {
         completed.add('approval-forecast');
       }
+      if (turnOutputs.has('getStockPrice')) {
+        completed.add('retry-stock');
+      }
       if (turnOutputs.has('updateChecklist')) {
         completed.add('checklist');
       }
@@ -162,6 +174,6 @@ export function useDemoProgress(
       if (message.role === 'user') completed.add('edit');
     }
 
-    return ALL_STEPS.filter((s) => !completed.has(s.id));
-  }, [messages, branchSelection, runOf, ablyMessages]);
+    return [...ALL_STEPS, ...extraSteps].filter((s) => !completed.has(s.id));
+  }, [messages, branchSelection, runOf, ablyMessages, extraSteps]);
 }

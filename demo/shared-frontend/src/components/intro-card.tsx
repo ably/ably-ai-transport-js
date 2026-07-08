@@ -90,18 +90,31 @@ export const COMMON_DEMO_STEPS: readonly DemoStep[] = [
   },
 ];
 
-export function IntroCard({ steps = COMMON_DEMO_STEPS }: { steps?: readonly DemoStep[] } = {}) {
+const DEFAULT_TITLE = 'ClientSession over Ably';
+const DEFAULT_DESCRIPTION =
+  'A chat wired directly to the Ably AI Transport ClientSession API. The session subscribes to a single Ably ' +
+  'channel and exposes a branching conversation tree, a paginated view, and write operations (send, regenerate, ' +
+  "edit, cancel). Sessions stay in sync across a user's devices and across multiple participants, with a " +
+  'bidirectional channel between user and agent for cancellation and steering. Each item below exercises a ' +
+  'specific feature - try them in order to see what it does.';
+
+/**
+ * The intro shown at the top of an empty conversation: a heading, a blurb, and
+ * a numbered walkthrough of the scenarios to try.
+ * @param steps - The walkthrough scenarios. Defaults to the shared baseline list.
+ * @param title - Heading for the card. Defaults to the generic ClientSession heading.
+ * @param description - Intro blurb under the heading. Defaults to the generic ClientSession blurb.
+ */
+export function IntroCard({
+  steps = COMMON_DEMO_STEPS,
+  title = DEFAULT_TITLE,
+  description = DEFAULT_DESCRIPTION,
+}: { steps?: readonly DemoStep[]; title?: string; description?: string } = {}) {
   return (
     <div className="mx-auto max-w-2xl space-y-6 py-8">
       <header className="space-y-2">
-        <h2 className="text-lg font-semibold text-zinc-100">ClientSession over Ably</h2>
-        <p className="text-sm text-zinc-300">
-          A chat wired directly to the Ably AI Transport ClientSession API. The session subscribes to a single Ably
-          channel and exposes a branching conversation tree, a paginated view, and write operations (send, regenerate,
-          edit, cancel). Sessions stay in sync across a user's devices and across multiple participants, with a
-          bidirectional channel between user and agent for cancellation and steering. Each item below exercises a
-          specific feature - try them in order to see what it does.
-        </p>
+        <h2 className="text-lg font-semibold text-zinc-100">{title}</h2>
+        <p className="text-sm text-zinc-300">{description}</p>
       </header>
 
       <ol className="space-y-4">

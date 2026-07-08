@@ -16,6 +16,7 @@ export type { DemoStep } from './components/intro-card';
 // Hooks
 export { useClientTools } from './hooks/use-client-tools';
 export { useDemoProgress } from './hooks/use-demo-progress';
+export type { PromptDemoStep, GestureDemoStep, DemoStepId, DemoStep as ProgressStep } from './hooks/use-demo-progress';
 
 // Utilities
 export { generateChannelSlug, generateClientName } from './lib/channel-name';

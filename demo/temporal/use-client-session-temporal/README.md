@@ -6,9 +6,9 @@ The channel defaults to `ai:demo` (`NEXT_PUBLIC_ABLY_CHANNEL`); `?channel=<name>
 
 ## What this demonstrates
 
-- `session.adoptRun(...)` + `run.createStep({ stepId: <Temporal activityId> })` — the SDK's purpose-built pairing for durable execution.
+- `session.adoptRun(...)` + `run.createStep({ stepId: stepIdFor(invocationId) })` — the SDK's purpose-built pairing for durable execution. `stepIdFor` (from `@ably/ai-transport/temporal`) composes the run's invocation id with the current Temporal `activityId`.
 - One Temporal activity per SDK step: `openRun`, one `runInferenceStep` per LLM call, one `runToolStep` per server tool, `suspendRun` / `endRun`.
-- **Retry supersession**: an activity retry reuses its `activityId` for the SDK's `stepId`, so the retried step's channel output cleanly supersedes the failed attempt.
+- **Retry supersession**: Temporal re-runs a failed activity under the same `activityId`, so its `stepIdFor`-derived `stepId` is identical on the retry and the retried step's channel output cleanly supersedes the failed attempt.
 - A long-running `listenChannel` activity translates channel-level cancel events into a workflow signal.
 
 ## Prerequisites
@@ -17,7 +17,7 @@ The channel defaults to `ai:demo` (`NEXT_PUBLIC_ABLY_CHANNEL`); `?channel=<name>
 - pnpm 11 (`corepack enable` once)
 - **Temporal CLI**: `brew install temporal` (macOS) — [other platforms](https://learn.temporal.io/getting_started/typescript/dev_environment/)
 - An [Ably API key](https://ably.com/accounts)
-- Optional: an AI provider key (Anthropic, OpenAI, or Vercel AI Gateway). Without one, the demo uses the mock model.
+- An AI provider key (Anthropic, OpenAI, or Vercel AI Gateway) for interactive use. The e2e tests use a bundled deterministic mock model, selected with `MOCK_LLM=1`; interactive use needs a real provider key (without either, `createModel()` throws).
 
 ## Setup
 
@@ -30,7 +30,7 @@ pnpm run build
 
 # 2. Configure env (from this directory)
 cp .env.local.example .env.local
-# then set ABLY_API_KEY (and optionally an AI provider key)
+# then set ABLY_API_KEY and an AI provider key
 
 # 3. Install
 pnpm install
@@ -58,7 +58,7 @@ The debug pane in the app has a **"View latest run in Temporal"** link that open
 Each prompt exercises a different path through the workflow.
 
 - **Server tool** — _"What's the weather in Paris?"_ — `runInferenceStep` returns tool-calls → `runToolStep(getWeather)` → next `runInferenceStep` → done.
-- **Retry** — _"What's the current stock price of AAPL?"_ — `getStockPrice` throws on its first attempt in a process; Temporal retries, and the retried step supersedes the failed attempt's channel output.
+- **Retry** — _"What's the current stock price of AAPL?"_ — `getStockPrice` is intentionally flaky: it rolls a whole-dollar price and throws on an odd one (~50% of attempts). Temporal retries the activity until an even price succeeds, and each retried step supersedes the failed attempt's channel output under the same `stepId`.
 - **Client tool suspend** — _"What's the weather?"_ (no location) — `getLocation` has no `execute` on the server; the workflow calls `suspendRun` and terminates. The browser executes `navigator.geolocation`, publishes the result on the channel, POSTs a continuation. A fresh workflow resumes the same run.
 - **Approval suspend** — _"What's the weather forecast for tomorrow in London?"_ — the model calls `getWeatherForecast`, which requires approval. Workflow suspends. Approve in the UI, the continuation POST starts a fresh workflow that resumes.
 - **Cancel** — click Stop mid-run. The client publishes `ai-cancel` on the channel; `listenChannel` translates that into a `cancel` signal; the workflow cancels the in-flight activity and calls `endRun('cancelled')`.

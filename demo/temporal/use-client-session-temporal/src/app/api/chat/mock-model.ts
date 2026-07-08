@@ -12,6 +12,10 @@
  *   then a weather sentence on the continuation
  * - `... weather forecast for <place>?` -> `getWeatherForecast` (approval,
  *   suspends), then a forecast sentence (or an acknowledgement if denied)
+ * - `... stock price of <SYMBOL>?`      -> `getStockPrice` (server tool), then a
+ *   price sentence on the continuation. The real tool throws on odd prices, so
+ *   Temporal retries the activity until it succeeds — only token generation is
+ *   mocked, so the retry drives itself.
  * - `... a long story about a dragon`   -> a long, slowly streamed, abort-aware
  *   reply for the cancel test
  *
@@ -98,6 +102,12 @@ function extractLocation(text: string): string {
   return match ? match[1].trim() : 'London, UK';
 }
 
+/** Pull an uppercase ticker symbol out of the prompt, defaulting to AAPL. */
+function extractSymbol(text: string): string {
+  const match = /\b([A-Z]{1,5})\b/.exec(text);
+  return match ? match[1] : 'AAPL';
+}
+
 /** Decide what the mock model should produce for the given prompt. */
 function planResponse(prompt: ModelPrompt): ResponsePlan {
   const text = lastUserText(prompt);
@@ -123,6 +133,17 @@ function planResponse(prompt: ModelPrompt): ResponsePlan {
       return { kind: 'text', text: 'It is currently sunny and about 72°F at your location.' };
     }
     return { kind: 'tool', toolName: 'getLocation', input: { highAccuracy: false } };
+  }
+
+  // Stock price -> getStockPrice (server tool). The real tool throws on odd
+  // prices, so this call may fail and Temporal retries it; on the continuation
+  // (an even price landed) summarise the result.
+  if (lower.includes('stock') || lower.includes('price') || /\bticker\b/.test(lower)) {
+    const symbol = extractSymbol(text);
+    if (hasToolResultFor(prompt, 'getStockPrice')) {
+      return { kind: 'text', text: `Here is the latest stock price for ${symbol}.` };
+    }
+    return { kind: 'tool', toolName: 'getStockPrice', input: { symbol } };
   }
 
   // "reply with the word X" / "reply with just the word X".

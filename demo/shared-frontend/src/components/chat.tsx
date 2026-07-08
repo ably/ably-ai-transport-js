@@ -7,7 +7,7 @@ import { UIMessageCodec } from '@ably/ai-transport/vercel';
 
 import { userMessage, wakeAgent } from '../helpers';
 import { useClientTools } from '../hooks/use-client-tools';
-import { useDemoProgress } from '../hooks/use-demo-progress';
+import { useDemoProgress, type DemoStep as ProgressStep } from '../hooks/use-demo-progress';
 import { MessageList } from './message-list';
 import { SuggestionChips } from './suggestion-chips';
 import type { CallbackLogEntry, ClientToolLogEntry } from './debug-pane';
@@ -37,9 +37,29 @@ interface ChatProps {
    * Forwarded to {@link MessageList}. Defaults to the shared baseline list.
    */
   demoSteps?: readonly DemoStep[];
+  /** Heading for the intro card. Defaults to the generic ClientSession heading. */
+  demoTitle?: string;
+  /** Intro blurb for the intro card. Defaults to the generic ClientSession blurb. */
+  demoDescription?: string;
+  /**
+   * Extra suggestion-chip scenarios this demo's model supports, appended to the
+   * shared baseline. Use for prompts a generic weather model can't drive (e.g.
+   * the stock retry), so they only appear in demos that opt in.
+   */
+  extraProgressSteps?: readonly ProgressStep[];
 }
 
-export function Chat({ chatId, clientId, historyLimit, api, extraSlot, demoSteps }: ChatProps) {
+export function Chat({
+  chatId,
+  clientId,
+  historyLimit,
+  api,
+  extraSlot,
+  demoSteps,
+  demoTitle,
+  demoDescription,
+  extraProgressSteps,
+}: ChatProps) {
   const { session } = useClientSession();
 
   const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
@@ -146,7 +166,7 @@ export function Chat({ chatId, clientId, historyLimit, api, extraSlot, demoSteps
 
   const ablyMessages = useAblyMessages();
 
-  const unfinishedSteps = useDemoProgress(messages, branchSelection, runOf, ablyMessages);
+  const unfinishedSteps = useDemoProgress(messages, branchSelection, runOf, ablyMessages, extraProgressSteps);
 
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -211,6 +231,8 @@ export function Chat({ chatId, clientId, historyLimit, api, extraSlot, demoSteps
           onToolApprove={handleToolApprove}
           onToolDeny={handleToolDeny}
           demoSteps={demoSteps}
+          demoTitle={demoTitle}
+          demoDescription={demoDescription}
         />
         {extraSlot}
         <div className="border-t border-zinc-800">

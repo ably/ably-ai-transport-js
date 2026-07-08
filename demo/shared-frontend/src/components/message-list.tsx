@@ -31,6 +31,10 @@ interface MessageListProps {
    * checklist demo adds its own row).
    */
   demoSteps?: readonly DemoStep[];
+  /** Heading for the pinned {@link IntroCard}. Defaults to the generic ClientSession heading. */
+  demoTitle?: string;
+  /** Intro blurb for the pinned {@link IntroCard}. Defaults to the generic ClientSession blurb. */
+  demoDescription?: string;
 }
 
 export function MessageList({
@@ -44,6 +48,8 @@ export function MessageList({
   onToolApprove,
   onToolDeny,
   demoSteps,
+  demoTitle,
+  demoDescription,
 }: MessageListProps) {
   const endRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -83,7 +89,11 @@ export function MessageList({
       onScroll={handleScroll}
       className="flex-1 overflow-y-auto px-4 py-4 space-y-4"
     >
-      <IntroCard steps={demoSteps} />
+      <IntroCard
+        steps={demoSteps}
+        title={demoTitle}
+        description={demoDescription}
+      />
       {hasOlder && (
         <div className="text-center">
           <button

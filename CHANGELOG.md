@@ -2,6 +2,33 @@
 
 This contains only the most important and/or user-facing changes; for a full changelog, see the commit history.
 
+## [0.5.0](https://github.com/ably/ably-ai-transport-js/tree/0.5.0) (2026-07-09)
+
+[Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.4.0...0.5.0)
+
+This release adds first-class support for running AI Transport agents inside durable execution frameworks: workflow engines such as Temporal and Vercel's Workflow Development Kit (WDK) that run each turn as a set of short-lived, independently retried processes. The new `Step` primitive is the re-attemptable unit of output within a run. A retry under the same step id supersedes the failed attempt's output on the channel instead of appending a duplicate, and a fresh process can adopt an already-open run and continue it without re-opening, so a single run (and its steps) is safe to execute across process boundaries and workflow retries. See the runnable [Temporal](https://github.com/ably/ably-ai-transport-js/tree/main/demo/temporal/use-client-session-temporal) and [Vercel WDK](https://github.com/ably/ably-ai-transport-js/tree/main/demo/vercel/react/use-chat-wdk) reference demos. The release also includes a number of other improvements; see the full details below.
+
+### Breaking Changes
+
+- **`AgentSession.close()` is renamed to `AgentSession.detach()`, and a new `AgentSession.end()` is added.** `detach()` aborts in-flight runs and detaches the channel the session attached, leaving any open run resumable; `end()` first publishes a terminal `ai-run-end` for a still-open run (so a forgotten `run.end()` still closes every observer) and then detaches. Neither closes the injected Ably client. Replace `session.close()` with `session.detach()`, or with `session.end()` where the session owns the run's terminal. [#233](https://github.com/ably/ably-ai-transport-js/pull/233)
+
+### New Features
+
+- **Steps: a re-attemptable unit of output within a run.** `run.createStep(options?)` returns a `RunStep` handle whose lifecycle mirrors the run (`start()`, then `pipe()` or `send()`, then `end()`); a retry under the same step id supersedes the failed attempt's channel output rather than appending a duplicate. `run.pipe()` keeps its signature but now brackets its output in a lazy implicit step, and a run's steps are exposed on the read-only `View`. [#232](https://github.com/ably/ably-ai-transport-js/pull/232)
+- **Durable cross-process run execution.** `AgentSession.adoptRun(identity, { durable })` returns an `AdoptedRun`; `await run.load()` resolves the run's anchors from the channel so a fresh process continues an already-open run without republishing `ai-run-start`. Step identity is stable and idempotent across at-least-once retries, so a re-run supersedes a dead attempt's output instead of doubling it. [#233](https://github.com/ably/ably-ai-transport-js/pull/233)
+- **Ergonomics for hosts that drive their own agent loop** (one where the host owns each model call and tool execution as its own durable step): `RunStep.send(output)` publishes a single discrete output message rather than streaming through `pipe()`; `stripToolExecutes`, `pendingToolCalls`, and `approvedPendingToolCalls` help a driver run tools out of band; and a new `@ably/ai-transport/temporal` entry point ships a `stepIdFor` helper for deriving stable step ids. [#249](https://github.com/ably/ably-ai-transport-js/pull/249)
+
+### Bug Fixes
+
+- The Vercel codec now preserves a tool part's representation through an encode/decode/fold roundtrip: a statically declared `tool-<name>` part no longer comes back as `dynamic-tool`, so clients that switch on the part type render it correctly. [#242](https://github.com/ably/ably-ai-transport-js/pull/242)
+- A retired invocation's late `ai-run-suspend` no longer rolls a taken-over run back to suspended, so a durable continuation (a follow-up process calling `run.load()`) no longer stalls with a "run is suspended" rejection. [#248](https://github.com/ably/ably-ai-transport-js/pull/248)
+- A channel that reaches FAILED, SUSPENDED, or DETACHED before its first attach no longer emits a spurious `ChannelContinuityLost` session error; continuity loss is reported only after the channel has attached at least once. [#230](https://github.com/ably/ably-ai-transport-js/pull/230)
+- History pagination validates that the requested limit is a positive integer, and the transport stops retaining wires it has already served. [#212](https://github.com/ably/ably-ai-transport-js/pull/212)
+
+### Performance
+
+- `View.loadOlder()` reveals are now O(revealed) rather than O(window), via per-node flatten memoisation, so paging deep history stays cheap. [#241](https://github.com/ably/ably-ai-transport-js/pull/241)
+
 ## [0.4.0](https://github.com/ably/ably-ai-transport-js/tree/0.4.0) (2026-07-01)
 
 [Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.3.0...0.4.0)

@@ -32,7 +32,7 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - run: pnpm install --frozen-lockfile
-      - uses: ably/cdn-deploy-action@9712faa8a242d1ee6b70897b3bf2a216a7c6a8e8 # v1.0.0
+      - uses: ably/cdn-deploy-action@dc178d76905313bf41c220d8e324791ad822a3f6 # v1.0.2
         with:
           source-dir: dist
           file-regex: '^ably-ai-transport\.umd\.cjs$'

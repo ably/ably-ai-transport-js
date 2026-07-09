@@ -3,6 +3,15 @@ name: Publish to CDN
 on:
   release:
     types: [published]
+  # Manual trigger for re-deploying a tag to the CDN without re-firing the
+  # release event (which would also re-run the npm publish workflow and fail on
+  # the already-published version).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build from and deploy to the CDN (e.g. "0.5.0")'
+        required: true
+        type: string
 
 jobs:
   publish:
@@ -14,9 +23,9 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          # github.ref/github.ref_name are empty for release events; read the
-          # tag from the event payload instead.
-          ref: ${{ github.event.release.tag_name }}
+          # On release, github.ref/github.ref_name are empty, so read the tag
+          # from the event payload; on workflow_dispatch, take it from the input.
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
           persist-credentials: false
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885 # v6.1.1
@@ -36,4 +45,4 @@ jobs:
         with:
           source-dir: dist
           file-regex: '^ably-ai-transport\.umd\.cjs$'
-          tag: ${{ github.event.release.tag_name }}
+          tag: ${{ github.event.release.tag_name || inputs.tag }}

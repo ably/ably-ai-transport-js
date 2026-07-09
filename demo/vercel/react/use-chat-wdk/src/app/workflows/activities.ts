@@ -261,7 +261,6 @@ async function runInference(
 
   const step = run.createStep({ stepId: opts.stepId });
   await step.start();
-  await awaitAttemptVisible(run, opts.stepId, opts.attempt);
 
   const conversation = run.view.getMessages().map((entry) => entry.message);
   if (conversation.length === 0) {
@@ -352,26 +351,6 @@ function observeTakenOver(
   if (observed.status === 'error') return { kind: 'error', errorMessage: observed.error.message };
   if (observed.status === 'complete' || observed.status === 'cancelled') return { kind: observed.status };
   return { kind: 'suspend' };
-}
-
-/**
- * On a retry, wait until this session's read-model reflects `attempt` physical
- * attempts of `stepId` before the caller reads the prompt. A retry's re-emitted
- * `ai-step-start` gates the dead attempt's output out of the view only once its
- * own echo folds back into this Tree — an ordering the publish ack doesn't
- * guarantee — so reading too early can trail the dead reply as an assistant
- * prefill, which real providers reject. Bounded: attempt 1 returns at once, and
- * a retry whose predecessor died before publishing its step-start proceeds
- * after the timeout.
- */
-async function awaitAttemptVisible(run: WdkAgentRun, stepId: string, attempt: number): Promise<void> {
-  if (attempt <= 1) return;
-  const reflected = (): boolean =>
-    (run.view.run(run.runId)?.steps.find((entry) => entry.stepId === stepId)?.attemptCount ?? 0) >= attempt;
-  const deadline = Date.now() + 5_000;
-  while (!reflected() && Date.now() < deadline) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 150));
-  }
 }
 
 /**

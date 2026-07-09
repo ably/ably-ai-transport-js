@@ -51,7 +51,7 @@ pnpm dev
 
 Open the app at <http://localhost:3000>. Open the Temporal Web UI at <http://localhost:8233>.
 
-The debug pane in the app has a **"View latest run in Temporal"** link that opens the current run's workflow in the Temporal Web UI.
+Every turn appears in the Web UI as a `chatWorkflow` execution, newest first. Open one to see its activity history — one activity per SDK step, plus any `getStockPrice` retries.
 
 ## Try this
 

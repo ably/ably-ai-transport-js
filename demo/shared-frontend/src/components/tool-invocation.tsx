@@ -150,7 +150,9 @@ function ToolPending({ name, input }: { name: string; input: unknown }) {
       </MarkerIcon>
       <MarkerContent>
         Calling <span className="font-mono text-foreground">{name}</span>
-        {input != null && Object.keys(input as object).length > 0 && <span> ({JSON.stringify(input)})</span>}
+        {input != null && typeof input === 'object' && Object.keys(input).length > 0 && (
+          <span> ({JSON.stringify(input)})</span>
+        )}
       </MarkerContent>
     </Marker>
   );

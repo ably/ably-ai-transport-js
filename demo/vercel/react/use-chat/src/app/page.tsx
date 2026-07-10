@@ -4,11 +4,10 @@ import { ChatTransportProvider } from '@ably/ai-transport/vercel/react';
 // OBJECT_MODES is not re-exported from the vercel/react entry point, so import
 // it from the package root.
 import { OBJECT_MODES } from '@ably/ai-transport';
+import { Providers, useAblyReady, generateChannelSlug, generateClientName } from '@ably-ai-demos/frontend';
 import { Chat } from './chat';
-import { Providers, useAblyReady } from './providers';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
-import { generateChannelSlug, generateClientName } from './lib/channel-name';
 
 const CHANNEL_NAMESPACE = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ai:';
 
@@ -16,7 +15,7 @@ function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; 
   const ready = useAblyReady();
 
   if (!ready) {
-    return <div className="flex h-dvh items-center justify-center text-sm text-zinc-600">Connecting...</div>;
+    return <div className="flex h-dvh items-center justify-center text-sm text-muted-foreground">Connecting...</div>;
   }
 
   return (
@@ -54,7 +53,10 @@ function ChatPage() {
   }, [paramChannel, paramClientId, channelName, clientId, router, searchParams]);
 
   return (
-    <Providers clientId={clientId}>
+    <Providers
+      clientId={clientId}
+      liveObjects
+    >
       <ChatWhenReady
         channelName={channelName}
         clientId={clientId}

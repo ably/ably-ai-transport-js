@@ -6,8 +6,8 @@ import { Invocation } from '@ably/ai-transport';
 import type { BranchHandle, ClientRun, ClientSession, RunInfo, SendOptions } from '@ably/ai-transport';
 import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
 
-// jsdom doesn't implement Element.prototype.scrollIntoView; MessageList's
-// auto-scroll effect calls it whenever the message list grows.
+// jsdom doesn't implement Element.prototype.scrollIntoView; shim it so a test
+// render never throws if a component reaches for it.
 Element.prototype.scrollIntoView = () => {};
 
 // ---------------------------------------------------------------------------

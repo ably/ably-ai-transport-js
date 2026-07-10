@@ -1,33 +1,44 @@
 'use client';
 
-import { useState } from 'react';
-import { isToolUIPart, type UIMessage } from 'ai';
+import { useState, type CSSProperties } from 'react';
+import { isToolUIPart, type DynamicToolUIPart, type ToolUIPart, type UIMessage } from 'ai';
+import { ChevronLeftIcon, ChevronRightIcon, Loader2Icon } from 'lucide-react';
+import { Badge } from './ui/badge';
+import { Bubble, BubbleContent } from './ui/bubble';
+import { Button } from './ui/button';
+import { Message, MessageContent, MessageFooter } from './ui/message';
+import { Response } from './ui/response';
+import { Textarea } from './ui/textarea';
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { ToolInvocation } from './tool-invocation';
 import { clientColor } from '../lib/client-color';
+import { cn } from '../lib/utils';
+
+/** The bubble's rendering vocabulary for a run's lifecycle. */
+export type MessageStatus = 'streaming' | 'complete' | 'cancelled' | 'error' | 'suspended';
 
 interface MessageBubbleProps {
   message: UIMessage;
-  // The SDK's codec-message-id for this message — the correlation key for
-  // tool approve/deny. Distinct from the domain `message.id`, which the SDK
-  // never treats as an identity (see CodecMessage).
-  codecMessageId: string;
   // Per-message metadata derived from the View at the list-glue layer
-  // (see MessageList) and passed as primitives so the bubble stays a
+  // (see the message lists) and passed as primitives so the bubble stays a
   // pure renderer with no SDK type dependencies.
   clientId: string | undefined;
   runId: string | undefined;
   stepId: string | undefined;
   stepCount: number;
-  status: 'streaming' | 'complete' | 'cancelled' | 'error' | 'suspended' | undefined;
+  status: MessageStatus | undefined;
   errorMessage?: string;
-  hasSiblings: boolean;
-  siblingCount: number;
-  selectedIndex: number;
-  onSelectSibling: (index: number) => void;
+  hasSiblings?: boolean;
+  siblingCount?: number;
+  selectedIndex?: number;
+  onSelectSibling?: (index: number) => void;
   onRegenerate?: () => void;
   onEdit?: (newText: string) => void;
-  onToolApprove?: (codecMessageId: string, toolCallId: string) => void;
-  onToolDeny?: (codecMessageId: string, toolCallId: string) => void;
+  // Approve/deny receive the tool part itself, so each demo's container reads
+  // whichever token its write path needs — the Vercel `approval.id` or the
+  // `(codecMessageId, toolCallId)` pair — without the bubble taking a side.
+  onToolApprove?: (toolPart: ToolUIPart | DynamicToolUIPart) => void;
+  onToolDeny?: (toolPart: ToolUIPart | DynamicToolUIPart) => void;
 }
 
 function BranchNavigator({
@@ -40,74 +51,82 @@ function BranchNavigator({
   onSelect: (index: number) => void;
 }) {
   return (
-    <div className="inline-flex items-center gap-1 rounded bg-zinc-800/60 px-1.5 py-0.5">
-      <button
-        onClick={() => onSelect(current - 1)}
-        disabled={current === 0}
-        className="text-[11px] text-zinc-400 hover:text-zinc-200 disabled:text-zinc-700 disabled:cursor-not-allowed transition-colors px-0.5"
-        title="Previous branch"
+    <div
+      data-testid="branch-navigator"
+      className="inline-flex items-center gap-0.5 rounded-md bg-muted px-0.5"
+    >
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => onSelect(current - 1)}
+            disabled={current === 0}
+            aria-label="Previous branch"
+          >
+            <ChevronLeftIcon />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Previous branch</TooltipContent>
+      </Tooltip>
+      <span
+        data-testid="branch-counter"
+        className="min-w-[2.5rem] text-center text-[10px] text-muted-foreground tabular-nums"
       >
-        &lt;
-      </button>
-      <span className="text-[10px] text-zinc-500 tabular-nums min-w-[2.5rem] text-center">
         {current + 1} / {total}
       </span>
-      <button
-        onClick={() => onSelect(current + 1)}
-        disabled={current >= total - 1}
-        className="text-[11px] text-zinc-400 hover:text-zinc-200 disabled:text-zinc-700 disabled:cursor-not-allowed transition-colors px-0.5"
-        title="Next branch"
-      >
-        &gt;
-      </button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => onSelect(current + 1)}
+            disabled={current >= total - 1}
+            aria-label="Next branch"
+          >
+            <ChevronRightIcon />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Next branch</TooltipContent>
+      </Tooltip>
     </div>
   );
 }
 
-function Badge({ label, value, color }: { label: string; value: string; color: string }) {
+function InfoBadge({
+  label,
+  value,
+  variant = 'secondary',
+  className,
+}: {
+  label: string;
+  value: string;
+  variant?: 'secondary' | 'destructive';
+  className?: string;
+}) {
   return (
-    <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] leading-tight ${color}`}>
-      <span className="text-zinc-600">{label}</span>
+    <Badge
+      variant={variant}
+      className={cn('rounded-sm px-1.5 text-[10px]', className)}
+    >
+      <span className={variant === 'destructive' ? 'opacity-70' : 'text-muted-foreground'}>{label}</span>
       <span>{value}</span>
-    </span>
+    </Badge>
   );
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const color =
-    status === 'complete'
-      ? 'bg-emerald-950 text-emerald-400'
-      : status === 'streaming'
-        ? 'bg-amber-950 text-amber-400'
-        : status === 'cancelled' || status === 'error'
-          ? 'bg-red-950 text-red-400'
-          : 'bg-zinc-900 text-zinc-500';
+  // The status badge carries the run's lifecycle colour: the destructive
+  // variant when cancelled or failed, green once complete, amber while
+  // streaming.
   return (
-    <Badge
+    <InfoBadge
       label="status"
       value={status}
-      color={color}
+      variant={status === 'cancelled' || status === 'error' ? 'destructive' : 'secondary'}
+      className={status === 'complete' ? 'text-emerald-500' : status === 'streaming' ? 'text-amber-500' : undefined}
     />
   );
-}
-
-function bubbleClasses(isUser: boolean, status: string | undefined, userBgClass?: string): string {
-  const base = 'rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap';
-
-  if (isUser) {
-    return `${base} ${userBgClass ?? 'bg-zinc-800'} text-zinc-100`;
-  }
-
-  if (status === 'streaming') {
-    return `${base} bg-zinc-900 text-zinc-300 border border-amber-900/40`;
-  }
-  if (status === 'complete') {
-    return `${base} bg-zinc-900 text-zinc-300 border border-emerald-900/40`;
-  }
-  if (status === 'cancelled' || status === 'error') {
-    return `${base} bg-zinc-900 text-zinc-300 border border-red-900/40`;
-  }
-  return `${base} bg-zinc-900 text-zinc-300 border border-zinc-800`;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,10 +158,10 @@ function EditForm({
       onSubmit={handleSubmit}
       className="w-full"
     >
-      <textarea
+      <Textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        className="w-full rounded-lg bg-zinc-800 border border-zinc-600 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-400 resize-none"
+        data-testid="edit-input"
         rows={Math.min(6, text.split('\n').length + 1)}
         autoFocus
         onKeyDown={(e) => {
@@ -153,21 +172,22 @@ function EditForm({
           }
         }}
       />
-      <div className="flex gap-2 mt-1.5">
-        <button
+      <div className="mt-1.5 flex gap-2">
+        <Button
           type="submit"
+          size="xs"
           disabled={!text.trim() || text.trim() === initialText}
-          className="rounded px-2.5 py-1 text-[11px] font-medium bg-zinc-700 text-zinc-200 hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           Save &amp; Submit
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
+          size="xs"
+          variant="ghost"
           onClick={onCancel}
-          className="rounded px-2.5 py-1 text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors"
         >
           Cancel
-        </button>
+        </Button>
       </div>
     </form>
   );
@@ -175,7 +195,6 @@ function EditForm({
 
 export function MessageBubble({
   message,
-  codecMessageId,
   clientId,
   runId,
   stepId,
@@ -196,15 +215,29 @@ export function MessageBubble({
 
   const role = message.role;
   const colors = clientId ? clientColor(clientId) : undefined;
+  // CAST: CSS custom properties are valid style keys but missing from React's
+  // CSSProperties type. The bubble sets --primary locally so shadcn's tinted
+  // variant derives the client-tinted background from it.
+  const bubbleTheme = colors ? ({ '--primary': colors.primary } as CSSProperties) : undefined;
 
   const messageText = message.parts
     .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
     .map((p) => p.text)
     .join('');
+  const hasToolParts = message.parts.some((p) => isToolUIPart(p));
+  // Assistant turn that is streaming but has produced no text or tool activity
+  // yet — show a quiet loader instead of an empty row (no blinking caret).
+  const showThinking = !isUser && status === 'streaming' && messageText.trim() === '' && !hasToolParts;
 
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className="max-w-[75%]">
+    <Message
+      align={isUser ? 'end' : 'start'}
+      data-testid="message-bubble"
+      data-role={role}
+    >
+      {/* Shrink-wrap the turn so the bubble stretches to the badge row's width
+          (never narrower), while long content stays capped at 75%. */}
+      <MessageContent className="w-fit max-w-[75%] gap-1.5">
         {isEditing && onEdit ? (
           <EditForm
             initialText={messageText}
@@ -213,29 +246,47 @@ export function MessageBubble({
           />
         ) : (
           <>
-            <div className={bubbleClasses(isUser, status, colors?.userBg)}>
-              {message.parts.map((part, i) => {
-                if (part.type === 'text') return <span key={i}>{part.text}</span>;
-                if (isToolUIPart(part)) {
-                  const noop = (): void => {};
-                  return (
-                    <ToolInvocation
-                      key={i}
-                      part={part}
-                      onApprove={
-                        onToolApprove && codecMessageId ? () => onToolApprove(codecMessageId, part.toolCallId) : noop
-                      }
-                      onDeny={onToolDeny && codecMessageId ? () => onToolDeny(codecMessageId, part.toolCallId) : noop}
-                    />
-                  );
-                }
-                return null;
-              })}
-              {!isUser && status === 'streaming' && (
-                <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-amber-500/60 animate-pulse rounded-sm align-text-bottom" />
+            {/* The user's turn is a tinted bubble — the client's palette colour
+                becomes the bubble's --primary, and shadcn's tinted variant
+                derives the background from it. The assistant reply is a muted
+                bubble; its status colour lives on the status badge. */}
+            <Bubble
+              variant={isUser ? 'tinted' : 'muted'}
+              align={isUser ? 'end' : 'start'}
+              className="w-full max-w-full"
+              style={isUser ? bubbleTheme : undefined}
+            >
+              {isUser ? (
+                <BubbleContent className="w-full whitespace-pre-wrap">{messageText}</BubbleContent>
+              ) : (
+                <BubbleContent className="w-full">
+                  {message.parts.map((part, i) => {
+                    // The assistant reply is markdown; render it through Response
+                    // (Streamdown) so lists, code, and emphasis format correctly.
+                    if (part.type === 'text') return <Response key={i}>{part.text}</Response>;
+                    if (isToolUIPart(part)) {
+                      const toolPart = part;
+                      return (
+                        <ToolInvocation
+                          key={i}
+                          part={toolPart}
+                          onApprove={onToolApprove ? () => onToolApprove(toolPart) : undefined}
+                          onDeny={onToolDeny ? () => onToolDeny(toolPart) : undefined}
+                        />
+                      );
+                    }
+                    return null;
+                  })}
+                  {showThinking && (
+                    <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+                      <Loader2Icon className="size-3.5 animate-spin" />
+                      <span className="shimmer">Thinking…</span>
+                    </span>
+                  )}
+                </BubbleContent>
               )}
-            </div>
-            <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+            </Bubble>
+            <MessageFooter className="flex flex-wrap items-center gap-1.5">
               {/* Branch navigator (when the message has siblings) */}
               {hasSiblings && siblingCount !== undefined && selectedIndex !== undefined && onSelectSibling && (
                 <BranchNavigator
@@ -247,63 +298,64 @@ export function MessageBubble({
 
               {/* Edit button (user messages) */}
               {onEdit && status !== 'streaming' && (
-                <button
+                <Button
+                  variant="ghost"
+                  size="xs"
                   onClick={() => setIsEditing(true)}
-                  className="text-[10px] text-zinc-500 hover:text-zinc-200 transition-colors rounded bg-zinc-800/60 px-1.5 py-0.5"
                   title="Edit message"
+                  data-testid="edit-message"
                 >
                   edit
-                </button>
+                </Button>
               )}
 
               {/* Regenerate button (assistant messages) */}
               {onRegenerate && status !== 'streaming' && (
-                <button
+                <Button
+                  variant="ghost"
+                  size="xs"
                   onClick={onRegenerate}
-                  className="text-[10px] text-zinc-500 hover:text-zinc-200 transition-colors rounded bg-zinc-800/60 px-1.5 py-0.5"
                   title="Regenerate response"
+                  data-testid="regenerate-message"
                 >
                   regenerate
-                </button>
+                </Button>
               )}
 
               {/* Debug badges (only when we know which Run the message belongs to). */}
               {runId && (
                 <>
-                  <Badge
+                  <InfoBadge
                     label="role"
                     value={role}
-                    color="bg-zinc-900 text-zinc-500"
                   />
                   {clientId && (
-                    <Badge
+                    <InfoBadge
                       label="client"
                       value={clientId}
-                      color={`bg-zinc-900 ${colors?.text ?? 'text-zinc-500'}`}
+                      className={colors?.text}
                     />
                   )}
-                  <Badge
+                  <InfoBadge
                     label="run"
                     value={runId.slice(0, 8)}
-                    color="bg-zinc-900 text-zinc-500"
                   />
                   {stepId && (
-                    <Badge
+                    <InfoBadge
                       label="step"
                       value={stepId.slice(0, 8) + (stepCount > 1 ? ` +${stepCount - 1}` : '')}
-                      color="bg-zinc-900 text-zinc-500"
                     />
                   )}
                   {status && !isUser && <StatusBadge status={status} />}
                 </>
               )}
-            </div>
+            </MessageFooter>
             {!isUser && status === 'error' && errorMessage && (
-              <div className="mt-1 text-[11px] text-red-300 break-words">{errorMessage}</div>
+              <div className="mt-1 text-[11px] break-words text-destructive">{errorMessage}</div>
             )}
           </>
         )}
-      </div>
-    </div>
+      </MessageContent>
+    </Message>
   );
 }

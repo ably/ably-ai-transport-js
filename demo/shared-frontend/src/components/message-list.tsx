@@ -1,43 +1,71 @@
 'use client';
 
-import { useRef, useEffect } from 'react';
-import type { UIMessage } from 'ai';
+import { useState, type RefObject } from 'react';
+import { ArrowDownIcon, Loader2Icon } from 'lucide-react';
+import type { DynamicToolUIPart, ToolUIPart, UIMessage } from 'ai';
 import type { BranchHandle, CodecMessage, RunInfo } from '@ably/ai-transport';
+import { Button } from './ui/button';
 import { MessageBubble } from './message-bubble';
-import { IntroCard, type DemoStep } from './intro-card';
+import { IntroCard } from './intro-card';
+import type { Scenario } from '../hooks/use-demo-progress';
+import { useStickToBottom } from '../hooks/use-stick-to-bottom';
 
 interface ViewLookupApi {
+  /** Branch-selection handle for a message (siblings + current index + select). */
   branchSelection: (codecMessageId: string) => BranchHandle<UIMessage>;
+  /** The owning Run for a message, when known. */
   runOf: (codecMessageId: string) => RunInfo | undefined;
 }
 
-interface MessageListProps {
-  // Visible messages paired with their codec-message-ids. The list keys all
-  // View correlation (runOf / branchSelection / edit / regenerate) on the
-  // codec-message-id, never the domain `message.id`.
-  messages: CodecMessage<UIMessage>[];
-  hasOlder: boolean;
-  loading: boolean;
-  view: ViewLookupApi;
-  onLoadOlder: () => void;
-  onRegenerate: (codecMessageId: string) => void;
-  onEdit: (codecMessageId: string, newText: string) => void;
-  onToolApprove?: (codecMessageId: string, toolCallId: string) => void;
-  onToolDeny?: (codecMessageId: string, toolCallId: string) => void;
+interface BranchingMessageListProps {
   /**
-   * Custom demo-scenario list shown by the pinned {@link IntroCard} when the
-   * conversation is empty. Defaults to the shared UI's baseline list; each
-   * demo can pass its own to swap in scenarios (e.g. the LiveObjects
-   * checklist demo adds its own row).
+   * Visible messages paired with their codec-message-ids. View correlation
+   * (runOf / branchSelection) keys on the codec-message-id. The action callbacks
+   * receive the whole {@link CodecMessage} so each demo's container reads the id
+   * its write path needs — the codec-message-id, or the domain `message.id`.
    */
-  demoSteps?: readonly DemoStep[];
-  /** Heading for the pinned {@link IntroCard}. Defaults to the generic ClientSession heading. */
-  demoTitle?: string;
-  /** Intro blurb for the pinned {@link IntroCard}. Defaults to the generic ClientSession blurb. */
-  demoDescription?: string;
+  messages: CodecMessage<UIMessage>[];
+  /** Whether an older history page is available. */
+  hasOlder: boolean;
+  /** Whether a history page is currently loading. */
+  loading: boolean;
+  /** View lookups for per-message run metadata and branch selection. */
+  view: ViewLookupApi;
+  /** Request the next older history page. */
+  onLoadOlder: () => void;
+  /** Regenerate the assistant reply anchored at this message. */
+  onRegenerate: (message: CodecMessage<UIMessage>) => void;
+  /** Re-send this user message with edited text (forks a branch). */
+  onEdit: (message: CodecMessage<UIMessage>, newText: string) => void;
+  /** Approve a pending tool call; receives the message and the tool part. */
+  onToolApprove?: (message: CodecMessage<UIMessage>, toolPart: ToolUIPart | DynamicToolUIPart) => void;
+  /** Deny a pending tool call; receives the message and the tool part. */
+  onToolDeny?: (message: CodecMessage<UIMessage>, toolPart: ToolUIPart | DynamicToolUIPart) => void;
+  /** Receives a "snap to the live edge" callback while mounted; the composer calls it on send. */
+  scrollToEndRef: RefObject<(() => void) | null>;
+  /** Intro-card scenarios. Defaults to the shared baseline. */
+  scenarios?: readonly Scenario[];
+  /** Intro-card heading. */
+  introTitle?: string;
+  /** Intro-card blurb. */
+  introDescription?: string;
 }
 
-export function MessageList({
+// Quiet spinner shown while an older history page is loading.
+function LoadingHistory() {
+  return (
+    <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
+      <Loader2Icon className="size-3.5 animate-spin" />
+      Loading history…
+    </div>
+  );
+}
+
+/**
+ * A branching transcript over the View's {@link CodecMessage} list: run-metadata
+ * badges, branch navigation, edit/regenerate, and older-history pagination.
+ */
+export function BranchingMessageList({
   messages,
   hasOlder,
   loading,
@@ -47,109 +75,116 @@ export function MessageList({
   onEdit,
   onToolApprove,
   onToolDeny,
-  demoSteps,
-  demoTitle,
-  demoDescription,
-}: MessageListProps) {
-  const endRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  // Whether the view is "stuck" to the bottom. While true, new content
-  // (including tokens streaming into the last message) keeps the latest output
-  // in view so it stays in sync across tabs. Set false when the user scrolls
-  // up, so we obey the scrollbar instead of yanking it back down.
-  const pinnedToBottomRef = useRef(true);
+  scrollToEndRef,
+  scenarios,
+  introTitle,
+  introDescription,
+}: BranchingMessageListProps) {
+  const { scrollRef, handleScroll, showJumpToLatest, jumpToLatest } = useStickToBottom(messages, scrollToEndRef, () => {
+    // History pagination triggers only at the very top of the scrollback, and
+    // never while a page is already loading.
+    if (hasOlder && !loading) onLoadOlder();
+  });
 
-  // Follow streaming output, not just new messages: this runs on every render
-  // caused by a `messages` change, which includes tokens appended to the last
-  // message. Only auto-scroll while pinned to the bottom.
-  useEffect(() => {
-    if (pinnedToBottomRef.current) {
-      endRef.current?.scrollIntoView({ behavior: 'auto' });
-    }
-  }, [messages]);
-
-  const handleScroll = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-
-    // Re-pin once the user is within a small threshold of the bottom; unpin as
-    // soon as they scroll away. The threshold absorbs sub-pixel rounding and
-    // the scroll event fired by our own auto-scroll.
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    pinnedToBottomRef.current = distanceFromBottom < 80;
-
-    if (hasOlder && !loading && el.scrollTop < 60) {
-      onLoadOlder();
-    }
-  };
+  // Empty conversation: show the onboarding intro from the top. Kept rendered
+  // once messages have existed so a transient empty re-emission mid-flow does
+  // not flash the intro-only state back in.
+  const [hadMessages, setHadMessages] = useState(false);
+  if (messages.length > 0 && !hadMessages) setHadMessages(true);
+  if (messages.length === 0 && !hadMessages) {
+    return (
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <IntroCard
+          scenarios={scenarios}
+          title={introTitle}
+          description={introDescription}
+        />
+        {loading && <LoadingHistory />}
+      </div>
+    );
+  }
 
   return (
-    <div
-      ref={scrollRef}
-      onScroll={handleScroll}
-      className="flex-1 overflow-y-auto px-4 py-4 space-y-4"
-    >
-      <IntroCard
-        steps={demoSteps}
-        title={demoTitle}
-        description={demoDescription}
-      />
-      {hasOlder && (
-        <div className="text-center">
-          <button
-            onClick={onLoadOlder}
-            disabled={loading}
-            className="text-xs text-zinc-500 hover:text-zinc-300 disabled:opacity-40 transition-colors"
-          >
-            {loading ? 'Loading...' : 'Load older messages'}
-          </button>
-        </div>
-      )}
-      {loading && <div className="text-center text-xs text-zinc-600 animate-pulse">Loading history...</div>}
-      {messages.length === 0 && !loading && (
-        <p className="text-sm text-zinc-600 text-center mt-20">Send a message to start chatting.</p>
-      )}
-      {messages.map(({ codecMessageId, message }) => {
-        // Project the owning Run + branch-selection bundle into primitives
-        // at this glue layer so the MessageBubble component stays free of
-        // SDK type dependencies. The bundle is total — safe to destructure
-        // for any message; non-anchor bubbles return `siblings = [message]`
-        // (length 1) so the bubble's render condition uses `hasSiblings`.
-        // All correlation keys on the codec-message-id, not `message.id`.
-        const run = view.runOf(codecMessageId);
-        const branch = view.branchSelection(codecMessageId);
-        // Translate the literal Run lifecycle state to the bubble's
-        // rendering vocabulary: `'active'` → `'streaming'`.
-        const bubbleStatus = run?.status === 'active' ? 'streaming' : run?.status;
-        // Surface the message's step alongside its run: a run.pipe reply has one
-        // implicit step; show its id (the latest if a run ran several steps).
-        const steps = run?.steps ?? [];
-        const lastStep = steps[steps.length - 1];
-        return (
-          <MessageBubble
-            key={codecMessageId}
-            message={message}
-            codecMessageId={codecMessageId}
-            clientId={run?.clientId || undefined}
-            runId={run?.runId}
-            stepId={lastStep?.stepId}
-            stepCount={steps.length}
-            status={bubbleStatus}
-            errorMessage={run?.error?.message}
-            hasSiblings={branch.hasSiblings}
-            siblingCount={branch.siblings.length}
-            selectedIndex={branch.index}
-            onSelectSibling={(index) => {
-              branch.select(index);
-            }}
-            onRegenerate={message.role === 'assistant' ? () => onRegenerate(codecMessageId) : undefined}
-            onEdit={message.role === 'user' ? (text) => onEdit(codecMessageId, text) : undefined}
-            onToolApprove={onToolApprove}
-            onToolDeny={onToolDeny}
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        data-testid="message-viewport"
+        className="scroll-fade-b min-h-0 flex-1 overflow-y-auto px-4 py-4"
+      >
+        <div
+          data-testid="messages"
+          className="flex flex-col gap-6"
+        >
+          {/* The demo walkthrough stays at the top of the scrollback, above the
+              oldest loaded message, so it remains reachable mid-chat. */}
+          <IntroCard
+            scenarios={scenarios}
+            title={introTitle}
+            description={introDescription}
           />
-        );
-      })}
-      <div ref={endRef} />
+          {hasOlder && (
+            <div className="text-center">
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={onLoadOlder}
+                disabled={loading}
+                data-testid="load-older"
+                className="text-muted-foreground"
+              >
+                {loading ? 'Loading...' : 'Load older messages'}
+              </Button>
+            </div>
+          )}
+          {loading && <LoadingHistory />}
+
+          {messages.map((codecMessage) => {
+            const { codecMessageId, message } = codecMessage;
+            const run = view.runOf(codecMessageId);
+            const branch = view.branchSelection(codecMessageId);
+            // Translate the run's lifecycle state to the bubble's vocabulary:
+            // 'active' → 'streaming'.
+            const bubbleStatus = run?.status === 'active' ? 'streaming' : run?.status;
+            const steps = run?.steps ?? [];
+            const lastStep = steps[steps.length - 1];
+            return (
+              <MessageBubble
+                key={codecMessageId}
+                message={message}
+                clientId={run?.clientId || undefined}
+                runId={run?.runId}
+                stepId={lastStep?.stepId}
+                stepCount={steps.length}
+                status={bubbleStatus}
+                errorMessage={run?.error?.message}
+                hasSiblings={branch.hasSiblings}
+                siblingCount={branch.hasSiblings ? branch.siblings.length : undefined}
+                selectedIndex={branch.hasSiblings ? branch.index : undefined}
+                onSelectSibling={branch.hasSiblings ? (index) => branch.select(index) : undefined}
+                onRegenerate={message.role === 'assistant' ? () => onRegenerate(codecMessage) : undefined}
+                onEdit={message.role === 'user' ? (text) => onEdit(codecMessage, text) : undefined}
+                onToolApprove={onToolApprove ? (toolPart) => onToolApprove(codecMessage, toolPart) : undefined}
+                onToolDeny={onToolDeny ? (toolPart) => onToolDeny(codecMessage, toolPart) : undefined}
+              />
+            );
+          })}
+        </div>
+      </div>
+
+      {showJumpToLatest && (
+        <Button
+          type="button"
+          variant="secondary"
+          size="icon-sm"
+          onClick={jumpToLatest}
+          data-testid="scroll-to-latest"
+          aria-label="Scroll to latest"
+          className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full border border-border shadow-md"
+        >
+          <ArrowDownIcon />
+        </Button>
+      )}
     </div>
   );
 }

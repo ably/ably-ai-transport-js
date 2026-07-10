@@ -1,33 +1,31 @@
 /**
- * useDemoProgress — derives which intro-card demo steps are still unfinished
- * from the conversation tree, so suggestion chips stay in sync across clients
- * via the channel-backed history.
+ * useDemoProgress — given a demo's scenario list, derives which scenarios are
+ * still unfinished from the conversation tree, so the suggestion chips stay in
+ * sync across clients via the channel-backed history.
  *
- * Steps detected from tree state:
- * - server-weather: a turn called getWeather without preceding getLocation
+ * A `Scenario` is the single source of truth for both the intro-card walkthrough
+ * and the suggestion chips: the intro renders every scenario; the chips render
+ * the trackable, still-unfinished ones. Completion is detected by `id`:
+ * - server-weather: a turn called getWeather without a preceding getLocation
  * - client-weather: a turn called getLocation
  * - approval-forecast: a turn produced a getWeatherForecast output (approved)
  * - retry-stock: a turn produced a getStockPrice output
  * - checklist: a turn produced an updateChecklist output (LiveObjects)
- * - multi-tab: more than one distinct turn-client-id appears in node headers
- * - regenerate: any assistant node has siblings (forked via Regenerate)
- * - edit: any user node has siblings (forked via Edit)
+ * - multi-tab: more than one distinct Run.clientId appears across visible Runs
+ * - regenerate: any assistant message belongs to a Run with siblings
+ * - edit: any user message belongs to a Run with siblings
+ * - cancel: an ai-cancel event appears on the channel
  *
- * Demos add scenarios their model supports (e.g. the stock retry) via the
- * `extraSteps` argument; a step is only offered as a chip if it appears in the
- * baseline list or `extraSteps`, so a scenario never leaks into a demo whose
- * model can't drive it. Detection above is universal — an undetected id is
- * simply ignored by the filter.
- *
- * Steps from the intro card that are NOT tracked here: cancel mid-stream
- * (no clean tree signal) and open Debug pane (local UI state only).
+ * A scenario with no `id` (e.g. the Observability walkthrough entry) is shown in
+ * the intro but never offered as a chip and never tracked.
  */
 
-import { useMemo } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import type * as Ably from 'ably';
 import { getToolName, isToolUIPart, type UIMessage } from 'ai';
-import { EVENT_CANCEL } from '@ably/ai-transport';
+import { EVENT_CANCEL, type BranchHandle, type CodecMessage, type RunInfo } from '@ably/ai-transport';
 
+/** A trackable scenario's stable id — maps to a built-in completion detector. */
 export type DemoStepId =
   | 'server-weather'
   | 'client-weather'
@@ -39,87 +37,54 @@ export type DemoStepId =
   | 'regenerate'
   | 'cancel';
 
-export interface PromptDemoStep {
-  id: DemoStepId;
-  type: 'prompt';
+/**
+ * One demo scenario, feeding both the intro-card walkthrough and the suggestion
+ * chips. A demo lists the scenarios its model can drive; the shared UI derives
+ * the chips (trackable, unfinished) and the intro (all of them) from it.
+ */
+export interface Scenario {
+  /**
+   * Stable id → the built-in completion detector and the chip/dedup key. Omit
+   * for intro-only entries (e.g. Observability) that are never tracked or
+   * offered as a chip.
+   */
+  id?: DemoStepId;
+  /** Short category tag shown on the chip and above the intro action line. */
   tag: string;
-  label: string;
-  prompt: string;
+  /** Intro-card entry heading. */
+  title: string;
+  /** Intro-card explanation of what the scenario demonstrates. */
+  blurb: string;
+  /**
+   * A prompt to send. When present the scenario is offered as a clickable
+   * suggestion chip, and the intro line reads `Ask: "<prompt>"` unless `action`
+   * overrides it.
+   */
+  prompt?: string;
+  /**
+   * A user gesture (no prompt), e.g. "open in new tab and chat from both". Shown
+   * as a non-clickable chip and as the intro line body unless `action` overrides.
+   */
+  gesture?: string;
+  /**
+   * Escape hatch for a rich intro-line body — links, or a compound
+   * prompt-plus-gesture ("Ask …, then click Approve"). Overrides the line
+   * auto-rendered from `prompt`/`gesture`; it does not affect the chip.
+   */
+  action?: ReactNode;
 }
 
-export interface GestureDemoStep {
-  id: DemoStepId;
-  type: 'gesture';
-  tag: string;
-  label: string;
-}
-
-export type DemoStep = PromptDemoStep | GestureDemoStep;
-
-const ALL_STEPS: DemoStep[] = [
-  {
-    id: 'server-weather',
-    type: 'prompt',
-    tag: 'Server tool',
-    label: `"what's the weather in Tokyo?"`,
-    prompt: `what's the weather in Tokyo?`,
-  },
-  {
-    id: 'client-weather',
-    type: 'prompt',
-    tag: 'Client tool',
-    label: `"what's the weather like?"`,
-    prompt: `what's the weather like?`,
-  },
-  {
-    id: 'approval-forecast',
-    type: 'prompt',
-    tag: 'Approval-gated tool',
-    label: `"what's the weather forecast for London?"`,
-    prompt: `what's the weather forecast for London?`,
-  },
-  {
-    id: 'checklist',
-    type: 'prompt',
-    tag: 'LiveObjects checklist',
-    label: `"Write me a short blog post about Ably — outline it, draft it, then tidy it up."`,
-    prompt: `Write me a short blog post about Ably — outline it, draft it, then tidy it up.`,
-  },
-  {
-    id: 'multi-tab',
-    type: 'gesture',
-    tag: 'Multi-client sync',
-    label: 'open in new tab and chat from both',
-  },
-  {
-    id: 'edit',
-    type: 'gesture',
-    tag: 'Branching',
-    label: 'hover a user message, click Edit',
-  },
-  {
-    id: 'regenerate',
-    type: 'gesture',
-    tag: 'Branching',
-    label: 'hover an assistant reply, click Regenerate',
-  },
-  {
-    id: 'cancel',
-    type: 'gesture',
-    tag: 'Cancel mid-stream',
-    label: 'send a long prompt, click Stop while it streams',
-  },
-];
-
-import type { BranchHandle, CodecMessage, RunInfo } from '@ably/ai-transport';
-
+/**
+ * Filter a demo's scenarios down to the trackable ones still unfinished, in the
+ * demo's own order. Drives the suggestion chips.
+ */
 export function useDemoProgress(
+  scenarios: readonly Scenario[],
   messages: CodecMessage<UIMessage>[],
   branchSelection: (codecMessageId: string) => BranchHandle<UIMessage>,
   runOf: (codecMessageId: string) => RunInfo | undefined,
   ablyMessages: Ably.InboundMessage[],
-  extraSteps: readonly DemoStep[] = [],
-): DemoStep[] {
+): Scenario[] {
   return useMemo(() => {
     const completed = new Set<DemoStepId>();
 
@@ -150,30 +115,21 @@ export function useDemoProgress(
       if (turnOutputs.has('getWeather') && !turnTools.has('getLocation')) {
         completed.add('server-weather');
       }
-      if (turnOutputs.has('getWeatherForecast')) {
-        completed.add('approval-forecast');
-      }
-      if (turnOutputs.has('getStockPrice')) {
-        completed.add('retry-stock');
-      }
-      if (turnOutputs.has('updateChecklist')) {
-        completed.add('checklist');
-      }
+      if (turnOutputs.has('getWeatherForecast')) completed.add('approval-forecast');
+      if (turnOutputs.has('getStockPrice')) completed.add('retry-stock');
+      if (turnOutputs.has('updateChecklist')) completed.add('checklist');
     }
 
-    const turnClientIds = new Set<string>();
-    for (const { codecMessageId } of messages) {
-      const run = runOf(codecMessageId);
-      if (run?.clientId) turnClientIds.add(run.clientId);
-    }
-    if (turnClientIds.size > 1) completed.add('multi-tab');
-
+    const runClientIds = new Set<string>();
     for (const { codecMessageId, message } of messages) {
+      const run = runOf(codecMessageId);
+      if (run?.clientId) runClientIds.add(run.clientId);
       if (!branchSelection(codecMessageId).hasSiblings) continue;
       if (message.role === 'assistant') completed.add('regenerate');
       if (message.role === 'user') completed.add('edit');
     }
+    if (runClientIds.size > 1) completed.add('multi-tab');
 
-    return [...ALL_STEPS, ...extraSteps].filter((s) => !completed.has(s.id));
-  }, [messages, branchSelection, runOf, ablyMessages, extraSteps]);
+    return scenarios.filter((s) => s.id !== undefined && !completed.has(s.id));
+  }, [scenarios, messages, branchSelection, runOf, ablyMessages]);
 }

@@ -45,7 +45,7 @@ export function FaultControls({
   return (
     <div className="px-4 pt-3 text-xs">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-zinc-500">Fault injection:</span>
+        <span className="text-muted-foreground">Fault injection:</span>
         {OPTIONS.map((option) => {
           const active = fault === option.value;
           return (
@@ -54,10 +54,13 @@ export function FaultControls({
               type="button"
               onClick={() => onChange(option.value)}
               title={option.description}
+              // Amber is a deliberate "armed / caution" accent (no semantic
+              // warning token exists in the theme); the neutral resting state
+              // uses shadcn tokens so the row sits in the shared theme.
               className={`rounded-full border px-2.5 py-0.5 transition-colors ${
                 active
                   ? 'border-amber-600 bg-amber-950 text-amber-300'
-                  : 'border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200'
+                  : 'border-border text-muted-foreground hover:border-foreground/40 hover:text-foreground'
               }`}
             >
               {option.label}

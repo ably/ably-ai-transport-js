@@ -4,7 +4,7 @@ import { useEffect, useState, type ReactNode, type RefObject } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ChatTransport, VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
-import type { ClientSession } from '@ably/ai-transport';
+import type { BranchHandle, ClientSession } from '@ably/ai-transport';
 
 import { Chat } from '../chat';
 import type { FaultMode } from '../lib/fault';
@@ -37,6 +37,14 @@ const { mockSendMessages, mockChatTransport, mockSession } = vi.hoisted(() => {
 
 let setMockMessages: ((messages: AI.UIMessage[]) => void) | null = null;
 
+const emptyBranchHandle = (): BranchHandle<AI.UIMessage> => ({
+  hasSiblings: false,
+  siblings: [],
+  index: 0,
+  selected: undefined,
+  select: () => {},
+});
+
 vi.mock('@ably/ai-transport/vercel/react', () => ({
   ChatTransportProvider: ({ children }: { children: ReactNode }) => children,
   useChatTransport: () => ({ chatTransport: mockChatTransport, session: mockSession, sessionError: undefined }),
@@ -55,6 +63,7 @@ vi.mock('@ably/ai-transport/vercel/react', () => ({
       hasOlder: false,
       loading: false,
       loadOlder: async () => {},
+      branchSelection: emptyBranchHandle,
       runOf: () => undefined,
     };
   },

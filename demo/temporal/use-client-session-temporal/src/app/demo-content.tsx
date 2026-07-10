@@ -1,4 +1,4 @@
-import type { DemoStep, PromptDemoStep } from '@ably-ai-demos/frontend';
+import type { Scenario } from '@ably-ai-demos/frontend';
 
 /** Heading + blurb for the intro card, describing the Temporal execution model. */
 export const TEMPORAL_INTRO_TITLE = 'ClientSession + Temporal';
@@ -10,73 +10,84 @@ export const TEMPORAL_INTRO_DESCRIPTION =
   'activity fails, Temporal retries it under the same step id and AIT reconciles — no duplicate output, and the ' +
   'reply still lands over Ably. Each item below exercises a specific piece; try them in order.';
 
-/** Temporal-specific walkthrough shown at the top of an empty conversation. */
-export const TEMPORAL_DEMO_STEPS: readonly DemoStep[] = [
+/**
+ * The Temporal walkthrough — one scenario feeds both the intro card and the
+ * suggestion chip, so a prompt like the durable retry is authored once. Only
+ * scenarios this demo's model can drive are listed (no LiveObjects checklist).
+ */
+export const TEMPORAL_SCENARIOS: readonly Scenario[] = [
   {
+    id: 'server-weather',
+    tag: 'Server tool',
     title: 'Server-side tool call',
-    action: (
-      <>
-        Ask: <span className="font-medium text-zinc-100">&ldquo;what&rsquo;s the weather in Paris?&rdquo;</span>
-      </>
-    ),
-    demonstrates:
+    prompt: `what's the weather in Paris?`,
+    blurb:
       'The model returns tool-calls; the workflow runs getWeather in its own runToolStep activity and publishes the result as an SDK step, then a follow-up inference activity summarises it.',
   },
   {
+    id: 'retry-stock',
+    tag: 'Durable retry',
     title: 'Durable retry',
-    action: (
-      <>
-        Ask:{' '}
-        <span className="font-medium text-zinc-100">&ldquo;what&rsquo;s the current stock price of AAPL?&rdquo;</span>
-      </>
-    ),
-    demonstrates:
+    prompt: `what's the current stock price of AAPL?`,
+    blurb:
       'getStockPrice is intentionally flaky (it throws on an odd price, ~50% of attempts). Temporal retries the activity under the same step id until it succeeds; the retried step supersedes the failed attempt — the reply still settles once, with no duplicate.',
   },
   {
+    id: 'client-weather',
+    tag: 'Client tool',
     title: 'Client-side tool call (suspend / resume)',
-    action: (
-      <>
-        Ask: <span className="font-medium text-zinc-100">&ldquo;what&rsquo;s the weather?&rdquo;</span>
-      </>
-    ),
-    demonstrates:
+    prompt: `what's the weather?`,
+    blurb:
       'getLocation has no server execute, so the workflow suspends and terminates. Your browser resolves the location (permission prompt) and POSTs a continuation; a fresh workflow resumes the same run.',
   },
   {
+    id: 'approval-forecast',
+    tag: 'Approval-gated tool',
     title: 'Approval-required tool call',
+    prompt: `what's the weather forecast for tomorrow in London?`,
     action: (
       <>
         Ask:{' '}
-        <span className="font-medium text-zinc-100">
+        <span className="font-medium text-foreground">
           &ldquo;what&rsquo;s the weather forecast for tomorrow in London?&rdquo;
         </span>
-        , then click <span className="font-medium text-zinc-100">Approve</span>.
+        , then click <span className="font-medium text-foreground">Approve</span>.
       </>
     ),
-    demonstrates:
+    blurb:
       'getWeatherForecast is approval-gated. The workflow suspends until you decide; approving POSTs a continuation and a fresh workflow resumes the run and runs the tool.',
   },
   {
+    id: 'edit',
+    tag: 'Branching',
+    title: 'Edit (branch)',
+    gesture: 'hover a user message, click Edit',
+    blurb: 'Re-sends as a forked branch rooted at the edited message; a fresh workflow drives the new turn.',
+  },
+  {
+    id: 'regenerate',
+    tag: 'Branching',
+    title: 'Regenerate (branch)',
+    gesture: 'hover an assistant reply, click Regenerate',
+    blurb: 'Forks a new branch from that point. The previous branch is kept — the tree remembers both.',
+  },
+  {
+    id: 'cancel',
+    tag: 'Cancel mid-stream',
     title: 'Cancel mid-stream',
-    action: (
-      <>
-        Send a long prompt, then click <span className="font-medium text-zinc-100">Stop</span> while it streams.
-      </>
-    ),
-    demonstrates:
+    gesture: 'send a long prompt, click Stop while it streams',
+    blurb:
       'Stop publishes ai-cancel over Ably; the listenChannel activity turns it into a workflow signal, the in-flight activity aborts, and the run ends cancelled.',
   },
   {
+    id: 'multi-tab',
+    tag: 'Multi-client sync',
     title: 'Multi-client sync',
-    action: (
-      <>
-        Click <span className="font-medium text-zinc-100">open in new tab</span> in the header, then send from either.
-      </>
-    ),
-    demonstrates: 'Both tabs share the same Ably channel; the durable run streams to both, in sync.',
+    gesture: 'open in new tab (header), then send from either',
+    blurb: 'Both tabs share the same Ably channel; the durable run streams to both, in sync.',
   },
   {
+    tag: 'Observability',
     title: 'Observability',
     action: (
       <>
@@ -85,27 +96,14 @@ export const TEMPORAL_DEMO_STEPS: readonly DemoStep[] = [
           href="http://localhost:8233"
           target="_blank"
           rel="noreferrer"
-          className="font-medium text-zinc-100 underline"
+          className="font-medium text-foreground underline"
         >
           Temporal Web UI
         </a>{' '}
-        (default <span className="font-medium text-zinc-100">http://localhost:8233</span>).
+        (default <span className="font-medium text-foreground">http://localhost:8233</span>).
       </>
     ),
-    demonstrates:
+    blurb:
       'Each turn is a workflow run you can inspect end-to-end: one activity per SDK step, and getStockPrice retried under the same activity id until an even price lands — the durable execution history behind the reply.',
   },
 ];
-
-/**
- * Suggestion chip for the durable-retry scenario. Appended to the shared
- * baseline via Chat's `extraProgressSteps` so it only appears in this demo,
- * whose model drives getStockPrice (a generic weather model can't).
- */
-export const STOCK_RETRY_STEP: PromptDemoStep = {
-  id: 'retry-stock',
-  type: 'prompt',
-  tag: 'Durable retry',
-  label: `"what's the current stock price of AAPL?"`,
-  prompt: `what's the current stock price of AAPL?`,
-};

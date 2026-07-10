@@ -12,12 +12,7 @@ import { createUIMessageCodec } from '@ably/ai-transport/vercel';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
 
-import {
-  TEMPORAL_DEMO_STEPS,
-  TEMPORAL_INTRO_TITLE,
-  TEMPORAL_INTRO_DESCRIPTION,
-  STOCK_RETRY_STEP,
-} from './demo-content';
+import { TEMPORAL_SCENARIOS, TEMPORAL_INTRO_TITLE, TEMPORAL_INTRO_DESCRIPTION } from './demo-content';
 
 const { ClientSessionProvider } = SessionHooks;
 
@@ -41,10 +36,10 @@ function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; 
         clientId={clientId}
         historyLimit={limit}
         api="api/chat"
-        demoSteps={TEMPORAL_DEMO_STEPS}
-        demoTitle={TEMPORAL_INTRO_TITLE}
-        demoDescription={TEMPORAL_INTRO_DESCRIPTION}
-        extraProgressSteps={[STOCK_RETRY_STEP]}
+        scenarios={TEMPORAL_SCENARIOS}
+        headerTitle={TEMPORAL_INTRO_TITLE}
+        introTitle={TEMPORAL_INTRO_TITLE}
+        introDescription={TEMPORAL_INTRO_DESCRIPTION}
       />
     </ClientSessionProvider>
   );

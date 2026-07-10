@@ -7,7 +7,7 @@ export { ChatShell } from './components/chat-shell';
 export type { HeaderLink } from './components/chat-shell';
 
 // Transcript + components
-export { BranchingMessageList } from './components/message-list';
+export { BranchingMessageList, LinearMessageList } from './components/message-list';
 export { MessageBubble } from './components/message-bubble';
 export type { MessageStatus } from './components/message-bubble';
 export { AvatarStack } from './components/avatar-stack';

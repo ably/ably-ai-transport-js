@@ -1,53 +1,52 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import type { ClientRun } from '@ably/ai-transport';
-import type { UIMessage } from 'ai';
+import type { DynamicToolUIPart, ToolUIPart, UIMessage } from 'ai';
 import { createUIMessageCodec, type VercelInput } from '@ably/ai-transport/vercel';
 
 import { userMessage, wakeAgent } from '../helpers';
 import { useClientTools } from '../hooks/use-client-tools';
-import { useDemoProgress, type DemoStep as ProgressStep } from '../hooks/use-demo-progress';
-import { MessageList } from './message-list';
-import { SuggestionChips } from './suggestion-chips';
+import { useDemoProgress, type Scenario } from '../hooks/use-demo-progress';
+import { BranchingMessageList } from './message-list';
 import type { CallbackLogEntry, ClientToolLogEntry } from './debug-pane';
 import { DebugPane } from './debug-pane';
-import type { DemoStep } from './intro-card';
+import { COMMON_SCENARIOS } from './intro-card';
+import { ChatShell, type HeaderLink } from './chat-shell';
 import { SessionHooks } from '../providers';
-import { clientColor } from '../lib/client-color';
-import { AvatarStack } from './avatar-stack';
 
 const { useClientSession, useView, useAblyMessages } = SessionHooks;
 const uiMessageCodec = createUIMessageCodec();
 
 interface ChatProps {
+  /** Ably channel name this session is bound to. */
   chatId: string;
+  /** This client's id (tinted in the header). */
   clientId?: string;
+  /** Page size for the paginated view. */
   historyLimit?: number;
   /** Agent endpoint the demo POSTs invocations to, to wake the serverless agent. */
   api: string;
   /**
    * Optional slot rendered between the message list and the input bar — the
-   * anchor for a demo-specific widget (e.g. the LiveObjects checklist widget
-   * in the use-client-session demo). Left undefined by default so demos that
-   * don't need one contribute nothing to the DOM.
+   * anchor for a demo-specific widget (e.g. the LiveObjects checklist widget in
+   * the use-client-session demo).
    */
   extraSlot?: ReactNode;
   /**
-   * Custom scenarios for the intro card when the conversation is empty.
-   * Forwarded to {@link MessageList}. Defaults to the shared baseline list.
+   * The scenarios this demo demonstrates — the single source for the intro-card
+   * walkthrough and the suggestion chips. Defaults to the shared baseline.
    */
-  demoSteps?: readonly DemoStep[];
-  /** Heading for the intro card. Defaults to the generic ClientSession heading. */
-  demoTitle?: string;
-  /** Intro blurb for the intro card. Defaults to the generic ClientSession blurb. */
-  demoDescription?: string;
-  /**
-   * Extra suggestion-chip scenarios this demo's model supports, appended to the
-   * shared baseline. Use for prompts a generic weather model can't drive (e.g.
-   * the stock retry), so they only appear in demos that opt in.
-   */
-  extraProgressSteps?: readonly ProgressStep[];
+  scenarios?: readonly Scenario[];
+  /** Intro-card heading. Defaults to the generic ClientSession heading. */
+  introTitle?: string;
+  /** Intro-card blurb. Defaults to the generic ClientSession blurb. */
+  introDescription?: string;
+  /** Header heading. Defaults to "Ably AI — ClientSession". */
+  headerTitle?: string;
+  /** Header links. Defaults to the SDK repo + Ably docs. */
+  headerLinks?: readonly HeaderLink[];
 }
 
 export function Chat({
@@ -56,10 +55,11 @@ export function Chat({
   historyLimit,
   api,
   extraSlot,
-  demoSteps,
-  demoTitle,
-  demoDescription,
-  extraProgressSteps,
+  scenarios = COMMON_SCENARIOS,
+  introTitle,
+  introDescription,
+  headerTitle = 'Ably AI — ClientSession',
+  headerLinks,
 }: ChatProps) {
   const { session } = useClientSession();
 
@@ -72,9 +72,9 @@ export function Chat({
     setClientToolLog([]);
   }, []);
 
-  // Record client-side tool executions, keyed by toolCallId. Each onExecute
-  // call carries a complete entry, so the `done`/`error` entry replaces the
-  // earlier `executing` one in place.
+  // Record client-side tool executions, keyed by toolCallId. Each onExecute call
+  // carries a complete entry, so the `done`/`error` entry replaces the earlier
+  // `executing` one in place.
   const recordClientTool = useCallback((entry: ClientToolLogEntry) => {
     setClientToolLog((prev) => {
       const idx = prev.findIndex((e) => e.toolCallId === entry.toolCallId);
@@ -90,30 +90,30 @@ export function Chat({
 
   useClientTools(view, clientId, api, recordClientTool);
 
-  // Track active ClientRun handles by their resolved run-id so /steer can
-  // target the live one. Cleaned up on run-end via the tree.on('run') hook
-  // below. A ref instead of state — only the steer call site reads it, and
-  // re-rendering is unnecessary.
+  // Track active ClientRun handles by their resolved run-id so /steer can target
+  // the live one. Cleaned up on run-end via the tree.on('run') hook below. A ref
+  // instead of state — only the steer call site reads it, and re-rendering on
+  // registration is unnecessary.
   const activeRunsRef = useRef<Map<string, ClientRun<VercelInput, UIMessage>>>(new Map());
 
-  // Wake the agent for a freshly-sent run by POSTing its invocation pointer.
-  // The core session never sends HTTP — the app owns the trigger. Send sites
-  // pass the `view.send*` promise; a POST failure is surfaced in the log.
+  // Wake the agent for a freshly-sent run by POSTing its invocation pointer. The
+  // core session never sends HTTP — the app owns the trigger. Send sites pass the
+  // `view.send*` promise; a POST failure is surfaced in the log.
   const wake = useCallback(
     (runPromise: Promise<ClientRun<VercelInput, UIMessage>>) => {
       void runPromise
         .then(async (run) => {
-          // Register the handle for /steer once the agent has minted the
-          // run-id. The dead-handle path on the SDK rejects steer() calls
-          // after run-end, so leaving stale entries here is safe — we still
-          // clean up on run-end below to keep the map bounded.
+          // Register the handle for /steer once the agent has minted the run-id.
+          // The dead-handle path on the SDK rejects steer() calls after run-end,
+          // so leaving stale entries is safe — we still clean up on run-end below
+          // to keep the map bounded.
           run.started
             .then(() => {
               activeRunsRef.current.set(run.runId, run);
             })
             .catch(() => {
-              // runId never resolved — nothing to register. The wake POST
-              // below will surface any underlying error.
+              // runId never resolved — nothing to register. The wake POST below
+              // surfaces any underlying error.
             });
           await wakeAgent(api, run);
         })
@@ -133,8 +133,8 @@ export function Chat({
 
   // Steer the active Run with a follow-up user message. Looks up the latest
   // active run by walking the View's run list newest-first; the handle's
-  // .steer() returns { published, outcome } which we log so the demo
-  // visualises consumed / not-consumed at run-end.
+  // .steer() returns { published, outcome }, both logged so the demo visualises
+  // consumed / not-consumed at run-end.
   const steerActiveRun = useCallback(
     (text: string) => {
       const runs = view.runs();
@@ -142,11 +142,7 @@ export function Chat({
       if (!active) {
         setCallbackLog((prev) => [
           ...prev,
-          {
-            time: Date.now(),
-            type: 'steerRejected',
-            summary: 'no active run to steer — send a message first',
-          },
+          { time: Date.now(), type: 'steerRejected', summary: 'no active run to steer — send a message first' },
         ]);
         return;
       }
@@ -168,11 +164,7 @@ export function Chat({
         .then(({ serial }) => {
           setCallbackLog((prev) => [
             ...prev,
-            {
-              time: Date.now(),
-              type: 'steerPublished',
-              summary: `${head}, serial=${serial ?? '?'}`,
-            },
+            { time: Date.now(), type: 'steerPublished', summary: `${head}, serial=${serial ?? '?'}` },
           ]);
         })
         .catch((error: unknown) => {
@@ -210,18 +202,15 @@ export function Chat({
     [view],
   );
 
-  // Derive "is a run in progress?" from the latest visible message's owning
-  // Run status. Stop is shown ONLY while the run is actively streaming
-  // ('active'). A 'suspended' run is paused awaiting input - a client tool
-  // result, or a tool-approval decision - so there is no live stream to abort:
-  // the user proceeds via the approval card, and the bar shows Send. This
-  // mirrors the useChat demo, where Stop shows only for status
-  // 'submitted' | 'streaming'. Terminal statuses ('complete' | 'cancelled' |
-  // 'error') also show Send. The Run carries the runId Stop needs to cancel.
+  // Derive "is a run in progress?" from the latest visible message's owning Run
+  // status. Stop is shown ONLY while the run is actively streaming ('active'). A
+  // 'suspended' run is paused awaiting input — a client tool result, or a
+  // tool-approval decision — so there is no live stream to abort: the user
+  // proceeds via the approval card, and the bar shows Send. Terminal statuses
+  // ('complete' | 'cancelled' | 'error') also show Send.
   const latestRun = runOf(messages.at(-1)?.codecMessageId ?? '');
   const latestRunId = latestRun?.runId;
-  const latestStatus = latestRun?.status;
-  const isRunInProgress = latestRunId !== undefined && latestStatus === 'active';
+  const isRunInProgress = latestRunId !== undefined && latestRun?.status === 'active';
   const status = isRunInProgress ? 'running' : 'idle';
 
   useEffect(() => {
@@ -249,14 +238,7 @@ export function Chat({
         // steer() calls synchronously, so the entry would just sit here.
         activeRunsRef.current.delete(event.runId);
       }
-      setCallbackLog((prev) => [
-        ...prev,
-        {
-          time: Date.now(),
-          type,
-          summary,
-        },
-      ]);
+      setCallbackLog((prev) => [...prev, { time: Date.now(), type, summary }]);
     });
     const offErr = session.on('error', (error) => {
       setCallbackLog((prev) => [...prev, { time: Date.now(), type: 'error', summary: error.message }]);
@@ -269,37 +251,46 @@ export function Chat({
 
   const ablyMessages = useAblyMessages();
 
-  const unfinishedSteps = useDemoProgress(messages, branchSelection, runOf, ablyMessages, extraProgressSteps);
+  const unfinishedScenarios = useDemoProgress(scenarios, messages, branchSelection, runOf, ablyMessages);
 
   const [input, setInput] = useState('');
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Snap-to-live-edge callback published by the transcript; sending always jumps
+  // to the bottom so the new turn and its streamed reply are in view.
+  const scrollToEndRef = useRef<(() => void) | null>(null);
   const handleSelectPrompt = useCallback((prompt: string) => {
     setInput(prompt);
     inputRef.current?.focus();
   }, []);
 
   const handleToolApprove = useCallback(
-    (codecMessageId: string, toolCallId: string) => {
-      const run = view.runOf(codecMessageId);
+    (codecMessage: { codecMessageId: string }, toolPart: ToolUIPart | DynamicToolUIPart) => {
+      const run = view.runOf(codecMessage.codecMessageId);
       if (!run) return;
       wake(
-        view.send([uiMessageCodec.createToolApprovalResponse(codecMessageId, { toolCallId, approved: true })], {
-          runId: run.runId,
-        }),
+        view.send(
+          [
+            uiMessageCodec.createToolApprovalResponse(codecMessage.codecMessageId, {
+              toolCallId: toolPart.toolCallId,
+              approved: true,
+            }),
+          ],
+          { runId: run.runId },
+        ),
       );
     },
     [view, wake],
   );
 
   const handleToolDeny = useCallback(
-    (codecMessageId: string, toolCallId: string) => {
-      const run = view.runOf(codecMessageId);
+    (codecMessage: { codecMessageId: string }, toolPart: ToolUIPart | DynamicToolUIPart) => {
+      const run = view.runOf(codecMessage.codecMessageId);
       if (!run) return;
       wake(
         view.send(
           [
-            uiMessageCodec.createToolApprovalResponse(codecMessageId, {
-              toolCallId,
+            uiMessageCodec.createToolApprovalResponse(codecMessage.codecMessageId, {
+              toolCallId: toolPart.toolCallId,
               approved: false,
               reason: 'User denied',
             }),
@@ -312,210 +303,68 @@ export function Chat({
   );
 
   return (
-    <div className="flex h-dvh">
-      <div className="flex flex-1 flex-col">
-        <Header
-          clientId={clientId}
-          channelName={chatId}
-        />
-        <MessageList
+    <ChatShell
+      title={headerTitle}
+      links={headerLinks}
+      channelName={chatId}
+      clientId={clientId}
+      suggestions={unfinishedScenarios}
+      onSelectPrompt={handleSelectPrompt}
+      input={input}
+      onInputChange={setInput}
+      inputRef={inputRef}
+      inputPlaceholder="Type a message... — or /steer <text> to steer the active run"
+      onSend={(text) => {
+        // `/steer <text>` targets the latest active Run via activeRun.steer(...) —
+        // a follow-up user message inside the running Run rather than a fresh
+        // send. The agent's run.hasInput() loop picks it up at the next iteration.
+        const steerMatch = /^\/steer\s+(.+)$/.exec(text);
+        if (steerMatch) {
+          steerActiveRun(steerMatch[1]?.trim() ?? '');
+          return;
+        }
+        scrollToEndRef.current?.();
+        wake(view.send(uiMessageCodec.createUserMessage(userMessage(text))));
+      }}
+      onStop={() => {
+        if (!latestRunId) return;
+        // Stop only shows for an ACTIVE run, so a live agent is attached:
+        // publishing the cancel signal makes it abort and publish run-end, which
+        // flips the run to a terminal status and reverts Stop to Send.
+        void session.cancel(latestRunId);
+      }}
+      isRunning={isRunInProgress}
+      extraSlot={extraSlot}
+      transcript={
+        <BranchingMessageList
           messages={messages}
           hasOlder={hasOlder}
           loading={loading}
-          view={{
-            branchSelection,
-            runOf,
-          }}
+          view={{ branchSelection, runOf }}
           onLoadOlder={() => void loadOlder()}
-          onRegenerate={(codecMessageId) => wake(view.regenerate(codecMessageId))}
-          onEdit={(codecMessageId, text) =>
-            wake(view.edit(codecMessageId, [uiMessageCodec.createUserMessage(userMessage(text))]))
+          onRegenerate={(cm) => wake(view.regenerate(cm.codecMessageId))}
+          onEdit={(cm, text) =>
+            wake(view.edit(cm.codecMessageId, [uiMessageCodec.createUserMessage(userMessage(text))]))
           }
           onToolApprove={handleToolApprove}
           onToolDeny={handleToolDeny}
-          demoSteps={demoSteps}
-          demoTitle={demoTitle}
-          demoDescription={demoDescription}
+          scrollToEndRef={scrollToEndRef}
+          scenarios={scenarios}
+          introTitle={introTitle}
+          introDescription={introDescription}
         />
-        {extraSlot}
-        <div className="border-t border-zinc-800">
-          <SuggestionChips
-            steps={unfinishedSteps}
-            onSelectPrompt={handleSelectPrompt}
-          />
-          <InputBar
-            value={input}
-            onChange={setInput}
-            inputRef={inputRef}
-            onSend={(text) => {
-              // `/steer <text>` targets the latest active Run via
-              // activeRun.steer(...) — a follow-up user message inside the
-              // running Run rather than a fresh send. The agent's
-              // run.hasInput() loop picks it up at the next iteration.
-              const steerMatch = /^\/steer\s+(.+)$/.exec(text);
-              if (steerMatch) {
-                steerActiveRun(steerMatch[1]?.trim() ?? '');
-                return;
-              }
-              wake(view.send(uiMessageCodec.createUserMessage(userMessage(text))));
-            }}
-            onStop={() => {
-              if (!latestRunId) return;
-              // Stop only shows for an ACTIVE run, so a live agent is attached:
-              // publishing the cancel signal makes it abort and publish run-end,
-              // which flips the run to a terminal status and reverts Stop to Send.
-              void session.cancel(latestRunId);
-            }}
-            hasAnyRuns={isRunInProgress}
-          />
-        </div>
-      </div>
-      <DebugPane
-        messages={messages}
-        ablyMessages={ablyMessages}
-        status={status}
-        callbackLog={callbackLog}
-        statusLog={statusLog}
-        clientToolLog={clientToolLog}
-        onClearLogs={clearLogs}
-      />
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Header
-// ---------------------------------------------------------------------------
-
-function Header({ clientId, channelName }: { clientId?: string; channelName: string }) {
-  return (
-    <header className="flex h-16 flex-shrink-0 items-center gap-3 border-b border-zinc-800 px-4">
-      <div className="flex flex-col gap-1.5">
-        <div className="flex items-center gap-2">
-          <div className="h-2 w-2 rounded-full bg-emerald-500" />
-          <h1 className="text-sm font-medium text-zinc-300">Ably AI — ClientSession</h1>
-        </div>
-        <div className="flex items-center gap-2 pl-4">
-          <a
-            href="https://github.com/ably/ably-ai-transport-js"
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1 rounded-full border border-zinc-700 px-2.5 py-0.5 text-xs text-zinc-300 hover:text-zinc-100 hover:border-zinc-500 transition-colors"
-          >
-            SDK repo
-            <ExternalLinkIcon />
-          </a>
-          <a
-            href="https://ably.com/docs/ai-transport"
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1 rounded-full border border-zinc-700 px-2.5 py-0.5 text-xs text-zinc-300 hover:text-zinc-100 hover:border-zinc-500 transition-colors"
-          >
-            Ably docs
-            <ExternalLinkIcon />
-          </a>
-        </div>
-      </div>
-      <div className="ml-auto flex items-center gap-3">
-        <AvatarStack
-          channelName={channelName}
-          selfClientId={clientId}
+      }
+      debugPane={
+        <DebugPane
+          messages={messages}
+          ablyMessages={ablyMessages}
+          status={status}
+          callbackLog={callbackLog}
+          statusLog={statusLog}
+          clientToolLog={clientToolLog}
+          onClearLogs={clearLogs}
         />
-        <button
-          type="button"
-          onClick={() => {
-            const url = new URL(window.location.href);
-            url.searchParams.delete('clientId');
-            window.open(url.toString(), '_blank');
-          }}
-          className="rounded-md border border-zinc-700 px-2 py-1 text-[10px] text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors"
-          title="Open this channel in a new tab as a fresh client"
-        >
-          open in new tab
-        </button>
-        {clientId && <span className={`font-mono text-xs ${clientColor(clientId).text}`}>{clientId}</span>}
-      </div>
-    </header>
-  );
-}
-
-function ExternalLinkIcon() {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      fill="none"
-      viewBox="0 0 24 24"
-      strokeWidth={1.75}
-      stroke="currentColor"
-      className="h-3 w-3"
-      aria-hidden
-    >
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"
-      />
-    </svg>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Input bar — single Stop button when streaming, Send button otherwise
-// ---------------------------------------------------------------------------
-
-function InputBar({
-  value,
-  onChange,
-  inputRef,
-  onSend,
-  onStop,
-  hasAnyRuns,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  inputRef?: React.RefObject<HTMLInputElement | null>;
-  onSend: (text: string) => void;
-  onStop: () => void;
-  hasAnyRuns: boolean;
-}) {
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const text = value.trim();
-    if (!text) return;
-    onChange('');
-    onSend(text);
-  };
-
-  return (
-    <form
-      onSubmit={handleSubmit}
-      className="px-4 py-3 flex gap-2"
-    >
-      <input
-        ref={inputRef}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="Type a message... — or /steer <text> to steer the active run"
-        className="flex-1 rounded-md bg-zinc-900 border border-zinc-700 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500"
-        autoFocus
-      />
-      {hasAnyRuns ? (
-        <button
-          type="button"
-          onClick={onStop}
-          className="rounded-md bg-red-900/60 px-4 py-2 text-sm font-medium text-red-300 hover:bg-red-900/80 transition-colors"
-        >
-          Stop
-        </button>
-      ) : (
-        <button
-          type="submit"
-          disabled={!value.trim()}
-          className="rounded-md bg-zinc-700 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-        >
-          Send
-        </button>
-      )}
-    </form>
+      }
+    />
   );
 }

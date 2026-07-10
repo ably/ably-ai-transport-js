@@ -2,6 +2,7 @@
 
 import { usePresence, usePresenceListener } from 'ably/react';
 
+import { Avatar, AvatarFallback } from './ui/avatar';
 import { clientColor } from '../lib/client-color';
 
 interface AvatarStackProps {
@@ -39,13 +40,15 @@ export function AvatarStack({ channelName, selfClientId }: AvatarStackProps) {
       {clientIds.map((id) => {
         const { avatarBg } = clientColor(id);
         return (
-          <div
+          <Avatar
             key={id}
             title={id === selfClientId ? `${id} (you)` : id}
-            className={`flex h-7 w-7 cursor-default select-none items-center justify-center rounded-full text-[10px] font-semibold uppercase text-white ring-2 ring-zinc-900 ${avatarBg}`}
+            className="size-7 ring-2 ring-background"
           >
-            {id.slice(0, 2)}
-          </div>
+            <AvatarFallback className={`text-[10px] font-semibold uppercase text-white ${avatarBg}`}>
+              {id.slice(0, 2)}
+            </AvatarFallback>
+          </Avatar>
         );
       })}
     </div>

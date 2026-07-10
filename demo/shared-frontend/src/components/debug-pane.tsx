@@ -4,11 +4,39 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import type { UIMessage } from 'ai';
 import type { CodecMessage } from '@ably/ai-transport';
 import type * as Ably from 'ably';
+import { ChevronLeftIcon } from 'lucide-react';
+import { Badge } from './ui/badge';
+import { Button } from './ui/button';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 
+/**
+ * One SDK callback observed since page load, rendered in the Lifecycle tab.
+ *
+ * `type` spans both consumer families this shared pane serves: the ClientSession
+ * run-lifecycle callbacks (`runStart`/`runSuspend`/`runResume`/`runEnd`/`error`)
+ * and the Vercel `useChat` callbacks (`onToolCall`/`onFinish`/`onData`/`onError`).
+ * A container feeds only its own family's literals; the pane colours each and
+ * falls back to a neutral colour for any it does not recognise.
+ */
 export interface CallbackLogEntry {
+  /** When the callback fired (ms since epoch). */
   time: number;
+  /** Which callback fired; selects the entry's colour in the Lifecycle tab. */
   type:
-    'runStart' | 'runSuspend' | 'runResume' | 'runEnd' | 'error' | 'steerPublished' | 'steerOutcome' | 'steerRejected';
+    | 'runStart'
+    | 'runSuspend'
+    | 'runResume'
+    | 'runEnd'
+    | 'error'
+    | 'steerPublished'
+    | 'steerOutcome'
+    | 'steerRejected'
+    | 'onToolCall'
+    | 'onFinish'
+    | 'onData'
+    | 'onError';
+  /** One-line, human-readable description of what the callback carried. */
   summary: string;
 }
 
@@ -51,23 +79,31 @@ export type ClientToolLogEntry =
       error: string;
     });
 
+/** Props for {@link DebugPane}. */
 interface DebugPaneProps {
-  // The visible messages paired with their codec-message-ids; the pane renders
-  // the raw `message` halves as JSON.
+  /** Visible messages paired with codec-message-ids; the pane renders the raw `message` halves as JSON. */
   messages: CodecMessage<UIMessage>[];
+  /** Raw inbound Ably messages, oldest first; rendered with their `extras.ai` header tiers. */
   ablyMessages: Ably.InboundMessage[];
+  /** Current session or chat status string, shown in the UIMessages tab. */
   status: string;
+  /** SDK callbacks observed since page load, oldest first. */
   callbackLog: CallbackLogEntry[];
+  /** Status-transition history, oldest first. */
   statusLog: { time: number; status: string }[];
+  /** Client-side tool executions observed on this client, keyed by `toolCallId`. */
   clientToolLog: ClientToolLogEntry[];
+  /** Clears the callback, status, and tool logs. */
   onClearLogs: () => void;
+  /** localStorage key persisting the pane's open/closed state; defaults to a shared demo key. */
+  storageKey?: string;
 }
 
 type Tab = 'ably' | 'uimessages' | 'lifecycle';
 
-// Persist the pane's open/closed state across refreshes. Stored as a string so
-// an absent key (first visit) falls through to the default-open behaviour.
-const PANE_OPEN_STORAGE_KEY = 'ait-demo:debug-pane-open';
+// Default localStorage key for the pane's open/closed state. Stored as a string
+// so an absent key (first visit) falls through to the default-open behaviour.
+const DEFAULT_PANE_OPEN_STORAGE_KEY = 'ait-demo:debug-pane-open';
 
 const AI_TIERS = ['transport', 'codec'] as const;
 
@@ -77,10 +113,46 @@ const AI_TIERS = ['transport', 'codec'] as const;
  * headers). Returns an empty record per tier when absent.
  */
 function extractTiers(msg: Ably.InboundMessage): Record<(typeof AI_TIERS)[number], Record<string, string>> {
+  // CAST: Ably types `extras` as `any`; narrow to the optional `ai` envelope
+  // this pane reads. Every access is optional-chained, so a shape mismatch
+  // yields empty tiers rather than throwing.
   const ai = (msg.extras as { ai?: { transport?: Record<string, string>; codec?: Record<string, string> } } | undefined)
     ?.ai;
   return { transport: ai?.transport ?? {}, codec: ai?.codec ?? {} };
 }
+
+// Colours for each callback type across both consumer families; an unrecognised
+// type falls back to a neutral colour at the call site.
+const callbackTypeColors: Record<string, string> = {
+  // ClientSession run-lifecycle callbacks.
+  runStart: 'text-blue-400',
+  runSuspend: 'text-amber-400',
+  runResume: 'text-cyan-400',
+  runEnd: 'text-emerald-400',
+  error: 'text-red-400',
+  // Mid-run client steering (ClientSession).
+  steerPublished: 'text-purple-400',
+  steerOutcome: 'text-fuchsia-400',
+  steerRejected: 'text-red-300',
+  // Vercel useChat callbacks.
+  onToolCall: 'text-blue-400',
+  onFinish: 'text-emerald-400',
+  onData: 'text-purple-400',
+  onError: 'text-red-400',
+};
+
+// Colours for each status string across both consumer families; an unrecognised
+// status falls back to the default badge colour.
+const statusColors: Record<string, string> = {
+  // ClientSession session status.
+  idle: 'text-muted-foreground/80',
+  running: 'text-emerald-400',
+  // Vercel useChat status.
+  ready: 'text-muted-foreground/80',
+  submitted: 'text-amber-400',
+  streaming: 'text-emerald-400',
+  error: 'text-destructive',
+};
 
 function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -94,23 +166,33 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
   return (
     <div
       ref={scrollRef}
-      className="flex-1 overflow-y-auto p-3 space-y-3"
+      className="flex flex-1 flex-col gap-3 overflow-y-auto p-3"
     >
       {entries.length === 0 && (
-        <p className="text-xs text-zinc-700 text-center mt-8">Raw Ably messages will appear here.</p>
+        <p className="mt-8 text-center text-xs text-muted-foreground">Raw Ably messages will appear here.</p>
       )}
       {entries.map((entry, idx) => {
         const tiers = extractTiers(entry);
         return (
           <div
             key={idx}
-            className="rounded border border-zinc-800 bg-zinc-900/50 p-2 text-[11px] font-mono"
+            className="rounded-md border bg-card p-2 font-mono text-[11px]"
           >
-            <div className="flex items-center gap-2 text-zinc-500 mb-1">
-              <span className="text-zinc-600">#{idx}</span>
-              <span>{new Date(entry.timestamp ?? Date.now()).toLocaleTimeString()}</span>
-              <span className="text-emerald-500">{entry.name ?? '(unnamed)'}</span>
-              <span className="text-amber-500">{String(entry.action ?? 'message.create')}</span>
+            <div className="mb-1 flex flex-wrap items-center gap-1.5 text-muted-foreground/80">
+              <span className="text-muted-foreground/60">#{idx}</span>
+              <span>{entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : ''}</span>
+              <Badge
+                variant="secondary"
+                className="text-emerald-500"
+              >
+                {entry.name ?? '(unnamed)'}
+              </Badge>
+              <Badge
+                variant="outline"
+                className="text-amber-500"
+              >
+                {String(entry.action ?? 'message.create')}
+              </Badge>
             </div>
             {AI_TIERS.map((tier) => {
               const tierHeaders = tiers[tier];
@@ -118,24 +200,24 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
               return (
                 <div
                   key={tier}
-                  className="ml-2 mb-1 space-y-0.5"
+                  className="mb-1 ml-2 flex flex-col gap-0.5"
                 >
-                  <div className="text-zinc-700">extras.ai.{tier}</div>
+                  <div className="text-muted-foreground/50">extras.ai.{tier}</div>
                   {Object.entries(tierHeaders).map(([k, v]) => (
                     <div
                       key={k}
-                      className="text-zinc-600 ml-2"
+                      className="ml-2 text-muted-foreground/60"
                     >
-                      <span className="text-zinc-500">{k}</span>
-                      <span className="text-zinc-700">: </span>
-                      <span className="text-zinc-400">{v}</span>
+                      <span className="text-muted-foreground/80">{k}</span>
+                      <span>: </span>
+                      <span className="text-muted-foreground">{v}</span>
                     </div>
                   ))}
                 </div>
               );
             })}
             {entry.data !== undefined && entry.data !== null && (
-              <div className="mt-1 text-zinc-600 break-all whitespace-pre-wrap">
+              <div className="mt-1 break-all whitespace-pre-wrap text-muted-foreground/60">
                 {typeof entry.data === 'string' ? entry.data : JSON.stringify(entry.data, null, 2)}
               </div>
             )}
@@ -160,38 +242,25 @@ function UIMessagesTab({ messages, status }: { messages: UIMessage[]; status: st
       ref={scrollRef}
       className="flex-1 overflow-y-auto p-3"
     >
-      <div className="mb-3 flex gap-2">
-        <div className="rounded border border-zinc-800 bg-zinc-900/50 px-2 py-1.5 text-[10px]">
-          <span className="text-zinc-600">Session status: </span>
-          <span className={`font-mono ${status === 'running' ? 'text-emerald-400' : 'text-zinc-600'}`}>{status}</span>
-        </div>
+      <div className="mb-3 flex items-center gap-2">
+        <span className="text-[10px] text-muted-foreground">Status</span>
+        <Badge
+          variant="secondary"
+          className={statusColors[status]}
+        >
+          {status}
+        </Badge>
       </div>
       {messages.length === 0 ? (
-        <p className="text-xs text-zinc-700 text-center mt-8">Messages will appear here as JSON.</p>
+        <p className="mt-8 text-center text-xs text-muted-foreground">Messages will appear here as JSON.</p>
       ) : (
-        <pre className="text-[11px] leading-4 text-zinc-500 whitespace-pre-wrap break-all font-mono">
+        <pre className="font-mono text-[11px] leading-4 break-all whitespace-pre-wrap text-muted-foreground/80">
           {JSON.stringify(messages, null, 2)}
         </pre>
       )}
     </div>
   );
 }
-
-const callbackTypeColors: Record<string, string> = {
-  runStart: 'text-blue-400',
-  runSuspend: 'text-amber-400',
-  runResume: 'text-cyan-400',
-  runEnd: 'text-emerald-400',
-  error: 'text-red-400',
-  steerPublished: 'text-purple-400',
-  steerOutcome: 'text-fuchsia-400',
-  steerRejected: 'text-red-300',
-};
-
-const statusColors: Record<string, string> = {
-  idle: 'text-zinc-500',
-  running: 'text-emerald-400',
-};
 
 function LifecycleTab({
   callbackLog,
@@ -215,91 +284,97 @@ function LifecycleTab({
   return (
     <div
       ref={scrollRef}
-      className="flex-1 overflow-y-auto p-3 space-y-3"
+      className="flex flex-1 flex-col gap-3 overflow-y-auto p-3"
     >
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-[10px] text-zinc-400 uppercase tracking-wider">Status transitions</span>
-        <button
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] tracking-wider text-muted-foreground uppercase">Status transitions</span>
+        <Button
+          variant="ghost"
+          size="xs"
           onClick={onClear}
-          className="text-[10px] text-zinc-600 hover:text-zinc-400 transition-colors"
+          className="text-muted-foreground"
         >
           clear
-        </button>
+        </Button>
       </div>
 
       {statusLog.length === 0 ? (
-        <p className="text-xs text-zinc-500 text-center">No status changes yet.</p>
+        <p className="text-center text-xs text-muted-foreground">No status changes yet.</p>
       ) : (
-        <div className="rounded border border-zinc-800 bg-zinc-900/50 p-2 text-[11px] font-mono flex flex-wrap gap-1 items-center">
+        <div className="flex flex-wrap items-center gap-1 rounded-md border bg-card p-2 font-mono text-[11px]">
           {statusLog.map((entry, idx) => (
             <span
               key={idx}
               className="flex items-center gap-1"
             >
-              {idx > 0 && <span className="text-zinc-700">&rarr;</span>}
-              <span className={statusColors[entry.status] ?? 'text-zinc-500'}>{entry.status}</span>
+              {idx > 0 && <span className="text-muted-foreground/50">→</span>}
+              <span className={statusColors[entry.status] ?? 'text-muted-foreground/80'}>{entry.status}</span>
             </span>
           ))}
         </div>
       )}
 
-      <div className="mt-4 mb-2">
-        <span className="text-[10px] text-zinc-400 uppercase tracking-wider">Run lifecycle</span>
+      <div className="mt-1">
+        <span className="text-[10px] tracking-wider text-muted-foreground uppercase">Callbacks</span>
       </div>
 
       {callbackLog.length === 0 ? (
-        <p className="text-xs text-zinc-500 text-center">Run start, run end, and error events will appear here.</p>
+        <p className="text-center text-xs text-muted-foreground">Callback events will appear here.</p>
       ) : (
         callbackLog.map((entry, idx) => (
           <div
             key={idx}
-            className="rounded border border-zinc-800 bg-zinc-900/50 p-2 text-[11px] font-mono"
+            className="rounded-md border bg-card p-2 font-mono text-[11px]"
           >
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-zinc-400">{new Date(entry.time).toLocaleTimeString()}</span>
-              <span className={callbackTypeColors[entry.type] ?? 'text-zinc-400'}>{entry.type}</span>
+            <div className="mb-1 flex items-center gap-2">
+              <span className="text-muted-foreground">{new Date(entry.time).toLocaleTimeString()}</span>
+              <Badge
+                variant={entry.type === 'error' || entry.type === 'onError' ? 'destructive' : 'secondary'}
+                className={callbackTypeColors[entry.type] ?? 'text-muted-foreground'}
+              >
+                {entry.type}
+              </Badge>
             </div>
-            <div className="text-indigo-300 break-all whitespace-pre-wrap">{entry.summary}</div>
+            <div className="break-all whitespace-pre-wrap text-indigo-300">{entry.summary}</div>
           </div>
         ))
       )}
 
-      <div className="mt-4 mb-2">
-        <span className="text-[10px] text-zinc-400 uppercase tracking-wider">Client-side tool calls</span>
+      <div className="mt-1">
+        <span className="text-[10px] tracking-wider text-muted-foreground uppercase">Client-side tool calls</span>
       </div>
 
       {clientToolLog.length === 0 ? (
-        <p className="text-xs text-zinc-500 text-center">
+        <p className="text-center text-xs text-muted-foreground">
           Tools this client executes (e.g. getLocation) will appear here.
         </p>
       ) : (
         clientToolLog.map((entry) => (
           <div
             key={entry.toolCallId}
-            className="rounded border border-zinc-800 bg-zinc-900/50 p-2 text-[11px] font-mono"
+            className="rounded-md border bg-card p-2 font-mono text-[11px]"
           >
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-zinc-400">{new Date(entry.time).toLocaleTimeString()}</span>
+            <div className="mb-1 flex items-center gap-2">
+              <span className="text-muted-foreground">{new Date(entry.time).toLocaleTimeString()}</span>
               <span className="text-blue-400">{entry.toolName}</span>
-              <span
+              <Badge
+                variant={entry.status === 'error' ? 'destructive' : 'secondary'}
                 className={
-                  entry.status === 'done'
-                    ? 'text-emerald-400'
-                    : entry.status === 'error'
-                      ? 'text-red-400'
-                      : 'text-amber-400'
+                  entry.status === 'done' ? 'text-emerald-400' : entry.status === 'error' ? undefined : 'text-amber-400'
                 }
               >
                 {entry.status}
-              </span>
+              </Badge>
             </div>
-            <div className="text-zinc-600 break-all">id: {entry.toolCallId}</div>
-            <div className="text-zinc-500 break-all whitespace-pre-wrap">in: {JSON.stringify(entry.input)}</div>
+            <div className="break-all text-muted-foreground/60">id: {entry.toolCallId}</div>
+            <div className="break-all whitespace-pre-wrap text-muted-foreground/80">
+              in: {JSON.stringify(entry.input)}
+            </div>
             {entry.status === 'done' && (
-              <div className="text-indigo-300 break-all whitespace-pre-wrap">out: {JSON.stringify(entry.output)}</div>
+              <div className="break-all whitespace-pre-wrap text-indigo-300">out: {JSON.stringify(entry.output)}</div>
             )}
             {entry.status === 'error' && (
-              <div className="text-red-300 break-all whitespace-pre-wrap">err: {entry.error}</div>
+              <div className="break-all whitespace-pre-wrap text-destructive">err: {entry.error}</div>
             )}
           </div>
         ))
@@ -316,93 +391,102 @@ export function DebugPane({
   statusLog,
   clientToolLog,
   onClearLogs,
+  storageKey = DEFAULT_PANE_OPEN_STORAGE_KEY,
 }: DebugPaneProps) {
   // Restore the last open/closed choice. A lazy initialiser is safe here
   // because the pane only mounts client-side, after the Ably connection is
   // ready, so there is no server-rendered markup for this state to mismatch.
   const [isOpen, setIsOpen] = useState<boolean>(() => {
     if (typeof window === 'undefined') return true;
-    return localStorage.getItem(PANE_OPEN_STORAGE_KEY) !== 'false';
+    return localStorage.getItem(storageKey) !== 'false';
   });
 
   // Persist on every change so the next refresh reopens in the same state.
   useEffect(() => {
-    localStorage.setItem(PANE_OPEN_STORAGE_KEY, String(isOpen));
-  }, [isOpen]);
-
-  const [tab, setTab] = useState<Tab>('ably');
+    localStorage.setItem(storageKey, String(isOpen));
+  }, [isOpen, storageKey]);
 
   // Project away the codec-message-id pairing — the pane renders raw messages.
   const uiMessages = useMemo(() => messages.map((m) => m.message), [messages]);
+  const [tab, setTab] = useState<Tab>('ably');
+
+  if (!isOpen) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setIsOpen(true)}
+            className="fixed top-1/2 right-0 h-auto -translate-y-1/2 rounded-r-none rounded-l-md border-r-0 px-1.5 py-3"
+            aria-label="Show debug pane"
+          >
+            <ChevronLeftIcon />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="left">Show debug pane</TooltipContent>
+      </Tooltip>
+    );
+  }
 
   return (
-    <>
-      {!isOpen && (
-        <button
-          onClick={() => setIsOpen(true)}
-          className="fixed right-0 top-1/2 -translate-y-1/2 rounded-l-md bg-zinc-800 border border-r-0 border-zinc-700 px-1.5 py-3 text-xs text-zinc-400 hover:text-zinc-200 transition-colors"
-          title="Show debug pane"
+    <Tabs
+      value={tab}
+      // CAST: Radix Tabs widens its onValueChange arg to string; the only
+      // values wired up are the three TabsTrigger values, which are exactly Tab.
+      onValueChange={(value) => setTab(value as Tab)}
+      className="flex w-[420px] shrink-0 flex-col gap-0 border-l border-border bg-background"
+    >
+      <div className="flex h-16 shrink-0 items-center justify-between border-b border-border px-3">
+        <TabsList>
+          <TabsTrigger value="ably">
+            Ably Messages
+            <span className="ml-1 text-muted-foreground">{ablyMessages.length}</span>
+          </TabsTrigger>
+          <TabsTrigger value="uimessages">
+            UIMessages
+            <span className="ml-1 text-muted-foreground">{messages.length}</span>
+          </TabsTrigger>
+          <TabsTrigger value="lifecycle">
+            Lifecycle
+            <span className="ml-1 text-muted-foreground">{callbackLog.length + clientToolLog.length}</span>
+          </TabsTrigger>
+        </TabsList>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setIsOpen(false)}
+          className="text-muted-foreground"
         >
-          &lsaquo;
-        </button>
-      )}
-
-      {isOpen && (
-        <div className="w-[420px] flex-shrink-0 border-l border-zinc-800 flex flex-col bg-zinc-950">
-          <div className="flex h-16 flex-shrink-0 items-center justify-between border-b border-zinc-800 px-3">
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => setTab('ably')}
-                className={`text-[10px] px-2 py-1 rounded transition-colors ${
-                  tab === 'ably' ? 'bg-zinc-800 text-zinc-300' : 'text-zinc-600 hover:text-zinc-400'
-                }`}
-              >
-                Ably Messages
-                <span className="ml-1 text-zinc-600">{ablyMessages.length}</span>
-              </button>
-              <button
-                onClick={() => setTab('uimessages')}
-                className={`text-[10px] px-2 py-1 rounded transition-colors ${
-                  tab === 'uimessages' ? 'bg-zinc-800 text-zinc-300' : 'text-zinc-600 hover:text-zinc-400'
-                }`}
-              >
-                UIMessages
-                <span className="ml-1 text-zinc-600">{messages.length}</span>
-              </button>
-              <button
-                onClick={() => setTab('lifecycle')}
-                className={`text-[10px] px-2 py-1 rounded transition-colors ${
-                  tab === 'lifecycle' ? 'bg-zinc-800 text-zinc-300' : 'text-zinc-600 hover:text-zinc-400'
-                }`}
-              >
-                Lifecycle
-                <span className="ml-1 text-zinc-600">{callbackLog.length + clientToolLog.length}</span>
-              </button>
-            </div>
-            <button
-              onClick={() => setIsOpen(false)}
-              className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
-            >
-              close
-            </button>
-          </div>
-          {tab === 'ably' ? (
-            <AblyMessagesTab entries={ablyMessages} />
-          ) : tab === 'uimessages' ? (
-            <UIMessagesTab
-              messages={uiMessages}
-              status={status}
-            />
-          ) : (
-            <LifecycleTab
-              callbackLog={callbackLog}
-              statusLog={statusLog}
-              clientToolLog={clientToolLog}
-              onClear={onClearLogs}
-            />
-          )}
-        </div>
-      )}
-    </>
+          close
+        </Button>
+      </div>
+      <TabsContent
+        value="ably"
+        className="flex min-h-0 flex-1 flex-col"
+      >
+        <AblyMessagesTab entries={ablyMessages} />
+      </TabsContent>
+      <TabsContent
+        value="uimessages"
+        className="flex min-h-0 flex-1 flex-col"
+      >
+        <UIMessagesTab
+          messages={uiMessages}
+          status={status}
+        />
+      </TabsContent>
+      <TabsContent
+        value="lifecycle"
+        className="flex min-h-0 flex-1 flex-col"
+      >
+        <LifecycleTab
+          callbackLog={callbackLog}
+          statusLog={statusLog}
+          clientToolLog={clientToolLog}
+          onClear={onClearLogs}
+        />
+      </TabsContent>
+    </Tabs>
   );
 }

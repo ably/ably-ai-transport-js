@@ -1,92 +1,77 @@
-export interface DemoStep {
-  title: string;
-  action: React.ReactNode;
-  demonstrates: string;
-}
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
+import type { Scenario } from '../hooks/use-demo-progress';
 
-// Baseline scenarios common to every demo built on ClientSession over Ably.
-// A concrete demo passes its own `steps` prop composed of these plus any
-// demo-specific additions (e.g. the checklist scenario for the LiveObjects
-// demo). Kept in the shared UI so demos don't each re-author the same text.
-export const COMMON_DEMO_STEPS: readonly DemoStep[] = [
+/**
+ * The baseline scenarios common to every weather-model demo built on Ably. A
+ * demo composes its own list from these (selecting, reordering, or inserting its
+ * own, e.g. the LiveObjects checklist) and passes it to {@link Chat}, which
+ * feeds both this card and the suggestion chips — so each scenario is authored
+ * once.
+ */
+export const COMMON_SCENARIOS: readonly Scenario[] = [
   {
+    id: 'server-weather',
+    tag: 'Server tool',
     title: 'Server-side tool call',
-    action: (
-      <>
-        Ask: <span className="font-medium text-zinc-100">&ldquo;what&rsquo;s the weather in Tokyo?&rdquo;</span>
-      </>
-    ),
-    demonstrates: 'The assistant calls getWeather, which runs on the server and streams the result back over Ably.',
+    prompt: `what's the weather in Tokyo?`,
+    blurb: 'The assistant calls getWeather, which runs on the server and streams the result back over Ably.',
   },
   {
+    id: 'client-weather',
+    tag: 'Client tool',
     title: 'Client-side tool call',
-    action: (
-      <>
-        Ask: <span className="font-medium text-zinc-100">&ldquo;what&rsquo;s the weather like?&rdquo;</span>
-      </>
-    ),
-    demonstrates:
+    prompt: `what's the weather like?`,
+    blurb:
       'The assistant calls getLocation in your browser (you will see a permission prompt), then feeds the coords into getWeather.',
   },
   {
+    id: 'approval-forecast',
+    tag: 'Approval-gated tool',
     title: 'Approval-required tool call',
+    prompt: `what's the weather forecast for London?`,
     action: (
       <>
         Ask:{' '}
-        <span className="font-medium text-zinc-100">&ldquo;what&rsquo;s the weather forecast for London?&rdquo;</span>,
-        then click <span className="font-medium text-zinc-100">Approve</span> on the card.
+        <span className="font-medium text-foreground">&ldquo;what&rsquo;s the weather forecast for London?&rdquo;</span>
+        , then click <span className="font-medium text-foreground">Approve</span> on the card.
       </>
     ),
-    demonstrates:
+    blurb:
       'getWeatherForecast pauses at approval-requested. Approve publishes a tool-approval-response event on the channel; the agent resumes and the result lands on the original message.',
   },
   {
+    id: 'multi-tab',
+    tag: 'Multi-client sync',
     title: 'Multi-client sync',
-    action: (
-      <>
-        Click <span className="font-medium text-zinc-100">open in new tab</span> in the header, then send a message from
-        either tab.
-      </>
-    ),
-    demonstrates: 'Both tabs share the same Ably channel. Messages, streams, and run state stay in sync.',
+    gesture: 'open in new tab (header), then send from either',
+    blurb: 'Both tabs share the same Ably channel. Messages, streams, and run state stay in sync.',
   },
   {
+    id: 'edit',
+    tag: 'Branching',
     title: 'Edit (branch)',
-    action: (
-      <>
-        Hover a user message, click <span className="font-medium text-zinc-100">Edit</span>, change the text.
-      </>
-    ),
-    demonstrates: 'Re-sends as a forked branch rooted at the edited message.',
+    gesture: 'hover a user message, click Edit',
+    blurb: 'Re-sends as a forked branch rooted at the edited message.',
   },
   {
+    id: 'regenerate',
+    tag: 'Branching',
     title: 'Regenerate (branch)',
-    action: (
-      <>
-        Hover an assistant reply, click <span className="font-medium text-zinc-100">Regenerate</span>.
-      </>
-    ),
-    demonstrates: 'Forks a new branch from that point. Previous branch is kept — the tree remembers both.',
+    gesture: 'hover an assistant reply, click Regenerate',
+    blurb: 'Forks a new branch from that point. The previous branch is kept — the tree remembers both.',
   },
   {
+    id: 'cancel',
+    tag: 'Cancel mid-stream',
     title: 'Cancel mid-stream',
-    action: (
-      <>
-        Send a long prompt, then click <span className="font-medium text-zinc-100">Stop</span> while the assistant is
-        writing.
-      </>
-    ),
-    demonstrates: 'Cancel is published over Ably; the server cancels the stream and the client closes cleanly.',
+    gesture: 'send a long prompt, click Stop while it streams',
+    blurb: 'Cancel is published over Ably; the server cancels the stream and the client closes cleanly.',
   },
   {
+    tag: 'Observability',
     title: 'Observability',
-    action: (
-      <>
-        Open the <span className="font-medium text-zinc-100">Debug pane</span> on the right.
-      </>
-    ),
-    demonstrates:
-      'Three tabs: raw Ably messages on the wire, resolved UIMessage state, and transport lifecycle events.',
+    gesture: 'open the Debug pane on the right',
+    blurb: 'Three tabs: raw Ably messages on the wire, resolved UIMessage state, and transport lifecycle events.',
   },
 ];
 
@@ -96,44 +81,64 @@ const DEFAULT_DESCRIPTION =
   'channel and exposes a branching conversation tree, a paginated view, and write operations (send, regenerate, ' +
   "edit, cancel). Sessions stay in sync across a user's devices and across multiple participants, with a " +
   'bidirectional channel between user and agent for cancellation and steering. Each item below exercises a ' +
-  'specific feature - try them in order to see what it does.';
+  'specific feature — try them in order to see what it does.';
+
+/** The intro-line body for a scenario: its rich `action`, else its prompt, else its gesture. */
+function ScenarioAction({ scenario }: { scenario: Scenario }) {
+  if (scenario.action) return <>{scenario.action}</>;
+  if (scenario.prompt) {
+    return (
+      <>
+        Ask: <span className="font-medium text-foreground">&ldquo;{scenario.prompt}&rdquo;</span>
+      </>
+    );
+  }
+  return <>{scenario.gesture}</>;
+}
 
 /**
- * The intro shown at the top of an empty conversation: a heading, a blurb, and
- * a numbered walkthrough of the scenarios to try.
- * @param steps - The walkthrough scenarios. Defaults to the shared baseline list.
+ * The intro shown at the top of an empty conversation: a heading, a blurb, and a
+ * numbered walkthrough of the scenarios to try.
+ * @param scenarios - The walkthrough scenarios. Defaults to the shared baseline.
  * @param title - Heading for the card. Defaults to the generic ClientSession heading.
  * @param description - Intro blurb under the heading. Defaults to the generic ClientSession blurb.
  */
 export function IntroCard({
-  steps = COMMON_DEMO_STEPS,
+  scenarios = COMMON_SCENARIOS,
   title = DEFAULT_TITLE,
   description = DEFAULT_DESCRIPTION,
-}: { steps?: readonly DemoStep[]; title?: string; description?: string } = {}) {
+}: {
+  scenarios?: readonly Scenario[];
+  title?: string;
+  description?: string;
+} = {}) {
   return (
-    <div className="mx-auto max-w-2xl space-y-6 py-8">
-      <header className="space-y-2">
-        <h2 className="text-lg font-semibold text-zinc-100">{title}</h2>
-        <p className="text-sm text-zinc-300">{description}</p>
-      </header>
-
-      <ol className="space-y-4">
-        {steps.map((step, i) => (
-          <li
-            key={step.title}
-            className="flex gap-3"
-          >
-            <span className="mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full border border-zinc-700 text-xs font-medium text-zinc-300">
-              {i + 1}
-            </span>
-            <div className="flex-1 space-y-1">
-              <div className="text-sm font-medium text-zinc-100">{step.title}</div>
-              <div className="text-sm text-zinc-300">{step.action}</div>
-              <div className="text-xs text-zinc-400">{step.demonstrates}</div>
-            </div>
-          </li>
-        ))}
-      </ol>
-    </div>
+    <Card className="mx-auto max-w-2xl">
+      <CardHeader>
+        <CardTitle>{title}</CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <ol className="flex flex-col gap-4">
+          {scenarios.map((scenario, i) => (
+            <li
+              key={scenario.title}
+              className="flex gap-3"
+            >
+              <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full border border-border text-xs font-medium text-muted-foreground">
+                {i + 1}
+              </span>
+              <div className="flex flex-1 flex-col gap-1">
+                <div className="text-sm font-medium text-foreground">{scenario.title}</div>
+                <div className="text-sm text-muted-foreground">
+                  <ScenarioAction scenario={scenario} />
+                </div>
+                <div className="text-xs text-muted-foreground/70">{scenario.blurb}</div>
+              </div>
+            </li>
+          ))}
+        </ol>
+      </CardContent>
+    </Card>
   );
 }

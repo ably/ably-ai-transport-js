@@ -52,6 +52,9 @@ const { mockSend, mockSteer, mockCancel, mockWakeAgent, runsHolder, viewMessages
         runsHolder.current.find(() =>
           viewMessagesHolder.current.some((m) => m.codecMessageId === codecMessageId && m.message.role === 'assistant'),
         ) ?? runsHolder.current.at(-1),
+      // The shared useDemoProgress calls branchSelection(id).hasSiblings; this
+      // linear demo never branches, so every message reports no siblings.
+      branchSelection: () => ({ hasSiblings: false }),
       on: () => () => {},
     },
   };
@@ -61,20 +64,25 @@ const { mockSend, mockSteer, mockCancel, mockWakeAgent, runsHolder, viewMessages
 // The linear rendered list, driven per test.
 let renderedMessages: AI.UIMessage[] = [];
 
-vi.mock('../../providers', () => ({
-  SessionHooks: {
-    useClientSession: () => ({ session }),
-    useAblyMessages: () => [],
-  },
-}));
+// Stub the shared package's session/helper seams while rendering its real UI
+// (ChatShell, LinearMessageList, DebugPane): override only the Ably-touching
+// pieces and keep every real component so the render assertions exercise the
+// shared shadcn UI.
+vi.mock('@ably-ai-demos/frontend', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@ably-ai-demos/frontend')>();
+  return {
+    ...actual,
+    SessionHooks: {
+      useClientSession: () => ({ session }),
+      useAblyMessages: () => [],
+    },
+    userMessage: (text: string) => ({ id: 'new-user', role: 'user', parts: [{ type: 'text', text }] }),
+    wakeAgent: mockWakeAgent,
+  };
+});
 
 vi.mock('@ably/ai-transport/vercel/react', () => ({
   useMessagesWithSeed: () => renderedMessages,
-}));
-
-vi.mock('../../helpers', () => ({
-  userMessage: (text: string) => ({ id: 'new-user', role: 'user', parts: [{ type: 'text', text }] }),
-  wakeAgent: mockWakeAgent,
 }));
 
 // The header's AvatarStack enters presence and reads the member set via

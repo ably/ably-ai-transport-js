@@ -14,6 +14,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CodecInputEvent, CodecMessage, CodecOutputEvent } from '../core/codec/types.js';
 import type { BranchHandle, ClientRun, ClientView, RunInfo, SendOptions } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
+import { errorMessage } from '../utils.js';
 import type { BaseSessionOption } from './internal/use-resolved-session.js';
 import { useResolvedSession } from './internal/use-resolved-session.js';
 
@@ -190,7 +191,13 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
       if (error instanceof Ably.ErrorInfo) {
         setLoadError(error);
       } else {
-        setLoadError(new Ably.ErrorInfo('Unknown error loading older messages', ErrorCode.BadRequest, 400));
+        setLoadError(
+          new Ably.ErrorInfo(
+            `unable to load older messages; ${errorMessage(error)}`,
+            ErrorCode.HistoryFetchFailed,
+            500,
+          ),
+        );
       }
       return [];
     } finally {

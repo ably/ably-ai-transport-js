@@ -2802,23 +2802,24 @@ describe('client view', () => {
       expect(onClose).toHaveBeenCalled();
     });
 
-    it('makes send reject with InvalidArgument after close', async () => {
+    it('makes send reject with SessionClosed after close', async () => {
       view.close();
-      await expect(view.send({ kind: 'user-message', message: { id: 'a', content: 'hi' } })).rejects.toThrow(
-        /view is closed/,
-      );
+      await expect(view.send({ kind: 'user-message', message: { id: 'a', content: 'hi' } })).rejects.toBeErrorInfo({
+        code: ErrorCode.SessionClosed,
+        message: 'unable to send; view is closed',
+      });
     });
 
-    it('makes regenerate reject after close', async () => {
+    it('makes regenerate reject with SessionClosed after close', async () => {
       view.close();
-      await expect(view.regenerate('any')).rejects.toThrow(/view is closed/);
+      await expect(view.regenerate('any')).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
     });
 
-    it('makes edit reject after close', async () => {
+    it('makes edit reject with SessionClosed after close', async () => {
       view.close();
-      await expect(view.edit('any', { kind: 'user-message', message: { id: 'a', content: 'x' } })).rejects.toThrow(
-        /view is closed/,
-      );
+      await expect(
+        view.edit('any', { kind: 'user-message', message: { id: 'a', content: 'x' } }),
+      ).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
     });
 
     it('is idempotent: double close does not throw and onClose fires once', () => {

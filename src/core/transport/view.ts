@@ -1084,7 +1084,7 @@ class DefaultClientView<
   async send(input: TInput | TInput[], options?: SendOptions): Promise<ClientRun<TMessage>> {
     this._logger.trace('DefaultClientView.send();');
     if (this._closed) {
-      throw new Ably.ErrorInfo('unable to send; view is closed', ErrorCode.InvalidArgument, 400);
+      throw new Ably.ErrorInfo('unable to send; view is closed', ErrorCode.SessionClosed, 400);
     }
 
     const normalised = _normaliseSend<TInput>(input);
@@ -1104,7 +1104,7 @@ class DefaultClientView<
     this._logger.trace('DefaultClientView.regenerate();', { messageId });
 
     if (this._closed) {
-      throw new Ably.ErrorInfo('unable to regenerate; view is closed', ErrorCode.InvalidArgument, 400);
+      throw new Ably.ErrorInfo('unable to regenerate; view is closed', ErrorCode.SessionClosed, 400);
     }
 
     // `messageId` is the assistant being regenerated. The new Run is a
@@ -1174,7 +1174,7 @@ class DefaultClientView<
     this._logger.trace('DefaultClientView.edit();', { messageId });
 
     if (this._closed) {
-      throw new Ably.ErrorInfo('unable to edit; view is closed', ErrorCode.InvalidArgument, 400);
+      throw new Ably.ErrorInfo('unable to edit; view is closed', ErrorCode.SessionClosed, 400);
     }
 
     // The edit target is a user prompt — a run-less INPUT node — so resolve

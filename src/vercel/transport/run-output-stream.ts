@@ -94,7 +94,7 @@ const createSettlingStream = (): SettlingStream => {
   if (!controller) {
     throw new Ably.ErrorInfo(
       'unable to create run stream; ReadableStream start() was not called synchronously',
-      ErrorCode.SessionSubscriptionError,
+      ErrorCode.InternalError,
       500,
     );
   }

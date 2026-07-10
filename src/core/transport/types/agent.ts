@@ -571,9 +571,9 @@ export interface OpenableRun<TOutput extends CodecOutputEvent, TProjection, TMes
    * publishes, opening the run for publishing. Must be called before any other
    * run method (pipe, step, suspend, end). Idempotent — a second call is a
    * no-op. Propagates `located`'s rejection (cancel / session close).
-   * @throws {Ably.ErrorInfo} `InvalidArgument` when the run was cancelled before
-   *   `start()` (or `located` rejected on cancel / session close);
-   *   `RunLifecycleError` when the opening publish fails.
+   * @throws {Ably.ErrorInfo} `OperationCancelled` when the run was cancelled
+   *   before `start()` (or `located` rejected on cancel); `SessionClosed` when
+   *   the session closed; `RunLifecycleError` when the opening publish fails.
    */
   start(): Promise<void>;
 }
@@ -613,10 +613,10 @@ export interface AdoptedRun<TOutput extends CodecOutputEvent, TProjection, TMess
    * @param options.timeoutMs - How long to wait for the run's `ai-run-start` to
    *   be observed on the channel before rejecting. Defaults to 30000.
    * @throws {Ably.ErrorInfo} `InvalidArgument` when the run is suspended
-   *   ("resume via `createRun().start()`") or terminal (read-only), or when the
-   *   run was cancelled before `load()`; `InputEventNotFound` when the run's
-   *   `ai-run-start` is not observed within `timeoutMs` (a workflow-ordering
-   *   error; retryable).
+   *   ("resume via `createRun().start()`") or terminal (read-only);
+   *   `OperationCancelled` when the run was cancelled before or during `load()`;
+   *   `InputEventNotFound` when the run's `ai-run-start` is not observed within
+   *   `timeoutMs` (a workflow-ordering error; retryable).
    */
   load(options?: { timeoutMs?: number }): Promise<void>;
 }

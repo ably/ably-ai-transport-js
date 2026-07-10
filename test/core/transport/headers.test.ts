@@ -245,16 +245,16 @@ describe('buildRunEndError', () => {
     expect(err.statusCode).toBe(500);
   });
 
-  it('falls back to a generic code/message/status when the headers are absent', () => {
+  it('falls back to StreamError and a generic message/status when the headers are absent', () => {
     const err = buildRunEndError({});
-    expect(err.code).toBe(ErrorCode.SessionSubscriptionError);
+    expect(err.code).toBe(ErrorCode.StreamError);
     expect(err.message).toBe('agent reported an error');
     expect(err.statusCode).toBe(500);
   });
 
-  it('falls back to the generic code and a 500 status for a non-numeric code', () => {
+  it('falls back to StreamError and a 500 status for a non-numeric code', () => {
     const err = buildRunEndError({ [HEADER_ERROR_CODE]: 'not-a-number', [HEADER_ERROR_MESSAGE]: 'x' });
-    expect(err.code).toBe(ErrorCode.SessionSubscriptionError);
+    expect(err.code).toBe(ErrorCode.StreamError);
     expect(err.statusCode).toBe(500);
   });
 });

@@ -946,8 +946,8 @@ class DefaultAgentSession<
               ? error
               : new Ably.ErrorInfo(
                   `unable to locate input event; ${errorMessage(error)}`,
-                  ErrorCode.InvalidArgument,
-                  400,
+                  ErrorCode.InternalError,
+                  500,
                 ),
           );
         });
@@ -1222,7 +1222,7 @@ class DefaultAgentSession<
       if (signal.aborted) {
         throw new Ably.ErrorInfo(
           `unable to start run; run ${runId} was cancelled before start()`,
-          ErrorCode.InvalidArgument,
+          ErrorCode.OperationCancelled,
           400,
         );
       }
@@ -1253,7 +1253,7 @@ class DefaultAgentSession<
         logger?.debug('Run.start(); located rejected before run-start', { runId, invocationId });
         throw error instanceof Ably.ErrorInfo
           ? error
-          : new Ably.ErrorInfo(`unable to start run; ${errorMessage(error)}`, ErrorCode.InvalidArgument, 400);
+          : new Ably.ErrorInfo(`unable to start run; ${errorMessage(error)}`, ErrorCode.InternalError, 500);
       }
 
       // Per-run metadata and the run.view pin were resolved by the watcher's
@@ -1336,7 +1336,7 @@ class DefaultAgentSession<
      * timeout into the fold's own abort path releases the cursor promptly.
      *
      * On resolution the run-start is confirmed and the trigger located. Otherwise:
-     * the run's own signal aborting (cancel) rejects with `InvalidArgument`; the
+     * the run's own signal aborting (cancel) rejects with `OperationCancelled`; the
      * timeout firing, or the channel exhausting without the run-start, rejects
      * with `InputEventNotFound` (retryable — a workflow-ordering error: the
      * run-start has not arrived yet), carrying any history-fetch failure as the
@@ -1391,7 +1391,11 @@ class DefaultAgentSession<
       // The run's OWN signal aborted (a genuine cancel, not the timeout): a
       // cancelled load, not a workflow-ordering miss.
       if (signal.aborted) {
-        throw new Ably.ErrorInfo(`unable to load run; run ${waitRunId} was cancelled`, ErrorCode.InvalidArgument, 400);
+        throw new Ably.ErrorInfo(
+          `unable to load run; run ${waitRunId} was cancelled`,
+          ErrorCode.OperationCancelled,
+          400,
+        );
       }
       // The timeout fired, or the channel exhausted without the run-start: a
       // retryable workflow-ordering error.
@@ -1422,7 +1426,7 @@ class DefaultAgentSession<
       if (signal.aborted) {
         throw new Ably.ErrorInfo(
           `unable to load run; run ${runId} was cancelled before load()`,
-          ErrorCode.InvalidArgument,
+          ErrorCode.OperationCancelled,
           400,
         );
       }
@@ -1462,7 +1466,7 @@ class DefaultAgentSession<
         logger?.debug('Run.load(); located rejected before adopt', { runId, invocationId });
         throw error instanceof Ably.ErrorInfo
           ? error
-          : new Ably.ErrorInfo(`unable to load run; ${errorMessage(error)}`, ErrorCode.InvalidArgument, 400);
+          : new Ably.ErrorInfo(`unable to load run; ${errorMessage(error)}`, ErrorCode.InternalError, 500);
       }
 
       // (3) Status-gate the adopt, now `startSerial` is confirmed (so `base.status`

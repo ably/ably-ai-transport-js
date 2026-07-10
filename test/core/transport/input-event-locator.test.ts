@@ -126,23 +126,23 @@ describe('locateInputEvent', () => {
     await p;
   });
 
-  it('rejects with InvalidArgument when the signal is already aborted', async () => {
+  it('rejects with OperationCancelled when the signal is already aborted', async () => {
     const tree = makeTree();
     const controller = new AbortController();
     controller.abort();
 
     await expect(locateInputEvent({ ...baseOpts, tree, signal: controller.signal })).rejects.toBeErrorInfoWithCode(
-      ErrorCode.InvalidArgument,
+      ErrorCode.OperationCancelled,
     );
   });
 
-  it('rejects with InvalidArgument when the signal aborts mid-wait', async () => {
+  it('rejects with OperationCancelled when the signal aborts mid-wait', async () => {
     const tree = makeTree();
     const controller = new AbortController();
 
     const p = locateInputEvent({ ...baseOpts, tree, signal: controller.signal });
     controller.abort();
 
-    await expect(p).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+    await expect(p).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
   });
 });

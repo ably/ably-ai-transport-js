@@ -15,10 +15,24 @@ export enum ErrorCode {
   InvalidArgument = 40003,
 
   /**
+   * The operation was cancelled (Ably 40033) — the run was cancelled, the
+   * caller's abort signal fired, or the session began closing while the
+   * operation was in flight.
+   */
+  OperationCancelled = 40033,
+
+  /**
    * Operation not permitted with the provided capability (Ably 40160).
    * Used when the Ably channel rejects a publish for a capability reason.
    */
   InsufficientCapability = 40160,
+
+  /**
+   * An internal invariant failed (Ably 50000) — the SDK or the Ably service
+   * behaved in a way the SDK cannot recover from or explain (e.g. a publish
+   * succeeded but returned no serial). Not caused by caller input.
+   */
+  InternalError = 50000,
 
   // 104000 - 104999 are reserved for AI Transport SDK errors
 
@@ -29,7 +43,8 @@ export enum ErrorCode {
   EncoderRecoveryFailed = 104000,
 
   /**
-   * A session-level channel subscription callback threw unexpectedly.
+   * The session's channel subscription failed — the subscribe/attach step
+   * failed, or a session-level subscription callback threw unexpectedly.
    */
   SessionSubscriptionError = 104001,
 
@@ -44,12 +59,15 @@ export enum ErrorCode {
   RunLifecycleError = 104003,
 
   /**
-   * An operation was attempted on a session that has already been closed.
+   * An operation was attempted on a session, view, or encoder that has already
+   * been closed.
    */
   SessionClosed = 104004,
 
   /**
-   * The HTTP POST to the agent endpoint failed (network error or non-2xx response).
+   * A send failed — the channel publish failed, or (in the Vercel chat
+   * transport) the HTTP POST to the agent endpoint failed (network error or
+   * non-2xx response).
    */
   SessionSendFailed = 104005,
 
@@ -70,7 +88,8 @@ export enum ErrorCode {
   /**
    * An error occurred while piping a response stream to the channel — either
    * the source event stream threw (e.g. LLM provider rate limit, model error,
-   * network failure) or an underlying publish failed mid-stream.
+   * network failure) or an underlying publish failed mid-stream. Also the
+   * fallback code when a run-end reports an error without a code on the wire.
    */
   StreamError = 104008,
 
@@ -87,7 +106,9 @@ export enum ErrorCode {
   /**
    * Channel history pagination failed after bounded retry — either the initial
    * `channel.history()` call or a subsequent `page.next()` exhausted its
-   * retry budget. The original failure is preserved as `cause`.
+   * retry budget. Also used when a history load fails with an error that is
+   * not already an `Ably.ErrorInfo`. The original failure is preserved as
+   * `cause` where available.
    */
   HistoryFetchFailed = 104011,
 }

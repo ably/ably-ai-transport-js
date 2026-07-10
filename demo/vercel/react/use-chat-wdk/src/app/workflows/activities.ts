@@ -37,7 +37,7 @@
 import * as Ably from 'ably';
 import { convertToModelMessages, stepCountIs, streamText } from 'ai';
 import { RetryableError } from 'workflow';
-import type { InvocationData } from '@ably/ai-transport';
+import { ErrorCode, type InvocationData } from '@ably/ai-transport';
 import {
   approvedPendingToolCalls,
   pendingToolCalls,
@@ -224,7 +224,7 @@ export async function cleanupActivity(
     } catch {
       return;
     }
-    await run.end({ reason: 'error', error: new Ably.ErrorInfo(errorMessage, 104000, 500) });
+    await run.end({ reason: 'error', error: new Ably.ErrorInfo(errorMessage, ErrorCode.StreamError, 500) });
   });
 }
 
@@ -307,7 +307,7 @@ async function publishTerminal(run: WdkAgentRun, outcome: InferenceOutcome): Pro
     case 'server-tools':
       return;
     case 'error':
-      await run.end({ reason: 'error', error: new Ably.ErrorInfo(outcome.errorMessage, 104000, 500) });
+      await run.end({ reason: 'error', error: new Ably.ErrorInfo(outcome.errorMessage, ErrorCode.StreamError, 500) });
       return;
     default:
       await run.end({ reason: outcome.kind });

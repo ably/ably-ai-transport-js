@@ -294,6 +294,23 @@ describe('useView', () => {
       expect(result.current.loading).toBe(false);
     });
 
+    it('wraps a non-ErrorInfo loadOlder rejection as HistoryFetchFailed', async () => {
+      const mock = createMockSession();
+      (mock.view.loadOlder as ReturnType<typeof vi.fn>).mockReturnValue(Promise.reject(new Error('boom')));
+
+      const { result } = renderHook(() => useView({ session: mock.session }));
+
+      await act(async () => {
+        await result.current.loadOlder();
+      });
+
+      expect(result.current.loadError).toBeErrorInfo({
+        code: ErrorCode.HistoryFetchFailed,
+        statusCode: 500,
+        message: 'unable to load older messages; boom',
+      });
+    });
+
     it('error is cleared on next successful loadOlder', async () => {
       const mock = createMockSession();
       const loadError = new Ably.ErrorInfo('unable to load older messages; network error', ErrorCode.BadRequest, 400);

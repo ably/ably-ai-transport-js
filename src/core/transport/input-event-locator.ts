@@ -105,7 +105,11 @@ export const locateInputEvent = (opts: LocateInputEventOptions): Promise<InputEv
       settled = true;
       cleanup();
       reject(
-        new Ably.ErrorInfo(`unable to look up input event; run ${runId} was cancelled`, ErrorCode.InvalidArgument, 400),
+        new Ably.ErrorInfo(
+          `unable to look up input event; run ${runId} was cancelled`,
+          ErrorCode.OperationCancelled,
+          400,
+        ),
       );
     };
 

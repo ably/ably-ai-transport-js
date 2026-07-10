@@ -2704,7 +2704,7 @@ describe('AgentSession', () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
       await new Promise((r) => setTimeout(r, 5));
-      await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
     });
   });
 
@@ -2723,7 +2723,7 @@ describe('AgentSession', () => {
 
     it('start() throws when external signal is already aborted', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1', signal: AbortSignal.abort() });
-      await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
     });
 
     it('cancels an in-flight pipe', async () => {
@@ -3369,7 +3369,7 @@ describe('AgentSession', () => {
       // Cancel-by-runId triggers controller.abort() on the registered run.
       simulateCancel(ch, { [HEADER_RUN_ID]: runId });
 
-      await expect(startPromise).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(startPromise).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
       await s.detach();
     });
   });
@@ -3518,7 +3518,7 @@ describe('AgentSession input-event lookup', () => {
 
     simulateStateChange(ch, { current: 'suspended', previous: 'attached' } as Ably.ChannelStateChange);
 
-    await expect(startPromise).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+    await expect(startPromise).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
     expect(onError).toHaveBeenCalledWith(expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost }));
     await session.detach();
   });
@@ -3609,7 +3609,7 @@ describe('AgentRun.located', () => {
     await session.detach();
   });
 
-  it('rejects with InvalidArgument when the run is cancelled before the trigger arrives', async () => {
+  it('rejects with OperationCancelled when the run is cancelled before the trigger arrives', async () => {
     const ch = createMockChannel();
     const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(ch),
@@ -3626,7 +3626,7 @@ describe('AgentRun.located', () => {
       signal: controller.signal,
     });
     controller.abort();
-    await expect(run.located).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+    await expect(run.located).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
     await session.detach();
   });
 
@@ -4588,7 +4588,7 @@ describe('adoptRun / load()', () => {
     const controller = new AbortController();
     controller.abort();
     const run = session.adoptRun(identityFor('run-cx'), { signal: controller.signal });
-    await expect(run.load()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+    await expect(run.load()).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
 
     await session.detach();
   });

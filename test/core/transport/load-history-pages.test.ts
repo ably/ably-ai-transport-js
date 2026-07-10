@@ -9,7 +9,7 @@
  *  - cursor `hasNext()` reflects the underlying paginated result
  *  - `next()` returns wires newest-first within each page
  *  - per-page failures are retried with bounded backoff
- *  - signal aborts surface as `InvalidArgument`
+ *  - signal aborts surface as `OperationCancelled`
  */
 
 import type * as Ably from 'ably';
@@ -245,12 +245,37 @@ describe('loadHistoryPages', () => {
     ).rejects.toBeErrorInfoWithCode(ErrorCode.HistoryFetchFailed);
   });
 
-  it('throws `InvalidArgument` when the signal is aborted on entry', async () => {
+  it('throws `OperationCancelled` when the signal aborts during retry backoff', async () => {
+    const ctrl = new AbortController();
+    const channel = {
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+      attach: vi.fn(() => Promise.resolve()),
+      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+      history: vi.fn(() => {
+        // Abort as the fetch fails, so the retry loop's backoff wait sees an
+        // already-aborted signal — deterministic, no timer races.
+        ctrl.abort();
+        return Promise.reject(new Error('transient'));
+      }),
+    };
+
+    await expect(
+      loadHistoryPages(channel as unknown as Ably.RealtimeChannel, {
+        pageLimit: 1,
+        maxRetries: 2,
+        retryBackoffMs: 1,
+        signal: ctrl.signal,
+      }),
+    ).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
+    expect(channel.history).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws `OperationCancelled` when the signal is aborted on entry', async () => {
     const { channel } = createMockChannel([[ablyMsg()]]);
     const ctrl = new AbortController();
     ctrl.abort();
     await expect(loadHistoryPages(channel, { pageLimit: 1, signal: ctrl.signal })).rejects.toBeErrorInfoWithCode(
-      ErrorCode.InvalidArgument,
+      ErrorCode.OperationCancelled,
     );
   });
 
@@ -264,6 +289,6 @@ describe('loadHistoryPages', () => {
     const first = await cursor.next();
     expect(first).toEqual([m1]);
     ctrl.abort();
-    await expect(cursor.next()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+    await expect(cursor.next()).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
   });
 });

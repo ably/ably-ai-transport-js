@@ -1,4 +1,4 @@
-import type * as Ably from 'ably';
+import * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -171,7 +171,7 @@ describe('createEncoderCore', () => {
     it('throws after close', async () => {
       const core = createEncoderCore(writer);
       await core.close();
-      await expect(core.publishDiscrete(payload())).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(core.publishDiscrete(payload())).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
     });
   });
 
@@ -205,7 +205,7 @@ describe('createEncoderCore', () => {
     it('throws after close', async () => {
       const core = createEncoderCore(writer);
       await core.close();
-      await expect(core.publishDiscreteBatch([payload()])).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(core.publishDiscreteBatch([payload()])).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
     });
   });
 
@@ -227,14 +227,14 @@ describe('createEncoderCore', () => {
       writer.nextPublishResult = { serials: [] };
       const core = createEncoderCore(writer);
       await expect(core.startStream('s1', streamPayload({ name: 'text' }))).rejects.toBeErrorInfoWithCode(
-        ErrorCode.BadRequest,
+        ErrorCode.InternalError,
       );
     });
 
     it('throws after close', async () => {
       const core = createEncoderCore(writer);
       await core.close();
-      await expect(core.startStream('s1', streamPayload())).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(core.startStream('s1', streamPayload())).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
     });
   });
 
@@ -264,7 +264,7 @@ describe('createEncoderCore', () => {
       await core.close();
       expect(() => {
         core.appendStream('s1', 'data');
-      }).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
+      }).toThrowErrorInfoWithCode(ErrorCode.SessionClosed);
     });
   });
 
@@ -306,7 +306,7 @@ describe('createEncoderCore', () => {
       const core = createEncoderCore(writer);
       await core.startStream('s1', streamPayload({ name: 'text' }));
       await core.close();
-      await expect(core.closeStream('s1', streamPayload())).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(core.closeStream('s1', streamPayload())).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
     });
   });
 
@@ -355,7 +355,7 @@ describe('createEncoderCore', () => {
     it('rejects after close', async () => {
       const core = createEncoderCore(writer);
       await core.close();
-      await expect(core.cancelAllStreams()).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      await expect(core.cancelAllStreams()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
     });
   });
 
@@ -499,8 +499,23 @@ describe('createEncoderCore', () => {
 
       await expect(core.close()).rejects.toBeErrorInfoWithCode(ErrorCode.EncoderRecoveryFailed);
 
-      // Encoder should still be closed — further writes throw InvalidArgument
-      await expect(core.publishDiscrete(payload())).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+      // Encoder should still be closed — further writes throw SessionClosed
+      await expect(core.publishDiscrete(payload())).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+    });
+
+    it('attaches the first recovery failure as cause when flush recovery fails', async () => {
+      const underlying = new Ably.ErrorInfo('update rejected', ErrorCode.InsufficientCapability, 401);
+      writer.nextAppendResult = async () => await Promise.reject(new Error('fail'));
+      writer.nextUpdateResult = async () => await Promise.reject(underlying);
+
+      const core = createEncoderCore(writer);
+      await core.startStream('s1', streamPayload({ name: 'text' }));
+      core.appendStream('s1', 'data');
+
+      await expect(core.close()).rejects.toBeErrorInfo({
+        code: ErrorCode.EncoderRecoveryFailed,
+        cause: { code: ErrorCode.InsufficientCapability },
+      });
     });
   });
 

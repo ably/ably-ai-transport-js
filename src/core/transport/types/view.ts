@@ -333,6 +333,8 @@ export interface ClientView<TInput extends CodecInputEvent, TMessage> extends Vi
    * overridden. The HTTP POST is fire-and-forget — the returned stream is
    * available immediately. If the POST fails, the error is surfaced via
    * the session's `on("error")` and the stream is errored.
+   *
+   * Rejects with `SessionClosed` when the view has been closed.
    */
   send(events: TInput | TInput[], options?: SendOptions): Promise<ClientRun<TMessage>>;
 
@@ -345,6 +347,9 @@ export interface ClientView<TInput extends CodecInputEvent, TMessage> extends Vi
    * regenerated message's run, and the message-level replacement (the new
    * assistant superseding the original) happens at projection-extraction
    * time.
+   *
+   * Rejects with `SessionClosed` when the view has been closed, or
+   * `InvalidArgument` when `messageId` is not in the tree.
    */
   regenerate(messageId: string, options?: SendOptions): Promise<ClientRun<TMessage>>;
 
@@ -354,6 +359,9 @@ export interface ClientView<TInput extends CodecInputEvent, TMessage> extends Vi
    * message) and `parent` from this view's branch. The replacement is a
    * single new message — the same single-message rule as {@link ClientView.send}
    * applies.
+   *
+   * Rejects with `SessionClosed` when the view has been closed, or
+   * `InvalidArgument` when `messageId` is not in the tree.
    */
   edit(messageId: string, inputs: TInput | TInput[], options?: SendOptions): Promise<ClientRun<TMessage>>;
 }

@@ -20,7 +20,7 @@ import {
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
-import { mergeHeaders } from '../../utils.js';
+import { errorCause, mergeHeaders } from '../../utils.js';
 import type { ChannelWriter, EncoderOptions, Extras, MessagePayload, StreamPayload, WriteOptions } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -71,33 +71,43 @@ interface PendingAppend {
 
 /** The core encoder primitives that domain codec encoders delegate to. */
 export interface EncoderCore {
-  /** Publish a single discrete (non-streaming) message described by a payload. */
+  /**
+   * Publish a single discrete (non-streaming) message described by a payload.
+   * @throws {Ably.ErrorInfo} SessionClosed if the core is closed.
+   */
   publishDiscrete(payload: MessagePayload, opts?: WriteOptions): Promise<Ably.PublishResult>;
 
-  /** Publish multiple discrete messages atomically in a single channel publish. */
+  /**
+   * Publish multiple discrete messages atomically in a single channel publish.
+   * @throws {Ably.ErrorInfo} SessionClosed if the core is closed.
+   */
   publishDiscreteBatch(payloads: MessagePayload[], opts?: WriteOptions): Promise<Ably.PublishResult>;
 
-  /** Start a streamed message with status:streaming. */
+  /**
+   * Start a streamed message with status:streaming.
+   * @throws {Ably.ErrorInfo} SessionClosed if the core is closed; InternalError if the publish succeeds but returns no serial.
+   */
   startStream(streamId: string, payload: StreamPayload, opts?: WriteOptions): Promise<void>;
 
   /**
    * Append data to an in-flight streamed message. Fire-and-forget: errors are
    * collected internally and surfaced by {@link closeStream},
    * {@link cancelAllStreams} or {@link close}.
-   * @throws {Ably.ErrorInfo} InvalidArgument if there is no active stream for `streamId` or the core is closed.
+   * @throws {Ably.ErrorInfo} InvalidArgument if there is no active stream for `streamId`; SessionClosed if the core is closed.
    */
   appendStream(streamId: string, data: string): void;
 
   /**
    * Close a streamed message with status:complete. Flushes all pending
    * appends for recovery before returning. Repeats persistent and payload headers.
-   * @throws {Ably.ErrorInfo} InvalidArgument if there is no active stream for `streamId`, or the encoder has been closed; EncoderRecoveryFailed if a failed append cannot be recovered during the flush.
+   * @throws {Ably.ErrorInfo} InvalidArgument if there is no active stream for `streamId`; SessionClosed if the encoder has been closed; EncoderRecoveryFailed if a failed append cannot be recovered during the flush.
    */
   closeStream(streamId: string, payload: StreamPayload): Promise<void>;
 
   /**
    * Cancel all in-progress streams (status:cancelled) and flush all
    * pending appends for recovery before returning.
+   * @throws {Ably.ErrorInfo} SessionClosed if the core is closed; EncoderRecoveryFailed if a failed append cannot be recovered during the flush.
    */
   cancelAllStreams(opts?: WriteOptions): Promise<void>;
 
@@ -172,8 +182,8 @@ class DefaultEncoderCore implements EncoderCore {
     if (!serial) {
       throw new Ably.ErrorInfo(
         `unable to start stream; no serial returned for stream '${payload.name}' (streamId: ${streamId})`,
-        ErrorCode.BadRequest,
-        400,
+        ErrorCode.InternalError,
+        500,
       );
     }
 
@@ -362,6 +372,7 @@ class DefaultEncoderCore implements EncoderCore {
         `unable to flush pending appends; recovery failed for stream(s): ${ids}`,
         ErrorCode.EncoderRecoveryFailed,
         500,
+        errorCause(recoveryErrors[0]?.error),
       );
     }
   }
@@ -394,7 +405,7 @@ class DefaultEncoderCore implements EncoderCore {
 
   private _assertNotClosed(): void {
     if (this._closed) {
-      throw new Ably.ErrorInfo('unable to write to encoder; encoder has been closed', ErrorCode.InvalidArgument, 400);
+      throw new Ably.ErrorInfo('unable to write to encoder; encoder has been closed', ErrorCode.SessionClosed, 400);
     }
   }
 

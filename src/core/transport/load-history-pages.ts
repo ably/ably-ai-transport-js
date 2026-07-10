@@ -14,7 +14,7 @@
  *  - Per-page failures are retried with bounded exponential backoff; on
  *    exhaustion throws `Ably.ErrorInfo` with code `HistoryFetchFailed`.
  *  - `signal.aborted` is checked between pages; rejects with
- *    `Ably.ErrorInfo` (InvalidArgument) when aborted.
+ *    `Ably.ErrorInfo` (OperationCancelled) when aborted.
  *
  * Spec: AIT-CT11 / AIT-ST hydration.
  */
@@ -31,7 +31,7 @@ export interface LoadHistoryPagesOptions {
   pageLimit: number;
   /** Set `untilAttach: true` on the underlying history query for gapless continuity with live subscriptions. Default: true. */
   untilAttach?: boolean;
-  /** AbortSignal checked between pages. Rejects with InvalidArgument when aborted. */
+  /** AbortSignal checked between pages. Rejects with OperationCancelled when aborted. */
   signal?: AbortSignal;
   /** Max retries per `page.next()` / initial `history()` failure. Default: 3. */
   maxRetries?: number;
@@ -68,7 +68,7 @@ export interface HistoryPagesCursor {
 const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
   new Promise<void>((resolve, reject) => {
     if (signal?.aborted) {
-      reject(new Ably.ErrorInfo('unable to wait; signal aborted', ErrorCode.InvalidArgument, 400));
+      reject(new Ably.ErrorInfo('unable to wait; signal aborted', ErrorCode.OperationCancelled, 400));
       return;
     }
     const timer: ReturnType<typeof setTimeout> | number = setTimeout(() => {
@@ -80,7 +80,7 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
     if (typeof timer === 'object') timer.unref();
     const onAbort = (): void => {
       clearTimeout(timer);
-      reject(new Ably.ErrorInfo('unable to wait; signal aborted', ErrorCode.InvalidArgument, 400));
+      reject(new Ably.ErrorInfo('unable to wait; signal aborted', ErrorCode.OperationCancelled, 400));
     };
     signal?.addEventListener('abort', onAbort, { once: true });
   });
@@ -108,7 +108,7 @@ const fetchPageWithRetry = async (
     if (signal?.aborted) {
       throw new Ably.ErrorInfo(
         'unable to fetch history page; signal aborted',
-        ErrorCode.InvalidArgument,
+        ErrorCode.OperationCancelled,
         400,
         errorCause(lastError),
       );
@@ -149,7 +149,7 @@ const fetchPageWithRetry = async (
  * @param channel - The Ably channel to read history from.
  * @param options - Pagination options.
  * @returns A cursor with `hasNext()` (cheap, cursor-only) and `next()` (fetches one page with retry).
- * @throws {Ably.ErrorInfo} `HistoryFetchFailed` on exhausted retry of the initial fetch, or `InvalidArgument` on signal abort.
+ * @throws {Ably.ErrorInfo} `HistoryFetchFailed` on exhausted retry of the initial fetch, or `OperationCancelled` on signal abort.
  */
 export const loadHistoryPages = async (
   channel: Ably.RealtimeChannel,
@@ -158,7 +158,7 @@ export const loadHistoryPages = async (
   const { pageLimit, untilAttach = true, signal, maxRetries = 3, retryBackoffMs = 100, logger } = options;
 
   if (signal?.aborted) {
-    throw new Ably.ErrorInfo('unable to load history; signal aborted', ErrorCode.InvalidArgument, 400);
+    throw new Ably.ErrorInfo('unable to load history; signal aborted', ErrorCode.OperationCancelled, 400);
   }
 
   await channel.attach();
@@ -188,7 +188,7 @@ export const loadHistoryPages = async (
   const next = async (): Promise<readonly Ably.InboundMessage[] | undefined> => {
     if (currentPage === undefined) return undefined;
     if (signal?.aborted) {
-      throw new Ably.ErrorInfo('unable to load history; signal aborted', ErrorCode.InvalidArgument, 400);
+      throw new Ably.ErrorInfo('unable to load history; signal aborted', ErrorCode.OperationCancelled, 400);
     }
 
     if (!firstYielded) {

@@ -23,34 +23,36 @@ function phaseColor(phase: ActivityEvent['phase']): string {
   return phase === 'running' ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500';
 }
 
+// Emerald / amber / red carry the run-status semantics (done, in-flight,
+// failed); only the neutral fallback maps to a shadcn token.
 function statusColor(status: string | undefined): string {
   if (status === 'completed') return 'bg-emerald-950 text-emerald-400';
   if (status === 'running' || status === 'pending') return 'bg-amber-950 text-amber-400';
   if (status === 'failed' || status === 'cancelled') return 'bg-red-950 text-red-400';
-  return 'bg-zinc-800 text-zinc-500';
+  return 'bg-muted text-muted-foreground';
 }
 
 function ActivityRow({ event, died }: { event: ActivityEvent; died: boolean }) {
   return (
     <div
-      className="flex items-center gap-2 rounded bg-zinc-900/60 px-2 py-1 text-[11px]"
+      className="flex items-center gap-2 rounded bg-muted px-2 py-1 text-[11px]"
       title={died ? 'this attempt died mid-activity; WDK retried it as a fresh process' : undefined}
     >
       <span className={`h-2 w-2 shrink-0 rounded-full ${died ? 'bg-red-500' : phaseColor(event.phase)}`} />
-      <span className="w-16 shrink-0 font-medium text-zinc-300">{KIND_LABEL[event.kind]}</span>
+      <span className="w-16 shrink-0 font-medium text-foreground">{KIND_LABEL[event.kind]}</span>
       {died && <span className="shrink-0 rounded bg-red-950 px-1 text-[10px] text-red-400">died</span>}
       {event.attempt > 1 && (
         <span className="shrink-0 rounded bg-amber-950 px-1 text-[10px] text-amber-400">attempt {event.attempt}</span>
       )}
       <span
-        className="truncate font-mono text-zinc-500"
+        className="truncate font-mono text-muted-foreground"
         title={event.wdkStepId}
       >
         step {shortId(event.wdkStepId)}
       </span>
       {event.aitRunId && (
         <span
-          className="ml-auto shrink-0 font-mono text-[10px] text-zinc-600"
+          className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground"
           title={`AIT run ${event.aitRunId}`}
         >
           run {shortId(event.aitRunId)}
@@ -122,14 +124,16 @@ function WdkProcessPanelInner({ channelName }: { channelName: string }) {
   }, [idsKey]);
 
   return (
-    <aside className="flex w-80 flex-shrink-0 flex-col border-l border-zinc-800 bg-zinc-950">
-      <div className="border-b border-zinc-800 px-3 py-3">
-        <div className="text-sm font-medium text-zinc-300">WDK processes</div>
-        <div className="mt-0.5 text-[11px] text-zinc-600">Workflows &amp; activities, correlated to AIT run ids</div>
+    <aside className="flex w-80 flex-shrink-0 flex-col border-l border-border bg-background">
+      <div className="border-b border-border px-3 py-3">
+        <div className="text-sm font-medium text-foreground">WDK processes</div>
+        <div className="mt-0.5 text-[11px] text-muted-foreground">
+          Workflows &amp; activities, correlated to AIT run ids
+        </div>
       </div>
       <div className="flex-1 space-y-3 overflow-y-auto p-3">
         {workflowIds.length === 0 && (
-          <div className="text-[11px] text-zinc-600">
+          <div className="text-[11px] text-muted-foreground">
             Send a message — each turn runs as a workflow whose activities appear here.
           </div>
         )}
@@ -146,11 +150,11 @@ function WdkProcessPanelInner({ channelName }: { channelName: string }) {
           return (
             <div
               key={workflowRunId}
-              className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-2"
+              className="rounded-lg border border-border bg-card p-2"
             >
               <div className="mb-1.5 flex items-center gap-2">
                 <span
-                  className="font-mono text-[11px] text-zinc-400"
+                  className="font-mono text-[11px] text-muted-foreground"
                   title={workflowRunId}
                 >
                   wf {shortId(workflowRunId)}
@@ -174,8 +178,8 @@ function WdkProcessPanelInner({ channelName }: { channelName: string }) {
           );
         })}
       </div>
-      <div className="border-t border-zinc-800 px-3 py-2 text-[10px] leading-tight text-zinc-600">
-        Dots &amp; rows are demo instrumentation; the <span className="text-zinc-500">WDK</span> status is polled from
+      <div className="border-t border-border px-3 py-2 text-[10px] leading-tight text-muted-foreground">
+        Dots &amp; rows are demo instrumentation; the <span className="text-foreground">WDK</span> status is polled from
         the real Workflow observability API.
       </div>
     </aside>

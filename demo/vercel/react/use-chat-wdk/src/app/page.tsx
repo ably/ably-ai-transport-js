@@ -4,10 +4,9 @@ import { ChatTransportProvider } from '@ably/ai-transport/vercel/react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 
+import { Providers, useAblyReady, generateChannelSlug, generateClientName } from '@ably-ai-demos/frontend';
 import { Chat } from './chat';
-import { generateChannelSlug, generateClientName } from './lib/channel-name';
 import type { FaultMode } from './lib/fault';
-import { Providers, useAblyReady } from './providers';
 
 const CHANNEL_NAMESPACE = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ai:';
 
@@ -34,7 +33,7 @@ function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; 
   );
 
   if (!ready) {
-    return <div className="flex h-dvh items-center justify-center text-sm text-zinc-600">Connecting...</div>;
+    return <div className="flex h-dvh items-center justify-center text-sm text-muted-foreground">Connecting...</div>;
   }
 
   return (

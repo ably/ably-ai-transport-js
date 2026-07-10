@@ -6,6 +6,7 @@ const repoRoot = path.resolve(__dirname, '..', '..', '..', '..');
 
 const nextConfig: NextConfig = {
   serverExternalPackages: ['jsonwebtoken', 'ably'],
+  transpilePackages: ['@ably-ai-demos/frontend'],
   // Next allows one dev server per dist dir. The e2e suite points this at its
   // own directory (see playwright.config.ts) so its server can run alongside a
   // developer's `pnpm dev`.

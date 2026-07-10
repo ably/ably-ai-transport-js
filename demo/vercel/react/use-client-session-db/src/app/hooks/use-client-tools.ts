@@ -30,8 +30,7 @@ import { getToolName, isToolUIPart, type DynamicToolUIPart, type ToolUIPart, typ
 import type { ClientView } from '@ably/ai-transport';
 import { createUIMessageCodec, type VercelInput } from '@ably/ai-transport/vercel';
 
-import { wakeAgent } from '../helpers';
-import type { ClientToolLogEntry } from '../components/debug-pane';
+import { wakeAgent, type ClientToolLogEntry } from '@ably-ai-demos/frontend';
 
 const uiMessageCodec = createUIMessageCodec();
 

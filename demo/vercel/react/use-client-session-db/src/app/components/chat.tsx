@@ -5,23 +5,54 @@ import type { ClientRun, RunStatus } from '@ably/ai-transport';
 import { isToolUIPart, type UIMessage } from 'ai';
 import { createUIMessageCodec, type VercelInput } from '@ably/ai-transport/vercel';
 import { useMessagesWithSeed } from '@ably/ai-transport/vercel/react';
-import { ArrowUpIcon, ExternalLinkIcon, SquareIcon } from 'lucide-react';
+import {
+  ChatShell,
+  LinearMessageList,
+  DebugPane,
+  useDemoProgress,
+  COMMON_SCENARIOS,
+  SessionHooks,
+  userMessage,
+  wakeAgent,
+  type MessageStatus,
+  type Scenario,
+  type DemoStepId,
+  type CallbackLogEntry,
+  type ClientToolLogEntry,
+} from '@ably-ai-demos/frontend';
 
-import { Button } from '@/components/ui/button';
-import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from '@/components/ui/input-group';
-import { userMessage, wakeAgent } from '../helpers';
 import { useClientTools } from '../hooks/use-client-tools';
-import { useDemoProgress } from '../hooks/use-demo-progress';
-import { MessageList, type BubbleStatus } from './message-list';
-import { SuggestionChips } from './suggestion-chips';
-import type { CallbackLogEntry, ClientToolLogEntry } from './debug-pane';
-import { DebugPane } from './debug-pane';
-import { SessionHooks } from '../providers';
-import { clientColor } from '../lib/client-color';
-import { AvatarStack } from './avatar-stack';
 
 const { useClientSession, useAblyMessages } = SessionHooks;
 const uiMessageCodec = createUIMessageCodec();
+
+// The scenarios this linear database-hydration demo can drive. The three tool
+// scenarios plus multi-tab and cancel are shared, authored once in
+// COMMON_SCENARIOS; database hydration is unique to this demo. Branching (edit /
+// regenerate) and the LiveObjects checklist are omitted — this demo is linear
+// and has no checklist.
+function pickCommon(ids: readonly DemoStepId[]): Scenario[] {
+  return ids.flatMap((id) => COMMON_SCENARIOS.filter((scenario) => scenario.id === id));
+}
+
+// Intro-only gesture (no `id`): a reload can't be detected from the conversation,
+// so it is never offered as a chip or tracked — it only appears in the intro.
+const DB_HYDRATION: Scenario = {
+  tag: 'Database hydration',
+  title: 'Database hydration',
+  gesture: 'send a few turns, then reload the page',
+  blurb:
+    'The agent persists each completed run to the store. On reload the demo seeds from the database and reconciles it ' +
+    'with the live channel at the seam, so the conversation comes back exactly once — no duplicates, no gaps.',
+};
+
+const SCENARIOS: readonly Scenario[] = [
+  ...pickCommon(['server-weather', 'client-weather', 'approval-forecast']),
+  DB_HYDRATION,
+  ...pickCommon(['multi-tab', 'cancel']),
+  // The observability walkthrough entry (no `id`) — intro-only.
+  ...COMMON_SCENARIOS.filter((scenario) => scenario.id === undefined),
+];
 
 /** Props for {@link Chat}. */
 interface ChatProps {
@@ -37,7 +68,7 @@ interface ChatProps {
 
 // Translate a run's literal lifecycle status to the bubble's rendering
 // vocabulary (`'active'` → `'streaming'`).
-function bubbleStatus(status: RunStatus | undefined): BubbleStatus | undefined {
+function bubbleStatus(status: RunStatus | undefined): MessageStatus | undefined {
   if (status === 'active') return 'streaming';
   return status;
 }
@@ -208,11 +239,13 @@ export function Chat({ chatId, clientId, seed, api }: ChatProps) {
   // each message's own domain id (this demo has no separate codec id to show).
   const codecMessages = useMemo(() => messages.map((message) => ({ codecMessageId: message.id, message })), [messages]);
 
-  // Read the visible runs for demo-progress derivation. view.runs() returns the
-  // current run set, so reading it each render keeps demo-progress in step with
-  // run starts/ends (the run-state effect above re-renders on every change).
-  const runs = view.runs();
-  const unfinishedSteps = useDemoProgress(messages, runs);
+  // Derive the still-unfinished scenarios from the conversation tree — the
+  // View's CodecMessage list (codec-message-ids), its branch/run lookups, and
+  // the raw channel messages (for the cancel signal). Stable across renders so
+  // the demo-progress memo does not thrash.
+  const branchSelection = useCallback((codecMessageId: string) => view.branchSelection(codecMessageId), [view]);
+  const runOf = useCallback((codecMessageId: string) => view.runOf(codecMessageId), [view]);
+  const unfinishedScenarios = useDemoProgress(SCENARIOS, view.getMessages(), branchSelection, runOf, ablyMessages);
 
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -281,7 +314,7 @@ export function Chat({ chatId, clientId, seed, api }: ChatProps) {
   // The last assistant message reflects the latest run's live state; earlier
   // assistant messages are from terminal runs and are complete.
   const statusOf = useCallback(
-    (message: UIMessage, index: number): BubbleStatus | undefined => {
+    (message: UIMessage, index: number): MessageStatus | undefined => {
       if (message.role !== 'assistant') return undefined;
       if (index === messages.length - 1) return bubbleStatus(latestRun?.status) ?? 'complete';
       return 'complete';
@@ -399,207 +432,45 @@ export function Chat({ chatId, clientId, seed, api }: ChatProps) {
   );
 
   return (
-    // The app is a fixed full-viewport shell: clamp any stray overflow so the
-    // page itself never grows scrollbars, and let the main column shrink below
-    // its content's intrinsic width.
-    <div className="flex h-dvh overflow-hidden">
-      <div className="flex min-w-0 flex-1 flex-col">
-        <Header
-          clientId={clientId}
-          channelName={chatId}
-        />
-        <MessageList
+    <ChatShell
+      title="Ably AI — ClientSession (DB hydration)"
+      channelName={chatId}
+      clientId={clientId}
+      input={input}
+      onInputChange={setInput}
+      inputRef={inputRef}
+      onSend={handleSend}
+      onStop={() => {
+        if (!latestRun) return;
+        // Stop only shows for an ACTIVE run, so a live agent is attached:
+        // publishing the cancel signal makes it abort and publish run-end,
+        // which flips the run to a terminal status and reverts Stop to Send.
+        void session.cancel(latestRun.runId);
+      }}
+      isRunning={isRunInProgress}
+      suggestions={unfinishedScenarios}
+      onSelectPrompt={handleSelectPrompt}
+      transcript={
+        <LinearMessageList
           messages={messages}
           statusOf={statusOf}
-          onToolApprove={handleToolApprove}
-          onToolDeny={handleToolDeny}
+          onToolApprove={(toolPart) => handleToolApprove(toolPart.toolCallId)}
+          onToolDeny={(toolPart) => handleToolDeny(toolPart.toolCallId)}
           scrollToEndRef={scrollToEndRef}
+          scenarios={SCENARIOS}
         />
-        <div className="border-t border-border">
-          <SuggestionChips
-            steps={unfinishedSteps}
-            onSelectPrompt={handleSelectPrompt}
-          />
-          <InputBar
-            value={input}
-            onChange={setInput}
-            inputRef={inputRef}
-            onSend={handleSend}
-            onStop={() => {
-              if (!latestRun) return;
-              // Stop only shows for an ACTIVE run, so a live agent is attached:
-              // publishing the cancel signal makes it abort and publish run-end,
-              // which flips the run to a terminal status and reverts Stop to Send.
-              void session.cancel(latestRun.runId);
-            }}
-            streaming={isRunInProgress}
-          />
-        </div>
-      </div>
-      <DebugPane
-        messages={codecMessages}
-        ablyMessages={ablyMessages}
-        status={status}
-        callbackLog={callbackLog}
-        statusLog={statusLog}
-        clientToolLog={clientToolLog}
-        onClearLogs={clearLogs}
-      />
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Header
-// ---------------------------------------------------------------------------
-
-function Header({ clientId, channelName }: { clientId?: string; channelName: string }) {
-  return (
-    <header className="flex h-16 flex-shrink-0 items-center gap-3 border-b border-border px-4">
-      <div className="flex flex-col gap-1.5">
-        <div className="flex items-center gap-2">
-          {/* Liveness indicator — no semantic "online" token exists, so a
-              fixed status colour is intentional here. */}
-          <div className="size-2 rounded-full bg-emerald-500" />
-          <h1 className="text-sm font-medium text-foreground">Ably AI — ClientSession (DB hydration)</h1>
-        </div>
-        <div className="flex items-center gap-2 pl-4">
-          <Button
-            asChild
-            variant="outline"
-            size="xs"
-            className="rounded-full"
-          >
-            <a
-              href="https://github.com/ably/ably-ai-transport-js"
-              target="_blank"
-              rel="noreferrer"
-            >
-              SDK repo
-              <ExternalLinkIcon data-icon="inline-end" />
-            </a>
-          </Button>
-          <Button
-            asChild
-            variant="outline"
-            size="xs"
-            className="rounded-full"
-          >
-            <a
-              href="https://ably.com/docs/ai-transport"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Ably docs
-              <ExternalLinkIcon data-icon="inline-end" />
-            </a>
-          </Button>
-        </div>
-      </div>
-      <div className="ml-auto flex items-center gap-3">
-        <AvatarStack
-          channelName={channelName}
-          selfClientId={clientId}
+      }
+      debugPane={
+        <DebugPane
+          messages={codecMessages}
+          ablyMessages={ablyMessages}
+          status={status}
+          callbackLog={callbackLog}
+          statusLog={statusLog}
+          clientToolLog={clientToolLog}
+          onClearLogs={clearLogs}
         />
-        <Button
-          type="button"
-          variant="outline"
-          size="xs"
-          onClick={() => {
-            const url = new URL(window.location.href);
-            url.searchParams.delete('clientId');
-            window.open(url.toString(), '_blank');
-          }}
-          title="Open this channel in a new tab as a fresh client"
-        >
-          open in new tab
-        </Button>
-        {clientId && <span className={`font-mono text-xs ${clientColor(clientId).text}`}>{clientId}</span>}
-      </div>
-    </header>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Input bar — single Stop button when streaming, Send button otherwise
-// ---------------------------------------------------------------------------
-
-function InputBar({
-  value,
-  onChange,
-  inputRef,
-  onSend,
-  onStop,
-  streaming,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  inputRef?: React.RefObject<HTMLTextAreaElement | null>;
-  onSend: (text: string) => void;
-  onStop: () => void;
-  streaming: boolean;
-}) {
-  const submit = () => {
-    const text = value.trim();
-    if (!text) return;
-    onChange('');
-    onSend(text);
-  };
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    submit();
-  };
-
-  return (
-    <form
-      onSubmit={handleSubmit}
-      className="px-4 py-3"
-    >
-      <InputGroup>
-        <InputGroupTextarea
-          ref={inputRef}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder="Type a message... — or /steer <text> to steer the active run"
-          autoFocus
-          rows={1}
-          className="min-h-0"
-          // Enter sends; Shift+Enter inserts a newline (standard composer UX).
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              submit();
-            }
-          }}
-        />
-        <InputGroupAddon align="inline-end">
-          {streaming ? (
-            <InputGroupButton
-              type="button"
-              data-testid="stop"
-              variant="destructive"
-              size="icon-sm"
-              className="rounded-full"
-              aria-label="Stop"
-              onClick={onStop}
-            >
-              <SquareIcon className="fill-current" />
-            </InputGroupButton>
-          ) : (
-            <InputGroupButton
-              type="submit"
-              variant="default"
-              size="icon-sm"
-              className="rounded-full"
-              aria-label="Send"
-              disabled={!value.trim()}
-            >
-              <ArrowUpIcon />
-            </InputGroupButton>
-          )}
-        </InputGroupAddon>
-      </InputGroup>
-    </form>
+      }
+    />
   );
 }

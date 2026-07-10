@@ -1,76 +1,33 @@
 /**
- * useDemoProgress - derives which intro-card demo steps are still unfinished
- * from the linear conversation, so suggestion chips stay in sync across clients
- * via the channel-backed history.
+ * useDemoProgress — given this demo's scenario list, derives which scenarios are
+ * still unfinished from the linear conversation, so the suggestion chips stay in
+ * sync across clients via the channel-backed history.
  *
- * Steps detected from the messages:
- * - server-weather: a turn called getWeather without preceding getLocation
+ * Completion is detected by scenario id from a plain `useChat` message list:
+ * - server-weather: a turn called getWeather without a preceding getLocation
  * - client-weather: a turn called getLocation
  * - approval-forecast: a turn produced a getWeatherForecast output (approved)
- * - cancel: a cancel event appears in the raw Ably messages
+ * - cancel: an ai-cancel event appears in the raw Ably messages
  *
  * This demo renders a linear `useChat` message list (no branch navigation), so
  * there is no per-message Run/branch metadata; the multi-tab, edit, and
- * regenerate steps the branching `use-chat` demo tracks do not apply here.
- * Steps from the intro card that are NOT tracked here: open Debug pane (local UI
- * state only).
+ * regenerate scenarios the branching `use-chat` demo tracks do not apply here,
+ * and the shared view-based `useDemoProgress` (which reads branch/run lookups)
+ * cannot be used. Intro-only scenarios (no `id`, e.g. Observability) are shown
+ * in the intro card but never offered as a chip or tracked.
  */
 
 import { useMemo } from 'react';
 import type * as Ably from 'ably';
 import { getToolName, isToolUIPart, type UIMessage } from 'ai';
 import { EVENT_CANCEL } from '@ably/ai-transport';
+import type { DemoStepId, Scenario } from '@ably-ai-demos/frontend';
 
-export type DemoStepId = 'server-weather' | 'client-weather' | 'approval-forecast' | 'cancel';
-
-export interface PromptDemoStep {
-  id: DemoStepId;
-  type: 'prompt';
-  tag: string;
-  label: string;
-  prompt: string;
-}
-
-export interface GestureDemoStep {
-  id: DemoStepId;
-  type: 'gesture';
-  tag: string;
-  label: string;
-}
-
-export type DemoStep = PromptDemoStep | GestureDemoStep;
-
-const ALL_STEPS: DemoStep[] = [
-  {
-    id: 'server-weather',
-    type: 'prompt',
-    tag: 'Server tool',
-    label: `"what's the weather in Tokyo?"`,
-    prompt: `what's the weather in Tokyo?`,
-  },
-  {
-    id: 'client-weather',
-    type: 'prompt',
-    tag: 'Client tool',
-    label: `"what's the weather like?"`,
-    prompt: `what's the weather like?`,
-  },
-  {
-    id: 'approval-forecast',
-    type: 'prompt',
-    tag: 'Approval-gated tool',
-    label: `"what's the weather forecast for London?"`,
-    prompt: `what's the weather forecast for London?`,
-  },
-  {
-    id: 'cancel',
-    type: 'gesture',
-    tag: 'Cancel mid-stream',
-    label: 'send a long prompt, click Stop while it streams',
-  },
-];
-
-export function useDemoProgress(messages: UIMessage[], ablyMessages: Ably.InboundMessage[]): DemoStep[] {
+export function useDemoProgress(
+  scenarios: readonly Scenario[],
+  messages: UIMessage[],
+  ablyMessages: Ably.InboundMessage[],
+): Scenario[] {
   return useMemo(() => {
     const completed = new Set<DemoStepId>();
 
@@ -106,6 +63,6 @@ export function useDemoProgress(messages: UIMessage[], ablyMessages: Ably.Inboun
       }
     }
 
-    return ALL_STEPS.filter((s) => !completed.has(s.id));
-  }, [messages, ablyMessages]);
+    return scenarios.filter((s) => s.id !== undefined && !completed.has(s.id));
+  }, [scenarios, messages, ablyMessages]);
 }

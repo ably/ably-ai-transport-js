@@ -122,7 +122,8 @@ describe('<Chat>', () => {
 
     await waitFor(() => expect(mockConnect).toHaveBeenCalled());
 
-    const items = screen.getAllByTestId('message');
+    // The shell renders only once connect() resolves and the channel attaches.
+    const items = await screen.findAllByTestId('message');
     expect(items.map((el) => el.getAttribute('data-id'))).toEqual(['u1', 'a1']);
     expect(screen.getByText('hi')).toBeTruthy();
     expect(screen.getByText('hello')).toBeTruthy();
@@ -146,7 +147,7 @@ describe('<Chat>', () => {
     await waitFor(() => expect(mockSendMessage).toHaveBeenCalledWith({ text: 'new turn' }));
   });
 
-  it('marks the last assistant response streaming and earlier ones completed', () => {
+  it('marks the last assistant response streaming and earlier ones completed', async () => {
     mockStatus = 'streaming';
     mockMessages = [
       userMsg('u1', 'hi'),
@@ -161,10 +162,11 @@ describe('<Chat>', () => {
       />,
     );
 
-    const states = screen.getAllByTestId('message').map((el) => el.getAttribute('data-state'));
-    // user messages carry no state; the earlier assistant is completed, the
+    const items = await screen.findAllByTestId('message');
+    const states = items.map((el) => el.getAttribute('data-state'));
+    // user messages carry no state; the earlier assistant is complete, the
     // last (in-flight) assistant is streaming.
-    expect(states).toEqual([null, 'completed', null, 'streaming']);
+    expect(states).toEqual([null, 'complete', null, 'streaming']);
   });
 
   it('shows Stop while streaming and calls stop() on click', async () => {
@@ -177,7 +179,7 @@ describe('<Chat>', () => {
       />,
     );
 
-    const stopButton = await screen.findByTestId('stop');
+    const stopButton = await screen.findByRole('button', { name: 'Stop' });
     fireEvent.click(stopButton);
     expect(mockStop).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('button', { name: 'Send' })).toBeNull();

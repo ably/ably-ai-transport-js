@@ -22,7 +22,7 @@
 
 import { useEffect, useRef } from 'react';
 import { getToolName, isToolUIPart, type ChatAddToolOutputFunction, type UIMessage } from 'ai';
-import type { ClientToolLogEntry } from '../components/debug-pane';
+import type { ClientToolLogEntry } from '@ably-ai-demos/frontend';
 
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
 

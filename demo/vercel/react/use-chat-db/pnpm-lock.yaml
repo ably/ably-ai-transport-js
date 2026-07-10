@@ -207,6 +207,9 @@ importers:
 
   .:
     dependencies:
+      '@ably-ai-demos/frontend':
+        specifier: file:../../../shared-frontend
+        version: file:../../../shared-frontend(@ably/ai-transport@+)(ably@2.23.0(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(ai@6.0.185(zod@4.4.3))(radix-ui@1.6.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@ably/ai-transport':
         specifier: link:../../../..
         version: link:../../../..
@@ -219,27 +222,15 @@ importers:
       '@ai-sdk/react':
         specifier: ^3.0.161
         version: 3.0.187(react@19.2.6)(zod@4.4.3)
-      '@shadcn/react':
-        specifier: ^0.2.0
-        version: 0.2.0(@types/react@19.2.14)(react@19.2.6)
       ably:
         specifier: ^2.23.0
         version: 2.23.0(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       ai:
         specifier: ^6
         version: 6.0.185(zod@4.4.3)
-      class-variance-authority:
-        specifier: ^0.7.1
-        version: 0.7.1
-      clsx:
-        specifier: ^2.1.1
-        version: 2.1.1
       jsonwebtoken:
         specifier: ^9
         version: 9.0.3
-      lucide-react:
-        specifier: ^1.21.0
-        version: 1.21.0(react@19.2.6)
       next:
         specifier: ^16
         version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
@@ -258,15 +249,15 @@ importers:
       streamdown:
         specifier: ^2.5.0
         version: 2.5.0(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
-      tailwind-merge:
-        specifier: ^3.6.0
-        version: 3.6.0
       tw-animate-css:
         specifier: ^1.4.0
         version: 1.4.0
       zod:
         specifier: ^4
         version: 4.4.3
+    dependenciesMeta:
+      '@ably-ai-demos/frontend':
+        injected: true
     devDependencies:
       '@playwright/test':
         specifier: 1.60.0
@@ -309,6 +300,16 @@ importers:
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@25.9.0)(jsdom@26.1.0)(vite@8.0.13(@types/node@25.9.0)(jiti@2.7.0))
 
 packages:
+
+  '@ably-ai-demos/frontend@file:../../../shared-frontend':
+    resolution: {directory: ../../../shared-frontend, type: directory}
+    peerDependencies:
+      '@ably/ai-transport': '*'
+      ably: ^2
+      ai: ^6
+      radix-ui: ^1.6.0
+      react: ^18.0.0 || ^19.0.0
+      react-dom: ^18.0.0 || ^19.0.0
 
   '@ably/msgpack-js@0.4.1':
     resolution: {integrity: sha512-Sjxj6SOr17hExAVrsycN7u6oV4PhZcK7Z2S8dM71CH/butgO47cSo/TL6FJPCXUyDAzKkOWjMUpJGyZkEpyu4Q==}
@@ -1743,17 +1744,6 @@ packages:
 
   '@sec-ant/readable-stream@0.4.1':
     resolution: {integrity: sha512-831qok9r2t8AlxLko40y2ebgSDhenenCatLVeW/uBtnHPyhHOvG0C7TvfgecV+wHzIm5KUICgzmVpWS+IMEAeg==}
-
-  '@shadcn/react@0.2.0':
-    resolution: {integrity: sha512-g/LMtyL0eiHCHkOCelhYf32RC5nTMdtUNag1ZQRhSDCW+jnHxDY1Dajk7P6zJosOg8z2N4wzfKOY5sh54QTDYA==}
-    peerDependencies:
-      '@types/react': '>=19'
-      react: '>=19'
-    peerDependenciesMeta:
-      '@types/react':
-        optional: true
-      react:
-        optional: true
 
   '@sindresorhus/is@4.6.0':
     resolution: {integrity: sha512-t09vSN3MdfsyCHoFcTRCH/iUtG7OJ0CsjzB8cjAmKc/va/kIgeDI/TxsigdncE/4be734m0cvIYwNaV4i2XqAw==}
@@ -5395,6 +5385,22 @@ packages:
 
 snapshots:
 
+  '@ably-ai-demos/frontend@file:../../../shared-frontend(@ably/ai-transport@+)(ably@2.23.0(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(ai@6.0.185(zod@4.4.3))(radix-ui@1.6.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)':
+    dependencies:
+      '@ably/ai-transport': link:../../../..
+      ably: 2.23.0(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      ai: 6.0.185(zod@4.4.3)
+      class-variance-authority: 0.7.1
+      clsx: 2.1.1
+      lucide-react: 1.21.0(react@19.2.6)
+      radix-ui: 1.6.0(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      react: 19.2.6
+      react-dom: 19.2.6(react@19.2.6)
+      streamdown: 2.5.0(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      tailwind-merge: 3.6.0
+    transitivePeerDependencies:
+      - supports-color
+
   '@ably/msgpack-js@0.4.1':
     dependencies:
       bops: 1.0.1
@@ -6859,11 +6865,6 @@ snapshots:
 
   '@sec-ant/readable-stream@0.4.1': {}
 
-  '@shadcn/react@0.2.0(@types/react@19.2.14)(react@19.2.6)':
-    optionalDependencies:
-      '@types/react': 19.2.14
-      react: 19.2.6
-
   '@sindresorhus/is@4.6.0': {}
 
   '@sindresorhus/merge-streams@4.0.0': {}
@@ -6949,7 +6950,7 @@ snapshots:
 
   '@testing-library/dom@10.4.1':
     dependencies:
-      '@babel/code-frame': 7.29.0
+      '@babel/code-frame': 7.29.7
       '@babel/runtime': 7.29.2
       '@types/aria-query': 5.0.4
       aria-query: 5.3.0

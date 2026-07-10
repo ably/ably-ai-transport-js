@@ -3,10 +3,9 @@
 import { ChatTransportProvider } from '@ably/ai-transport/vercel/react';
 import type { UIMessage } from 'ai';
 import { Chat } from './components/chat';
-import { Providers, useAblyReady } from './providers';
+import { Providers, useAblyReady, generateChannelSlug, generateClientName } from '@ably-ai-demos/frontend';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
-import { generateChannelSlug, generateClientName } from './lib/channel-name';
 
 const CHANNEL_NAMESPACE = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ai:';
 

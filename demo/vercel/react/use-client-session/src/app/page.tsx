@@ -5,10 +5,10 @@ import {
   useAblyReady,
   SessionHooks,
   Chat,
-  COMMON_DEMO_STEPS,
+  COMMON_SCENARIOS,
   generateChannelSlug,
   generateClientName,
-  type DemoStep,
+  type Scenario,
 } from '@ably-ai-demos/frontend';
 import { OBJECT_MODES } from '@ably/ai-transport/react';
 import { createUIMessageCodec } from '@ably/ai-transport/vercel';
@@ -22,23 +22,19 @@ const CHANNEL_NAMESPACE = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ai:
 const uiMessageCodec = createUIMessageCodec();
 
 // Base scenarios plus the LiveObjects checklist entry this demo demonstrates.
-// The base list is shared across demos; the checklist row is specific here.
-const DEMO_STEPS: readonly DemoStep[] = [
-  ...COMMON_DEMO_STEPS.slice(0, 3),
+// The base list is shared across demos; the checklist row is specific here. One
+// scenario feeds both the intro card and the suggestion chip.
+const DEMO_SCENARIOS: readonly Scenario[] = [
+  ...COMMON_SCENARIOS.slice(0, 3),
   {
+    id: 'checklist',
+    tag: 'LiveObjects checklist',
     title: 'LiveObjects checklist',
-    action: (
-      <>
-        Ask:{' '}
-        <span className="font-medium text-zinc-100">
-          &ldquo;write me a short blog post about Ably — outline it, draft it, then tidy it up&rdquo;
-        </span>
-      </>
-    ),
-    demonstrates:
+    prompt: 'write me a short blog post about Ably — outline it, draft it, then tidy it up',
+    blurb:
       'The assistant plans a task checklist in Ably LiveObjects and flips each step to done as it works. The widget below the chat renders the live progress and restores it on reload.',
   },
-  ...COMMON_DEMO_STEPS.slice(3),
+  ...COMMON_SCENARIOS.slice(3),
 ];
 
 function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; clientId?: string; limit?: number }) {
@@ -60,7 +56,7 @@ function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; 
         historyLimit={limit}
         api="api/chat"
         extraSlot={<ChecklistSlot />}
-        demoSteps={DEMO_STEPS}
+        scenarios={DEMO_SCENARIOS}
       />
     </ClientSessionProvider>
   );

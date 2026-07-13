@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)}/.claude/hooks/worktree-setup.sh\" || true",
+            "timeout": 120,
+            "statusMessage": "Bootstrapping worktree…"
+          }
+        ]
+      }
+    ]
+  }
+}

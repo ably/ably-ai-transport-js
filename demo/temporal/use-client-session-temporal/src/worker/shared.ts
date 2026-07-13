@@ -44,11 +44,13 @@ export interface ToolCallInfo {
 /**
  * Outcome the inference activity returns for the workflow to route on.
  *
- * The `kind` values align with the SDK's `RunEndReason` / `Run.suspend`
+ * The terminal `kind` values align with the SDK's `RunEndReason` / `Run.suspend`
  * vocabulary so `_publishTerminal` can pass `kind` straight through:
- * `complete` / `cancelled` / `error` map to `run.end({ reason: kind })`,
- * `suspend` maps to `run.suspend()`, and `server-tools` is the only
- * non-terminal kind — the workflow loops on it.
+ * `complete` / `cancelled` / `error` map to `run.end({ reason: kind })` and
+ * `suspend` maps to `run.suspend()`. `server-tools` is the only non-terminal
+ * kind — the workflow loops on it, running its tool steps then a follow-up
+ * inference. (Client steering is answered inside the inference activity's own
+ * loop, so it is never surfaced to the workflow.)
  *
  * All terminal outcomes have already been published on the wire by the
  * activity's own session before it returned. The workflow just decides

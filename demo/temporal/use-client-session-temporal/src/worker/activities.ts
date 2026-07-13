@@ -58,6 +58,7 @@ import type { InferenceOutcome, RunIds, ToolCallInfo } from './shared.js';
 // Concrete run/session type this file works with — every activity uses the Vercel codec.
 type VercelSession = AgentSession<VercelOutput, VercelProjection, UIMessage>;
 type VercelAgentRun = AgentRun<VercelOutput, VercelProjection, UIMessage>;
+type VercelRunStep = ReturnType<VercelAgentRun['createStep']>;
 
 const logger = makeLogger({
   logLevel: process.env.WORKER_LOG_LEVEL === 'trace' ? LogLevel.Trace : LogLevel.Debug,
@@ -157,8 +158,9 @@ async function _publishRunTerminal(run: VercelAgentRun, outcome: InferenceOutcom
       await run.suspend();
       return;
     case 'server-tools':
-      // server-tools is the only non-terminal outcome — nothing to publish; the
-      // workflow will loop with a follow-up inference.
+      // The only non-terminal outcome — nothing to publish; the workflow loops
+      // with a follow-up inference after its tool steps. (Client steering is
+      // handled inside the inference activity, never surfaced to the workflow.)
       return;
     case 'error':
       // complete / cancelled / error all pass straight through to run.end. The
@@ -176,10 +178,14 @@ async function _publishRunTerminal(run: VercelAgentRun, outcome: InferenceOutcom
 }
 
 // -----------------------------------------------------------------------------
-// runInferenceStep — one LLM inference call, published as one SDK step. Drives
-// every inference in the turn, first and follow-ups alike: it adopts the run
-// openRun (or a prior step) left active, loads it, runs the model, and returns
-// the outcome the workflow routes on. Server tools have their `execute`
+// runInferenceStep — ONE turn's inference, published as exactly one SDK step.
+// Drives every inference in the turn, first and follow-ups alike: it adopts the
+// run openRun (or a prior step) left active, loads it, and runs the model.
+// Client steering (a follow-up user-message folded into the active run while we
+// stream) loops another inference pass into the SAME step inside this activity,
+// rather than round-tripping through the workflow. One step per activity keeps
+// the retry deterministic — a retry re-runs the turn under the same stepId and
+// supersedes its prior attempt's output. Server tools have their `execute`
 // stripped so the AI SDK stops after the call and we drive the tool exec via
 // runToolStep.
 //
@@ -234,28 +240,71 @@ export async function runInferenceStep(input: StepInput): Promise<InferenceOutco
   }
 }
 
-// Shared inference core: create + open a step, streamText+pipe, close the
-// step, classify the outcome. Callers ready the run handle (via createRun or
-// adoptRun) and drain history first — this function reads run.view.
+// One inference turn for the activity, published as a single SDK step. Callers
+// ready the run handle (via createRun or adoptRun) and drain history first — the
+// passes read run.view.
+//
+// The pre-check dispatches a just-approved server tool before any model call.
+// Otherwise this opens ONE step and runs the triggering input's inference pass
+// into it, then loops another inference pass into the SAME step for each
+// steering message a client folded into the run while we streamed: after a
+// `complete` pass, `run.hasInput()` reports (and drains) the pending steering
+// message, and the next pass answers it. Each pass's `step.pipe` stamps the
+// steering message it drained as a consumed `steer-codec-message-ids`, so the
+// client's steering outcome resolves consumed.
+// Non-`complete` outcomes (server-tools / suspend / cancelled / error) end the
+// loop and route the run on their own.
+//
+// The stepId is the activity's canonical (deterministic) id, so a retry re-runs
+// the whole turn under the same id and supersedes its prior attempt's output.
 async function _runInferenceStep(run: VercelAgentRun, stepId: string): Promise<InferenceOutcome> {
   // Pre-check: if this invocation was triggered by a `tool-approval-response`
   // (approved=true), the last assistant's tool part is in
   // `approval-responded` state and the framework owes it an output.
-  // Dispatch it as a server-tools step now, before calling the model — the
-  // LLM would otherwise see an open `tool_use` with no matching `tool_result`
-  // and reject. Only match `approval-responded` here (not `input-available`)
-  // so this branch doesn't race with the post-`streamText` classification
-  // below, which is where a fresh call the model just emitted is handled.
+  // Dispatch it as a server-tools step now, before opening a step or calling
+  // the model — the LLM would otherwise see an open `tool_use` with no matching
+  // `tool_result` and reject. Only match `approval-responded` here (not
+  // `input-available`) so this branch doesn't race with the post-`streamText`
+  // classification below, which is where a fresh call the model just emitted is
+  // handled.
   const approvedServerCalls = _filterServerToolCalls(approvedPendingToolCalls(run.messages));
   if (approvedServerCalls.length > 0) {
     return { kind: 'server-tools', serverToolCalls: approvedServerCalls };
   }
 
-  const activityId = stepId;
-
   const step = run.createStep({ stepId });
   await step.start();
 
+  // Run the triggering input's pass, then loop another pass into this same step
+  // for each steering message that folded in while the previous pass streamed.
+  // hasInput() gates every pass — including the first, so a run cancelled before
+  // any inference skips the loop entirely — and only a `complete` pass can be
+  // steered; the others route the run on their own. `outcome` is unset until the
+  // first pass runs, so the guard reads it null-safely.
+  let outcome: InferenceOutcome | undefined;
+  while ((!outcome || outcome.kind === 'complete') && run.hasInput()) {
+    outcome = await _runInferencePass(run, step);
+  }
+
+  // If the run was already cancelled before the first pass, hasInput() was false
+  // and no pass ran — treat that as a cancellation.
+  const finalOutcome: InferenceOutcome = outcome ?? { kind: 'cancelled' };
+
+  // Close the step with the reason the final pass implies (a piped stream error
+  // already marks it failed; the empty-conversation guard has no pipe, so pass
+  // the reason explicitly).
+  await step.end({
+    reason: finalOutcome.kind === 'error' ? 'failed' : finalOutcome.kind === 'cancelled' ? 'cancelled' : 'complete',
+  });
+
+  console.log('[inference] outcome', { stepId, kind: finalOutcome.kind });
+  return finalOutcome;
+}
+
+// One inference pass into an already-open step: streamText + pipe, then classify
+// the outcome. Server tools have their `execute` stripped so the AI SDK stops
+// after the call and the workflow drives the tool via runToolStep.
+async function _runInferencePass(run: VercelAgentRun, step: VercelRunStep): Promise<InferenceOutcome> {
   const conversation = run.view.getMessages().map((m) => m.message);
   if (conversation.length === 0) {
     // Defensive: guards against a cross-activity tree hydration edge case where
@@ -263,7 +312,6 @@ async function _runInferenceStep(run: VercelAgentRun, stepId: string): Promise<I
     // Treat this as a stop so the workflow ends the run cleanly instead of
     // dying inside streamText with 'messages must not be empty'.
     console.warn('[inference] conversation is empty — ending run to avoid crash');
-    await step.end({ reason: 'failed' });
     return { kind: 'error', errorMessage: 'conversation drain returned no messages' };
   }
 
@@ -273,15 +321,13 @@ async function _runInferenceStep(run: VercelAgentRun, stepId: string): Promise<I
     messages: await convertToModelMessages(conversation),
     tools: stripToolExecutes(tools),
     abortSignal: run.abortSignal,
-    // The workflow drives multi-step: this call must not loop.
+    // The workflow (and the steering loop above) drive multi-step: this call
+    // must not loop.
     stopWhen: stepCountIs(1),
   });
 
   const pipeResult = await step.pipe(result.toUIMessageStream());
   const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
-  await step.end();
-
-  console.log('[inference] outcome', { activityId, reason: outcome.reason });
   if (outcome.reason === 'error') return { kind: 'error', errorMessage: outcome.error.message };
   if (outcome.reason === 'cancelled') return { kind: 'cancelled' };
   if (outcome.reason === 'complete') return { kind: 'complete' };

@@ -24,23 +24,28 @@ let setMockViewMessages: ((messages: AI.UIMessage[]) => void) | null = null;
 // the Stop / Send button state) for the rendered messages. Default: no Run.
 let mockRunOf: (codecMessageId: string) => RunInfo | undefined = () => undefined;
 
-const mockSend = vi.fn((_input: VercelInput | VercelInput[], _opts?: SendOptions): Promise<ClientRun<AI.UIMessage>> =>
-  Promise.resolve({
-    // The triggering input's codec-message-id — the synchronous routing
-    // handle the client owns the moment it publishes.
-    inputCodecMessageId: 'input-1',
-    // The agent mints the run-id now, so `runId` is empty until `started`
-    // resolves (once `ai-run-start` is observed). A fresh send omits run-id
-    // from the invocation pointer, leaving the agent to mint it.
-    runId: '',
-    status: 'active',
-    error: undefined,
-    messages: [],
-    started: Promise.resolve(),
-    inputEventId: 'ev-1',
-    cancel: async () => {},
-    toInvocation: () => Invocation.fromJSON({ inputEventId: 'ev-1', sessionName: 'demo' }),
-  }),
+const mockSend = vi.fn(
+  (_input: VercelInput | VercelInput[], _opts?: SendOptions): Promise<ClientRun<VercelInput, AI.UIMessage>> =>
+    Promise.resolve({
+      // The triggering input's codec-message-id — the synchronous routing
+      // handle the client owns the moment it publishes.
+      inputCodecMessageId: 'input-1',
+      // The agent mints the run-id now, so `runId` is empty until `started`
+      // resolves (once `ai-run-start` is observed). A fresh send omits run-id
+      // from the invocation pointer, leaving the agent to mint it.
+      runId: '',
+      status: 'active',
+      error: undefined,
+      messages: [],
+      started: Promise.resolve(),
+      inputEventId: 'ev-1',
+      cancel: async () => {},
+      steer: () => ({
+        published: Promise.resolve({ serial: undefined }),
+        outcome: Promise.resolve({ consumed: false }),
+      }),
+      toInvocation: () => Invocation.fromJSON({ inputEventId: 'ev-1', sessionName: 'demo' }),
+    }),
 );
 
 const mockSession = {
@@ -148,7 +153,7 @@ describe('<Chat>', () => {
       />,
     );
 
-    const input = screen.getByPlaceholderText('Type a message...');
+    const input = screen.getByPlaceholderText(/Type a message/);
     const form = input.closest('form');
     if (!form) throw new Error('input is not nested in a <form>');
 
@@ -205,7 +210,7 @@ describe('<Chat>', () => {
     // Scope the button assertions to the input bar's <form> so descriptive
     // copy / suggestion chips elsewhere on the page (which also mention "Stop"
     // and "Send") can't satisfy the role query.
-    const inputForm = screen.getByPlaceholderText('Type a message...').closest('form');
+    const inputForm = screen.getByPlaceholderText(/Type a message/).closest('form');
     if (!inputForm) throw new Error('input is not nested in a <form>');
     const inputBar = within(inputForm);
 
@@ -237,7 +242,7 @@ describe('<Chat>', () => {
       setMockViewMessages?.([assistantText('streaming a reply...')]);
     });
 
-    const inputForm = screen.getByPlaceholderText('Type a message...').closest('form');
+    const inputForm = screen.getByPlaceholderText(/Type a message/).closest('form');
     if (!inputForm) throw new Error('input is not nested in a <form>');
     const inputBar = within(inputForm);
 

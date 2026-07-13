@@ -46,6 +46,7 @@ import { createLeafBranchSource } from './leaf-branch-source.js';
 import { createMaterialisation } from './materialisation.js';
 import type { RunManager } from './run-manager.js';
 import { createRunManager } from './run-manager.js';
+import { RunSteerTracker } from './run-steer-tracker.js';
 import { createRunStepWriter, stepEndReasonFor } from './run-step-writer.js';
 import {
   bestEffortDetach,
@@ -66,6 +67,7 @@ import type {
   AgentSessionOptions,
   CancelRequest,
   OpenableRun,
+  OutputEvent,
   RunEndParams,
   RunRuntime,
   RunStatus,
@@ -704,7 +706,7 @@ class DefaultAgentSession<
     // run, or the authoritative `AdoptIdentity.invocationId` for an adopted one.
     const invocationId =
       strategy.open === 'adopt' ? strategy.identity.invocationId : (runtime.invocationId ?? crypto.randomUUID());
-    const { onCancel, onError: runOnError, signal: externalSignal } = runtime;
+    const { onCancel, onError: runOnError, signal: externalSignal, onSteer } = runtime;
 
     // Whether the run is being adopted (vs. created). Identity is authoritative
     // on the adopt path: the trigger's run-id header never re-keys the run (for a
@@ -809,13 +811,58 @@ class DefaultAgentSession<
      * own `parent`.
      */
     let assistantParentFallback: string | undefined;
+
+    // Per-run steer state: which steers have folded into this run's projection
+    // but not yet been drained by hasInput(), and which were drained since the
+    // last step attempt opened (stamped as steer-codec-message-ids). Identity-
+    // based (codec-message-ids), so cross-publisher delivery order is irrelevant.
+    const steerTracker = new RunSteerTracker();
+    // Whether the run has produced any output yet. hasInput() reports the
+    // triggering input as unanswered until the first output, so the agent's
+    // loop always runs at least once; the step writer flips this when a pass
+    // first pipes or sends output (markOutputProduced), not when a step opens —
+    // an explicit step opens before its first pass runs.
+    let hasProducedOutput = false;
+
+    // Watch the Tree for steers folding into this run's projection: a client
+    // published a user-input event tagged with this run's run-id while the run
+    // was active. The Tree emits `output` carrying the fold's decoded `inputs`;
+    // an event for this run with a non-empty `inputs` is a steer (a pure
+    // agent-output fold carries no inputs, and a supersede refold carries
+    // neither inputs nor outputs). Record each by codec-message-id so
+    // hasInput() surfaces it and the next step attempt stamps it, then fire the
+    // onSteer hint once per steering message.
+    const onTreeOutput = (event: OutputEvent<TOutput>): void => {
+      if (event.runId !== runId) return;
+      if (event.inputs.length === 0) return;
+      if (event.codecMessageId !== undefined) steerTracker.addPending(event.codecMessageId);
+      if (!onSteer) return;
+      try {
+        onSteer();
+      } catch (error) {
+        const errInfo = new Ably.ErrorInfo(
+          `unable to notify steer for run ${runId}; onSteer handler threw: ${errorMessage(error)}`,
+          ErrorCode.CancelListenerError,
+          500,
+          errorCause(error),
+        );
+        logger?.error('Run.onSteer(); handler threw', { runId });
+        if (runOnError) runOnError(errInfo);
+        else this._emitter.emit('error', errInfo);
+      }
+    };
+    // Subscribe on the LIVE Tree; a continuity-loss swap replaces the Tree, but
+    // this run's steer tracking is torn down with the run at deregisterRun, and
+    // continuity loss aborts the run's controller anyway (see _onContinuityLost).
+    const unsubscribeTreeOutput = getTree().on('output', onTreeOutput);
+
     /**
      * Remove this run from the session's routing maps and close its `run.view`.
      * Drops the `_registeredRuns` entry plus the `input-codec-message-id → run-id`
      * reverse index (and any stale deferred cancel still buffered for that
-     * input), and tears down `run.view`'s Tree subscriptions so they don't
-     * accumulate across the runs of a long-lived session. Called when the run
-     * ends, suspends, or its start fails.
+     * input), unsubscribes the steer watcher, and tears down `run.view`'s Tree
+     * subscriptions so they don't accumulate across the runs of a long-lived
+     * session. Called when the run ends, suspends, or its start fails.
      */
     const deregisterRun = (): void => {
       registeredRuns.delete(runId);
@@ -823,6 +870,7 @@ class DefaultAgentSession<
         runIdByInputCodecMessageId.delete(resolvedInputCodecMessageId);
         deferredCancels.delete(resolvedInputCodecMessageId);
       }
+      unsubscribeTreeOutput();
       view.close();
     };
 
@@ -1055,6 +1103,14 @@ class DefaultAgentSession<
         inputClientId: resolvedInputClientId,
         inputCodecMessageId: resolvedInputCodecMessageId,
       }),
+      // Steer seams: as each step attempt opens, mark the run as having
+      // produced output (so hasInput() stops reporting the initial-response
+      // pass) and hand the writer the steers drained since the previous attempt
+      // to stamp under steer-codec-message-ids on this attempt's outputs.
+      markOutputProduced: () => {
+        hasProducedOutput = true;
+      },
+      consumeSteerStampIds: () => steerTracker.consumeRecentlyProcessed(),
     });
 
     const run: AgentRun<TOutput, TProjection, TMessage> = {
@@ -1082,6 +1138,21 @@ class DefaultAgentSession<
       },
       get located() {
         return located;
+      },
+
+      hasInput: (): boolean => {
+        // Loop driver: run at least once for the triggering input, then again
+        // for each steer that folded in since the previous pass. A cancel
+        // (aborted signal) stops the loop. Reading pending steers DRAINS them
+        // into the "recently processed" set the next step attempt stamps —
+        // there is no observe-only check.
+        if (signal.aborted) return false;
+        if (!hasProducedOutput) return true;
+        if (steerTracker.hasPending()) {
+          steerTracker.drainPending();
+          return true;
+        }
+        return false;
       },
 
       // The output write-path is the RunStepWriter's; the run object delegates.

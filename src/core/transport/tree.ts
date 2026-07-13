@@ -1232,6 +1232,7 @@ export class DefaultTree<
       codecMessageId,
       serial,
       events: [],
+      inputs: all.filter((e) => e.direction === 'input').map((e) => e.event),
     });
   }
 
@@ -1324,6 +1325,7 @@ export class DefaultTree<
         codecMessageId,
         serial,
         events: outputs,
+        inputs: events.inputs,
         ...(stepId !== undefined && { stepId }),
         ...(startSerial !== undefined && { startSerial }),
       });
@@ -1521,6 +1523,7 @@ export class DefaultTree<
       codecMessageId: undefined,
       serial: undefined,
       events: [],
+      inputs: [],
     });
   }
 

@@ -267,6 +267,19 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
    * is always still available on {@link StreamResult.error}.
    */
   onError?: (error: Ably.ErrorInfo) => void;
+
+  /**
+   * Called when a steering message folds into this Run's projection — a
+   * client published a user-input event tagged with this Run's `run-id`
+   * while the Run was active. Fires once per inbound steering message
+   * (per-message, not coalesced).
+   *
+   * The handler is a hint: it lets the agent race the steering arrival
+   * against an in-flight model call to decide whether to cancel and
+   * restart. The SDK never interrupts a model call itself.
+   * Authoritative visibility of pending steering is via {@link AgentRun.hasInput}.
+   */
+  onSteer?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -440,6 +453,34 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
    * before adopting the run for publishing.
    */
   readonly located: Promise<void>;
+
+  /**
+   * Whether the run has input the agent has not yet responded to — the driver
+   * for the agent's iteration loop:
+   *
+   * ```ts
+   * while (run.hasInput()) {
+   *   const result = streamText({ messages: run.messages, ... });
+   *   await run.pipe(result.toUIMessageStream());
+   * }
+   * await run.end({ reason: 'complete' });
+   * ```
+   *
+   * Returns `true` before the run has produced any output (the triggering
+   * input always needs a first response), and again whenever a steering
+   * message has folded into the run's projection since the previous pass —
+   * a client published a user-input event tagged with this run's `run-id`
+   * while the run was active. Returns `false` once the run has produced
+   * output and no steer is pending, or once {@link AgentRun.abortSignal} has fired.
+   *
+   * Calling `hasInput()` DRAINS any pending steers: the next output the agent
+   * pipes stamps those steers' codec-message-ids under `steer-codec-message-ids`,
+   * resolving each steering client's outcome as consumed. Observe-only checks
+   * that must not drain are not supported — treat every call as a commitment
+   * to respond to whatever it reports.
+   * @returns True iff the agent's loop should run another inference pass.
+   */
+  hasInput(): boolean;
 
   /**
    * Pipe a ReadableStream through the encoder to the channel.

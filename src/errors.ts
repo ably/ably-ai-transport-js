@@ -49,7 +49,9 @@ export enum ErrorCode {
   SessionSubscriptionError = 104001,
 
   /**
-   * Cancel listener or onCancel hook threw while processing a cancel message.
+   * A run-scoped developer callback threw while the SDK invoked it — the
+   * `onCancel` hook processing a cancel message, or the `onSteer` hook
+   * notifying that a steering message folded into the run.
    */
   CancelListenerError = 104002,
 

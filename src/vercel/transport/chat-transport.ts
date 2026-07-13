@@ -634,7 +634,7 @@ export const createChatTransport = <
     //   through U1 inclusive via the body.
     // - Fresh send / edit: publish the new user-message input(s) via
     //   `view.send`.
-    let run: ClientRun<AI.UIMessage<TMetadata, TDataParts, TTools>>;
+    let run: ClientRun<VercelInput, AI.UIMessage<TMetadata, TDataParts, TTools>>;
     if (isContinuation) {
       // Non-empty here: the empty case returned the deferred-observe stream above.
       run = await session.view.send(continuationInputs, sendOpts);

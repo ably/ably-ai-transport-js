@@ -12,6 +12,8 @@ export type {
   RunNodeState,
   RunStatus,
   SendOptions,
+  SteerOutcome,
+  SteerResult,
   View,
 } from '../core/transport/types.js';
 export type { ClientSessionSlot } from './contexts/client-session-context.js';

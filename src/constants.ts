@@ -158,6 +158,23 @@ export const HEADER_STEP_CLIENT_ID = 'step-client-id';
  */
 export const HEADER_INPUT_CODEC_MESSAGE_ID = 'input-codec-message-id';
 
+/**
+ * Header: JSON-stringified array of codec-message-ids of steers the agent's
+ * loop drained from pending into "recently processed" since the previous
+ * step attempt opened. Stamped on a step attempt's assistant outputs via the
+ * step's default headers (alongside `step-id` / `start-serial`); omitted when
+ * the set is empty. Each steer appears on exactly one attempt's outputs — the
+ * first attempt opened after `hasInput()` observed the steer.
+ *
+ * Used by clients to resolve `ClientRun.steer(...)` outcomes by membership:
+ * accumulate the union across the run's observed responses, then on
+ * `ai-run-suspend` / `ai-run-end` check whether the steer's own
+ * codec-message-id is in the union. Order-insensitive — it does not rely on
+ * channel-serial monotonicity, which is not guaranteed for cross-publisher
+ * delivery.
+ */
+export const HEADER_STEER_CODEC_MESSAGE_IDS = 'steer-codec-message-ids';
+
 // ---------------------------------------------------------------------------
 // Run-end error headers (set on `ai-run-end` when `run-reason: error`)
 // ---------------------------------------------------------------------------

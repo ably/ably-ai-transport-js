@@ -18,7 +18,7 @@
 
 import * as Ably from 'ably';
 
-import { HEADER_START_SERIAL } from '../../constants.js';
+import { HEADER_START_SERIAL, HEADER_STEER_CODEC_MESSAGE_IDS } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { errorCause } from '../../utils.js';
@@ -61,6 +61,19 @@ export const stepEndReasonFor = (reason: RunEndReason): StepEndReason =>
 interface StartSerialRef {
   /** The attempt's `start-serial`, or `undefined` until its `ai-step-start` publishes (or if that publish returned no serial). */
   value: string | undefined;
+}
+
+/**
+ * A mutable holder for the steer codec-message-ids a pass stamps under
+ * `steer-codec-message-ids`. Set per-pipe (in `doPipe` / `doSend`, which drain
+ * {@link RunStepWriterContext.consumeSteerStampIds}) rather than once at step
+ * open, so a step carrying more than one pipe stamps each steering message on
+ * the pass that answers it. Read live by the composed encoder `onMessage`, so it is
+ * threaded through this ref rather than baked into the encoder up front.
+ */
+interface SteerIdsRef {
+  /** The steer codec-message-ids to stamp; empty until a pipe drains them (or when no steer was drained). */
+  value: string[];
 }
 
 /**
@@ -123,6 +136,22 @@ export interface RunStepWriterContext<
   assertPublishable(verb: 'pipe' | 'step' | 'send'): void;
   /** The run's resolved structural anchors, read live at publish time. */
   getAnchors(): StepWriterAnchors;
+  /**
+   * Signal that a step attempt has opened (`ai-step-start` published), so the
+   * run marks itself as having produced output — its `hasInput()` then stops
+   * reporting the initial-response pass. Called once per attempt at open, for
+   * both the implicit `run.pipe` step and an explicit `createStep`. Optional;
+   * omitted when the run has no steer loop.
+   */
+  markOutputProduced?(): void;
+  /**
+   * Return the codec-message-ids of steers drained since the previous step
+   * attempt opened, to stamp under `steer-codec-message-ids` on this attempt's
+   * assistant outputs (the header is omitted when the array is empty). Called
+   * once per attempt at open, draining the run's per-attempt delta. Optional;
+   * omitted when the run has no steer loop.
+   */
+  consumeSteerStampIds?(): string[];
 }
 
 /** The output-producing surface of an agent run: stream piping and explicit step handles. */
@@ -272,6 +301,11 @@ export const createRunStepWriter = <
    */
   const openStep = async (stepId: string, stepClientId: string): Promise<string | undefined> => {
     const runId = ctx.getRunId();
+    // Opening a step does NOT mark output produced — an explicit step opens
+    // (start()) before its first pass pipes anything, so flipping here would make
+    // hasInput() report the triggering input as already answered before the first
+    // inference runs. markOutputProduced fires per-pass in doPipe/doSend instead.
+    // The steers to stamp are likewise drained per-pipe, not here.
     const scopes = stepScopes(stepClientId);
     const startSerial = await runManager.startStep(runId, stepId, scopes);
     getTree().applyStepLifecycle({
@@ -340,20 +374,21 @@ export const createRunStepWriter = <
    * short-lived, not a per-step long-lived object. Extracted so `doPipe` and
    * `doSend` share one path for header composition and the composed
    * `onMessage` that stamps the step attempt's `start-serial` (live via
-   * {@link StartSerialRef} because the value is known only after
-   * `ai-step-start` publishes, which for `run.pipe`'s lazy implicit step is
-   * AFTER this encoder is created).
+   * {@link StartSerialRef}) and its drained `steer-codec-message-ids` (live via
+   * {@link SteerIdsRef}) — both known only after `ai-step-start` publishes,
+   * which for `run.pipe`'s lazy implicit step is AFTER this encoder is created.
    * @param step - The step to stamp the message under.
    * @param step.stepId - The step's id, stamped on the message.
    * @param step.startSerialRef - Holds the step attempt's `start-serial`, stamped on the message once known.
    * @param step.stepClientId - The step's resolved client, stamped as `step-client-id`.
+   * @param step.steerIdsRef - Holds the steer codec-message-ids this attempt stamps under `steer-codec-message-ids`.
    * @param opts - Per-publish overrides.
    * @param opts.parent - Override for the assistant message's structural parent (from `PipeOptions.parent`).
    * @param opts.forkOf - Override for the assistant message's `forkOf` anchor (from `PipeOptions.forkOf`).
    * @returns The encoder (single message; caller must publish then `close()`).
    */
   const createMessageEncoder = (
-    step: { stepId: string; startSerialRef: StartSerialRef; stepClientId: string },
+    step: { stepId: string; startSerialRef: StartSerialRef; stepClientId: string; steerIdsRef: SteerIdsRef },
     opts?: { parent?: string; forkOf?: string },
   ) => {
     const runId = ctx.getRunId();
@@ -361,10 +396,11 @@ export const createRunStepWriter = <
     const runOwnerClientId = runManager.getClientId(runId);
 
     const codecMessageId = crypto.randomUUID();
-    // The default headers carry no attempt identity: `start-serial` is known
-    // only after the step-start publishes (for the lazy implicit step, inside
-    // `onFirstOutput` — after this encoder is created), so it is injected
-    // per-message by the composed `onMessage` rather than baked in here.
+    // The default headers carry no attempt identity: `start-serial` and the
+    // drained `steer-codec-message-ids` are both known only after the step-start
+    // publishes (for the lazy implicit step, inside `onFirstOutput` — after this
+    // encoder is created), so they are injected per-message by the composed
+    // `onMessage` rather than baked in here.
     const defaultHeaders = buildTransportHeaders({
       role: 'assistant',
       runId,
@@ -391,18 +427,22 @@ export const createRunStepWriter = <
     // (once known) on the transport tier of every outbound message, THEN run the
     // developer's hook. Reads the ref live so it captures the value the lazy
     // implicit-step open sets before the first output is published.
-    const stampStartSerial = (message: Ably.Message): void => {
+    const stampAttempt = (message: Ably.Message): void => {
       const startSerial = step.startSerialRef.value;
-      if (startSerial === undefined) return;
+      const steerIds = step.steerIdsRef.value;
+      if (startSerial === undefined && steerIds.length === 0) return;
       // CAST: the encoder always builds `extras.ai.transport` before invoking
       // this hook (Ably SDK types `extras` as `any`); narrow to the tier we own.
       const transport = (message.extras as { ai: { transport: Record<string, string> } }).ai.transport;
-      transport[HEADER_START_SERIAL] = startSerial;
+      if (startSerial !== undefined) transport[HEADER_START_SERIAL] = startSerial;
+      // Stamp the steers this attempt drained (steering client outcome
+      // resolution is set-membership on this array), omitted when empty.
+      if (steerIds.length > 0) transport[HEADER_STEER_CODEC_MESSAGE_IDS] = JSON.stringify(steerIds);
     };
     return codec.createEncoder(channel, {
       extras: { headers: defaultHeaders },
       onMessage: (message: Ably.Message): void => {
-        stampStartSerial(message);
+        stampAttempt(message);
         onMessage?.(message);
       },
       messageId: codecMessageId,
@@ -424,6 +464,7 @@ export const createRunStepWriter = <
    * @param step.stepId - The step's id, stamped on every output.
    * @param step.startSerialRef - Holds the step attempt's `start-serial`, stamped on every output once known.
    * @param step.stepClientId - The step's resolved client, stamped as `step-client-id` on every output.
+   * @param step.steerIdsRef - Holds the steer codec-message-ids this attempt stamps under `steer-codec-message-ids`.
    * @param step.onFirstOutput - Optional hook fired once before the first output (the lazy implicit-step open); omitted when the step is already open.
    * @returns The {@link StreamResult}.
    */
@@ -434,11 +475,26 @@ export const createRunStepWriter = <
       stepId: string;
       startSerialRef: StartSerialRef;
       stepClientId: string;
+      steerIdsRef: SteerIdsRef;
       onFirstOutput?: () => Promise<void>;
     },
   ): Promise<StreamResult> => {
     await ctx.requireConnected('pipe');
     ctx.assertPublishable('pipe');
+
+    // A pass piping output IS the run producing output; mark it so hasInput()
+    // stops reporting the initial-response pass as unanswered. Done per-pass here
+    // (not at step open) because an explicit step opens before its first pass
+    // runs — see openStep.
+    ctx.markOutputProduced?.();
+
+    // Drain the steers this pass answers and stamp them on THIS pipe's outputs.
+    // Done per-pipe (not once at step open) so a step carrying more than one
+    // pipe — the agent loops another inference pass into the same step for a
+    // steering message that folded in mid-stream — stamps each steering message
+    // on the pipe that answers it. hasInput() moves a pending steering message
+    // into the "recently processed" set this consume reads.
+    step.steerIdsRef.value = ctx.consumeSteerStampIds?.() ?? [];
 
     const runId = ctx.getRunId();
     const encoder = createMessageEncoder(step, { parent: streamOpts?.parent, forkOf: streamOpts?.forkOf });
@@ -479,13 +535,19 @@ export const createRunStepWriter = <
    * @param step.stepId - The step's id, stamped on the output.
    * @param step.startSerialRef - Holds the step attempt's `start-serial`, stamped on the output.
    * @param step.stepClientId - The step's resolved client, stamped as `step-client-id`.
+   * @param step.steerIdsRef - Holds the steer codec-message-ids this attempt stamps under `steer-codec-message-ids`.
    */
   const doSend = async (
     output: TOutput,
-    step: { stepId: string; startSerialRef: StartSerialRef; stepClientId: string },
+    step: { stepId: string; startSerialRef: StartSerialRef; stepClientId: string; steerIdsRef: SteerIdsRef },
   ): Promise<void> => {
     await ctx.requireConnected('send');
     ctx.assertPublishable('send');
+
+    // Mark output produced and drain-and-stamp this pass's steers, mirroring
+    // doPipe (see there for why both are per-call rather than once at step open).
+    ctx.markOutputProduced?.();
+    step.steerIdsRef.value = ctx.consumeSteerStampIds?.() ?? [];
 
     const encoder = createMessageEncoder(step);
 
@@ -537,6 +599,9 @@ export const createRunStepWriter = <
       // `ai-step-start`. The composed encoder `onMessage` reads it to stamp
       // every output, and the close uses it as the `ai-step-end` back-ref.
       const startSerialRef: StartSerialRef = { value: undefined };
+      // Holds the steers this attempt drains at its lazy open, stamped on its
+      // outputs; empty until the open (or when nothing was drained).
+      const steerIdsRef: SteerIdsRef = { value: [] };
       // Object wrapper, not bare `let`s: TS would flow-narrow `opened` (assigned
       // only inside the onFirstOutput callback) to false at the close check below.
       const stepState = { opened: false, settled: false };
@@ -555,6 +620,7 @@ export const createRunStepWriter = <
         stepId,
         startSerialRef,
         stepClientId,
+        steerIdsRef,
         onFirstOutput: async () => {
           stepState.opened = true;
           activeStep = { settle };
@@ -607,6 +673,9 @@ export const createRunStepWriter = <
     // `ai-step-start`. The composed encoder `onMessage` reads it to stamp every
     // output, and the close uses it as the `ai-step-end` back-ref.
     const startSerialRef: StartSerialRef = { value: undefined };
+    // Holds the steers this step drains at start(), stamped on its outputs;
+    // empty until start() (or when nothing was drained).
+    const steerIdsRef: SteerIdsRef = { value: [] };
     // Step client: an explicit `options.stepClientId` (the steer seam) wins;
     // else sticky from the cursor; else the triggering input's publisher on the
     // run's first step (see resolveStepClientId). Stamped on the bracket + output.
@@ -671,7 +740,7 @@ export const createRunStepWriter = <
             400,
           );
         }
-        const result = await doPipe(stream, streamOpts, { stepId, startSerialRef, stepClientId });
+        const result = await doPipe(stream, streamOpts, { stepId, startSerialRef, stepClientId, steerIdsRef });
         // A piped stream error marks the step failed without throwing — so the
         // common `vercelRunOutcome(...) -> run.end(outcome)` flow needs no
         // try/catch, while the step status still reflects the failure.
@@ -690,7 +759,7 @@ export const createRunStepWriter = <
           );
         }
         try {
-          await doSend(output, { stepId, startSerialRef, stepClientId });
+          await doSend(output, { stepId, startSerialRef, stepClientId, steerIdsRef });
         } catch (error) {
           // A publish throw marks the step failed so a subsequent `end()` with
           // no reason still settles `failed` (mirrors pipe's error-tracking) —

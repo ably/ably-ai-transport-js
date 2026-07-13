@@ -83,7 +83,7 @@ export type SendDelegate<TInput extends CodecInputEvent, TMessage> = (
   input: TInput[],
   options: SendOptions | undefined,
   parentCodecMessageId: string | undefined,
-) => Promise<ClientRun<TMessage>>;
+) => Promise<ClientRun<TInput, TMessage>>;
 
 // ---------------------------------------------------------------------------
 // Options
@@ -1081,7 +1081,7 @@ class DefaultClientView<
   // -------------------------------------------------------------------------
 
   // Spec: AIT-CT3, AIT-CT4
-  async send(input: TInput | TInput[], options?: SendOptions): Promise<ClientRun<TMessage>> {
+  async send(input: TInput | TInput[], options?: SendOptions): Promise<ClientRun<TInput, TMessage>> {
     this._logger.trace('DefaultClientView.send();');
     if (this._closed) {
       throw new Ably.ErrorInfo('unable to send; view is closed', ErrorCode.SessionClosed, 400);
@@ -1100,7 +1100,7 @@ class DefaultClientView<
   }
 
   // Spec: AIT-CT5, AIT-CT13d
-  async regenerate(messageId: string, options?: SendOptions): Promise<ClientRun<TMessage>> {
+  async regenerate(messageId: string, options?: SendOptions): Promise<ClientRun<TInput, TMessage>> {
     this._logger.trace('DefaultClientView.regenerate();', { messageId });
 
     if (this._closed) {
@@ -1170,7 +1170,11 @@ class DefaultClientView<
   }
 
   // Spec: AIT-CT6
-  async edit(messageId: string, inputs: TInput | TInput[], options?: SendOptions): Promise<ClientRun<TMessage>> {
+  async edit(
+    messageId: string,
+    inputs: TInput | TInput[],
+    options?: SendOptions,
+  ): Promise<ClientRun<TInput, TMessage>> {
     this._logger.trace('DefaultClientView.edit();', { messageId });
 
     if (this._closed) {

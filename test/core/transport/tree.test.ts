@@ -2561,6 +2561,7 @@ describe('Tree', () => {
         codecMessageId: 'm1',
         serial: 's1',
         events: [{ type: 'append-message', message: { id: 'a', content: 'hi' } }],
+        inputs: [],
       });
     });
 
@@ -2580,6 +2581,7 @@ describe('Tree', () => {
         codecMessageId: 'm1',
         serial: 's1',
         events: [{ type: 'append-message', message: { id: 'a', content: 'hi' } }],
+        inputs: [],
       });
     });
 
@@ -2598,6 +2600,7 @@ describe('Tree', () => {
         codecMessageId: 'm1',
         serial: 's1',
         events: [],
+        inputs: [{ kind: 'append-input', message: { id: 'a', content: 'hi' } }],
       });
     });
 
@@ -2611,6 +2614,7 @@ describe('Tree', () => {
         codecMessageId: 'm1',
         serial: undefined,
         events: [{ type: 'append-message', message: { id: 'a', content: 'hi' } }],
+        inputs: [],
       });
     });
 

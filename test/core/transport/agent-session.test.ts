@@ -30,6 +30,7 @@ import {
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_STEER_CODEC_MESSAGE_IDS,
   HEADER_STEP_CLIENT_ID,
   HEADER_STEP_ID,
 } from '../../../src/constants.js';
@@ -963,6 +964,213 @@ describe('AgentSession', () => {
       // The run was suspended, not ended — no run-end is published.
       expect(channel.publishCalls.filter((m) => m.name === 'ai-run-suspend')).toHaveLength(1);
       expect(channel.publishCalls.find((m) => m.name === 'ai-run-end')).toBeUndefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // run.hasInput() — delta predicate for the steering loop
+  // -------------------------------------------------------------------------
+
+  describe('hasInput()', () => {
+    it('returns true before start()', () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      expect(run.hasInput()).toBe(true);
+    });
+
+    it('returns true after start() until the first output produces a step', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+      // start() resolves but no pipe() yet — the trigger has not been processed.
+      expect(run.hasInput()).toBe(true);
+    });
+
+    it('returns false after start() + pipe() with no steering arriving', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+      await run.pipe(streamOf({ type: 'text', text: 'hi' }));
+      expect(run.hasInput()).toBe(false);
+    });
+
+    it('returns true after an explicit createStep().start(), until that step pipes output', async () => {
+      // An explicit step opens (start()) before its first pass pipes anything.
+      // Opening must NOT mark output produced — otherwise the agent's loop,
+      // which gates every pass on hasInput(), would skip the very first
+      // inference. The trigger stays unanswered until the step actually pipes.
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      const step = run.createStep();
+      await step.start();
+      expect(run.hasInput()).toBe(true);
+
+      await step.pipe(streamOf({ type: 'text', text: 'hi' }));
+      expect(run.hasInput()).toBe(false);
+      await step.end();
+    });
+
+    it('returns false when the abortSignal has fired', async () => {
+      const controller = new AbortController();
+      const run = createRunFromOpts(session, { runId: 'run-1', signal: controller.signal });
+      await run.start();
+      controller.abort();
+      // Cancel implies "no more input to process" — hasInput() returns false
+      // regardless of pending steering, so the loop exits and the agent calls
+      // run.end({ reason: 'cancelled' }).
+      expect(run.hasInput()).toBe(false);
+    });
+
+    it("stamps a steer's codec-message-id on the step attempt that ran after hasInput() drained it", async () => {
+      // Headline test: trigger id-1 starts the run; pipe(1)'s step attempt
+      // carries no `steer-codec-message-ids` (no steers folded yet); a steer of
+      // id-2 lands; hasInput() returns true and drains it into
+      // recentlyProcessed; pipe(2)'s step attempt stamps
+      // `steer-codec-message-ids = ["id-2"]` on its output.
+      // Build a session with a codec whose decoder produces real input events
+      // for delivered messages (the default mock decoder returns empty, so the
+      // Tree-output listener's `event.inputs` filter would reject the steer).
+      const ch = createMockChannel();
+      const functionalCodec = createMockCodec();
+      functionalCodec.createDecoder = vi.fn(() => ({
+        decode: (m: Ably.InboundMessage) => {
+          const hdrs = (m.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport ?? {};
+          const id = hdrs[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
+          return {
+            inputs: [{ kind: 'user-message' as const, message: { id, content: id } }],
+            outputs: [],
+          };
+        },
+      }));
+      const steerSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: functionalCodec,
+      });
+      await steerSession.connect();
+
+      const runId = 'run-headline';
+      const invocationId = 'inv-headline';
+      const inputEventId = 'p-headline';
+      const triggerId = 'id-1';
+      const steerId = 'id-2';
+
+      const run = createRunFromOpts(steerSession, { runId, invocationId, inputEventId });
+      const startPromise = run.start();
+      // Trigger publishes — no run-id (the agent mints the run-id at start-time
+      // for a fresh run).
+      deliverInputEvent(ch, {
+        invocationId,
+        codecMessageId: triggerId,
+        serial: 'serial-1',
+        inputEventId,
+        publisherClientId: 'user-a',
+      });
+      await startPromise;
+
+      // pipe(1) — no steer has folded; the attempt's outputs carry no
+      // `steer-codec-message-ids`.
+      await run.pipe(streamOf({ type: 'text', text: 'response-1' }));
+      expect(functionalCodec.lastEncoder()?.outputTransport[0]?.[HEADER_STEER_CODEC_MESSAGE_IDS]).toBeUndefined();
+
+      // Steer folds: user-input tagged with the active run-id. Routes through
+      // the Tree's run-message path; the listener's `event.runId === runId`
+      // filter accepts it and the functional decoder yields one user-message
+      // input.
+      deliverInputEvent(ch, {
+        invocationId,
+        runId,
+        codecMessageId: steerId,
+        serial: 'serial-2',
+        inputEventId: `p-${steerId}`,
+        publisherClientId: 'user-a',
+      });
+
+      // hasInput() drains the steer into recentlyProcessed; loop iterates.
+      expect(run.hasInput()).toBe(true);
+
+      // pipe(2)'s step attempt stamps the steer's id on its output.
+      await run.pipe(streamOf({ type: 'text', text: 'response-2' }));
+      expect(functionalCodec.lastEncoder()?.outputTransport[0]?.[HEADER_STEER_CODEC_MESSAGE_IDS]).toBe(
+        JSON.stringify([steerId]),
+      );
+
+      // hasInput() returns false now — nothing further to drain.
+      expect(run.hasInput()).toBe(false);
+
+      await steerSession.detach();
+    });
+
+    it('stamps each steering message on its own pipe when two passes pipe into one explicit step', async () => {
+      // The agent's per-turn shape: one explicit step, two inference passes piped
+      // into it (the second answers a steer that folded in mid-stream). Unlike
+      // run.pipe — which opens a fresh implicit step per pipe — both pipes here
+      // share ONE step, so this proves the per-pipe drain-and-stamp isn't
+      // clobbered by the single step-open, and that opening the step leaves the
+      // steer pending for the pass that answers it.
+      const ch = createMockChannel();
+      const functionalCodec = createMockCodec();
+      functionalCodec.createDecoder = vi.fn(() => ({
+        decode: (m: Ably.InboundMessage) => {
+          const hdrs = (m.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport ?? {};
+          const id = hdrs[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
+          return {
+            inputs: [{ kind: 'user-message' as const, message: { id, content: id } }],
+            outputs: [],
+          };
+        },
+      }));
+      const steerSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: functionalCodec,
+      });
+      await steerSession.connect();
+
+      const runId = 'run-explicit';
+      const invocationId = 'inv-explicit';
+      const inputEventId = 'p-explicit';
+      const triggerId = 'id-1';
+      const steerId = 'id-2';
+
+      const run = createRunFromOpts(steerSession, { runId, invocationId, inputEventId });
+      const startPromise = run.start();
+      deliverInputEvent(ch, {
+        invocationId,
+        codecMessageId: triggerId,
+        serial: 'serial-1',
+        inputEventId,
+        publisherClientId: 'user-a',
+      });
+      await startPromise;
+
+      // Open the one step. Opening must leave the trigger unanswered.
+      const step = run.createStep();
+      await step.start();
+      expect(run.hasInput()).toBe(true);
+
+      // pass 1 (trigger) — no steer folded, so its output carries no steer ids.
+      await step.pipe(streamOf({ type: 'text', text: 'response-1' }));
+      expect(functionalCodec.lastEncoder()?.outputTransport[0]?.[HEADER_STEER_CODEC_MESSAGE_IDS]).toBeUndefined();
+
+      // A steer folds in; hasInput() drains it so pass 2 can answer.
+      deliverInputEvent(ch, {
+        invocationId,
+        runId,
+        codecMessageId: steerId,
+        serial: 'serial-2',
+        inputEventId: `p-${steerId}`,
+        publisherClientId: 'user-a',
+      });
+      expect(run.hasInput()).toBe(true);
+
+      // pass 2 pipes into the SAME step and stamps only the steer it drained.
+      await step.pipe(streamOf({ type: 'text', text: 'response-2' }));
+      expect(functionalCodec.lastEncoder()?.outputTransport[0]?.[HEADER_STEER_CODEC_MESSAGE_IDS]).toBe(
+        JSON.stringify([steerId]),
+      );
+
+      expect(run.hasInput()).toBe(false);
+      await step.end();
+      await steerSession.detach();
     });
   });
 
@@ -4118,7 +4326,7 @@ const viewMessageIds = (wiresOldestFirst: Ably.InboundMessage[]): string[] => {
   const sendDelegate: SendDelegate<TestInput, TestMessage> =
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     vi.fn(() =>
-      Promise.resolve<ClientRun<TestMessage>>({
+      Promise.resolve<ClientRun<TestInput, TestMessage>>({
         inputCodecMessageId: 'k',
         runId: 'r',
         status: 'active',
@@ -4128,6 +4336,10 @@ const viewMessageIds = (wiresOldestFirst: Ably.InboundMessage[]): string[] => {
         inputEventId: '',
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
         cancel: () => Promise.resolve(),
+        steer: () => ({
+          published: Promise.resolve({ serial: undefined }),
+          outcome: Promise.resolve({ consumed: false }),
+        }),
         toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       }),
     );

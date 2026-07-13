@@ -336,7 +336,7 @@ export interface ClientView<TInput extends CodecInputEvent, TMessage> extends Vi
    *
    * Rejects with `SessionClosed` when the view has been closed.
    */
-  send(events: TInput | TInput[], options?: SendOptions): Promise<ClientRun<TMessage>>;
+  send(events: TInput | TInput[], options?: SendOptions): Promise<ClientRun<TInput, TMessage>>;
 
   /**
    * Regenerate an assistant message. Mints a codec `Regenerate` input
@@ -351,7 +351,7 @@ export interface ClientView<TInput extends CodecInputEvent, TMessage> extends Vi
    * Rejects with `SessionClosed` when the view has been closed, or
    * `InvalidArgument` when `messageId` is not in the tree.
    */
-  regenerate(messageId: string, options?: SendOptions): Promise<ClientRun<TMessage>>;
+  regenerate(messageId: string, options?: SendOptions): Promise<ClientRun<TInput, TMessage>>;
 
   /**
    * Edit a user message. Creates a new run that forks the target message
@@ -363,5 +363,5 @@ export interface ClientView<TInput extends CodecInputEvent, TMessage> extends Vi
    * Rejects with `SessionClosed` when the view has been closed, or
    * `InvalidArgument` when `messageId` is not in the tree.
    */
-  edit(messageId: string, inputs: TInput | TInput[], options?: SendOptions): Promise<ClientRun<TMessage>>;
+  edit(messageId: string, inputs: TInput | TInput[], options?: SendOptions): Promise<ClientRun<TInput, TMessage>>;
 }

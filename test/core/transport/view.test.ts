@@ -123,8 +123,10 @@ const createMockChannel = (): Ably.RealtimeChannel =>
     attach: vi.fn(() => Promise.resolve()),
   }) as unknown as Ably.RealtimeChannel;
 
-// Build a ClientRun<TestMessage> mock; override inputCodecMessageId / runId per case.
-const makeClientRun = (overrides: Partial<ClientRun<TestMessage>> = {}): ClientRun<TestMessage> => ({
+// Build a ClientRun<TestInput, TestMessage> mock; override inputCodecMessageId / runId per case.
+const makeClientRun = (
+  overrides: Partial<ClientRun<TestInput, TestMessage>> = {},
+): ClientRun<TestInput, TestMessage> => ({
   inputCodecMessageId: 'mock-input',
   runId: 'mock-run',
   status: 'active',
@@ -134,6 +136,7 @@ const makeClientRun = (overrides: Partial<ClientRun<TestMessage>> = {}): ClientR
   inputEventId: '',
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   cancel: () => Promise.resolve(),
+  steer: () => ({ published: Promise.resolve({ serial: undefined }), outcome: Promise.resolve({ consumed: false }) }),
   toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
   ...overrides,
 });
@@ -1421,7 +1424,7 @@ describe('client view', () => {
       });
 
       // First regen completes — promoted to auto.
-      let deferredResolve: ((value: ClientRun<TestMessage>) => void) | undefined;
+      let deferredResolve: ((value: ClientRun<TestInput, TestMessage>) => void) | undefined;
       vi.mocked(sendDelegate).mockResolvedValueOnce(makeClientRun({ inputCodecMessageId: 'a1', runId: 'Rregen1' }));
       await view.regenerate('a1');
       tree.applyRunLifecycle({
@@ -1450,7 +1453,7 @@ describe('client view', () => {
       vi.mocked(sendDelegate).mockImplementationOnce(
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- need to capture the resolver
         () =>
-          new Promise<ClientRun<TestMessage>>((resolve) => {
+          new Promise<ClientRun<TestInput, TestMessage>>((resolve) => {
             deferredResolve = resolve;
           }),
       );
@@ -3404,7 +3407,7 @@ describe('client view', () => {
     // of the trailing text: a new Run anchored at a2p, contributing a
     // single new text bubble while a1p stays put with its 2/2 counter.
     describe('regenerate target inside a regenerator Run', () => {
-      let regen2: ClientRun<TestMessage>;
+      let regen2: ClientRun<TestInput, TestMessage>;
       beforeEach(async () => {
         apply(tree, {
           runId: 'R1',

@@ -2,7 +2,7 @@
 
 import type * as Ably from 'ably';
 
-import type { CodecOutputEvent } from '../../codec/types.js';
+import type { CodecInputEvent, CodecOutputEvent } from '../../codec/types.js';
 import type { RunEndReason, RunStatus, StepEndReason } from './shared.js';
 
 // ---------------------------------------------------------------------------
@@ -473,6 +473,18 @@ export interface OutputEvent<TOutput extends CodecOutputEvent> {
    * that the Run's projection changed.
    */
   events: TOutput[];
+  /**
+   * The decoded client inputs from this message, in wire order. Non-empty for
+   * two cases: (1) a run-less user input that created or grew an input node,
+   * and (2) a steering message tagged with a Run's `run-id` that folded into
+   * the Run's projection. Empty for pure agent output folds and for the
+   * projection-changed signal a step supersede refold emits.
+   *
+   * Typed as the base {@link CodecInputEvent} union (codec-agnostic) so the
+   * Tree's interface stays free of `TInput`; consumers that need the codec's
+   * concrete `TInput` shape narrow on the discriminator at the call site.
+   */
+  inputs: CodecInputEvent[];
 }
 
 /**

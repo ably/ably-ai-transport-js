@@ -7,7 +7,8 @@ import type * as Ably from 'ably';
 
 export interface CallbackLogEntry {
   time: number;
-  type: 'runStart' | 'runSuspend' | 'runResume' | 'runEnd' | 'error';
+  type:
+    'runStart' | 'runSuspend' | 'runResume' | 'runEnd' | 'error' | 'steerPublished' | 'steerOutcome' | 'steerRejected';
   summary: string;
 }
 
@@ -182,6 +183,9 @@ const callbackTypeColors: Record<string, string> = {
   runResume: 'text-cyan-400',
   runEnd: 'text-emerald-400',
   error: 'text-red-400',
+  steerPublished: 'text-purple-400',
+  steerOutcome: 'text-fuchsia-400',
+  steerRejected: 'text-red-300',
 };
 
 const statusColors: Record<string, string> = {

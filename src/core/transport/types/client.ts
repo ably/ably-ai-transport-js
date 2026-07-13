@@ -8,8 +8,13 @@ import type { Logger } from '../../../logger.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../../codec/types.js';
 import type { Invocation } from '../invocation.js';
 import type { BaseRun } from './run.js';
+import type { SteerResult } from './steer.js';
 import type { Tree } from './tree.js';
 import type { ClientView } from './view.js';
+
+// Re-exported so consumers can import the steering types from the same
+// public surface as `ClientRun` and `ClientSession`.
+export type { SteerOutcome, SteerResult } from './steer.js';
 
 // ---------------------------------------------------------------------------
 // Client session options
@@ -125,9 +130,15 @@ export interface SendOptions {
  *
  * The core does not expose a per-run output stream — streaming is a
  * consumer-layer concern (e.g. the Vercel ChatTransport builds a stream from
- * the Tree's `output` events).
+ * the Tree's `output` events). The handle carries the shared {@link BaseRun}
+ * read-model plus the client's routing/control surface, including the
+ * run-scoped {@link steer} write verb.
+ * @template TInput - The codec's input-event domain type accepted by
+ *   {@link steer}; matches the session's `TInput`.
+ * @template TMessage - The codec's message domain type read from
+ *   {@link BaseRun.messages}.
  */
-export interface ClientRun<TMessage> extends BaseRun<TMessage> {
+export interface ClientRun<TInput extends CodecInputEvent, TMessage> extends BaseRun<TMessage> {
   /**
    * The synchronous routing handle for this send: the triggering input's
    * codec-message-id, which the client owns the moment it publishes and the
@@ -161,6 +172,32 @@ export interface ClientRun<TMessage> extends BaseRun<TMessage> {
    * published; it does not wait for {@link started}.
    */
   cancel(): Promise<void>;
+  /**
+   * Publish a codec input event that targets THIS run — steering. The steer
+   * carries this run's `run-id` header so the agent's Tree folds it into the
+   * active run's projection. Pass the same shape `view.send(...)` accepts:
+   * typically `codec.createUserMessage(...)` for a follow-up user message, but
+   * any `TInput` the codec defines is permitted.
+   *
+   * Returns two promises (see {@link SteerResult}): `published` for the
+   * channel-publish acknowledgement (with the Ably-assigned serial) and
+   * `outcome` for the consumed/not-consumed determination derived from the
+   * union of `steer-codec-message-ids` stamps the run's responses carry.
+   *
+   * The SDK awaits {@link BaseRun.runId} internally if it has not yet resolved,
+   * so this call is safe to make as soon as the handle is returned by
+   * {@link ClientView}'s send / regenerate / edit. If the run-id never resolves
+   * (e.g. the invocation failed), both returned promises reject.
+   *
+   * Once the SDK has folded an `ai-run-end` for this run, the handle is dead
+   * and subsequent `steer()` calls return immediately-rejected promises — no
+   * channel publish is attempted. The application recovers by issuing a new
+   * `view.send(...)` + invocation.
+   * @param input - The codec input event to publish, in the codec's input shape.
+   * @returns Two promises: `published` (publish acknowledgement) and `outcome`
+   *   (consumed/not-consumed at the next terminal event).
+   */
+  steer(input: TInput): SteerResult;
   /**
    * Build the {@link Invocation} pointer for this run — only `inputEventId` and
    * the session's channel name as `sessionName`. The body carries no run-id: a

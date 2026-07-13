@@ -52,6 +52,7 @@ import {
   SessionState,
   subscribeAndAttach,
 } from './session-support.js';
+import { SteerCoordinator } from './steer-coordinator.js';
 import type { DefaultTree } from './tree.js';
 import type {
   ClientRun,
@@ -60,6 +61,7 @@ import type {
   ClientView,
   RunEndReason,
   SendOptions,
+  SteerResult,
   Tree,
 } from './types.js';
 import { createClientView } from './view.js';
@@ -128,6 +130,15 @@ class DefaultClientSession<
    * stays empty across the session. Closed once on session close.
    */
   private readonly _encoder: Encoder<TInput, TOutput>;
+
+  /**
+   * Client-side steer state machine. Owns the `run.steer(...)` lifecycle:
+   * publishing steering inputs into an active Run, matching their channel
+   * echoes for the publish serial, and resolving consumed/not-consumed
+   * outcomes by set-membership of `steer-codec-message-ids` stamps observed
+   * on the Run's response messages.
+   */
+  private readonly _steer: SteerCoordinator<TInput>;
 
   // Spec: AIT-CT10, AIT-CT10a
   readonly tree: Tree<TOutput, TProjection>;
@@ -200,6 +211,13 @@ class DefaultClientSession<
       onClose: () => this._views.delete(this._view),
     });
     this._encoder = this._codec.createEncoder(this._channel);
+
+    this._steer = new SteerCoordinator<TInput>({
+      publish: async (input, opts) => this._encoder.publishInput(input, opts),
+      clientId: () => this._resolveClientId(),
+      isSessionClosed: () => this._state === SessionState.CLOSED,
+      logger: this._logger,
+    });
 
     this._views.add(this._view);
 
@@ -332,6 +350,11 @@ class DefaultClientSession<
           }
         }
 
+        // Feed the steer coordinator every inbound message: it matches steer
+        // echoes (for the publish serial), accumulates `steer-codec-message-ids`
+        // stamps, and resolves steer outcomes on run-suspend / run-end.
+        this._steer.observeMessage(ablyMessage);
+
         // Emit ably-message AFTER the apply so View subscribers can find the
         // owning node in `_lastVisibleNodeKeySet` (keyed by run-id for reply runs
         // and codec-message-id for inputs), which is refreshed by the tree
@@ -372,6 +395,11 @@ class DefaultClientSession<
     });
 
     const err = continuityLostError(stateChange, 'deliver events');
+
+    // Drain in-flight steers: post-loss the channel will not deliver the steer
+    // echoes or run-end lifecycle events that would resolve their outcomes, so
+    // they would otherwise hang until close().
+    this._steer.drainContinuityLost(err);
 
     // Surface the loss via the session `error` event. Consumers that expose a
     // per-run stream (e.g. the Vercel ChatTransport) error their stream off
@@ -431,7 +459,7 @@ class DefaultClientSession<
     input: TInput[],
     sendOptions: SendOptions | undefined,
     parentCodecMessageId: string | undefined,
-  ): Promise<ClientRun<TMessage>> {
+  ): Promise<ClientRun<TInput, TMessage>> {
     if (this._state === SessionState.CLOSED) {
       throw new Ably.ErrorInfo('unable to send; session is closed', ErrorCode.SessionClosed, 400);
     }
@@ -662,6 +690,16 @@ class DefaultClientSession<
       inputCodecMessageId: startedKey,
       started,
       inputEventId: triggerInputEventId,
+      // Publish a steering user-message into this active Run. The agent mints
+      // the run-id, so a steer attempted before `ai-run-start` lands is delayed
+      // (not rejected) until the id resolves: derive the coordinator's required
+      // `Promise<string>` from `started` (which resolves once run-start fills
+      // the run-id cell) and the live `base.runId` getter.
+      steer: (steerInput: TInput): SteerResult =>
+        this._steer.steer(
+          started.then(() => base.runId),
+          steerInput,
+        ),
       // The agent mints the run-id, so a fresh run has none until run-start.
       // Cancel synchronously by the triggering input's codec-message-id (the
       // handle the client owns at send time, = `inputCodecMessageId`): the
@@ -760,6 +798,10 @@ class DefaultClientSession<
       }
       this._pendingRunStarts.clear();
     }
+
+    // Reject any in-flight steer outcomes / pending echoes so callers awaiting
+    // them settle rather than hang on teardown.
+    this._steer.drainClosed();
 
     // Best-effort encoder close — flushes any pending stream operations.
     // The client only uses the discrete input path (publishInput), so this is

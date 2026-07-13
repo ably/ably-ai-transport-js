@@ -2,8 +2,10 @@
  * The chat workflow. One workflow instance per HTTP POST (workflowId ==
  * invocationId). The workflow opens the run in one activity (`openRun` —
  * createRun + start, no inference), runs the first inference as its own
- * `runInferenceStep`, then loops server-tool + follow-up-inference activities
- * until a terminal outcome comes back. Splitting open from the first inference
+ * `runInferenceStep`, then loops follow-up activities — server-tool steps and
+ * further inference passes after them — until a terminal outcome comes back.
+ * (Client steering is answered inside the inference activity's own loop, so it
+ * never reaches the workflow.) Splitting open from the first inference
  * keeps the two independently retryable: an inference failure retries the
  * inference alone, never re-opening the run.
  *
@@ -78,8 +80,9 @@ export async function chatWorkflow(input: ChatWorkflowInput): Promise<void> {
         return;
       }
 
-      // server-tools: one activity per tool call, then a follow-up inference
-      // (which will publish the terminal when it's done).
+      // Non-terminal (server-tools, the only one): run one activity per tool
+      // call, then loop with a follow-up inference (which publishes the terminal
+      // when it's done).
       for (const toolCall of outcome.serverToolCalls) {
         await runToolStep({ ids, invocation: input.invocation, toolCall });
       }

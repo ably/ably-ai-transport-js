@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ClientRun, RunStatus } from '@ably/ai-transport';
 import { isToolUIPart, type UIMessage } from 'ai';
-import { UIMessageCodec } from '@ably/ai-transport/vercel';
+import { UIMessageCodec, type VercelInput } from '@ably/ai-transport/vercel';
 import { useMessagesWithSeed } from '@ably/ai-transport/vercel/react';
 import { ArrowUpIcon, ExternalLinkIcon, SquareIcon } from 'lucide-react';
 
@@ -92,7 +92,7 @@ export function Chat({ chatId, clientId, seed, api }: ChatProps) {
   // The core session never sends HTTP — the app owns the trigger. Send sites
   // pass the `view.send*` promise; a POST failure is surfaced in the log.
   const wake = useCallback(
-    (runPromise: Promise<ClientRun<UIMessage>>) => {
+    (runPromise: Promise<ClientRun<VercelInput, UIMessage>>) => {
       void runPromise
         .then((run) => wakeAgent(api, run))
         .catch((error: unknown) => {

@@ -1,4 +1,5 @@
 import type { ClientRun } from '@ably/ai-transport';
+import type { VercelInput } from '@ably/ai-transport/vercel';
 import type { UIMessage } from 'ai';
 
 /**
@@ -35,7 +36,7 @@ interface WakeAgentResult {
  * @returns The agent-minted run-id and invocation-id read back from the response.
  * @throws If the endpoint responds with a non-JSON body (e.g. an error page).
  */
-export async function wakeAgent(api: string, run: ClientRun<UIMessage>): Promise<WakeAgentResult> {
+export async function wakeAgent(api: string, run: ClientRun<VercelInput, UIMessage>): Promise<WakeAgentResult> {
   const response = await fetch(api, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

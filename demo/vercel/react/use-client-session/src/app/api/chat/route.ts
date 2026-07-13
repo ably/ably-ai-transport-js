@@ -73,39 +73,15 @@ export async function POST(req: Request) {
   // run's own turn (the unit to persist).
   while (run.view.hasOlder()) await run.view.loadOlder();
   await run.start();
-  const conversation = run.view.getMessages().map((m) => m.message);
 
-  let result;
+  let root;
   try {
     // Object state has synced by the time get() resolves, so the snapshot
     // reflects the checklist as it stands before this run — the model resumes
     // from the current progress without conversation archaeology. get() rejects
     // when LiveObjects is unavailable; that happens after run-start has
     // published, hence the catch below ends the run.
-    const root = await session.object.get<ChecklistRoot>();
-    const steps = checklistFrom(root.compactJson());
-
-    result = streamText({
-      model: createModel(),
-      system: systemPrompt(steps),
-      messages: await convertToModelMessages(conversation),
-      tools: { ...tools, ...makeChecklistTool(root, () => Date.now()) },
-      abortSignal: run.abortSignal,
-      // Multi-step: streamText loops inference + server-tool execution within
-      // this call so server-executed tools (getWeather, approved
-      // getWeatherForecast, updateChecklist) chain straight into the model's
-      // next inference pass and produce the final response. It also lets the
-      // agent plan then flip step statuses one at a time across the loop, so
-      // the client watches the LiveObjects checklist advance live within the
-      // single run. Without this the run would suspend after each server tool,
-      // leading to empty-events continuations that violate the SDK's "every
-      // send carries ≥1 prompt-bearing event" invariant. Client-executed tools
-      // (getLocation) and approval-requested tools still pause this call
-      // naturally — streamText finishes that step with
-      // `finishReason: 'tool-calls'`, the run suspends, and the client
-      // publishes a continuation.
-      stopWhen: stepCountIs(10),
-    });
+    root = await session.object.get<ChecklistRoot>();
   } catch (error) {
     // The run has already started on the channel; end it so clients don't see
     // a permanently active run, then release the connection.
@@ -114,17 +90,61 @@ export async function POST(req: Request) {
     ably.close();
     throw error;
   }
+  const checklistRoot = root;
 
   after(async () => {
-    const pipeResult = await run.pipe(result.toUIMessageStream());
-    const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
-    if (outcome.reason === 'suspend') {
+    // Steering loop. `run.hasInput()` is a delta predicate:
+    //   - returns true on the first call (the trigger input is pending),
+    //   - returns true again whenever a steering message has folded into the
+    //     run since the previous call (the user typed `/steer ...` while we
+    //     were streaming),
+    //   - returns false only when nothing new has arrived since the previous
+    //     call AND the trigger has been processed at least once.
+    // Each iteration re-reads `run.view.getMessages()`, so any steering message
+    // that folded into the run is included in the model's context for the next
+    // inference pass. A suspend / cancel / error outcome breaks the loop.
+    let outcome: Awaited<ReturnType<typeof vercelRunOutcome>> | undefined;
+    while (run.hasInput()) {
+      const steps = checklistFrom(checklistRoot.compactJson());
+      const conversation = run.view.getMessages().map((m) => m.message);
+      const result = streamText({
+        model: createModel(),
+        system: systemPrompt(steps),
+        messages: await convertToModelMessages(conversation),
+        tools: { ...tools, ...makeChecklistTool(checklistRoot, () => Date.now()) },
+        abortSignal: run.abortSignal,
+        // Multi-step: streamText loops inference + server-tool execution within
+        // this call so server-executed tools (getWeather, approved
+        // getWeatherForecast, updateChecklist) chain straight into the model's
+        // next inference pass and produce the final response. It also lets the
+        // agent plan then flip step statuses one at a time across the loop, so
+        // the client watches the LiveObjects checklist advance live within the
+        // single run. Without this the run would suspend after each server tool,
+        // leading to empty-events continuations that violate the SDK's "every
+        // send carries ≥1 prompt-bearing event" invariant. Client-executed tools
+        // (getLocation) and approval-requested tools still pause this call
+        // naturally — streamText finishes that step with
+        // `finishReason: 'tool-calls'`, the run suspends, and the client
+        // publishes a continuation.
+        stopWhen: stepCountIs(10),
+      });
+      const pipeResult = await run.pipe(result.toUIMessageStream());
+      outcome = await vercelRunOutcome(pipeResult, result.finishReason);
+      // Exit on any non-complete outcome (suspend / cancel / error). On a
+      // `complete` outcome we re-check `hasInput()` at the top: a steer that
+      // arrived during this iteration makes it true again and drives another
+      // inference pass that includes the steer in the conversation.
+      if (outcome.reason !== 'complete') break;
+    }
+
+    const finalOutcome = outcome ?? { reason: 'complete' as const };
+    if (finalOutcome.reason === 'suspend') {
       await run.suspend();
     } else {
       // We choose to forward the run's terminal error so clients can show why
       // the run failed; a server could omit it to avoid exposing internal
       // failure detail.
-      await run.end(outcome);
+      await run.end(finalOutcome);
     }
     await session.end();
     ably.close();

@@ -75,31 +75,51 @@ export async function POST(req: Request) {
   // The database read (this demo's in-memory message-store stands in for it).
   const seed = loadMessages(invocation.sessionName);
   const seamId = seed.at(-1)?.id;
-  const tail = await run.view.loadUntil((m) => m.message.id === seamId);
+  await run.view.loadUntil((m) => m.message.id === seamId);
   await run.start();
 
-  const conversation = [...seed, ...tail.map((m) => m.message)];
-
-  const result = streamText({
-    model: createModel(),
-    system: `You are a helpful assistant. When the user asks about weather, use the getWeather tool. If they don't specify a location, call getLocation first to get their coordinates, then call getWeather with a description of that location. When the user asks about a weather forecast or upcoming weather, use getWeatherForecast.`,
-    messages: await convertToModelMessages(conversation),
-    tools,
-    abortSignal: run.abortSignal,
-    // Multi-step: streamText loops inference + server-tool execution within
-    // this call so server-executed tools (getWeather, approved
-    // getWeatherForecast) chain straight into the model's next inference pass
-    // and produce the final response. Client-executed tools (getLocation) and
-    // approval-requested tools still pause this call naturally — streamText
-    // finishes that step with `finishReason: 'tool-calls'`, the run suspends,
-    // and the client publishes a continuation.
-    stopWhen: stepCountIs(10),
-  });
-
   after(async () => {
-    const pipeResult = await run.pipe(result.toUIMessageStream());
-    const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
-    if (outcome.reason === 'suspend') {
+    // Steering loop. `run.hasInput()` is a delta predicate:
+    //   - returns true on the first call (the trigger input is pending),
+    //   - returns true again whenever a steering message has folded into the
+    //     run since the previous call (the user typed `/steer ...` while we
+    //     were streaming),
+    //   - returns false only when nothing new has arrived since the previous
+    //     call AND the trigger has been processed at least once.
+    // Each iteration recomposes the model context from the seed plus
+    // `run.view.getMessages()` — after the seam walk that view holds exactly
+    // the not-yet-stored tail, and it grows as steering messages fold in, so
+    // each steering message is included in the next inference pass. A suspend /
+    // cancel / error outcome breaks the loop.
+    let outcome: Awaited<ReturnType<typeof vercelRunOutcome>> | undefined;
+    while (run.hasInput()) {
+      const conversation = [...seed, ...run.view.getMessages().map((m) => m.message)];
+      const result = streamText({
+        model: createModel(),
+        system: `You are a helpful assistant. When the user asks about weather, use the getWeather tool. If they don't specify a location, call getLocation first to get their coordinates, then call getWeather with a description of that location. When the user asks about a weather forecast or upcoming weather, use getWeatherForecast.`,
+        messages: await convertToModelMessages(conversation),
+        tools,
+        abortSignal: run.abortSignal,
+        // Multi-step: streamText loops inference + server-tool execution within
+        // this call so server-executed tools (getWeather, approved
+        // getWeatherForecast) chain straight into the model's next inference pass
+        // and produce the final response. Client-executed tools (getLocation) and
+        // approval-requested tools still pause this call naturally — streamText
+        // finishes that step with `finishReason: 'tool-calls'`, the run suspends,
+        // and the client publishes a continuation.
+        stopWhen: stepCountIs(10),
+      });
+      const pipeResult = await run.pipe(result.toUIMessageStream());
+      outcome = await vercelRunOutcome(pipeResult, result.finishReason);
+      // Exit on any non-complete outcome (suspend / cancel / error). On a
+      // `complete` outcome we re-check `hasInput()` at the top: a steering
+      // message that arrived during this iteration makes it true again and
+      // drives another inference pass that includes it in the conversation.
+      if (outcome.reason !== 'complete') break;
+    }
+
+    const finalOutcome = outcome ?? { reason: 'complete' as const };
+    if (finalOutcome.reason === 'suspend') {
       // The run paused for a client-executed or approval-gated tool. Suspend
       // it (publishing the suspend signal); the client resolves the tool and
       // sends a continuation that resumes this run. A suspended run is never
@@ -115,10 +135,10 @@ export async function POST(req: Request) {
       // idempotent; only completed runs are stored (cancelled/errored partials
       // stay on the channel via run-end).
       const runMessages = run.messages;
-      await run.end(outcome);
+      await run.end(finalOutcome);
       // The database write: persist the completed run's messages (the in-memory
       // message-store stands in for a durable store).
-      if (outcome.reason === 'complete') await appendMessages(invocation.sessionName, runMessages);
+      if (finalOutcome.reason === 'complete') await appendMessages(invocation.sessionName, runMessages);
     }
     await session.end();
     ably.close();

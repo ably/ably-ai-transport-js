@@ -109,11 +109,12 @@ export interface OutputEventDispatch<U> {
 
 /**
  * Partition an output descriptor set's `event` descriptors into an exact-type
- * map and a wildcard list. Stream descriptors are skipped — each driver indexes
- * those by its own key (phase on encode, kind on decode). Shared by the output
- * encode and decode drivers so the exact-vs-wildcard split has one home.
+ * map and a wildcard list. Non-`event` descriptors are skipped — each driver
+ * indexes stream descriptors by its own key (phase on encode, kind on decode),
+ * and drop descriptors are the encode driver's concern alone. Shared by the
+ * output encode and decode drivers so the exact-vs-wildcard split has one home.
  * @template U - The codec's event union.
- * @param descriptors - The full descriptor set (events + streamed families).
+ * @param descriptors - The full descriptor set (events, streamed families, and dropped types).
  * @returns The event descriptors split into {@link OutputEventDispatch}.
  */
 export const partitionOutputEvents = <U extends { type: string }>(

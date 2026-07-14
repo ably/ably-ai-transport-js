@@ -3,9 +3,10 @@
  *
  * Builds a chunk→descriptor registry once, then routes each event: discrete
  * descriptors publish a single message, streamed families drive
- * start/append/close, and escape-hatch `encode` functions take over entirely.
- * Headers are always built through the descriptor's declared fields (the `h`
- * builder), so the imperative paths can't drift from the declarative ones.
+ * start/append/close, dropped types skip silently (publish nothing), and
+ * escape-hatch `encode` functions take over entirely. Headers are always built
+ * through the descriptor's declared fields (the `h` builder), so the
+ * imperative paths can't drift from the declarative ones.
  */
 
 import * as Ably from 'ably';
@@ -39,7 +40,7 @@ export interface OutputDescriptorEncoder<U> {
 /**
  * Build an output encode driver for a descriptor set bound to a wire message name.
  * @template U - The codec's event union.
- * @param descriptors - The descriptor set (events + streamed families).
+ * @param descriptors - The descriptor set (events, streamed families, and dropped types).
  * @param wireName - The Ably message name for this direction (`ai-output` / `ai-input`).
  * @returns An {@link OutputDescriptorEncoder} routing each event through its descriptor.
  */
@@ -52,6 +53,9 @@ export const createOutputDescriptorEncoder = <U extends { type: string }>(
   // maps to a list of candidates; delta/end types are unique per family (1:1).
   const streamStartsByType = new Map<string, OutputStreamDescriptor<U>[]>();
   const streamDeltasOrEndsByType = new Map<string, { descriptor: OutputStreamDescriptor<U>; phase: 'delta' | 'end' }>();
+  // Types the codec deliberately keeps off the wire (see the `drop` construct):
+  // skipped silently, where any other undescribed type throws.
+  const droppedTypes = new Set<string>();
 
   for (const descriptor of descriptors) {
     if (descriptor.construct === 'stream') {
@@ -60,6 +64,8 @@ export const createOutputDescriptorEncoder = <U extends { type: string }>(
       streamStartsByType.set(descriptor.start, starts);
       streamDeltasOrEndsByType.set(descriptor.delta, { descriptor, phase: 'delta' });
       streamDeltasOrEndsByType.set(descriptor.end, { descriptor, phase: 'end' });
+    } else if (descriptor.construct === 'drop') {
+      droppedTypes.add(descriptor.type);
     }
   }
 
@@ -110,7 +116,16 @@ export const createOutputDescriptorEncoder = <U extends { type: string }>(
         }
       }
 
-      const descriptor = discreteByType.get(type) ?? wildcards.find((w) => w.match?.(type));
+      // Discrete dispatch. An exact `event` wins (an exact event+drop overlap
+      // is rejected at defineCodec time); otherwise an exact `drop` declaration
+      // is honoured before wildcard events, so a specific drop beats an
+      // `event('x-*')` family. The drop check must also stay after the stream
+      // dispatch above, so a dropped type can serve as a shared start's decline
+      // target. A type nothing dispatches to at all is a genuine surprise —
+      // reject it loudly rather than silently dropping content.
+      const exact = discreteByType.get(type);
+      if (!exact && droppedTypes.has(type)) return;
+      const descriptor = exact ?? wildcards.find((w) => w.match?.(type));
       if (!descriptor) {
         throw new Ably.ErrorInfo(`unable to publish; unsupported event type '${type}'`, ErrorCode.InvalidArgument, 400);
       }

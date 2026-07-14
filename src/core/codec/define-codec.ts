@@ -11,11 +11,11 @@
  *
  * Both directions are declarative descriptor tables driven by the generic
  * encode/decode drivers. `defineCodec` hands each table a direction-scoped
- * builder typed to that direction's union — `{ event, stream }` for outputs,
- * `{ event, batch }` for inputs — so each construct's spec stays type-correct
- * per direction under shared construct names, with no per-entry casts. Both
- * sides build/read wire headers through the same shared field bindings, so
- * encode and decode cannot drift.
+ * builder typed to that direction's union — `{ event, stream, drop }` for
+ * outputs, `{ event, batch }` for inputs — so each construct's spec stays
+ * type-correct per direction under shared construct names, with no per-entry
+ * casts. Both sides build/read wire headers through the same shared field
+ * bindings, so encode and decode cannot drift.
  */
 
 import * as Ably from 'ably';
@@ -126,7 +126,7 @@ export interface DefineCodecConfig<
   reducer: CodecReducer<TInput, TOutput, TProjection, TMessage>;
   /**
    * The declarative output (`ai-output`) descriptor table, returned from the
-   * injected `{ event, stream }` builder (both curried on `TOutput`).
+   * injected `{ event, stream, drop }` builder (curried on `TOutput`).
    */
   output: (b: OutputBuilder<TOutput>) => readonly OutputDescriptor<TOutput>[];
   /**
@@ -350,11 +350,12 @@ const rejectReservedFieldKeys = (fields: readonly HeaderField<unknown>[], owner:
  *
  * - duplicate wire `kind`s (discrete event types + stream family kinds, which
  *   drive decode dispatch);
- * - duplicate encode-dispatch chunk types — a stream delta/end phase or a
- *   discrete event must each be claimed by exactly one descriptor. A stream
- *   `start` chunk type is exempt: it may be shared across families (resolved
- *   by `startWhen`) and may double as a discrete event (its decline target);
- *   its only forbidden overlap is being another family's delta/end phase;
+ * - duplicate encode-dispatch chunk types — a stream delta/end phase, a discrete
+ *   event, or a dropped type must each be claimed by exactly one descriptor. A
+ *   stream `start` chunk type is exempt: it may be shared across families
+ *   (resolved by `startWhen`) and may double as a discrete event/drop (its
+ *   decline target); its only forbidden overlap is being another family's
+ *   delta/end phase;
  * - duplicate input `kind`s and duplicate `partType`s within a batch;
  * - field bindings on the driver-reserved `kind` / `partType` header keys.
  * @param outputs - The assembled output descriptor table.
@@ -368,13 +369,13 @@ const validateTables = <TInput, TOutput>(
   // Encode dispatch. A chunk `type` is claimed by exactly one descriptor, with
   // one deliberate exception: a stream `start` chunk type may be **shared**
   // across families (the encoder resolves it at encode time by each family's
-  // `startWhen`) and may also back a discrete `event` — a start whose
+  // `startWhen`) and may also back a discrete `event`/`drop` — a start whose
   // discriminators all decline falls through to discrete dispatch. So starts
   // are collected apart from the "sole claim" chunk types — a stream delta/end
-  // phase, a discrete event — which must each be claimed by exactly one
-  // descriptor. The one overlap a start must NOT have (being another family's
-  // delta/end, which the start-first dispatch would shadow) is checked after
-  // the loop.
+  // phase, a discrete event, a dropped type — which must each be claimed by
+  // exactly one descriptor. The one overlap a start must NOT have (being
+  // another family's delta/end, which the start-first dispatch would shadow)
+  // is checked after the loop.
   const soleChunkTypes = new Map<string, { owner: string; isDeltaOrEnd: boolean }>();
   const startChunkTypes = new Map<string, string>();
   const reserveSoleChunkType = (literal: string, owner: string, { isDeltaOrEnd }: { isDeltaOrEnd: boolean }): void => {
@@ -395,7 +396,7 @@ const validateTables = <TInput, TOutput>(
       reserveSoleChunkType(descriptor.type, owner, { isDeltaOrEnd: false });
       reserve(wireKinds, descriptor.type, owner);
       rejectReservedFieldKeys(descriptor.fields, owner);
-    } else {
+    } else if (descriptor.construct === 'stream') {
       const owner = `output stream '${descriptor.kind}'`;
       reserve(wireKinds, descriptor.kind, owner);
 
@@ -406,12 +407,16 @@ const validateTables = <TInput, TOutput>(
       reserveSoleChunkType(descriptor.delta, owner, { isDeltaOrEnd: true });
       reserveSoleChunkType(descriptor.end, owner, { isDeltaOrEnd: true });
       rejectReservedFieldKeys(descriptor.fields, owner);
+    } else {
+      // A dropped type produces no wire output; reserving it as a sole claim
+      // catches an author both handling and dropping the same type.
+      reserveSoleChunkType(descriptor.type, `dropped output '${descriptor.type}'`, { isDeltaOrEnd: false });
     }
   }
 
   // A stream start that is also some family's delta/end phase would never route
   // to that delta/end (the encoder tries the start path first), so forbid it.
-  // Overlap with a discrete event (a decline target) is legal and skipped.
+  // Overlap with a discrete event/drop (a decline target) is legal and skipped.
   for (const [start, startOwner] of startChunkTypes) {
     const holder = soleChunkTypes.get(start);
     if (holder?.isDeltaOrEnd === true) {

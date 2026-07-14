@@ -101,7 +101,7 @@ export const UIMessageCodec = defineCodec<VercelInput, VercelOutput>()({
 | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `adapterTag?`      | Optional Ably-Agent identifier; only set on the codec when supplied                                                                                                                                               |
 | `reducer`          | `{ init, fold, getMessages }` - `TProjection` / `TMessage` infer from here                                                                                                                                        |
-| `output`           | Returns the `ai-output` descriptor table from the injected `{ event, stream }` builder                                                                                                                            |
+| `output`           | Returns the `ai-output` descriptor table from the injected `{ event, stream, drop }` builder                                                                                                                      |
 | `input`            | Returns the `ai-input` descriptor table from the injected `{ event, batch }` builder                                                                                                                              |
 | `factories`        | Required. Selects, from the injected full well-known set, the factory subset this codec exposes: `createUserMessage` / `createRegenerate` are mandatory, each tool factory only when `TInput` carries the variant |
 | `decodeLifecycle?` | Factory called once per decoder instance for mid-stream-join repair; omit for none                                                                                                                                |
@@ -110,10 +110,11 @@ export const UIMessageCodec = defineCodec<VercelInput, VercelOutput>()({
 
 Both directions are declarative descriptor tables driven by the generic encode/decode drivers, so encode and decode cannot drift. Each builder is curried on the codec's union, so every callback receives the exact narrowed member with no casts.
 
-The **output** builder offers two constructs:
+The **output** builder offers three constructs:
 
 - `event(type, spec?)` - one discrete output event. `spec` declares optional header `fields` (defaulting to none), an optional wire `data` codec, an `ephemeral` predicate, and an `encode` escape hatch. A `-*` type literal (e.g. `data-*`) declares a wildcard family; the dispatch predicate is derived from the literal's prefix.
 - `stream(kind, spec)` - a streamed family. The first argument is the family's `kind` - the value stamped on the wire `kind` dispatch header. `spec` declares the `start` / `delta` / `end` chunk `type`s, a `streamId` extractor, a `deltaField`, header `fields`, and `onEnd` / `decodeDelta` / `decodeEnd` / `decodeDiscrete` hatches. The driver routes start/delta/end to `startStream()` / `appendStream()` / `closeStream()`.
+- `drop(type)` - an output `type` the codec deliberately keeps off the wire. The encoder skips it silently (publishing nothing), and any type that is neither described nor dropped throws on encode - so an unexpected provider event fails loudly rather than being dropped unnoticed. An exact `drop` beats a wildcard `event` family, and a dropped type may double as a shared stream start's decline target.
 
 The **input** builder mirrors it:
 
@@ -245,7 +246,7 @@ To support a new AI framework, assemble a codec with [`defineCodec`](#defining-a
 
 1. **Define the type parameters** - the input/output event unions (`TInput` extending `CodecInputEvent`, `TOutput` extending `CodecOutputEvent`), the per-node projection, and the domain message type
 2. **Implement the reducer** - `init()`, `fold()` (dispatching on `event.direction`), and `getMessages()`, folding events unconditionally (the transport delivers them once, in canonical order)
-3. **Declare the output table** - the `output` builder function returning `event` / `stream` descriptors built on [header-field bindings](#header-field-bindings)
+3. **Declare the output table** - the `output` builder function returning `event` / `stream` / `drop` descriptors built on [header-field bindings](#header-field-bindings)
 4. **Declare the input table** - the `input` builder function returning `event` / `batch` descriptors
 5. **Select the exposed factories** - the `factories` selector: return `base` unchanged for a full codec, or the mandatory `createUserMessage` / `createRegenerate` subset for a partial one
 6. **Optionally supply `decodeLifecycle`** - a policy factory for mid-stream-join repair

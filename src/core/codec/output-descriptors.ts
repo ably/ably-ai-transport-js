@@ -9,10 +9,11 @@
  * decoder, stream reconstruction).
  *
  * Authoring is cast-free: the {@link outputBuilder} factory hands the codec an
- * `{ event, stream }` pair curried on the codec's output union, so every `data` /
- * `encode` / `decode` callback receives the exact narrowed member. The descriptors
- * are then erased to a heterogeneous {@link OutputDescriptor} via a single
- * documented cast at each constructor boundary — never in author code.
+ * `{ event, stream, drop }` builder curried on the codec's output union, so
+ * every `data` / `encode` / `decode` callback receives the exact narrowed
+ * member. The descriptors are then erased to a heterogeneous
+ * {@link OutputDescriptor} via a single documented cast at each constructor
+ * boundary — never in author code.
  */
 
 import type * as Ably from 'ably';
@@ -293,8 +294,21 @@ export interface OutputStreamDescriptor<U> {
   decodeDiscrete?: (ctx: OutputDecodeContext) => U[];
 }
 
-/** An erased output descriptor — a discrete event or a streamed family. */
-export type OutputDescriptor<U> = OutputEventDescriptor<U> | OutputStreamDescriptor<U>;
+/**
+ * An erased drop descriptor — a known output `type` the codec deliberately
+ * keeps off the wire (see {@link OutputBuilder.drop}). Carries no encode/decode:
+ * the encode driver skips these types silently instead of throwing, and a
+ * dropped type never reaches the wire so there is nothing to decode.
+ */
+export interface OutputDropDescriptor {
+  /** Discriminator — the construct this descriptor was built with. */
+  construct: 'drop';
+  /** The output event `type` dropped on encode (never published, never decoded). */
+  type: string;
+}
+
+/** An erased output descriptor — a discrete event, a streamed family, or a dropped type. */
+export type OutputDescriptor<U> = OutputEventDescriptor<U> | OutputStreamDescriptor<U> | OutputDropDescriptor;
 
 // ---------------------------------------------------------------------------
 // Builder factory
@@ -302,8 +316,9 @@ export type OutputDescriptor<U> = OutputEventDescriptor<U> | OutputStreamDescrip
 
 /**
  * The direction-scoped output builder `defineCodec` injects into the `output`
- * config function — `event` (single discrete) and `stream` (streamed family),
- * both curried on the codec's output union so author entries narrow cast-free.
+ * config function — `event` (single discrete), `stream` (streamed family), and
+ * `drop` (deliberately kept off the wire), curried on the codec's output union
+ * so author entries narrow cast-free.
  * @template U - The codec's output union.
  */
 export interface OutputBuilder<U extends { type: string }> {
@@ -331,12 +346,26 @@ export interface OutputBuilder<U extends { type: string }> {
     kind: string,
     spec: OutputStreamSpec<U, S, D, E>,
   ) => OutputDescriptor<U>;
+  /**
+   * Declare an output `type` the codec deliberately keeps off the wire — the
+   * codec's wire-curation policy. A dropped event is redundant on the wire — no
+   * projection folds it and no decode policy reads it — so the encoder publishes
+   * nothing for it, silently. Each entry should carry a
+   * comment saying why the event is redundant (e.g. a lifecycle opener whose
+   * snapshot re-echoes the request envelope no consumer reads). Any output type
+   * that is neither described nor dropped still throws on encode, so a
+   * newly-appearing provider event is never dropped unnoticed.
+   * @param type - The output event `type` literal to drop on encode.
+   * @returns An erased {@link OutputDescriptor}.
+   */
+  drop: (type: U['type']) => OutputDescriptor<U>;
 }
 
 /**
- * Build the curried `{ event, stream }` output builder for a codec's output union.
- * `defineCodec` calls this once and hands the result to the `output` config
- * function; mirrors the input side's {@link import('./input-descriptors.js').inputBuilder}.
+ * Build the curried `{ event, stream, drop }` output builder for a codec's
+ * output union. `defineCodec` calls this once and hands the result to the
+ * `output` config function; mirrors the input side's
+ * {@link import('./input-descriptors.js').inputBuilder}.
  * @template U - The codec's output union.
  * @returns The direction-scoped {@link OutputBuilder}.
  */
@@ -361,4 +390,7 @@ export const outputBuilder = <U extends { type: string }>(): OutputBuilder<U> =>
   stream: (kind, spec) =>
     // CAST: see `event` — the narrowed stream spec erases to `OutputDescriptor<U>`.
     ({ construct: 'stream', kind, ...spec }) as unknown as OutputDescriptor<U>,
+  // No spec to erase: a drop descriptor is just its dispatch type, so it
+  // matches OutputDropDescriptor (a member of the union) with no cast.
+  drop: (type) => ({ construct: 'drop', type }),
 });

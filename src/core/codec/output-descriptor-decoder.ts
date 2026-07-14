@@ -57,7 +57,8 @@ export interface OutputDescriptorDecoder<U> {
 /**
  * Build an output decode driver for a descriptor set.
  * @template U - The codec's event union.
- * @param descriptors - The descriptor set (events + streamed families).
+ * @param descriptors - The descriptor set (events, streamed families, and
+ * dropped types — the latter never reach the wire, so nothing decodes for them).
  * @returns An {@link OutputDescriptorDecoder} that reconstructs events from the wire.
  */
 export const createOutputDescriptorDecoder = <U extends { type: string }>(

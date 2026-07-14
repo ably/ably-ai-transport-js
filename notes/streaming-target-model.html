@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenAI codec streaming — the target model</title>
+    <style>
+      :root {
+        --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --border: #2a2f3a;
+        --text: #e6e9ef; --muted: #9aa3b0; --accent: #6ea8fe; --green: #46c08a;
+        --amber: #e3a008; --red: #ef6b6b; --purple: #d2a8ff; --cyan: #8fd3e8; --pink: #f6a5c0;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.6 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 30px 20px 80px; }
+      .wrap { max-width: 1120px; margin: 0 auto; }
+      h1 { font-size: 24px; margin: 0 0 8px; letter-spacing: -0.01em; }
+      p.lede { color: var(--muted); margin: 0 0 6px; max-width: 920px; font-size: 15.5px; }
+      a { color: var(--accent); }
+      code, .mono { font-family: var(--mono); }
+      code.inl { font-size: 12.5px; background: #11151c; padding: 1px 6px; border-radius: 4px; color: #d6b36b; border: 1px solid var(--border); }
+      .status { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--green); border: 1px solid #2c4a3b; background: #10231b; border-radius: 999px; padding: 3px 11px; margin-bottom: 18px; }
+      .sec { margin-top: 40px; }
+      .sec > .h { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; }
+      .sec > .h .n { font-family: var(--mono); font-size: 13px; color: var(--accent); border: 1px solid var(--border); border-radius: 6px; padding: 2px 8px; }
+      .sec > .h .t { font-size: 18px; font-weight: 700; }
+      .sec > p.intro { color: var(--muted); margin: 0 0 16px; max-width: 960px; }
+
+      .goal { border: 1px solid var(--border); border-left: 3px solid var(--green); border-radius: 12px; background: var(--panel); padding: 16px 20px; }
+      .goal .big { font-size: 17px; font-weight: 700; color: #fff; }
+      .goal p { margin: 8px 0 0; color: #cfd5df; font-size: 14px; }
+
+      .slotfig { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); padding: 16px 20px; font-family: var(--mono); font-size: 13px; line-height: 1.9; white-space: pre; overflow-x: auto; }
+      .slotfig .kw { color: var(--purple); } .slotfig .sl { color: var(--cyan); font-weight: 700; } .slotfig .cm { color: #5a626e; } .slotfig .lit { color: #c9a978; }
+      .slotfig .hl { background: #11202a; border: 1px solid #28525f; border-radius: 5px; padding: 0 5px; }
+
+      table.fam { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 4px; }
+      table.fam th, table.fam td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+      table.fam th { color: var(--muted); font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+      table.fam td.fam { font-family: var(--mono); color: var(--cyan); font-weight: 700; white-space: nowrap; }
+      table.fam td.m { font-family: var(--mono); font-size: 12px; color: #cfd5df; }
+      table.fam td.id { font-family: var(--mono); font-size: 12px; }
+      table.fam .iid { color: var(--green); } table.fam .ci { color: var(--pink); } table.fam .si { color: var(--amber); } table.fam .disc { color: var(--purple); }
+      table.fam td.fill { font-family: var(--mono); font-size: 12px; color: #d6b36b; }
+      table.fam tr.done td { border-bottom-color: #2c4a3b; }
+
+      .rule { margin-top: 14px; border-left: 3px solid var(--accent); background: var(--panel2); border-radius: 0 8px 8px 0; padding: 12px 15px; font-size: 13.5px; color: #d3d9e2; }
+      .rule b { color: #fff; } .rule code { font-family: var(--mono); font-size: 12.5px; color: #d6b36b; }
+
+      .caps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; }
+      @media (max-width: 900px) { .caps { grid-template-columns: 1fr; } }
+      .cap { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); padding: 15px 16px; border-top: 3px solid var(--accent); }
+      .cap .cn { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--accent); font-weight: 700; }
+      .cap .ct { font-size: 15px; font-weight: 700; margin: 4px 0 8px; }
+      .cap p { margin: 0 0 8px; font-size: 13px; color: #cfd5df; } .cap p:last-child { margin: 0; }
+      .cap .lbl { font-weight: 700; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; padding: 1px 6px; border-radius: 5px; margin-right: 6px; }
+      .cap .lbl.today { color: #e0894b; border: 1px solid #4a3320; background: #1e1610; }
+      .cap .lbl.want { color: var(--green); border: 1px solid #2c4a3b; background: #10231b; }
+      .cap .ex { font-family: var(--mono); font-size: 11px; line-height: 1.7; background: #11151c; border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; margin: 10px 0 0; white-space: pre-wrap; word-break: break-word; color: #cfd5df; }
+      .cap .ex .lit { color: #c9a978; }
+      .cap .ex .cmt { color: #5a626e; }
+      .cap .ex .add { color: var(--green); font-weight: 700; background: #10231b; border: 1px solid #2c4a3b; border-radius: 4px; padding: 0 3px; }
+      .cap code { font-family: var(--mono); font-size: 12px; color: #d6b36b; }
+
+      table.mx { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 18px; }
+      table.mx th, table.mx td { text-align: center; padding: 9px 10px; border-bottom: 1px solid var(--border); }
+      table.mx th:first-child, table.mx td:first-child { text-align: left; }
+      table.mx th { color: var(--muted); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+      table.mx td.fam { font-family: var(--mono); color: var(--cyan); font-weight: 700; white-space: nowrap; }
+      table.mx .y { color: var(--green); font-weight: 700; } table.mx .n { color: #5a626e; }
+
+      .callout { margin-top: 16px; border-left: 3px solid var(--amber); background: var(--panel2); border-radius: 0 8px 8px 0; padding: 13px 16px; font-size: 13.5px; color: #d3d9e2; }
+      .callout.blue { border-left-color: var(--accent); }
+      .callout b { color: #fff; } .callout code { font-family: var(--mono); font-size: 12.5px; color: #d6b36b; }
+      ul.tight { margin: 8px 0 0; padding-left: 20px; } ul.tight li { margin-bottom: 7px; color: #d3d9e2; }
+      ul.tight code { font-family: var(--mono); font-size: 12.5px; color: #d6b36b; }
+
+      .next { margin-top: 40px; border: 1px dashed var(--border); border-radius: 12px; padding: 16px 20px; background: #14171d; }
+      .next h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); margin: 0 0 8px; }
+      .next p { margin: 0; font-size: 14px; color: #cfd5df; } .next code { font-family: var(--mono); color: #d6b36b; }
+      .footref { margin-top: 30px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--border); padding-top: 14px; }
+      .footref code { font-family: var(--mono); color: #d6b36b; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>OpenAI codec streaming — the target model</h1>
+      <div class="status">Design target · implemented by this PR</div>
+      <div style="border: 2px solid #b00; background: #fff3f3; color: #7a0000; padding: 12px 16px; border-radius: 6px; margin: 16px 0; font-size: 15px;">
+        ⚠️ <b>Out of date.</b> Written for an earlier shape of the OpenAI codec;
+        not refreshed for its current wire model (drop-based wire curation,
+        slimmed <code>output_item.done</code>, payload-less terminal lifecycle
+        events, and the <code>deltaFields</code> &rarr; <code>decodeDeltaFields</code>
+        rename). Background only — do not rely on the specifics.
+      </div>
+      <p class="lede">
+        How the OpenAI codec treats OpenAI's streamed events, and the codec-API surface that treatment runs on. This pins
+        down the <b>target behaviour</b>, the <b>three capabilities</b> that behaviour needed from the
+        <code class="inl">stream()</code> construct, and <b>what the PR adds</b> to provide them —
+        <code class="inl">streamId</code>, <code class="inl">deltaFields</code> + <code class="inl">decodeDelta</code>, and
+        <code class="inl">startWhen</code>. Everything described here ships on this branch.
+      </p>
+
+      <!-- 1 -->
+      <section class="sec">
+        <div class="h"><span class="n">1</span><span class="t">The bar</span></div>
+        <div class="goal">
+          <div class="big">We stream everything OpenAI can stream.</div>
+          <p>If a piece of content streams over the OpenAI wire and our codec <em>can't</em> stream it, that's not a
+            content-specific shortcoming — it means the <code class="inl">stream()</code> model is too narrow and needs
+            revisiting. Streaming is the realtime service's whole pitch; "carry the final value only" is not an acceptable
+            resting state for anything OpenAI delivers incrementally.</p>
+          <p>And the bar is met with no middle ground: every event OpenAI streams outside the opt-in hosted-tool / modality
+            surfaces is modelled — as a stream, a discrete boundary, or lifecycle — and any undescribed event <b>throws at the
+            encoder</b> rather than being silently dropped (see the inventory at the tail of
+            <code class="inl">src/openai/codec/descriptors.ts</code>).</p>
+        </div>
+      </section>
+
+      <!-- 2 -->
+      <section class="sec">
+        <div class="h"><span class="n">2</span><span class="t">The unifying insight: it's all "text growing into a slot"</span></div>
+        <p class="intro">
+          Lined up, every streamable family is the <b>same shape</b>: a text value that grows into a <b>slot</b> of an item,
+          where a slot is <code class="inl">(item, position)</code> and is opened by some <em>start</em> event. Once you see that,
+          the differences between families are just <em>which</em> slot and <em>which</em> events name it.
+        </p>
+        <div class="slotfig"><span class="kw">item</span>                               <span class="cm">← the whole item, addressed by item_id</span>
+  └─ <span class="sl">content</span>[ <span class="hl">i</span> ]  or  <span class="sl">summary</span>[ <span class="hl">i</span> ]     <span class="cm">← a SLOT: one position in an item array (i = content_index / summary_index)</span>
+        └─ <span class="lit">"text that grows, delta by delta"</span>   <span class="cm">← what the stream fills</span>
+
+  <span class="cm">function_call is the exception: no array — the slot is the item's own `arguments` field</span></div>
+        <div class="rule"><b>A stream = one growing text value bound to one slot.</b> The slot's identity is <code>item_id</code> plus (at most) one position index. That identity is what makes concurrent streams distinct, and it's what the reducer needs to place the text.</div>
+      </section>
+
+      <!-- 3 -->
+      <section class="sec">
+        <div class="h"><span class="n">3</span><span class="t">The five families — all streaming</span></div>
+        <p class="intro">
+          Five streamed families (plus the hosted-tool streams, §6, which are the same shape) — all five ship in this PR.
+          Each row is "what opens the slot → what grows it → what closes it," the slot identity, and where the text lands in
+          the projection. The authoritative table is <code class="inl">src/openai/codec/descriptors.ts</code>.
+        </p>
+        <table class="fam">
+          <tr><th style="width:16%">family</th><th style="width:22%">start (opens slot)</th><th style="width:15%">delta → end</th><th style="width:20%">slot identity</th><th>fills</th></tr>
+          <tr class="done"><td class="fam">output_text</td><td class="m">content_part.added <span class="disc">[part=output_text]</span></td><td class="m">output_text.delta / .done</td><td class="id"><span class="iid">item_id</span> + <span class="ci">content_index</span></td><td class="fill">message content[ci].text</td></tr>
+          <tr class="done"><td class="fam">refusal</td><td class="m">content_part.added <span class="disc">[part=refusal]</span></td><td class="m">refusal.delta / .done</td><td class="id"><span class="iid">item_id</span> + <span class="ci">content_index</span></td><td class="fill">message content[ci].refusal</td></tr>
+          <tr class="done"><td class="fam">reasoning_summary_text</td><td class="m">reasoning_summary_part.added</td><td class="m">reasoning_summary_text.delta / .done</td><td class="id"><span class="iid">item_id</span> + <span class="si">summary_index</span></td><td class="fill">reasoning summary[si].text</td></tr>
+          <tr class="done"><td class="fam">reasoning_text</td><td class="m">content_part.added <span class="disc">[part=reasoning_text]</span></td><td class="m">reasoning_text.delta / .done</td><td class="id"><span class="iid">item_id</span> + <span class="ci">content_index</span></td><td class="fill">reasoning content[ci].text</td></tr>
+          <tr class="done"><td class="fam">function_call_arguments</td><td class="m">output_item.added <span class="disc">[item=function_call]</span></td><td class="m">function_call_arguments.delta / .done</td><td class="id"><span class="iid">item_id</span> — the item itself <span style="color:#5a626e">(read at <span class="iid">item.id</span>, nested, on the start; at top-level <span class="iid">item_id</span> on delta/done)</span></td><td class="fill">fc item .arguments</td></tr>
+        </table>
+        <div class="rule">
+          <b>Family naming rule:</b> a family's name is the stem its own <code>.delta</code> and <code>.done</code> events share
+          (equivalently, "the thing before <code>.delta</code>"), with the <code>response.</code> prefix dropped — unique,
+          mechanical, self-documenting. The <em>start</em> is deliberately not part of the name because starts get
+          <em>shared</em> across families.
+        </div>
+        <div class="callout blue">
+          <b>Family ≠ instance.</b> A <b>family</b> is a static <em>kind</em> of stream (a reconstruction recipe, selected on
+          decode by the wire <code>kind</code> header). A <b>stream-id</b> is one live <em>instance</em> of a family — one slot.
+          One family can have many concurrent instances (two text parts = two <code>output_text</code> instances, distinct
+          stream-ids). We need multiple <em>families</em> because the protocol has multiple distinct <em>kinds</em> of streamed
+          content — each emits its own event types and lands in its own place — and the family is what restores that "what is
+          it?" distinction the wire strips away.
+        </div>
+        <div class="callout">
+          <b>Why <code>function_call_arguments</code> looks asymmetric to the rest.</b> The other four families fill a <em>part</em>
+          inside an item's array (<code>content[]</code> or <code>summary[]</code>), and a part has a <b>dedicated opener</b> —
+          <code>content_part.added</code> / <code>reasoning_summary_part.added</code> — that names the already-created item by
+          <b>top-level <code>item_id</code></b> plus a position index. That's why they only need <b>compose</b> (item_id + index)
+          and get a clean dedicated start.
+          <br><br>
+          A <code>function_call</code> has <b>no sub-array of parts</b> — its <code>arguments</code> is a plain string field on
+          the item itself — so OpenAI emits <b>no <code>*_part.added</code> event</b> for it. Its stream has to start on the only
+          earlier anchor: the item-creation event <code>output_item.added</code>, which carries the whole <code>item</code>
+          object <em>inline</em> — so the id sits <b>nested at <code>item.id</code></b>. That one fact is the root of <em>both</em>
+          its oddities: the nested id forces <b>relocate</b> (Cap 1), and because <code>output_item.added</code> also births
+          messages and reasoning items, the stream can only claim it for <code>function_call</code>s — a <b>discriminated
+          start</b> (Cap 3), with message/reasoning ones falling through to the plain <code>event('response.output_item.added')</code>
+          descriptor we keep anyway. It's not a special case bolted on — it's what you get when the streamed value is the item's
+          <em>own field</em> rather than a part inside it. On decode, <code>buildStart</code> re-emits the
+          <code>output_item.added</code> start from the carried item, and the family's <code>decodeDelta</code> /
+          <code>decodeEnd</code> reconstruct <code>item_id</code> / <code>name</code> from the item envelope riding the start
+          header.
+        </div>
+      </section>
+
+      <!-- 4 -->
+      <section class="sec">
+        <div class="h"><span class="n">4</span><span class="t">The three codec-API capabilities the PR adds</span></div>
+        <p class="intro">
+          The previous <code class="inl">stream()</code> assumed: a single top-level string id, a start event type that alone
+          names the family, and deltas stripped to <code class="inl">(id, fragment)</code>. The target breaks all three, so the
+          PR adds three capabilities to the descriptor surface (<code class="inl">src/core/codec/output-descriptors.ts</code>):
+        </p>
+        <div class="caps">
+          <div class="cap">
+            <div class="cn">Capability 1 · for the transport</div>
+            <div class="ct">Derived id = a uniqueness handle</div>
+            <p><span class="lbl today">The limitation</span> The stream-id was a single <code>idField</code> — one top-level string key, looked up the same way on every phase (<code>chunk[idField]</code>) — so it had to be a single property present on start, delta and end alike. No slot identity beyond "one flat id" was expressible.</p>
+            <p><span class="lbl want">What the PR adds</span> The spec's <code>streamId: { field } | ((chunk) =&gt; string)</code> — a declared field, or an extractor the encoder resolves per chunk. That lifts <b>two different</b> limitations, used by <b>different</b> families:</p>
+            <p style="margin-top:6px"><b style="color:var(--cyan)">compose</b> — build the id from <em>more than one</em> field, because no single one is unique: <code>output_text</code> / <code>refusal</code> / <code>reasoning_text</code> compose <code>item_id + ':' + content_index</code>; <code>reasoning_summary_text</code> composes <code>item_id + ':summary:' + summary_index</code> — namespaced because a reasoning item's <code>summary[]</code> and <code>content[]</code> both 0-index off one <code>item_id</code>.</p>
+            <p><b style="color:var(--cyan)">relocate</b> — read the id from a <em>different place per event</em>, because the same id moves: <code>function_call_arguments</code> reads it nested at <code>item.id</code> on the start but top-level <code>item_id</code> on the deltas. One coordinate; what varies is <em>where it lives</em>.</p>
+            <p>Either way it stays an opaque uniqueness handle for the Ably message — never parsed by the reducer.</p>
+          </div>
+          <div class="cap">
+            <div class="cn">Capability 2 · for the reducer</div>
+            <div class="ct">Deltas carry their real fields</div>
+            <p><span class="lbl today">The limitation</span> For each fragment the decoder built the reducer's delta object as <code>{ item_id, delta }</code> — but <code>item_id</code> there was just <em>the stream id echoed back</em> (the two were the same value), and the position index was left out. A reducer therefore had no way to tell which slot a fragment belonged to &mdash; a message with more than one text part could not be filled correctly.</p>
+            <p><span class="lbl want">What the PR adds</span> <code>deltaFields</code> declares the header fields a delta chunk carries — its <em>own</em> field set, distinct from the start/end <code>fields</code>. Their values are stream-invariant coordinates (<code>item_id</code>, <code>content_index</code>) re-stamped on every append, so the decoder rebuilds each delta from them; <code>decodeDelta</code> is the escape hatch for a field that can't be read straight from a header key (fn-args rebuilds <code>item_id</code> from the carried item envelope). The decoder never echoes the stream id onto the chunk — the reducer routes on real coordinates, and the transport stream id stays opaque.</p>
+            <div class="ex">{ type: <span class="lit">"response.output_text.delta"</span>,
+  item_id: <span class="lit">"msg_1"</span>,
+  <span class="add">content_index: 0</span>,  <span class="cmt">← carried via deltaFields</span>
+  delta: <span class="lit">"Hel"</span> }</div>
+          </div>
+          <div class="cap">
+            <div class="cn">Capability 3 · for dispatch</div>
+            <div class="ct">Start <code>type</code> alone can't name the family</div>
+            <p><span class="lbl today">The limitation</span> The encoder picked a family by the start chunk's <code>type</code> alone. That broke the moment a <code>type</code> was <em>shared</em>: <code>content_part.added</code> opens text <em>or</em> refusal <em>or</em> reasoning_text (told apart by <code>part.type</code>); <code>output_item.added</code> opens the fn-args stream <em>only</em> when <code>item.type = function_call</code>.</p>
+            <p><span class="lbl want">What the PR adds</span> <code>startWhen?: (chunk) =&gt; boolean</code> on the stream spec, implementing one policy: <b>a stream starts on the event that first reveals its slot.</b> Several families may share a start type; the encoder starts the first family whose <code>startWhen</code> matches. A shared-start chunk matching <em>no</em> family's <code>startWhen</code> is not a stream start — it falls through to the discrete <code>event()</code> descriptor for that type (<code>stream()</code> publishes nothing). <code>defineCodec</code>'s table validation permits the share: a start may double as an <code>event()</code> decline target; its only illegal overlap is being another family's delta/end phase.</p>
+            <p style="color:#7f8895;font-size:12px">(For a <code>function_call</code> the reveal is <code>output_item.added</code> — the slot is the item's own <code>arguments</code>, born with the item; for content/summary it comes <em>one event later</em>, at <code>*_part.added</code>. See §3. A <em>broader</em> core alternative — a stream with <b>no</b> start event, opened lazily on its first delta — would drop discrimination entirely, but this policy doesn't need it: every family has a reveal event, and it's the richer start since it carries the slot's part/item + index.)</p>
+          </div>
+        </div>
+
+        <div class="rule"><b>Caps 1 and 2 look redundant but aren't — in fact Cap 1 <em>forces</em> Cap 2.</b> Under the old model the decoded delta's <code>item_id</code> was just the stream id echoed back (same value). The moment Cap 1 makes the stream id composite (<code>msg_1:0</code>), it can't be echoed as <code>item_id</code> — that would corrupt it and the reducer's <code>byItemId</code> lookup would miss — so <code>item_id</code> is instead reconstructed from a <b>real re-stamped field</b>, and the composite id stays a transport-only handle the reducer never sees. Cap 1 packs the coordinates into the id for the <em>transport</em>; Cap 2 reads the real coordinates back for the <em>reducer</em>, from the fields that ride every append — never by decoding the id.</div>
+        <div class="rule"><b>And Cap 2 rebuilds the delta's <em>own</em> field set — not a blind copy of the start's.</b> <code>content_index</code> belongs on a delta; <code>part</code> (a <code>content_part.added</code> field) does <em>not</em> — the real <code>output_text.delta</code> never carries it, so copying every start field across would fabricate one the agent never sent (breaking source-agnosticism). That is why <code>deltaFields</code> is a separate declaration from <code>fields</code>: the fields that delta type actually has — a per-phase set — whose values happen to be available from the re-stamped start headers.</div>
+
+        <p class="intro" style="margin:18px 0 0">
+          <b>Which capabilities each family uses to stream</b> — <span style="color:var(--green);font-weight:700">✅</span> = this family
+          uses that capability, <span style="color:#5a626e">—</span> = it doesn't (with why). All five families ship in this PR
+          on exactly these capabilities.
+        </p>
+        <table class="mx">
+          <tr><th>family</th><th>uses Cap 1<br>streamId</th><th>uses Cap 2<br>deltaFields / decodeDelta</th><th>uses Cap 3<br>startWhen</th></tr>
+          <tr><td class="fam">reasoning_summary_text</td><td class="y">✅ <span style="font-size:10px;color:var(--muted)">compose</span></td><td class="y">✅ <span style="font-size:10px;color:var(--muted)">deltaFields</span></td><td class="n">— (dedicated start)</td></tr>
+          <tr><td class="fam">output_text</td><td class="y">✅ <span style="font-size:10px;color:var(--muted)">compose</span></td><td class="y">✅ <span style="font-size:10px;color:var(--muted)">deltaFields</span></td><td class="y">✅</td></tr>
+          <tr><td class="fam">refusal</td><td class="y">✅ <span style="font-size:10px;color:var(--muted)">compose</span></td><td class="y">✅ <span style="font-size:10px;color:var(--muted)">deltaFields</span></td><td class="y">✅</td></tr>
+          <tr><td class="fam">reasoning_text</td><td class="y">✅ <span style="font-size:10px;color:var(--muted)">compose</span></td><td class="y">✅ <span style="font-size:10px;color:var(--muted)">deltaFields</span></td><td class="y">✅</td></tr>
+          <tr><td class="fam">function_call_arguments</td><td class="y">✅ <span style="font-size:10px;color:var(--muted)">relocate</span></td><td class="y">✅ <span style="font-size:10px;color:var(--muted)">decodeDelta — id nested in the item envelope</span></td><td class="y">✅ <span style="font-size:10px;color:var(--muted)">non-fc → event()</span></td></tr>
+        </table>
+        <div class="callout">
+          <b>Two things that matrix tells us:</b>
+          <ul class="tight" style="margin-top:6px">
+            <li><b><code>reasoning_summary_text</code> is the cheapest</b> — Caps 1 + 2 only, no discriminated start. It was the natural first family, proving the identity + delta capabilities end-to-end before touching dispatch.</li>
+            <li><b><code>function_call_arguments</code> is the hardest</b> — the only one whose discriminated start comes <em>with a discrete fallback</em> (the same <code>output_item.added</code> is sometimes a stream start, sometimes a plain envelope).</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- 5 -->
+      <section class="sec">
+        <div class="h"><span class="n">5</span><span class="t">Where the text lands — the reducer side</span></div>
+        <p class="intro">
+          Streaming isn't done when the text is on the wire — it has to fold into the right place in the projection. With Cap 2
+          (fields on deltas), the reducer routes each delta by real coordinates:
+        </p>
+        <ul class="tight">
+          <li><code>output_text</code> / <code>refusal</code> / <code>reasoning_text</code> → the part at <code>content[content_index]</code> of the addressed item (append text / set refusal).</li>
+          <li><code>reasoning_summary_text</code> → the summary part at <code>summary[summary_index]</code> of the reasoning item.</li>
+          <li><code>function_call_arguments</code> → the <code>arguments</code> string of the function_call item (item-level, no sub-index).</li>
+        </ul>
+        <div class="rule">The derived stream-id (Cap 1) is used <b>only</b> as the transport's uniqueness handle for the Ably message — <b>never</b> parsed by the reducer. The reducer routes purely on the real fields carried on each chunk (Cap 2). Clean separation: <code>id = transport handle</code>, <code>fields = semantic routing</code>.</div>
+      </section>
+
+      <!-- 6 -->
+      <section class="sec">
+        <div class="h"><span class="n">6</span><span class="t">Scope — and the one edge we're watching</span></div>
+        <p class="intro">The three capabilities aren't OpenAI-text-specific; they're what "stream everything" requires in general.</p>
+        <ul class="tight">
+          <li><b>Hosted-tool streams generalise for free.</b> <code>mcp_call_arguments.delta</code>, <code>code_interpreter_call_code.delta</code>, custom-tool input, etc. are all "text/data growing into an item's slot, opened by a discriminated item envelope." With the three capabilities in place, these are just more descriptor entries — which is the evidence the model is <em>sound</em>, not broken. Adding them is the follow-up ticket <a href="https://ably.atlassian.net/browse/AIT-1121">AIT-1121</a>.</li>
+          <li><b>The one edge: binary modalities.</b> Audio bytes and partial images aren't text deltas. They either ride as base64 <em>strings</em> (fits, since <code>deltaField</code> is a string) or need a binary delta payload — a genuinely separate consideration, set aside to the hosted-tools follow-up (<a href="https://ably.atlassian.net/browse/AIT-1121">AIT-1121</a>) rather than pretended to fit.</li>
+        </ul>
+      </section>
+
+      <div class="next">
+        <h2>The API shape, as shipped</h2>
+        <p>The surface this doc once left open is now decided and in the PR: a family declares a <em>derived</em> id via
+          <code>streamId</code> (a <code>{ field }</code> or an extractor function), a delta declares its own field set via
+          <code>deltaFields</code> (with <code>decodeDelta</code> as the escape hatch), and a shared start declares its
+          discriminator via <code>startWhen</code> (with the discrete <code>event()</code> fall-through). The PR's codec-API
+          groundwork commits introduce these one capability per commit, ahead of the family commits that use them. The
+          authoritative surface is <code>OutputStreamSpec</code> in <code>src/core/codec/output-descriptors.ts</code>.</p>
+      </div>
+
+      <div class="footref">
+        Claude-authored reviewer material for the OpenAI codec PR (AIT-1115); the target model was worked out during the
+        AIT-742 design work. Event shapes verified against <code>openai@6.44.0</code>; the event reference is the companion
+        <code>openai-streaming-events-cheatsheet.html</code> in this directory. The shipped implementation is authoritative —
+        check claims against: descriptor surface <code>src/core/codec/output-descriptors.ts</code>, drivers
+        <code>src/core/codec/output-descriptor-encoder.ts</code> / <code>src/core/codec/output-descriptor-decoder.ts</code>,
+        the OpenAI family table <code>src/openai/codec/descriptors.ts</code>.
+      </div>
+    </div>
+  </body>
+</html>

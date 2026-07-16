@@ -85,13 +85,14 @@ Codecs are assembled by the `defineCodec` factory (`src/core/codec/define-codec.
 ```typescript
 import { defineCodec } from '@ably/ai-transport';
 
-export const UIMessageCodec = defineCodec<VercelInput, VercelOutput>()({
-  adapterTag: 'vercel-ai-sdk-ui-message',
-  reducer: { init, fold, getMessages },
-  output: outputs, // (b: OutputBuilder<TOutput>) => readonly OutputDescriptor<TOutput>[]
-  input: inputs, //  (b: InputBuilder<TInput>) => readonly InputDescriptor<TInput>[]
-  decodeLifecycle: createVercelDecodeLifecycle,
-});
+export const createUIMessageCodec = () =>
+  defineCodec<VercelInput, VercelOutput>()({
+    adapterTag: 'vercel-ai-sdk-ui-message',
+    reducer: { init, fold, getMessages },
+    output: outputs, // (b: OutputBuilder<TOutput>) => readonly OutputDescriptor<TOutput>[]
+    input: inputs, //  (b: InputBuilder<TInput>) => readonly InputDescriptor<TInput>[]
+    decodeLifecycle: createVercelDecodeLifecycle,
+  });
 ```
 
 `defineCodec` is curried on the input/output unions (`defineCodec<TInput, TOutput>()({ … })`) so `TProjection` and `TMessage` infer from `config.reducer` - a caller never spells them out. It returns a `DefinedCodec` (a conforming `Codec` whose well-known input factories are typed concretely, callable without a guard).
@@ -206,7 +207,7 @@ Configured with an ordered list of phases (e.g. `["start", "start-step"]`). When
 
 For the Vercel codec, this means: if a client joins a stream after `text-start` was published, the tracker synthesizes a `start` chunk so the Vercel UI message lifecycle is complete. See [Lifecycle tracker](lifecycle-tracker.md) for the full internals.
 
-## Vercel UIMessageCodec
+## Vercel codec (`createUIMessageCodec`)
 
 The Vercel codec (`src/vercel/codec/`) is the concrete implementation for the Vercel AI SDK. It maps between `UIMessageChunk` events and `UIMessage` messages.
 

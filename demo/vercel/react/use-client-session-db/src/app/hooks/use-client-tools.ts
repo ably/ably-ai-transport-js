@@ -28,10 +28,12 @@
 import { useEffect, useRef } from 'react';
 import { getToolName, isToolUIPart, type DynamicToolUIPart, type ToolUIPart, type UIMessage } from 'ai';
 import type { ClientView } from '@ably/ai-transport';
-import { UIMessageCodec, type VercelInput } from '@ably/ai-transport/vercel';
+import { createUIMessageCodec, type VercelInput } from '@ably/ai-transport/vercel';
 
 import { wakeAgent } from '../helpers';
 import type { ClientToolLogEntry } from '../components/debug-pane';
+
+const uiMessageCodec = createUIMessageCodec();
 
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
 
@@ -156,7 +158,7 @@ async function executeClientTool(
   let input: VercelInput;
   try {
     const output = await executor(toolPart.input);
-    input = UIMessageCodec.createToolResult(codecMessageId, { toolCallId: toolPart.toolCallId, output });
+    input = uiMessageCodec.createToolResult(codecMessageId, { toolCallId: toolPart.toolCallId, output });
     if (log?.onExecute) {
       log.onExecute({
         time: log.startedAt,
@@ -169,7 +171,7 @@ async function executeClientTool(
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Client tool execution failed';
-    input = UIMessageCodec.createToolResultError(codecMessageId, {
+    input = uiMessageCodec.createToolResultError(codecMessageId, {
       toolCallId: toolPart.toolCallId,
       message,
     });

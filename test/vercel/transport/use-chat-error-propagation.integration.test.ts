@@ -20,7 +20,7 @@ import { createAgentSession } from '../../../src/core/transport/agent-session.js
 import { createClientSession } from '../../../src/core/transport/client-session.js';
 import type { AgentSession, ClientSession } from '../../../src/core/transport/types.js';
 import {
-  UIMessageCodec,
+  createUIMessageCodec,
   type VercelInput,
   type VercelOutput,
   type VercelProjection,
@@ -30,6 +30,8 @@ import { createChatTransport } from '../../../src/vercel/transport/chat-transpor
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { createRunFromOpts } from '../../helper/run-from-opts.js';
+
+const UIMessageCodec = createUIMessageCodec();
 
 // ---------------------------------------------------------------------------
 // Tests

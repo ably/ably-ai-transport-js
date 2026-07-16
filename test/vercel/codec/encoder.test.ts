@@ -13,7 +13,9 @@ import {
   HEADER_STREAM_ID,
 } from '../../../src/constants.js';
 import type { ChannelWriter } from '../../../src/core/codec/types.js';
-import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
+import { createUIMessageCodec } from '../../../src/vercel/codec/index.js';
+
+const UIMessageCodec = createUIMessageCodec();
 
 // The codec is now assembled by defineCodec; createEncoder is the generic
 // factory it produces (a plain closure, safe to destructure).

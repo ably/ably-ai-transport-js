@@ -12,12 +12,12 @@ No special API is needed. Connect two clients to the same channel name, and mess
 
 ```tsx
 // Client A — its <AblyProvider> client authenticates as "user-a"
-<ClientSessionProvider channelName="ai:demo" codec={UIMessageCodec}>
+<ClientSessionProvider channelName="ai:demo" codec={createUIMessageCodec()}>
   <Chat />
 </ClientSessionProvider>
 
 // Client B — its <AblyProvider> client authenticates as "user-b"
-<ClientSessionProvider channelName="ai:demo" codec={UIMessageCodec}>
+<ClientSessionProvider channelName="ai:demo" codec={createUIMessageCodec()}>
   <Chat />
 </ClientSessionProvider>
 

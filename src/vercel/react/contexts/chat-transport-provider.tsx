@@ -2,7 +2,7 @@
  * ChatTransportProvider: creates a ChatTransport from a ClientSession and makes it
  * available to descendants via ChatTransportContext.
  *
- * Wraps children with ClientSessionProvider (using UIMessageCodec). The
+ * Wraps children with ClientSessionProvider (using the default Vercel codec). The
  * surrounding `<AblyProvider>` supplies the Realtime client; the session
  * resolves the channel from `channelName` itself. An inner component reads
  * the ClientSession via useClientSession() and creates the ChatTransport
@@ -22,7 +22,7 @@ import type * as AI from 'ai';
 import { type PropsWithChildren, type ReactNode, useContext, useMemo } from 'react';
 
 import { type ClientSessionProviderProps, createSessionHooks } from '../../../react/index.js';
-import { UIMessageCodec, type VercelInput, type VercelOutput, type VercelProjection } from '../../codec/index.js';
+import { createUIMessageCodec, type VercelInput, type VercelOutput, type VercelProjection } from '../../codec/index.js';
 import type { ChatTransportOptions } from '../../transport/index.js';
 import { createChatTransport } from '../../transport/index.js';
 import type { ChatTransportSlot } from './chat-transport-context.js';
@@ -30,6 +30,14 @@ import { ChatTransportContext } from './chat-transport-context.js';
 
 export const { ClientSessionProvider, useAblyMessages, useClientSession, useCreateView, useTree, useView } =
   createSessionHooks<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>();
+
+/**
+ * The default Vercel codec this provider binds. The provider/context path is
+ * instantiated at module scope, so it is SDK-default-typed; for per-instance
+ * `UIMessage` typing use the imperative path (`createClientSession<…>` +
+ * `createChatTransport<…>` + `useMessageSync<…>`).
+ */
+const defaultUIMessageCodec = createUIMessageCodec();
 
 type CoreClientSessionProviderProps = Omit<
   ClientSessionProviderProps<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
@@ -39,7 +47,7 @@ type CoreClientSessionProviderProps = Omit<
 /**
  * Props for {@link ChatTransportProvider}.
  *
- * All {@link ClientSessionProviderProps} for Vercel types except `codec` (baked as UIMessageCodec),
+ * All {@link ClientSessionProviderProps} for Vercel types except `codec` (baked as the default Vercel codec),
  * plus the transport-owned invocation POST options (`api` / `credentials` / `fetch`) and
  * `chatOptions` for customizing chat request construction.
  */
@@ -90,7 +98,7 @@ const ChatTransportProviderInner = ({
  *
  * Wraps children with `ClientSessionProvider` using `channelName` (the Realtime
  * client is read from the surrounding `<AblyProvider>`), creates a
- * {@link ClientSession} with UIMessageCodec, wraps it in a {@link ChatTransport},
+ * {@link ClientSession} with the default Vercel codec, wraps it in a {@link ChatTransport},
  * and registers the full slot in `ChatTransportContext` under `channelName`. Descendants call
  * {@link useChatTransport} with the same `channelName` to access both.
  *
@@ -137,7 +145,7 @@ export const ChatTransportProvider = ({
   return (
     <ClientSessionProvider
       {...sessionProps}
-      codec={UIMessageCodec}
+      codec={defaultUIMessageCodec}
     >
       <ChatTransportProviderInner
         channelName={sessionProps.channelName}

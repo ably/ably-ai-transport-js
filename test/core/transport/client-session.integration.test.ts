@@ -38,11 +38,13 @@ import { buildStepHeaders, buildTransportHeaders } from '../../../src/core/trans
 import type { AgentSession, ClientSession, ClientView, RunLifecycleEvent } from '../../../src/core/transport/types.js';
 import { getCodecHeaders, getTransportHeaders } from '../../../src/utils.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
-import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
+import { createUIMessageCodec } from '../../../src/vercel/codec/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { createRunFromOpts } from '../../helper/run-from-opts.js';
 import { textResponseStream } from '../../integration/helpers.js';
+
+const UIMessageCodec = createUIMessageCodec();
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -65,9 +65,22 @@ export interface VercelToolApprovalResponsePayload {
  * The Vercel codec's `TInput` — every record-shape a client publishes on
  * the `ai-input` wire. Composed from the SDK's well-known input shapes,
  * with the tool variants parameterized by the Vercel domain payloads above.
+ *
+ * The generic params thread through the `UserMessage` arm's `AI.UIMessage`;
+ * the tool-resolution arms carry Vercel domain payloads that do not depend on
+ * them (a tool result's `output` is `unknown` regardless — tool typing lands on
+ * the assistant's message parts via `getMessages`). Each defaults to the SDK
+ * default, so an unparameterized `VercelInput` resolves to the all-defaults instantiation.
+ * @template TMetadata - Per-message metadata type carried by a user message.
+ * @template TDataParts - Custom data-part types on a user message.
+ * @template TTools - Tool set typing the user message's tool parts.
  */
-export type VercelInput =
-  | UserMessage<AI.UIMessage>
+export type VercelInput<
+  TMetadata = unknown,
+  TDataParts extends AI.UIDataTypes = AI.UIDataTypes,
+  TTools extends AI.UITools = AI.UITools,
+> =
+  | UserMessage<AI.UIMessage<TMetadata, TDataParts, TTools>>
   | Regenerate
   | ToolResult<VercelToolResultPayload>
   | ToolResultError<VercelToolResultErrorPayload>
@@ -77,8 +90,19 @@ export type VercelInput =
  * The Vercel codec's `TOutput` — every record-shape the agent publishes
  * on the `ai-output` wire. The Vercel codec passes the AI SDK's
  * `UIMessageChunk` through unchanged.
+ *
+ * Derived via {@link AI.InferUIMessageChunk} from the consumer's
+ * `AI.UIMessage<TMetadata, TDataParts>`, so a streamed chunk's `messageMetadata`
+ * and data-part payloads carry the consumer's types (the chunk shape has no
+ * tool parameter — tool typing lands on the assistant's message parts). Both
+ * default to the SDK default, so an unparameterized `VercelOutput` resolves to the all-defaults instantiation.
+ * @template TMetadata - Per-message metadata type carried on lifecycle chunks.
+ * @template TDataParts - Custom data-part types on `data-*` chunks.
  */
-export type VercelOutput = AI.UIMessageChunk;
+export type VercelOutput<
+  TMetadata = unknown,
+  TDataParts extends AI.UIDataTypes = AI.UIDataTypes,
+> = AI.InferUIMessageChunk<AI.UIMessage<TMetadata, TDataParts>>;
 
 // ---------------------------------------------------------------------------
 // Projection re-export

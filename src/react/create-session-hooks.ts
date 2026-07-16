@@ -11,7 +11,7 @@
  * } = createSessionHooks<VercelInput, VercelOutput, VercelProjection, UIMessage>();
  *
  * // In page:
- * <ClientSessionProvider channelName="ai:demo" codec={UIMessageCodec}>
+ * <ClientSessionProvider channelName="ai:demo" codec={createUIMessageCodec()}>
  *   <Chat />
  * </ClientSessionProvider>
  *

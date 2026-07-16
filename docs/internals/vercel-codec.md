@@ -1,15 +1,23 @@
 # Vercel codec
 
-The Vercel codec (`src/vercel/codec/`) implements the [Codec interface](codec-interface.md) for the Vercel AI SDK, mapping between `UIMessageChunk` outputs / `UIMessage` objects and Ably channel operations. `UIMessageCodec` (`index.ts`) is **assembled by `defineCodec`** rather than hand-written — there are no separate encoder/decoder classes. `defineCodec` is given the reducer (`init` / `fold` / `getMessages` from `reducer.ts`), the declarative output and input descriptor tables (`outputs` from `outputs.ts`, `inputs` from `inputs.ts`), and a decode lifecycle factory (`createVercelDecodeLifecycle` from `decode-lifecycle.ts`); it builds the generic encoder/decoder and merges the core's well-known input factories (`createUserMessage`, `createRegenerate`, `createToolResult`, `createToolResultError`, `createToolApprovalResponse`) internally. It is typed `Codec<VercelInput, VercelOutput, VercelProjection, UIMessage>`.
+The Vercel codec (`src/vercel/codec/`) implements the [Codec interface](codec-interface.md) for the Vercel AI SDK, mapping between `UIMessageChunk` outputs / `UIMessage` objects and Ably channel operations. The codec, produced by the `createUIMessageCodec()` factory (`index.ts`), is **assembled by `defineCodec`** rather than hand-written — there are no separate encoder/decoder classes. `defineCodec` is given the reducer (`init` / `fold` / `getMessages` from `reducer.ts`), the declarative output and input descriptor tables (`outputs` from `outputs.ts`, `inputs` from `inputs.ts`), and a decode lifecycle factory (`createVercelDecodeLifecycle` from `decode-lifecycle.ts`); it builds the generic encoder/decoder and merges the core's well-known input factories (`createUserMessage`, `createRegenerate`, `createToolResult`, `createToolResultError`, `createToolApprovalResponse`) internally. The factory is generic over the `UIMessage` metadata / data-part / tool params, so `createUIMessageCodec<TMetadata, TDataParts, TTools>()` yields a `Codec<VercelInput<…>, VercelOutput<…>, VercelProjection<…>, UIMessage<…>>`.
 
 ```ts
-export const UIMessageCodec = defineCodec<VercelInput, VercelOutput>()({
-  adapterTag: 'vercel-ai-sdk-ui-message',
-  reducer: { init, fold, getMessages }, // reducer.ts
-  output: outputs, // outputs.ts
-  input: inputs, // inputs.ts
-  decodeLifecycle: createVercelDecodeLifecycle, // decode-lifecycle.ts
-});
+export const createUIMessageCodec = <TMetadata, TDataParts extends AI.UIDataTypes, TTools extends AI.UITools>() =>
+  // assembled once at the SDK defaults, then cast to <TMetadata, TDataParts, TTools>
+  // (the reducer runtime is identical for every instantiation)
+  defineCodec<VercelInput, VercelOutput>()({
+    adapterTag: 'vercel-ai-sdk-ui-message',
+    reducer: { init, fold, getMessages }, // reducer.ts
+    output: outputs, // outputs.ts
+    input: inputs, // inputs.ts
+    decodeLifecycle: createVercelDecodeLifecycle, // decode-lifecycle.ts
+  }) as DefinedCodec<
+    VercelInput<TMetadata, TDataParts, TTools>,
+    VercelOutput<TMetadata, TDataParts>,
+    VercelProjection<TMetadata, TDataParts, TTools>,
+    AI.UIMessage<TMetadata, TDataParts, TTools>
+  >;
 ```
 
 The codec is split into single-concern modules: `reducer.ts` + `reducer-state.ts` and the per-concern `fold-*` modules (fold), `inputs.ts` / `outputs.ts` (descriptor tables), `fields.ts` (header-field bindings), `decode-lifecycle.ts` (mid-stream-join repair), `wire-data.ts` (runtime guards), and `tool-transitions.ts` (shared tool-part state machine).
@@ -21,7 +29,7 @@ The codec is split into single-concern modules: `reducer.ts` + `reducer-state.ts
 
 ## Encode / decode via descriptor tables
 
-`UIMessageCodec` has no hand-written encoder or decoder. Instead it declares two descriptor tables that `defineCodec` runs in both directions:
+The Vercel codec has no hand-written encoder or decoder. Instead it declares two descriptor tables that `defineCodec` runs in both directions:
 
 - **`outputs.ts`** — the `ai-output` table, built from the injected `{ event, stream }` builder. `stream(...)` declares a streamed family (start / delta / end); `event(...)` declares a discrete output.
 - **`inputs.ts`** — the `ai-input` table, built from the injected `{ event, batch }` builder. `event(...)` declares a single discrete input (payload-nested or `wireOnly`); `batch(...)` declares a multi-part input that fans out into one wire event per part.

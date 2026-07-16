@@ -23,9 +23,12 @@ import {
 } from '@ably/ai-transport/react';
 import type { ClientRun } from '@ably/ai-transport';
 import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
-import { UIMessageCodec } from '@ably/ai-transport/vercel';
+import { createUIMessageCodec } from '@ably/ai-transport/vercel';
 import type * as AI from 'ai';
 import { useState } from 'react';
+
+// A stable codec instance for the provider and the send helpers.
+const uiMessageCodec = createUIMessageCodec();
 
 // Wake the agent: the core session never sends HTTP, so the app POSTs the
 // run's invocation pointer to its endpoint. The agent reads the conversation
@@ -78,7 +81,7 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
     // Compose the user message into a codec input, then send(). send()
     // publishes the input on the channel and returns the run; then POST the
     // invocation to wake the agent.
-    const run = await send(UIMessageCodec.createUserMessage(userMsg));
+    const run = await send(uiMessageCodec.createUserMessage(userMsg));
     await wakeAgent(run);
   };
 
@@ -154,7 +157,7 @@ export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }
     // the invocation to wake the agent.
     <ClientSessionProvider
       channelName={chatId}
-      codec={UIMessageCodec}
+      codec={uiMessageCodec}
     >
       <ChatInner chatId={chatId} clientId={clientId} />
     </ClientSessionProvider>

@@ -19,13 +19,15 @@ import { EVENT_AI_INPUT, EVENT_AI_OUTPUT, HEADER_CODEC_MESSAGE_ID, HEADER_RUN_ID
 import { toCodecEvents } from '../../../src/core/codec/codec-event.js';
 import { getCodecHeaders, getTransportHeaders } from '../../../src/utils.js';
 import {
-  UIMessageCodec,
+  createUIMessageCodec,
   type VercelInput,
   type VercelOutput,
   type VercelProjection,
 } from '../../../src/vercel/codec/index.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
+
+const UIMessageCodec = createUIMessageCodec();
 
 /**
  * Create an onMessage hook that stamps run and message ID headers

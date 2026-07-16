@@ -13,6 +13,6 @@
 
 - **Use real SDK types from peer dependencies**, not custom redefinitions. Import `Ably.Message` from `ably` and `AI.UIMessageChunk` from `ai`. This ensures compile-time breakage when peer SDK types change.
 - Import all peer dependency types as namespaces: `import type * as Ably from "ably"` then use `Ably.Message`, `Ably.PublishResult`, etc. `import type * as AI from "ai"` then use `AI.UIMessageChunk`, `AI.UIMessage`, etc.
-- When the AI SDK exports an interface (e.g. `AI.ChatTransport`, `AI.FinishReason`, `AI.ProviderMetadata`), import and extend it — don't redefine. Our `ChatTransport` extends the SDK's `AI.ChatTransport<AI.UIMessage>` with `close()`.
+- When the AI SDK exports an interface (e.g. `AI.ChatTransport`, `AI.FinishReason`, `AI.ProviderMetadata`), import and extend it — don't redefine. Our `ChatTransport<…>` extends the SDK's `AI.ChatTransport<AI.UIMessage<…>>` with `close()`, `streaming`, and `onStreamingChange` (see `src/vercel/transport/chat-transport.ts`). The SDK type is referenced via a named import there only because `import-x/namespace` can't verify a namespaced generic in an `extends` clause; prefer the `AI.*` namespace everywhere else.
 - Our `ChannelWriter` interface is satisfied directly by `Ably.RealtimeChannel` — no adapter needed. Prefer structural interfaces the SDK types already satisfy over wrapping them.
 - For HTTP request/response body types, define a typed interface and assert it on `req.json()` / `JSON.parse()` rather than using untyped destructuring.

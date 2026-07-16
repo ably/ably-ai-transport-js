@@ -1,7 +1,7 @@
 'use client';
 
 import { Providers, useAblyReady, SessionHooks } from './providers';
-import { UIMessageCodec } from '@ably/ai-transport/vercel';
+import { createUIMessageCodec } from '@ably/ai-transport/vercel';
 import type { UIMessage } from 'ai';
 import { Chat } from './components/chat';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -11,6 +11,7 @@ import { generateChannelSlug, generateClientName } from './lib/channel-name';
 const { ClientSessionProvider } = SessionHooks;
 
 const CHANNEL_NAMESPACE = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ai:';
+const uiMessageCodec = createUIMessageCodec();
 
 const AGENT_API = 'api/chat';
 
@@ -53,7 +54,7 @@ function SeededChatWhenLoaded({ channelName, clientId }: { channelName: string; 
   return (
     <ClientSessionProvider
       channelName={channelName}
-      codec={UIMessageCodec}
+      codec={uiMessageCodec}
     >
       <Chat
         chatId={channelName}

@@ -20,13 +20,24 @@ import { isToolPart, type ToolPart } from '../tool-part.js';
 import { useChatTransport } from './use-chat-transport.js';
 import { useMessagesWithSeed } from './use-messages-with-seed.js';
 
-/** Options for {@link useMessageSync}. */
-export interface UseMessageSyncOptions {
+/**
+ * Options for {@link useMessageSync}.
+ * @template TMetadata - Per-message metadata type (defaults to the SDK default).
+ * @template TDataParts - Custom data-part types (defaults to the SDK default).
+ * @template TTools - Tool set typing tool parts (defaults to the SDK default).
+ */
+export interface UseMessageSyncOptions<
+  TMetadata = unknown,
+  TDataParts extends AI.UIDataTypes = AI.UIDataTypes,
+  TTools extends AI.UITools = AI.UITools,
+> {
   /**
    * The `setMessages` updater function from `useChat()`. Called with an
    * updater that returns the next overlay.
    */
-  setMessages: (updater: (prev: AI.UIMessage[]) => AI.UIMessage[]) => void;
+  setMessages: (
+    updater: (prev: AI.UIMessage<TMetadata, TDataParts, TTools>[]) => AI.UIMessage<TMetadata, TDataParts, TTools>[],
+  ) => void;
   /**
    * The application's own seeded conversation — typically `useChat()`'s
    * `messages`, where persisted history was supplied via
@@ -49,7 +60,7 @@ export interface UseMessageSyncOptions {
    * duplicate; render the seeded conversation from the composed messages
    * instead.
    */
-  messages?: AI.UIMessage[];
+  messages?: AI.UIMessage<TMetadata, TDataParts, TTools>[];
   /**
    * Channel name of the {@link ChatTransportProvider} to observe.
    * Omit to use the nearest provider.
@@ -121,13 +132,25 @@ const mergeMessages = (tree: AI.UIMessage[], overlay: AI.UIMessage[]): AI.UIMess
  * When a seed is supplied via `messages`, a reloaded conversation shows its
  * stored history plus the live tail exactly once. With no seed, the full live
  * channel history is surfaced unchanged.
+ * @template TMetadata - Per-message metadata type (defaults to the SDK default).
+ * @template TDataParts - Custom data-part types (defaults to the SDK default).
+ * @template TTools - Tool set typing tool parts (defaults to the SDK default).
  * @param options - Hook options.
  * @param options.setMessages - The `setMessages` function from `useChat()`.
  * @param options.messages - The application's seeded conversation to reconcile with the live channel; omit for full channel history.
  * @param options.channelName - Channel name of the provider to observe; defaults to the nearest.
  * @param options.skip - When `true`, skip all subscriptions.
  */
-export const useMessageSync = ({ messages, setMessages, channelName, skip }: UseMessageSyncOptions): void => {
+export const useMessageSync = <
+  TMetadata = unknown,
+  TDataParts extends AI.UIDataTypes = AI.UIDataTypes,
+  TTools extends AI.UITools = AI.UITools,
+>({
+  messages,
+  setMessages,
+  channelName,
+  skip,
+}: UseMessageSyncOptions<TMetadata, TDataParts, TTools>): void => {
   const { session, chatTransport, chatTransportError } = useChatTransport({ channelName, skip });
 
   const resolved = !skip && !chatTransportError;
@@ -136,8 +159,11 @@ export const useMessageSync = ({ messages, setMessages, channelName, skip }: Use
 
   // Delegate seam reconciliation (backward walk + `seed ⧺ live` compose) to the
   // shared hook; `reconciled` advances as the view pages back and live messages
-  // arrive.
-  const reconciled = useMessagesWithSeed({ view, seed: messages ?? [] });
+  // arrive. The module-scope provider erases the codec's UIMessage params, so the
+  // channel view and reconciliation run at the SDK default; the consumer's seed
+  // assigns into that default representation (covariant).
+  const seed: AI.UIMessage[] = messages ?? [];
+  const reconciled = useMessagesWithSeed({ view, seed });
 
   const [gated, setGated] = useState(false);
 
@@ -160,6 +186,12 @@ export const useMessageSync = ({ messages, setMessages, channelName, skip }: Use
   // even when `reconciled` is reference-stable (an unchanged window).
   useEffect(() => {
     if (!view || gated) return;
-    setMessages((overlay) => mergeMessages(reconciled, overlay));
+    // CAST: the module-scope provider erases the codec's UIMessage params to the
+    // SDK default, so `reconciled` / `mergeMessages` operate at that default. The
+    // consumer's <TMetadata, TDataParts, TTools> type arguments assert the channel's
+    // codec types, so bridge the merged overlay to the asserted type for
+    // `setMessages` here — the one boundary between the module-scope constraint
+    // and the consumer's per-instance typing.
+    setMessages((overlay) => mergeMessages(reconciled, overlay) as AI.UIMessage<TMetadata, TDataParts, TTools>[]);
   }, [view, reconciled, gated, setMessages]);
 };

@@ -248,7 +248,7 @@ Open `http://localhost:3000`. Type a message - you'll see tokens stream in real 
 3. `chatTransport` satisfies Vercel's `ChatTransport` interface; `session` is the underlying `ClientSession` used for `useMessageSync` and `useView`.
 4. When you send a message, `useChat()` calls the chat transport's `sendMessages`, which publishes your message on the Ably channel and POSTs the run's invocation pointer (`{ inputEventId, sessionName }`) to `/api/chat` to wake the agent.
 5. The server creates a run, reads the conversation by draining `run.view` (paging `loadOlder()` until `hasOlder()` is false), streams the LLM response through the encoder to the channel, and publishes a run-end event.
-6. The client session decodes incoming Ably messages through `UIMessageCodec` and routes them to the stream.
+6. The client session decodes incoming Ably messages through the Vercel codec and routes them to the stream.
 7. `useMessageSync()` syncs messages from the session (including messages from other clients) into `useChat`'s state.
 
 For the conceptual details, see [Client and agent sessions](../concepts/sessions.md) and [Runs](../concepts/runs.md).

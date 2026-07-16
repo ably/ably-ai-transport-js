@@ -30,15 +30,19 @@
 
 import * as Ably from 'ably';
 import type * as AI from 'ai';
+// Named import for the one SDK type used in an `extends` heritage clause: the
+// `import-x/namespace` resolver can't verify a namespaced generic there
+// (`AI.ChatTransport<…>`) though tsc resolves it fine. Everything else uses the
+// `AI.*` namespace per TYPES.md.
+import type { ChatTransport as SdkChatTransport } from 'ai';
 
-import type { CodecMessage } from '../../core/codec/index.js';
+import type { CodecMessage, DefinedCodec } from '../../core/codec/index.js';
 import type { ClientRun, ClientSession, SendOptions } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import { LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
-import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
-import { UIMessageCodec } from '../codec/index.js';
+import { createUIMessageCodec, type VercelInput, type VercelOutput, type VercelProjection } from '../codec/index.js';
 import { isToolPart, type ToolPart } from '../tool-part.js';
 import { createDeferredContinuationStream, createRunOutputStream } from './run-output-stream.js';
 
@@ -49,8 +53,19 @@ import { createDeferredContinuationStream, createRunOutputStream } from './run-o
 /**
  * Context passed to {@link ChatTransportOptions.prepareSendMessagesRequest} for
  * customizing the HTTP POST body and headers.
+ *
+ * The generic params thread through `history` / `messages` so a consumer's
+ * `AI.UIMessage` typing is preserved in the request hook; each defaults to the
+ * SDK default.
+ * @template TMetadata - Per-message metadata type on the context messages.
+ * @template TDataParts - Custom data-part types on the context messages.
+ * @template TTools - Tool set typing the context messages' tool parts.
  */
-export interface SendMessagesRequestContext {
+export interface SendMessagesRequestContext<
+  TMetadata = unknown,
+  TDataParts extends AI.UIDataTypes = AI.UIDataTypes,
+  TTools extends AI.UITools = AI.UITools,
+> {
   /** Chat session ID (from useChat's id). */
   chatId?: string;
   /** What triggered the request: user sent a message, or requested regeneration. */
@@ -63,9 +78,9 @@ export interface SendMessagesRequestContext {
    */
   messageId?: string;
   /** Previous messages in the conversation (context for the LLM). */
-  history: AI.UIMessage[];
+  history: AI.UIMessage<TMetadata, TDataParts, TTools>[];
   /** The new message(s) being sent (to publish to the channel). Empty for regeneration and for continuations (an auto-submit where the last message is an already-tracked assistant). */
-  messages: AI.UIMessage[];
+  messages: AI.UIMessage<TMetadata, TDataParts, TTools>[];
   /** The codec-message-id of the message being forked — the edited user message, or the preceding assistant when forking off an unresolved tool call. Undefined for regeneration (View.regenerate derives it) and fresh sends. */
   forkOf?: string;
   /** The codec-message-id of the predecessor in the conversation thread. */
@@ -75,8 +90,20 @@ export interface SendMessagesRequestContext {
 /** Default agent endpoint the transport POSTs invocations to — mirrors Vercel's DefaultChatTransport. */
 const DEFAULT_VERCEL_API = '/api/chat';
 
-/** Options for customizing the ChatTransport behavior. */
-export interface ChatTransportOptions {
+/**
+ * Options for customizing the ChatTransport behavior.
+ *
+ * The generic params thread through the {@link SendMessagesRequestContext}
+ * passed to `prepareSendMessagesRequest`; each defaults to the SDK default.
+ * @template TMetadata - Per-message metadata type on the request context messages.
+ * @template TDataParts - Custom data-part types on the request context messages.
+ * @template TTools - Tool set typing the request context messages' tool parts.
+ */
+export interface ChatTransportOptions<
+  TMetadata = unknown,
+  TDataParts extends AI.UIDataTypes = AI.UIDataTypes,
+  TTools extends AI.UITools = AI.UITools,
+> {
   /**
    * Endpoint the transport POSTs the invocation pointer to, to wake the
    * agent. Mirrors useChat's request-driven contract. Default `/api/chat`.
@@ -95,7 +122,7 @@ export interface ChatTransportOptions {
    * @param context - The conversation context for the current request.
    * @returns The body and headers to merge into the invocation POST.
    */
-  prepareSendMessagesRequest?: (context: SendMessagesRequestContext) => {
+  prepareSendMessagesRequest?: (context: SendMessagesRequestContext<TMetadata, TDataParts, TTools>) => {
     body?: Record<string, unknown>;
     headers?: Record<string, string>;
   };
@@ -106,57 +133,25 @@ export interface ChatTransportOptions {
 // ---------------------------------------------------------------------------
 
 /**
- * Additional options passed through from useChat alongside the core
- * sendMessages/reconnectToStream parameters.
- *
- * Mirrors the AI SDK's internal ChatRequestOptions type, which is not
- * exported from the `ai` package.
- */
-interface ChatRequestOptions {
-  /** Additional headers for the request. */
-  headers?: Record<string, string> | Headers;
-  /** Additional JSON body properties for the request. */
-  body?: object;
-  /** Custom metadata to attach to the request. */
-  metadata?: unknown;
-}
-
-/**
  * Transport interface for Vercel AI SDK's useChat hook.
  *
- * Structurally compatible with the AI SDK's internal `ChatTransport<UIMessage>`
- * interface. Extended with `close()` for releasing the underlying Ably transport
- * resources and `streaming` / `onStreamingChange` for coordinating with
- * useMessageSync.
+ * Extends the AI SDK's `AI.ChatTransport<AI.UIMessage<…>>` — inheriting
+ * `sendMessages` / `reconnectToStream` (both typed to the consumer's UIMessage,
+ * carrying the SDK's `AI.ChatRequestOptions`) — with `close()` for releasing the
+ * underlying Ably transport resources and `streaming` / `onStreamingChange` for
+ * coordinating with useMessageSync.
+ *
+ * The generic params thread the consumer's `AI.UIMessage` typing through
+ * `sendMessages`' `messages`; each defaults to the SDK default.
+ * @template TMetadata - Per-message metadata type.
+ * @template TDataParts - Custom data-part types.
+ * @template TTools - Tool set typing tool parts.
  */
-export interface ChatTransport {
-  /** Send messages and return a streaming response of UIMessageChunk events. */
-  sendMessages: (
-    options: {
-      /** The type of message submission — new message or regeneration. */
-      trigger: 'submit-message' | 'regenerate-message';
-      /** Unique identifier for the chat session. */
-      chatId: string;
-      /** ID of the message to regenerate, or undefined for new messages. */
-      messageId: string | undefined;
-      /** Array of UI messages representing the conversation history. */
-      messages: AI.UIMessage[];
-      /** Signal to abort the request if needed. */
-      abortSignal: AbortSignal | undefined;
-    } & ChatRequestOptions,
-  ) => Promise<ReadableStream<AI.UIMessageChunk>>;
-
-  /**
-   * Reconnect to an existing streaming response. Returns null if no active
-   * stream exists for the specified chat session.
-   */
-  reconnectToStream: (
-    options: {
-      /** Unique identifier for the chat session to reconnect to. */
-      chatId: string;
-    } & ChatRequestOptions,
-  ) => Promise<ReadableStream<AI.UIMessageChunk> | null>;
-
+export interface ChatTransport<
+  TMetadata = unknown,
+  TDataParts extends AI.UIDataTypes = AI.UIDataTypes,
+  TTools extends AI.UITools = AI.UITools,
+> extends SdkChatTransport<AI.UIMessage<TMetadata, TDataParts, TTools>> {
   /** Close the underlying transport, releasing all resources. */
   close(): Promise<void>;
 
@@ -281,17 +276,27 @@ const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'a
  *   (`approved` = `overlayPart.approval.approved`, i.e. approve or deny)
  * - `output-available` overlay vs unresolved tree → `tool-result`
  * - `output-error` overlay vs unresolved tree → `tool-result-error`
+ * @template TMetadata - Per-message metadata type carried by the produced inputs.
+ * @template TDataParts - Custom data-part types carried by the produced inputs.
+ * @template TTools - Tool set typing the produced inputs' tool parts.
+ * @param codec - The codec whose well-known input factories build the resolutions.
  * @param codecMessages - The visible tree messages paired with their codec-message-ids.
  * @param messages - useChat's local overlay messages.
  * @returns The continuation inputs to publish, in tree order. Each input
  *   carries its own `codecMessageId` targeting the prior assistant it folds
  *   onto.
  */
-const deriveContinuationInputs = (
+const deriveContinuationInputs = <TMetadata, TDataParts extends AI.UIDataTypes, TTools extends AI.UITools>(
+  codec: DefinedCodec<
+    VercelInput<TMetadata, TDataParts, TTools>,
+    VercelOutput<TMetadata, TDataParts>,
+    VercelProjection<TMetadata, TDataParts, TTools>,
+    AI.UIMessage<TMetadata, TDataParts, TTools>
+  >,
   codecMessages: CodecMessage<AI.UIMessage>[],
   messages: AI.UIMessage[],
-): VercelInput[] => {
-  const inputs: VercelInput[] = [];
+): VercelInput<TMetadata, TDataParts, TTools>[] => {
+  const inputs: VercelInput<TMetadata, TDataParts, TTools>[] = [];
   for (const overlay of messages) {
     if (overlay.role !== 'assistant') continue;
     // Match the overlay to its tree message by domain id (both sides
@@ -319,7 +324,7 @@ const deriveContinuationInputs = (
       // agent's projection sees the decision.
       if (overlayPart.state === 'approval-responded' && (!treePart || treePart.state === 'approval-requested')) {
         inputs.push(
-          UIMessageCodec.createToolApprovalResponse(codecMessageId, {
+          codec.createToolApprovalResponse(codecMessageId, {
             toolCallId: overlayPart.toolCallId,
             approved: overlayPart.approval.approved,
             ...(overlayPart.approval.reason === undefined ? {} : { reason: overlayPart.approval.reason }),
@@ -339,14 +344,14 @@ const deriveContinuationInputs = (
 
       if (overlayPart.state === 'output-available') {
         inputs.push(
-          UIMessageCodec.createToolResult(codecMessageId, {
+          codec.createToolResult(codecMessageId, {
             toolCallId: overlayPart.toolCallId,
             output: overlayPart.output,
           }),
         );
       } else {
         inputs.push(
-          UIMessageCodec.createToolResultError(codecMessageId, {
+          codec.createToolResultError(codecMessageId, {
             toolCallId: overlayPart.toolCallId,
             message: overlayPart.errorText,
           }),
@@ -394,14 +399,31 @@ interface ChatTransportEventsMap {
  * limitation that cannot be fixed from the transport layer. The
  * developer must respect useChat's `status` and only call `sendMessage`
  * when status is `'ready'`.
+ * @template TMetadata - Per-message metadata type (defaults to the SDK default).
+ * @template TDataParts - Custom data-part types (defaults to the SDK default).
+ * @template TTools - Tool set typing tool parts (defaults to the SDK default).
  * @param session - The core client session to wrap.
  * @param chatOptions - Optional hooks for customizing request construction.
  * @returns A {@link ChatTransport} compatible with Vercel's useChat hook.
  */
-export const createChatTransport = (
-  session: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
-  chatOptions?: ChatTransportOptions,
-): ChatTransport => {
+export const createChatTransport = <
+  TMetadata = unknown,
+  TDataParts extends AI.UIDataTypes = AI.UIDataTypes,
+  TTools extends AI.UITools = AI.UITools,
+>(
+  session: ClientSession<
+    VercelInput<TMetadata, TDataParts, TTools>,
+    VercelOutput<TMetadata, TDataParts>,
+    VercelProjection<TMetadata, TDataParts, TTools>,
+    AI.UIMessage<TMetadata, TDataParts, TTools>
+  >,
+  chatOptions?: ChatTransportOptions<TMetadata, TDataParts, TTools>,
+): ChatTransport<TMetadata, TDataParts, TTools> => {
+  // Codec instance typed to the consumer's UIMessage params, used to build the
+  // well-known input factories (createUserMessage + the tool resolutions) so
+  // the inputs published on this session carry the caller's message type.
+  const codec = createUIMessageCodec<TMetadata, TDataParts, TTools>();
+
   // -- Invocation POST config (the transport owns waking the agent) ----------
   const api = chatOptions?.api ?? DEFAULT_VERCEL_API;
   const fetchFn = chatOptions?.fetch ?? globalThis.fetch.bind(globalThis);
@@ -423,7 +445,7 @@ export const createChatTransport = (
 
   // -- sendMessages implementation -------------------------------------------
 
-  const sendMessages: ChatTransport['sendMessages'] = async (opts) => {
+  const sendMessages: ChatTransport<TMetadata, TDataParts, TTools>['sendMessages'] = async (opts) => {
     const { messages, abortSignal, trigger, messageId } = opts;
 
     // The visible messages paired with their codec-message-ids. useChat
@@ -457,7 +479,7 @@ export const createChatTransport = (
     // For a continuation, derive the tool-resolution inputs up front so we can
     // detect the "nothing to send" case before any send/POST work (and reuse
     // them at dispatch below).
-    const continuationInputs = isContinuation ? deriveContinuationInputs(codecMessages, messages) : [];
+    const continuationInputs = isContinuation ? deriveContinuationInputs(codec, codecMessages, messages) : [];
 
     // The runId a continuation reuses — the suspended assistant's run, looked up
     // by its codec-message-id. Resolved once; reused by the empty-continuation
@@ -527,8 +549,8 @@ export const createChatTransport = (
         : undefined;
 
     // Determine the history/messages split based on mode.
-    let newMessages: AI.UIMessage[];
-    let history: AI.UIMessage[];
+    let newMessages: AI.UIMessage<TMetadata, TDataParts, TTools>[];
+    let history: AI.UIMessage<TMetadata, TDataParts, TTools>[];
 
     if (trigger === 'regenerate-message' || isContinuation) {
       newMessages = [];
@@ -543,7 +565,7 @@ export const createChatTransport = (
       }
       // CAST: length check above guarantees at least one element; .at(-1) cannot be undefined.
       // eslint-disable-next-line @typescript-eslint/non-nullable-type-assertion-style -- prefer `as` over `!` per TYPES.md
-      newMessages = [messages.at(-1) as AI.UIMessage];
+      newMessages = [messages.at(-1) as AI.UIMessage<TMetadata, TDataParts, TTools>];
       // When forking off an unresolved tool call, drop the unresolved
       // assistant from history too — it belongs on the sibling branch, not
       // the ancestor chain of the new message.
@@ -612,7 +634,7 @@ export const createChatTransport = (
     //   through U1 inclusive via the body.
     // - Fresh send / edit: publish the new user-message input(s) via
     //   `view.send`.
-    let run: ClientRun<AI.UIMessage>;
+    let run: ClientRun<AI.UIMessage<TMetadata, TDataParts, TTools>>;
     if (isContinuation) {
       // Non-empty here: the empty case returned the deferred-observe stream above.
       run = await session.view.send(continuationInputs, sendOpts);
@@ -635,7 +657,7 @@ export const createChatTransport = (
       }
       run = await session.view.regenerate(regenCodecId, sendOpts);
     } else {
-      const inputs = newMessages.map((m) => UIMessageCodec.createUserMessage(m));
+      const inputs = newMessages.map((m) => codec.createUserMessage(m));
       run = await session.view.send(inputs, sendOpts);
     }
 

@@ -1,8 +1,8 @@
 // Vercel AI SDK codec
 export type { VercelInput, VercelOutput, VercelProjection } from './codec/index.js';
-export { UIMessageCodec } from './codec/index.js';
+export { createUIMessageCodec } from './codec/index.js';
 
-// Vercel AI SDK transport wrappers (pre-bound to UIMessageCodec)
+// Vercel AI SDK transport wrappers (pre-bound to the Vercel codec)
 export type {
   ChatTransport,
   ChatTransportOptions,

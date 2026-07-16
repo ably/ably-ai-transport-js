@@ -48,8 +48,19 @@ export interface MessageTrackers {
  * fields are internal to the reducer; they happen to live on the
  * projection because the projection is the only thing the reducer can
  * carry from fold to fold (it has no instance state).
+ *
+ * The generic params thread through the `messages` field's `AI.UIMessage`,
+ * each defaulting to the SDK default, so an unparameterized `VercelProjection` — as
+ * the reducer internals use it — resolves to the all-defaults instantiation.
+ * @template TMetadata - Per-message metadata type on the projected messages.
+ * @template TDataParts - Custom data-part types on the projected messages.
+ * @template TTools - Tool set typing the projected messages' tool parts.
  */
-export interface VercelProjection {
+export interface VercelProjection<
+  TMetadata = unknown,
+  TDataParts extends AI.UIDataTypes = AI.UIDataTypes,
+  TTools extends AI.UITools = AI.UITools,
+> {
   /**
    * UIMessages produced or modified in this Run, in publication order,
    * each paired with its codec-message-id. The reducer correlates strictly
@@ -57,7 +68,7 @@ export interface VercelProjection {
    * (the AI SDK stream's `start.messageId` for assistants, the caller's id
    * for user messages) and is never used as an identity key.
    */
-  messages: CodecMessage<AI.UIMessage>[];
+  messages: CodecMessage<AI.UIMessage<TMetadata, TDataParts, TTools>>[];
   /** Per-codecMessageId tracker state for streamed parts. Internal — do not access. */
   trackers: Map<string, MessageTrackers>;
   /**

@@ -79,7 +79,7 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
 // ---------------------------------------------------------------------------
 
 describe('Vercel createClientSession', () => {
-  it('returns a functional ClientSession with UIMessageCodec pre-bound', async () => {
+  it('returns a functional ClientSession with the Vercel codec pre-bound', async () => {
     const channel = createMockChannel();
     const session = createClientSession({ client: createMockClient(channel), channelName: 'test-channel' });
 
@@ -111,7 +111,7 @@ describe('Vercel createClientSession', () => {
 });
 
 describe('Vercel createAgentSession', () => {
-  it('returns a functional AgentSession with UIMessageCodec pre-bound', async () => {
+  it('returns a functional AgentSession with the Vercel codec pre-bound', async () => {
     const channel = createMockChannel();
     const session = createAgentSession({ client: createMockClient(channel), channelName: 'test-channel' });
     await session.connect();

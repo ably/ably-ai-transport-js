@@ -83,7 +83,7 @@ The session channel is an ordinary Ably channel, so `session.presence` exposes i
 The client session manages conversation state: the message list, conversation tree (for branching), active runs, and history. It subscribes to the Ably channel before attaching, so no messages are lost. It also exposes the channel's presence object as `session.presence`, so a client can observe which clients are connected (see [Presence](../features/presence.md)), and the channel's LiveObjects entry point as `session.object` for synchronized shared state alongside the conversation (opt-in - see [LiveObjects](../features/liveobjects.md)).
 
 ```typescript
-import { createClientSession, UIMessageCodec } from '@ably/ai-transport/vercel';
+import { createClientSession, createUIMessageCodec } from '@ably/ai-transport/vercel';
 
 const session = createClientSession({ client: ably, channelName });
 await session.connect();
@@ -91,7 +91,7 @@ const view = session.view;
 
 // Send a message - compose the user message into a codec input, then send().
 // Publishes on the channel and returns immediately with a run handle.
-const run = await view.send(UIMessageCodec.createUserMessage(userMessage));
+const run = await view.send(createUIMessageCodec().createUserMessage(userMessage));
 
 // Wake the agent: POST the invocation pointer to your endpoint. The core
 // transport never sends HTTP — the app owns this step.
@@ -118,12 +118,12 @@ In React, `ClientSessionProvider` creates the session and `useClientSession` rea
 
 ```typescript
 import { ClientSessionProvider, useClientSession, useView } from '@ably/ai-transport/react';
-import { UIMessageCodec } from '@ably/ai-transport/vercel';
+import { createUIMessageCodec } from '@ably/ai-transport/vercel';
 import type { VercelInput, VercelProjection } from '@ably/ai-transport/vercel';
 import type * as AI from 'ai';
 
 // In your layout or page component:
-<ClientSessionProvider channelName="ai:demo" codec={UIMessageCodec}>
+<ClientSessionProvider channelName="ai:demo" codec={createUIMessageCodec()}>
   <Chat />
 </ClientSessionProvider>
 
@@ -141,7 +141,7 @@ The session is parameterized by a `Codec<TInput, TOutput, TProjection, TMessage>
 - **Reducer** (`init`/`fold`): folds decoded events into an opaque per-node `TProjection`
 - **Message extraction** (`getMessages`): builds complete `TMessage`s from a projection
 
-The generic session layer knows nothing about specific frameworks. For the Vercel AI SDK, `UIMessageCodec` maps between `UIMessageChunk` events and `UIMessage` messages. The Vercel entry point (`@ably/ai-transport/vercel`) pre-binds this codec so you don't need to pass it explicitly.
+The generic session layer knows nothing about specific frameworks. For the Vercel AI SDK, the codec from `createUIMessageCodec()` maps between `UIMessageChunk` events and `UIMessage` messages. The Vercel entry point (`@ably/ai-transport/vercel`) pre-binds this codec so you don't need to pass it explicitly.
 
 For the internal implementation of each session, see [Client session](../internals/client-session.md) and [Agent session](../internals/agent-session.md). For the sub-components they compose, see [Transport components](../internals/transport-components.md). For the codec, encoder, and decoder internals, see [Codec interface](../internals/codec-interface.md), [Encoder](../internals/encoder.md), and [Decoder](../internals/decoder.md). For the wire format, see [Wire protocol](../internals/wire-protocol.md).
 
@@ -151,5 +151,5 @@ For the internal implementation of each session, see [Client session](../interna
 | ------------------------------------------------ | -------------------------------------------------------------------------------------------- |
 | Build with Vercel AI SDK's `useChat()`           | `@ably/ai-transport/vercel/react` - gives you `useChatTransport()` + `useMessageSync()`      |
 | Build with Vercel AI SDK using lower-level hooks | `@ably/ai-transport/react` + `@ably/ai-transport/vercel`                                     |
-| Build a server endpoint with Vercel AI SDK       | `@ably/ai-transport/vercel` - gives you `createAgentSession()` pre-bound to `UIMessageCodec` |
+| Build a server endpoint with Vercel AI SDK       | `@ably/ai-transport/vercel` - gives you `createAgentSession()` pre-bound to the Vercel codec |
 | Implement a custom codec for another framework   | `@ably/ai-transport` - the generic core with `Codec<TInput, TOutput, TProjection, TMessage>` |

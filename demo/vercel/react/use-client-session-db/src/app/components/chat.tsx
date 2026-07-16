@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ClientRun, RunStatus } from '@ably/ai-transport';
 import { isToolUIPart, type UIMessage } from 'ai';
-import { UIMessageCodec } from '@ably/ai-transport/vercel';
+import { createUIMessageCodec } from '@ably/ai-transport/vercel';
 import { useMessagesWithSeed } from '@ably/ai-transport/vercel/react';
 import { ArrowUpIcon, ExternalLinkIcon, SquareIcon } from 'lucide-react';
 
@@ -21,6 +21,7 @@ import { clientColor } from '../lib/client-color';
 import { AvatarStack } from './avatar-stack';
 
 const { useClientSession, useAblyMessages } = SessionHooks;
+const uiMessageCodec = createUIMessageCodec();
 
 /** Props for {@link Chat}. */
 interface ChatProps {
@@ -223,7 +224,7 @@ export function Chat({ chatId, clientId, seed, api }: ChatProps) {
       const run = view.runOf(codecMessageId);
       if (!run) return;
       wake(
-        view.send([UIMessageCodec.createToolApprovalResponse(codecMessageId, { toolCallId, approved: true })], {
+        view.send([uiMessageCodec.createToolApprovalResponse(codecMessageId, { toolCallId, approved: true })], {
           runId: run.runId,
         }),
       );
@@ -240,7 +241,7 @@ export function Chat({ chatId, clientId, seed, api }: ChatProps) {
       wake(
         view.send(
           [
-            UIMessageCodec.createToolApprovalResponse(codecMessageId, {
+            uiMessageCodec.createToolApprovalResponse(codecMessageId, {
               toolCallId,
               approved: false,
               reason: 'User denied',
@@ -276,7 +277,7 @@ export function Chat({ chatId, clientId, seed, api }: ChatProps) {
         } catch {
           // best-effort cancel; the send below still proceeds
         }
-        wake(view.send(UIMessageCodec.createUserMessage(userMessage(text))));
+        wake(view.send(uiMessageCodec.createUserMessage(userMessage(text))));
       })();
     },
     [latestRun, session, view, wake],

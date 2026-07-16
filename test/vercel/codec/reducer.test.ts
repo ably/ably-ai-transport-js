@@ -12,9 +12,11 @@ import { describe, expect, it } from 'vitest';
 
 import type { ReducerMeta } from '../../../src/core/codec/types.js';
 import type { VercelInput, VercelOutput } from '../../../src/vercel/codec/events.js';
-import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
+import { createUIMessageCodec } from '../../../src/vercel/codec/index.js';
 import { fold as foldEvent, getMessages, init, type VercelProjection } from '../../../src/vercel/codec/reducer.js';
 import { isToolPart, type ToolPart } from '../../../src/vercel/tool-part.js';
+
+const UIMessageCodec = createUIMessageCodec();
 
 const meta = (serial: string, messageId?: string): ReducerMeta =>
   messageId === undefined ? { serial } : { serial, messageId };

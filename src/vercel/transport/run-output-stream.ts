@@ -29,7 +29,12 @@ import type { ClientSession } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
 
-type VercelSession = ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+type VercelSession<TMetadata, TDataParts extends AI.UIDataTypes, TTools extends AI.UITools> = ClientSession<
+  VercelInput<TMetadata, TDataParts, TTools>,
+  VercelOutput<TMetadata, TDataParts>,
+  VercelProjection<TMetadata, TDataParts, TTools>,
+  AI.UIMessage<TMetadata, TDataParts, TTools>
+>;
 
 /**
  * Whether a Vercel output chunk ends the consumer-facing stream. The terminal
@@ -42,19 +47,19 @@ const isTerminalChunk = (output: VercelOutput): boolean =>
   output.type === 'finish' || output.type === 'error' || output.type === 'abort';
 
 /** A consumer-facing run output stream plus the handle to close it externally. */
-interface RunOutputStream {
+interface RunOutputStream<TMetadata, TDataParts extends AI.UIDataTypes> {
   /** The stream of decoded outputs for the run, as `useChat` consumes it. */
-  stream: ReadableStream<VercelOutput>;
+  stream: ReadableStream<VercelOutput<TMetadata, TDataParts>>;
   /** Close the stream now (e.g. on local cancel). Idempotent. */
   close: () => void;
 }
 
 /** The shared scaffold behind a settle-once consumer stream. */
-interface SettlingStream {
+interface SettlingStream<TMetadata, TDataParts extends AI.UIDataTypes> {
   /** The stream the consumer reads. */
-  stream: ReadableStream<VercelOutput>;
+  stream: ReadableStream<VercelOutput<TMetadata, TDataParts>>;
   /** The stream's controller (enqueue outputs / inspect desiredSize). */
-  controller: ReadableStreamDefaultController<VercelOutput>;
+  controller: ReadableStreamDefaultController<VercelOutput<TMetadata, TDataParts>>;
   /** Close the stream once, then run registered cleanup. Idempotent. */
   close: () => void;
   /** Error the stream once with `reason`, then run cleanup. Idempotent. */
@@ -73,8 +78,11 @@ interface SettlingStream {
  * SettlingStream.registerCleanup}.
  * @returns The stream, its controller, settle helpers, and a cleanup registrar.
  */
-const createSettlingStream = (): SettlingStream => {
-  const holder: { controller?: ReadableStreamDefaultController<VercelOutput> } = {};
+const createSettlingStream = <TMetadata, TDataParts extends AI.UIDataTypes>(): SettlingStream<
+  TMetadata,
+  TDataParts
+> => {
+  const holder: { controller?: ReadableStreamDefaultController<VercelOutput<TMetadata, TDataParts>> } = {};
   const cleanups: (() => void)[] = [];
   const teardown = (): void => {
     for (const fn of cleanups) fn();
@@ -82,7 +90,7 @@ const createSettlingStream = (): SettlingStream => {
   };
   // ReadableStream's start() runs synchronously, so the controller is captured
   // before the constructor returns.
-  const stream = new ReadableStream<VercelOutput>({
+  const stream = new ReadableStream<VercelOutput<TMetadata, TDataParts>>({
     start: (controller) => {
       holder.controller = controller;
     },
@@ -143,6 +151,9 @@ const createSettlingStream = (): SettlingStream => {
  * client owns from send time, before the agent mints the runId. The agent's
  * minted runId is supplied as a promise so the run-end safety-net can still
  * close the stream once it resolves.
+ * @template TMetadata - Per-message metadata type carried by the session.
+ * @template TDataParts - Custom data-part types carried by the session.
+ * @template TTools - Tool set typing the session's message tool parts.
  * @param session - The Vercel client session whose Tree to observe.
  * @param runId - The agent-minted runId, resolved when run-start is observed.
  *   Used only by the run-end safety-net, which awaits it so a run-end that races
@@ -152,12 +163,12 @@ const createSettlingStream = (): SettlingStream => {
  *   output routes to this stream when it carries this id.
  * @returns The stream and its external close handle.
  */
-export const createRunOutputStream = (
-  session: VercelSession,
+export const createRunOutputStream = <TMetadata, TDataParts extends AI.UIDataTypes, TTools extends AI.UITools>(
+  session: VercelSession<TMetadata, TDataParts, TTools>,
   runId: Promise<string>,
   inputCodecMessageId: string,
-): RunOutputStream => {
-  const { stream, controller, close, error, registerCleanup } = createSettlingStream();
+): RunOutputStream<TMetadata, TDataParts> => {
+  const { stream, controller, close, error, registerCleanup } = createSettlingStream<TMetadata, TDataParts>();
 
   // The agent mints the runId; learn it (for the run-end safety-net) when the
   // promise resolves. Fire-and-forget: the stream opens on the input key, so a
@@ -265,16 +276,23 @@ export const DEFERRED_CONTINUATION_TIMEOUT_MS = 30_000;
  *
  * It errors when the session emits an `error`, mirroring
  * {@link createRunOutputStream}.
+ * @template TMetadata - Per-message metadata type carried by the session.
+ * @template TDataParts - Custom data-part types carried by the session.
+ * @template TTools - Tool set typing the session's message tool parts.
  * @param session - The Vercel client session whose Tree to observe.
  * @param runId - The run to observe (the continuation's reused runId), or
  *   `undefined` when none is known — in which case the stream closes immediately.
  * @returns The stream and its external close handle.
  */
-export const createDeferredContinuationStream = (
-  session: VercelSession,
+export const createDeferredContinuationStream = <
+  TMetadata,
+  TDataParts extends AI.UIDataTypes,
+  TTools extends AI.UITools,
+>(
+  session: VercelSession<TMetadata, TDataParts, TTools>,
   runId: string | undefined,
-): RunOutputStream => {
-  const { stream, close, error, registerCleanup } = createSettlingStream();
+): RunOutputStream<TMetadata, TDataParts> => {
+  const { stream, close, error, registerCleanup } = createSettlingStream<TMetadata, TDataParts>();
 
   // Snapshot pre-check (closes the subscribe-after-the-fact race): the run's
   // resume/turn/run-end can arrive over the channel before this stream

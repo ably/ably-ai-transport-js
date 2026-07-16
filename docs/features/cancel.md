@@ -13,7 +13,7 @@ Cancel a specific run by ID:
 // preferred form: run.cancel() keys on the input's codec-message-id, which the
 // client owns synchronously, so a cancel issued before the agent has minted the
 // run id is still honoured (the agent buffers it until its run is known).
-const run = await view.send(UIMessageCodec.createUserMessage(message));
+const run = await view.send(createUIMessageCodec().createUserMessage(message));
 await run.cancel();
 
 // Or cancel by runId from anywhere that holds the id. The agent mints the run
@@ -36,7 +36,7 @@ const { send } = useView({ session });
 const [activeRun, setActiveRun] = useState<ClientRun | undefined>();
 
 const onSend = async (message: AI.UIMessage) => {
-  const run = await send(UIMessageCodec.createUserMessage(message));
+  const run = await send(createUIMessageCodec().createUserMessage(message));
   setActiveRun(run);
 };
 

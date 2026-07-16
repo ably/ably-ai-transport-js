@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { ClientRun } from '@ably/ai-transport';
 import type { UIMessage } from 'ai';
-import { UIMessageCodec } from '@ably/ai-transport/vercel';
+import { createUIMessageCodec } from '@ably/ai-transport/vercel';
 
 import { userMessage, wakeAgent } from '../helpers';
 import { useClientTools } from '../hooks/use-client-tools';
@@ -18,6 +18,7 @@ import { clientColor } from '../lib/client-color';
 import { AvatarStack } from './avatar-stack';
 
 const { useClientSession, useView, useAblyMessages } = SessionHooks;
+const uiMessageCodec = createUIMessageCodec();
 
 interface ChatProps {
   chatId: string;
@@ -180,7 +181,7 @@ export function Chat({
       const run = view.runOf(codecMessageId);
       if (!run) return;
       wake(
-        view.send([UIMessageCodec.createToolApprovalResponse(codecMessageId, { toolCallId, approved: true })], {
+        view.send([uiMessageCodec.createToolApprovalResponse(codecMessageId, { toolCallId, approved: true })], {
           runId: run.runId,
         }),
       );
@@ -195,7 +196,7 @@ export function Chat({
       wake(
         view.send(
           [
-            UIMessageCodec.createToolApprovalResponse(codecMessageId, {
+            uiMessageCodec.createToolApprovalResponse(codecMessageId, {
               toolCallId,
               approved: false,
               reason: 'User denied',
@@ -226,7 +227,7 @@ export function Chat({
           onLoadOlder={() => void loadOlder()}
           onRegenerate={(codecMessageId) => wake(view.regenerate(codecMessageId))}
           onEdit={(codecMessageId, text) =>
-            wake(view.edit(codecMessageId, [UIMessageCodec.createUserMessage(userMessage(text))]))
+            wake(view.edit(codecMessageId, [uiMessageCodec.createUserMessage(userMessage(text))]))
           }
           onToolApprove={handleToolApprove}
           onToolDeny={handleToolDeny}
@@ -244,7 +245,7 @@ export function Chat({
             value={input}
             onChange={setInput}
             inputRef={inputRef}
-            onSend={(text) => wake(view.send(UIMessageCodec.createUserMessage(userMessage(text))))}
+            onSend={(text) => wake(view.send(uiMessageCodec.createUserMessage(userMessage(text))))}
             onStop={() => {
               if (!latestRunId) return;
               // Stop only shows for an ACTIVE run, so a live agent is attached:

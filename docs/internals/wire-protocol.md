@@ -44,7 +44,7 @@ Every codec message carries one SDK-controlled header — `kind` — that the de
 | `providerMetadata` | JSON-serialized provider metadata                                                                                                                                                                               |
 | `finishReason`     | Why the LLM stopped generating (on `finish`)                                                                                                                                                                    |
 
-For the Vercel `UIMessageCodec`, `kind` carries the codec event's domain discriminator: a discrete output stamps its chunk `type` (e.g. `start`, `finish`, `tool-output-available`, the `data-*` wildcard); a streamed output stamps its family id (`text`, `reasoning`, `tool-input`); an input stamps its `kind` (`user-message`, `tool-result`, `tool-result-error`, `tool-approval-response`, `regenerate`). The set of valid `kind` values is codec-defined — each descriptor's literal becomes one — not a fixed SDK enum.
+For the Vercel codec, `kind` carries the codec event's domain discriminator: a discrete output stamps its chunk `type` (e.g. `start`, `finish`, `tool-output-available`, the `data-*` wildcard); a streamed output stamps its family id (`text`, `reasoning`, `tool-input`); an input stamps its `kind` (`user-message`, `tool-result`, `tool-result-error`, `tool-approval-response`, `regenerate`). The set of valid `kind` values is codec-defined — each descriptor's literal becomes one — not a fixed SDK enum.
 
 Error text and `data-*` payloads ride in the message `data`, not in a header.
 

@@ -77,13 +77,13 @@ There are no first-party React hooks for LiveObjects — `ably/react` exports no
 import { useEffect, useState } from 'react';
 import { OBJECT_MODES } from '@ably/ai-transport';
 import { ClientSessionProvider, useClientSession } from '@ably/ai-transport/react';
-import { UIMessageCodec } from '@ably/ai-transport/vercel';
+import { createUIMessageCodec } from '@ably/ai-transport/vercel';
 
 function App() {
   return (
     <ClientSessionProvider
       channelName="ai:demo"
-      codec={UIMessageCodec}
+      codec={createUIMessageCodec()}
       clientId="user-123"
       channelModes={OBJECT_MODES}
     >

@@ -77,7 +77,7 @@ On the client, every streaming event is accumulated into the conversation tree a
 
 ```typescript
 const view = session.view;
-const run = await view.send(UIMessageCodec.createUserMessage(userMessage));
+const run = await view.send(createUIMessageCodec().createUserMessage(userMessage));
 
 // Subscribe to accumulated messages - updates on every token
 const unsubscribe = view.on('update', () => {
@@ -94,7 +94,7 @@ For per-event granularity, subscribe to the tree's `output` event. Every decoded
 
 ```typescript
 // Per-event consumption - most apps use the view instead
-const run = await view.send(UIMessageCodec.createUserMessage(userMessage));
+const run = await view.send(createUIMessageCodec().createUserMessage(userMessage));
 const unsubscribe = session.tree.on('output', (event) => {
   if (event.inputCodecMessageId !== run.inputCodecMessageId) return;
   for (const chunk of event.events) {
@@ -113,7 +113,7 @@ Late-joining clients receive the final message from channel history, which conta
 
 ## What streams through
 
-The transport streams whatever events the codec produces. For the Vercel AI SDK codec (`UIMessageCodec`), these are `UIMessageChunk` events:
+The transport streams whatever events the codec produces. For the Vercel AI SDK codec (`createUIMessageCodec()`), these are `UIMessageChunk` events:
 
 | Chunk type        | Ably encoding                                              |
 | ----------------- | ---------------------------------------------------------- |

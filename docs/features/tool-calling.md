@@ -106,7 +106,7 @@ const tools = {
 Watch for tool parts in the `input-available` state, execute the browser API, then publish the result back to the channel:
 
 ```typescript
-import { UIMessageCodec } from '@ably/ai-transport/vercel';
+import { createUIMessageCodec } from '@ably/ai-transport/vercel';
 
 // 1. Find the pending tool call in the assistant message. Walk the flat
 //    list paired with codec-message-ids so we can address the result back to
@@ -139,7 +139,7 @@ const position = await new Promise((resolve, reject) => navigator.geolocation.ge
 //    codec-supplied payload carries the domain-specific fields (`toolCallId`,
 //    `output`). Routing lives on the input itself - no wrapper object.
 await view.send(
-  UIMessageCodec.createToolResult(assistant.codecMessageId, {
+  createUIMessageCodec().createToolResult(assistant.codecMessageId, {
     toolCallId: toolPart.toolCallId,
     output: {
       latitude: position.coords.latitude,

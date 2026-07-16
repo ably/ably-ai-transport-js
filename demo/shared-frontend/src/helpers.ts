@@ -3,7 +3,7 @@ import type { UIMessage } from 'ai';
 
 /**
  * Construct a user UIMessage from a text string. Callers wrap it for the
- * wire at the call site, e.g. `view.send(UIMessageCodec.createUserMessage(userMessage(text)))`.
+ * wire at the call site, e.g. `view.send(createUIMessageCodec().createUserMessage(userMessage(text)))`.
  */
 export function userMessage(text: string): UIMessage {
   return {

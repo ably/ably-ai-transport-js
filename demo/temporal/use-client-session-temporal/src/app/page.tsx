@@ -8,7 +8,7 @@ import {
   generateChannelSlug,
   generateClientName,
 } from '@ably-ai-demos/frontend';
-import { UIMessageCodec } from '@ably/ai-transport/vercel';
+import { createUIMessageCodec } from '@ably/ai-transport/vercel';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
 
@@ -22,6 +22,7 @@ import {
 const { ClientSessionProvider } = SessionHooks;
 
 const CHANNEL_NAMESPACE = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ai:';
+const uiMessageCodec = createUIMessageCodec();
 
 function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; clientId?: string; limit?: number }) {
   const ready = useAblyReady();
@@ -33,7 +34,7 @@ function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; 
   return (
     <ClientSessionProvider
       channelName={channelName}
-      codec={UIMessageCodec}
+      codec={uiMessageCodec}
     >
       <Chat
         chatId={channelName}

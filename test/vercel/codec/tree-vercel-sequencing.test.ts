@@ -25,8 +25,10 @@ import { HEADER_CODEC_MESSAGE_ID, HEADER_ROLE, HEADER_RUN_ID, HEADER_STREAM } fr
 import { createTree } from '../../../src/core/transport/tree.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 import type { VercelInput, VercelOutput } from '../../../src/vercel/codec/events.js';
-import { UIMessageCodec } from '../../../src/vercel/codec/index.js';
+import { createUIMessageCodec } from '../../../src/vercel/codec/index.js';
 import type { VercelProjection } from '../../../src/vercel/codec/reducer.js';
+
+const UIMessageCodec = createUIMessageCodec();
 
 const silentLogger = makeLogger({ logLevel: LogLevel.Silent });
 

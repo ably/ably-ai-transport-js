@@ -15,7 +15,7 @@ Create a `ClientSession` and make it available to descendant components. The Rea
 ```tsx
 <ClientSessionProvider
   channelName="ai:demo"
-  codec={UIMessageCodec}
+  codec={createUIMessageCodec()}
 >
   <Chat />
 </ClientSessionProvider>
@@ -45,11 +45,11 @@ For multiple sessions, nest providers with distinct `channelName` values:
 ```tsx
 <ClientSessionProvider
   channelName="ai:main"
-  codec={UIMessageCodec}
+  codec={createUIMessageCodec()}
 >
   <ClientSessionProvider
     channelName="ai:aux"
-    codec={UIMessageCodec}
+    codec={createUIMessageCodec()}
   >
     <App />
   </ClientSessionProvider>
@@ -258,7 +258,7 @@ Import from `@ably/ai-transport/vercel/react`.
 
 ### ChatTransportProvider
 
-Create a `ClientSession` and `ChatTransport` and make both available to descendant components. A convenience wrapper around `ClientSessionProvider` with `UIMessageCodec` pre-bound — no `codec` prop needed.
+Create a `ClientSession` and `ChatTransport` and make both available to descendant components. A convenience wrapper around `ClientSessionProvider` with the Vercel codec pre-bound — no `codec` prop needed.
 
 ```tsx
 <ChatTransportProvider channelName="ai:demo">

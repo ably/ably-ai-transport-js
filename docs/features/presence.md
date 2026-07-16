@@ -35,13 +35,13 @@ await session.presence.enter({ role: 'agent' });
 ```tsx
 import { usePresence, usePresenceListener } from 'ably/react';
 import { ClientSessionProvider } from '@ably/ai-transport/react';
-import { UIMessageCodec } from '@ably/ai-transport/vercel';
+import { createUIMessageCodec } from '@ably/ai-transport/vercel';
 
 function App() {
   return (
     <ClientSessionProvider
       channelName="ai:demo"
-      codec={UIMessageCodec}
+      codec={createUIMessageCodec()}
     >
       <OnlineList />
     </ClientSessionProvider>

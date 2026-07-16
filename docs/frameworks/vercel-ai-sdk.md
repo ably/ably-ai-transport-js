@@ -23,7 +23,7 @@ Vercel's `useChat()` accepts a custom `transport` that handles message delivery.
 import { ChatTransportProvider, useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
 import { useChat } from '@ai-sdk/react';
 
-// Wrap your component tree with ChatTransportProvider (no codec needed — UIMessageCodec is pre-bound)
+// Wrap your component tree with ChatTransportProvider (no codec needed — the Vercel codec is pre-bound)
 <ChatTransportProvider channelName={chatId}>
   <ChatInner chatId={chatId} />
 </ChatTransportProvider>;
@@ -48,14 +48,17 @@ Use the generic React hooks directly. You manage message state through the sessi
 
 ```tsx
 import { ClientSessionProvider, useClientSession, useView } from '@ably/ai-transport/react';
-import { UIMessageCodec } from '@ably/ai-transport/vercel';
+import { createUIMessageCodec } from '@ably/ai-transport/vercel';
 import type { VercelInput, VercelProjection } from '@ably/ai-transport/vercel';
 import type * as AI from 'ai';
+
+// A stable codec instance (hold it at module scope or via useMemo).
+const uiMessageCodec = createUIMessageCodec();
 
 // Wrap your component tree with ClientSessionProvider
 <ClientSessionProvider
   channelName={chatId}
-  codec={UIMessageCodec}
+  codec={uiMessageCodec}
 >
   <ChatInner />
 </ClientSessionProvider>;
@@ -79,15 +82,34 @@ This path gives you conversation branching UI (sibling navigation via `branchSel
 | You don't need edit or branch navigation                 | You need `edit()` or branch navigation        |
 | You're already using `useChat()` and adding AI Transport | You're building a custom chat UI from scratch |
 
+## Typed messages (metadata, data parts, tools)
+
+`createUIMessageCodec`, `createClientSession`, `createAgentSession`, and `createChatTransport` are generic over the AI SDK's three `UIMessage` type parameters — message metadata, custom data parts, and tools. Supply them once and your typed message flows through the session, so `view.getMessages()` returns messages whose `metadata`, data parts, and tool parts carry your types instead of the SDK defaults. Omit them and inference is unchanged.
+
+```tsx
+import { createClientSession } from '@ably/ai-transport/vercel';
+import type * as AI from 'ai';
+
+type Metadata = { userId: string };
+type DataParts = AI.UIDataTypes & { chart: { points: number[] } };
+type Tools = AI.UITools & { getWeather: { input: { city: string }; output: { tempC: number } } };
+
+const session = createClientSession<Metadata, DataParts, Tools>({ client, channelName: 'ai:demo' });
+const [{ message }] = session.view.getMessages();
+message.metadata; // typed `Metadata | undefined` — not `unknown`
+```
+
+Under the module-scope React constraint, the `ChatTransportProvider` / `createSessionHooks` path stays at the SDK defaults; thread concrete types through the imperative path (`createClientSession<…>` + `createChatTransport<…>` + `useMessageSync<…>`).
+
 ## Entry points
 
-| Import                            | What you get                                                                                                                                     |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `@ably/ai-transport/vercel`       | `UIMessageCodec`, `createAgentSession()`, `createClientSession()`, `createChatTransport()`, `vercelRunOutcome()` - all pre-bound to Vercel types |
-| `@ably/ai-transport/vercel/react` | `ChatTransportProvider`, `useChatTransport()`, `useMessageSync()`, plus all generic hooks pre-bound to Vercel types                              |
-| `@ably/ai-transport/react`        | Generic hooks (`useView`, `useTree`, `useClientSession`, etc.) - work with any codec including `UIMessageCodec`                                  |
+| Import                            | What you get                                                                                                                                             |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@ably/ai-transport/vercel`       | `createUIMessageCodec()`, `createAgentSession()`, `createClientSession()`, `createChatTransport()`, `vercelRunOutcome()` - all pre-bound to Vercel types |
+| `@ably/ai-transport/vercel/react` | `ChatTransportProvider`, `useChatTransport()`, `useMessageSync()`, plus all generic hooks pre-bound to Vercel types                                      |
+| `@ably/ai-transport/react`        | Generic hooks (`useView`, `useTree`, `useClientSession`, etc.) - work with any codec including the Vercel codec                                          |
 
-The Vercel entry points are convenience wrappers. `createAgentSession()` from `/vercel` is the same as the core `createAgentSession()` with `UIMessageCodec` pre-bound - you don't pass a `codec` option.
+The Vercel entry points are convenience wrappers. `createAgentSession()` from `/vercel` is the same as the core `createAgentSession()` with the Vercel codec pre-bound - you don't pass a `codec` option.
 
 ## Server side
 
@@ -136,7 +158,7 @@ session.close();
 
 ## Codec details
 
-`UIMessageCodec` maps between Vercel AI SDK types and Ably messages. It is assembled by `defineCodec` from declarative descriptor tables rather than hand-written encoder/decoder classes — `inputs.ts` declares the `ai-input` events, `outputs.ts` declares the `ai-output` events, and the reducer (`init`/`fold`/`getMessages`) folds decoded events into `UIMessage` objects.
+The Vercel codec maps between Vercel AI SDK types and Ably messages. It is assembled by `defineCodec` from declarative descriptor tables rather than hand-written encoder/decoder classes — `inputs.ts` declares the `ai-input` events, `outputs.ts` declares the `ai-output` events, and the reducer (`init`/`fold`/`getMessages`) folds decoded events into `UIMessage` objects.
 
 Each output descriptor is either a **streamed family** (start / delta / end chunks accumulated into one Ably message) or a **discrete event** (one Ably message):
 

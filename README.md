@@ -423,7 +423,7 @@ src/
 │   └── transport/      # ClientSession, AgentSession, Tree
 ├── react/              # React hooks for any codec
 ├── vercel/             # Vercel AI SDK codec and transport adapters
-│   ├── codec/          # UIMessageCodec
+│   ├── codec/          # createUIMessageCodec
 │   ├── transport/      # Vercel-specific factories, ChatTransport
 │   └── react/          # useChatTransport, useMessageSync
 └── index.ts            # Core entry point

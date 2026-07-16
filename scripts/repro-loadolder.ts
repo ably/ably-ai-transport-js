@@ -23,7 +23,7 @@ import { createClientSession } from '../src/core/transport/client-session.js';
 import { LogLevel, makeLogger } from '../src/logger.js';
 import { getTransportHeaders } from '../src/utils.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../src/vercel/codec/index.js';
-import { UIMessageCodec } from '../src/vercel/codec/index.js';
+import { createUIMessageCodec } from '../src/vercel/codec/index.js';
 
 const apiKey = process.env.ABLY_API_KEY;
 if (!apiKey) {
@@ -145,7 +145,7 @@ const main = async (): Promise<void> => {
   const session = createClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
     client,
     channelName,
-    codec: UIMessageCodec,
+    codec: createUIMessageCodec(),
     clientId: client.auth.clientId ?? undefined,
     logger,
   });

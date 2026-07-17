@@ -36,6 +36,7 @@ import { type BranchSource, NavigableBranchSource } from './branch-source.js';
 import { messageTailSplitIndex } from './conversation-projection.js';
 import type { HistoryHydrator } from './history-hydrator.js';
 import type { LeafBranchSource } from './leaf-branch-source.js';
+import { deferUnrespondedSteers, type SteerOrdering } from './steer-ordering.js';
 import { nodeKey, type TreeInternal } from './tree.js';
 import type {
   BranchHandle,
@@ -112,6 +113,13 @@ interface ViewOptions<TInput extends CodecInputEvent, TOutput extends CodecOutpu
   logger: Logger;
   /** Called when the view is closed, allowing the owner to clean up references. */
   onClose?: () => void;
+  /**
+   * Repositions unresponded steers within a run node's flattened messages so
+   * the run ends on a user message. Supplied by the agent's leaf view (whose
+   * `getMessages()` feeds the inference prompt); omitted by the client view,
+   * which renders messages in chronological serial order.
+   */
+  steerOrdering?: SteerOrdering;
 }
 
 /** Options for creating a client View — the navigable, writable {@link DefaultClientView}. */
@@ -182,6 +190,7 @@ class DefaultView<
   private readonly _logger: Logger;
   private readonly _emitter: EventEmitter<ViewEventsMap>;
   private readonly _onClose?: () => void;
+  private readonly _steerOrdering?: SteerOrdering;
 
   /**
    * Cache of `codec.getMessages`, keyed by node key (the Tree's stable primary
@@ -205,15 +214,27 @@ class DefaultView<
    * Flatten one node to its messages, served from {@link _messagesByNode} when
    * the node is unchanged since its last flatten. Passed to
    * `branchSource.extractMessages` so every flatten of the chain is memoised.
+   *
+   * When a {@link SteerOrdering} is supplied (the agent's leaf view), a run
+   * node's messages are post-processed to defer unresponded steers to the tail.
+   * The reorder runs on read rather than being cached, so it reflects the
+   * current responded-state — a steer stamped between reads without a
+   * projection change would otherwise be served from a stale ordering.
    * @param node - The node to flatten.
-   * @returns The node's codecMessages (cached by node key).
+   * @returns The node's codecMessages (cached by node key; steer-reordered per read).
    */
   private readonly _getMessages = (node: ConversationNode<TProjection>): CodecMessage<TMessage>[] => {
     const key = nodeKey(node);
-    const cached = this._messagesByNode.get(key);
-    if (cached !== undefined) return cached;
-    const messages = this._codec.getMessages(node.projection);
-    this._messagesByNode.set(key, messages);
+    let messages = this._messagesByNode.get(key);
+    if (messages === undefined) {
+      messages = this._codec.getMessages(node.projection);
+      this._messagesByNode.set(key, messages);
+    }
+    const ordering = this._steerOrdering;
+    if (ordering !== undefined && node.kind === 'run') {
+      const runId = node.runId;
+      messages = deferUnrespondedSteers(messages, (cmid) => ordering.isUnrespondedSteer(runId, cmid));
+    }
     return messages;
   };
 
@@ -305,6 +326,7 @@ class DefaultView<
     this._hydrator = options.hydrator;
     this._branchSource = options.branchSource;
     this._onClose = options.onClose;
+    this._steerOrdering = options.steerOrdering;
     this._logger = options.logger.withContext({ component: 'View' });
     this._logger.trace('DefaultView();');
     this._emitter = new EventEmitter<ViewEventsMap>(this._logger);

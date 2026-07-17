@@ -29,11 +29,12 @@ import { Invocation } from '../../../src/core/transport/invocation.js';
 import { createLeafBranchSource, LeafBranchSource } from '../../../src/core/transport/leaf-branch-source.js';
 // Vitest hoists vi.mock above imports, so this static import gets the mock.
 import { type HistoryPagesCursor, loadHistoryPages } from '../../../src/core/transport/load-history-pages.js';
+import type { SteerOrdering } from '../../../src/core/transport/steer-ordering.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
-import type { ClientRun, ClientView, RunLifecycleEvent } from '../../../src/core/transport/types.js';
+import type { ClientRun, ClientView, RunLifecycleEvent, View } from '../../../src/core/transport/types.js';
 import type { SendDelegate } from '../../../src/core/transport/view.js';
-import { createClientView } from '../../../src/core/transport/view.js';
+import { createClientView, createLeafView } from '../../../src/core/transport/view.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
 import { makeFakeLoadUntil } from '../../helper/fake-load-until.js';
@@ -4144,5 +4145,83 @@ describe('agent leaf view — incomplete-run filtering (LeafBranchSource)', () =
     source.setPin('u2', 'R2', undefined);
 
     expect(source.selectedReplyRun('u1')?.runId).toBe('R1');
+  });
+});
+
+describe('agent leaf view — steer ordering (deferUnrespondedSteers)', () => {
+  let tree: DefaultTree<TestInput, TestOutput, TestProjection>;
+  let source: LeafBranchSource<TestInput, TestOutput, TestProjection, TestMessage>;
+  let codec: Codec<TestInput, TestOutput, TestProjection, TestMessage>;
+
+  beforeEach(() => {
+    codec = makeTestCodec();
+    tree = createTree<TestInput, TestOutput, TestProjection>(codec, silentLogger);
+    source = createLeafBranchSource<TestInput, TestOutput, TestProjection, TestMessage>({
+      getTree: () => tree,
+      codec,
+    });
+  });
+
+  // Fold a steer — a user-message input tagged with a run-id — into a run's
+  // projection, mirroring a client publishing a follow-up user message into an
+  // active run.
+  const applySteer = (runId: string, codecMessageId: string, content: string, serial: string): void => {
+    tree.applyMessage(
+      { inputs: [{ kind: 'user-message', message: { id: codecMessageId, content } }], outputs: [] },
+      { [HEADER_RUN_ID]: runId, [HEADER_CODEC_MESSAGE_ID]: codecMessageId, [HEADER_ROLE]: 'user' },
+      serial,
+    );
+  };
+
+  // Trigger prompt u1, an active run R1 pinned as the current run, a steer 'bar'
+  // folded in at a serial BELOW the assistant output 'a1' — so the raw
+  // projection orders the steer before the assistant reply.
+  const seedSteerBeforeOutput = (): void => {
+    applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'foo' }, serial: 's1' });
+    tree.applyRunLifecycle({ type: 'start', runId: 'R1', clientId: 'c', invocationId: '', parent: 'u1', serial: 's2' });
+    applySteer('R1', 'bar', 'bar', 's3');
+    apply(tree, {
+      runId: 'R1',
+      codecMessageId: 'a1',
+      role: 'assistant',
+      message: { id: 'a1', content: 'r1' },
+      serial: 's4',
+    });
+    source.setPin('u1', 'R1', undefined);
+  };
+
+  const makeLeafView = (steerOrdering?: SteerOrdering): View<TestMessage> =>
+    createLeafView<TestInput, TestOutput, TestProjection, TestMessage>({
+      tree,
+      codec,
+      hydrator: createHistoryHydrator({
+        channel: createMockChannel(),
+        tree,
+        applier: createWireApplier(tree, codec.createDecoder()),
+        logger: silentLogger,
+      }),
+      branchSource: source,
+      logger: silentLogger,
+      steerOrdering,
+    });
+
+  it('leaves the steer in serial order when no steerOrdering is supplied', () => {
+    seedSteerBeforeOutput();
+    const view = makeLeafView();
+    // Raw serial order: the steer sorts before the assistant output.
+    expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'bar', 'a1']);
+  });
+
+  it('defers an unresponded steer to the tail so the run ends on the user message', () => {
+    seedSteerBeforeOutput();
+    const view = makeLeafView({ isUnrespondedSteer: (_runId, cmid) => cmid === 'bar' });
+    expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'a1', 'bar']);
+  });
+
+  it('leaves a responded steer in its serial position', () => {
+    seedSteerBeforeOutput();
+    // The steer has been responded to (excluded by the predicate) — no reorder.
+    const view = makeLeafView({ isUnrespondedSteer: () => false });
+    expect(view.getMessages().map((m) => m.message.id)).toEqual(['u1', 'bar', 'a1']);
   });
 });

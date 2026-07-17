@@ -792,15 +792,26 @@ class DefaultAgentSession<
       getTree,
       codec,
     });
+    // Per-run steer state: which steers have folded into this run's projection
+    // but not yet been drained by hasInput(), and which were drained since the
+    // last step attempt opened (stamped as steer-codec-message-ids). Identity-
+    // based (codec-message-ids), so cross-publisher delivery order is irrelevant.
+    // Declared before run.view so the view's steer ordering can read it.
+    const steerTracker = new RunSteerTracker();
+
     // run.view — the run's read-only, leaf-pinned, paginating View: the same read
     // base the client's `session.view` exposes, projecting the branch the leaf
-    // source resolves.
+    // source resolves. Its steer ordering defers a steer no output has responded
+    // to yet to the tail of the run's messages, so `getMessages()` — the source
+    // of the inference prompt — ends on a user message even when the steer's
+    // wire serial sorts it before the assistant output in the raw projection.
     const view: View<TMessage> = createLeafView<TInput, TOutput, TProjection, TMessage>({
       tree: getTree(),
       codec,
       hydrator: getHydrator(),
       branchSource: leafSource,
       logger: viewLogger,
+      steerOrdering: { isUnrespondedSteer: (_runId, cmid) => steerTracker.isUnrespondedSteer(cmid) },
     });
     /**
      * The reply run's structural-parent fallback, computed by the input-event
@@ -811,12 +822,6 @@ class DefaultAgentSession<
      * own `parent`.
      */
     let assistantParentFallback: string | undefined;
-
-    // Per-run steer state: which steers have folded into this run's projection
-    // but not yet been drained by hasInput(), and which were drained since the
-    // last step attempt opened (stamped as steer-codec-message-ids). Identity-
-    // based (codec-message-ids), so cross-publisher delivery order is irrelevant.
-    const steerTracker = new RunSteerTracker();
     // Whether the run has produced any output yet. hasInput() reports the
     // triggering input as unanswered until the first output, so the agent's
     // loop always runs at least once; the step writer flips this when a pass
@@ -1147,12 +1152,20 @@ class DefaultAgentSession<
         // into the "recently processed" set the next step attempt stamps —
         // there is no observe-only check.
         if (signal.aborted) return false;
+        // Drain any steers folded in so far before deciding, INCLUDING before
+        // the initial pass. A steer published fast enough to fold in before
+        // ai-run-start is already part of the initial pass's conversation
+        // (`run.view.getMessages()` reads it), so that pass answers and stamps
+        // it. Leaving it pending would leak it into the next hasInput() call
+        // and trigger a redundant follow-up pass — which would re-answer it
+        // against a conversation ending in the assistant reply and error out
+        // ("conversation must end with a user message"). The drain here and the
+        // pass's getMessages() read run back-to-back with no await between, so
+        // what is drained is exactly what the pass sees.
+        const hadPending = steerTracker.hasPending();
+        if (hadPending) steerTracker.drainPending();
         if (!hasProducedOutput) return true;
-        if (steerTracker.hasPending()) {
-          steerTracker.drainPending();
-          return true;
-        }
-        return false;
+        return hadPending;
       },
 
       // The output write-path is the RunStepWriter's; the run object delegates.

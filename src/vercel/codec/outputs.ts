@@ -54,6 +54,7 @@ export const outputs = ({ event, stream }: OutputBuilder<VercelOutput>): readonl
     idField: 'id',
     deltaField: 'delta',
     fields: [fId, fMeta],
+    decodeDelta: ({ rebuild }) => rebuild([fId]),
   }),
 
   stream('reasoning', {
@@ -63,6 +64,7 @@ export const outputs = ({ event, stream }: OutputBuilder<VercelOutput>): readonl
     idField: 'id',
     deltaField: 'delta',
     fields: [fId, fMeta],
+    decodeDelta: ({ rebuild }) => rebuild([fId]),
   }),
 
   // tool-input streams; the close step is a close-or-discrete fallback, the end
@@ -75,6 +77,7 @@ export const outputs = ({ event, stream }: OutputBuilder<VercelOutput>): readonl
     idField: 'toolCallId',
     deltaField: 'inputTextDelta',
     fields: [fToolCallId, fToolName, fDynamic, fTitle, fProviderExecuted, fMeta],
+    decodeDelta: ({ rebuild }) => rebuild([fToolCallId]),
     onEnd: async (c, core, { h, name }) => {
       try {
         await core.closeStream(c.toolCallId, {

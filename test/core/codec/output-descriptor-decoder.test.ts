@@ -41,7 +41,7 @@ describe('output descriptor decoder — delta reconstruction', () => {
         idField: 'item_id',
         deltaField: 'delta',
         fields: [fContentIndex, fPart],
-        decodeDelta: ({ rebuild }) => rebuild([fContentIndex]),
+        decodeDelta: ({ rebuild }) => rebuild([fItemId, fContentIndex]),
       }),
     ]);
 
@@ -83,5 +83,55 @@ describe('output descriptor decoder — delta reconstruction', () => {
     expect(decoder.buildDelta(tracker, 'abc')).toEqual([
       { type: 'x-delta', item_id: 'm2', content_index: 99, delta: 'ABC' },
     ]);
+  });
+
+  it('the idField is reconstructed from the header that idField names, never the transport stream id', () => {
+    const decoder = createOutputDescriptorDecoder<U>([
+      stream('x', {
+        start: 'x-start',
+        delta: 'x-delta',
+        end: 'x-end',
+        idField: 'item_id',
+        deltaField: 'delta',
+        fields: [fItemId, fContentIndex, fPart],
+        decodeDelta: ({ rebuild }) => rebuild([fItemId, fContentIndex]),
+      }),
+    ]);
+
+    // The transport stream id is composite (`m1:0`) — as a derived streamId would
+    // produce — but every rebuilt phase carries the real `item_id` ('m1') read
+    // from the re-stamped headers, never the transport id (i.e. the stream's `idField` only defines which fields to _read_).
+    const tracker = trackerWith('x', 'm1:0', {
+      item_id: 'm1',
+      content_index: '0',
+      part: JSON.stringify({ kind: 'text' }),
+    });
+
+    expect(decoder.buildStart(tracker)).toEqual([
+      { type: 'x-start', item_id: 'm1', content_index: 0, part: { kind: 'text' } },
+    ]);
+    expect(decoder.buildDelta(tracker, 'Hi')).toEqual([
+      { type: 'x-delta', item_id: 'm1', content_index: 0, delta: 'Hi' },
+    ]);
+    expect(decoder.buildEnd(tracker, { [KIND_HEADER]: 'x', item_id: 'm1', content_index: '0' })).toEqual([
+      { type: 'x-end', item_id: 'm1', content_index: 0 },
+    ]);
+  });
+
+  it('rebuilds a fragment-only delta when decodeDelta is omitted', () => {
+    const decoder = createOutputDescriptorDecoder<U>([
+      stream('z', {
+        start: 'x-start',
+        delta: 'x-delta',
+        end: 'x-end',
+        idField: 'item_id',
+        deltaField: 'delta',
+        fields: [fItemId],
+        // decodeDelta omitted — the delta needs no fields beyond the fragment.
+      }),
+    ]);
+
+    const tracker = trackerWith('z', 'm9', { item_id: 'm9' });
+    expect(decoder.buildDelta(tracker, 'Yo')).toEqual([{ type: 'x-delta', delta: 'Yo' }]);
   });
 });

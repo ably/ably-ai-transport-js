@@ -134,8 +134,7 @@ export interface OutputStreamDeltaContext<C> {
   /**
    * Helper function to rebuild the delta chunk declaratively. It returns a
    * delta chunk which is populated by copying the named header fields from the
-   * re-stamped start headers, as well as copying the {@link streamId} to the
-   * {@link OutputStreamSpec.idField} and the {@link delta} to the
+   * re-stamped start headers, as well as copying the {@link delta} to the
    * {@link OutputStreamSpec.deltaField}.
    */
   rebuild: (fields: readonly FieldFor<C>[]) => C[];
@@ -210,8 +209,7 @@ export interface OutputStreamSpec<
    *
    * Builds the delta chunk from the data received in a stream append. If you
    * do not provide `decodeDelta`, the decoder will create a delta chunk whose
-   * only fields are the {@link idField} (taken from the `stream-id` header)
-   * and the {@link deltaField} (the appended text fragment).
+   * only field is the {@link deltaField} (the appended text fragment).
    */
   decodeDelta?: (ctx: OutputStreamDeltaContext<ResolveType<U, D>>) => ResolveType<U, D>[];
   /** Escape-hatch override for the end-chunk rebuild (e.g. input from accumulated text). */

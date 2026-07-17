@@ -1099,6 +1099,75 @@ describe('AgentSession', () => {
       await steerSession.detach();
     });
 
+    it('drains a steer that folded in before the first pass, so it is stamped on that pass and triggers no redundant follow-up', async () => {
+      // A steer published fast enough to fold in before the first pipe is part
+      // of the initial pass's conversation. The initial hasInput() must drain
+      // it so that pass stamps it as consumed and the loop does NOT run a
+      // spurious follow-up pass (which would re-answer it against a conversation
+      // ending in the assistant reply and error out).
+      const ch = createMockChannel();
+      const functionalCodec = createMockCodec();
+      functionalCodec.createDecoder = vi.fn(() => ({
+        decode: (m: Ably.InboundMessage) => {
+          const hdrs = (m.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport ?? {};
+          const id = hdrs[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
+          return {
+            inputs: [{ kind: 'user-message' as const, message: { id, content: id } }],
+            outputs: [],
+          };
+        },
+      }));
+      const steerSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: functionalCodec,
+      });
+      await steerSession.connect();
+
+      const runId = 'run-early-steer';
+      const invocationId = 'inv-early-steer';
+      const inputEventId = 'p-early-steer';
+      const triggerId = 'id-1';
+      const steerId = 'id-2';
+
+      const run = createRunFromOpts(steerSession, { runId, invocationId, inputEventId });
+      const startPromise = run.start();
+      deliverInputEvent(ch, {
+        invocationId,
+        codecMessageId: triggerId,
+        serial: 'serial-1',
+        inputEventId,
+        publisherClientId: 'user-a',
+      });
+      await startPromise;
+
+      // Steer folds in BEFORE any pipe — while the initial pass has yet to run.
+      deliverInputEvent(ch, {
+        invocationId,
+        runId,
+        codecMessageId: steerId,
+        serial: 'serial-2',
+        inputEventId: `p-${steerId}`,
+        publisherClientId: 'user-a',
+      });
+
+      // The initial pass still runs (it answers the triggering input) and drains
+      // the already-folded steer.
+      expect(run.hasInput()).toBe(true);
+
+      // That single pass stamps the early steer as consumed on its output.
+      await run.pipe(streamOf({ type: 'text', text: 'response-1' }));
+      expect(functionalCodec.lastEncoder()?.outputTransport[0]?.[HEADER_STEER_CODEC_MESSAGE_IDS]).toBe(
+        JSON.stringify([steerId]),
+      );
+
+      // No redundant follow-up pass: the steer was already drained by the
+      // initial pass, so nothing remains to answer.
+      expect(run.hasInput()).toBe(false);
+
+      await steerSession.detach();
+    });
+
     it('stamps each steering message on its own pipe when two passes pipe into one explicit step', async () => {
       // The agent's per-turn shape: one explicit step, two inference passes piped
       // into it (the second answers a steer that folded in mid-stream). Unlike

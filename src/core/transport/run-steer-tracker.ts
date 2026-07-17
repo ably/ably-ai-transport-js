@@ -64,4 +64,20 @@ export class RunSteerTracker {
     this._recentlyProcessed.clear();
     return ids;
   }
+
+  /**
+   * Whether a steer has folded into the Run but no output has responded to it
+   * yet: it is still pending, or drained but not yet stamped on an attempt's
+   * outputs. Once stamped ({@link consumeRecentlyProcessed} clears it), the
+   * responding output carries a higher serial than the steer, so serial order
+   * already places the steer correctly and it is no longer deferred.
+   *
+   * Used by the run's projection flatten to move an as-yet-unresponded steer to
+   * the tail so the inference prompt ends on a user message.
+   * @param codecMessageId - The candidate steer's codec-message-id.
+   * @returns True iff the id is a steer awaiting a response.
+   */
+  isUnrespondedSteer(codecMessageId: string): boolean {
+    return this._pending.has(codecMessageId) || this._recentlyProcessed.has(codecMessageId);
+  }
 }

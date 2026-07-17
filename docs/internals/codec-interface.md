@@ -113,7 +113,7 @@ Both directions are declarative descriptor tables driven by the generic encode/d
 The **output** builder offers two constructs:
 
 - `event(type, spec?)` - one discrete output event. `spec` declares optional header `fields` (defaulting to none), an optional wire `data` codec, an `ephemeral` predicate, and an `encode` escape hatch. A `-*` type literal (e.g. `data-*`) declares a wildcard family; the dispatch predicate is derived from the literal's prefix.
-- `stream(kind, spec)` - a streamed family. The first argument is the family's `kind` - the value stamped on the wire `kind` dispatch header. `spec` declares the `start` / `delta` / `end` chunk `type`s, an `idField`, a `deltaField`, header `fields`, and `onEnd` / `decodeEnd` / `decodeDiscrete` hatches. The driver routes start/delta/end to `startStream()` / `appendStream()` / `closeStream()`.
+- `stream(kind, spec)` - a streamed family. The first argument is the family's `kind` - the value stamped on the wire `kind` dispatch header. `spec` declares the `start` / `delta` / `end` chunk `type`s, a `streamId` extractor, a `deltaField`, header `fields`, and `onEnd` / `decodeDelta` / `decodeEnd` / `decodeDiscrete` hatches. The driver routes start/delta/end to `startStream()` / `appendStream()` / `closeStream()`.
 
 The **input** builder mirrors it:
 

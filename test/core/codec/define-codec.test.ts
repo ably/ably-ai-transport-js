@@ -302,7 +302,7 @@ const noteStream = {
   start: 'note-start',
   delta: 'note-delta',
   end: 'note-end',
-  idField: 'id',
+  streamId: (c: { id: string }) => c.id,
   deltaField: 'delta',
   fields: [],
 } as const;

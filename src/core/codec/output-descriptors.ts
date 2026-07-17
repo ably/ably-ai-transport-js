@@ -25,7 +25,7 @@ import type { MessagePayload, StreamPayload, WriteOptions } from './types.js';
 // Type helpers
 // ---------------------------------------------------------------------------
 
-/** The string-valued keys of `C` — the only keys `idField`/`deltaField` may name. */
+/** The string-valued keys of `C` — the only keys `deltaField` may name. */
 export type StringKeyOf<C> = { [K in keyof C]-?: C[K] extends string ? K : never }[keyof C];
 
 /**
@@ -188,8 +188,17 @@ export interface OutputStreamSpec<
   delta: D;
   /** The end chunk `type` literal. */
   end: E;
-  /** The string-valued chunk key carrying the stream id (e.g. `id`, `toolCallId`). */
-  idField: StringKeyOf<ResolveType<U, S>> & StringKeyOf<ResolveType<U, D>> & StringKeyOf<ResolveType<U, E>>;
+  /**
+   * How the transport stream id (the Ably `stream-id` header) is derived from a
+   * chunk, on encode. Derive it from whichever chunk fields uniquely identify the stream: a
+   * single key (`(c) => c.id`), a composite of several (e.g. OpenAI's `item_id`
+   * plus `content_index`), or a per-phase relocation (e.g. read a different place on
+   * the start than on the delta and end). Either way the id is an opaque
+   * uniqueness handle for the wire message and is never written into the chunks that the decoder rebuilds.
+   * The extractor may throw (e.g. an `Ably.ErrorInfo`) to reject a chunk whose id it
+   * cannot derive; the throw surfaces from the encode call.
+   */
+  streamId: (chunk: ResolveType<U, S> | ResolveType<U, D> | ResolveType<U, E>) => string;
   /** The string-valued delta chunk key carrying the appended fragment. */
   deltaField: StringKeyOf<ResolveType<U, D>>;
   /**
@@ -256,8 +265,8 @@ export interface OutputStreamDescriptor<U> {
   delta: string;
   /** The end chunk `type`. */
   end: string;
-  /** The chunk key carrying the stream id. */
-  idField: string;
+  /** How the transport stream id is derived from a chunk, on encode. */
+  streamId: (chunk: U) => string;
   /** The delta chunk key carrying the appended fragment. */
   deltaField: string;
   /** Declared header fields (start/end). */

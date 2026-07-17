@@ -13,6 +13,7 @@
 
 import { stripUndefined } from '../../utils.js';
 import { KIND_HEADER, partitionOutputEvents, readFields } from './field-bag.js';
+import type { FieldFor } from './fields.js';
 import type {
   OutputDecodeContext,
   OutputDescriptor,
@@ -105,8 +106,25 @@ export const createOutputDescriptorDecoder = <U extends { type: string }>(
     buildDelta: (tracker, delta) => {
       const desc = familyOf(tracker);
       if (!desc) return [];
-      const bag: Record<string, unknown> = { [desc.idField]: tracker.streamId, [desc.deltaField]: delta };
-      return [rebuild(desc.delta, bag)];
+      // The delta rebuilds from named fields read off the re-stamped start headers,
+      // plus the echoed stream id and the fragment. `rebuildDelta` copies the named
+      // fields; a family customises which via `decodeDelta`, or omits it for a
+      // fragment-only delta.
+      const rebuildDelta = (fields: readonly FieldFor<U>[]): U[] => {
+        const bag = readFields(fields, tracker.codecHeaders);
+        bag[desc.idField] = tracker.streamId;
+        bag[desc.deltaField] = delta;
+        return [rebuild(desc.delta, bag)];
+      };
+      if (desc.decodeDelta) {
+        return desc.decodeDelta({
+          streamId: tracker.streamId,
+          delta,
+          codecHeaders: tracker.codecHeaders,
+          rebuild: rebuildDelta,
+        });
+      }
+      return rebuildDelta([]);
     },
 
     buildEnd: (tracker, closingCodecHeaders) => {

@@ -20,14 +20,24 @@ Element.prototype.scrollIntoView = () => {};
 // mutable state each test sets before rendering.
 // ---------------------------------------------------------------------------
 
-const { mockSend, mockCancel, mockWakeAgent, runsHolder, viewMessagesHolder, session } = vi.hoisted(() => {
+const { mockSend, mockSteer, mockCancel, mockWakeAgent, runsHolder, viewMessagesHolder, session } = vi.hoisted(() => {
   const runsHolder: { current: RunInfo[] } = { current: [] };
   const viewMessagesHolder: { current: CodecMessage<AI.UIMessage>[] } = { current: [] };
   // Typed via vi.fn's generic (not impl params) so `mock.calls` is typed for the
   // approval-args assertions without declaring unused parameters.
-  const mockSend = vi.fn<(events: VercelInput | VercelInput[], opts?: SendOptions) => Promise<{ runId: string }>>(
-    async () => ({ runId: 'run-1' }),
-  );
+  // The returned run carries a resolved `started` promise (the chat registers
+  // the handle for /steer once run-start lands) and a `steer` stub the steer
+  // path calls. `steer` returns the SDK's { published, outcome } pair.
+  const mockSteer = vi.fn(() => ({
+    published: Promise.resolve({ serial: 'steer-serial' }),
+    outcome: Promise.resolve({ consumed: true }),
+  }));
+  const mockSend = vi.fn<
+    (
+      events: VercelInput | VercelInput[],
+      opts?: SendOptions,
+    ) => Promise<{ runId: string; started: Promise<void>; steer: typeof mockSteer }>
+  >(async () => ({ runId: 'run-1', started: Promise.resolve(), steer: mockSteer }));
   const mockCancel = vi.fn(async () => {});
   const mockWakeAgent = vi.fn(async () => ({ runId: 'run-1', invocationId: 'inv-1' }));
   const session = {
@@ -45,7 +55,7 @@ const { mockSend, mockCancel, mockWakeAgent, runsHolder, viewMessagesHolder, ses
       on: () => () => {},
     },
   };
-  return { mockSend, mockCancel, mockWakeAgent, runsHolder, viewMessagesHolder, session };
+  return { mockSend, mockSteer, mockCancel, mockWakeAgent, runsHolder, viewMessagesHolder, session };
 });
 
 // The linear rendered list, driven per test.
@@ -110,6 +120,7 @@ function assistantApproval(id: string, toolCallId: string): AI.UIMessage {
 describe('<Chat> (use-client-session-db)', () => {
   beforeEach(() => {
     mockSend.mockClear();
+    mockSteer.mockClear();
     mockCancel.mockClear();
     mockWakeAgent.mockClear();
     runsHolder.current = [];
@@ -152,14 +163,16 @@ describe('<Chat> (use-client-session-db)', () => {
   it('sends the typed message over the view and wakes the agent', async () => {
     renderChat();
 
-    const input = screen.getByPlaceholderText('Type a message...');
+    const input = screen.getByPlaceholderText(/^Type a message/);
     fireEvent.change(input, { target: { value: 'new turn' } });
     const form = input.closest('form');
     if (!form) throw new Error('input is not nested in a <form>');
     fireEvent.submit(form);
 
     await waitFor(() => expect(mockSend).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(mockWakeAgent).toHaveBeenCalledWith('api/chat', { runId: 'run-1' }));
+    await waitFor(() =>
+      expect(mockWakeAgent).toHaveBeenCalledWith('api/chat', expect.objectContaining({ runId: 'run-1' })),
+    );
   });
 
   it('shows Stop while the latest run is active, and Stop cancels it', async () => {
@@ -169,7 +182,7 @@ describe('<Chat> (use-client-session-db)', () => {
     renderedMessages = [userMsg('u1', 'hi')];
     renderChat();
 
-    const inputForm = screen.getByPlaceholderText('Type a message...').closest('form');
+    const inputForm = screen.getByPlaceholderText(/^Type a message/).closest('form');
     if (!inputForm) throw new Error('input is not nested in a <form>');
     const inputBar = within(inputForm);
 
@@ -186,7 +199,7 @@ describe('<Chat> (use-client-session-db)', () => {
     renderedMessages = [assistantApproval('a1', 'call-1')];
     renderChat();
 
-    const inputForm = screen.getByPlaceholderText('Type a message...').closest('form');
+    const inputForm = screen.getByPlaceholderText(/^Type a message/).closest('form');
     if (!inputForm) throw new Error('input is not nested in a <form>');
     const inputBar = within(inputForm);
 
@@ -203,7 +216,7 @@ describe('<Chat> (use-client-session-db)', () => {
 
     // Active run shows Stop, so the composer's Send isn't available — but the
     // form still submits on Enter, cancelling the active run first.
-    const input = screen.getByPlaceholderText('Type a message...');
+    const input = screen.getByPlaceholderText(/^Type a message/);
     fireEvent.change(input, { target: { value: 'concurrent' } });
     const form = input.closest('form');
     if (!form) throw new Error('input is not nested in a <form>');
@@ -233,5 +246,52 @@ describe('<Chat> (use-client-session-db)', () => {
     expect(opts).toEqual({ runId: 'run-approval' });
     expect(Array.isArray(events)).toBe(true);
     await waitFor(() => expect(mockWakeAgent).toHaveBeenCalled());
+  });
+
+  it('folds a /steer into the active run without cancelling it or sending a new turn', async () => {
+    renderChat();
+
+    // First send a normal turn so the run handle is registered for /steer
+    // (registration happens once the returned run's `started` resolves).
+    const input = screen.getByPlaceholderText(/^Type a message/);
+    fireEvent.change(input, { target: { value: 'first turn' } });
+    const form = input.closest('form');
+    if (!form) throw new Error('input is not nested in a <form>');
+    fireEvent.submit(form);
+    await waitFor(() => expect(mockSend).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockWakeAgent).toHaveBeenCalled());
+
+    // That run is now active on the channel.
+    runsHolder.current = [{ runId: 'run-1', clientId: 'user-a', status: 'active', invocationId: 'inv-1', steps: [] }];
+    mockSend.mockClear();
+    mockCancel.mockClear();
+
+    // A /steer folds into the active run: it calls the handle's steer(), and —
+    // unlike a plain concurrent send — does NOT cancel the run or start a new one.
+    fireEvent.change(input, { target: { value: '/steer keep going' } });
+    fireEvent.submit(form);
+
+    await waitFor(() => expect(mockSteer).toHaveBeenCalledTimes(1));
+    expect(mockCancel).not.toHaveBeenCalled();
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('rejects a /steer when there is no active run to target', async () => {
+    renderChat();
+
+    const input = screen.getByPlaceholderText(/^Type a message/);
+    fireEvent.change(input, { target: { value: '/steer too early' } });
+    const form = input.closest('form');
+    if (!form) throw new Error('input is not nested in a <form>');
+    fireEvent.submit(form);
+
+    // Awaiting the composer clearing flushes the (would-be) async send path, so
+    // the not-called assertions below are not racing an unsettled microtask.
+    await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe(''));
+    // No active run: the steer path bails before publishing. The plain send /
+    // cancel paths (which a non-/steer message would take) are never reached.
+    expect(mockSteer).not.toHaveBeenCalled();
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockCancel).not.toHaveBeenCalled();
   });
 });

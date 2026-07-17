@@ -89,13 +89,33 @@ export function Chat({ chatId, clientId, seed, api }: ChatProps) {
   // codec-message-ids), independent of the linear list we render.
   useClientTools(view, clientId, api, recordClientTool);
 
+  // Track active ClientRun handles by their resolved run-id so /steer can
+  // target the live one. Cleaned up on run-end via the tree.on('run') hook
+  // below. A ref instead of state — only the steer call site reads it, and
+  // re-rendering is unnecessary.
+  const activeRunsRef = useRef<Map<string, ClientRun<VercelInput, UIMessage>>>(new Map());
+
   // Wake the agent for a freshly-sent run by POSTing its invocation pointer.
   // The core session never sends HTTP — the app owns the trigger. Send sites
   // pass the `view.send*` promise; a POST failure is surfaced in the log.
   const wake = useCallback(
     (runPromise: Promise<ClientRun<VercelInput, UIMessage>>) => {
       void runPromise
-        .then((run) => wakeAgent(api, run))
+        .then(async (run) => {
+          // Register the handle for /steer once the agent has minted the
+          // run-id. The dead-handle path on the SDK rejects steer() calls
+          // after run-end, so leaving stale entries here is safe — we still
+          // clean up on run-end below to keep the map bounded.
+          run.started
+            .then(() => {
+              activeRunsRef.current.set(run.runId, run);
+            })
+            .catch(() => {
+              // runId never resolved — nothing to register. The wake POST
+              // below will surface any underlying error.
+            });
+          await wakeAgent(api, run);
+        })
         .catch((error: unknown) => {
           setCallbackLog((prev) => [
             ...prev,
@@ -159,6 +179,10 @@ export function Chat({ chatId, clientId, seed, api }: ChatProps) {
       } else {
         type = 'runEnd';
         summary = `${head}, reason=${event.reason}`;
+        // Drop the local steer handle for a run that has ended, keeping the map
+        // bounded. steer() on a dead handle rejects anyway, so this is only
+        // housekeeping.
+        activeRunsRef.current.delete(event.runId);
       }
       setCallbackLog((prev) => [
         ...prev,
@@ -265,9 +289,100 @@ export function Chat({ chatId, clientId, seed, api }: ChatProps) {
     [messages.length, latestRun],
   );
 
+  // Steer the active Run with a follow-up user message. Looks up the latest
+  // active run by walking the View's run list newest-first; the handle's
+  // .steer() returns { published, outcome } which we log so the demo
+  // visualises consumed / not-consumed at run-end. Unlike a plain send, a
+  // steer folds into the SAME run — it never cancels or starts a new run, so
+  // the whole steered turn persists as one unit when that run completes.
+  const steerActiveRun = useCallback(
+    (text: string) => {
+      const runs = view.runs();
+      const active = [...runs].reverse().find((r) => r.status === 'active' || r.status === 'suspended');
+      if (!active) {
+        setCallbackLog((prev) => [
+          ...prev,
+          {
+            time: Date.now(),
+            type: 'steerRejected',
+            summary: 'no active run to steer — send a message first',
+          },
+        ]);
+        return;
+      }
+      const handle = activeRunsRef.current.get(active.runId);
+      if (!handle) {
+        setCallbackLog((prev) => [
+          ...prev,
+          {
+            time: Date.now(),
+            type: 'steerRejected',
+            summary: `active run ${active.runId.slice(0, 8)} has no local handle (opened elsewhere)`,
+          },
+        ]);
+        return;
+      }
+      const head = `runId=${active.runId.slice(0, 8)}`;
+      const { published, outcome } = handle.steer(uiMessageCodec.createUserMessage(userMessage(text)));
+      void published
+        .then(({ serial }) => {
+          setCallbackLog((prev) => [
+            ...prev,
+            {
+              time: Date.now(),
+              type: 'steerPublished',
+              summary: `${head}, serial=${serial ?? '?'}`,
+            },
+          ]);
+        })
+        .catch((error: unknown) => {
+          setCallbackLog((prev) => [
+            ...prev,
+            {
+              time: Date.now(),
+              type: 'steerRejected',
+              summary: error instanceof Error ? error.message : 'steer rejected',
+            },
+          ]);
+        });
+      void outcome
+        .then(({ consumed, runTerminalReason }) => {
+          setCallbackLog((prev) => [
+            ...prev,
+            {
+              time: Date.now(),
+              type: 'steerOutcome',
+              summary: `${head}, ${consumed ? 'consumed' : 'not-consumed'}${runTerminalReason ? ` (${runTerminalReason})` : ''}`,
+            },
+          ]);
+        })
+        .catch((error: unknown) => {
+          setCallbackLog((prev) => [
+            ...prev,
+            {
+              time: Date.now(),
+              type: 'steerRejected',
+              summary: error instanceof Error ? error.message : 'steer outcome rejected',
+            },
+          ]);
+        });
+    },
+    [view],
+  );
+
   const handleSend = useCallback(
     (text: string) => {
       scrollToEndRef.current?.();
+      // `/steer <text>` targets the latest active Run via steerActiveRun — a
+      // follow-up user message that folds into the running Run rather than a
+      // fresh send. The agent's run.hasInput() loop picks it up at the next
+      // inference pass. This bypasses the cancel-and-replace below precisely so
+      // the run is NOT cancelled.
+      const steerMatch = /^\/steer\s+(.+)$/.exec(text);
+      if (steerMatch) {
+        steerActiveRun(steerMatch[1]?.trim() ?? '');
+        return;
+      }
       // Linear history: cancel any still-active response before starting a new
       // run, so the seam reconciliation only ever meets complete (or cancelled)
       // runs. Then send over the session view and wake the agent.
@@ -280,7 +395,7 @@ export function Chat({ chatId, clientId, seed, api }: ChatProps) {
         wake(view.send(uiMessageCodec.createUserMessage(userMessage(text))));
       })();
     },
-    [latestRun, session, view, wake],
+    [latestRun, session, view, wake, steerActiveRun],
   );
 
   return (
@@ -446,7 +561,7 @@ function InputBar({
           ref={inputRef}
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          placeholder="Type a message..."
+          placeholder="Type a message... — or /steer <text> to steer the active run"
           autoFocus
           rows={1}
           className="min-h-0"

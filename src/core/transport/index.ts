@@ -32,6 +32,7 @@ export type {
   StepEndParams,
   StepEndReason,
   StepInfo,
+  StepLifecycleEvent,
   StepOptions,
   StreamResult,
   Tree,

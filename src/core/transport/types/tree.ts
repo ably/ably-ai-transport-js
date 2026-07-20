@@ -551,6 +551,13 @@ export interface Tree<TOutput extends CodecOutputEvent, TProjection> {
   on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
 
   /**
+   * Subscribe to step lifecycle events (step-start and step-end) within a run.
+   * A step-end for a run the Tree has never observed is a no-op and does not
+   * fire.
+   */
+  on(event: 'step', handler: (event: StepLifecycleEvent) => void): () => void;
+
+  /**
    * Subscribe to decoded agent outputs as they are folded into a Run.
    * Fires once per inbound message after its fold, carrying the message's
    * output events plus routing metadata (runId, codec-message-id, serial).

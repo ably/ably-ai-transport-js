@@ -9,7 +9,7 @@ export { AvatarStack } from './components/avatar-stack';
 export { SuggestionChips } from './components/suggestion-chips';
 export { ToolInvocation } from './components/tool-invocation';
 export { DebugPane } from './components/debug-pane';
-export type { CallbackLogEntry, ClientToolLogEntry } from './components/debug-pane';
+export type { ClientToolLogEntry, LifecycleLogEntry } from './components/debug-pane';
 export { IntroCard, COMMON_DEMO_STEPS } from './components/intro-card';
 export type { DemoStep } from './components/intro-card';
 

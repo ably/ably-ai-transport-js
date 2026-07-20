@@ -10,7 +10,7 @@ import { useClientTools } from '../hooks/use-client-tools';
 import { useDemoProgress, type DemoStep as ProgressStep } from '../hooks/use-demo-progress';
 import { MessageList } from './message-list';
 import { SuggestionChips } from './suggestion-chips';
-import type { CallbackLogEntry, ClientToolLogEntry } from './debug-pane';
+import type { ClientToolLogEntry, LifecycleLogEntry } from './debug-pane';
 import { DebugPane } from './debug-pane';
 import type { DemoStep } from './intro-card';
 import { SessionHooks } from '../providers';
@@ -62,11 +62,11 @@ export function Chat({
 }: ChatProps) {
   const { session } = useClientSession();
 
-  const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
+  const [lifecycleLog, setLifecycleLog] = useState<LifecycleLogEntry[]>([]);
   const [statusLog, setStatusLog] = useState<{ time: number; status: string }[]>([]);
   const [clientToolLog, setClientToolLog] = useState<ClientToolLogEntry[]>([]);
   const clearLogs = useCallback(() => {
-    setCallbackLog([]);
+    setLifecycleLog([]);
     setStatusLog([]);
     setClientToolLog([]);
   }, []);
@@ -117,12 +117,12 @@ export function Chat({
           await wakeAgent(api, run);
         })
         .catch((error: unknown) => {
-          setCallbackLog((prev) => [
+          setLifecycleLog((prev) => [
             ...prev,
             {
               time: Date.now(),
               type: 'error',
-              summary: error instanceof Error ? error.message : 'failed to wake agent',
+              detail: error instanceof Error ? error.message : 'failed to wake agent',
             },
           ]);
         });
@@ -139,24 +139,24 @@ export function Chat({
       const runs = view.runs();
       const active = [...runs].reverse().find((r) => r.status === 'active' || r.status === 'suspended');
       if (!active) {
-        setCallbackLog((prev) => [
+        setLifecycleLog((prev) => [
           ...prev,
           {
             time: Date.now(),
             type: 'steerRejected',
-            summary: 'no active run to steer — send a message first',
+            detail: 'no active run to steer — send a message first',
           },
         ]);
         return;
       }
       const handle = activeRunsRef.current.get(active.runId);
       if (!handle) {
-        setCallbackLog((prev) => [
+        setLifecycleLog((prev) => [
           ...prev,
           {
             time: Date.now(),
             type: 'steerRejected',
-            summary: `active run ${active.runId.slice(0, 8)} has no local handle (opened elsewhere)`,
+            detail: `active run ${active.runId.slice(0, 8)} has no local handle (opened elsewhere)`,
           },
         ]);
         return;
@@ -165,43 +165,43 @@ export function Chat({
       const { published, outcome } = handle.steer(UIMessageCodec.createUserMessage(userMessage(text)));
       void published
         .then(({ serial }) => {
-          setCallbackLog((prev) => [
+          setLifecycleLog((prev) => [
             ...prev,
             {
               time: Date.now(),
               type: 'steerPublished',
-              summary: `${head}, serial=${serial ?? '?'}`,
+              detail: `${head}, serial=${serial ?? '?'}`,
             },
           ]);
         })
         .catch((error: unknown) => {
-          setCallbackLog((prev) => [
+          setLifecycleLog((prev) => [
             ...prev,
             {
               time: Date.now(),
               type: 'steerRejected',
-              summary: error instanceof Error ? error.message : 'steer rejected',
+              detail: error instanceof Error ? error.message : 'steer rejected',
             },
           ]);
         });
       void outcome
         .then(({ consumed, runTerminalReason }) => {
-          setCallbackLog((prev) => [
+          setLifecycleLog((prev) => [
             ...prev,
             {
               time: Date.now(),
               type: 'steerOutcome',
-              summary: `${head}, ${consumed ? 'consumed' : 'not-consumed'}${runTerminalReason ? ` (${runTerminalReason})` : ''}`,
+              detail: `${head}, ${consumed ? 'consumed' : 'not-consumed'}${runTerminalReason ? ` (${runTerminalReason})` : ''}`,
             },
           ]);
         })
         .catch((error: unknown) => {
-          setCallbackLog((prev) => [
+          setLifecycleLog((prev) => [
             ...prev,
             {
               time: Date.now(),
               type: 'steerRejected',
-              summary: error instanceof Error ? error.message : 'steer outcome rejected',
+              detail: error instanceof Error ? error.message : 'steer outcome rejected',
             },
           ]);
         });
@@ -229,39 +229,40 @@ export function Chat({
 
   useEffect(() => {
     const offRun = session.tree.on('run', (event) => {
-      const head = `runId=${event.runId.slice(0, 8)}, clientId=${event.clientId}`;
-      let type: CallbackLogEntry['type'];
-      let summary: string;
+      const detail = `run: ${event.runId.slice(0, 8)}, client: ${event.clientId}`;
+      let type: LifecycleLogEntry['type'];
+      let reason: string | undefined;
       if (event.type === 'start') {
         type = 'runStart';
-        summary = head;
       } else if (event.type === 'suspend') {
         type = 'runSuspend';
-        summary = head;
       } else if (event.type === 'resume') {
         type = 'runResume';
-        summary = head;
       } else {
         type = 'runEnd';
-        summary = `${head}, reason=${event.reason}`;
+        reason = event.reason;
         // Drop the local handle — the SDK marks it dead and rejects further
         // steer() calls synchronously, so the entry would just sit here.
         activeRunsRef.current.delete(event.runId);
       }
-      setCallbackLog((prev) => [
-        ...prev,
-        {
-          time: Date.now(),
-          type,
-          summary,
-        },
-      ]);
+      setLifecycleLog((prev) => [...prev, { time: event.timestamp ?? Date.now(), type, detail, reason }]);
+    });
+    const offStep = session.tree.on('step', (event) => {
+      const detail = `run: ${event.runId.slice(0, 8)}, step: ${event.stepId.slice(0, 8)}${
+        event.stepClientId ? `, client: ${event.stepClientId}` : ''
+      }`;
+      const entry: LifecycleLogEntry =
+        event.type === 'step-start'
+          ? { time: event.timestamp ?? Date.now(), type: 'stepStart', detail }
+          : { time: event.timestamp ?? Date.now(), type: 'stepEnd', detail, reason: event.reason };
+      setLifecycleLog((prev) => [...prev, entry]);
     });
     const offErr = session.on('error', (error) => {
-      setCallbackLog((prev) => [...prev, { time: Date.now(), type: 'error', summary: error.message }]);
+      setLifecycleLog((prev) => [...prev, { time: Date.now(), type: 'error', detail: error.message }]);
     });
     return () => {
       offRun();
+      offStep();
       offErr();
     };
   }, [session]);
@@ -373,7 +374,7 @@ export function Chat({
         messages={messages}
         ablyMessages={ablyMessages}
         status={status}
-        callbackLog={callbackLog}
+        lifecycleLog={lifecycleLog}
         statusLog={statusLog}
         clientToolLog={clientToolLog}
         onClearLogs={clearLogs}

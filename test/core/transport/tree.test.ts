@@ -2705,6 +2705,47 @@ describe('Tree', () => {
       tree.emitAblyMessage(fakeMsg);
       expect(handler).toHaveBeenCalledWith(fakeMsg);
     });
+
+    it('emits a step event on both step-start and step-end', () => {
+      const handler = vi.fn();
+      tree.on('step', handler);
+      applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S1', serial: 's1', timestamp: 1000 });
+      applyStep(tree, {
+        type: 'step-end',
+        runId: 'R1',
+        stepId: 'S1',
+        startSerial: 's1',
+        serial: 's2',
+        reason: 'complete',
+        timestamp: 1100,
+      });
+      expect(handler).toHaveBeenCalledTimes(2);
+      expect(handler).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ type: 'step-start', runId: 'R1', stepId: 'S1', timestamp: 1000 }),
+      );
+      expect(handler).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ type: 'step-end', runId: 'R1', stepId: 'S1', reason: 'complete', timestamp: 1100 }),
+      );
+    });
+
+    it('does not emit a step event for a step-end on an unknown run', () => {
+      // A step-end for a run the tree has never observed is a no-op, mirroring
+      // run-end on an unknown run — so no `step` event fires.
+      const handler = vi.fn();
+      tree.on('step', handler);
+      applyStep(tree, { type: 'step-end', runId: 'R-unknown', stepId: 'S1', serial: 's1', reason: 'complete' });
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('unsubscribe stops step delivery', () => {
+      const handler = vi.fn();
+      const unsub = tree.on('step', handler);
+      unsub();
+      applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S1', serial: 's1' });
+      expect(handler).not.toHaveBeenCalled();
+    });
   });
 
   // -------------------------------------------------------------------------

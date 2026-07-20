@@ -3,16 +3,17 @@ import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import type { UIMessage } from 'ai';
 import type { CodecMessage } from '@ably/ai-transport';
 import { DebugPane } from '../../index';
+import type { LifecycleLogEntry } from '../debug-pane';
 
 const PANE_OPEN_STORAGE_KEY = 'ait-demo:debug-pane-open';
 
-const renderPane = () =>
+const renderPane = (lifecycleLog: LifecycleLogEntry[] = []) =>
   render(
     <DebugPane
       messages={[] as CodecMessage<UIMessage>[]}
       ablyMessages={[]}
       status="ready"
-      callbackLog={[]}
+      lifecycleLog={lifecycleLog}
       statusLog={[]}
       clientToolLog={[]}
       onClearLogs={() => {}}
@@ -60,5 +61,45 @@ describe('<DebugPane> open/closed persistence', () => {
     localStorage.setItem(PANE_OPEN_STORAGE_KEY, 'true');
     renderPane();
     expect(isOpen()).toBe(true);
+  });
+});
+
+describe('<DebugPane> Lifecycle log', () => {
+  beforeEach(() => {
+    cleanup();
+    localStorage.clear();
+  });
+
+  it('shows the empty state when there are no lifecycle events', () => {
+    renderPane([]);
+    // Two "Lifecycle" texts exist: the tab and the section header. Click the tab.
+    fireEvent.click(screen.getByRole('button', { name: /Lifecycle/ }));
+    expect(screen.getByText('Run and step lifecycle events will appear here.')).not.toBeNull();
+  });
+
+  it('renders run and step events interleaved chronologically in one pane', () => {
+    const lifecycleLog: LifecycleLogEntry[] = [
+      { time: 1_000, type: 'runStart', detail: 'run: 209528f6, client: galaxy-otter' },
+      { time: 1_050, type: 'stepStart', detail: 'run: 209528f6, step: e5d4a6fb, client: galaxy-otter' },
+      {
+        time: 1_100,
+        type: 'stepEnd',
+        detail: 'run: 209528f6, step: e5d4a6fb, client: galaxy-otter',
+        reason: 'complete',
+      },
+      { time: 1_150, type: 'runEnd', detail: 'run: 209528f6, client: galaxy-otter', reason: 'complete' },
+    ];
+    renderPane(lifecycleLog);
+    fireEvent.click(screen.getByRole('button', { name: /Lifecycle/ }));
+
+    expect(screen.getByText('runStart')).not.toBeNull();
+    expect(screen.getByText('stepStart')).not.toBeNull();
+    expect(screen.getByText('stepEnd')).not.toBeNull();
+    expect(screen.getByText('runEnd')).not.toBeNull();
+    // Both terminal events carry the 'complete' reason label.
+    expect(screen.getAllByText('complete').length).toBe(2);
+    // Run and step details both render (step ids only on the step rows).
+    expect(screen.getAllByText(/run: 209528f6/).length).toBe(4);
+    expect(screen.getAllByText(/step: e5d4a6fb/).length).toBe(2);
   });
 });

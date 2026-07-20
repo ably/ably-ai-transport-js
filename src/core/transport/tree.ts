@@ -355,6 +355,7 @@ interface TreeEventsMap<TOutput extends CodecOutputEvent> {
   update: undefined;
   'ably-message': Ably.InboundMessage;
   run: RunLifecycleEvent;
+  step: StepLifecycleEvent;
   output: OutputEvent<TOutput>;
 }
 
@@ -1439,6 +1440,8 @@ export class DefaultTree<
     // case (node already exists) changes step content only, repainted via the
     // supersede's empty-events `output` emit, not the structural channel.
     if (this._structuralVersion !== structuralBefore) this._emitter.emit('update');
+
+    this._emitter.emit('step', event);
   }
 
   /**
@@ -1940,13 +1943,15 @@ export class DefaultTree<
   on(event: 'update', handler: () => void): () => void;
   on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
   on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
+  on(event: 'step', handler: (event: StepLifecycleEvent) => void): () => void;
   on(event: 'output', handler: (event: OutputEvent<TOutput>) => void): () => void;
   on(
-    event: 'update' | 'ably-message' | 'run' | 'output',
+    event: 'update' | 'ably-message' | 'run' | 'step' | 'output',
     handler:
       | (() => void)
       | ((msg: Ably.InboundMessage) => void)
       | ((event: RunLifecycleEvent) => void)
+      | ((event: StepLifecycleEvent) => void)
       | ((event: OutputEvent<TOutput>) => void),
   ): () => void {
     // CAST: overload signatures enforce correct handler types per event name.

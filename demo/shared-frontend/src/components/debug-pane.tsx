@@ -5,12 +5,31 @@ import type { UIMessage } from 'ai';
 import type { CodecMessage } from '@ably/ai-transport';
 import type * as Ably from 'ably';
 
-export interface CallbackLogEntry {
+/**
+ * One observed lifecycle event — a run-lifecycle transition, a step-lifecycle
+ * transition, or an error. Entries are recorded in arrival (wire) order so a
+ * run and its steps interleave in a single chronological pane.
+ */
+export type LifecycleLogEntry = {
+  /** When the event was published (server timestamp, ms), falling back to receipt time. */
   time: number;
+  /** The event kind, used for the coloured label and to nest step entries. */
   type:
-    'runStart' | 'runSuspend' | 'runResume' | 'runEnd' | 'error' | 'steerPublished' | 'steerOutcome' | 'steerRejected';
-  summary: string;
-}
+    | 'runStart'
+    | 'runSuspend'
+    | 'runResume'
+    | 'runEnd'
+    | 'stepStart'
+    | 'stepEnd'
+    | 'error'
+    | 'steerPublished'
+    | 'steerOutcome'
+    | 'steerRejected';
+  /** The detail line shown under the label: run/step ids, the error message, or steer outcome. */
+  detail: string;
+  /** Terminal reason, shown inline; a failure reason renders red. Present on runEnd/stepEnd. */
+  reason?: string;
+};
 
 /** Fields common to every {@link ClientToolLogEntry} variant. */
 interface ClientToolLogEntryBase {
@@ -57,7 +76,7 @@ interface DebugPaneProps {
   messages: CodecMessage<UIMessage>[];
   ablyMessages: Ably.InboundMessage[];
   status: string;
-  callbackLog: CallbackLogEntry[];
+  lifecycleLog: LifecycleLogEntry[];
   statusLog: { time: number; status: string }[];
   clientToolLog: ClientToolLogEntry[];
   onClearLogs: () => void;
@@ -177,11 +196,13 @@ function UIMessagesTab({ messages, status }: { messages: UIMessage[]; status: st
   );
 }
 
-const callbackTypeColors: Record<string, string> = {
+const lifecycleTypeColors: Record<LifecycleLogEntry['type'], string> = {
   runStart: 'text-blue-400',
   runSuspend: 'text-amber-400',
   runResume: 'text-cyan-400',
   runEnd: 'text-emerald-400',
+  stepStart: 'text-sky-400',
+  stepEnd: 'text-teal-400',
   error: 'text-red-400',
   steerPublished: 'text-purple-400',
   steerOutcome: 'text-fuchsia-400',
@@ -194,12 +215,12 @@ const statusColors: Record<string, string> = {
 };
 
 function LifecycleTab({
-  callbackLog,
+  lifecycleLog,
   statusLog,
   clientToolLog,
   onClear,
 }: {
-  callbackLog: CallbackLogEntry[];
+  lifecycleLog: LifecycleLogEntry[];
   statusLog: { time: number; status: string }[];
   clientToolLog: ClientToolLogEntry[];
   onClear: () => void;
@@ -210,7 +231,7 @@ function LifecycleTab({
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [callbackLog, statusLog, clientToolLog]);
+  }, [lifecycleLog, statusLog, clientToolLog]);
 
   return (
     <div
@@ -244,24 +265,31 @@ function LifecycleTab({
       )}
 
       <div className="mt-4 mb-2">
-        <span className="text-[10px] text-zinc-400 uppercase tracking-wider">Run lifecycle</span>
+        <span className="text-[10px] text-zinc-400 uppercase tracking-wider">Lifecycle</span>
       </div>
 
-      {callbackLog.length === 0 ? (
-        <p className="text-xs text-zinc-500 text-center">Run start, run end, and error events will appear here.</p>
+      {lifecycleLog.length === 0 ? (
+        <p className="text-xs text-zinc-500 text-center">Run and step lifecycle events will appear here.</p>
       ) : (
-        callbackLog.map((entry, idx) => (
-          <div
-            key={idx}
-            className="rounded border border-zinc-800 bg-zinc-900/50 p-2 text-[11px] font-mono"
-          >
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-zinc-400">{new Date(entry.time).toLocaleTimeString()}</span>
-              <span className={callbackTypeColors[entry.type] ?? 'text-zinc-400'}>{entry.type}</span>
+        lifecycleLog.map((entry, idx) => {
+          const isStep = entry.type === 'stepStart' || entry.type === 'stepEnd';
+          const failed = entry.type === 'error' || entry.reason === 'failed';
+          return (
+            <div
+              key={idx}
+              className={`rounded border border-zinc-800 bg-zinc-900/50 p-2 text-[11px] font-mono ${
+                isStep ? 'ml-4 border-l-2 border-l-zinc-700' : ''
+              }`}
+            >
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-zinc-400">{new Date(entry.time).toLocaleTimeString()}</span>
+                <span className={failed ? 'text-red-400' : lifecycleTypeColors[entry.type]}>{entry.type}</span>
+                {entry.reason && <span className="text-zinc-500">{entry.reason}</span>}
+              </div>
+              <div className="text-zinc-500 break-all whitespace-pre-wrap">{entry.detail}</div>
             </div>
-            <div className="text-indigo-300 break-all whitespace-pre-wrap">{entry.summary}</div>
-          </div>
-        ))
+          );
+        })
       )}
 
       <div className="mt-4 mb-2">
@@ -312,7 +340,7 @@ export function DebugPane({
   messages,
   ablyMessages,
   status,
-  callbackLog,
+  lifecycleLog,
   statusLog,
   clientToolLog,
   onClearLogs,
@@ -376,7 +404,7 @@ export function DebugPane({
                 }`}
               >
                 Lifecycle
-                <span className="ml-1 text-zinc-600">{callbackLog.length + clientToolLog.length}</span>
+                <span className="ml-1 text-zinc-600">{lifecycleLog.length + clientToolLog.length}</span>
               </button>
             </div>
             <button
@@ -395,7 +423,7 @@ export function DebugPane({
             />
           ) : (
             <LifecycleTab
-              callbackLog={callbackLog}
+              lifecycleLog={lifecycleLog}
               statusLog={statusLog}
               clientToolLog={clientToolLog}
               onClear={onClearLogs}

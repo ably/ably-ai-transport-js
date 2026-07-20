@@ -70,8 +70,8 @@ export interface PendingToolCall {
  *
  * Does NOT include `approval-responded` parts — those are the domain of
  * {@link approvedPendingToolCalls} and are checked separately at a different
- * point in the driver's loop. Returns an empty array when the last message
- * isn't an assistant, or has no pending tool parts. Does NOT classify by
+ * point in the driver's loop. Returns an empty array when there is no assistant
+ * message, or it has no pending tool parts. Does NOT classify by
  * resolution mechanism (server / client / approval) — that policy belongs to
  * the caller who owns the tools registry and can inspect `execute` /
  * `needsApproval` per call.
@@ -118,8 +118,15 @@ const _toolCallsInState = (
   messages: readonly AI.UIMessage[],
   state: 'input-available' | 'approval-responded',
 ): PendingToolCall[] => {
-  const last = messages.at(-1);
-  if (last?.role !== 'assistant') return [];
+  // Scan back to the last assistant message rather than requiring the trailing
+  // message to be one. A client steering message can fold into the run while a
+  // tool-call pass is streaming; in raw run.messages order it sorts after the
+  // assistant tool-call message, pushing it off the tail. An open tool_use must
+  // still be resolved (its tool_result produced) before that steer can be
+  // processed, so the pending calls we owe live on the last assistant, whatever
+  // trails it.
+  const last = messages.findLast((m) => m.role === 'assistant');
+  if (last === undefined) return [];
   const result: PendingToolCall[] = [];
   for (const part of last.parts) {
     if (!isToolPart(part)) continue;

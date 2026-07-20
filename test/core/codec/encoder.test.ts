@@ -566,4 +566,33 @@ describe('createEncoderCore', () => {
       expect(headersOf(msg)[HEADER_CODEC_MESSAGE_ID]).toBeUndefined();
     });
   });
+
+  describe('WriteOptions.appHeaders', () => {
+    it('stamps the native extras.headers app lane on discrete publishes', async () => {
+      const core = createEncoderCore(writer);
+      await core.publishDiscrete(payload(), { appHeaders: { interrupt: 'true' } });
+
+      const msg = first(writer.publishCalls) as Ably.Message;
+      // CAST: Ably SDK types `extras` as `any`; the encoder sets `headers` from appHeaders.
+      const extras = msg.extras as { headers?: Record<string, string> };
+      expect(extras.headers).toEqual({ interrupt: 'true' });
+    });
+
+    it('keeps app headers out of the transport tier', async () => {
+      const core = createEncoderCore(writer);
+      await core.publishDiscrete(payload(), { appHeaders: { interrupt: 'true' } });
+
+      expect(headersOf(first(writer.publishCalls) as Ably.Message).interrupt).toBeUndefined();
+    });
+
+    it('does not set extras.headers when appHeaders is not provided', async () => {
+      const core = createEncoderCore(writer);
+      await core.publishDiscrete(payload());
+
+      const msg = first(writer.publishCalls) as Ably.Message;
+      // CAST: Ably SDK types `extras` as `any`; assert the app lane is absent.
+      const extras = msg.extras as { headers?: Record<string, string> };
+      expect(extras.headers).toBeUndefined();
+    });
+  });
 });

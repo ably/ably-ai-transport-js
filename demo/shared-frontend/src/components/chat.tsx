@@ -135,7 +135,7 @@ export function Chat({
   // .steer() returns { published, outcome } which we log so the demo
   // visualises consumed / not-consumed at run-end.
   const steerActiveRun = useCallback(
-    (text: string) => {
+    (text: string, interrupt: boolean) => {
       const runs = view.runs();
       const active = [...runs].reverse().find((r) => r.status === 'active' || r.status === 'suspended');
       if (!active) {
@@ -161,8 +161,15 @@ export function Chat({
         ]);
         return;
       }
-      const head = `runId=${active.runId.slice(0, 8)}`;
-      const { published, outcome } = handle.steer(UIMessageCodec.createUserMessage(userMessage(text)));
+      const head = `runId=${active.runId.slice(0, 8)}${interrupt ? ', interrupt' : ''}`;
+      // `/interrupt` stamps `interrupt: 'true'` on the steer's app-header lane;
+      // the agent's onSteer reads it and aborts the in-flight model call so the
+      // steer is picked up at once. `/steer` sends none, so the agent waits for
+      // the current step to finish and folds the steer on its next hasInput pass.
+      const { published, outcome } = handle.steer(
+        UIMessageCodec.createUserMessage(userMessage(text)),
+        interrupt ? { headers: { interrupt: 'true' } } : undefined,
+      );
       void published
         .then(({ serial }) => {
           setLifecycleLog((prev) => [
@@ -348,13 +355,23 @@ export function Chat({
             onChange={setInput}
             inputRef={inputRef}
             onSend={(text) => {
-              // `/steer <text>` targets the latest active Run via
+              // Two steer verbs target the latest active Run via
               // activeRun.steer(...) — a follow-up user message inside the
-              // running Run rather than a fresh send. The agent's
-              // run.hasInput() loop picks it up at the next iteration.
+              // running Run rather than a fresh send:
+              //   `/interrupt <text>` stamps the `interrupt` app header so the
+              //     agent's onSteer aborts its in-flight model call and picks
+              //     the steer up immediately.
+              //   `/steer <text>` carries no such header, so the agent lets the
+              //     current step finish and folds the steer on its next
+              //     run.hasInput() pass.
+              const interruptMatch = /^\/interrupt\s+(.+)$/.exec(text);
+              if (interruptMatch) {
+                steerActiveRun(interruptMatch[1]?.trim() ?? '', true);
+                return;
+              }
               const steerMatch = /^\/steer\s+(.+)$/.exec(text);
               if (steerMatch) {
-                steerActiveRun(steerMatch[1]?.trim() ?? '');
+                steerActiveRun(steerMatch[1]?.trim() ?? '', false);
                 return;
               }
               wake(view.send(UIMessageCodec.createUserMessage(userMessage(text))));
@@ -495,7 +512,7 @@ function InputBar({
         ref={inputRef}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder="Type a message... — or /steer <text> to steer the active run"
+        placeholder="Type a message... — /steer <text> or /interrupt <text> to steer the active run"
         className="flex-1 rounded-md bg-zinc-900 border border-zinc-700 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500"
         autoFocus
       />

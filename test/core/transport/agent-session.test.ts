@@ -54,7 +54,7 @@ import type { RunManager } from '../../../src/core/transport/run-manager.js';
 import * as runManagerModule from '../../../src/core/transport/run-manager.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
-import type { AgentSession, ClientRun } from '../../../src/core/transport/types.js';
+import type { AgentSession, ClientRun, SteerNotification } from '../../../src/core/transport/types.js';
 import type { SendDelegate } from '../../../src/core/transport/view.js';
 import { createClientView } from '../../../src/core/transport/view.js';
 import { ErrorCode } from '../../../src/errors.js';
@@ -437,6 +437,12 @@ interface DeliverInputEventOpts {
    * AITRFC-014 (edits and regenerates anchor at different headers).
    */
   regenerates?: string;
+  /**
+   * Optional application headers to place on the message's native
+   * `extras.headers` app lane (not `extras.ai`). The SDK relays these verbatim
+   * to `onSteer`; they never affect routing.
+   */
+  appHeaders?: Record<string, string>;
 }
 
 /**
@@ -466,7 +472,7 @@ const deliverInputEvent = (ch: MockChannel, opts: DeliverInputEventOpts): void =
     name: opts.name ?? 'text',
     serial: opts.serial,
     clientId: opts.publisherClientId,
-    extras: { ai: { transport: headers } },
+    extras: { ai: { transport: headers }, ...(opts.appHeaders ? { headers: opts.appHeaders } : {}) },
     // A never-mutated message's version serial equals its serial; carrying it
     // lets the Tree's replay guard dedup a wire delivered both live and via a
     // history walk (the role `_foldedSerials` used to play).
@@ -1239,6 +1245,149 @@ describe('AgentSession', () => {
 
       expect(run.hasInput()).toBe(false);
       await step.end();
+      await steerSession.detach();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // onSteer — SteerNotification delivered when a steer folds into the run
+  // -------------------------------------------------------------------------
+
+  describe('onSteer', () => {
+    it('delivers a SteerNotification carrying the steer wire app headers', async () => {
+      // A steer published with `extras.headers` (the native app-to-app lane)
+      // must reach `onSteer` verbatim: the notification's `headers` mirrors that
+      // lane so the agent can, e.g., interrupt the in-flight step on
+      // `interrupt: 'true'`.
+      const ch = createMockChannel();
+      const functionalCodec = createMockCodec();
+      functionalCodec.createDecoder = vi.fn(() => ({
+        decode: (m: Ably.InboundMessage) => {
+          const hdrs = (m.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport ?? {};
+          const id = hdrs[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
+          return {
+            inputs: [{ kind: 'user-message' as const, message: { id, content: id } }],
+            outputs: [],
+          };
+        },
+      }));
+      const steerSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: functionalCodec,
+      });
+      await steerSession.connect();
+
+      const runId = 'run-steer-headers';
+      const invocationId = 'inv-steer-headers';
+      const inputEventId = 'p-steer-headers';
+      const triggerId = 'id-1';
+      const steerId = 'id-2';
+
+      const steers: SteerNotification[] = [];
+      const run = createRunFromOpts(steerSession, {
+        runId,
+        invocationId,
+        inputEventId,
+        onSteer: (steer) => steers.push(steer),
+      });
+      const startPromise = run.start();
+      deliverInputEvent(ch, {
+        invocationId,
+        codecMessageId: triggerId,
+        serial: 'serial-1',
+        inputEventId,
+        publisherClientId: 'user-a',
+      });
+      await startPromise;
+      await run.pipe(streamOf({ type: 'text', text: 'response-1' }));
+
+      // The trigger input is not a steer — onSteer stays silent until a wire
+      // folds into the active run.
+      expect(steers).toHaveLength(0);
+
+      // Steer folds with an app-lane header. Routes through the Tree run-message
+      // path; onSteer fires once with the header relayed verbatim.
+      deliverInputEvent(ch, {
+        invocationId,
+        runId,
+        codecMessageId: steerId,
+        serial: 'serial-2',
+        inputEventId: `p-${steerId}`,
+        publisherClientId: 'user-a',
+        appHeaders: { interrupt: 'true' },
+      });
+
+      expect(steers).toHaveLength(1);
+      expect(steers[0]).toEqual(
+        expect.objectContaining({
+          runId,
+          codecMessageId: steerId,
+          serial: 'serial-2',
+          headers: { interrupt: 'true' },
+        }),
+      );
+      expect(steers[0]?.inputs).toEqual([{ kind: 'user-message', message: { id: steerId, content: steerId } }]);
+
+      await steerSession.detach();
+    });
+
+    it('delivers an empty headers bag when the steer wire carries no app lane', async () => {
+      // A plain steer (no `extras.headers`) still fires onSteer, but with an
+      // empty header bag — the agent leaves the in-flight step running.
+      const ch = createMockChannel();
+      const functionalCodec = createMockCodec();
+      functionalCodec.createDecoder = vi.fn(() => ({
+        decode: (m: Ably.InboundMessage) => {
+          const hdrs = (m.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport ?? {};
+          const id = hdrs[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
+          return {
+            inputs: [{ kind: 'user-message' as const, message: { id, content: id } }],
+            outputs: [],
+          };
+        },
+      }));
+      const steerSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: functionalCodec,
+      });
+      await steerSession.connect();
+
+      const runId = 'run-steer-noheaders';
+      const invocationId = 'inv-steer-noheaders';
+      const inputEventId = 'p-steer-noheaders';
+
+      const steers: SteerNotification[] = [];
+      const run = createRunFromOpts(steerSession, {
+        runId,
+        invocationId,
+        inputEventId,
+        onSteer: (steer) => steers.push(steer),
+      });
+      const startPromise = run.start();
+      deliverInputEvent(ch, {
+        invocationId,
+        codecMessageId: 'id-1',
+        serial: 'serial-1',
+        inputEventId,
+        publisherClientId: 'user-a',
+      });
+      await startPromise;
+      await run.pipe(streamOf({ type: 'text', text: 'response-1' }));
+
+      deliverInputEvent(ch, {
+        invocationId,
+        runId,
+        codecMessageId: 'id-2',
+        serial: 'serial-2',
+        inputEventId: 'p-id-2',
+        publisherClientId: 'user-a',
+      });
+
+      expect(steers).toHaveLength(1);
+      expect(steers[0]?.headers).toEqual({});
+
       await steerSession.detach();
     });
   });

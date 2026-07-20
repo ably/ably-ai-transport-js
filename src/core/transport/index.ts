@@ -27,6 +27,8 @@ export type {
   RunStatus,
   RunStep,
   SendOptions,
+  SteerNotification,
+  SteerOptions,
   SteerOutcome,
   SteerResult,
   StepEndParams,

@@ -454,6 +454,9 @@ class DefaultEncoderCore implements EncoderCore {
       data: payload.data,
       extras: {
         ai: this._aiExtras(transport, payload.codecHeaders ?? {}),
+        // Application headers ride the native `extras.headers` lane, untouched
+        // by the SDK, so a receiving agent can read them (e.g. in `onSteer`).
+        ...(opts?.appHeaders ? { headers: opts.appHeaders } : {}),
         ...(payload.ephemeral ? { ephemeral: true } : {}),
       },
     };

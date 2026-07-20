@@ -8,13 +8,13 @@ import type { Logger } from '../../../logger.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../../codec/types.js';
 import type { Invocation } from '../invocation.js';
 import type { BaseRun } from './run.js';
-import type { SteerResult } from './steer.js';
+import type { SteerOptions, SteerResult } from './steer.js';
 import type { Tree } from './tree.js';
 import type { ClientView } from './view.js';
 
 // Re-exported so consumers can import the steering types from the same
 // public surface as `ClientRun` and `ClientSession`.
-export type { SteerOutcome, SteerResult } from './steer.js';
+export type { SteerOptions, SteerOutcome, SteerResult } from './steer.js';
 
 // ---------------------------------------------------------------------------
 // Client session options
@@ -194,10 +194,13 @@ export interface ClientRun<TInput extends CodecInputEvent, TMessage> extends Bas
    * channel publish is attempted. The application recovers by issuing a new
    * `view.send(...)` + invocation.
    * @param input - The codec input event to publish, in the codec's input shape.
+   * @param options - Optional per-steer options; `headers` are stamped on the
+   *   steer's native `extras.headers` lane and relayed verbatim to the agent's
+   *   `onSteer` (as the `SteerNotification`'s `headers`).
    * @returns Two promises: `published` (publish acknowledgement) and `outcome`
    *   (consumed/not-consumed at the next terminal event).
    */
-  steer(input: TInput): SteerResult;
+  steer(input: TInput, options?: SteerOptions): SteerResult;
   /**
    * Build the {@link Invocation} pointer for this run — only `inputEventId` and
    * the session's channel name as `sessionName`. The body carries no run-id: a

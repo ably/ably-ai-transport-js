@@ -12,6 +12,7 @@ export type {
   RunNodeState,
   RunStatus,
   SendOptions,
+  SteerOptions,
   SteerOutcome,
   SteerResult,
   View,

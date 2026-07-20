@@ -75,7 +75,14 @@ export async function POST(req: Request) {
   let stepAbort = new AbortController();
   const run = session.createRun(invocation, {
     signal: req.signal,
-    onSteer: () => stepAbort.abort(),
+    // A steer only breaks the in-flight model call when the client marked it
+    // urgent by stamping `interrupt: 'true'` on the steer's app-header lane
+    // (the `/interrupt` verb). A plain `/steer` carries no header, so we leave
+    // the current step running and let the `hasInput()` loop fold the steer on
+    // its next pass.
+    onSteer: (steer) => {
+      if (steer.headers.interrupt === 'true') stepAbort.abort();
+    },
   });
 
   // Drain run.view — the one history driver — for the full multi-turn

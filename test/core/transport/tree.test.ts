@@ -104,6 +104,8 @@ interface ApplyOpts {
   message?: TestMessage;
   /** Override events entirely. When set, `message` is ignored. */
   events?: (TestInput | TestOutput)[];
+  /** The message's native `extras.headers` (app lane), surfaced on the `output` event. */
+  appHeaders?: Record<string, string>;
 }
 
 type TreeEvent = TestInput | TestOutput;
@@ -125,7 +127,7 @@ const apply = (tree: TreeInternal<TestInput, TestOutput, TestProjection>, opts: 
   const events: TreeEvent[] = opts.events ?? (opts.message ? [{ type: 'append-message', message: opts.message }] : []);
   const inputs = events.filter((e): e is TestInput => 'kind' in e);
   const outputs = events.filter((e): e is TestOutput => 'type' in e);
-  tree.applyMessage({ inputs, outputs }, h, opts.serial, opts.timestamp, opts.version);
+  tree.applyMessage({ inputs, outputs }, h, opts.serial, opts.timestamp, opts.version, opts.appHeaders);
 };
 
 const messagesOf = (tree: TreeInternal<TestInput, TestOutput, TestProjection>, runId: string): TestMessage[] => {
@@ -2562,7 +2564,22 @@ describe('Tree', () => {
         serial: 's1',
         events: [{ type: 'append-message', message: { id: 'a', content: 'hi' } }],
         inputs: [],
+        appHeaders: {},
       });
+    });
+
+    it('surfaces a steer wire’s app headers on the output event', () => {
+      const handler = vi.fn();
+      tree.on('output', handler);
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm1',
+        role: 'user',
+        events: [{ kind: 'append-input', message: { id: 'a', content: 'stop' } }],
+        serial: 's1',
+        appHeaders: { interrupt: 'true' },
+      });
+      expect(handler).toHaveBeenCalledWith(expect.objectContaining({ runId: 'R1', appHeaders: { interrupt: 'true' } }));
     });
 
     it('emits output carrying the triggering input-codec-message-id from the wire', () => {
@@ -2582,6 +2599,7 @@ describe('Tree', () => {
         serial: 's1',
         events: [{ type: 'append-message', message: { id: 'a', content: 'hi' } }],
         inputs: [],
+        appHeaders: {},
       });
     });
 
@@ -2601,6 +2619,7 @@ describe('Tree', () => {
         serial: 's1',
         events: [],
         inputs: [{ kind: 'append-input', message: { id: 'a', content: 'hi' } }],
+        appHeaders: {},
       });
     });
 
@@ -2615,6 +2634,7 @@ describe('Tree', () => {
         serial: undefined,
         events: [{ type: 'append-message', message: { id: 'a', content: 'hi' } }],
         inputs: [],
+        appHeaders: {},
       });
     });
 

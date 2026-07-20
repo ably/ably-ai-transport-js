@@ -485,6 +485,15 @@ export interface OutputEvent<TOutput extends CodecOutputEvent> {
    * concrete `TInput` shape narrow on the discriminator at the call site.
    */
   inputs: CodecInputEvent[];
+  /**
+   * The application's own headers (`extras.headers`) carried by the message
+   * that produced this fold — the opaque app-to-app lane the SDK never reads or
+   * interprets, relayed verbatim. Empty when the message carried none. A
+   * steering client stamps these via `run.steer(input, { headers })` so the
+   * agent can read them (surfaced on the `SteerNotification` passed to
+   * `onSteer`).
+   */
+  appHeaders: Record<string, string>;
 }
 
 /**

@@ -163,7 +163,7 @@ describe('pendingToolCalls', () => {
     expect(pendingToolCalls(messages).map((p) => p.toolCallId)).toEqual(['c']);
   });
 
-  it('returns [] when the last message is not an assistant', () => {
+  it('returns [] when there is no assistant message', () => {
     const messages = [msg({ role: 'user', parts: [{ type: 'text', text: 'hi' }] })];
     expect(pendingToolCalls(messages)).toEqual([]);
   });
@@ -177,7 +177,7 @@ describe('pendingToolCalls', () => {
     expect(pendingToolCalls(messages)).toEqual([]);
   });
 
-  it('inspects the LAST message only — earlier tool parts are ignored', () => {
+  it('inspects the last assistant — a fully-answered trailing assistant means nothing pending', () => {
     const messages = [
       msg({
         role: 'assistant',
@@ -187,9 +187,35 @@ describe('pendingToolCalls', () => {
       msg({ role: 'assistant', parts: [{ type: 'text', text: 'answer' }] }),
     ];
 
-    // The last message is a text-only assistant — no pending tool calls, even
-    // though an earlier message had one.
+    // The last assistant is text-only — no pending tool calls, even though an
+    // earlier assistant had one (it was already resolved by the later turn).
     expect(pendingToolCalls(messages)).toEqual([]);
+  });
+
+  it('finds the pending call on the last assistant when a steer message trails it', () => {
+    // A client steering message folds into the run while a tool-call pass is
+    // streaming; in raw run.messages order it sorts after the assistant
+    // tool-call message. The pending server tool still owes an output, so it
+    // must be found and dispatched before the steer can be processed.
+    const messages = [
+      msg({ role: 'user', parts: [{ type: 'text', text: 'weather in Tokyo?' }] }),
+      msg({
+        role: 'assistant',
+        parts: [
+          {
+            type: 'tool-getWeather',
+            toolCallId: 'call-weather',
+            state: 'input-available',
+            input: { location: 'Tokyo' },
+          },
+        ],
+      }),
+      msg({ role: 'user', parts: [{ type: 'text', text: 'actually London' }] }),
+    ];
+
+    expect(pendingToolCalls(messages)).toEqual([
+      { toolCallId: 'call-weather', toolName: 'getWeather', input: { location: 'Tokyo' } },
+    ]);
   });
 });
 
@@ -238,13 +264,40 @@ describe('approvedPendingToolCalls', () => {
     expect(approvedPendingToolCalls(messages).map((p) => p.toolCallId)).toEqual(['approved']);
   });
 
-  it('returns [] when the last message is not an assistant', () => {
+  it('returns [] when there is no assistant message', () => {
     const messages = [msg({ role: 'user', parts: [{ type: 'text', text: 'hi' }] })];
     expect(approvedPendingToolCalls(messages)).toEqual([]);
   });
 
   it('returns [] when the messages array is empty', () => {
     expect(approvedPendingToolCalls([])).toEqual([]);
+  });
+
+  it('finds the approved call on the last assistant when a steer message trails it', () => {
+    // Approval-resume equivalent of the steering race: the just-approved tool
+    // still owes an output, and a steer that landed during the approval must
+    // not hide it from the pre-check that dispatches it.
+    const messages = [
+      msg({ role: 'user', parts: [{ type: 'text', text: 'forecast?' }] }),
+      msg({
+        role: 'assistant',
+        parts: [
+          {
+            type: 'dynamic-tool',
+            toolCallId: 'call-forecast',
+            toolName: 'getWeatherForecast',
+            state: 'approval-responded',
+            input: { location: 'London, UK' },
+            approval: { id: 'ap-1', approved: true },
+          },
+        ],
+      }),
+      msg({ role: 'user', parts: [{ type: 'text', text: 'actually make it Paris' }] }),
+    ];
+
+    expect(approvedPendingToolCalls(messages)).toEqual([
+      { toolCallId: 'call-forecast', toolName: 'getWeatherForecast', input: { location: 'London, UK' } },
+    ]);
   });
 
   it('excludes denied approval-responded parts — approved: false is NOT dispatched to the tool-execute path', () => {

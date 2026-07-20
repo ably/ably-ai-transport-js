@@ -117,6 +117,22 @@ describe('SteerCoordinator', () => {
       expect(headers[HEADER_CODEC_MESSAGE_ID]).toMatch(/^[0-9a-f-]{36}$/);
     });
 
+    it('forwards options.headers as the publish appHeaders (app lane)', async () => {
+      const { coord, publishCalls } = h;
+      coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' }, { headers: { interrupt: 'true' } });
+      await flush();
+      expect(publishCalls.at(0)?.opts.appHeaders).toEqual({ interrupt: 'true' });
+      // App headers ride their own lane, never the transport header record.
+      expect(publishCalls.at(0)?.opts.extras?.headers?.interrupt).toBeUndefined();
+    });
+
+    it('omits appHeaders when no options.headers are given', async () => {
+      const { coord, publishCalls } = h;
+      coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
+      await flush();
+      expect(publishCalls.at(0)?.opts.appHeaders).toBeUndefined();
+    });
+
     it('rejects both promises when the runIdPromise rejects', async () => {
       const { coord } = h;
       const runIdErr = new Ably.ErrorInfo('runId never resolved', ErrorCode.InvalidArgument, 400);

@@ -1,6 +1,17 @@
-/** Steering surface types — outcome and result of `ClientRun.steer(...)`. */
+/** Steering surface types — options, outcome, and result of `ClientRun.steer(...)`. */
 
 import type { RunEndReason } from './shared.js';
+
+/** Per-steer options for `ClientRun.steer(...)`. */
+export interface SteerOptions {
+  /**
+   * Application headers to stamp on the steer message's native `extras.headers`
+   * lane — opaque to the SDK, relayed verbatim so the agent can read them in
+   * `onSteer` (via the `SteerNotification`'s `headers`). Use them to carry
+   * app-defined steer metadata (e.g. a priority) the agent acts on.
+   */
+  headers?: Record<string, string>;
+}
 
 /**
  * The outcome of a steering publish, derivable from the agent's response

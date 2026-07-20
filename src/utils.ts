@@ -69,6 +69,25 @@ export const getTransportHeaders = (message: Ably.InboundMessage): Record<string
 export const getCodecHeaders = (message: Ably.InboundMessage): Record<string, string> => getAiTier(message, 'codec');
 
 /**
+ * Extract the application's own headers (`extras.headers`) from an Ably
+ * InboundMessage. This lane is never read or written by the SDK's transport or
+ * codec tiers — it carries opaque app-to-app data, relayed verbatim so a
+ * receiving agent can act on it (e.g. in `onSteer`).
+ * @param message - The Ably message to extract headers from.
+ * @returns The application headers record, or an empty object if absent.
+ */
+export const getAppHeaders = (message: Ably.InboundMessage): Record<string, string> => {
+  // CAST: Ably SDK types `extras` as `any`; runtime checks below guard access.
+  const extras = message.extras as unknown;
+  if (!extras || typeof extras !== 'object') return {};
+  const headers = (extras as { headers?: unknown }).headers;
+  if (!headers || typeof headers !== 'object') return {};
+  // CAST: Ably wire protocol guarantees headers is Record<string, string>
+  // when present, verified by the runtime guards above.
+  return headers as Record<string, string>;
+};
+
+/**
  * Parse a JSON string, returning undefined on failure.
  * @param value - The JSON string to parse.
  * @returns The parsed value, or undefined if parsing fails.

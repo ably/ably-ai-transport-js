@@ -40,7 +40,7 @@ import { errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
 import type { CodecInputEvent, WriteOptions } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
 import type { RunEndReason } from './types/shared.js';
-import type { SteerOutcome, SteerResult } from './types/steer.js';
+import type { SteerOptions, SteerOutcome, SteerResult } from './types/steer.js';
 
 /** Constructor options for {@link SteerCoordinator}. */
 export interface SteerCoordinatorOptions<TInput extends CodecInputEvent> {
@@ -145,9 +145,11 @@ export class SteerCoordinator<TInput extends CodecInputEvent> {
    * returned promises reject without any channel publish.
    * @param runIdPromise - The handle's `runId` promise (may be unresolved).
    * @param input - The codec input event to publish, in the codec's input shape.
+   * @param options - Optional per-steer options; `headers` are stamped on the
+   *   steer's native `extras.headers` lane for the agent to read in `onSteer`.
    * @returns The {@link SteerResult} pair.
    */
-  steer(runIdPromise: Promise<string>, input: TInput): SteerResult {
+  steer(runIdPromise: Promise<string>, input: TInput, options?: SteerOptions): SteerResult {
     // Build the published/outcome promise pair up front so we can return
     // them synchronously. The publish lifecycle runs in an async IIFE
     // below; `published`'s serial only resolves once we observe the
@@ -237,7 +239,11 @@ export class SteerCoordinator<TInput extends CodecInputEvent> {
       // `_applyRunMessage`. Callers pass the same shape `view.send` accepts
       // (typically `codec.createUserMessage(...)`).
       try {
-        await this._publish(input, { extras: { headers }, messageId: codecMessageId });
+        await this._publish(input, {
+          extras: { headers },
+          messageId: codecMessageId,
+          ...(options?.headers ? { appHeaders: options.headers } : {}),
+        });
       } catch (error) {
         // Publish failed — pull the pending-echo entry and reject both
         // promises. The channel never observed the publish, so the echo

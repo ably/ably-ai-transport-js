@@ -21,7 +21,7 @@
 import type * as Ably from 'ably';
 
 import { HEADER_RUN_ID } from '../../constants.js';
-import { getTransportHeaders } from '../../utils.js';
+import { getAppHeaders, getTransportHeaders } from '../../utils.js';
 import type { CodecInputEvent, CodecOutputEvent, Decoder } from '../codec/types.js';
 import { isRunLifecycleName, isStepLifecycleName, parseRunLifecycle, parseStepLifecycle } from './headers.js';
 import type { TreeInternal } from './tree.js';
@@ -92,7 +92,7 @@ const applyWireMessage = <TInput extends CodecInputEvent, TOutput extends CodecO
 
   const { inputs, outputs } = decoder.decode(rawMsg);
   if (inputs.length > 0 || outputs.length > 0 || headers[HEADER_RUN_ID]) {
-    tree.applyMessage({ inputs, outputs }, headers, serial, timestamp, rawMsg.version.serial);
+    tree.applyMessage({ inputs, outputs }, headers, serial, timestamp, rawMsg.version.serial, getAppHeaders(rawMsg));
   }
   return undefined;
 };

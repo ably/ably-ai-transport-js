@@ -485,6 +485,15 @@ export interface OutputEvent<TOutput extends CodecOutputEvent> {
    * concrete `TInput` shape narrow on the discriminator at the call site.
    */
   inputs: CodecInputEvent[];
+  /**
+   * The application's own headers (`extras.headers`) carried by the message
+   * that produced this fold — the opaque app-to-app lane the SDK never reads or
+   * interprets, relayed verbatim. Empty when the message carried none. A
+   * steering client stamps these via `run.steer(input, { headers })` so the
+   * agent can read them (surfaced on the `SteerNotification` passed to
+   * `onSteer`).
+   */
+  appHeaders: Record<string, string>;
 }
 
 /**
@@ -549,6 +558,13 @@ export interface Tree<TOutput extends CodecOutputEvent, TProjection> {
 
   /** Subscribe to run lifecycle events (start, suspend, resume, and end). */
   on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
+
+  /**
+   * Subscribe to step lifecycle events (step-start and step-end) within a run.
+   * A step-end for a run the Tree has never observed is a no-op and does not
+   * fire.
+   */
+  on(event: 'step', handler: (event: StepLifecycleEvent) => void): () => void;
 
   /**
    * Subscribe to decoded agent outputs as they are folded into a Run.

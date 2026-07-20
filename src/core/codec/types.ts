@@ -55,6 +55,12 @@ export interface WriteOptions {
   extras?: Extras;
   /** Message identity for projection routing. Stamped as `codec-message-id`. */
   messageId?: string;
+  /**
+   * Application headers to attach to the message's native `extras.headers`
+   * namespace — the app-to-app lane the SDK never reads or interprets. Carried
+   * verbatim so a receiving agent can read them (e.g. in `onSteer`).
+   */
+  appHeaders?: Record<string, string>;
 }
 
 // ---------------------------------------------------------------------------

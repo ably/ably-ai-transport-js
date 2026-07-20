@@ -61,6 +61,7 @@ import type {
   ClientView,
   RunEndReason,
   SendOptions,
+  SteerOptions,
   SteerResult,
   Tree,
 } from './types.js';
@@ -695,10 +696,11 @@ class DefaultClientSession<
       // (not rejected) until the id resolves: derive the coordinator's required
       // `Promise<string>` from `started` (which resolves once run-start fills
       // the run-id cell) and the live `base.runId` getter.
-      steer: (steerInput: TInput): SteerResult =>
+      steer: (steerInput: TInput, options?: SteerOptions): SteerResult =>
         this._steer.steer(
           started.then(() => base.runId),
           steerInput,
+          options,
         ),
       // The agent mints the run-id, so a fresh run has none until run-start.
       // Cancel synchronously by the triggering input's codec-message-id (the

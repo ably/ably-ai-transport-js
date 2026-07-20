@@ -65,6 +65,7 @@ const makeDecoder = (inputs: TestInput[], outputs: TestOutput[]): Decoder<TestIn
 const msg = (opts: {
   name?: string;
   headers?: Record<string, string>;
+  appHeaders?: Record<string, string>;
   serial?: string;
   timestamp?: number;
   version?: string;
@@ -72,7 +73,7 @@ const msg = (opts: {
   ({
     name: opts.name ?? 'msg',
     action: 'message.create',
-    extras: { ai: { transport: opts.headers ?? {} } },
+    extras: { ai: { transport: opts.headers ?? {} }, ...(opts.appHeaders ? { headers: opts.appHeaders } : {}) },
     serial: opts.serial ?? 's1',
     timestamp: opts.timestamp ?? 1000,
     // `version` is present on every Ably delivery; `version.serial` is typed
@@ -194,6 +195,7 @@ describe('WireApplier', () => {
         's2',
         1234,
         undefined,
+        {},
       );
     });
 
@@ -213,6 +215,27 @@ describe('WireApplier', () => {
         's2',
         1234,
         's2@3',
+        {},
+      );
+    });
+
+    it('threads the native extras.headers app lane through to applyMessage', () => {
+      const tree = makeTree();
+      const decoder = makeDecoder([], [{ type: 'out' }]);
+
+      createWireApplier(asTree(tree), decoder).apply(
+        msg({ headers: { [HEADER_RUN_ID]: 'R1' }, appHeaders: { interrupt: 'true' }, serial: 's2' }),
+      );
+
+      // The app headers ride the 6th applyMessage arg, extracted from
+      // `extras.headers` — the opaque app-to-app lane.
+      expect(tree.applyMessage).toHaveBeenCalledWith(
+        { inputs: [], outputs: [{ type: 'out' }] },
+        expect.objectContaining({ [HEADER_RUN_ID]: 'R1' }),
+        's2',
+        expect.any(Number),
+        undefined,
+        { interrupt: 'true' },
       );
     });
 

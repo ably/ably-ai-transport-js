@@ -273,6 +273,9 @@ export interface TreeInternal<
    *   deliveries from sources that omit it). Guards the node's event log
    *   against whole-wire replays: a delivery at or below the version already
    *   decoded into its log entry is dropped.
+   * @param appHeaders - The message's native `extras.headers` (the opaque
+   *   app-to-app lane), surfaced verbatim on the `output` event. Omit (defaults
+   *   to empty) for optimistic local folds with no wire message.
    */
   applyMessage(
     events: { inputs: TInput[]; outputs: TOutput[] },
@@ -280,6 +283,7 @@ export interface TreeInternal<
     serial?: string,
     timestamp?: number,
     version?: string,
+    appHeaders?: Record<string, string>,
   ): void;
 
   /**
@@ -355,6 +359,7 @@ interface TreeEventsMap<TOutput extends CodecOutputEvent> {
   update: undefined;
   'ably-message': Ably.InboundMessage;
   run: RunLifecycleEvent;
+  step: StepLifecycleEvent;
   output: OutputEvent<TOutput>;
 }
 
@@ -1134,6 +1139,7 @@ export class DefaultTree<
     serial?: string,
     timestamp?: number,
     version?: string,
+    appHeaders: Record<string, string> = {},
   ): void {
     const wireRunId = headers[HEADER_RUN_ID];
     const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
@@ -1178,7 +1184,7 @@ export class DefaultTree<
     if (inputNodeCodecMessageId !== undefined) {
       this._applyInputMessage(inputNodeCodecMessageId, headers, serial, timestamp, version, all);
     } else if (wireRunId !== undefined) {
-      this._applyRunMessage(wireRunId, events, headers, serial, timestamp, version);
+      this._applyRunMessage(wireRunId, events, headers, serial, timestamp, version, appHeaders);
     }
 
     if (this._structuralVersion !== structuralBefore) this._emitter.emit('update');
@@ -1233,6 +1239,7 @@ export class DefaultTree<
       serial,
       events: [],
       inputs: all.filter((e) => e.direction === 'input').map((e) => e.event),
+      appHeaders: {},
     });
   }
 
@@ -1251,6 +1258,8 @@ export class DefaultTree<
    * @param serial - Ably channel serial; undefined for an optimistic insert.
    * @param timestamp - Ably server timestamp (epoch ms); undefined for an optimistic insert.
    * @param version - The delivery's `Message.version.serial`, or undefined.
+   * @param appHeaders - The message's native `extras.headers`, surfaced on the
+   *   `output` event so a steer's app headers reach the agent's `onSteer`.
    */
   private _applyRunMessage(
     wireRunId: string,
@@ -1259,6 +1268,7 @@ export class DefaultTree<
     serial: string | undefined,
     timestamp: number | undefined,
     version: string | undefined,
+    appHeaders: Record<string, string>,
   ): void {
     const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
     // The triggering input's codec-message-id (the agent's echo), surfaced on
@@ -1326,6 +1336,7 @@ export class DefaultTree<
         serial,
         events: outputs,
         inputs: events.inputs,
+        appHeaders,
         ...(stepId !== undefined && { stepId }),
         ...(startSerial !== undefined && { startSerial }),
       });
@@ -1439,6 +1450,8 @@ export class DefaultTree<
     // case (node already exists) changes step content only, repainted via the
     // supersede's empty-events `output` emit, not the structural channel.
     if (this._structuralVersion !== structuralBefore) this._emitter.emit('update');
+
+    this._emitter.emit('step', event);
   }
 
   /**
@@ -1524,6 +1537,7 @@ export class DefaultTree<
       serial: undefined,
       events: [],
       inputs: [],
+      appHeaders: {},
     });
   }
 
@@ -1940,13 +1954,15 @@ export class DefaultTree<
   on(event: 'update', handler: () => void): () => void;
   on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
   on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
+  on(event: 'step', handler: (event: StepLifecycleEvent) => void): () => void;
   on(event: 'output', handler: (event: OutputEvent<TOutput>) => void): () => void;
   on(
-    event: 'update' | 'ably-message' | 'run' | 'output',
+    event: 'update' | 'ably-message' | 'run' | 'step' | 'output',
     handler:
       | (() => void)
       | ((msg: Ably.InboundMessage) => void)
       | ((event: RunLifecycleEvent) => void)
+      | ((event: StepLifecycleEvent) => void)
       | ((event: OutputEvent<TOutput>) => void),
   ): () => void {
     // CAST: overload signatures enforce correct handler types per event name.

@@ -66,7 +66,24 @@ export async function POST(req: Request) {
     channelModes: OBJECT_MODES,
   });
   await session.connect();
-  const run = session.createRun(invocation, { signal: req.signal });
+
+  // Aborts only the CURRENT model call, never the Run. Reassigned per inference
+  // pass below; `onSteer` fires it so a steer breaks out of streamText's inner
+  // tool loop and back into our `hasInput()` loop immediately — the SDK never
+  // interrupts a model call itself. Kept distinct from `run.abortSignal` so a
+  // steer stops the response-in-progress without cancelling the Run.
+  let stepAbort = new AbortController();
+  const run = session.createRun(invocation, {
+    signal: req.signal,
+    // A steer only breaks the in-flight model call when the client marked it
+    // urgent by stamping `interrupt: 'true'` on the steer's app-header lane
+    // (the `/interrupt` verb). A plain `/steer` carries no header, so we leave
+    // the current step running and let the `hasInput()` loop fold the steer on
+    // its next pass.
+    onSteer: (steer) => {
+      if (steer.headers.interrupt === 'true') stepAbort.abort();
+    },
+  });
 
   // Drain run.view — the one history driver — for the full multi-turn
   // conversation to feed the model, then start. run.messages is only this
@@ -105,6 +122,9 @@ export async function POST(req: Request) {
     // inference pass. A suspend / cancel / error outcome breaks the loop.
     let outcome: Awaited<ReturnType<typeof vercelRunOutcome>> | undefined;
     while (run.hasInput()) {
+      // Fresh per-pass controller so this iteration's `onSteer` abort only
+      // affects this streamText call.
+      stepAbort = new AbortController();
       const steps = checklistFrom(checklistRoot.compactJson());
       const conversation = run.view.getMessages().map((m) => m.message);
       const result = streamText({
@@ -112,7 +132,10 @@ export async function POST(req: Request) {
         system: systemPrompt(steps),
         messages: await convertToModelMessages(conversation),
         tools: { ...tools, ...makeChecklistTool(checklistRoot, () => Date.now()) },
-        abortSignal: run.abortSignal,
+        // Abort on a genuine cancel (run.abortSignal) OR a steer (stepAbort), so
+        // a steer arriving mid-tool-loop stops the current model call at once
+        // instead of waiting for streamText to exhaust its steps.
+        abortSignal: AbortSignal.any([run.abortSignal, stepAbort.signal]),
         // Multi-step: streamText loops inference + server-tool execution within
         // this call so server-executed tools (getWeather, approved
         // getWeatherForecast, updateChecklist) chain straight into the model's
@@ -129,6 +152,20 @@ export async function POST(req: Request) {
         stopWhen: stepCountIs(10),
       });
       const pipeResult = await run.pipe(result.toUIMessageStream());
+      // run.pipe races only run.abortSignal, so a steer abort ends the stream
+      // cleanly (pipe reason 'complete') while a real cancel ends it 'cancelled'.
+      // A steer interrupted this iteration if the stream ended clean, this
+      // iteration's stepAbort fired, and the Run itself was not cancelled.
+      const steerInterrupted = pipeResult.reason === 'complete' && stepAbort.signal.aborted && !run.abortSignal.aborted;
+      if (steerInterrupted) {
+        // Don't pass an interrupted iteration to vercelRunOutcome: an aborted
+        // streamText rejects finishReason abort-like, which maps to 'cancelled'
+        // and would end the Run. Swallow the rejection so it isn't unhandled,
+        // then loop. hasInput() is now true, so the next iteration re-infers
+        // with the steer at the tail of the conversation.
+        void Promise.resolve(result.finishReason).catch(() => {});
+        continue;
+      }
       outcome = await vercelRunOutcome(pipeResult, result.finishReason);
       // Exit on any non-complete outcome (suspend / cancel / error). On a
       // `complete` outcome we re-check `hasInput()` at the top: a steer that

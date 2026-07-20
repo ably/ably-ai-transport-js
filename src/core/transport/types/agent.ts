@@ -174,6 +174,40 @@ export interface StreamResult {
   error?: Error;
 }
 
+/**
+ * A steering message that folded into a Run's projection, passed to
+ * {@link RunRuntime.onSteer}. Carries the transport pointers that identify the
+ * steer plus the application headers the steering client stamped, so the agent
+ * can decide how to react to the steer (e.g. interrupt an in-flight model call
+ * only for an "urgent" steer).
+ */
+export interface SteerNotification {
+  /** The Run's `run-id` the steering message was tagged with. */
+  runId: string;
+  /**
+   * The steering message's `codec-message-id`, or `undefined` when the
+   * carrying message had none.
+   */
+  codecMessageId: string | undefined;
+  /**
+   * Ably channel serial of the steering message, or `undefined` for an
+   * optimistic local fold with no wire echo yet.
+   */
+  serial: string | undefined;
+  /**
+   * The decoded client input events the steering message carried, in wire
+   * order. Typed as the codec-agnostic {@link CodecInputEvent} union; narrow on
+   * the discriminator to read the codec's concrete shape.
+   */
+  inputs: CodecInputEvent[];
+  /**
+   * The application headers (`extras.headers`) the steering client stamped via
+   * `run.steer(input, { headers })` — the opaque app-to-app lane, relayed
+   * verbatim. Empty when the steer carried none.
+   */
+  headers: Record<string, string>;
+}
+
 /** Per-run runtime hooks, signal, and overrides supplied at `createRun()` time. */
 export interface RunRuntime<TOutput extends CodecOutputEvent> {
   /**
@@ -278,8 +312,12 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
    * against an in-flight model call to decide whether to cancel and
    * restart. The SDK never interrupts a model call itself.
    * Authoritative visibility of pending steering is via {@link AgentRun.hasInput}.
+   *
+   * Receives a {@link SteerNotification} carrying the steer's transport
+   * pointers and the application headers the client stamped, so the handler can
+   * decide how to react (e.g. abort only for an "urgent" steer).
    */
-  onSteer?: () => void;
+  onSteer?: (steer: SteerNotification) => void;
 }
 
 // ---------------------------------------------------------------------------

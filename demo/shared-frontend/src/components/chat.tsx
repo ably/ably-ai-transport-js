@@ -10,7 +10,7 @@ import { useClientTools } from '../hooks/use-client-tools';
 import { useDemoProgress, type DemoStep as ProgressStep } from '../hooks/use-demo-progress';
 import { MessageList } from './message-list';
 import { SuggestionChips } from './suggestion-chips';
-import type { CallbackLogEntry, ClientToolLogEntry } from './debug-pane';
+import type { ClientToolLogEntry, LifecycleLogEntry } from './debug-pane';
 import { DebugPane } from './debug-pane';
 import type { DemoStep } from './intro-card';
 import { SessionHooks } from '../providers';
@@ -62,11 +62,11 @@ export function Chat({
 }: ChatProps) {
   const { session } = useClientSession();
 
-  const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
+  const [lifecycleLog, setLifecycleLog] = useState<LifecycleLogEntry[]>([]);
   const [statusLog, setStatusLog] = useState<{ time: number; status: string }[]>([]);
   const [clientToolLog, setClientToolLog] = useState<ClientToolLogEntry[]>([]);
   const clearLogs = useCallback(() => {
-    setCallbackLog([]);
+    setLifecycleLog([]);
     setStatusLog([]);
     setClientToolLog([]);
   }, []);
@@ -117,12 +117,12 @@ export function Chat({
           await wakeAgent(api, run);
         })
         .catch((error: unknown) => {
-          setCallbackLog((prev) => [
+          setLifecycleLog((prev) => [
             ...prev,
             {
               time: Date.now(),
               type: 'error',
-              summary: error instanceof Error ? error.message : 'failed to wake agent',
+              detail: error instanceof Error ? error.message : 'failed to wake agent',
             },
           ]);
         });
@@ -135,73 +135,80 @@ export function Chat({
   // .steer() returns { published, outcome } which we log so the demo
   // visualises consumed / not-consumed at run-end.
   const steerActiveRun = useCallback(
-    (text: string) => {
+    (text: string, interrupt: boolean) => {
       const runs = view.runs();
       const active = [...runs].reverse().find((r) => r.status === 'active' || r.status === 'suspended');
       if (!active) {
-        setCallbackLog((prev) => [
+        setLifecycleLog((prev) => [
           ...prev,
           {
             time: Date.now(),
             type: 'steerRejected',
-            summary: 'no active run to steer — send a message first',
+            detail: 'no active run to steer — send a message first',
           },
         ]);
         return;
       }
       const handle = activeRunsRef.current.get(active.runId);
       if (!handle) {
-        setCallbackLog((prev) => [
+        setLifecycleLog((prev) => [
           ...prev,
           {
             time: Date.now(),
             type: 'steerRejected',
-            summary: `active run ${active.runId.slice(0, 8)} has no local handle (opened elsewhere)`,
+            detail: `active run ${active.runId.slice(0, 8)} has no local handle (opened elsewhere)`,
           },
         ]);
         return;
       }
-      const head = `runId=${active.runId.slice(0, 8)}`;
-      const { published, outcome } = handle.steer(UIMessageCodec.createUserMessage(userMessage(text)));
+      const head = `runId=${active.runId.slice(0, 8)}${interrupt ? ', interrupt' : ''}`;
+      // `/interrupt` stamps `interrupt: 'true'` on the steer's app-header lane;
+      // the agent's onSteer reads it and aborts the in-flight model call so the
+      // steer is picked up at once. `/steer` sends none, so the agent waits for
+      // the current step to finish and folds the steer on its next hasInput pass.
+      const { published, outcome } = handle.steer(
+        UIMessageCodec.createUserMessage(userMessage(text)),
+        interrupt ? { headers: { interrupt: 'true' } } : undefined,
+      );
       void published
         .then(({ serial }) => {
-          setCallbackLog((prev) => [
+          setLifecycleLog((prev) => [
             ...prev,
             {
               time: Date.now(),
               type: 'steerPublished',
-              summary: `${head}, serial=${serial ?? '?'}`,
+              detail: `${head}, serial=${serial ?? '?'}`,
             },
           ]);
         })
         .catch((error: unknown) => {
-          setCallbackLog((prev) => [
+          setLifecycleLog((prev) => [
             ...prev,
             {
               time: Date.now(),
               type: 'steerRejected',
-              summary: error instanceof Error ? error.message : 'steer rejected',
+              detail: error instanceof Error ? error.message : 'steer rejected',
             },
           ]);
         });
       void outcome
         .then(({ consumed, runTerminalReason }) => {
-          setCallbackLog((prev) => [
+          setLifecycleLog((prev) => [
             ...prev,
             {
               time: Date.now(),
               type: 'steerOutcome',
-              summary: `${head}, ${consumed ? 'consumed' : 'not-consumed'}${runTerminalReason ? ` (${runTerminalReason})` : ''}`,
+              detail: `${head}, ${consumed ? 'consumed' : 'not-consumed'}${runTerminalReason ? ` (${runTerminalReason})` : ''}`,
             },
           ]);
         })
         .catch((error: unknown) => {
-          setCallbackLog((prev) => [
+          setLifecycleLog((prev) => [
             ...prev,
             {
               time: Date.now(),
               type: 'steerRejected',
-              summary: error instanceof Error ? error.message : 'steer outcome rejected',
+              detail: error instanceof Error ? error.message : 'steer outcome rejected',
             },
           ]);
         });
@@ -229,39 +236,40 @@ export function Chat({
 
   useEffect(() => {
     const offRun = session.tree.on('run', (event) => {
-      const head = `runId=${event.runId.slice(0, 8)}, clientId=${event.clientId}`;
-      let type: CallbackLogEntry['type'];
-      let summary: string;
+      const detail = `run: ${event.runId.slice(0, 8)}, client: ${event.clientId}`;
+      let type: LifecycleLogEntry['type'];
+      let reason: string | undefined;
       if (event.type === 'start') {
         type = 'runStart';
-        summary = head;
       } else if (event.type === 'suspend') {
         type = 'runSuspend';
-        summary = head;
       } else if (event.type === 'resume') {
         type = 'runResume';
-        summary = head;
       } else {
         type = 'runEnd';
-        summary = `${head}, reason=${event.reason}`;
+        reason = event.reason;
         // Drop the local handle — the SDK marks it dead and rejects further
         // steer() calls synchronously, so the entry would just sit here.
         activeRunsRef.current.delete(event.runId);
       }
-      setCallbackLog((prev) => [
-        ...prev,
-        {
-          time: Date.now(),
-          type,
-          summary,
-        },
-      ]);
+      setLifecycleLog((prev) => [...prev, { time: event.timestamp ?? Date.now(), type, detail, reason }]);
+    });
+    const offStep = session.tree.on('step', (event) => {
+      const detail = `run: ${event.runId.slice(0, 8)}, step: ${event.stepId.slice(0, 8)}${
+        event.stepClientId ? `, client: ${event.stepClientId}` : ''
+      }`;
+      const entry: LifecycleLogEntry =
+        event.type === 'step-start'
+          ? { time: event.timestamp ?? Date.now(), type: 'stepStart', detail }
+          : { time: event.timestamp ?? Date.now(), type: 'stepEnd', detail, reason: event.reason };
+      setLifecycleLog((prev) => [...prev, entry]);
     });
     const offErr = session.on('error', (error) => {
-      setCallbackLog((prev) => [...prev, { time: Date.now(), type: 'error', summary: error.message }]);
+      setLifecycleLog((prev) => [...prev, { time: Date.now(), type: 'error', detail: error.message }]);
     });
     return () => {
       offRun();
+      offStep();
       offErr();
     };
   }, [session]);
@@ -347,13 +355,23 @@ export function Chat({
             onChange={setInput}
             inputRef={inputRef}
             onSend={(text) => {
-              // `/steer <text>` targets the latest active Run via
+              // Two steer verbs target the latest active Run via
               // activeRun.steer(...) — a follow-up user message inside the
-              // running Run rather than a fresh send. The agent's
-              // run.hasInput() loop picks it up at the next iteration.
+              // running Run rather than a fresh send:
+              //   `/interrupt <text>` stamps the `interrupt` app header so the
+              //     agent's onSteer aborts its in-flight model call and picks
+              //     the steer up immediately.
+              //   `/steer <text>` carries no such header, so the agent lets the
+              //     current step finish and folds the steer on its next
+              //     run.hasInput() pass.
+              const interruptMatch = /^\/interrupt\s+(.+)$/.exec(text);
+              if (interruptMatch) {
+                steerActiveRun(interruptMatch[1]?.trim() ?? '', true);
+                return;
+              }
               const steerMatch = /^\/steer\s+(.+)$/.exec(text);
               if (steerMatch) {
-                steerActiveRun(steerMatch[1]?.trim() ?? '');
+                steerActiveRun(steerMatch[1]?.trim() ?? '', false);
                 return;
               }
               wake(view.send(UIMessageCodec.createUserMessage(userMessage(text))));
@@ -373,7 +391,7 @@ export function Chat({
         messages={messages}
         ablyMessages={ablyMessages}
         status={status}
-        callbackLog={callbackLog}
+        lifecycleLog={lifecycleLog}
         statusLog={statusLog}
         clientToolLog={clientToolLog}
         onClearLogs={clearLogs}
@@ -494,7 +512,7 @@ function InputBar({
         ref={inputRef}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder="Type a message... — or /steer <text> to steer the active run"
+        placeholder="Type a message... — /steer <text> or /interrupt <text> to steer the active run"
         className="flex-1 rounded-md bg-zinc-900 border border-zinc-700 px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 outline-none focus:border-zinc-500"
         autoFocus
       />

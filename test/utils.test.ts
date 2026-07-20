@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   errorCause,
   errorMessage,
+  getAppHeaders,
   getCodecHeaders,
   getTransportHeaders,
   mergeHeaders,
@@ -103,6 +104,40 @@ describe('getCodecHeaders', () => {
   it('returns empty object when extras is not an object', () => {
     const msg = { extras: 'string' } as Ably.InboundMessage;
     expect(getCodecHeaders(msg)).toEqual({});
+  });
+});
+
+describe('getAppHeaders', () => {
+  it('extracts the native extras.headers lane', () => {
+    const msg = {
+      extras: { ai: { transport: { 'run-id': 'r1' } }, headers: { interrupt: 'true' } },
+    } as unknown as Ably.InboundMessage;
+    expect(getAppHeaders(msg)).toEqual({ interrupt: 'true' });
+  });
+
+  it('does not confuse the app lane with the transport tier', () => {
+    const msg = { extras: { ai: { transport: { 'run-id': 'r1' } } } } as Ably.InboundMessage;
+    expect(getAppHeaders(msg)).toEqual({});
+  });
+
+  it('returns empty object when headers is absent', () => {
+    const msg = { extras: {} } as Ably.InboundMessage;
+    expect(getAppHeaders(msg)).toEqual({});
+  });
+
+  it('returns empty object when extras is undefined', () => {
+    const msg = { extras: undefined } as Ably.InboundMessage;
+    expect(getAppHeaders(msg)).toEqual({});
+  });
+
+  it('returns empty object when extras is not an object', () => {
+    const msg = { extras: 'string' } as Ably.InboundMessage;
+    expect(getAppHeaders(msg)).toEqual({});
+  });
+
+  it('returns empty object when headers is not an object', () => {
+    const msg = { extras: { headers: 'nope' } } as unknown as Ably.InboundMessage;
+    expect(getAppHeaders(msg)).toEqual({});
   });
 });
 

@@ -843,7 +843,13 @@ class DefaultAgentSession<
       if (event.codecMessageId !== undefined) steerTracker.addPending(event.codecMessageId);
       if (!onSteer) return;
       try {
-        onSteer();
+        onSteer({
+          runId,
+          codecMessageId: event.codecMessageId,
+          serial: event.serial,
+          inputs: event.inputs,
+          headers: event.appHeaders,
+        });
       } catch (error) {
         const errInfo = new Ably.ErrorInfo(
           `unable to notify steer for run ${runId}; onSteer handler threw: ${errorMessage(error)}`,

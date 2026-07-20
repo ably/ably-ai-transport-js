@@ -7,7 +7,7 @@
 
 import type * as Ably from 'ably';
 
-import type { AgentSession, CancelRequest, CodecOutputEvent, OpenableRun } from '../../src/index.js';
+import type { AgentSession, CancelRequest, CodecOutputEvent, OpenableRun, SteerNotification } from '../../src/index.js';
 import { Invocation } from '../../src/index.js';
 
 interface RunOpts<TOutput extends CodecOutputEvent> {
@@ -20,6 +20,7 @@ interface RunOpts<TOutput extends CodecOutputEvent> {
   onCancelled?: (write: (event: TOutput) => Promise<void>) => void | Promise<void>;
   onCancel?: (request: CancelRequest) => Promise<boolean>;
   onError?: (error: Ably.ErrorInfo) => void;
+  onSteer?: (steer: SteerNotification) => void;
 }
 
 /**
@@ -58,5 +59,6 @@ export const createRunFromOpts = <TOutput extends CodecOutputEvent, TProjection,
     onCancelled: opts.onCancelled,
     onCancel: opts.onCancel,
     onError: opts.onError,
+    onSteer: opts.onSteer,
   });
 };

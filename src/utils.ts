@@ -27,20 +27,31 @@ export const errorCause = (error: unknown): Ably.ErrorInfo | undefined =>
   error instanceof Ably.ErrorInfo ? error : undefined;
 
 /**
+ * Read the SDK's reserved `extras.ai` envelope from an Ably message.
+ * `extras.ai` is the SDK's reserved corner of the message envelope; its
+ * presence marks a message as SDK wire traffic. Returns the raw envelope
+ * value unvalidated — callers narrow it as needed.
+ * @param message - The Ably message to read from.
+ * @returns The `extras.ai` value, or undefined when the message has no extras object.
+ */
+export const getAiEnvelope = (message: Ably.InboundMessage): unknown => {
+  // CAST: Ably SDK types `extras` as `any`; runtime checks below guard access.
+  const extras = message.extras as unknown;
+  if (!extras || typeof extras !== 'object') return undefined;
+  return (extras as { ai?: unknown }).ai;
+};
+
+/**
  * Read one tier of the SDK's `extras.ai` namespace from an Ably message.
- * `extras.ai` is the SDK's reserved corner of the message envelope, split into
- * a `transport` tier (generic transport headers) and a `codec` tier (codec
- * headers). The application's own `extras.headers` is deliberately left
- * untouched.
+ * The envelope is split into a `transport` tier (generic transport headers)
+ * and a `codec` tier (codec headers). The application's own `extras.headers`
+ * is deliberately left untouched.
  * @param message - The Ably message to read from.
  * @param tier - Which `extras.ai` sub-namespace to read.
  * @returns The tier's headers record, or an empty object if absent.
  */
 const getAiTier = (message: Ably.InboundMessage, tier: 'transport' | 'codec'): Record<string, string> => {
-  // CAST: Ably SDK types `extras` as `any`; runtime checks below guard access.
-  const extras = message.extras as unknown;
-  if (!extras || typeof extras !== 'object') return {};
-  const ai = (extras as { ai?: unknown }).ai;
+  const ai = getAiEnvelope(message);
   if (!ai || typeof ai !== 'object') return {};
   const sub = (ai as Record<string, unknown>)[tier];
   if (!sub || typeof sub !== 'object') return {};

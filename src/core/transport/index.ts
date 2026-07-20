@@ -48,3 +48,13 @@ export { createClientSession } from './client-session.js';
 
 // Header builder
 export { buildTransportHeaders } from './headers.js';
+
+// Raw-message helpers (sharing the channel with plain Pub/Sub)
+export type { FetchRawHistoryOptions, MergedConversationItem, MergedItem, MergedRawItem } from './raw-messages.js';
+export {
+  fetchRawHistory,
+  isForeignMessage,
+  isTransportMessage,
+  mergeBySerial,
+  runStartSerialOf,
+} from './raw-messages.js';

@@ -17,6 +17,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadHistoryPages } from '../../../src/core/transport/load-history-pages.js';
 import { ErrorCode } from '../../../src/errors.js';
+import { buildPageChain, createHistoryChannel, type MockPage } from '../../helper/history-pages.js';
 
 let serialCounter = 0;
 const nextSerial = (): string => {
@@ -32,37 +33,6 @@ const ablyMsg = (): Ably.InboundMessage =>
     extras: { ai: { transport: {} } },
   }) as unknown as Ably.InboundMessage;
 
-interface MockPage {
-  items: Ably.InboundMessage[];
-  hasNext: () => boolean;
-  next: () => Promise<MockPage | undefined>;
-}
-
-const buildPageChain = (pages: Ably.InboundMessage[][]): MockPage => {
-  const build = (i: number): MockPage => ({
-    items: pages[i] ?? [],
-    hasNext: () => i < pages.length - 1,
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-    next: () => Promise.resolve(i < pages.length - 1 ? build(i + 1) : undefined),
-  });
-  return build(0);
-};
-
-const createMockChannel = (
-  pages: Ably.InboundMessage[][] = [],
-): { channel: Ably.RealtimeChannel; historyMock: ReturnType<typeof vi.fn> } => {
-  const historyMock = vi.fn(
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-    () => Promise.resolve(buildPageChain(pages)),
-  );
-  const channel = {
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-    attach: vi.fn(() => Promise.resolve()),
-    history: historyMock,
-  };
-  return { channel: channel as unknown as Ably.RealtimeChannel, historyMock };
-};
-
 describe('loadHistoryPages', () => {
   beforeEach(() => {
     serialCounter = 0;
@@ -73,7 +43,7 @@ describe('loadHistoryPages', () => {
     const m3 = ablyMsg();
     const m2 = ablyMsg();
     const m1 = ablyMsg();
-    const { channel } = createMockChannel([
+    const { channel } = createHistoryChannel([
       [m4, m3],
       [m2, m1],
     ]);
@@ -94,7 +64,7 @@ describe('loadHistoryPages', () => {
   });
 
   it('passes `untilAttach: true` by default', async () => {
-    const { channel, historyMock } = createMockChannel([[ablyMsg()]]);
+    const { channel, historyMock } = createHistoryChannel([[ablyMsg()]]);
     await loadHistoryPages(channel, { pageLimit: 10 });
     expect(historyMock).toHaveBeenCalledWith({ limit: 10, untilAttach: true });
   });
@@ -221,7 +191,7 @@ describe('loadHistoryPages', () => {
 
   it('hasNext() returns false once the signal aborts', async () => {
     const ctrl = new AbortController();
-    const { channel } = createMockChannel([[ablyMsg()], [ablyMsg()]]);
+    const { channel } = createHistoryChannel([[ablyMsg()], [ablyMsg()]]);
 
     const cursor = await loadHistoryPages(channel, { pageLimit: 1, signal: ctrl.signal });
     expect(cursor.hasNext()).toBe(true);
@@ -271,7 +241,7 @@ describe('loadHistoryPages', () => {
   });
 
   it('throws `OperationCancelled` when the signal is aborted on entry', async () => {
-    const { channel } = createMockChannel([[ablyMsg()]]);
+    const { channel } = createHistoryChannel([[ablyMsg()]]);
     const ctrl = new AbortController();
     ctrl.abort();
     await expect(loadHistoryPages(channel, { pageLimit: 1, signal: ctrl.signal })).rejects.toBeErrorInfoWithCode(
@@ -283,7 +253,7 @@ describe('loadHistoryPages', () => {
     const ctrl = new AbortController();
     const m1 = ablyMsg();
     const m2 = ablyMsg();
-    const { channel } = createMockChannel([[m1], [m2]]);
+    const { channel } = createHistoryChannel([[m1], [m2]]);
 
     const cursor = await loadHistoryPages(channel, { pageLimit: 1, signal: ctrl.signal });
     const first = await cursor.next();

@@ -173,6 +173,15 @@ export const HEADER_ERROR_MESSAGE = 'error-message';
 // ---------------------------------------------------------------------------
 
 /**
+ * The transport's reserved message-name prefix. Every transport wire name
+ * below carries it, and the classification helpers treat any message whose
+ * name starts with it (or that carries the `extras.ai` envelope) as transport
+ * traffic. Applications sharing the session channel with their own Pub/Sub
+ * traffic must not publish messages under this prefix.
+ */
+export const TRANSPORT_NAME_PREFIX = 'ai-';
+
+/**
  * Message name: client->agent cancel intent. Targets a run by `run-id` (a
  * continuation, whose run-id the client already knows) and/or by
  * `input-codec-message-id` (a fresh send, whose run-id the agent mints at

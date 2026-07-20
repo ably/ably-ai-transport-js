@@ -144,4 +144,9 @@ Default*` directly.
 9. **Self-contained features** — each manages its own subscriptions, state, and
    cleanup.
 10. **Single shared channel** — one Ably channel per transport, shared by all
-    features.
+    features. The channel may also carry application-owned Pub/Sub traffic:
+    the transport reserves the `ai-` message-name prefix and the `extras.ai`
+    envelope, and every transport wire message must be classifiable by that
+    reservation. The authoritative classifier lives in
+    `core/transport/raw-messages.ts`; the prefix constant lives with the wire
+    names in `constants.ts`.

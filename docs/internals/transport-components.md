@@ -109,4 +109,15 @@ buildTransportHeaders({
 
 Optional fields are omitted from the result entirely when undefined, not stamped as empty strings. The fields checked with `!== undefined` (`runId`, `runClientId`, `inputClientId`, `inputCodecMessageId`) treat the empty string `''` as a present value and still stamp the header — so anonymous publishers surface as an explicit empty string rather than vanishing. The remaining optional fields (`parent`, `forkOf`, `regenerates`, `invocationId`, `inputEventId`) omit on any falsy value. A fresh `ai-input` carries no `run-id` (the agent mints it), while a continuation stamps the run-id it re-enters. See [Branching headers](wire-protocol.md#branching-headers) for how `parent` and `forkOf` shape the conversation tree, [Run.pipe parent resolution](wire-protocol.md#how-parent-is-resolved) for the default-parent rules, and [Client identity](wire-protocol.md#client-identity) for the two `clientId` tiers.
 
+## Raw-message helpers
+
+`src/core/transport/raw-messages.ts` - the application-facing surface for [sharing the channel with plain Pub/Sub](../features/channel-sharing.md).
+
+Four stateless plain functions, exported from the core entry point:
+
+- `isTransportMessage` / `isForeignMessage` — classify a channel message by the wire reservation (the `ai-` name prefix, `TRANSPORT_NAME_PREFIX`, or the `extras.ai` envelope).
+- `fetchRawHistory` — read filtered raw messages back off the channel oldest-first. Built on `loadHistoryPages` (the shared pagination cursor with retry/backoff), so it attaches the channel itself and defaults to an `untilAttach`-bounded read; rejects with `HistoryFetchFailed` rather than silently truncating when its `maxPages` cap is hit with history remaining.
+- `mergeBySerial` — interleave a View's conversation messages with raw messages into one serial-ordered transcript, positioning each conversation message by the serial its `serialOf` callback returns.
+- `runStartSerialOf` — builds the canonical `serialOf` for the merge from a View and its Tree (run start serials live on the Tree's `RunNode`, not the View-facing `RunInfo`).
+
 See [Client session](client-session.md) and [Agent session](agent-session.md) for how these sub-components are composed into the full session implementations. See [Wire protocol](wire-protocol.md) for the full header and event specification. See [Encoder](encoder.md) for how the encoder writes through the channel. See [Decoder](decoder.md) for how decoded events are produced for routing. See [Headers](headers.md) for the domain header reader/writer utilities.

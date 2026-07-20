@@ -4,6 +4,8 @@ The AI Transport wire protocol defines what gets published on an Ably channel du
 
 `extras.ai` is split into two tiers: [transport headers](#transport-headers) under `extras.ai.transport` and [codec headers](#codec-headers) under `extras.ai.codec`. The two message types are [lifecycle events](#lifecycle-events) vs [content messages](#content-messages). See the [glossary](glossary.md) for Ably-specific terms used throughout.
 
+The wire reservation is two-fold: alongside the `extras.ai` envelope, every transport message name carries the reserved **`ai-` prefix** (exported as `TRANSPORT_NAME_PREFIX`). Applications sharing the session channel with their own Pub/Sub traffic must publish under neither — the classification helpers (`isTransportMessage` / `isForeignMessage`) treat a message carrying either marker as transport traffic. See [Sharing the channel with Pub/Sub](../features/channel-sharing.md).
+
 ## Header namespaces
 
 ### Transport headers

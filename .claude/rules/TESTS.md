@@ -78,6 +78,7 @@ Happy-path scenarios that validate the wire protocol and real Ably behavior:
 10. Conversation tree / branching: send, regenerate (fork), verify tree from history
 11. Error propagation: server error mid-stream, client receives and stream closes cleanly
 12. Multi-client sync: two clients on the same channel both see the streamed response
+13. Channel sharing: raw Pub/Sub messages interleaved with a run; transport state unaffected; raw history read + serial merge round-trips
 
 ### What NOT to integration test
 

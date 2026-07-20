@@ -212,6 +212,8 @@ const messages = useAblyMessages<TInput, TOutput, TProjection, TMessage>({ sessi
 
 **Returns:** `Ably.InboundMessage[]` - raw Ably messages in chronological order. Includes live and history-loaded messages.
 
+The stream carries **all** channel traffic, including the transport's own wire messages. An application sharing the channel with its own Pub/Sub traffic should filter with `isForeignMessage` (from `@ably/ai-transport`) to isolate its messages — see [Sharing the channel with Pub/Sub](../features/channel-sharing.md).
+
 ---
 
 ### useMessagesWithSeed

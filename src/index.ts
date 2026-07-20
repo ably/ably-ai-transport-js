@@ -13,8 +13,12 @@ export type {
   ClientSessionOptions,
   ClientView,
   ConversationNode,
+  FetchRawHistoryOptions,
   InputNode,
   InvocationData,
+  MergedConversationItem,
+  MergedItem,
+  MergedRawItem,
   OpenableRun,
   OutputEvent,
   PipeOptions,
@@ -36,7 +40,17 @@ export type {
   Tree,
   View,
 } from './core/transport/index.js';
-export { buildTransportHeaders, createAgentSession, createClientSession, Invocation } from './core/transport/index.js';
+export {
+  buildTransportHeaders,
+  createAgentSession,
+  createClientSession,
+  fetchRawHistory,
+  Invocation,
+  isForeignMessage,
+  isTransportMessage,
+  mergeBySerial,
+  runStartSerialOf,
+} from './core/transport/index.js';
 
 // Channel modes
 export { OBJECT_MODES } from './core/channel-options.js';
@@ -129,6 +143,7 @@ export {
   HEADER_STATUS,
   HEADER_STREAM,
   HEADER_STREAM_ID,
+  TRANSPORT_NAME_PREFIX,
 } from './constants.js';
 
 // Utilities

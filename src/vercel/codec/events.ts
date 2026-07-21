@@ -2,7 +2,7 @@
  * Vercel codec input/output unions.
  *
  * The codec splits cleanly along the protocol's `ai-input` / `ai-output`
- * wire seam:
+ * wire boundary:
  *
  * - **`VercelOutput`** = `AI.UIMessageChunk` — the AI SDK's streamed-output
  *   domain model, published by the agent on `ai-output`.

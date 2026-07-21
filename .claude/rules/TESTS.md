@@ -55,6 +55,8 @@ To run against a different environment, set `VITE_ABLY_ENV`:
 | `local`               | Connects to `local-rest.ably.io:8081` (no TLS) | Yes — set `VITE_ABLY_API_KEY` |
 | `production`          | Connects to production Ably                    | Yes — set `VITE_ABLY_API_KEY` |
 
+Independently, setting `ABLY_LOCAL_SANDBOX_URL` (e.g. `http://localhost:9010`) points app provisioning at a **local sandbox** — a provisioner fronting a local Ably-compatible server — instead of the cloud. The globalSetup provisions the app through that sandbox's `POST /apps`, and clients route at the isolated server it reports (its own endpoint/port/tls). This is the inert support the ably-server compatibility harness drives; it takes precedence over `VITE_ABLY_ENV` and is a no-op (cloud path unchanged) when unset.
+
 ### Conventions
 
 - Unique channel names per test via `uniqueChannelName()` to avoid crosstalk

@@ -35,6 +35,7 @@ import {
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
   HEADER_START_SERIAL,
+  HEADER_STEER_CODEC_MESSAGE_IDS,
   HEADER_STEP_ID,
   HEADER_STREAM,
 } from '../../constants.js';
@@ -1307,6 +1308,11 @@ export class DefaultTree<
       this._recordStepAttribution(run, serial, stepId, startSerial);
     }
 
+    // The steer-responded stamp this output carried. It rides the emit so a
+    // resuming agent can see which steering messages an earlier pass already
+    // answered. A malformed stamp degrades to "no stamp" for this message.
+    const steerCodecMessageIds = this._parseSteerStamp(headers[HEADER_STEER_CODEC_MESSAGE_IDS]);
+
     // Log the wire and fold it — incrementally onto the tail in the common
     // case, or by refolding the node if this wire arrived out of serial order.
     // `run` may be a reconciled optimistic node: record on whichever entry
@@ -1328,7 +1334,33 @@ export class DefaultTree<
         inputs: events.inputs,
         ...(stepId !== undefined && { stepId }),
         ...(startSerial !== undefined && { startSerial }),
+        ...(steerCodecMessageIds !== undefined && { steerCodecMessageIds }),
       });
+    }
+  }
+
+  /**
+   * Parses an output's `steer-codec-message-ids` stamp header, a JSON array of
+   * the codec-message-ids the output responded to. Returns undefined when the
+   * header is absent or malformed, so a bad stamp never poisons the fold.
+   * @param stamp - The raw header value, or undefined when unset.
+   * @returns The parsed codec-message-ids, or undefined.
+   */
+  private _parseSteerStamp(stamp: string | undefined): string[] | undefined {
+    if (stamp === undefined) return undefined;
+    try {
+      // CAST: trust boundary. The agent stamps a JSON array of strings, and a
+      // malformed value degrades to "no stamp" for this message.
+      const parsed = JSON.parse(stamp) as unknown;
+      if (!Array.isArray(parsed)) {
+        this._logger.warn('Tree.applyMessage(); ignoring non-array steer-codec-message-ids');
+        return undefined;
+      }
+      const ids = parsed.filter((id): id is string => typeof id === 'string');
+      return ids.length > 0 ? ids : undefined;
+    } catch {
+      this._logger.warn('Tree.applyMessage(); failed to parse steer-codec-message-ids');
+      return undefined;
     }
   }
 

@@ -1241,6 +1241,160 @@ describe('AgentSession', () => {
       await step.end();
       await steerSession.detach();
     });
+
+    it('rehydrates an unresponded steer that folded before the run-id re-key, so a resumed run answers it', async () => {
+      // Resume race: the steer folds tagged with the run's REAL id while the run
+      // still holds the provisional id it minted at construction, so the live
+      // listener cannot attribute it. The continuation trigger then re-keys the
+      // run to the real id. Without rehydration the steer is lost — after a
+      // pre-loop pass has produced output, hasInput() returns false and the
+      // steer is never answered. seedSteers() (at start()) recovers it from the
+      // observed-run-id buffer, so the next hasInput() drives a follow-up pass.
+      const ch = createMockChannel();
+      const functionalCodec = createMockCodec();
+      functionalCodec.createDecoder = vi.fn(() => ({
+        decode: (m: Ably.InboundMessage) => {
+          const hdrs = (m.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport ?? {};
+          const id = hdrs[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
+          return { inputs: [{ kind: 'user-message' as const, message: { id, content: id } }], outputs: [] };
+        },
+      }));
+      const steerSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: functionalCodec,
+      });
+      await steerSession.connect();
+
+      const invocationId = 'inv-resume-seed';
+      const inputEventId = 'p-trigger';
+      const wireRunId = 'run-real';
+      const triggerId = 'trigger-1';
+      const steerId = 'steer-1';
+
+      // No runtime.runId → the agent mints a provisional id, mirroring a
+      // continuation before the trigger re-keys it to the real run-id.
+      const run = steerSession.createRun(Invocation.fromJSON({ inputEventId, sessionName: 'test' }), { invocationId });
+      const startPromise = run.start();
+
+      // The steer folds first, tagged with the REAL run-id — dropped by the live
+      // listener (the run is still provisional) but buffered by observed run-id.
+      deliverInputEvent(ch, {
+        invocationId,
+        runId: wireRunId,
+        codecMessageId: steerId,
+        serial: 'serial-steer',
+        inputEventId: 'p-steer',
+        publisherClientId: 'user-a',
+      });
+      // The continuation trigger folds, re-keying the run to the real id.
+      deliverInputEvent(ch, {
+        invocationId,
+        runId: wireRunId,
+        codecMessageId: triggerId,
+        serial: 'serial-trigger',
+        inputEventId,
+        publisherClientId: 'user-a',
+      });
+      await startPromise;
+      expect(run.runId).toBe(wireRunId);
+
+      // A pre-loop pass produces output (the tool-resolution pass) without
+      // draining the steer, so its output carries no steer stamp.
+      await run.pipe(streamOf({ type: 'text', text: 'response-1' }));
+      expect(functionalCodec.lastEncoder()?.outputTransport[0]?.[HEADER_STEER_CODEC_MESSAGE_IDS]).toBeUndefined();
+
+      // The rehydrated steer survived the re-key: hasInput() reports it even
+      // though output was already produced, driving a follow-up pass that stamps
+      // it (the triggering input is excluded from seeding, so only the steer is).
+      expect(run.hasInput()).toBe(true);
+      await run.pipe(streamOf({ type: 'text', text: 'response-2' }));
+      expect(functionalCodec.lastEncoder()?.outputTransport[0]?.[HEADER_STEER_CODEC_MESSAGE_IDS]).toBe(
+        JSON.stringify([steerId]),
+      );
+      expect(run.hasInput()).toBe(false);
+
+      await steerSession.detach();
+    });
+
+    it('does not rehydrate a steer an earlier pass already stamped as answered', async () => {
+      // Same resume race, but an assistant reply already answered the steer and
+      // carries its id under `steer-codec-message-ids`. seedSteers() must treat
+      // it as responded and NOT re-seed it, so the resumed run does not
+      // re-answer an answered steer: after a pre-loop pass produces output,
+      // hasInput() reports nothing left to do.
+      const ch = createMockChannel();
+      const functionalCodec = createMockCodec();
+      functionalCodec.createDecoder = vi.fn(() => ({
+        decode: (m: Ably.InboundMessage) => {
+          const hdrs = (m.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport ?? {};
+          // The reply that answered the steer decodes to outputs, so the
+          // listener reads its responded stamp without counting it as a fold.
+          if (hdrs[HEADER_STEER_CODEC_MESSAGE_IDS] !== undefined) {
+            return { inputs: [], outputs: [{ type: 'text' as const, text: 'answered' }] };
+          }
+          const id = hdrs[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
+          return { inputs: [{ kind: 'user-message' as const, message: { id, content: id } }], outputs: [] };
+        },
+      }));
+      const steerSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: functionalCodec,
+      });
+      await steerSession.connect();
+
+      const invocationId = 'inv-resume-answered';
+      const inputEventId = 'p-trigger';
+      const wireRunId = 'run-real';
+      const triggerId = 'trigger-1';
+      const steerId = 'steer-1';
+
+      const run = steerSession.createRun(Invocation.fromJSON({ inputEventId, sessionName: 'test' }), { invocationId });
+      const startPromise = run.start();
+      // The steer folds (buffered) ...
+      deliverInputEvent(ch, {
+        invocationId,
+        runId: wireRunId,
+        codecMessageId: steerId,
+        serial: 'serial-steer',
+        inputEventId: 'p-steer',
+        publisherClientId: 'user-a',
+      });
+      // ... then the run-tagged reply that already answered it, stamped with the
+      // steer's id (a pure output, not a steer fold).
+      ch.listener?.({
+        name: 'text',
+        serial: 'serial-answer',
+        extras: {
+          ai: {
+            transport: {
+              [HEADER_RUN_ID]: wireRunId,
+              [HEADER_CODEC_MESSAGE_ID]: 'answer-1',
+              [HEADER_STEER_CODEC_MESSAGE_IDS]: JSON.stringify([steerId]),
+            },
+          },
+        },
+        version: { serial: 'serial-answer' },
+      } as unknown as Ably.InboundMessage);
+      // The continuation trigger re-keys the run to the real id.
+      deliverInputEvent(ch, {
+        invocationId,
+        runId: wireRunId,
+        codecMessageId: triggerId,
+        serial: 'serial-trigger',
+        inputEventId,
+        publisherClientId: 'user-a',
+      });
+      await startPromise;
+
+      // A pre-loop pass produces output; the answered steer was not rehydrated,
+      // so there is nothing left to drive a follow-up pass.
+      await run.pipe(streamOf({ type: 'text', text: 'response-1' }));
+      expect(run.hasInput()).toBe(false);
+
+      await steerSession.detach();
+    });
   });
 
   // -------------------------------------------------------------------------

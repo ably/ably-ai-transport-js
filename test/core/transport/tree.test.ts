@@ -10,6 +10,7 @@ import {
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
   HEADER_START_SERIAL,
+  HEADER_STEER_CODEC_MESSAGE_IDS,
   HEADER_STEP_ID,
   HEADER_STREAM,
 } from '../../../src/constants.js';
@@ -101,6 +102,8 @@ interface ApplyOpts {
   stepId?: string;
   /** Sets the `start-serial` transport header (the back-ref to the owning step attempt's `ai-step-start` serial). */
   startSerial?: string;
+  /** Sets the raw `steer-codec-message-ids` transport header (a JSON string, so malformed values can be exercised). */
+  steerStamp?: string;
   message?: TestMessage;
   /** Override events entirely. When set, `message` is ignored. */
   events?: (TestInput | TestOutput)[];
@@ -121,6 +124,7 @@ const apply = (tree: TreeInternal<TestInput, TestOutput, TestProjection>, opts: 
   if (opts.streamed) h[HEADER_STREAM] = 'true';
   if (opts.stepId !== undefined) h[HEADER_STEP_ID] = opts.stepId;
   if (opts.startSerial !== undefined) h[HEADER_START_SERIAL] = opts.startSerial;
+  if (opts.steerStamp !== undefined) h[HEADER_STEER_CODEC_MESSAGE_IDS] = opts.steerStamp;
 
   const events: TreeEvent[] = opts.events ?? (opts.message ? [{ type: 'append-message', message: opts.message }] : []);
   const inputs = events.filter((e): e is TestInput => 'kind' in e);
@@ -2844,6 +2848,63 @@ describe('Tree', () => {
 
       const repaint = outputs.find((e) => e.runId === 'R1' && e.events.length === 0);
       expect(repaint).toBeDefined();
+    });
+
+    it('surfaces the steer-codec-message-ids stamp on the output event', () => {
+      // A resuming agent reads the stamp off the output emit to tell an already
+      // answered steer from an unanswered one; the Tree parses the JSON-array
+      // header and hands the ids up on `steerCodecMessageIds`.
+      const outputs: OutputEvent<TestOutput>[] = [];
+      tree.on('output', (e) => outputs.push(e));
+
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm1',
+        message: { id: 'm1', content: 'x' },
+        serial: 's1',
+        steerStamp: JSON.stringify(['steer-1', 'steer-2']),
+      });
+
+      const emitted = outputs.find((e) => e.runId === 'R1' && e.codecMessageId === 'm1');
+      expect(emitted?.steerCodecMessageIds).toEqual(['steer-1', 'steer-2']);
+    });
+
+    it('omits steerCodecMessageIds when the output carries no stamp', () => {
+      const outputs: OutputEvent<TestOutput>[] = [];
+      tree.on('output', (e) => outputs.push(e));
+
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'm1', content: 'x' }, serial: 's1' });
+
+      const emitted = outputs.find((e) => e.runId === 'R1' && e.codecMessageId === 'm1');
+      expect(emitted?.steerCodecMessageIds).toBeUndefined();
+    });
+
+    it('degrades a malformed steer stamp to no stamp with a warn', () => {
+      // A non-JSON or non-array stamp must never poison the fold: it degrades to
+      // "no stamp" for this message and logs a warning.
+      const warns: string[] = [];
+      const noisyTree = treeWithWindow(REORDER_WINDOW_MS, warns);
+      const outputs: OutputEvent<TestOutput>[] = [];
+      noisyTree.on('output', (e) => outputs.push(e));
+
+      apply(noisyTree, {
+        runId: 'R1',
+        codecMessageId: 'm1',
+        message: { id: 'm1', content: 'x' },
+        serial: 's1',
+        steerStamp: 'not-json',
+      });
+      apply(noisyTree, {
+        runId: 'R1',
+        codecMessageId: 'm2',
+        message: { id: 'm2', content: 'y' },
+        serial: 's2',
+        steerStamp: JSON.stringify(42),
+      });
+
+      expect(outputs.find((e) => e.codecMessageId === 'm1')?.steerCodecMessageIds).toBeUndefined();
+      expect(outputs.find((e) => e.codecMessageId === 'm2')?.steerCodecMessageIds).toBeUndefined();
+      expect(warns.filter((w) => w.includes('steer-codec-message-ids'))).toHaveLength(2);
     });
 
     it('suppresses the output emit for a known-superseded attempt', () => {

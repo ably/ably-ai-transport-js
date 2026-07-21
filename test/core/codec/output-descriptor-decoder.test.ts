@@ -43,9 +43,9 @@ describe('output descriptor decoder — delta reconstruction', () => {
       }),
     ]);
 
-    // `part` rides the start headers (re-stamped on every append), but delta.decode
-    // rebuilds from item_id/content_index only — so the rebuilt delta carries
-    // content_index but must not have a `part`.
+    // `part` is carried on the start headers (re-stamped on every append), but
+    // delta.decode rebuilds from item_id/content_index only, so the rebuilt delta
+    // carries content_index but must not have a `part`.
     const tracker = trackerWith('x', 'm1', {
       item_id: 'm1',
       content_index: '0',

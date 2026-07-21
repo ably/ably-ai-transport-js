@@ -226,7 +226,7 @@ export type OutputStreamEndPhase<U extends { type: string }, E extends U['type']
       type: E;
       /** Absent — a custom close requires a custom rebuild (see the paired variant). */
       encode?: never;
-      /** Escape-hatch override for the end-chunk rebuild (e.g. input from accumulated text). */
+      /** Escape-hatch override for the end-chunk rebuild (e.g. rebuilt from accumulated text). */
       decode?: (ctx: EndDecodeContext) => ResolveType<U, E>[];
     }
   | {

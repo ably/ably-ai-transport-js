@@ -60,7 +60,7 @@ type CodecEvent<TInput, TOutput> =
 
 Direction is derived once, from the Ably message name (`ai-input` xor `ai-output`), at decode time - a single message is one direction, never both.
 
-Codec authors rarely implement this interface by hand. The [`defineCodec`](#defining-a-codec) factory assembles a conforming codec from a reducer, declarative descriptor tables, and an optional decode-lifecycle policy; it supplies the encoder/decoder skeletons and the well-known input factories for you.
+Codec authors rarely implement this interface by hand. The [`defineCodec`](#defining-a-codec) factory assembles a conforming codec from a reducer, declarative descriptor tables, a `factories` selector, and an optional decode-lifecycle policy; it supplies the encoder/decoder skeletons and the well-known factory bodies, from which the codec's `factories` selector picks the subset it exposes.
 
 ## How the session uses the codec
 
@@ -80,7 +80,7 @@ The client session uses:
 
 ## Defining a codec
 
-Codecs are assembled by the `defineCodec` factory (`src/core/codec/define-codec.ts`) rather than hand-written encoder/decoder classes. A codec author supplies only its parts; `defineCodec` builds the codec-agnostic encoder/decoder skeletons, wires the descriptor drivers, and merges the well-known input factories:
+Codecs are assembled by the `defineCodec` factory (`src/core/codec/define-codec.ts`) rather than hand-written encoder/decoder classes. A codec author supplies only its parts; `defineCodec` builds the codec-agnostic encoder/decoder skeletons, wires the descriptor drivers, and spreads the factory subset the codec's `factories` selector returns:
 
 ```typescript
 import { defineCodec } from '@ably/ai-transport';
@@ -91,28 +91,31 @@ export const createUIMessageCodec = () =>
     reducer: { init, fold, getMessages },
     output: outputs, // (b: OutputBuilder<TOutput>) => readonly OutputDescriptor<TOutput>[]
     input: inputs, //  (b: InputBuilder<TInput>) => readonly InputDescriptor<TInput>[]
-    decodeLifecycle: createVercelDecodeLifecycle,
+    factories: (base) => base, // full codec: expose every well-known factory (a partial codec returns a subset)
+    decoderSynthesiseLifecycle: createVercelDecodeLifecycle,
   });
 ```
 
-`defineCodec` is curried on the input/output unions (`defineCodec<TInput, TOutput>()({ … })`) so `TProjection` and `TMessage` infer from `config.reducer` - a caller never spells them out. It returns a `DefinedCodec` (a conforming `Codec` whose well-known input factories are typed concretely, callable without a guard).
+`defineCodec` is curried on the input/output unions (`defineCodec<TInput, TOutput>()({ … })`) so `TProjection` and `TMessage` infer from `config.reducer` - a caller never spells them out. It returns a `DefinedCodec` (a conforming `Codec` whose exposed well-known input factories are typed concretely, callable without a guard).
 
-| Config field       | Purpose                                                                                |
-| ------------------ | -------------------------------------------------------------------------------------- |
-| `adapterTag?`      | Optional Ably-Agent identifier; only set on the codec when supplied                    |
-| `reducer`          | `{ init, fold, getMessages }` - `TProjection` / `TMessage` infer from here             |
-| `output`           | Returns the `ai-output` descriptor table from the injected `{ event, stream }` builder |
-| `input`            | Returns the `ai-input` descriptor table from the injected `{ event, batch }` builder   |
-| `decodeLifecycle?` | Factory called once per decoder instance for mid-stream-join repair; omit for none     |
+| Config field                  | Purpose                                                                                                                                                                                                           |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `adapterTag?`                 | Optional Ably-Agent identifier; only set on the codec when supplied                                                                                                                                               |
+| `reducer`                     | `{ init, fold, getMessages }` - `TProjection` / `TMessage` infer from here                                                                                                                                        |
+| `output`                      | Returns the `ai-output` descriptor table from the injected `{ event, stream, drop }` builder                                                                                                                      |
+| `input`                       | Returns the `ai-input` descriptor table from the injected `{ event, batch }` builder                                                                                                                              |
+| `factories`                   | Required. Selects, from the injected full well-known set, the factory subset this codec exposes: `createUserMessage` / `createRegenerate` are mandatory, each tool factory only when `TInput` carries the variant |
+| `decoderSynthesiseLifecycle?` | Factory called once per decoder instance for mid-stream-join repair; omit for none                                                                                                                                |
 
 ### Descriptor tables
 
 Both directions are declarative descriptor tables driven by the generic encode/decode drivers, so encode and decode cannot drift. Each builder is curried on the codec's union, so every callback receives the exact narrowed member with no casts.
 
-The **output** builder offers two constructs:
+The **output** builder offers three constructs:
 
 - `event(type, spec?)` - one discrete output event. `spec` declares optional header `fields` (defaulting to none), an optional wire `data` codec, an `ephemeral` predicate, and an `encode` escape hatch. A `-*` type literal (e.g. `data-*`) declares a wildcard family; the dispatch predicate is derived from the literal's prefix.
-- `stream(kind, spec)` - a streamed family. The first argument is the family's `kind` - the value stamped on the wire `kind` dispatch header. `spec` declares the `start` / `delta` / `end` chunk `type`s, an `idField`, a `deltaField`, header `fields`, and `onEnd` / `decodeEnd` / `decodeDiscrete` hatches. The driver routes start/delta/end to `startStream()` / `appendStream()` / `closeStream()`.
+- `stream(kind, spec)` - a streamed family. The first argument is the family's `kind` - the value stamped on the wire `kind` dispatch header. `spec` declares the `start` / `delta` / `end` chunk `type`s, a `streamId` extractor, a `deltaField`, header `fields`, and `onEnd` / `decodeDelta` / `decodeEnd` / `decodeDiscrete` hatches. The driver routes start/delta/end to `startStream()` / `appendStream()` / `closeStream()`.
+- `drop(type)` - an output `type` the codec deliberately keeps off the wire. The encoder skips it silently (publishing nothing), and any type that is neither described nor dropped throws on encode - so an unexpected provider event fails loudly rather than being dropped unnoticed. An exact `drop` beats a wildcard `event` family, and a dropped type may double as a shared stream start's decline target.
 
 The **input** builder mirrors it:
 
@@ -136,11 +139,13 @@ A field's key plays a dual role in descriptor tables: it is the wire header key 
 
 ### Well-known input factories
 
-The five well-known input factories (`createUserMessage`, `createRegenerate`, `createToolResult`, `createToolResultError`, `createToolApprovalResponse`) are provided once by the core (`src/core/codec/well-known-inputs.ts`) and merged into the codec internally by `defineCodec` (it spreads `wellKnownInputs<TInput>()`). Their bodies are fully determined by the well-known variant shapes - e.g. `createUserMessage(message)` returns `{ kind: 'user-message', message }` and `createToolResult(codecMessageId, payload)` returns `{ kind: 'tool-result', codecMessageId, payload }` - so codec authors never re-implement them.
+The five well-known input factory bodies (`createUserMessage`, `createRegenerate`, `createToolResult`, `createToolResultError`, `createToolApprovalResponse`) are provided once by the core (`src/core/codec/well-known-inputs.ts`), so codec authors never re-implement them. Their bodies are fully determined by the well-known variant shapes - e.g. `createUserMessage(message)` returns `{ kind: 'user-message', message }` and `createToolResult(codecMessageId, payload)` returns `{ kind: 'tool-result', codecMessageId, payload }`.
+
+`defineCodec` calls `wellKnownInputs<TInput>()` and hands the full set to the codec's `factories` selector as `base`; whatever that selector returns is spread onto the codec. A **full** codec exposes them all (`factories: (base) => base`); a **partial** codec whose `TInput` omits the tool variants returns just the two mandatory factories (`(base) => ({ createUserMessage: base.createUserMessage, createRegenerate: base.createRegenerate })`). The selector's return type (`DefinedCodecFactories<TInput>`) types each tool factory as present only when `TInput` carries the matching variant, so a partial codec cannot over-expose a factory its `TInput` can't represent - and, because only the selected factories are spread, a partial codec carries no tool-factory methods at runtime. This is what keeps a partial codec's `DefinedCodec` assignable to `Codec` (whose tool factories are optional).
 
 ### Decode lifecycle policy
 
-`decodeLifecycle` is a factory returning a fresh `LifecyclePolicy<TOutput>` per decoder instance, used to repair mid-stream joins (history compaction, rewind miss, partial page). `onDiscrete` (keyed on codec `kind`) and `onStreamStart` perform a side effect on the per-decoder lifecycle tracker and **return lead-in events to prepend**; the descriptor driver always runs after and its output is appended - the policy never replaces a decode. See [Lifecycle tracker](#lifecycle-tracker) below.
+`decoderSynthesiseLifecycle` is a factory returning a fresh `LifecyclePolicy<TOutput>` per decoder instance, used to repair mid-stream joins (history compaction, rewind miss, partial page). `onDiscrete` (keyed on codec `kind`) and `onStreamStart` perform a side effect on the per-decoder lifecycle tracker and **return lead-in events to prepend**; the descriptor driver always runs after and its output is appended - the policy never replaces a decode. See [Lifecycle tracker](#lifecycle-tracker) below.
 
 The [encoder core](encoder.md) handles all Ably-specific concerns: serial tracking, append queuing, [flush/recovery](encoder.md#recovery-mechanism), [header persistence](encoder.md#closing-appends-repeat-all-headers). The [decoder core](decoder.md) handles [action dispatch](decoder.md#action-dispatch), serial tracking, and [prefix-match accumulation](decoder.md#known-serial-prefix-match), invoking the descriptor-driven build/decode hooks `defineCodec` supplies.
 
@@ -177,7 +182,7 @@ interface ReducerMeta {
 
 ### Why a list, not a single message
 
-A single run can produce multiple domain messages. For example, a Vercel run produces both the user message and the streamed assistant message. `getMessages()` returns a `CodecMessage<TMessage>[]` - each message paired with the `codec-message-id` that identifies it on the wire:
+`getMessages()` returns a `CodecMessage<TMessage>[]` - a list, not a single message - because one node's projection can hold more than one domain message, each paired with the `codec-message-id` that identifies it on the wire. (The user prompt and the agent's reply are _not_ an instance of this: they live in separate nodes - an `InputNode` and a `RunNode` - each with its own projection. A list arises when a single projection accumulates several messages under distinct codec-message-ids, e.g. more than one assistant message folded into one run's projection.)
 
 ```typescript
 interface CodecMessage<TMessage> {
@@ -242,10 +247,11 @@ To support a new AI framework, assemble a codec with [`defineCodec`](#defining-a
 
 1. **Define the type parameters** - the input/output event unions (`TInput` extending `CodecInputEvent`, `TOutput` extending `CodecOutputEvent`), the per-node projection, and the domain message type
 2. **Implement the reducer** - `init()`, `fold()` (dispatching on `event.direction`), and `getMessages()`, folding events unconditionally (the transport delivers them once, in canonical order)
-3. **Declare the output table** - the `output` builder function returning `event` / `stream` descriptors built on [header-field bindings](#header-field-bindings)
+3. **Declare the output table** - the `output` builder function returning `event` / `stream` / `drop` descriptors built on [header-field bindings](#header-field-bindings)
 4. **Declare the input table** - the `input` builder function returning `event` / `batch` descriptors
-5. **Optionally supply `decodeLifecycle`** - a policy factory for mid-stream-join repair
+5. **Select the exposed factories** - the `factories` selector: return `base` unchanged for a full codec, or the mandatory `createUserMessage` / `createRegenerate` subset for a partial one
+6. **Optionally supply `decoderSynthesiseLifecycle`** - a policy factory for mid-stream-join repair
 
-The well-known input factories (`createUserMessage`, `createRegenerate`, and the optional tool-result / tool-approval factories) are merged in by `defineCodec` - you do not implement them.
+You never implement the well-known input factory bodies (`createUserMessage`, `createRegenerate`, and the tool-result / tool-approval factories) - the core provides them and `defineCodec` hands them to your `factories` selector; you only choose which subset the codec exposes.
 
 See [Vercel codec](vercel-codec.md) for the concrete Vercel implementation details. See [Encoder](encoder.md) for the encoder core the descriptor drivers delegate to. See [Decoder](decoder.md) for the decoder core. See [Wire protocol](wire-protocol.md) for the transport vs domain header discipline.

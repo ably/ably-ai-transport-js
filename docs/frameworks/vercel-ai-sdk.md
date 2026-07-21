@@ -177,4 +177,4 @@ Each output message carries an SDK-controlled `kind` codec header (the dispatch 
 
 ## Status
 
-The Vercel AI SDK is the only supported framework today. The generic session and codec interfaces (`Codec<TInput, TOutput, TProjection, TMessage>`) support custom integrations for other frameworks. See [Client and agent sessions](../concepts/sessions.md) for the architecture.
+The Vercel AI SDK is the most complete framework integration today. The generic session and codec interfaces (`Codec<TInput, TOutput, TProjection, TMessage>`) support custom integrations for other frameworks. See [Client and agent sessions](../concepts/sessions.md) for the architecture.

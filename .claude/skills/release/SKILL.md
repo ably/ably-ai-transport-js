@@ -180,7 +180,9 @@ steps from `CONTRIBUTING.md` that are out of scope for this skill:
    already confirmed in Step 1).
 2. Commit the staged changes with `/commit`.
 3. Open a PR for `release/NEW_VERSION` → `main` and get it reviewed and
-   merged.
+   merged. Write the PR body using the structure in "Release PR
+   description" below, and open it as a **draft** when it depends on
+   not-yet-merged PRs.
 4. Create a [GitHub release](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository#creating-a-release):
    - Tag: `NEW_VERSION` (no `v` prefix).
    - Title: `vNEW_VERSION`.
@@ -188,6 +190,36 @@ steps from `CONTRIBUTING.md` that are out of scope for this skill:
 5. Verify the npm publish workflow (`release.yml`) and the CDN publish workflow (`publish.cdn.yml`) both complete successfully.
 6. Update the [Ably Changelog](https://changelog.ably.com/) via
    [Headway](https://headwayapp.co/).
+
+### Release PR description
+
+The release PR body must make the changelog's coverage auditable at a
+glance: a reviewer should see every PR that was considered and why each one
+did or did not reach the `CHANGELOG.md`. Follow the structure of
+[#255](https://github.com/ably/ably-ai-transport-js/pull/255) and
+[#270](https://github.com/ably/ably-ai-transport-js/pull/270):
+
+1. A one-paragraph summary: what the bump touches (`package.json`,
+   `src/version.ts`, `CHANGELOG.md`) and the headline change.
+2. A `PRs included since OLD_VERSION` section with two labelled lists:
+   - **User-facing (in changelog)**: every PR that produced a `CHANGELOG.md`
+     bullet, one `#number` per line. Add a short parenthetical for the
+     headline and for any breaking change.
+   - **Not user-facing (not in changelog)**: every other PR in the release
+     window, each with a one-line reason (`CI`, `demo`, `test-only`,
+     `internal tooling`, `internal refactor`, ...). This is exactly the
+     changelog skill's "Skipped PRs" (its Step 7), plus any PR dropped by the
+     net-change rule; reuse that output so the two skills stay consistent.
+
+   The union of the two lists should be every PR in the release window
+   (`git log OLD_VERSION..main`, plus any not-yet-merged PR the release
+   deliberately documents ahead of merge). Nothing is silently dropped.
+
+3. When any changelog entry is for a PR that has not merged yet
+   (ahead-of-merge), or the branch was cut from an earlier `main`, add a
+   blockquote **"Rebase before cutting"** note: list the PRs to merge first,
+   and instruct a rebase of `release/NEW_VERSION` onto the updated `main` so
+   the released tree matches the changelog before the tag is cut.
 
 ## Things to watch for
 

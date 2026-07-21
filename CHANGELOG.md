@@ -2,6 +2,26 @@
 
 This contains only the most important and/or user-facing changes; for a full changelog, see the commit history.
 
+## [0.6.0](https://github.com/ably/ably-ai-transport-js/tree/0.6.0) (2026-07-21)
+
+[Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.5.0...0.6.0)
+
+This release adds **mid-run steering**: a client can steer an already-active run with a follow-up prompt via `run.steer()`, without cancelling the run or breaking the stream. The release also includes a number of other improvements; see the full details below.
+
+### Breaking Changes
+
+- The `UIMessageCodec` value export is replaced by the `createUIMessageCodec()` factory. [#267](https://github.com/ably/ably-ai-transport-js/pull/267)
+
+### New Features
+
+- **Mid-run steering.** `run.steer(input)` publishes a follow-up user message into an active run and returns `{ published, outcome }`; on the agent side, `run.hasInput()` drives the inference loop and the optional `onSteer` hook fires when a steer folds in. Adds the `SteerOutcome` and `SteerResult` types. [#260](https://github.com/ably/ably-ai-transport-js/pull/260)
+- **The Vercel wrapper forwards the AI SDK `UIMessage` generic type parameters** `<Metadata, DataParts, Tools>` through `createClientSession`, `createAgentSession`, `createChatTransport`, and the imperative React hooks. `ChatTransport` now extends the SDK's `AI.ChatTransport`. [#267](https://github.com/ably/ably-ai-transport-js/pull/267)
+
+### Bug Fixes
+
+- A failed initial attach no longer permanently breaks a session; the next `connect()` retries against a channel that may have recovered. [#252](https://github.com/ably/ably-ai-transport-js/pull/252)
+- Errors carry more accurate codes: cancellations now surface `OperationCancelled`, closed-session operations `SessionClosed`, and internal failures a new `InternalError`, rather than all being `InvalidArgument`. [#259](https://github.com/ably/ably-ai-transport-js/pull/259)
+
 ## [0.5.0](https://github.com/ably/ably-ai-transport-js/tree/0.5.0) (2026-07-09)
 
 [Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.4.0...0.5.0)

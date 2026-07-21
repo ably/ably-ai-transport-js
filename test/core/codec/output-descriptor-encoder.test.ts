@@ -129,7 +129,7 @@ describe('output descriptor encoder — derived stream id', () => {
   });
 });
 
-// Two stream groups share one start type (`part.added`), told apart by
+// Two stream groups share one start type (`part.added`), differentiated by
 // `part.type`; a third `part.type` matches neither and declines to the discrete
 // `event('part.added')` descriptor.
 type StartU =

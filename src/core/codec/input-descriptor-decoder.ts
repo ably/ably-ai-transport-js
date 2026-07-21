@@ -3,7 +3,7 @@
  * sibling of {@link import('./output-descriptor-decoder.js')}.
  *
  * Rebuilds inputs from one inbound `ai-input` message, dispatching on the codec
- * `kind` header. A single `event` rebuilds its field bag (and `data`) and wraps
+ * `kind` header. A single `event` rebuilds its fields (and `data`) and wraps
  * it into the `{ kind, codecMessageId, payload }` envelope; `wireOnly` events
  * decode to `[]`. A
  * `batch` reads the `partType` sub-discriminator, rebuilds the part via its
@@ -11,12 +11,12 @@
  * `kind` plus the codec-message-id reconstructed from the transport header.
  *
  * Returns bare `TInput[]`, never `CodecEvent[]` — direction tagging is
- * core-owned, downstream at the decode→fold seam.
+ * core-owned, downstream at the decode→fold boundary.
  */
 
 import { HEADER_CODEC_MESSAGE_ID } from '../../constants.js';
 import { stripUndefined } from '../../utils.js';
-import { PART_TYPE_HEADER, partFor, readFields } from './field-bag.js';
+import { PART_TYPE_HEADER, partFor, readFields } from './header-fields.js';
 import type {
   BatchDescriptor,
   InputDecodeContext,
@@ -54,9 +54,9 @@ export const createInputDescriptorDecoder = <U extends { kind: string }>(
 
     const codecMessageId = ctx.transportHeaders[HEADER_CODEC_MESSAGE_ID] ?? '';
     // The payload bag is stripped of undefined-valued props — the same rule
-    // every rebuild seam applies to its innermost bag (absent and undefined
+    // every rebuild boundary applies to its innermost bag (absent and undefined
     // are indistinguishable on the wire). The envelope keys are always defined.
-    // CAST: the rebuild seam — `bag` is assembled from the descriptor's declared
+    // CAST: the rebuild boundary — `bag` is assembled from the descriptor's declared
     // fields and data codec onto the payload, so the `{ kind, codecMessageId, payload }`
     // envelope conforms to the matched member by construction.
     return [{ kind: descriptor.kind, codecMessageId, payload: stripUndefined(bag) } as unknown as U];

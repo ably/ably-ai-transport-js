@@ -49,7 +49,7 @@ const abortSignalToPromise = (signal: AbortSignal | undefined): { promise: Promi
  * @param onCancelled - Optional callback invoked when the stream is cancelled, before the stream ends.
  * @param resolveWriteOptions - Optional per-output hook returning {@link WriteOptions} overrides to pass to `encoder.publishOutput`.
  * @param logger - Optional logger for diagnostic output.
- * @param beforeFirstWrite - Optional hook awaited exactly once, immediately before the FIRST output is published. Never fires for a stream that completes empty, errors, or is cancelled before producing any output — so a caller can open a resource (e.g. `run.pipe`'s implicit step) lazily, only when output actually begins.
+ * @param beforeFirstWrite - Optional hook awaited exactly once, immediately before the FIRST output event is handed to the encoder. Never fires for a stream that completes empty, errors, or is cancelled before producing any event. Note the event that triggers the hook may itself publish nothing (a codec `drop` type), so the resource the hook opens (e.g. `run.pipe`'s implicit step) can bracket zero wire writes.
  * @returns A {@link StreamResult}: `reason` is why the pipe ended, and `error` holds the caught error when `reason` is `'error'`.
  */
 export const pipeStream = async <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent>(
@@ -104,10 +104,12 @@ export const pipeStream = async <TInput extends CodecInputEvent, TOutput extends
         break;
       }
 
-      // Fire the lazy first-output hook before the first publish so a caller
-      // can open a resource (e.g. the implicit step) that must bracket the
-      // output. An empty / errored / pre-output-cancelled stream never reaches
-      // here, so the hook (and any resource it opens) never fires.
+      // Fire the lazy first-output hook before the first event reaches the
+      // encoder so a caller can open a resource (e.g. the implicit step) that
+      // must bracket the output. An empty / errored / pre-output-cancelled
+      // stream never reaches here, so the hook (and any resource it opens)
+      // never fires. The triggering event may itself be a codec `drop` type
+      // that publishes nothing — the opened resource may bracket zero writes.
       if (!firstWriteDone) {
         firstWriteDone = true;
         if (beforeFirstWrite) await beforeFirstWrite();

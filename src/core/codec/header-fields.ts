@@ -1,5 +1,5 @@
 /**
- * Shared header-field bag helpers.
+ * Shared header-field helpers.
  *
  * The wire dispatch discriminator (`kind`) plus the symmetric field↔headers
  * write and read used by the descriptor drivers. Centralised so encode and
@@ -10,10 +10,10 @@
 import type { HeaderField } from './fields.js';
 import type { OutputDescriptor, OutputEventDescriptor } from './output-descriptors.js';
 
-/** The codec header carrying the SDK-controlled dispatch kind / stream family id. */
+/** The codec header carrying the SDK-controlled dispatch kind / stream group id. */
 export const KIND_HEADER = 'kind';
 
-/** The sentinel suffix marking a descriptor literal as a wildcard family. */
+/** The sentinel suffix marking a descriptor literal as a wildcard group. */
 const WILDCARD_SUFFIX = '-*';
 
 /**
@@ -52,7 +52,7 @@ export const prop = (source: object, key: string): unknown => (source as Record<
  * seeded with the dispatch `kind`. Each field writes the value at its key on
  * `source`; an optional `keys` subset restricts which fields are written.
  * @param fields - The declared header fields.
- * @param kindValue - The dispatch kind / stream family id to seed under {@link KIND_HEADER}.
+ * @param kindValue - The dispatch kind / stream group id to seed under {@link KIND_HEADER}.
  * @param source - The object to read field values from (a chunk, or a lensed payload).
  * @param keys - Optional subset of field keys to write; omit to write all.
  * @returns The codec-headers record.
@@ -72,16 +72,16 @@ export const writeFields = (
 };
 
 /**
- * Read declared fields out of a codec-headers record into a bag keyed by field key.
+ * Read declared fields out of a codec-headers record into a record keyed by field key.
  * A field that reads `undefined` (absent, with no default) contributes no key — the
- * bag carries only the values that are actually present.
+ * result carries only the values that are actually present.
  * @param fields - The declared header fields.
  * @param headers - The inbound codec-tier headers.
- * @returns A bag of the present field values, keyed by each field's key.
+ * @returns A record of the present field values, keyed by each field's key.
  */
 /** The structural slice of a part descriptor {@link partFor} dispatches on. */
 interface PartDispatch {
-  /** The exact `partType` literal, or the `-*` wildcard literal for a family. */
+  /** The exact `partType` literal, or the `-*` wildcard literal for a group. */
   partType: string;
   /** Wildcard dispatch predicate; absent for an exact part. */
   match?: (partType: string) => boolean;
@@ -109,11 +109,12 @@ export interface OutputEventDispatch<U> {
 
 /**
  * Partition an output descriptor set's `event` descriptors into an exact-type
- * map and a wildcard list. Stream descriptors are skipped — each driver indexes
- * those by its own key (phase on encode, kind on decode). Shared by the output
- * encode and decode drivers so the exact-vs-wildcard split has one home.
+ * map and a wildcard list. Non-`event` descriptors are skipped — each driver
+ * indexes stream descriptors by its own key (phase on encode, kind on decode),
+ * and drop descriptors are the encode driver's concern alone. Shared by the
+ * output encode and decode drivers so the exact-vs-wildcard split has one home.
  * @template U - The codec's event union.
- * @param descriptors - The full descriptor set (events + streamed families).
+ * @param descriptors - The full descriptor set (events, streamed groups, and dropped types).
  * @returns The event descriptors split into {@link OutputEventDispatch}.
  */
 export const partitionOutputEvents = <U extends { type: string }>(
@@ -133,10 +134,10 @@ export const readFields = (
   fields: readonly HeaderField<unknown>[],
   headers: Record<string, string>,
 ): Record<string, unknown> => {
-  const bag: Record<string, unknown> = {};
+  const values: Record<string, unknown> = {};
   for (const field of fields) {
     const value = field.read(headers);
-    if (value !== undefined) bag[field.key] = value;
+    if (value !== undefined) values[field.key] = value;
   }
-  return bag;
+  return values;
 };

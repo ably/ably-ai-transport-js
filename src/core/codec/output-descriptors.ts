@@ -9,23 +9,24 @@
  * decoder, stream reconstruction).
  *
  * Authoring is cast-free: the {@link outputBuilder} factory hands the codec an
- * `{ event, stream }` pair curried on the codec's output union, so every `data` /
- * `encode` / `decode` callback receives the exact narrowed member. The descriptors
- * are then erased to a heterogeneous {@link OutputDescriptor} via a single
- * documented cast at each constructor boundary — never in author code.
+ * `{ event, stream, drop }` builder curried on the codec's output union, so
+ * every `data` / `encode` / `decode` callback receives the exact narrowed
+ * member. The descriptors are then erased to a heterogeneous
+ * {@link OutputDescriptor} via a single documented cast at each constructor
+ * boundary — never in author code.
  */
 
 import type * as Ably from 'ably';
 
-import { wildcardMatcher } from './field-bag.js';
 import type { DataCodec, FieldFor, HeaderField } from './fields.js';
+import { wildcardMatcher } from './header-fields.js';
 import type { MessagePayload, StreamPayload, WriteOptions } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Type helpers
 // ---------------------------------------------------------------------------
 
-/** The string-valued keys of `C` — the only keys `idField`/`deltaField` may name. */
+/** The string-valued keys of `C` — the only keys the delta phase's `field` may name. */
 export type StringKeyOf<C> = { [K in keyof C]-?: C[K] extends string ? K : never }[keyof C];
 
 /**
@@ -102,8 +103,8 @@ export interface OutputDecodeContext {
   data: unknown;
 }
 
-/** Context passed to a stream descriptor's `decodeEnd` escape hatch. */
-export interface OutputStreamEndContext {
+/** Context passed to a stream phase's `end.decode` escape hatch. */
+export interface EndDecodeContext {
   /** The stream identifier (e.g. chunk id, toolCallId). */
   streamId: string;
   /** The full accumulated stream text. */
@@ -112,6 +113,32 @@ export interface OutputStreamEndContext {
   codecHeaders: Record<string, string>;
   /** The codec headers carried on close (may differ from the start headers). */
   closingCodecHeaders: Record<string, string>;
+}
+
+/**
+ * Context passed to a stream phase's `delta.decode` rebuild.
+ *
+ * In the simple case where the delta chunk can be reconstructed by copying a
+ * subset of the re-stamped {@link OutputStreamSpec.fields}, use the {@link rebuild}
+ * helper. In the case where the re-stamped fields do not map directly to
+ * fields of the delta chunk, construct the chunk yourself using the {@link delta}
+ * and {@link codecHeaders}.
+ * @template C - The delta chunk member being rebuilt.
+ */
+export interface DeltaDecodeContext<C> {
+  /** The transport stream id (the `stream-id` header). */
+  streamId: string;
+  /** This delta's appended text fragment. */
+  delta: string;
+  /** The stream's persistent (start) codec headers, re-stamped on every append. */
+  codecHeaders: Record<string, string>;
+  /**
+   * Helper function to rebuild the delta chunk declaratively. It returns a
+   * delta chunk which is populated by copying the named header fields from the
+   * re-stamped start headers, as well as copying the {@link delta} to the
+   * delta phase's `field`.
+   */
+  rebuild: (fields: readonly FieldFor<C>[]) => C[];
 }
 
 // ---------------------------------------------------------------------------
@@ -142,9 +169,83 @@ export interface OutputEventSpec<C> {
 }
 
 /**
- * A streamed-family descriptor spec. `start`/`delta`/`end` are the domain chunk
- * `type` literals; the family id (the {@link OutputBuilder.stream} first argument)
- * is the wire `kind` header all three phases stamp.
+ * The start phase of a streamed group — the start chunk `type` literal plus an
+ * optional payload discriminator.
+ * @template U - The codec's event union.
+ * @template S - The start chunk `type` literal.
+ */
+export interface OutputStreamStartPhase<U extends { type: string }, S extends U['type']> {
+  /** The start chunk `type` literal. */
+  type: S;
+  /**
+   * Payload discriminator resolving a *shared* start event to this group. When
+   * more than one group shares a start `type` (e.g. several part kinds opened by
+   * one `content_part.added`), the encoder starts the first group whose `match`
+   * returns true. Default: always true — an unshared start. When no group's
+   * `match` matches a chunk of a shared start type, the chunk is not a stream
+   * start: the encoder falls through to the discrete `event()` descriptor for
+   * that type (`stream()` publishes nothing).
+   */
+  match?: (chunk: ResolveType<U, S>) => boolean;
+}
+
+/**
+ * The delta phase of a streamed group — the delta chunk `type` literal, the key
+ * carrying the appended fragment, and an optional rebuild hatch.
+ * @template U - The codec's event union.
+ * @template D - The delta chunk `type` literal.
+ */
+export interface OutputStreamDeltaPhase<U extends { type: string }, D extends U['type']> {
+  /** The delta chunk `type` literal. */
+  type: D;
+  /** The string-valued delta chunk key carrying the appended fragment. */
+  field: StringKeyOf<ResolveType<U, D>>;
+  /**
+   * Escape-hatch decode for the delta-chunk rebuild.
+   *
+   * Builds the delta chunk from the data received in a stream append. If you do
+   * not provide `decode`, the decoder will create a delta chunk whose only field
+   * is the delta phase's `field` (the appended text fragment).
+   */
+  decode?: (ctx: DeltaDecodeContext<ResolveType<U, D>>) => ResolveType<U, D>[];
+}
+
+/**
+ * The end phase of a streamed group — the end chunk `type` literal plus optional
+ * encode/decode hatches. The `encode` and `decode` hatches pair one-directionally:
+ * a custom `encode` (the stream-close step) requires a matching `decode` (the
+ * end-chunk rebuild), because a custom close writes a shape the default rebuild
+ * cannot read back. A `decode` on its own is legal — the default close is
+ * well-defined, so a custom rebuild needs no custom close.
+ * @template U - The codec's event union.
+ * @template E - The end chunk `type` literal.
+ */
+export type OutputStreamEndPhase<U extends { type: string }, E extends U['type']> =
+  | {
+      /** The end chunk `type` literal. */
+      type: E;
+      /** Absent — a custom close requires a custom rebuild (see the paired variant). */
+      encode?: never;
+      /** Escape-hatch override for the end-chunk rebuild (e.g. input from accumulated text). */
+      decode?: (ctx: EndDecodeContext) => ResolveType<U, E>[];
+    }
+  | {
+      /** The end chunk `type` literal. */
+      type: E;
+      /** Escape-hatch override for the stream-close step (e.g. close-or-discrete fallback). */
+      encode: (
+        chunk: ResolveType<U, E>,
+        core: EscapeHatchCore,
+        ctx: OutputEncodeHatchContext<ResolveType<U, E>>,
+      ) => Promise<void>;
+      /** Escape-hatch override for the end-chunk rebuild, required alongside a custom `encode`. */
+      decode: (ctx: EndDecodeContext) => ResolveType<U, E>[];
+    };
+
+/**
+ * A streamed-group descriptor spec. The `start`/`delta`/`end` phases carry the
+ * domain chunk `type` literals; the group id (the {@link OutputBuilder.stream}
+ * first argument) is the wire `kind` header all three phases stamp.
  * @template U - The codec's event union.
  * @template S - The start chunk `type` literal.
  * @template D - The delta chunk `type` literal.
@@ -156,33 +257,32 @@ export interface OutputStreamSpec<
   D extends U['type'],
   E extends U['type'],
 > {
-  /** The start chunk `type` literal. */
-  start: S;
-  /** The delta chunk `type` literal. */
-  delta: D;
-  /** The end chunk `type` literal. */
-  end: E;
-  /** The string-valued chunk key carrying the stream id (e.g. `id`, `toolCallId`). */
-  idField: StringKeyOf<ResolveType<U, S>> & StringKeyOf<ResolveType<U, D>> & StringKeyOf<ResolveType<U, E>>;
-  /** The string-valued delta chunk key carrying the appended fragment. */
-  deltaField: StringKeyOf<ResolveType<U, D>>;
+  /**
+   * How the transport stream id (the Ably `stream-id` header) is derived from a
+   * chunk, on encode. Derive it from whichever chunk fields uniquely identify the stream: a
+   * single key (`(c) => c.id`), a composite of several (e.g. OpenAI's `item_id`
+   * plus `content_index`), or a per-phase relocation (e.g. read a different place on
+   * the start than on the delta and end). Either way the id is an opaque
+   * uniqueness handle for the wire message and is never written into the chunks that the decoder rebuilds.
+   * The extractor may throw (e.g. an `Ably.ErrorInfo`) to reject a chunk whose id it
+   * cannot derive; the throw surfaces from the encode call.
+   */
+  streamId: (chunk: ResolveType<U, S> | ResolveType<U, D> | ResolveType<U, E>) => string;
   /**
    * Declared header fields written/read on the start and end chunks. Each
    * field's key names both the wire header and the chunk property (see
    * {@link FieldFor}); a field may bind a property carried by either phase.
    */
   fields: readonly (FieldFor<ResolveType<U, S>> | FieldFor<ResolveType<U, E>>)[];
-  /** Escape-hatch override for the stream-close step only (e.g. close-or-discrete fallback). */
-  onEnd?: (
-    chunk: ResolveType<U, E>,
-    core: EscapeHatchCore,
-    ctx: OutputEncodeHatchContext<ResolveType<U, E>>,
-  ) => Promise<void>;
-  /** Escape-hatch override for the end-chunk rebuild (e.g. input from accumulated text). */
-  decodeEnd?: (ctx: OutputStreamEndContext) => ResolveType<U, E>[];
+  /** The start phase — start chunk `type` and optional shared-start discriminator. */
+  start: OutputStreamStartPhase<U, S>;
+  /** The delta phase — delta chunk `type`, fragment key, and optional rebuild hatch. */
+  delta: OutputStreamDeltaPhase<U, D>;
+  /** The end phase — end chunk `type` and the paired close/rebuild hatches. */
+  end: OutputStreamEndPhase<U, E>;
   /**
-   * Escape-hatch decode for when the family arrives as a discrete (non-streamed)
-   * message — the wire `kind` equals the family id but the wire wasn't streamed
+   * Escape-hatch decode for when the group arrives as a discrete (non-streamed)
+   * message — the wire `kind` equals the group id but the wire wasn't streamed
    * (e.g. history compaction). Reconstructs the start/end chunk pair.
    */
   decodeDiscrete?: (ctx: OutputDecodeContext) => ResolveType<U, S | E>[];
@@ -210,34 +310,60 @@ export interface OutputEventDescriptor<U> {
   encode?: (chunk: U, core: EscapeHatchCore, ctx: OutputEncodeHatchContext<U>) => Promise<void>;
 }
 
-/** A streamed-family descriptor erased to the codec's union `U`. */
+/** A streamed-group descriptor erased to the codec's union `U`. */
 export interface OutputStreamDescriptor<U> {
   /** Discriminator — the construct this descriptor was built with. */
   construct: 'stream';
-  /** The stream family id, stamped as the wire `kind` header on every phase. */
+  /** The stream group id, stamped as the wire `kind` header on every phase. */
   kind: string;
-  /** The start chunk `type`. */
-  start: string;
-  /** The delta chunk `type`. */
-  delta: string;
-  /** The end chunk `type`. */
-  end: string;
-  /** The chunk key carrying the stream id. */
-  idField: string;
-  /** The delta chunk key carrying the appended fragment. */
-  deltaField: string;
-  /** Declared header fields. */
+  /** How the transport stream id is derived from a chunk, on encode. */
+  streamId: (chunk: U) => string;
+  /** Declared header fields (start/end). */
   fields: readonly HeaderField<unknown>[];
-  /** Escape-hatch close override, if any. */
-  onEnd?: (chunk: U, core: EscapeHatchCore, ctx: OutputEncodeHatchContext<U>) => Promise<void>;
-  /** Escape-hatch end-rebuild override, if any. */
-  decodeEnd?: (ctx: OutputStreamEndContext) => U[];
+  /** The start phase — start chunk `type` and optional shared-start discriminator. */
+  start: {
+    /** The start chunk `type`. */
+    type: string;
+    /** Payload discriminator resolving a shared start event to this group, if any. */
+    match?: (chunk: U) => boolean;
+  };
+  /** The delta phase — delta chunk `type`, fragment key, and optional rebuild hatch. */
+  delta: {
+    /** The delta chunk `type`. */
+    type: string;
+    /** The delta chunk key carrying the appended fragment. */
+    field: string;
+    /** How the delta chunk is rebuilt on decode, when the group customises it beyond a fragment-only delta. */
+    decode?: (ctx: DeltaDecodeContext<U>) => U[];
+  };
+  /** The end phase — end chunk `type` and the paired close/rebuild hatches. */
+  end: {
+    /** The end chunk `type`. */
+    type: string;
+    /** Escape-hatch close override, if any. */
+    encode?: (chunk: U, core: EscapeHatchCore, ctx: OutputEncodeHatchContext<U>) => Promise<void>;
+    /** Escape-hatch end-rebuild override, if any. */
+    decode?: (ctx: EndDecodeContext) => U[];
+  };
   /** Escape-hatch non-streamed decode, if any. */
   decodeDiscrete?: (ctx: OutputDecodeContext) => U[];
 }
 
-/** An erased output descriptor — a discrete event or a streamed family. */
-export type OutputDescriptor<U> = OutputEventDescriptor<U> | OutputStreamDescriptor<U>;
+/**
+ * An erased drop descriptor — a known output `type` the codec deliberately
+ * keeps off the wire (see {@link OutputBuilder.drop}). Carries no encode/decode:
+ * the encode driver skips these types silently instead of throwing, and a
+ * dropped type never reaches the wire so there is nothing to decode.
+ */
+export interface OutputDropDescriptor {
+  /** Discriminator — the construct this descriptor was built with. */
+  construct: 'drop';
+  /** The output event `type` dropped on encode (never published, never decoded). */
+  type: string;
+}
+
+/** An erased output descriptor — a discrete event, a streamed group, or a dropped type. */
+export type OutputDescriptor<U> = OutputEventDescriptor<U> | OutputStreamDescriptor<U> | OutputDropDescriptor;
 
 // ---------------------------------------------------------------------------
 // Builder factory
@@ -245,8 +371,9 @@ export type OutputDescriptor<U> = OutputEventDescriptor<U> | OutputStreamDescrip
 
 /**
  * The direction-scoped output builder `defineCodec` injects into the `output`
- * config function — `event` (single discrete) and `stream` (streamed family),
- * both curried on the codec's output union so author entries narrow cast-free.
+ * config function — `event` (single discrete), `stream` (streamed group), and
+ * `drop` (deliberately kept off the wire), curried on the codec's output union
+ * so author entries narrow cast-free.
  * @template U - The codec's output union.
  */
 export interface OutputBuilder<U extends { type: string }> {
@@ -263,10 +390,10 @@ export interface OutputBuilder<U extends { type: string }> {
     spec?: OutputEventSpec<ResolveType<U, T>>,
   ) => OutputDescriptor<U>;
   /**
-   * Declare a streamed output family (start / delta / end). `start`/`delta`/`end`
-   * are domain chunk `type` literals; the first argument is the family id, stamped
-   * as the wire `kind` dispatch header on every phase.
-   * @param kind - The stream family id, stamped as the wire `kind` header on every phase.
+   * Declare a streamed output group (start / delta / end). The `start`/`delta`/`end`
+   * phases carry domain chunk `type` literals; the first argument is the group id,
+   * stamped as the wire `kind` dispatch header on every phase.
+   * @param kind - The stream group id, stamped as the wire `kind` header on every phase.
    * @param spec - The narrowed stream spec.
    * @returns An erased {@link OutputDescriptor}.
    */
@@ -274,12 +401,26 @@ export interface OutputBuilder<U extends { type: string }> {
     kind: string,
     spec: OutputStreamSpec<U, S, D, E>,
   ) => OutputDescriptor<U>;
+  /**
+   * Declare an output `type` the codec deliberately keeps off the wire — the
+   * codec's wire-curation policy. A dropped event is redundant on the wire — no
+   * projection folds it and no decode policy reads it — so the encoder publishes
+   * nothing for it, silently. Each entry should carry a
+   * comment saying why the event is redundant (e.g. a lifecycle opener whose
+   * snapshot re-echoes the request envelope no consumer reads). Any output type
+   * that is neither described nor dropped still throws on encode, so a
+   * newly-appearing provider event is never dropped unnoticed.
+   * @param type - The output event `type` literal to drop on encode.
+   * @returns An erased {@link OutputDescriptor}.
+   */
+  drop: (type: U['type']) => OutputDescriptor<U>;
 }
 
 /**
- * Build the curried `{ event, stream }` output builder for a codec's output union.
- * `defineCodec` calls this once and hands the result to the `output` config
- * function; mirrors the input side's {@link import('./input-descriptors.js').inputBuilder}.
+ * Build the curried `{ event, stream, drop }` output builder for a codec's
+ * output union. `defineCodec` calls this once and hands the result to the
+ * `output` config function; mirrors the input side's
+ * {@link import('./input-descriptors.js').inputBuilder}.
  * @template U - The codec's output union.
  * @returns The direction-scoped {@link OutputBuilder}.
  */
@@ -296,7 +437,7 @@ export const outputBuilder = <U extends { type: string }>(): OutputBuilder<U> =>
       fields: spec?.fields ?? [],
       data: spec?.data,
       ephemeral: spec?.ephemeral,
-      // A `-*` literal declares a wildcard family; the dispatch predicate is
+      // A `-*` literal declares a wildcard group; the dispatch predicate is
       // derived from the literal so the two can never disagree (see wildcardMatcher).
       match: wildcardMatcher(type),
       encode: spec?.encode,
@@ -304,4 +445,7 @@ export const outputBuilder = <U extends { type: string }>(): OutputBuilder<U> =>
   stream: (kind, spec) =>
     // CAST: see `event` — the narrowed stream spec erases to `OutputDescriptor<U>`.
     ({ construct: 'stream', kind, ...spec }) as unknown as OutputDescriptor<U>,
+  // No spec to erase: a drop descriptor is just its dispatch type, so it
+  // matches OutputDropDescriptor (a member of the union) with no cast.
+  drop: (type) => ({ construct: 'drop', type }),
 });

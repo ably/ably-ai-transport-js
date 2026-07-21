@@ -2,19 +2,20 @@
  * `defineCodec` — composition packaging for a codec.
  *
  * A codec author supplies only its **parts** — a reducer, a per-direction
- * descriptor table (the `output` and `input` builder functions), an optional
- * decode lifecycle policy, and an optional agent identifier — and `defineCodec`
- * assembles a fully-formed {@link Codec}: the generic encoder/decoder skeletons
- * (built here, codec-agnostic), the reducer methods, and the well-known input
- * factories (merged internally).
+ * descriptor table (the `output` and `input` builder functions), a `factories`
+ * selector naming which well-known input factories the codec exposes, an
+ * optional decode lifecycle policy, and an optional agent identifier — and
+ * `defineCodec` assembles a fully-formed {@link Codec}: the generic
+ * encoder/decoder skeletons (built here, codec-agnostic), the reducer methods,
+ * and the factory subset the `factories` selector returns.
  *
  * Both directions are declarative descriptor tables driven by the generic
  * encode/decode drivers. `defineCodec` hands each table a direction-scoped
- * builder typed to that direction's union — `{ event, stream }` for outputs,
- * `{ event, batch }` for inputs — so each construct's spec stays type-correct
- * per direction under shared construct names, with no per-entry casts. Both
- * sides build/read wire headers through the same shared field bindings, so
- * encode and decode cannot drift.
+ * builder typed to that direction's union — `{ event, stream, drop }` for
+ * outputs, `{ event, batch }` for inputs — so each construct's spec stays
+ * type-correct per direction under shared construct names, with no per-entry
+ * casts. Both sides build/read wire headers through the same shared field
+ * bindings, so encode and decode cannot drift.
  */
 
 import * as Ably from 'ably';
@@ -25,8 +26,8 @@ import type { DecoderCore, DecoderCoreHooks } from './decoder.js';
 import { createDecoderCore } from './decoder.js';
 import type { EncoderCore, EncoderCoreOptions } from './encoder.js';
 import { createEncoderCore } from './encoder.js';
-import { KIND_HEADER, PART_TYPE_HEADER } from './field-bag.js';
 import type { HeaderField } from './fields.js';
+import { KIND_HEADER, PART_TYPE_HEADER } from './header-fields.js';
 import { createInputDescriptorDecoder, type InputDescriptorDecoder } from './input-descriptor-decoder.js';
 import { createInputDescriptorEncoder, type InputDescriptorEncoder } from './input-descriptor-encoder.js';
 import { type InputBuilder, inputBuilder, type InputDescriptor } from './input-descriptors.js';
@@ -45,10 +46,10 @@ import type {
   Encoder,
   MessagePayload,
   ReducerMeta,
-  StreamTrackerState,
+  StreamSequenceState,
   WriteOptions,
 } from './types.js';
-import { type WellKnownInputFactories, wellKnownInputs } from './well-known-inputs.js';
+import { type DefinedCodecFactories, type WellKnownInputFactories, wellKnownInputs } from './well-known-inputs.js';
 
 // Re-exported so codec descriptor tables (e.g. the Vercel `inputs.ts` / `outputs.ts`)
 // can type their builder parameter without reaching into the descriptor modules directly.
@@ -82,7 +83,7 @@ export interface LifecyclePolicy<TOutput> {
    */
   onDiscrete?: Record<string, (runId: string, ctx: LifecycleDiscreteContext) => TOutput[]>;
   /** Lead-in prepended to a stream's start events (mid-stream-join pre-roll). */
-  onStreamStart?: (runId: string, tracker: StreamTrackerState) => TOutput[];
+  onStreamStart?: (runId: string, tracker: StreamSequenceState) => TOutput[];
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +126,7 @@ export interface DefineCodecConfig<
   reducer: CodecReducer<TInput, TOutput, TProjection, TMessage>;
   /**
    * The declarative output (`ai-output`) descriptor table, returned from the
-   * injected `{ event, stream }` builder (both curried on `TOutput`).
+   * injected `{ event, stream, drop }` builder (curried on `TOutput`).
    */
   output: (b: OutputBuilder<TOutput>) => readonly OutputDescriptor<TOutput>[];
   /**
@@ -134,22 +135,36 @@ export interface DefineCodecConfig<
    */
   input: (b: InputBuilder<TInput>) => readonly InputDescriptor<TInput>[];
   /**
-   * Factory for a fresh decode lifecycle policy per decoder instance (the
-   * policy's closures capture a fresh, per-decoder lifecycle tracker). Omit
+   * Selects the well-known input factories this codec exposes. Receives the
+   * full set of factory bodies (payload-typed to `TInput`) and returns the
+   * subset the codec supports: `createUserMessage` and `createRegenerate` are
+   * mandatory, and each tool factory may be included only when `TInput` carries
+   * the matching variant — the return type {@link DefinedCodecFactories}
+   * forbids exposing a factory the codec's `TInput` cannot represent. A full
+   * codec returns the set unchanged; a text-only codec returns just the two
+   * mandatory factories.
+   */
+  factories: (base: WellKnownInputFactories<TInput>) => DefinedCodecFactories<TInput>;
+  /**
+   * Factory for a fresh decoder synthesise-lifecycle policy per decoder instance
+   * (the policy's closures capture a fresh, per-decoder lifecycle tracker). Omit
    * for a codec with no mid-stream-join repair.
    */
-  decodeLifecycle?: () => LifecyclePolicy<TOutput>;
+  decoderSynthesiseLifecycle?: () => LifecyclePolicy<TOutput>;
 }
 
 /**
  * A codec assembled by {@link defineCodec}: a conforming {@link Codec} whose
- * well-known input factories are typed concretely by {@link WellKnownInputFactories}
- * (so `createToolResult` etc. are callable without a guard). The factory methods
- * are sourced from `WellKnownInputFactories` rather than `Codec` because the
- * former types them against `UserMessageOf<TInput>` / `ToolResultPayloadOf<TInput>`
- * — equal to the codec's `TMessage` / payloads for every real codec, but not
- * provably so to the generic type system. At a concrete call site a
- * `DefinedCodec` is assignable to the corresponding `Codec`.
+ * well-known input factory properties are typed by {@link DefinedCodecFactories}
+ * — `createUserMessage`/`createRegenerate` always present, and each tool factory
+ * present only when `TInput` carries the matching variant. Their payload types
+ * come from {@link WellKnownInputFactories} (against `UserMessageOf<TInput>` /
+ * `ToolResultPayloadOf<TInput>` — equal to the codec's `TMessage` / payloads for
+ * every real codec, but not provably so to the generic type system). At a
+ * concrete call site a `DefinedCodec` is assignable to the corresponding
+ * `Codec` — including for a partial codec, because a tool factory `TInput`
+ * cannot represent is typed absent, so a text-only codec satisfies `Codec`'s
+ * optional tool factories rather than over-promising them.
  */
 export type DefinedCodec<
   TInput extends CodecInputEvent,
@@ -157,7 +172,7 @@ export type DefinedCodec<
   TProjection,
   TMessage,
 > = Omit<Codec<TInput, TOutput, TProjection, TMessage>, keyof WellKnownInputFactories<TInput>> &
-  WellKnownInputFactories<TInput>;
+  DefinedCodecFactories<TInput>;
 
 // ---------------------------------------------------------------------------
 // Generic encoder
@@ -242,7 +257,7 @@ const decodeDiscretePayload = <TInput extends { kind: string }, TOutput>(
 // foreign or crafted ai-input stream) must not rebuild through the output
 // stream path — its events would be mislabelled as inputs by the
 // direction-routing decode. Enforces the invariant the decode cast relies on.
-const isOutputStream = (tracker: StreamTrackerState): boolean => tracker.name === EVENT_AI_OUTPUT;
+const isOutputStream = (tracker: StreamSequenceState): boolean => tracker.name === EVENT_AI_OUTPUT;
 
 const buildHooks = <TInput extends { kind: string }, TOutput extends { type: string }>(
   outputDecoder: ReturnType<typeof createOutputDescriptorDecoder<TOutput>>,
@@ -333,10 +348,14 @@ const rejectReservedFieldKeys = (fields: readonly HeaderField<unknown>[], owner:
  * `defineCodec` call. Catches author mistakes the drivers would otherwise
  * surface as silent last-wins routing or encode/decode asymmetry:
  *
- * - duplicate dispatch literals within a namespace — the domain chunk `type`
- *   namespace (discrete event types + stream phase types, which drive encode
- *   dispatch) and the wire `kind` namespace (discrete event types + stream
- *   family kinds, which drive decode dispatch);
+ * - duplicate wire `kind`s (discrete event types + stream group kinds, which
+ *   drive decode dispatch);
+ * - duplicate encode-dispatch chunk types — a stream delta/end phase, a discrete
+ *   event, or a dropped type must each be described by exactly one descriptor. A
+ *   stream `start` chunk type is exempt: it may be shared across groups
+ *   (resolved by `start.match`) and may double as a discrete event/drop (its
+ *   decline target); its only forbidden overlap is being another group's
+ *   delta/end phase;
  * - duplicate input `kind`s and duplicate `partType`s within a batch;
  * - field bindings on the driver-reserved `kind` / `partType` header keys.
  * @param outputs - The assembled output descriptor table.
@@ -346,21 +365,66 @@ const validateTables = <TInput, TOutput>(
   outputs: readonly OutputDescriptor<TOutput>[],
   inputs: readonly InputDescriptor<TInput>[],
 ): void => {
-  const chunkTypes = new Map<string, string>();
   const wireKinds = new Map<string, string>();
+  // Encode dispatch. A chunk `type` is described by exactly one descriptor, with
+  // one deliberate exception: a stream `start` chunk type may be **shared**
+  // across groups (the encoder resolves it at encode time by each group's
+  // `start.match`) and may also back a discrete `event`/`drop` — a start whose
+  // discriminators all decline falls through to discrete dispatch. So starts
+  // are collected apart from the singly-described chunk types — a stream delta/end
+  // phase, a discrete event, a dropped type — which must each be described by
+  // exactly one descriptor. The one overlap a start must NOT have (being
+  // another group's delta/end, which the start-first dispatch would shadow)
+  // is checked after the loop.
+  const soleChunkTypes = new Map<string, { owner: string; isDeltaOrEnd: boolean }>();
+  const startChunkTypes = new Map<string, string>();
+  const reserveSoleChunkType = (literal: string, owner: string, { isDeltaOrEnd }: { isDeltaOrEnd: boolean }): void => {
+    const holder = soleChunkTypes.get(literal);
+    if (holder !== undefined) {
+      throw new Ably.ErrorInfo(
+        `unable to define codec; dispatch literal '${literal}' is declared by both ${holder.owner} and ${owner}`,
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+    soleChunkTypes.set(literal, { owner, isDeltaOrEnd });
+  };
+
   for (const descriptor of outputs) {
     if (descriptor.construct === 'event') {
       const owner = `output event '${descriptor.type}'`;
-      reserve(chunkTypes, descriptor.type, owner);
+      reserveSoleChunkType(descriptor.type, owner, { isDeltaOrEnd: false });
       reserve(wireKinds, descriptor.type, owner);
       rejectReservedFieldKeys(descriptor.fields, owner);
-    } else {
+    } else if (descriptor.construct === 'stream') {
       const owner = `output stream '${descriptor.kind}'`;
       reserve(wireKinds, descriptor.kind, owner);
-      for (const phase of [descriptor.start, descriptor.delta, descriptor.end]) {
-        reserve(chunkTypes, phase, owner);
-      }
+
+      // A start is not reserved for exclusive ownership (shared / decline-target
+      // overlaps are legal); its one illegal overlap is checked below.
+      startChunkTypes.set(descriptor.start.type, owner);
+
+      reserveSoleChunkType(descriptor.delta.type, owner, { isDeltaOrEnd: true });
+      reserveSoleChunkType(descriptor.end.type, owner, { isDeltaOrEnd: true });
       rejectReservedFieldKeys(descriptor.fields, owner);
+    } else {
+      // A dropped type produces no wire output; reserving it as singly-described
+      // catches an author both handling and dropping the same type.
+      reserveSoleChunkType(descriptor.type, `dropped output '${descriptor.type}'`, { isDeltaOrEnd: false });
+    }
+  }
+
+  // A stream start that is also some group's delta/end phase would never route
+  // to that delta/end (the encoder tries the start path first), so forbid it.
+  // Overlap with a discrete event/drop (a decline target) is legal and skipped.
+  for (const [start, startOwner] of startChunkTypes) {
+    const holder = soleChunkTypes.get(start);
+    if (holder?.isDeltaOrEnd === true) {
+      throw new Ably.ErrorInfo(
+        `unable to define codec; stream start '${start}' (${startOwner}) collides with the delta/end phase of ${holder.owner}`,
+        ErrorCode.InvalidArgument,
+        400,
+      );
     }
   }
 
@@ -399,7 +463,7 @@ export const defineCodec =
   <TProjection, TMessage>(
     config: DefineCodecConfig<TInput, TOutput, TProjection, TMessage>,
   ): DefinedCodec<TInput, TOutput, TProjection, TMessage> => {
-    const { reducer, decodeLifecycle } = config;
+    const { reducer, decoderSynthesiseLifecycle } = config;
     // Build the direction-scoped builders, hand them to the codec's table
     // functions, and collect the descriptor arrays the drivers consume.
     const outputs = config.output(outputBuilder<TOutput>());
@@ -425,8 +489,12 @@ export const defineCodec =
           // decoder instance gets independent per-run phase state. No options
           // thread through: Codec.createDecoder takes none, so accepting any
           // here would be unreachable surface.
-          createDecoderCore(buildHooks(outputDecoder, inputDecoder, decodeLifecycle?.()), {}),
+          createDecoderCore(buildHooks(outputDecoder, inputDecoder, decoderSynthesiseLifecycle?.()), {}),
         ),
-      ...wellKnownInputs<TInput>(),
+      // The codec's factories selector picks, from the full well-known set, the
+      // subset its TInput supports; spreading its result means a partial codec
+      // carries only the factories it exposes — so there is no cast here and no
+      // runtime factory the typed surface denies.
+      ...config.factories(wellKnownInputs<TInput>()),
     };
   };

@@ -15,7 +15,7 @@ export type {
   ReducerMeta,
   Regenerate,
   StreamPayload,
-  StreamTrackerState,
+  StreamSequenceState,
   ToolApprovalResponse,
   ToolResult,
   ToolResultError,
@@ -39,18 +39,21 @@ export { createLifecycleTracker } from './lifecycle-tracker.js';
 export type { DataCodec, FieldFor, HeaderField } from './fields.js';
 export { boolField, enumField, jsonField, strField } from './fields.js';
 
-// Well-known input factories (merged into every codec by defineCodec)
-export type { WellKnownInputFactories } from './well-known-inputs.js';
+// Well-known input factories: the full set a codec's `factories` selector picks
+// from (WellKnownInputFactories), and the exposed-subset type it returns
+// (DefinedCodecFactories).
+export type { DefinedCodecFactories, WellKnownInputFactories } from './well-known-inputs.js';
 
 // Output descriptor authoring surface
 export type {
+  DeltaDecodeContext,
+  EndDecodeContext,
   EscapeHatchCore,
   HeaderBuilder,
   OutputDecodeContext,
   OutputDescriptor,
   OutputEncodeHatchContext,
   OutputEventSpec,
-  OutputStreamEndContext,
   OutputStreamSpec,
 } from './output-descriptors.js';
 

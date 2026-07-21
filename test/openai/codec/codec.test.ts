@@ -1,0 +1,885 @@
+/**
+ * OpenAI codec offline roundtrip: encode -> wire -> decode -> fold.
+ *
+ * Unit tier (mocks only). The {@link createBridge} mock `ChannelWriter` records
+ * the encoder's publish/append operations and replays the `InboundMessage`
+ * sequence a subscriber would see, fed back through the real decoder + reducer.
+ * This exercises the encode and decode paths together without a network; the
+ * real-Ably proof lives in `codec.integration.test.ts`.
+ */
+
+import type * as Ably from 'ably';
+import type { Responses } from 'openai/resources/responses/responses';
+import { describe, expect, it } from 'vitest';
+
+import {
+  EVENT_AI_INPUT,
+  HEADER_CODEC_MESSAGE_ID,
+  HEADER_ROLE,
+  HEADER_STATUS,
+  HEADER_STREAM,
+  HEADER_STREAM_ID,
+} from '../../../src/constants.js';
+import { toCodecEvents } from '../../../src/core/codec/codec-event.js';
+import { ErrorCode } from '../../../src/errors.js';
+import type { OpenAIOutput } from '../../../src/openai/codec/index.js';
+import { ResponsesCodec } from '../../../src/openai/codec/index.js';
+import { init, type OpenAIProjection } from '../../../src/openai/codec/reducer.js';
+import { toResponsesInput } from '../../../src/openai/to-responses-input.js';
+import { getCodecHeaders, getTransportHeaders } from '../../../src/utils.js';
+import {
+  completed,
+  computerCallOutputItem,
+  contentPartAdded,
+  contentPartDone,
+  createBridge,
+  created,
+  failed,
+  firstInputText,
+  functionCallArgsRun,
+  functionCallItem,
+  functionCallOutputEvent,
+  incomplete,
+  inProgress,
+  itemAdded,
+  itemDone,
+  messageItem,
+  metaOf,
+  queued,
+  reasoningItem,
+  reasoningSummaryPartDone,
+  reasoningSummaryRun,
+  reasoningTextDelta,
+  reasoningTextDone,
+  reasoningTextPartAdded,
+  refusalDelta,
+  refusalDone,
+  refusalPartAdded,
+  stampHeaders,
+  streamError,
+  textDelta,
+  textDone,
+  textRun,
+  userTurn,
+} from './fixtures.js';
+
+const transportOf = (m: Ably.InboundMessage): Record<string, string> => getTransportHeaders(m);
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
+
+// The raw wire `data` the encoder published for the first message of `kind` —
+// what a subscriber sees BEFORE any decode.
+const wireData = (inbound: Ably.InboundMessage[], kind: string): unknown =>
+  inbound.find((m) => getCodecHeaders(m).kind === kind)?.data;
+
+// The item the encoder put on the wire for the discrete output_item.done event,
+// read out of its `{ item }` data envelope (see the envelope note in
+// descriptors.ts; the framing itself is asserted separately below). Asserting on
+// it proves the encoder itself reduced the item to its wire form, independently
+// of the decoder: the decoder just reads the same `item` field back, and a
+// decoded-and-folded assertion can't distinguish the wire form from the full
+// item (both fold to the same projection), so only the raw payload is the
+// decode-independent check.
+const wireDoneItem = (inbound: Ably.InboundMessage[]): unknown => {
+  const data = wireData(inbound, 'response.output_item.done');
+  return isRecord(data) ? data.item : undefined;
+};
+
+// Encode events through the bridge and return the decoded inbound + outputs.
+// Events are fed to the encoder as-is — exactly what an agent's run.pipe does —
+// and the codec's descriptor table curates the wire (its drop entries encode
+// the framing events to nothing).
+const roundtrip = async (
+  events: OpenAIOutput[],
+): Promise<{ inbound: Ably.InboundMessage[]; outputs: OpenAIOutput[] }> => {
+  const { writer, inbound } = createBridge();
+  const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+  for (const event of events) await encoder.publishOutput(event);
+  await encoder.close();
+  const messages = inbound();
+  const decoder = ResponsesCodec.createDecoder();
+  const outputs = messages.flatMap((msg) => decoder.decode(msg).outputs);
+  return { inbound: messages, outputs };
+};
+
+describe('OpenAI codec roundtrip (offline)', () => {
+  it('streams text as a streamed message with string appends', async () => {
+    const { inbound } = await roundtrip(textRun('msg_1', 'Hello, world!'));
+    const streamCreate = inbound.find((m) => m.action === 'message.create' && transportOf(m)[HEADER_STREAM] === 'true');
+    expect(streamCreate).toBeDefined();
+    expect(streamCreate && transportOf(streamCreate)[HEADER_STATUS]).toBe('streaming');
+    // The output_text stream id composes item_id + content_index.
+    expect(streamCreate && transportOf(streamCreate)[HEADER_STREAM_ID]).toBe('msg_1:0');
+
+    const appends = inbound.filter((m) => m.action === 'message.append' && m.serial === streamCreate?.serial);
+    expect(appends.length).toBeGreaterThanOrEqual(2);
+    expect(appends.every((m) => typeof m.data === 'string')).toBe(true);
+    expect(appends.some((m) => transportOf(m)[HEADER_STATUS] === 'complete')).toBe(true);
+  });
+
+  it('publishes lifecycle/structural events as discrete messages (no status)', async () => {
+    const { inbound } = await roundtrip(textRun('msg_1', 'Hi'));
+    const discrete = inbound.filter((m) => transportOf(m)[HEADER_STREAM] === 'false');
+    expect(discrete.length).toBeGreaterThanOrEqual(1);
+    expect(discrete.every((m) => transportOf(m)[HEADER_STATUS] === undefined)).toBe(true);
+  });
+
+  it('decodes + folds the wire back into the assistant text turn', async () => {
+    const { inbound } = await roundtrip(textRun('msg_1', 'Hello, world!'));
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+    for (const msg of inbound) {
+      for (const event of toCodecEvents(decoder.decode(msg))) {
+        projection = ResponsesCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
+      }
+    }
+    const turn = ResponsesCodec.getMessages(projection)[0]?.message;
+    expect(turn?.role).toBe('assistant');
+    const message = turn?.items.find((i): i is Responses.ResponseOutputMessage => i.type === 'message');
+    const part = message?.content.find((p) => p.type === 'output_text');
+    expect(part?.type === 'output_text' ? part.text : '').toBe('Hello, world!');
+  });
+
+  it('streams a reasoning summary under a composite stream id and folds it back', async () => {
+    const { inbound } = await roundtrip(reasoningSummaryRun('rs_1', 'Thinking…'));
+
+    // Composite, summary-namespaced stream id (item_id + summary dimension +
+    // summary_index) so it can't clash with a reasoning_text content slot.
+    const streamCreate = inbound.find((m) => m.action === 'message.create' && transportOf(m)[HEADER_STREAM] === 'true');
+    expect(streamCreate && transportOf(streamCreate)[HEADER_STREAM_ID]).toBe('rs_1:summary:0');
+
+    // Decode + fold: the summary text lands in the reasoning item's summary[0].
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+    for (const msg of inbound) {
+      for (const event of toCodecEvents(decoder.decode(msg))) {
+        projection = ResponsesCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
+      }
+    }
+    const item = ResponsesCodec.getMessages(projection)[0]?.message.items.find(
+      (i): i is Responses.ResponseReasoningItem => i.type === 'reasoning',
+    );
+    expect(item?.summary).toEqual([{ type: 'summary_text', text: 'Thinking…' }]);
+  });
+
+  it('routes output_text and refusal on the shared content_part.added start, keyed by content_index', async () => {
+    const { inbound } = await roundtrip([
+      created(),
+      itemAdded(messageItem('msg_1')),
+      contentPartAdded('msg_1', 0), // opens output_text at content[0]
+      refusalPartAdded('msg_1', 1), // opens refusal at content[1]
+      textDelta('msg_1', 'hello', 0),
+      refusalDelta('msg_1', 'no', 1),
+      textDone('msg_1', 'hello', 0),
+      refusalDone('msg_1', 'no', 1),
+      completed(),
+    ]);
+
+    // Two distinct streams opened from one shared start type, under composite ids.
+    const streamIds = inbound
+      .filter((m) => m.action === 'message.create' && transportOf(m)[HEADER_STREAM] === 'true')
+      .map((m) => transportOf(m)[HEADER_STREAM_ID]);
+    expect(streamIds).toEqual(['msg_1:0', 'msg_1:1']);
+
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+    for (const msg of inbound) {
+      for (const event of toCodecEvents(decoder.decode(msg))) {
+        projection = ResponsesCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
+      }
+    }
+    const message = ResponsesCodec.getMessages(projection)[0]?.message.items.find(
+      (i): i is Responses.ResponseOutputMessage => i.type === 'message',
+    );
+    expect(message?.content).toEqual([
+      { type: 'output_text', text: 'hello', annotations: [] },
+      { type: 'refusal', refusal: 'no' },
+    ]);
+  });
+
+  it("folds output_item.done's message logprobs into the projected output_text part", async () => {
+    // The rich, finalised-part logprobs shape (with `bytes`) — the shape
+    // `ResponseOutputText.logprobs` wants — carried on output_item.done's item,
+    // where it survives the reduction to wire form with its real SDK type (so the
+    // fold is cast-free). See toWireItem / the reducer's output_item.done handler.
+    const logprobs: Responses.ResponseOutputText['logprobs'] = [
+      { token: 'Hi', logprob: -0.1, bytes: [72, 105], top_logprobs: [] },
+    ];
+    const finalPart: Responses.ResponseOutputText = { type: 'output_text', text: 'Hi', annotations: [], logprobs };
+    const { inbound } = await roundtrip([
+      itemAdded(messageItem('msg_1')),
+      contentPartAdded('msg_1'),
+      textDelta('msg_1', 'Hi'),
+      textDone('msg_1', 'Hi'),
+      itemDone(messageItem('msg_1', [finalPart])),
+      completed(),
+    ]);
+
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+    for (const msg of inbound) {
+      for (const event of toCodecEvents(decoder.decode(msg))) {
+        projection = ResponsesCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
+      }
+    }
+    const message = ResponsesCodec.getMessages(projection)[0]?.message.items.find(
+      (i): i is Responses.ResponseOutputMessage => i.type === 'message',
+    );
+    const part = message?.content.find((p) => p.type === 'output_text');
+    expect(part?.type === 'output_text' ? part.logprobs : undefined).toEqual(logprobs);
+  });
+
+  it('folds logprobs onto the right content slot in a multi-part (refusal + output_text) message', async () => {
+    // The wire form carries the message's parts index-aligned, so a logprobs-bearing
+    // output_text at content[1] must fold onto content[1] — not shift onto the
+    // refusal at content[0], which stays logprobs-free.
+    const logprobs: Responses.ResponseOutputText['logprobs'] = [
+      { token: 'Hi', logprob: -0.1, bytes: [72, 105], top_logprobs: [] },
+    ];
+    const finalMessage = messageItem('msg_1', [
+      { type: 'refusal', refusal: 'no' },
+      { type: 'output_text', text: 'Hi', annotations: [], logprobs },
+    ]);
+    const { inbound } = await roundtrip([
+      itemAdded(messageItem('msg_1')),
+      refusalPartAdded('msg_1', 0),
+      refusalDelta('msg_1', 'no', 0),
+      refusalDone('msg_1', 'no', 0),
+      contentPartAdded('msg_1', 1),
+      textDelta('msg_1', 'Hi', 1),
+      textDone('msg_1', 'Hi', 1),
+      itemDone(finalMessage),
+      completed(),
+    ]);
+
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+    for (const msg of inbound) {
+      for (const event of toCodecEvents(decoder.decode(msg))) {
+        projection = ResponsesCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
+      }
+    }
+    const message = ResponsesCodec.getMessages(projection)[0]?.message.items.find(
+      (i): i is Responses.ResponseOutputMessage => i.type === 'message',
+    );
+    expect(message?.content[0]).toEqual({ type: 'refusal', refusal: 'no' });
+    const textPart = message?.content[1];
+    expect(textPart?.type === 'output_text' ? textPart.logprobs : undefined).toEqual(logprobs);
+  });
+
+  it('decodes output_item.done for a message as a lean item (no content) when logprobs were not requested', async () => {
+    // Wire economy: a reply without logprobs reduces output_item.done to
+    // { id, type, status } — no `content` array — so the projected output_text
+    // part carries no logprobs.
+    const doneItem = messageItem('msg_1', [{ type: 'output_text', text: 'Hi', annotations: [] }]);
+
+    // Precondition: the item carries the content the wire strips, so the lean-item
+    // assertion below can't pass merely because the fixture was already lean.
+    expect(doneItem.content.length).toBeGreaterThan(0);
+
+    const { outputs } = await roundtrip([
+      itemAdded(messageItem('msg_1')),
+      contentPartAdded('msg_1'),
+      textDelta('msg_1', 'Hi'),
+      textDone('msg_1', 'Hi'),
+      itemDone(doneItem),
+      completed(),
+    ]);
+    const done = outputs.find(
+      (o): o is Extract<OpenAIOutput, { type: 'response.output_item.done' }> => o.type === 'response.output_item.done',
+    );
+    expect(done?.item).toEqual({ type: 'message', id: 'msg_1', status: 'in_progress' });
+  });
+
+  it('streams function-call arguments under the item id and folds them back', async () => {
+    const { inbound } = await roundtrip([
+      created(),
+      ...functionCallArgsRun('fc_1', 'call_1', 'getWeather', '{"location":"London"}'),
+      completed(),
+    ]);
+
+    // The stream id is the item id: item.id on the start, item_id on the deltas.
+    const streamCreate = inbound.find((m) => m.action === 'message.create' && transportOf(m)[HEADER_STREAM] === 'true');
+    expect(streamCreate && transportOf(streamCreate)[HEADER_STREAM_ID]).toBe('fc_1');
+
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+    for (const msg of inbound) {
+      for (const event of toCodecEvents(decoder.decode(msg))) {
+        projection = ResponsesCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
+      }
+    }
+    const item = ResponsesCodec.getMessages(projection)[0]?.message.items.find(
+      (i): i is Responses.ResponseFunctionToolCall => i.type === 'function_call',
+    );
+    expect(item?.arguments).toBe('{"location":"London"}');
+    // The envelope (call_id / name) survived via the item carried on the stream
+    // start (fItem), not the wire-form output_item.done.
+    expect(item?.call_id).toBe('call_1');
+    expect(item?.name).toBe('getWeather');
+  });
+
+  it('declines to stream a non-function-call output_item.added (discrete envelope)', async () => {
+    const { inbound } = await roundtrip([created(), itemAdded(messageItem('msg_1')), completed()]);
+
+    // A message item is not a function_call, so its output_item.added is a plain
+    // discrete envelope, not a stream start.
+    expect(inbound.filter((m) => transportOf(m)[HEADER_STREAM] === 'true')).toHaveLength(0);
+    const discreteKinds = inbound
+      .filter((m) => transportOf(m)[HEADER_STREAM] === 'false')
+      .map((m) => getCodecHeaders(m).kind);
+    expect(discreteKinds).toContain('response.output_item.added');
+  });
+
+  it('streams reasoning text on a reasoning item under a composite id and folds it', async () => {
+    const { inbound } = await roundtrip([
+      created(),
+      itemAdded(reasoningItem('rs_1')),
+      reasoningTextPartAdded('rs_1', 0),
+      reasoningTextDelta('rs_1', 'be', 0),
+      reasoningTextDelta('rs_1', 'cause', 0),
+      reasoningTextDone('rs_1', 'because', 0),
+      completed(),
+    ]);
+
+    const streamCreate = inbound.find((m) => m.action === 'message.create' && transportOf(m)[HEADER_STREAM] === 'true');
+    expect(streamCreate && transportOf(streamCreate)[HEADER_STREAM_ID]).toBe('rs_1:0');
+
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+    for (const msg of inbound) {
+      for (const event of toCodecEvents(decoder.decode(msg))) {
+        projection = ResponsesCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
+      }
+    }
+    const item = ResponsesCodec.getMessages(projection)[0]?.message.items.find(
+      (i): i is Responses.ResponseReasoningItem => i.type === 'reasoning',
+    );
+    expect(item?.content).toEqual([{ type: 'reasoning_text', text: 'because' }]);
+  });
+
+  it('preserves a reasoning item encrypted_content across the wire (store:false round-trip)', async () => {
+    // encrypted_content is done-only and never streamed; seed the opening bracket via
+    // `added` WITHOUT it so this proves the wire-form output_item.done carries it, and
+    // that it survives the flatten back into the /responses input array.
+    const { inbound } = await roundtrip([
+      created(),
+      itemAdded(reasoningItem('rs_1')),
+      itemDone(reasoningItem('rs_1', [], 'ENCRYPTED-BLOB')),
+      completed(),
+    ]);
+
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+    for (const msg of inbound) {
+      for (const event of toCodecEvents(decoder.decode(msg))) {
+        projection = ResponsesCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
+      }
+    }
+    const messages = ResponsesCodec.getMessages(projection).map((m) => m.message);
+    const reasoning = messages[0]?.items.find((i): i is Responses.ResponseReasoningItem => i.type === 'reasoning');
+    expect(reasoning?.encrypted_content).toBe('ENCRYPTED-BLOB');
+
+    const inputReasoning = toResponsesInput(messages).find(
+      (i): i is Responses.ResponseReasoningItem => i.type === 'reasoning',
+    );
+    expect(inputReasoning?.encrypted_content).toBe('ENCRYPTED-BLOB');
+  });
+
+  it('rejects a function-call output_item.added that carries no item id', async () => {
+    const { writer } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    // The item id is the stream's slot key; a streamed function_call without one
+    // is malformed wire data and is rejected at the encode boundary.
+    await expect(
+      encoder.publishOutput(itemAdded({ type: 'function_call', call_id: 'c1', name: 'getWeather', arguments: '' })),
+    ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+  });
+
+  it('roundtrips the transmitted discrete events and drops the framing events at encode', async () => {
+    const item = messageItem('msg_1', [{ type: 'output_text', text: 'done', annotations: [] }]);
+    const { inbound, outputs } = await roundtrip([
+      created(),
+      inProgress(),
+      queued(),
+      itemAdded(item),
+      itemDone(item),
+      contentPartDone('msg_1'),
+      reasoningSummaryPartDone('rs_1'),
+      incomplete(),
+      failed('nope'),
+      streamError('boom'),
+      completed(),
+    ]);
+
+    // The transmitted discrete events round-trip through encode + decode; the
+    // framing events fed in are dropped by the codec's descriptor table at
+    // encode, so no wire message carries them.
+    const types = outputs.map((e) => e.type);
+    for (const expected of ['response.output_item.added', 'response.output_item.done']) {
+      expect(types).toContain(expected);
+    }
+    const wireKinds = inbound.map((m) => getCodecHeaders(m).kind ?? '');
+    for (const dropped of [
+      'response.created',
+      'response.in_progress',
+      'response.queued',
+      'error',
+      'response.content_part.done',
+      'response.reasoning_summary_part.done',
+      // The terminal events carry no state a wire consumer reads (run outcome is
+      // observed out-of-band via the transport run-end event), so they are
+      // dropped at encode alongside the openers — never on the wire, never decoded.
+      'response.completed',
+      'response.incomplete',
+      'response.failed',
+    ]) {
+      expect(wireKinds).not.toContain(dropped);
+    }
+    for (const terminal of ['response.completed', 'response.incomplete', 'response.failed']) {
+      expect(types).not.toContain(terminal);
+    }
+
+    // The kept item envelope survives with its id.
+    const added = outputs.find((e) => e.type === 'response.output_item.added');
+    expect(added?.type === 'response.output_item.added' ? added.item.id : '').toBe('msg_1');
+  });
+
+  it('throws on an unmodelled output event (safety net)', async () => {
+    const { writer } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    // A hosted-tool event (web search) the codec doesn't model: it must surface
+    // loudly rather than being dropped, since it signals an opt-in feature we
+    // don't support yet.
+    await expect(
+      encoder.publishOutput({
+        type: 'response.web_search_call.searching',
+        item_id: 'ws_1',
+        output_index: 0,
+        sequence_number: 0,
+      }),
+    ).rejects.toThrow(/unsupported event type 'response\.web_search_call\.searching'/);
+
+    // output_text annotations are citations produced by the retrieval tools, so
+    // they only appear alongside those opt-in tools and throw the same way.
+    await expect(
+      encoder.publishOutput({
+        type: 'response.output_text.annotation.added',
+        item_id: 'msg_1',
+        output_index: 0,
+        content_index: 0,
+        annotation_index: 0,
+        annotation: {},
+        sequence_number: 0,
+      }),
+    ).rejects.toThrow(/unsupported event type 'response\.output_text\.annotation\.added'/);
+  });
+
+  it('throws on an unmodelled output item type at encode (added and done)', async () => {
+    const { writer } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    // A computer_call_output is a ResponseOutputItem member the codec does not
+    // model (and not a valid ResponseInputItem). The item envelope is carried on
+    // output_item.added / .done, whose encode asserts the item is modelled, so an
+    // undescribed item type fails loudly at the agent before it reaches the wire.
+    await expect(encoder.publishOutput(itemAdded(computerCallOutputItem()))).rejects.toThrow(
+      /unsupported output item type 'computer_call_output'/,
+    );
+    await expect(encoder.publishOutput(itemDone(computerCallOutputItem()))).rejects.toBeErrorInfo({
+      code: ErrorCode.InvalidArgument,
+      message: "unable to publish; unsupported output item type 'computer_call_output'",
+    });
+  });
+
+  it('drops the framing events silently at encode (no publish, no throw)', async () => {
+    const { writer, inbound } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    // The codec's drop entries: each encodes to nothing, unlike an undescribed
+    // event (which throws — see the safety-net test above).
+    await encoder.publishOutput(created());
+    await encoder.publishOutput(inProgress());
+    await encoder.publishOutput(queued());
+    await encoder.publishOutput(streamError('boom'));
+    await encoder.publishOutput(contentPartDone('msg_1'));
+    await encoder.publishOutput(reasoningSummaryPartDone('rs_1'));
+    // The terminal events are dropped too: run outcome travels out-of-band.
+    await encoder.publishOutput(incomplete());
+    await encoder.publishOutput(failed('nope'));
+    await encoder.publishOutput(completed());
+    await encoder.close();
+    expect(inbound()).toHaveLength(0);
+  });
+
+  it('roundtrips a server-side function call and its output through the wire', async () => {
+    const call = functionCallItem('fc_1', 'call_1', 'getWeather', '{"location":"London"}', 'completed');
+    const { inbound } = await roundtrip([
+      created(),
+      itemAdded(call),
+      itemDone(call),
+      functionCallOutputEvent('call_1', '{"temperature":12}'),
+      completed(),
+    ]);
+
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+    for (const msg of inbound) {
+      for (const event of toCodecEvents(decoder.decode(msg))) {
+        projection = ResponsesCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
+      }
+    }
+    const items = ResponsesCodec.getMessages(projection)[0]?.message.items ?? [];
+    expect(items.map((i) => i.type)).toEqual(['function_call', 'function_call_output']);
+    const callItem = items.find((i): i is Responses.ResponseFunctionToolCall => i.type === 'function_call');
+    expect(callItem?.name).toBe('getWeather');
+    expect(callItem?.arguments).toBe('{"location":"London"}');
+    const output = items.find(
+      (i): i is Responses.ResponseInputItem.FunctionCallOutput => i.type === 'function_call_output',
+    );
+    expect(output?.call_id).toBe('call_1');
+    expect(output?.output).toBe('{"temperature":12}');
+  });
+
+  it('roundtrips a user message on the ai-input wire', async () => {
+    const { writer, inbound } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'u1') });
+    await encoder.publishInput(ResponsesCodec.createUserMessage(userTurn('Hi there')));
+    await encoder.close();
+
+    const messages = inbound();
+    const input = messages.find((m) => m.name === EVENT_AI_INPUT);
+    expect(input).toBeDefined();
+    expect(input && getCodecHeaders(input).kind).toBe('user-message');
+    expect(input && getCodecHeaders(input).partType).toBe('input_text');
+    expect(input && getTransportHeaders(input)[HEADER_ROLE]).toBe('user');
+    expect(input?.data).toBe('Hi there');
+
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+    for (const msg of messages) {
+      for (const event of toCodecEvents(decoder.decode(msg))) {
+        projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+      }
+    }
+    const turn = ResponsesCodec.getMessages(projection)[0]?.message;
+    expect(turn?.role).toBe('user');
+    expect(firstInputText(turn)).toBe('Hi there');
+  });
+
+  it('publishes a regenerate signal as a wire-only input that folds to nothing', async () => {
+    const { writer, inbound } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'u1') });
+    await encoder.publishInput(ResponsesCodec.createRegenerate('asst-1', 'user-1'));
+    await encoder.close();
+
+    const messages = inbound();
+    const input = messages.find((m) => m.name === EVENT_AI_INPUT);
+    expect(input).toBeDefined();
+    expect(input && getCodecHeaders(input).kind).toBe('regenerate');
+
+    // Wire-only: the decoder emits no input events, so the reducer never folds
+    // it and the projection stays empty (the signal carries no message state).
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+    let inputCount = 0;
+    for (const msg of messages) {
+      const decoded = decoder.decode(msg);
+      inputCount += decoded.inputs.length;
+      for (const event of toCodecEvents(decoded)) {
+        projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+      }
+    }
+    expect(inputCount).toBe(0);
+    expect(ResponsesCodec.getMessages(projection)).toHaveLength(0);
+  });
+
+  it('round-trips an empty prompt as a single empty text part', async () => {
+    const { writer, inbound } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'u1') });
+    // A turn whose message has no content parts exercises explode's ≥1-part guarantee.
+    await encoder.publishInput(
+      ResponsesCodec.createUserMessage({ role: 'user', items: [{ type: 'message', role: 'user', content: [] }] }),
+    );
+    await encoder.close();
+
+    const messages = inbound();
+    const input = messages.find((m) => m.name === EVENT_AI_INPUT);
+    expect(input && getCodecHeaders(input).partType).toBe('input_text');
+    expect(input?.data).toBe('');
+
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+    for (const msg of messages) {
+      for (const event of toCodecEvents(decoder.decode(msg))) {
+        projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+      }
+    }
+    expect(firstInputText(ResponsesCodec.getMessages(projection)[0]?.message)).toBe('');
+  });
+
+  it('rejects a user turn with more than one message item', async () => {
+    const { writer } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'u1') });
+    // The fan-out carries no item boundary, so more than one message item
+    // can't be represented on the wire — reject rather than silently
+    // collapsing them into one.
+    await expect(
+      encoder.publishInput(
+        ResponsesCodec.createUserMessage({
+          role: 'user',
+          items: [
+            { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'one' }] },
+            { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'two' }] },
+          ],
+        }),
+      ),
+    ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+  });
+
+  it('rejects a user turn whose sole item is not a message', async () => {
+    const { writer } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'u1') });
+    // Only a message item is a valid user turn; any other item type is a
+    // genuine caller bug on the encode side and is rejected rather than skipped.
+    await expect(
+      encoder.publishInput(
+        ResponsesCodec.createUserMessage({
+          role: 'user',
+          items: [functionCallItem('fc_1', 'call_1', 'getWeather')],
+        }),
+      ),
+    ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+  });
+
+  it('rejects a content part type that we currently do not handle', async () => {
+    const { writer } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'u1') });
+    // input_text is the only content part type this version of the codec
+    // handles; any other part type is a genuine caller bug on the encode
+    // side (e.g. an input_image sent before AIT-1120 lands) and is rejected
+    // rather than silently dropped.
+    await expect(
+      encoder.publishInput(
+        ResponsesCodec.createUserMessage({
+          role: 'user',
+          items: [
+            {
+              type: 'message',
+              role: 'user',
+              content: [{ type: 'input_image', detail: 'auto' }],
+            },
+          ],
+        }),
+      ),
+    ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+  });
+
+  it('round-trips the turn role rather than defaulting it', async () => {
+    const { writer, inbound } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'u1') });
+    // A non-'user' role would be masked by the 'user' fallback if the header
+    // were mis-keyed, so round-tripping it proves the role is actually read.
+    await encoder.publishInput(
+      ResponsesCodec.createUserMessage({
+        role: 'assistant',
+        items: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] }],
+      }),
+    );
+    await encoder.close();
+
+    const decoder = ResponsesCodec.createDecoder();
+    let projection: OpenAIProjection = init();
+    for (const msg of inbound()) {
+      for (const event of toCodecEvents(decoder.decode(msg))) {
+        projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+      }
+    }
+    expect(ResponsesCodec.getMessages(projection)[0]?.message.role).toBe('assistant');
+  });
+
+  it('defaults the role to user when the role header is absent', () => {
+    const decoder = ResponsesCodec.createDecoder();
+    // CAST: a minimal inbound ai-input part with no role transport header, to
+    // exercise assemble's `?? 'user'` fallback. Still carries a
+    // codec-message-id — the reducer needs one to have anywhere to fold this
+    // message into; that isn't what this test is exercising.
+    const msg = {
+      action: 'message.create',
+      serial: 's1',
+      version: { serial: 's1' },
+      name: EVENT_AI_INPUT,
+      data: 'hi',
+      extras: {
+        ai: { transport: { [HEADER_CODEC_MESSAGE_ID]: 'u1' }, codec: { kind: 'user-message', partType: 'input_text' } },
+      },
+    } as unknown as Ably.InboundMessage;
+
+    let projection: OpenAIProjection = init();
+    for (const event of toCodecEvents(decoder.decode(msg))) {
+      projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+    }
+    expect(ResponsesCodec.getMessages(projection)[0]?.message.role).toBe('user');
+  });
+});
+
+// The roundtrip/fold tests above prove the decoder + reducer behave correctly
+// when the excluded fields are absent. These prove the other half: the codec
+// actually removes them, so the redundant data never reaches what a subscriber
+// decodes. Most cases feed a FULL output item to output_item.done and assert the
+// item on the wire is exactly the wire form WireDoneItem declares (see
+// toWireItem / toWireContent in descriptors.ts); the first test covers
+// the `{ item }` data-envelope framing, and another asserts sequence_number is
+// dropped from every decoded event.
+//
+// Each test also asserts a precondition that the fed-in item genuinely carries
+// the fields it then proves the wire strips. A wire-form assertion can't tell "the
+// codec removed it" from "it was never there", so without the precondition a
+// fixture trimmed to the minimal SDK-required shape would make the assertion
+// pass vacuously.
+describe('OpenAI codec wire reduction', () => {
+  it("publishes each item-carrying event's item under an `{ item }` data envelope", async () => {
+    const message = messageItem('msg_1', [{ type: 'output_text', text: 'Hi', annotations: [] }]);
+    const added = itemAdded(message);
+
+    // Preconditions: the added event carries the output_index/sequence_number the
+    // wire strips, and the item carries the content output_item.done strips.
+    expect(added).toMatchObject({ output_index: 0, sequence_number: 0 });
+    expect(message.content.length).toBeGreaterThan(0);
+
+    const { inbound } = await roundtrip([added, itemDone(message), functionCallOutputEvent('call_1', '{"ok":true}')]);
+    // Two things at once, via an exact toEqual. Reduction: each event is reduced
+    // to just its item on the wire — the event's own output_index /
+    // sequence_number don't survive (this is the only assertion that the *added*
+    // event itself is reduced; the other tests reduce output_item.done's item).
+    // Framing: that item is carried under a top-level `item` key rather than as the
+    // bare payload, reserving room for a sibling wire field to join the envelope.
+    // output_item.added carries the full item; output_item.done the wire-form item;
+    // function_call_output the codec's own item.
+    expect(wireData(inbound, 'response.output_item.added')).toEqual({ item: message });
+    expect(wireData(inbound, 'response.output_item.done')).toEqual({
+      item: { type: 'message', id: 'msg_1', status: 'in_progress' },
+    });
+    expect(wireData(inbound, 'function_call_output')).toEqual({
+      item: { type: 'function_call_output', call_id: 'call_1', output: '{"ok":true}' },
+    });
+  });
+
+  it('drops sequence_number from every decoded output event', async () => {
+    // sequence_number orders events within a single raw OpenAI SSE connection;
+    // Ably serials already order our wire, so it is meaningful nowhere here. Every
+    // fixture event below carries sequence_number, yet no decoded output should:
+    // the discrete item envelopes never encode it, and the reconstructed stream
+    // closes/deltas omit it (see WithoutSequenceNumber in events.ts). This spans
+    // the discrete item events (output_item.added / .done) and three of the
+    // codec's five streamed groups (output_text, function_call_arguments,
+    // reasoning_summary_text); the other two (refusal, reasoning_text) strip it
+    // by the same reconstruction path.
+    const events = [
+      ...textRun('msg_1', 'Hello, world!'),
+      ...functionCallArgsRun('fc_1', 'call_1', 'getWeather', '{"x":1}'),
+      ...reasoningSummaryRun('rs_1', 'Thinking'),
+    ];
+
+    // Precondition: every fed-in event carries the sequence_number the wire strips.
+    expect(events.every((e) => 'sequence_number' in e)).toBe(true);
+
+    const { outputs } = await roundtrip(events);
+    expect(outputs.length).toBeGreaterThan(0);
+    for (const event of outputs) {
+      expect(event).not.toHaveProperty('sequence_number');
+    }
+  });
+
+  it('output_item.done for a message reduces to id/type/status, with no content when logprobs is an empty array', async () => {
+    const item = messageItem('msg_1', [{ type: 'output_text', text: 'Hi', annotations: [], logprobs: [] }]);
+
+    // Precondition: the part carries the text/annotations the wire strips.
+    expect(item.content[0]).toMatchObject({ text: 'Hi', annotations: [] });
+
+    const { inbound } = await roundtrip([itemDone(item)]);
+    // text / role / annotations are rebuilt by the reducer from the streams, so
+    // none are carried on the wire. An empty logprobs array is not logprobs either (the
+    // length>0 guard in toWireContent), so there is no `content` at all —
+    // the lean case a plain output_text with no logprobs field also yields (see
+    // the decoded-shape assertion of that path in the roundtrip block above).
+    expect(wireDoneItem(inbound)).toEqual({ type: 'message', id: 'msg_1', status: 'in_progress' });
+  });
+
+  it('output_item.done for a message reduces to per-part logprobs, index-aligned, dropping text/annotations/refusal string', async () => {
+    const logprobs: Responses.ResponseOutputText['logprobs'] = [
+      { token: 'Hi', logprob: -0.1, bytes: [72, 105], top_logprobs: [] },
+    ];
+    const item = messageItem('msg_1', [
+      { type: 'refusal', refusal: 'no' },
+      { type: 'output_text', text: 'Hi', annotations: [], logprobs },
+    ]);
+
+    // Preconditions: the parts carry the refusal string / text / annotations the wire strips.
+    expect(item.content[0]).toMatchObject({ refusal: 'no' });
+    expect(item.content[1]).toMatchObject({ text: 'Hi', annotations: [] });
+
+    const { inbound } = await roundtrip([itemDone(item)]);
+    // Only the logprobs residue is carried on the wire, in a placeholder array aligned
+    // with the content: the refusal reduces to just its type, the output_text to
+    // its type + logprobs. The text, annotations and refusal string are dropped.
+    expect(wireDoneItem(inbound)).toEqual({
+      type: 'message',
+      id: 'msg_1',
+      status: 'in_progress',
+      content: [{ type: 'refusal' }, { type: 'output_text', logprobs }],
+    });
+  });
+
+  it('output_item.done for a function_call reduces to id/type/status, dropping call_id/name/arguments', async () => {
+    const item = functionCallItem('fc_1', 'call_1', 'getWeather', '{"location":"London"}', 'completed');
+
+    // Precondition: the item carries the call_id/name/arguments the wire strips.
+    expect(item).toMatchObject({ call_id: 'call_1', name: 'getWeather', arguments: '{"location":"London"}' });
+
+    const { inbound } = await roundtrip([itemDone(item)]);
+    // call_id / name / arguments reach the client on the stream start + deltas,
+    // so output_item.done drops them and carries only the finalised status.
+    expect(wireDoneItem(inbound)).toEqual({ type: 'function_call', id: 'fc_1', status: 'completed' });
+  });
+
+  it('output_item.done for a reasoning item reduces to id/type/status/encrypted_content, dropping summary', async () => {
+    const reasoning: Responses.ResponseReasoningItem = {
+      id: 'rs_1',
+      type: 'reasoning',
+      status: 'completed',
+      summary: [{ type: 'summary_text', text: 'because' }],
+      encrypted_content: 'ENCRYPTED-BLOB',
+    };
+
+    // Precondition: the item carries the summary the wire strips.
+    expect(reasoning.summary.length).toBeGreaterThan(0);
+
+    const { inbound } = await roundtrip([itemDone(reasoning)]);
+    // encrypted_content is the sole output_item.done-only datum that must survive
+    // (the zero-data-retention (ZDR) cross-turn carrier of chain-of-thought); the
+    // summary is streamed, so it is rebuilt from its stream and dropped here.
+    expect(wireDoneItem(inbound)).toEqual({
+      type: 'reasoning',
+      id: 'rs_1',
+      status: 'completed',
+      encrypted_content: 'ENCRYPTED-BLOB',
+    });
+  });
+
+  it('output_item.done for a reasoning item reduces to id/type/status, omitting encrypted_content when the item has none', async () => {
+    const reasoning: Responses.ResponseReasoningItem = {
+      id: 'rs_1',
+      type: 'reasoning',
+      status: 'completed',
+      summary: [{ type: 'summary_text', text: 'because' }],
+    };
+
+    // Precondition: the item carries the summary the wire strips.
+    expect(reasoning.summary.length).toBeGreaterThan(0);
+
+    const { inbound } = await roundtrip([itemDone(reasoning)]);
+    // With no encrypted_content on the item the key is omitted entirely, not
+    // sent as an empty string (the string guard in toWireItem); summary is
+    // streamed, so it is dropped too.
+    expect(wireDoneItem(inbound)).toEqual({ type: 'reasoning', id: 'rs_1', status: 'completed' });
+  });
+});

@@ -8,21 +8,22 @@ export default defineConfig({
     dts({
       entryRoot: resolve(__dirname, '.'),
       insertTypesEntry: true,
-      exclude: ['react/**', 'vercel/**', 'openai/**'],
     }),
   ],
   build: {
-    outDir: '../dist',
+    outDir: '../../dist/openai',
     lib: {
       entry: resolve(__dirname, 'index.ts'),
-      name: 'AblyAiTransport',
-      fileName: 'ably-ai-transport',
+      name: 'AblyAiTransportOpenAI',
+      fileName: 'ably-ai-transport-openai',
+      formats: ['es', 'umd'],
     },
     rollupOptions: {
-      external: ['ably'],
+      external: ['ably', 'openai'],
       output: {
         globals: {
           ably: 'Ably',
+          openai: 'OpenAI',
         },
       },
     },

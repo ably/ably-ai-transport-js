@@ -1300,4 +1300,43 @@ test.describe('use-client-session demo - chat behaviour', () => {
       await ctxB.close();
     }
   });
+
+  // checks: steer during approval suspension — the approved tool resolves AND
+  // the steer is answered, with no run error.
+  test('steer during approval suspension: the tool resolves and the steer is answered', async ({ page }, testInfo) => {
+    // "what's the weather forecast for London?" → the agent calls
+    // getWeatherForecast and SUSPENDS at approval-requested. While suspended the
+    // user steers the run with `/steer Say "STEERED"` — a follow-up user message
+    // that folds into the SAME run. Approving then resumes it.
+    //
+    // On resume the run owes a tool_result for the approved call, but the SDK
+    // defers the unresponded steer to the tail of getMessages(). Feeding that
+    // straight to the model would sit a user message after an open tool_use with
+    // no tool_result between them — the model rejects it and the run errors. The
+    // route resolves the approved tool first (on a conversation trimmed to the
+    // last assistant), then a later steering-loop pass answers the steer. So the
+    // forecast card renders AND the steered reply appears, with no error.
+    await page.goto(freshChannelUrl(testInfo.title));
+    const input = page.getByPlaceholder('Type a message...');
+    await input.waitFor({ state: 'visible' });
+    await input.fill("what's the weather forecast for London?");
+    await input.press('Enter');
+
+    const approveButton = page.getByRole('button', { name: /Approve/i }).first();
+    await expect(approveButton).toBeVisible({ timeout: 60_000 });
+
+    // Steer while the run is suspended for approval.
+    await input.fill('/steer Say "STEERED"');
+    await input.press('Enter');
+
+    // Approve: resume, resolve the tool, then answer the steer.
+    await approveButton.click();
+
+    // The approved tool executes (forecast card) AND the steered reply lands.
+    await expect(page.locator('text=/5-Day Forecast/i').first()).toBeVisible({ timeout: 60_000 });
+    await expect(bubbleContaining(page, 'STEERED')).toBeVisible({ timeout: 60_000 });
+    await awaitStreamingQuiesce(page);
+    // The run reached completion cleanly — no stuck approval card.
+    await expect(page.getByRole('button', { name: /Approve/i })).toHaveCount(0);
+  });
 });

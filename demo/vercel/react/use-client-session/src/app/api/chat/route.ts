@@ -21,10 +21,10 @@
  */
 
 import { after } from 'next/server';
-import { streamText, convertToModelMessages, stepCountIs } from 'ai';
+import { streamText, convertToModelMessages, stepCountIs, type UIMessage } from 'ai';
 import Ably from 'ably';
 import { LiveObjects } from 'ably/liveobjects';
-import { createAgentSession, vercelRunOutcome } from '@ably/ai-transport/vercel';
+import { approvedPendingToolCalls, createAgentSession, vercelRunOutcome } from '@ably/ai-transport/vercel';
 import type { InvocationData } from '@ably/ai-transport';
 import { Invocation, OBJECT_MODES } from '@ably/ai-transport';
 import { createModel } from './model';
@@ -93,6 +93,41 @@ export async function POST(req: Request) {
   const checklistRoot = root;
 
   after(async () => {
+    // One inference pass over the given conversation. streamText runs its
+    // multi-step loop inline, so server-executed tools produce the final
+    // response in this call; a client or approval-gated tool ends the step with
+    // `finishReason: 'tool-calls'` and the outcome reports a suspend.
+    const runInferencePass = async (turn: readonly UIMessage[]) => {
+      const steps = checklistFrom(checklistRoot.compactJson());
+      const result = streamText({
+        model: createModel(),
+        system: systemPrompt(steps),
+        messages: await convertToModelMessages([...turn]),
+        tools: { ...tools, ...makeChecklistTool(checklistRoot, () => Date.now()) },
+        abortSignal: run.abortSignal,
+        stopWhen: stepCountIs(10),
+      });
+      const pipeResult = await run.pipe(result.toUIMessageStream());
+      return vercelRunOutcome(pipeResult, result.finishReason);
+    };
+
+    let outcome: Awaited<ReturnType<typeof vercelRunOutcome>> | undefined;
+
+    // If approved tool calls are trailed by a user message, we resolve them
+    // before considering that message. The model rejects a user message that
+    // follows an open tool_use with no tool_result between them, so this trims
+    // to the last assistant and runs a pass to emit the tool_result first. It
+    // runs before the steering loop so it doesn't call `hasInput()`, which keeps
+    // the steering message pending for the loop to answer once the tool result
+    // is on the channel.
+    const resumeTurn = run.view.getMessages().map((m) => m.message);
+    const lastAssistant = resumeTurn.map((m) => m.role).lastIndexOf('assistant');
+    const steerTrailsToolCall =
+      lastAssistant !== -1 && lastAssistant < resumeTurn.length - 1 && approvedPendingToolCalls(resumeTurn).length > 0;
+    if (steerTrailsToolCall) {
+      outcome = await runInferencePass(resumeTurn.slice(0, lastAssistant + 1));
+    }
+
     // Steering loop. `run.hasInput()` is a delta predicate:
     //   - returns true on the first call (the trigger input is pending),
     //   - returns true again whenever a steering message has folded into the
@@ -103,37 +138,12 @@ export async function POST(req: Request) {
     // Each iteration re-reads `run.view.getMessages()`, so any steering message
     // that folded into the run is included in the model's context for the next
     // inference pass. A suspend / cancel / error outcome breaks the loop.
-    let outcome: Awaited<ReturnType<typeof vercelRunOutcome>> | undefined;
-    while (run.hasInput()) {
-      const steps = checklistFrom(checklistRoot.compactJson());
-      const conversation = run.view.getMessages().map((m) => m.message);
-      const result = streamText({
-        model: createModel(),
-        system: systemPrompt(steps),
-        messages: await convertToModelMessages(conversation),
-        tools: { ...tools, ...makeChecklistTool(checklistRoot, () => Date.now()) },
-        abortSignal: run.abortSignal,
-        // Multi-step: streamText loops inference + server-tool execution within
-        // this call so server-executed tools (getWeather, approved
-        // getWeatherForecast, updateChecklist) chain straight into the model's
-        // next inference pass and produce the final response. It also lets the
-        // agent plan then flip step statuses one at a time across the loop, so
-        // the client watches the LiveObjects checklist advance live within the
-        // single run. Without this the run would suspend after each server tool,
-        // leading to empty-events continuations that violate the SDK's "every
-        // send carries ≥1 prompt-bearing event" invariant. Client-executed tools
-        // (getLocation) and approval-requested tools still pause this call
-        // naturally — streamText finishes that step with
-        // `finishReason: 'tool-calls'`, the run suspends, and the client
-        // publishes a continuation.
-        stopWhen: stepCountIs(10),
-      });
-      const pipeResult = await run.pipe(result.toUIMessageStream());
-      outcome = await vercelRunOutcome(pipeResult, result.finishReason);
+    while ((outcome === undefined || outcome.reason === 'complete') && run.hasInput()) {
+      outcome = await runInferencePass(run.view.getMessages().map((m) => m.message));
       // Exit on any non-complete outcome (suspend / cancel / error). On a
-      // `complete` outcome we re-check `hasInput()` at the top: a steer that
-      // arrived during this iteration makes it true again and drives another
-      // inference pass that includes the steer in the conversation.
+      // `complete` outcome we re-check `hasInput()` at the top: a steering
+      // message that arrived during this iteration makes it true again and
+      // drives another inference pass that includes it in the conversation.
       if (outcome.reason !== 'complete') break;
     }
 

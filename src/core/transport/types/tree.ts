@@ -466,6 +466,14 @@ export interface OutputEvent<TOutput extends CodecOutputEvent> {
    */
   startSerial?: string;
   /**
+   * The codec-message-ids this message stamped as responded steering messages
+   * (from the output's `steer-codec-message-ids` header), or `undefined` when
+   * the message carried no stamp. A resuming agent unions these across a run's
+   * history to see which steering messages an earlier pass already answered, and
+   * re-seeds only the ones that remain.
+   */
+  steerCodecMessageIds?: string[];
+  /**
    * The decoded agent outputs from this message, in wire order. Empty when
    * the folded message carried only inputs (e.g. an optimistic user
    * message), or when the event is a projection-changed signal emitted after

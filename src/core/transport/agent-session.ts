@@ -792,19 +792,20 @@ class DefaultAgentSession<
       getTree,
       codec,
     });
-    // Per-run steer state: which steers have folded into this run's projection
-    // but not yet been drained by hasInput(), and which were drained since the
-    // last step attempt opened (stamped as steer-codec-message-ids). Identity-
-    // based (codec-message-ids), so cross-publisher delivery order is irrelevant.
-    // Declared before run.view so the view's steer ordering can read it.
+    // Per-run steer state: which steering messages have folded into this run's
+    // projection but not yet been drained by hasInput(), and which were drained
+    // since the last step attempt opened (stamped as steer-codec-message-ids).
+    // Identity-based (codec-message-ids), so cross-publisher delivery order is
+    // irrelevant. Declared before run.view so the view's steer ordering can read it.
     const steerTracker = new RunSteerTracker();
 
     // run.view — the run's read-only, leaf-pinned, paginating View: the same read
     // base the client's `session.view` exposes, projecting the branch the leaf
-    // source resolves. Its steer ordering defers a steer no output has responded
-    // to yet to the tail of the run's messages, so `getMessages()` — the source
-    // of the inference prompt — ends on a user message even when the steer's
-    // wire serial sorts it before the assistant output in the raw projection.
+    // source resolves. Its steer ordering defers a steering message no output
+    // has responded to yet to the tail of the run's messages, so `getMessages()`
+    // (the source of the inference prompt) ends on a user message even when the
+    // steering message's wire serial sorts it before the assistant output in the
+    // raw projection.
     const view: View<TMessage> = createLeafView<TInput, TOutput, TProjection, TMessage>({
       tree: getTree(),
       codec,
@@ -829,18 +830,28 @@ class DefaultAgentSession<
     // an explicit step opens before its first pass runs.
     let hasProducedOutput = false;
 
-    // Watch the Tree for steers folding into this run's projection: a client
-    // published a user-input event tagged with this run's run-id while the run
-    // was active. The Tree emits `output` carrying the fold's decoded `inputs`;
-    // an event for this run with a non-empty `inputs` is a steer (a pure
-    // agent-output fold carries no inputs, and a supersede refold carries
-    // neither inputs nor outputs). Record each by codec-message-id so
-    // hasInput() surfaces it and the next step attempt stamps it, then fire the
-    // onSteer hint once per steering message.
-    const onTreeOutput = (event: OutputEvent<TOutput>): void => {
-      if (event.runId !== runId) return;
-      if (event.inputs.length === 0) return;
-      if (event.codecMessageId !== undefined) steerTracker.addPending(event.codecMessageId);
+    // These two maps hold the steering messages that fold in before the run
+    // opens and the steer-responded stamps that arrive with them, keyed by the
+    // run-id we see on the wire. On a resume the client's steering message folded
+    // during an earlier invocation, and history replays it before the
+    // continuation trigger re-keys this run from its provisional run-id to the
+    // wire run-id. The live listener below therefore can't yet know the fold
+    // belongs to this run. Keying by the run-id we observe survives that re-key,
+    // and seedSteers() (which start() and load() call at the end) then adds the
+    // steering messages this run hasn't answered to the tracker.
+    const foldedSteersByRunId = new Map<string, Set<string>>();
+    const respondedSteersByRunId = new Map<string, Set<string>>();
+    let steersSeeded = false;
+    const addToRunSet = (map: Map<string, Set<string>>, key: string, value: string): void => {
+      const set = map.get(key);
+      if (set) set.add(value);
+      else map.set(key, new Set([value]));
+    };
+
+    // This fires the run's onSteer hint once and isolates a throwing handler, so
+    // a bad handler can't kill the steer machinery (see the error-handling rule
+    // for SDK callbacks).
+    const notifySteer = (): void => {
       if (!onSteer) return;
       try {
         onSteer();
@@ -856,10 +867,79 @@ class DefaultAgentSession<
         else this._emitter.emit('error', errInfo);
       }
     };
-    // Subscribe on the LIVE Tree; a continuity-loss swap replaces the Tree, but
-    // this run's steer tracking is torn down with the run at deregisterRun, and
+
+    // This watches the Tree for steering messages folding into the run's
+    // projection: a client published a user-input event tagged with this run's
+    // run-id. The Tree emits `output` carrying the fold's decoded `inputs`, and
+    // an event for this run with a non-empty `inputs` is a steering message (a
+    // pure agent-output fold carries no inputs, and a supersede refold carries
+    // neither inputs nor outputs). Before the run opens it buffers the folds and
+    // responded stamps for seedSteers() to reconcile. Once the run is open, a
+    // live steering message goes straight onto the tracker and fires the onSteer
+    // hint.
+    const onTreeOutput = (event: OutputEvent<TOutput>): void => {
+      const eventRunId = event.runId;
+      // An input-node fold carries no run-id and is never a steering message into a run.
+      if (eventRunId === undefined) return;
+
+      if (!steersSeeded) {
+        // The run hasn't opened yet, so this buffers by the run-id we observe:
+        // a re-key on resume then can't lose a steering message that history
+        // replayed. It also collects this run's responded stamps so seedSteers()
+        // can skip a steering message an earlier pass already answered.
+        if (event.steerCodecMessageIds !== undefined) {
+          for (const id of event.steerCodecMessageIds) addToRunSet(respondedSteersByRunId, eventRunId, id);
+        }
+        if (event.inputs.length > 0 && event.codecMessageId !== undefined) {
+          addToRunSet(foldedSteersByRunId, eventRunId, event.codecMessageId);
+        }
+        return;
+      }
+
+      // The run has opened and its id is resolved, so this is a live steering
+      // message for the run.
+      if (eventRunId !== runId) return;
+      if (event.inputs.length === 0 || event.codecMessageId === undefined) return;
+      steerTracker.addPending(event.codecMessageId);
+      notifySteer();
+    };
+    // This subscribes on the live Tree. A continuity-loss swap replaces the
+    // Tree, but the run tears down its own steer tracking at deregisterRun, and
     // continuity loss aborts the run's controller anyway (see _onContinuityLost).
     const unsubscribeTreeOutput = getTree().on('output', onTreeOutput);
+
+    /**
+     * Adds the steering messages this run folded but hasn't answered yet to the
+     * tracker, once the run's id has resolved. start() and load() both call it
+     * at the end. The live listener can't attribute the buffered hydration folds
+     * before the run-id re-key, so this bridges them into the tracker, which
+     * lets hasInput() drive a follow-up pass and the View defer the steering
+     * message to the conversation tail. It skips two folds: the run's own
+     * triggering input, which the initial pass answers, and any steering message
+     * an earlier pass already answered (found in the responded stamps). Once it
+     * has seeded, live folds take the listener's direct path, so it drops the
+     * buffers.
+     */
+    const seedSteers = (): void => {
+      if (steersSeeded) return;
+      steersSeeded = true;
+      const folded = foldedSteersByRunId.get(runId);
+      const responded = respondedSteersByRunId.get(runId);
+      let seededAny = false;
+      if (folded) {
+        for (const codecMessageId of folded) {
+          // The triggering input rides the same run-tagged path on a resume; it
+          // is answered by the initial pass, so it is not a pending steering message.
+          if (codecMessageId === resolvedInputCodecMessageId) continue;
+          if (responded?.has(codecMessageId)) continue;
+          steerTracker.addPending(codecMessageId);
+          seededAny = true;
+        }
+      }
+      foldedSteersByRunId.clear();
+      respondedSteersByRunId.clear();
+      if (seededAny) notifySteer();
+    };
 
     /**
      * Remove this run from the session's routing maps and close its `run.view`.
@@ -1110,8 +1190,9 @@ class DefaultAgentSession<
       }),
       // Steer seams: as each step attempt opens, mark the run as having
       // produced output (so hasInput() stops reporting the initial-response
-      // pass) and hand the writer the steers drained since the previous attempt
-      // to stamp under steer-codec-message-ids on this attempt's outputs.
+      // pass) and hand the writer the steering messages drained since the
+      // previous attempt to stamp under steer-codec-message-ids on this
+      // attempt's outputs.
       markOutputProduced: () => {
         hasProducedOutput = true;
       },
@@ -1147,18 +1228,18 @@ class DefaultAgentSession<
 
       hasInput: (): boolean => {
         // Loop driver: run at least once for the triggering input, then again
-        // for each steer that folded in since the previous pass. A cancel
-        // (aborted signal) stops the loop. Reading pending steers DRAINS them
-        // into the "recently processed" set the next step attempt stamps —
-        // there is no observe-only check.
+        // for each steering message that folded in since the previous pass. A
+        // cancel (aborted signal) stops the loop. Reading pending steering
+        // messages DRAINS them into the "recently processed" set the next step
+        // attempt stamps, so there is no observe-only check.
         if (signal.aborted) return false;
-        // Drain any steers folded in so far before deciding, INCLUDING before
-        // the initial pass. A steer published fast enough to fold in before
-        // ai-run-start is already part of the initial pass's conversation
-        // (`run.view.getMessages()` reads it), so that pass answers and stamps
-        // it. Leaving it pending would leak it into the next hasInput() call
-        // and trigger a redundant follow-up pass — which would re-answer it
-        // against a conversation ending in the assistant reply and error out
+        // Drain any steering messages folded in so far before deciding,
+        // INCLUDING before the initial pass. A steering message published fast
+        // enough to fold in before ai-run-start is already part of the initial
+        // pass's conversation (`run.view.getMessages()` reads it), so that pass
+        // answers and stamps it. Leaving it pending would leak it into the next
+        // hasInput() call and trigger a redundant follow-up pass that re-answers
+        // it against a conversation ending in the assistant reply and errors out
         // ("conversation must end with a user message"). The drain here and the
         // pass's getMessages() read run back-to-back with no await between, so
         // what is drained is exactly what the pass sees.
@@ -1392,6 +1473,12 @@ class DefaultAgentSession<
         });
       }
 
+      // This seeds any unanswered steering messages the run folded before
+      // opening (a resume replays them from history). The run-id has resolved
+      // and the trigger is located, so the buffers keyed by the observed run-id
+      // now map onto this run.
+      seedSteers();
+
       logger?.debug('Run.start(); run started', { runId, inputEventId });
     };
 
@@ -1582,6 +1669,12 @@ class DefaultAgentSession<
       const ownerClientId = getTree().getRunNode(runId)?.clientId;
       runManager.registerRun(runId, ownerClientId, controller);
       open = true;
+
+      // This seeds any unanswered steering messages the run folded before
+      // opening (an adopting process hydrates them from history). The run-id is
+      // fixed on the adopt path, so the buffers keyed by the observed run-id map
+      // onto this run.
+      seedSteers();
 
       logger?.debug('Run.load(); run adopted', { runId, inputEventId });
     };

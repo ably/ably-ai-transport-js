@@ -75,7 +75,19 @@ Summary guidance:
 - Strip conventional-commit prefixes (`feat:`, `fix:`, `chore:`,
   `refactor:`, `docs:`, scoped variants like `fix(transport):`, etc.) and
   rewrite into sentence case.
-- Keep it to one short sentence focused on user-visible impact.
+- Keep it to one short sentence focused on user-visible impact. State the API
+  or behaviour change and stop; do not write migration guides or spell out
+  downstream benefits, which belong in the docs rather than the changelog.
+- **Code samples: silent breaks only.** Include a small before/after code
+  sample only for a breaking change the compiler will not catch, where no
+  signature changed but the runtime behaviour did (a _silent_ break). Example:
+  0.4.0's `run.messages` narrowed from the whole conversation to one turn with
+  an unchanged `TMessage[]` type, so call sites kept compiling but silently fed
+  the model less, and a two-line before/after made the trap obvious. A
+  _visible_ break (a removed or renamed export, or a changed signature, which
+  errors at compile time on upgrade, e.g. `UIMessageCodec` becoming
+  `createUIMessageCodec()`) needs only a one-line statement of the replacement;
+  the compiler surfaces it.
 - **Never reference internal-only artifacts.** The changelog is read by end
   users of the published package, who have no access to internal trackers.
   Strip and never emit: Jira ticket or epic ids (e.g. `AIT-815`),

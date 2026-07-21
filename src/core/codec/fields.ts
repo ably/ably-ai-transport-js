@@ -78,7 +78,7 @@ export interface DataCodec<C> {
   /**
    * Extract the chunk props this envelope contributes from the wire `data`.
    * Undefined-valued props are stripped when the driver rebuilds the object —
-   * every rebuild seam (output chunk, input payload, batch part) applies the
+   * every rebuild boundary (output chunk, input payload, batch part) applies the
    * same rule, since absent and undefined are indistinguishable on the wire.
    */
   decode: (data: unknown) => Partial<C>;

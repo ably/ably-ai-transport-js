@@ -95,7 +95,7 @@ export interface MessagePayload {
  * concatenated for recovery and prefix-matching on the decoder.
  */
 export interface StreamPayload {
-  /** Ably message name — `ai-output` (only outputs stream); not the codec `kind` / stream family. */
+  /** Ably message name — `ai-output` (only outputs stream); not the codec `kind` / stream group. */
   name: string;
   /** Initial or closing data for the stream. Must be a string for append/accumulate semantics. */
   data: string;
@@ -109,15 +109,15 @@ export interface StreamPayload {
 }
 
 // ---------------------------------------------------------------------------
-// StreamTrackerState — accumulated state of a streamed message
+// StreamSequenceState — accumulated state of a streamed message
 // ---------------------------------------------------------------------------
 
 /**
  * Running state of a streamed message tracked by the decoder core.
  * Accumulates text across appends and tracks lifecycle (open/closed).
  */
-export interface StreamTrackerState {
-  /** Ably message name — `ai-output` (only outputs stream); not the codec `kind` / stream family. */
+export interface StreamSequenceState {
+  /** Ably message name — `ai-output` (only outputs stream); not the codec `kind` / stream group. */
   name: string;
   /** Stream identifier (e.g. chunk.id for text, toolCallId for tool-input). */
   streamId: string;

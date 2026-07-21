@@ -2,15 +2,18 @@
 
 ## Layout
 
-The generic layer lives in `src/core/` and `src/react/`; the Vercel layer in
-`src/vercel/` (and `src/vercel/react/`). Within each layer, `codec/` and
+The generic layer lives in `src/core/` and `src/react/`; each codec lives in its
+own directory (`src/vercel/`, `src/openai/`, …), with any React hooks under a
+`react/` subdirectory (e.g. `src/vercel/react/`). Within each, `codec/` and
 `transport/` are separate concerns. Shared header/event/message-name constants
 and Ably message helpers sit at the top of `src/` (`constants.ts`, `utils.ts`).
 Tests mirror `src/` under `test/`.
 
-The package ships four entry points, each with its own `index.ts`. That
-`index.ts` is the authoritative list of what is public — only types and
-functions it re-exports are public API.
+The package ships several entry points, each with its own `index.ts` (see the
+table). That `index.ts` is the authoritative list of what is public — only
+types and functions it re-exports are public API. New codecs add a new entry
+point — plus a `/react` one if they ship React hooks — rather than changing an
+existing one.
 
 | Entry point                       | Purpose                                                                                                          | Peer deps             |
 | --------------------------------- | ---------------------------------------------------------------------------------------------------------------- | --------------------- |
@@ -18,27 +21,46 @@ functions it re-exports are public API.
 | `@ably/ai-transport/react`        | Generic React hooks and providers for any codec                                                                  | `ably`, `react`       |
 | `@ably/ai-transport/vercel`       | Vercel AI SDK codec, convenience factories, and the chat-transport adapter                                       | `ably`, `ai`          |
 | `@ably/ai-transport/vercel/react` | React hooks for Vercel's `useChat`                                                                               | `ably`, `ai`, `react` |
+| `@ably/ai-transport/openai`       | OpenAI Responses codec (`ResponsesCodec`)                                                                        | `ably`, `openai`      |
 
 ## Two-layer architecture
 
-The codebase splits into a **generic layer** and a **Vercel layer**. This
-separation is the most important invariant to preserve:
+The codebase splits into two layers: a **generic layer** and a **codec layer**.
+The codec layer is implemented once per provider — each such implementation a
+_codec_ (Vercel, OpenAI, …). This separation is the most important invariant to
+preserve:
 
 - **Generic layer** (`src/core/`, `src/react/`) — defines the
-  `Codec<TEvent, TMessage>` interface and the codec-parameterized transport
+  `Codec<TInput, TOutput, TProjection, TMessage>` interface (see
+  `src/core/codec/types.ts`) and the codec-parameterized transport
   (`ClientSession`, `AgentSession`, `Tree`, View pagination). It is
-  framework-agnostic: it must know nothing about Vercel's `UIMessageChunk` or
-  `UIMessage`, and must read or write only transport-tier metadata — never
-  codec-specific domain metadata (see header discipline below).
-- **Vercel layer** (`src/vercel/`) — implements the codec for the Vercel AI
-  SDK and provides convenience factories plus React hooks. Its chat-transport
-  adapter wraps a generic `ClientSession` to satisfy the interface `useChat`
-  expects.
+  framework-agnostic: it must know nothing about any specific codec's wire
+  types (e.g. Vercel's `UIMessageChunk` / `UIMessage`, OpenAI's
+  `ResponseStreamEvent`), and must read or write only transport-tier metadata —
+  never codec-specific domain metadata (see header discipline below).
+- **Codec layer** (`src/vercel/`, `src/openai/`, …) — one _codec_ per provider,
+  each implementing the `Codec` for that provider's wire format against its
+  types, and optionally adding convenience factories and React hooks. Vercel is
+  the fullest worked example: its chat-transport adapter wraps a generic
+  `ClientSession` to satisfy the interface `useChat` expects.
 
 Codec and transport are themselves distinct: the **codec** owns the wire
 format (encode/decode of events and messages); the **transport** owns sessions,
 runs, channel I/O, and conversation state. The transport is parameterized by
 the codec and never hardcodes a wire format.
+
+**Wire curation belongs to the codec, at encode.** Every event a codec
+supports is transmitted (as a discrete event or a stream, possibly with a
+slimmed payload) or deliberately kept off the wire (a `drop` descriptor);
+anything else throws at the encoder, so a genuinely unexpected provider event
+fails loudly rather than leaking onto the channel. Agents pipe their output
+stream to the transport as-is for everything the codec supports — an agent
+that opts into a provider surface the codec doesn't model must filter those
+events out before publishing, and the throw makes forgetting that loud. (A
+provider SDK may still supply its own conversion first — Vercel's
+`toUIMessageStream()` turns a `streamText` result into the chunk stream that
+the codec's union models — but that is the provider's shape conversion, not
+our curation point.)
 
 ## Tree / View / Session split
 
@@ -125,12 +147,13 @@ Default*` directly.
 
 ## Summary of principles
 
-1. **Two-layer split** — the generic transport/codec knows nothing about
-   Vercel; the Vercel layer implements the codec and provides wrappers.
+1. **Generic-vs-codec split** — the generic transport/codec knows nothing about
+   any specific codec; each codec (Vercel, OpenAI, …) implements the `Codec`
+   and provides wrappers.
 2. **Codec/transport separation** — codec owns the wire format; transport owns
    sessions, runs, and state, parameterized by the codec.
 3. **Codec-parameterized** — generic components are parameterized by
-   `<TEvent, TMessage>` via the `Codec` interface.
+   `<TInput, TOutput, TProjection, TMessage>` via the `Codec` interface.
 4. **Constructor/option injection** — no singletons, no globals.
 5. **Composition, not inheritance** — compose features; no class hierarchies.
 6. **Interface-first** — public contracts are interfaces; implementations are
@@ -139,7 +162,7 @@ Default*` directly.
    `extras.ai` envelope split into a transport tier (`extras.ai.transport`,
    always present) and an optional codec tier (`extras.ai.codec`). The generic
    layer reads and writes only the transport tier; codec-specific metadata
-   belongs in the codec tier, owned by the codec/Vercel layer.
+   belongs in the codec tier, owned by the codec layer.
 8. **Explicit exports** — only what an `index.ts` re-exports is public API.
 9. **Self-contained features** — each manages its own subscriptions, state, and
    cleanup.

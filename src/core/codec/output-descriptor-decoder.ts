@@ -13,6 +13,7 @@
 
 import { stripUndefined } from '../../utils.js';
 import { KIND_HEADER, partitionOutputEvents, readFields } from './field-bag.js';
+import type { FieldFor } from './fields.js';
 import type {
   OutputDecodeContext,
   OutputDescriptor,
@@ -56,7 +57,8 @@ export interface OutputDescriptorDecoder<U> {
 /**
  * Build an output decode driver for a descriptor set.
  * @template U - The codec's event union.
- * @param descriptors - The descriptor set (events + streamed families).
+ * @param descriptors - The descriptor set (events, streamed families, and
+ * dropped types — the latter never reach the wire, so nothing decodes for them).
  * @returns An {@link OutputDescriptorDecoder} that reconstructs events from the wire.
  */
 export const createOutputDescriptorDecoder = <U extends { type: string }>(
@@ -97,16 +99,30 @@ export const createOutputDescriptorDecoder = <U extends { type: string }>(
     buildStart: (tracker) => {
       const desc = familyOf(tracker);
       if (!desc) return [];
-      const bag = readFields(desc.fields, tracker.codecHeaders);
-      bag[desc.idField] = tracker.streamId;
-      return [rebuild(desc.start, bag)];
+      return [rebuild(desc.start, readFields(desc.fields, tracker.codecHeaders))];
     },
 
     buildDelta: (tracker, delta) => {
       const desc = familyOf(tracker);
       if (!desc) return [];
-      const bag: Record<string, unknown> = { [desc.idField]: tracker.streamId, [desc.deltaField]: delta };
-      return [rebuild(desc.delta, bag)];
+      // The delta rebuilds from named fields read off the re-stamped start
+      // headers, plus the fragment. `rebuildDelta` copies the named fields; a
+      // family customises which via `decodeDelta`, or omits it for a
+      // fragment-only delta.
+      const rebuildDelta = (fields: readonly FieldFor<U>[]): U[] => {
+        const bag = readFields(fields, tracker.codecHeaders);
+        bag[desc.deltaField] = delta;
+        return [rebuild(desc.delta, bag)];
+      };
+      if (desc.decodeDelta) {
+        return desc.decodeDelta({
+          streamId: tracker.streamId,
+          delta,
+          codecHeaders: tracker.codecHeaders,
+          rebuild: rebuildDelta,
+        });
+      }
+      return rebuildDelta([]);
     },
 
     buildEnd: (tracker, closingCodecHeaders) => {
@@ -120,9 +136,7 @@ export const createOutputDescriptorDecoder = <U extends { type: string }>(
           closingCodecHeaders,
         });
       }
-      const bag = readFields(desc.fields, closingCodecHeaders);
-      bag[desc.idField] = tracker.streamId;
-      return [rebuild(desc.end, bag)];
+      return [rebuild(desc.end, readFields(desc.fields, closingCodecHeaders))];
     },
 
     decodeDiscrete: (codecKind, codecHeaders, transportHeaders, data) => {

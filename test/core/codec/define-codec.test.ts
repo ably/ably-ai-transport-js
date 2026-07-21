@@ -4,8 +4,23 @@ import { describe, expect, it, vi } from 'vitest';
 import { EVENT_AI_INPUT, EVENT_AI_OUTPUT } from '../../../src/constants.js';
 import { defineCodec } from '../../../src/core/codec/define-codec.js';
 import { strField } from '../../../src/core/codec/fields.js';
-import type { ChannelWriter, CodecEvent, CodecMessage, ReducerMeta } from '../../../src/core/codec/types.js';
+import type {
+  ChannelWriter,
+  CodecEvent,
+  CodecInputEvent,
+  CodecMessage,
+  ReducerMeta,
+} from '../../../src/core/codec/types.js';
+import type { WellKnownInputFactories } from '../../../src/core/codec/well-known-inputs.js';
 import { ErrorCode } from '../../../src/errors.js';
+
+// These fixtures exercise descriptor routing and validation, not the well-known
+// input factories, and their input unions carry no well-known variants — so
+// they expose only the two mandatory factories `defineCodec` requires.
+const mandatoryFactories = <TInput extends CodecInputEvent>(base: WellKnownInputFactories<TInput>) => ({
+  createUserMessage: base.createUserMessage,
+  createRegenerate: base.createRegenerate,
+});
 
 // ---------------------------------------------------------------------------
 // Fixture codec
@@ -53,6 +68,7 @@ const codec = defineCodec<NoopInput, QuirkyOutput>()({
   ],
   // A single event with no fields/data rebuilds to the { kind, codecMessageId, payload } envelope.
   input: ({ event }) => [event('noop')],
+  factories: mandatoryFactories,
 });
 
 const aiMessage = (name: string, codecHeaders: Record<string, string>): Ably.InboundMessage =>
@@ -171,6 +187,97 @@ describe('defineCodec — encoder wiring', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Dropped output types — the `drop` construct
+//
+// A codec's descriptor table is a total inventory of its output union: every
+// type is transmitted (event/stream) or deliberately kept off the wire (drop).
+// A dropped type encodes to nothing, silently; any type that is neither
+// described nor dropped still throws, so a genuinely unexpected event is never
+// lost unnoticed.
+// ---------------------------------------------------------------------------
+
+type CuratedOutput =
+  | { type: 'kept' }
+  | { type: 'dropped' }
+  | { type: 'surprise' }
+  | { type: 'wild-kept' }
+  | { type: 'wild-dropped' }
+  | { type: 'fam-start'; id: string; wanted: boolean }
+  | { type: 'fam-delta'; id: string; delta: string }
+  | { type: 'fam-end'; id: string };
+
+const curatedCodec = defineCodec<NoopInput, CuratedOutput>()({
+  reducer: {
+    init: (): FixtureProjection => ({ folded: [] }),
+    // The reducer is irrelevant to these encode-side tests.
+    fold: (state: FixtureProjection): FixtureProjection => state,
+    getMessages: (): CodecMessage<NoopInput | CuratedOutput>[] => [],
+  },
+  output: ({ event, stream, drop }) => [
+    event('kept'),
+    drop('dropped'),
+    // An exact drop must beat this wildcard family in encode dispatch.
+    event('wild-*'),
+    drop('wild-dropped'),
+    // A dropped type doubling as a shared start's decline target: a start
+    // chunk no family claims falls through to the drop.
+    stream('fam', {
+      start: 'fam-start',
+      delta: 'fam-delta',
+      end: 'fam-end',
+      streamId: (c) => c.id,
+      deltaField: 'delta',
+      fields: [],
+      startWhen: (c) => c.wanted,
+    }),
+    drop('fam-start'),
+  ],
+  input: ({ event }) => [event('noop')],
+  factories: mandatoryFactories,
+});
+
+describe('defineCodec — dropped output types', () => {
+  it('publishes a described output type', async () => {
+    const writer = createMockWriter();
+    await curatedCodec.createEncoder(writer).publishOutput({ type: 'kept' });
+    expect(writer.published).toHaveLength(1);
+  });
+
+  it('drops a dropped output type silently (no publish, no throw)', async () => {
+    const writer = createMockWriter();
+    await curatedCodec.createEncoder(writer).publishOutput({ type: 'dropped' });
+    expect(writer.published).toHaveLength(0);
+  });
+
+  it('still throws on an output type that is neither described nor dropped', async () => {
+    const writer = createMockWriter();
+    await expect(curatedCodec.createEncoder(writer).publishOutput({ type: 'surprise' })).rejects.toBeErrorInfoWithCode(
+      ErrorCode.InvalidArgument,
+    );
+  });
+
+  it('honours an exact drop over a matching wildcard event family', async () => {
+    const writer = createMockWriter();
+    const encoder = curatedCodec.createEncoder(writer);
+    await encoder.publishOutput({ type: 'wild-dropped' });
+    expect(writer.published).toHaveLength(0);
+    await encoder.publishOutput({ type: 'wild-kept' });
+    expect(writer.published).toHaveLength(1);
+  });
+
+  it('drops a shared stream start that every family declines', async () => {
+    const writer = createMockWriter();
+    const encoder = curatedCodec.createEncoder(writer);
+    // Claimed by the family: opens the stream (one wire publish).
+    await encoder.publishOutput({ type: 'fam-start', id: 's1', wanted: true });
+    expect(writer.published).toHaveLength(1);
+    // Declined by the family: falls through to the drop — nothing published.
+    await encoder.publishOutput({ type: 'fam-start', id: 's2', wanted: false });
+    expect(writer.published).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Wire-controlled kind robustness
 //
 // The decode lifecycle policy's onDiscrete is a plain-object Record indexed by
@@ -188,6 +295,7 @@ describe('defineCodec — wire-controlled kind robustness', () => {
     },
     output: ({ event }) => [event('quirky', { data: { encode: () => '', decode: () => ({ kind: 'decoded' }) } })],
     input: ({ event }) => [event('noop')],
+    factories: mandatoryFactories,
     decodeLifecycle: () => ({
       onDiscrete: { quirky: () => [{ type: 'quirky', kind: 'lead-in' }] },
     }),
@@ -243,9 +351,11 @@ describe('defineCodec — wire-controlled kind robustness', () => {
 
 type NoteOutput =
   | { type: 'note'; text: string; kind?: string }
-  | { type: 'note-start'; id: string }
+  | { type: 'note-start'; id: string; variant?: 'a' | 'b' }
   | { type: 'note-delta'; id: string; delta: string }
-  | { type: 'note-end'; id: string };
+  | { type: 'note-end'; id: string }
+  | { type: 'note-delta-b'; id: string; delta: string }
+  | { type: 'note-end-b'; id: string };
 
 interface PingInput {
   kind: 'ping';
@@ -278,13 +388,14 @@ const defineWith = (
     },
     output,
     input,
+    factories: mandatoryFactories,
   });
 
 const noteStream = {
   start: 'note-start',
   delta: 'note-delta',
   end: 'note-end',
-  idField: 'id',
+  streamId: (c: { id: string }) => c.id,
   deltaField: 'delta',
   fields: [],
 } as const;
@@ -326,10 +437,85 @@ describe('defineCodec — table validation', () => {
     ).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
   });
 
-  it('throws when two streams share a phase literal', () => {
+  it('throws when two streams share a delta/end phase literal', () => {
+    // Two identical streams share their delta/end phases (a delta/end must be
+    // uniquely owned); the shared start is allowed, but the delta collision is not.
     expect(() =>
       defineWith(
         ({ stream }) => [stream('notes-a', noteStream), stream('notes-b', noteStream)],
+        ({ event }) => [event('ping')],
+      ),
+    ).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
+  });
+
+  it('accepts two streams sharing a start type discriminated by startWhen', () => {
+    const streamA = {
+      start: 'note-start',
+      delta: 'note-delta',
+      end: 'note-end',
+      streamId: (c: { id: string }) => c.id,
+      deltaField: 'delta',
+      fields: [],
+      startWhen: (c: Extract<NoteOutput, { type: 'note-start' }>) => c.variant === 'a',
+    } as const;
+    const streamB = {
+      start: 'note-start',
+      delta: 'note-delta-b',
+      end: 'note-end-b',
+      streamId: (c: { id: string }) => c.id,
+      deltaField: 'delta',
+      fields: [],
+      startWhen: (c: Extract<NoteOutput, { type: 'note-start' }>) => c.variant === 'b',
+    } as const;
+    expect(() =>
+      defineWith(
+        ({ stream }) => [stream('notes-a', streamA), stream('notes-b', streamB)],
+        ({ event }) => [event('ping')],
+      ),
+    ).not.toThrow();
+  });
+
+  it('accepts a stream start type that also backs a discrete event (its decline target)', () => {
+    expect(() =>
+      defineWith(
+        ({ event, stream }) => [event('note-start'), stream('notes', noteStream)],
+        ({ event }) => [event('ping')],
+      ),
+    ).not.toThrow();
+  });
+
+  it('accepts a stream start type that is also a dropped type (its decline target)', () => {
+    expect(() =>
+      defineWith(
+        ({ stream, drop }) => [stream('notes', noteStream), drop('note-start')],
+        ({ event }) => [event('ping')],
+      ),
+    ).not.toThrow();
+  });
+
+  it('throws when a discrete event type is also dropped', () => {
+    expect(() =>
+      defineWith(
+        ({ event, drop }) => [event('note'), drop('note')],
+        ({ event }) => [event('ping')],
+      ),
+    ).toThrowErrorInfo({ code: ErrorCode.InvalidArgument, statusCode: 400 });
+  });
+
+  it("throws when a stream start collides with another stream's delta/end phase", () => {
+    // `note-delta` is streamC's start but noteStream's delta — the start-first
+    // dispatch would shadow the continuation, so this must be rejected.
+    const streamC = {
+      start: 'note-delta',
+      delta: 'note-delta-b',
+      end: 'note-end-b',
+      streamId: (c: { id: string }) => c.id,
+      deltaField: 'delta',
+      fields: [],
+    } as const;
+    expect(() =>
+      defineWith(
+        ({ stream }) => [stream('notes', noteStream), stream('notes-c', streamC)],
         ({ event }) => [event('ping')],
       ),
     ).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
@@ -405,5 +591,27 @@ describe('defineCodec — reducer wiring', () => {
       { codecMessageId: 'cm-0', message: output },
       { codecMessageId: 'cm-1', message: input },
     ]);
+  });
+});
+
+describe('defineCodec — factory spread', () => {
+  // The `codec` fixture's `factories` builder returns only the two mandatory
+  // factories (mandatoryFactories). These assertions pin the spread contract at
+  // the layer that implements it: defineCodec spreads exactly the subset the
+  // builder returns — the mandatory factories are present and real, and the tool
+  // factories the builder omitted are absent at runtime, not merely type-hidden.
+  it('exposes the mandatory factories the builder returned', () => {
+    expect(typeof codec.createUserMessage).toBe('function');
+    expect(codec.createRegenerate('assistant-1', 'user-1')).toEqual({
+      kind: 'regenerate',
+      target: 'assistant-1',
+      parent: 'user-1',
+    });
+  });
+
+  it('does not spread the tool factories the builder omitted', () => {
+    expect(codec.createToolResult).toBeUndefined();
+    expect(codec.createToolResultError).toBeUndefined();
+    expect(codec.createToolApprovalResponse).toBeUndefined();
   });
 });

@@ -15,3 +15,8 @@ demo/shared-frontend/
 # Vendored shadcn/ui primitives — regeneratable, kept in shadcn's own formatting
 demo/**/src/components/ui/
 demo/**/src/lib/utils.ts
+
+# The reviewer-materials explainers use white-space: pre trees whose leading
+# spaces live inside inline markup; prettier reflow corrupts their rendering.
+notes/openai-streaming-events-cheatsheet.html
+notes/streaming-target-model.html

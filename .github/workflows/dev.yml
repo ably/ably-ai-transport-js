@@ -164,6 +164,7 @@ jobs:
           - demo/vercel/react/use-client-session-db
           - demo/vercel/react/use-chat-wdk
           - demo/temporal/use-client-session-temporal
+          - demo/openai/react/use-client-session
     name: demo ${{ matrix.demo }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -218,6 +219,8 @@ jobs:
             name: use-client-session-db
           - demo: demo/vercel/react/use-chat-wdk
             name: use-chat-wdk
+          - demo: demo/openai/react/use-client-session
+            name: openai-use-client-session
     name: demo-e2e ${{ matrix.name }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

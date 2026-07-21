@@ -267,7 +267,7 @@ describe('Vercel decoder', () => {
           { [HEADER_RUN_ID]: 'run-1' },
         ),
       );
-      expect(deltaOutputs).toEqual([expect.objectContaining({ type: 'reasoning-delta', delta: 'think' })]);
+      expect(deltaOutputs).toEqual([expect.objectContaining({ type: 'reasoning-delta', id: 'r-1', delta: 'think' })]);
 
       // End
       const { outputs: endOutputs } = decoder.decode(
@@ -313,7 +313,7 @@ describe('Vercel decoder', () => {
         ),
       );
       expect(deltaOutputs).toEqual([
-        expect.objectContaining({ type: 'tool-input-delta', inputTextDelta: '{"q":"test"}' }),
+        expect.objectContaining({ type: 'tool-input-delta', toolCallId: 'tc-1', inputTextDelta: '{"q":"test"}' }),
       ]);
 
       // Available (complete)

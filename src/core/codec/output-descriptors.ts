@@ -9,10 +9,11 @@
  * decoder, stream reconstruction).
  *
  * Authoring is cast-free: the {@link outputBuilder} factory hands the codec an
- * `{ event, stream }` pair curried on the codec's output union, so every `data` /
- * `encode` / `decode` callback receives the exact narrowed member. The descriptors
- * are then erased to a heterogeneous {@link OutputDescriptor} via a single
- * documented cast at each constructor boundary — never in author code.
+ * `{ event, stream, drop }` builder curried on the codec's output union, so
+ * every `data` / `encode` / `decode` callback receives the exact narrowed
+ * member. The descriptors are then erased to a heterogeneous
+ * {@link OutputDescriptor} via a single documented cast at each constructor
+ * boundary — never in author code.
  */
 
 import type * as Ably from 'ably';
@@ -25,7 +26,7 @@ import type { MessagePayload, StreamPayload, WriteOptions } from './types.js';
 // Type helpers
 // ---------------------------------------------------------------------------
 
-/** The string-valued keys of `C` — the only keys `idField`/`deltaField` may name. */
+/** The string-valued keys of `C` — the only keys `deltaField` may name. */
 export type StringKeyOf<C> = { [K in keyof C]-?: C[K] extends string ? K : never }[keyof C];
 
 /**
@@ -114,6 +115,32 @@ export interface OutputStreamEndContext {
   closingCodecHeaders: Record<string, string>;
 }
 
+/**
+ * Context passed to a stream descriptor's `decodeDelta` rebuild.
+ *
+ * In the simple case where the delta chunk can be reconstructed by copying a
+ * subset of the re-stamped {@link OutputStreamSpec.fields}, use the {@link rebuild}
+ * helper. In the case where the re-stamped fields do not map directly to
+ * fields of the delta chunk, construct the chunk yourself using the {@link delta}
+ * and {@link codecHeaders}.
+ * @template C - The delta chunk member being rebuilt.
+ */
+export interface OutputStreamDeltaContext<C> {
+  /** The transport stream id (the `stream-id` header). */
+  streamId: string;
+  /** This delta's appended text fragment. */
+  delta: string;
+  /** The stream's persistent (start) codec headers, re-stamped on every append. */
+  codecHeaders: Record<string, string>;
+  /**
+   * Helper function to rebuild the delta chunk declaratively. It returns a
+   * delta chunk which is populated by copying the named header fields from the
+   * re-stamped start headers, as well as copying the {@link delta} to the
+   * {@link OutputStreamSpec.deltaField}.
+   */
+  rebuild: (fields: readonly FieldFor<C>[]) => C[];
+}
+
 // ---------------------------------------------------------------------------
 // Data codec
 // ---------------------------------------------------------------------------
@@ -162,8 +189,17 @@ export interface OutputStreamSpec<
   delta: D;
   /** The end chunk `type` literal. */
   end: E;
-  /** The string-valued chunk key carrying the stream id (e.g. `id`, `toolCallId`). */
-  idField: StringKeyOf<ResolveType<U, S>> & StringKeyOf<ResolveType<U, D>> & StringKeyOf<ResolveType<U, E>>;
+  /**
+   * How the transport stream id (the Ably `stream-id` header) is derived from a
+   * chunk, on encode. Derive it from whichever chunk fields uniquely identify the stream: a
+   * single key (`(c) => c.id`), a composite of several (e.g. OpenAI's `item_id`
+   * plus `content_index`), or a per-phase relocation (e.g. read a different place on
+   * the start than on the delta and end). Either way the id is an opaque
+   * uniqueness handle for the wire message and is never written into the chunks that the decoder rebuilds.
+   * The extractor may throw (e.g. an `Ably.ErrorInfo`) to reject a chunk whose id it
+   * cannot derive; the throw surfaces from the encode call.
+   */
+  streamId: (chunk: ResolveType<U, S> | ResolveType<U, D> | ResolveType<U, E>) => string;
   /** The string-valued delta chunk key carrying the appended fragment. */
   deltaField: StringKeyOf<ResolveType<U, D>>;
   /**
@@ -172,12 +208,30 @@ export interface OutputStreamSpec<
    * {@link FieldFor}); a field may bind a property carried by either phase.
    */
   fields: readonly (FieldFor<ResolveType<U, S>> | FieldFor<ResolveType<U, E>>)[];
+  /**
+   * Payload discriminator resolving a *shared* start event to this family. When
+   * more than one family shares a `start` type (e.g. several part kinds opened by
+   * one `content_part.added`), the encoder starts the first family whose
+   * `startWhen` returns true. Default: always true — an unshared start. When no
+   * family's `startWhen` matches a chunk of a shared start type, the chunk is not
+   * a stream start: the encoder falls through to the discrete `event()` descriptor
+   * for that type (`stream()` publishes nothing).
+   */
+  startWhen?: (chunk: ResolveType<U, S>) => boolean;
   /** Escape-hatch override for the stream-close step only (e.g. close-or-discrete fallback). */
   onEnd?: (
     chunk: ResolveType<U, E>,
     core: EscapeHatchCore,
     ctx: OutputEncodeHatchContext<ResolveType<U, E>>,
   ) => Promise<void>;
+  /**
+   * Escape-hatch decode for the delta-chunk rebuild.
+   *
+   * Builds the delta chunk from the data received in a stream append. If you
+   * do not provide `decodeDelta`, the decoder will create a delta chunk whose
+   * only field is the {@link deltaField} (the appended text fragment).
+   */
+  decodeDelta?: (ctx: OutputStreamDeltaContext<ResolveType<U, D>>) => ResolveType<U, D>[];
   /** Escape-hatch override for the end-chunk rebuild (e.g. input from accumulated text). */
   decodeEnd?: (ctx: OutputStreamEndContext) => ResolveType<U, E>[];
   /**
@@ -222,22 +276,39 @@ export interface OutputStreamDescriptor<U> {
   delta: string;
   /** The end chunk `type`. */
   end: string;
-  /** The chunk key carrying the stream id. */
-  idField: string;
+  /** How the transport stream id is derived from a chunk, on encode. */
+  streamId: (chunk: U) => string;
   /** The delta chunk key carrying the appended fragment. */
   deltaField: string;
-  /** Declared header fields. */
+  /** Declared header fields (start/end). */
   fields: readonly HeaderField<unknown>[];
+  /** Payload discriminator resolving a shared start event to this family, if any. */
+  startWhen?: (chunk: U) => boolean;
   /** Escape-hatch close override, if any. */
   onEnd?: (chunk: U, core: EscapeHatchCore, ctx: OutputEncodeHatchContext<U>) => Promise<void>;
+  /** How the delta chunk is rebuilt on decode, when the family customises it beyond a fragment-only delta. */
+  decodeDelta?: (ctx: OutputStreamDeltaContext<U>) => U[];
   /** Escape-hatch end-rebuild override, if any. */
   decodeEnd?: (ctx: OutputStreamEndContext) => U[];
   /** Escape-hatch non-streamed decode, if any. */
   decodeDiscrete?: (ctx: OutputDecodeContext) => U[];
 }
 
-/** An erased output descriptor — a discrete event or a streamed family. */
-export type OutputDescriptor<U> = OutputEventDescriptor<U> | OutputStreamDescriptor<U>;
+/**
+ * An erased drop descriptor — a known output `type` the codec deliberately
+ * keeps off the wire (see {@link OutputBuilder.drop}). Carries no encode/decode:
+ * the encode driver skips these types silently instead of throwing, and a
+ * dropped type never reaches the wire so there is nothing to decode.
+ */
+export interface OutputDropDescriptor {
+  /** Discriminator — the construct this descriptor was built with. */
+  construct: 'drop';
+  /** The output event `type` dropped on encode (never published, never decoded). */
+  type: string;
+}
+
+/** An erased output descriptor — a discrete event, a streamed family, or a dropped type. */
+export type OutputDescriptor<U> = OutputEventDescriptor<U> | OutputStreamDescriptor<U> | OutputDropDescriptor;
 
 // ---------------------------------------------------------------------------
 // Builder factory
@@ -245,8 +316,9 @@ export type OutputDescriptor<U> = OutputEventDescriptor<U> | OutputStreamDescrip
 
 /**
  * The direction-scoped output builder `defineCodec` injects into the `output`
- * config function — `event` (single discrete) and `stream` (streamed family),
- * both curried on the codec's output union so author entries narrow cast-free.
+ * config function — `event` (single discrete), `stream` (streamed family), and
+ * `drop` (deliberately kept off the wire), curried on the codec's output union
+ * so author entries narrow cast-free.
  * @template U - The codec's output union.
  */
 export interface OutputBuilder<U extends { type: string }> {
@@ -274,12 +346,26 @@ export interface OutputBuilder<U extends { type: string }> {
     kind: string,
     spec: OutputStreamSpec<U, S, D, E>,
   ) => OutputDescriptor<U>;
+  /**
+   * Declare an output `type` the codec deliberately keeps off the wire — the
+   * codec's wire-curation policy. A dropped event is redundant on the wire — no
+   * projection folds it and no decode policy reads it — so the encoder publishes
+   * nothing for it, silently. Each entry should carry a
+   * comment saying why the event is redundant (e.g. a lifecycle opener whose
+   * snapshot re-echoes the request envelope no consumer reads). Any output type
+   * that is neither described nor dropped still throws on encode, so a
+   * newly-appearing provider event is never dropped unnoticed.
+   * @param type - The output event `type` literal to drop on encode.
+   * @returns An erased {@link OutputDescriptor}.
+   */
+  drop: (type: U['type']) => OutputDescriptor<U>;
 }
 
 /**
- * Build the curried `{ event, stream }` output builder for a codec's output union.
- * `defineCodec` calls this once and hands the result to the `output` config
- * function; mirrors the input side's {@link import('./input-descriptors.js').inputBuilder}.
+ * Build the curried `{ event, stream, drop }` output builder for a codec's
+ * output union. `defineCodec` calls this once and hands the result to the
+ * `output` config function; mirrors the input side's
+ * {@link import('./input-descriptors.js').inputBuilder}.
  * @template U - The codec's output union.
  * @returns The direction-scoped {@link OutputBuilder}.
  */
@@ -304,4 +390,7 @@ export const outputBuilder = <U extends { type: string }>(): OutputBuilder<U> =>
   stream: (kind, spec) =>
     // CAST: see `event` — the narrowed stream spec erases to `OutputDescriptor<U>`.
     ({ construct: 'stream', kind, ...spec }) as unknown as OutputDescriptor<U>,
+  // No spec to erase: a drop descriptor is just its dispatch type, so it
+  // matches OutputDropDescriptor (a member of the union) with no cast.
+  drop: (type) => ({ construct: 'drop', type }),
 });

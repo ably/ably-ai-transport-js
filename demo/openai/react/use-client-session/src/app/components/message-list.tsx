@@ -1,0 +1,155 @@
+'use client';
+
+import { useRef, useEffect } from 'react';
+import type { OpenAIMessage } from '@ably/ai-transport/openai';
+import type { BranchHandle, CodecMessage, RunInfo } from '@ably/ai-transport';
+import { MessageBubble } from './message-bubble';
+import { IntroCard } from './intro-card';
+import { collectToolOutputs, toRenderItems } from '../helpers';
+
+interface ViewLookupApi {
+  branchSelection: (codecMessageId: string) => BranchHandle<OpenAIMessage>;
+  runOf: (codecMessageId: string) => RunInfo | undefined;
+}
+
+interface MessageListProps {
+  // Visible messages paired with their codec-message-ids. The list keys all
+  // View correlation (runOf / branchSelection / edit / regenerate) on the
+  // codec-message-id, never a domain message id.
+  messages: CodecMessage<OpenAIMessage>[];
+  hasOlder: boolean;
+  loading: boolean;
+  view: ViewLookupApi;
+  onLoadOlder: () => void;
+  onRegenerate: (codecMessageId: string) => void;
+  onEdit: (codecMessageId: string, newText: string) => void;
+}
+
+export function MessageList({
+  messages,
+  hasOlder,
+  loading,
+  view,
+  onLoadOlder,
+  onRegenerate,
+  onEdit,
+}: MessageListProps) {
+  const endRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // Whether the view is "stuck" to the bottom. While true, new content
+  // (including tokens streaming into the last message) keeps the latest output
+  // in view so it stays in sync across tabs. Set false when the user scrolls
+  // up, so we obey the scrollbar instead of yanking it back down.
+  const pinnedToBottomRef = useRef(true);
+
+  // Follow streaming output, not just new messages: this runs on every render
+  // caused by a `messages` change, which includes tokens appended to the last
+  // message. Only auto-scroll while pinned to the bottom.
+  useEffect(() => {
+    if (pinnedToBottomRef.current) {
+      endRef.current?.scrollIntoView({ behavior: 'auto' });
+    }
+  }, [messages]);
+
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    // Re-pin once the user is within a small threshold of the bottom; unpin as
+    // soon as they scroll away. The threshold absorbs sub-pixel rounding and
+    // the scroll event fired by our own auto-scroll.
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    pinnedToBottomRef.current = distanceFromBottom < 80;
+
+    if (hasOlder && !loading && el.scrollTop < 60) {
+      onLoadOlder();
+    }
+  };
+
+  // A run splits its work across messages, so a function_call and its
+  // function_call_output land in separate messages. Collect every output up
+  // front, keyed by call_id, so a call's tool card can show a result published
+  // in a sibling message.
+  const toolOutputs = collectToolOutputs(messages.map(({ message }) => message));
+
+  // Hide messages that render nothing — a message holding only
+  // function_call_output items produces no parts (its output shows on the
+  // call's message), so it would otherwise draw an empty bubble.
+  const visibleMessages = messages.filter(({ message }) => toRenderItems(message, toolOutputs).length > 0);
+
+  // Runs whose output is visible carry their terminal error on their own
+  // assistant bubble(s). A run that failed before producing any output has no
+  // such bubble, so its error renders under the triggering user message
+  // instead — `runOf` resolves an input to its selected reply run, so a
+  // successful regenerate replaces the errored run and the error disappears.
+  const runsWithVisibleOutput = new Set(
+    visibleMessages
+      .filter(({ message }) => message.role === 'assistant')
+      .flatMap(({ codecMessageId }) => view.runOf(codecMessageId)?.runId ?? []),
+  );
+
+  return (
+    <div
+      ref={scrollRef}
+      onScroll={handleScroll}
+      className="flex-1 overflow-y-auto px-4 py-4 space-y-4"
+    >
+      <IntroCard />
+      {hasOlder && (
+        <div className="text-center">
+          <button
+            onClick={onLoadOlder}
+            disabled={loading}
+            className="text-xs text-zinc-500 hover:text-zinc-300 disabled:opacity-40 transition-colors"
+          >
+            {loading ? 'Loading...' : 'Load older messages'}
+          </button>
+        </div>
+      )}
+      {loading && <div className="text-center text-xs text-zinc-600 animate-pulse">Loading history...</div>}
+      {visibleMessages.length === 0 && !loading && (
+        <p className="text-sm text-zinc-600 text-center mt-20">Send a message to start chatting.</p>
+      )}
+      {visibleMessages.map(({ codecMessageId, message }) => {
+        // Project the owning Run + branch-selection bundle into primitives
+        // at this glue layer so the MessageBubble component stays free of
+        // transport type dependencies. The bundle is total — safe to
+        // destructure for any message; non-anchor bubbles return
+        // `siblings = [message]` (length 1) so the bubble's render condition
+        // uses `hasSiblings`. All correlation keys on the codec-message-id.
+        const run = view.runOf(codecMessageId);
+        const branch = view.branchSelection(codecMessageId);
+        // Translate the literal Run lifecycle state to the bubble's
+        // rendering vocabulary: `'active'` → `'streaming'`.
+        const bubbleStatus = run?.status === 'active' ? 'streaming' : run?.status;
+        // The run's terminal error, placed per the rule above: on the run's
+        // assistant output when any is visible, else on the triggering user
+        // bubble.
+        const errorMessage =
+          run?.status === 'error' && (message.role === 'assistant' || !runsWithVisibleOutput.has(run.runId))
+            ? run.error.message
+            : undefined;
+        return (
+          <MessageBubble
+            key={codecMessageId}
+            message={message}
+            toolOutputs={toolOutputs}
+            clientId={run?.clientId || undefined}
+            runId={run?.runId}
+            status={bubbleStatus}
+            errorMessage={errorMessage}
+            hasSiblings={branch.hasSiblings}
+            siblingCount={branch.siblings.length}
+            selectedIndex={branch.index}
+            onSelectSibling={(index) => {
+              branch.select(index);
+            }}
+            onRegenerate={message.role === 'assistant' ? () => onRegenerate(codecMessageId) : undefined}
+            onEdit={message.role === 'user' ? (text) => onEdit(codecMessageId, text) : undefined}
+          />
+        );
+      })}
+      <div ref={endRef} />
+    </div>
+  );
+}

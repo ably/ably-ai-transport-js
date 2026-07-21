@@ -30,7 +30,7 @@ const createVercelLifecycleTracker = (): LifecycleTracker<AI.UIMessageChunk> =>
 
 /**
  * Build a fresh Vercel decode lifecycle policy (with its own tracker). Passed
- * to `defineCodec` as the `decodeLifecycle` factory so each decoder instance
+ * to `defineCodec` as the `decoderSynthesiseLifecycle` factory so each decoder instance
  * gets independent per-run phase state.
  * @returns A {@link LifecyclePolicy} for the Vercel output union.
  */

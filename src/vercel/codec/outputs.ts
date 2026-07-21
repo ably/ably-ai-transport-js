@@ -41,65 +41,64 @@ import {
  * direction-scoped builder.
  * @param builder - The `{ event, stream }` builder curried on `VercelOutput`.
  * @param builder.event - Define a single discrete output event.
- * @param builder.stream - Define a streamed output family (start / delta / end).
+ * @param builder.stream - Define a streamed output group (start / delta / end).
  * @returns The output descriptor table the generic output drivers consume.
  */
 export const outputs = ({ event, stream }: OutputBuilder<VercelOutput>): readonly OutputDescriptor<VercelOutput>[] => [
-  // --- streamed families -----------------------------------------------------
+  // --- streamed groups -------------------------------------------------------
 
   stream('text', {
-    start: 'text-start',
-    delta: 'text-delta',
-    end: 'text-end',
-    idField: 'id',
-    deltaField: 'delta',
+    streamId: (c) => c.id,
     fields: [fId, fMeta],
+    start: { type: 'text-start' },
+    delta: { type: 'text-delta', field: 'delta', decode: ({ rebuild }) => rebuild([fId]) },
+    end: { type: 'text-end' },
   }),
 
   stream('reasoning', {
-    start: 'reasoning-start',
-    delta: 'reasoning-delta',
-    end: 'reasoning-end',
-    idField: 'id',
-    deltaField: 'delta',
+    streamId: (c) => c.id,
     fields: [fId, fMeta],
+    start: { type: 'reasoning-start' },
+    delta: { type: 'reasoning-delta', field: 'delta', decode: ({ rebuild }) => rebuild([fId]) },
+    end: { type: 'reasoning-end' },
   }),
 
   // tool-input streams; the close step is a close-or-discrete fallback, the end
-  // chunk reconstructs `input` from the accumulated text, and the family also
+  // chunk reconstructs `input` from the accumulated text, and the group also
   // decodes from a non-streamed discrete publish.
   stream('tool-input', {
-    start: 'tool-input-start',
-    delta: 'tool-input-delta',
-    end: 'tool-input-available',
-    idField: 'toolCallId',
-    deltaField: 'inputTextDelta',
+    streamId: (c) => c.toolCallId,
     fields: [fToolCallId, fToolName, fDynamic, fTitle, fProviderExecuted, fMeta],
-    onEnd: async (c, core, { h, name }) => {
-      try {
-        await core.closeStream(c.toolCallId, {
-          name,
-          data: '',
-          codecHeaders: h(c, ['toolCallId', 'toolName', 'providerMetadata']),
-        });
-      } catch (error: unknown) {
-        // closeStream raises InvalidArgument when there is no active stream for
-        // this id; fall through to a discrete publish, rethrow anything else.
-        if (!(error instanceof Ably.ErrorInfo && errorInfoIs(error, ErrorCode.InvalidArgument))) {
-          throw error;
+    start: { type: 'tool-input-start' },
+    delta: { type: 'tool-input-delta', field: 'inputTextDelta', decode: ({ rebuild }) => rebuild([fToolCallId]) },
+    end: {
+      type: 'tool-input-available',
+      encode: async (c, core, { h, name }) => {
+        try {
+          await core.closeStream(c.toolCallId, {
+            name,
+            data: '',
+            codecHeaders: h(c, ['toolCallId', 'toolName', 'providerMetadata']),
+          });
+        } catch (error: unknown) {
+          // closeStream raises InvalidArgument when there is no active stream for
+          // this id; fall through to a discrete publish, rethrow anything else.
+          if (!(error instanceof Ably.ErrorInfo && errorInfoIs(error, ErrorCode.InvalidArgument))) {
+            throw error;
+          }
+          await core.publishDiscrete({ name, data: c.input, codecHeaders: h(c) });
         }
-        await core.publishDiscrete({ name, data: c.input, codecHeaders: h(c) });
-      }
+      },
+      decode: ({ streamId, accumulated, codecHeaders, closingCodecHeaders }) => [
+        stripUndefined({
+          type: 'tool-input-available' as const,
+          toolCallId: streamId,
+          toolName: fToolName.read(closingCodecHeaders) || fToolName.read(codecHeaders),
+          input: parseJsonOrString(accumulated),
+          providerMetadata: fMeta.read(closingCodecHeaders),
+        }),
+      ],
     },
-    decodeEnd: ({ streamId, accumulated, codecHeaders, closingCodecHeaders }) => [
-      stripUndefined({
-        type: 'tool-input-available' as const,
-        toolCallId: streamId,
-        toolName: fToolName.read(closingCodecHeaders) || fToolName.read(codecHeaders),
-        input: parseJsonOrString(accumulated),
-        providerMetadata: fMeta.read(closingCodecHeaders),
-      }),
-    ],
     decodeDiscrete: ({ codecHeaders, data }) => [
       stripUndefined({
         type: 'tool-input-start' as const,

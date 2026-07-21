@@ -1,6 +1,6 @@
 import * as Ably from 'ably';
 
-import { ablyApiKey, isLocalEnvironment, testEndpoint } from './environment.js';
+import { ablyApiKey, isLocalEnvironment, localSandboxRouting, testEndpoint } from './environment.js';
 import { randomClientId } from './identifier.js';
 
 const clients: Ably.Realtime[] = [];
@@ -21,6 +21,16 @@ const baseOptions = (options?: Ably.ClientOptions): Ably.ClientOptions => {
   if (isLocalEnvironment()) {
     merged.port = 8081;
     merged.tls = false;
+  }
+
+  // When provisioned against a local sandbox, route every client at the
+  // isolated server that sandbox booted for this app (its own endpoint/port,
+  // plaintext ws/http), overriding the cloud endpoint set above.
+  const localSandbox = localSandboxRouting();
+  if (localSandbox) {
+    merged.endpoint = localSandbox.endpoint;
+    merged.port = localSandbox.port;
+    merged.tls = localSandbox.tls;
   }
 
   return merged;

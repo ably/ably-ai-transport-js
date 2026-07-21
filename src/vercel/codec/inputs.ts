@@ -51,7 +51,7 @@ export const inputs = ({ event, batch }: InputBuilder<VercelInput>): readonly In
     fields: [fToolCallId],
     data: {
       encode: (p) => ({ output: p.output }),
-      // Malformed wire data decodes to undefined, which the rebuild seam strips
+      // Malformed wire data decodes to undefined, which the rebuild boundary strips
       // — the folded payload then has no `output` key (reads as undefined).
       decode: (d) => ({ output: isToolOutputAvailableWireData(d) ? d.output : undefined }),
     },

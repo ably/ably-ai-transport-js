@@ -4476,7 +4476,7 @@ const makeInputMsg = (
 // ---------------------------------------------------------------------------
 
 /**
- * Extract the `extras.ai.transport` header bag from a synthetic inbound message.
+ * Extract the `extras.ai.transport` transport header fields from a synthetic inbound message.
  * @param m - The inbound message.
  * @returns The transport header record (empty if absent).
  */

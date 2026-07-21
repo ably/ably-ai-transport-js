@@ -18,8 +18,8 @@
 
 import type * as Ably from 'ably';
 
-import { wildcardMatcher } from './field-bag.js';
 import type { DataCodec, FieldFor, HeaderField } from './fields.js';
+import { wildcardMatcher } from './header-fields.js';
 import type { MessagePayload, WriteOptions } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -147,7 +147,7 @@ export interface PartSpec<Q> {
  * Mirrors the {@link inputBuilder} `event` curry one level down — and the
  * output builder's wildcard idiom: `p(partType, spec)` narrows `spec` to the
  * part member the literal selects, and a `-*` literal (e.g. `data-*`) declares
- * a wildcard family whose dispatch predicate is derived from the literal's
+ * a wildcard group whose dispatch predicate is derived from the literal's
  * prefix, narrowing `spec` to the template member. Both forms are cast-free in
  * author code.
  * @template P - The part union.
@@ -238,7 +238,7 @@ export interface InputEventDescriptor {
 
 /** An erased per-part wire mapping within a {@link BatchDescriptor}. */
 export interface PartDescriptor {
-  /** The exact `partType` this part encodes as (the wildcard sentinel for a family). */
+  /** The exact `partType` this part encodes as (the wildcard sentinel for a group). */
   partType: string;
   /** Decode-dispatch predicate for a wildcard part; absent for an exact part. */
   match?: (partType: string) => boolean;
@@ -317,7 +317,7 @@ export const inputBuilder = <U extends { kind: string }>(): InputBuilder<U> => {
     data?: DataCodec<unknown>;
   }
   const part = (partType: string, spec: ErasedPartSpec): PartDescriptor => {
-    // A `-*` literal declares a wildcard family; the dispatch predicate is
+    // A `-*` literal declares a wildcard group; the dispatch predicate is
     // derived from the literal so the two can never disagree (see wildcardMatcher).
     const match = wildcardMatcher(partType);
     return {

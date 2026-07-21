@@ -14,7 +14,7 @@
 import * as Ably from 'ably';
 
 import { ErrorCode } from '../../errors.js';
-import { KIND_HEADER, PART_TYPE_HEADER, partFor, prop, writeFields } from './field-bag.js';
+import { KIND_HEADER, PART_TYPE_HEADER, partFor, prop, writeFields } from './header-fields.js';
 import type {
   BatchDescriptor,
   BatchMessageHeaders,

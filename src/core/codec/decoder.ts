@@ -20,7 +20,7 @@ import type * as Ably from 'ably';
 import { HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../constants.js';
 import type { Logger } from '../../logger.js';
 import { getCodecHeaders, getTransportHeaders } from '../../utils.js';
-import type { MessagePayload, StreamTrackerState } from './types.js';
+import type { MessagePayload, StreamSequenceState } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Options
@@ -29,9 +29,9 @@ import type { MessagePayload, StreamTrackerState } from './types.js';
 /** Options for creating a decoder core. */
 export interface DecoderCoreOptions {
   /** Called when a tracked stream is replaced (non-prefix update). Receives the tracker with updated state. */
-  onStreamUpdate?: (tracker: StreamTrackerState) => void;
+  onStreamUpdate?: (tracker: StreamSequenceState) => void;
   /** Called when a message is deleted. Receives the serial and tracker (if one exists). */
-  onStreamDelete?: (serial: string, tracker: StreamTrackerState | undefined) => void;
+  onStreamDelete?: (serial: string, tracker: StreamSequenceState | undefined) => void;
   /** Logger instance for diagnostic output. */
   logger?: Logger;
 }
@@ -46,17 +46,17 @@ export interface DecoderCoreHooks<TEvent> {
    * Build domain events emitted when a new stream starts. May return multiple
    * events (e.g. a start event and a start-step event).
    */
-  buildStartEvents(tracker: StreamTrackerState): TEvent[];
+  buildStartEvents(tracker: StreamSequenceState): TEvent[];
 
   /** Build domain events for a text delta received on a stream. */
-  buildDeltaEvents(tracker: StreamTrackerState, delta: string): TEvent[];
+  buildDeltaEvents(tracker: StreamSequenceState, delta: string): TEvent[];
 
   /**
    * Build domain events emitted when a stream completes (status:complete).
    * Not called for cancelled streams. The closing codec headers may differ
    * from tracker.codecHeaders if the closing append carried updated headers.
    */
-  buildEndEvents(tracker: StreamTrackerState, closingCodecHeaders: Record<string, string>): TEvent[];
+  buildEndEvents(tracker: StreamSequenceState, closingCodecHeaders: Record<string, string>): TEvent[];
 
   /**
    * Decode a discrete message (a `message.create` whose stream header is not
@@ -84,9 +84,9 @@ export interface DecoderCore<TEvent> {
 class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
   private readonly _hooks: DecoderCoreHooks<TEvent>;
   private readonly _logger: Logger | undefined;
-  private readonly _onStreamUpdate: ((tracker: StreamTrackerState) => void) | undefined;
-  private readonly _onStreamDelete: ((serial: string, tracker: StreamTrackerState | undefined) => void) | undefined;
-  private readonly _serialState = new Map<string, StreamTrackerState>();
+  private readonly _onStreamUpdate: ((tracker: StreamSequenceState) => void) | undefined;
+  private readonly _onStreamDelete: ((serial: string, tracker: StreamSequenceState | undefined) => void) | undefined;
+  private readonly _serialState = new Map<string, StreamSequenceState>();
 
   constructor(hooks: DecoderCoreHooks<TEvent>, options: DecoderCoreOptions = {}) {
     this._hooks = hooks;
@@ -154,7 +154,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
   // Private: safe callback invocation
   // -------------------------------------------------------------------------
 
-  private _invokeOnStreamUpdate(tracker: StreamTrackerState): void {
+  private _invokeOnStreamUpdate(tracker: StreamSequenceState): void {
     if (!this._onStreamUpdate) return;
     try {
       this._onStreamUpdate(tracker);
@@ -163,7 +163,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
     }
   }
 
-  private _invokeOnStreamDelete(serial: string, tracker: StreamTrackerState | undefined): void {
+  private _invokeOnStreamDelete(serial: string, tracker: StreamSequenceState | undefined): void {
     if (!this._onStreamDelete) return;
     try {
       this._onStreamDelete(serial, tracker);
@@ -198,7 +198,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
   private _alreadyIncorporated(
     method: string,
     serial: string,
-    tracker: StreamTrackerState,
+    tracker: StreamSequenceState,
     version: string | undefined,
   ): boolean {
     if (version !== undefined && version <= tracker.version) {
@@ -224,7 +224,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
    * full content for the decoder's lifetime.
    * @param tracker - The tracker to close.
    */
-  private _closeTracker(tracker: StreamTrackerState): void {
+  private _closeTracker(tracker: StreamSequenceState): void {
     tracker.closed = true;
     tracker.accumulated = '';
   }
@@ -248,7 +248,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
    * @returns True when this call closed the tracker; false otherwise.
    */
   private _applyTerminalStatus(
-    tracker: StreamTrackerState,
+    tracker: StreamSequenceState,
     status: string | undefined,
     closingCodecHeaders: Record<string, string>,
     outputs: TEvent[],
@@ -288,7 +288,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
 
     const streamId = payload.transportHeaders?.[HEADER_STREAM_ID] ?? '';
 
-    const tracker: StreamTrackerState = {
+    const tracker: StreamSequenceState = {
       name: payload.name,
       streamId,
       accumulated: '',
@@ -428,7 +428,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
     });
 
     // Create tracker
-    const newTracker: StreamTrackerState = {
+    const newTracker: StreamSequenceState = {
       name: payload.name,
       streamId,
       accumulated: data,

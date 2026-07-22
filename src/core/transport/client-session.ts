@@ -559,6 +559,9 @@ class DefaultClientSession<
       const parent = entry.parent ?? (sendOptions?.parent === undefined ? autoParent : sendOptions.parent);
       const forkOf = sendOptions?.forkOf;
       const regenerates = entry.kind === 'regenerate' ? entry.target : undefined;
+      // A client tool-result fork stamps the run-id it supersedes (the suspended
+      // run it resolves) so the Tree hides that dead run from branch selection.
+      const supersedes = sendOptions?.supersedes;
 
       const headers = buildTransportHeaders({
         role,
@@ -568,6 +571,7 @@ class DefaultClientSession<
         ...(parent !== undefined && { parent }),
         ...(forkOf !== undefined && { forkOf }),
         ...(regenerates !== undefined && { regenerates }),
+        ...(supersedes !== undefined && { supersedes }),
         inputEventId,
       });
 

@@ -15,6 +15,7 @@
 import type * as AI from 'ai';
 
 import type {
+  CodecMessage,
   Regenerate,
   ToolApprovalResponse,
   ToolResult,
@@ -31,12 +32,45 @@ import type {
 // the core.
 // ---------------------------------------------------------------------------
 
+/**
+ * A self-contained copy of the SUSPENDED RUN's full message list, so a fork
+ * continuation reconstructs that run's entire projection in its OWN run without
+ * depending on the suspended run it forked from.
+ *
+ * Carried on a tool-result / tool-result-error input when the client opens a
+ * fork continuation (a concurrent answer to a shared tool call). Each seed
+ * message pairs a FRESH client-minted `codecMessageId` with the message content
+ * (its domain `id` + parts) in its current state — prior resolved tool calls as
+ * well as the one being answered now. The reducer uses it only when the target
+ * assistant is absent from the fork's projection: it reconstructs every seed
+ * message (registering tool-part trackers), then applies this fork's result
+ * onto the target — reconstructing the same run the trunk holds, carrying THIS
+ * fork's result and the FULL prior context. Carrying the whole run (not just the
+ * current tool-call assistant) keeps context across SEQUENTIAL client tool
+ * calls. See `fold-input.ts`.
+ */
+export interface ForkSeed {
+  /**
+   * The suspended run's message list, each under a FRESH client-minted
+   * `codecMessageId`, in publication order. Carries the messages in their
+   * current state (earlier tool calls already resolved; the current one still
+   * awaiting this result, applied separately from the input's own payload).
+   */
+  messages: CodecMessage<AI.UIMessage>[];
+}
+
 /** Vercel domain payload for a {@link ToolResult}. */
 export interface VercelToolResultPayload {
   /** The tool call this result corresponds to. */
   toolCallId: string;
   /** The tool's output value. Tool-defined shape. */
   output: unknown;
+  /**
+   * Fork-continuation reconstruction seed (see {@link ForkSeed}). Present only
+   * when this result opens a fork run for a concurrently-answered tool call;
+   * omitted for a result folding onto an assistant already in the projection.
+   */
+  forkSeed?: ForkSeed;
 }
 
 /** Vercel domain payload for a {@link ToolResultError}. */
@@ -45,6 +79,11 @@ export interface VercelToolResultErrorPayload {
   toolCallId: string;
   /** Human-readable description of the failure. */
   message: string;
+  /**
+   * Fork-continuation reconstruction seed (see {@link ForkSeed}); present under
+   * the same condition as on {@link VercelToolResultPayload}.
+   */
+  forkSeed?: ForkSeed;
 }
 
 /** Vercel domain payload for a {@link ToolApprovalResponse}. */

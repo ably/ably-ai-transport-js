@@ -484,6 +484,13 @@ class DefaultClientSession<
     // reuses the existing run-id the caller passed.
     const runId = sendOptions?.runId;
 
+    // The wire role for this send's inputs. Defaults to 'user' (a plain client
+    // send). A client tool-result fork passes 'assistant': it is published
+    // run-less and reconstructs an assistant turn, so the codec-agnostic Tree
+    // reads the non-'user' role to classify the run-less fork as a reply run
+    // rather than a user input node (see SendOptions.role / Tree.applyMessage).
+    const role = sendOptions?.role ?? 'user';
+
     // Spec: AIT-CT3d
     // Auto-compute parent from the visible branch tail when not explicitly
     // provided. The View pre-resolves the codec-message-id of the last visible message
@@ -554,7 +561,7 @@ class DefaultClientSession<
       const regenerates = entry.kind === 'regenerate' ? entry.target : undefined;
 
       const headers = buildTransportHeaders({
-        role: 'user',
+        role,
         runId,
         codecMessageId,
         runClientId: this._resolveClientId(),

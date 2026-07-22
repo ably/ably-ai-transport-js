@@ -242,6 +242,11 @@ export const parseRunLifecycle = (
     const parent = headers[HEADER_PARENT];
     const forkOf = headers[HEADER_FORK_OF];
     const regenerates = headers[HEADER_MSG_REGENERATE];
+    // The triggering input's codec-message-id, already stamped on the wire by
+    // `buildLifecycleHeaders`. Carried onto the 'start' event so the Tree can
+    // reconcile a client-owned optimistic fork run (keyed by this same
+    // codec-message-id) onto the agent-minted run-id.
+    const inputCodecMessageId = headers[HEADER_INPUT_CODEC_MESSAGE_ID];
     return {
       type: 'start',
       runId,
@@ -252,6 +257,7 @@ export const parseRunLifecycle = (
       ...(parent !== undefined && { parent }),
       ...(forkOf !== undefined && { forkOf }),
       ...(regenerates !== undefined && { regenerates }),
+      ...(inputCodecMessageId !== undefined && { inputCodecMessageId }),
     };
   }
 

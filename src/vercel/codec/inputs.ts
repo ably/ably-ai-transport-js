@@ -18,12 +18,41 @@ import type * as AI from 'ai';
 
 import { HEADER_ROLE } from '../../constants.js';
 import type { InputBuilder, InputDescriptor } from '../../core/codec/index.js';
-import type { VercelInput } from './events.js';
+import type { ForkSeed, VercelInput } from './events.js';
 import { fApproved, fId, fMediaType, fMessageId, fReason, fToolCallId } from './fields.js';
-import { asString, isClientToolResultErrorWireData, isToolOutputAvailableWireData } from './wire-data.js';
+import {
+  asString,
+  isClientToolResultErrorWireData,
+  isToolOutputAvailableWireData,
+  readForkSeedWireData,
+} from './wire-data.js';
 
 /** Fallback for a message with no encodable parts (see the `user-message` batch). */
 const EMPTY_MESSAGE_PARTS: AI.UIMessage['parts'] = [{ type: 'text', text: '' }];
+
+/**
+ * Spread the encoded fork-continuation `forkSeed` into a tool-result /
+ * tool-result-error wire `data` envelope, omitting the key when absent. The
+ * seed is plain JSON (a list of `{ codecMessageId, message }` entries), so it
+ * round-trips in `data` alongside `output` / `message`.
+ * @param seed - The payload's `forkSeed`, if present.
+ * @returns `{ forkSeed }` when present, else `{}`.
+ */
+const encodeForkSeed = (seed: ForkSeed | undefined): { forkSeed?: ForkSeed } =>
+  seed === undefined ? {} : { forkSeed: seed };
+
+/**
+ * Decode the fork-continuation `forkSeed` from a tool-result /
+ * tool-result-error wire `data` envelope, validating and filtering it at this
+ * trust boundary (see {@link readForkSeedWireData} — malformed parts are dropped
+ * so they never reach the reducer).
+ * @param d - The JSON-parsed input `data` envelope.
+ * @returns `{ forkSeed }` when a valid seed is present, else `{}`.
+ */
+const decodeForkSeed = (d: unknown): { forkSeed?: ForkSeed } => {
+  const seed = readForkSeedWireData(d);
+  return seed === undefined ? {} : { forkSeed: seed };
+};
 
 /**
  * Part types the `user-message` batch's `parts` sub-table can encode — must
@@ -50,17 +79,24 @@ export const inputs = ({ event, batch }: InputBuilder<VercelInput>): readonly In
   event('tool-result', {
     fields: [fToolCallId],
     data: {
-      encode: (p) => ({ output: p.output }),
+      encode: (p) => ({ output: p.output, ...encodeForkSeed(p.forkSeed) }),
       // Malformed wire data decodes to undefined, which the rebuild boundary strips
-      // — the folded payload then has no `output` key (reads as undefined).
-      decode: (d) => ({ output: isToolOutputAvailableWireData(d) ? d.output : undefined }),
+      // — the folded payload then has no `output` key (reads as undefined). The
+      // optional `forkSeed` rides a fork continuation (omitted otherwise).
+      decode: (d) => ({
+        output: isToolOutputAvailableWireData(d) ? d.output : undefined,
+        ...decodeForkSeed(d),
+      }),
     },
   }),
   event('tool-result-error', {
     fields: [fToolCallId],
     data: {
-      encode: (p) => ({ message: p.message }),
-      decode: (d) => ({ message: isClientToolResultErrorWireData(d) ? (d.message ?? '') : '' }),
+      encode: (p) => ({ message: p.message, ...encodeForkSeed(p.forkSeed) }),
+      decode: (d) => ({
+        message: isClientToolResultErrorWireData(d) ? (d.message ?? '') : '',
+        ...decodeForkSeed(d),
+      }),
     },
   }),
   event('tool-approval-response', { fields: [fToolCallId, fApproved, fReason] }),

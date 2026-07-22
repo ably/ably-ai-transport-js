@@ -225,6 +225,46 @@ const createMockSession = (): MockSession => {
   return { session, send, regenerate, cancel, close, mockRun, tree, view };
 };
 
+// Drive one continuation through the chat transport (a useChat auto-submit after
+// a client tool result): submit-message whose last overlay message is the
+// tracked assistant carrying the executed tool.
+const sendContinuation = async (mock: ReturnType<typeof createMockSession>, overlay: AI.UIMessage[]): Promise<void> => {
+  const chat = createChatTransport(mock.session);
+  await chat.sendMessages({
+    trigger: 'submit-message',
+    chatId: 'chat-1',
+    messageId: undefined,
+    messages: overlay,
+    abortSignal: undefined,
+  });
+};
+
+// The send options a tab's continuation dispatched with.
+const sendOptsOf = (mock: ReturnType<typeof createMockSession>): SendOptions | undefined => {
+  const call = mock.send.mock.calls[0] as [VercelInput[], SendOptions] | undefined;
+  return call?.[1];
+};
+
+// The fork branch a tab's continuation opened — identified by the fork
+// tool-result's target codec-message-id (the client-owned optimistic reply-run
+// key the agent reconciles to its minted run-id), since the fork is run-less.
+const forkTargetOf = (mock: ReturnType<typeof createMockSession>): string | undefined => {
+  const call = mock.send.mock.calls[0] as [VercelInput[], SendOptions] | undefined;
+  const toolResult = call?.[0].find(
+    (input): input is Extract<VercelInput, { kind: 'tool-result' }> => input.kind === 'tool-result',
+  );
+  return toolResult?.codecMessageId;
+};
+
+// The tool-result output a tab's continuation carried.
+const resultOutputOf = (mock: ReturnType<typeof createMockSession>): unknown => {
+  const call = mock.send.mock.calls[0] as [VercelInput[], SendOptions] | undefined;
+  const toolResult = call?.[0].find(
+    (input): input is Extract<VercelInput, { kind: 'tool-result' }> => input.kind === 'tool-result',
+  );
+  return toolResult?.payload.output;
+};
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1218,9 +1258,9 @@ describe('createChatTransport', () => {
   // sendMessages — continuation: codecMessageId threading
   // -------------------------------------------------------------------------
 
-  describe('sendMessages — continuation codecMessageId', () => {
-    it('passes the prior assistant tree codec-message-id as codecMessageId for a client-tool resolution', async () => {
-      const { session, send, view, mockRun } = createMockSession();
+  describe('sendMessages — continuation forks a client-tool resolution', () => {
+    it('forks into a fresh reply run, reconstructing the tool-call assistant from a seed', async () => {
+      const { session, send, view, tree, mockRun } = createMockSession();
 
       const user1 = makeMessage('u1');
       // Tree view: getLocation is unresolved (input-available).
@@ -1249,12 +1289,22 @@ describe('createChatTransport', () => {
       };
 
       (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue(asPairs([user1, treeAssistant]));
-      // Continuation flow calls runOf(lastMessage.id) to find the runId.
+      // Continuation flow resolves the suspended run by the assistant's
+      // codec-message-id; the fork then reads the run node for its parent.
       (view.runOf as ReturnType<typeof vi.fn>).mockReturnValue({
-        runId: 'run-a1',
-        clientId: '',
-        status: 'active',
+        runId: 'run-suspended',
+        clientId: 'user-a',
+        status: 'suspended',
         invocationId: '',
+      });
+      (tree.getRunNode as ReturnType<typeof vi.fn>).mockReturnValue({
+        kind: 'run',
+        runId: 'run-suspended',
+        parentCodecMessageId: 'u1',
+        state: { status: 'suspended' },
+        // The suspended run's projection — the source of the fork seed. Here the
+        // run holds its single tool-call assistant (getLocation, unresolved).
+        projection: { messages: asPairs([treeAssistant]), trackers: new Map(), pendingToolResolutions: [] },
       });
 
       const chat = createChatTransport(session);
@@ -1270,20 +1320,39 @@ describe('createChatTransport', () => {
       mockRun.close();
       await streamPromise;
 
-      const [input] = send.mock.calls[0] as [VercelInput[]];
+      const [input, opts] = send.mock.calls[0] as [VercelInput[], SendOptions];
 
-      // chat-transport passes tool-resolution inputs to view.send.
-      // Each input carries `codecMessageId` so the SDK stamps the wire
-      // HEADER_CODEC_MESSAGE_ID to 'a1' — the reducer's direct-fold path
-      // then matches by codec-message-id and folds onto the existing
-      // assistant without a cross-message redirect.
+      // A client tool result forks: the resolution opens its OWN reply run so
+      // concurrent answers segregate. It addresses a FRESH codec-message-id (not
+      // the tree assistant's) and carries a `forkSeed` — the suspended run's full
+      // message list under fresh ids — so the fork run's reducer reconstructs
+      // that run before folding this result.
       expect(input).toHaveLength(1);
       expect(input[0]?.kind).toBe('tool-result');
-      expect(input[0]?.codecMessageId).toBe('a1');
+      expect(input[0]?.codecMessageId).toBeDefined();
+      expect(input[0]?.codecMessageId).not.toBe('a1');
+      const toolResult = input[0]?.kind === 'tool-result' ? input[0] : undefined;
+      // The seed carries the suspended run's message list; the single message is
+      // the tool-call assistant (domain id 'a1') under a fresh codec-message-id.
+      expect(toolResult?.payload.forkSeed?.messages).toHaveLength(1);
+      const seedMsg = toolResult?.payload.forkSeed?.messages[0];
+      expect(seedMsg?.message.id).toBe('a1');
+      expect(seedMsg?.message.parts).toContainEqual(
+        expect.objectContaining({ type: 'dynamic-tool', toolCallId: 'tc1', state: 'input-available' }),
+      );
+      // The result targets the fresh id of the seed message carrying tc1.
+      expect(input[0]?.codecMessageId).toBe(seedMsg?.codecMessageId);
+      // The fork is published RUN-LESS (the agent mints the fork's run-id, not
+      // the client), rooted at the suspended run's own input node so it is a
+      // same-parent sibling, and marked role:'assistant' so the tree treats the
+      // run-less input as a reply run rather than a user input node.
+      expect(opts.runId).toBeUndefined();
+      expect(opts.parent).toBe('u1');
+      expect(opts.role).toBe('assistant');
     });
 
-    it('routes a continuation by codec-message-id even when it differs from the domain message id', async () => {
-      const { session, send, view, mockRun } = createMockSession();
+    it('resolves the fork parent from the suspended run by codec-message-id, never the domain id', async () => {
+      const { session, send, view, tree, mockRun } = createMockSession();
 
       const user1 = makeMessage('u1');
       // The assistant's domain id ('a1', preserved from the stream) is NOT its
@@ -1315,10 +1384,29 @@ describe('createChatTransport', () => {
         { codecMessageId: 'codec-u1', message: user1 },
         { codecMessageId: 'codec-a1', message: treeAssistant },
       ]);
-      // runOf resolves the runId ONLY when queried by the codec-message-id —
-      // a lookup by the domain id 'a1' would miss and leave runId unset.
+      // runOf resolves the suspended run ONLY when queried by the
+      // codec-message-id — a lookup by the domain id 'a1' would miss.
       (view.runOf as ReturnType<typeof vi.fn>).mockImplementation((id: string) =>
-        id === 'codec-a1' ? { runId: 'run-a1', clientId: '', status: 'active', invocationId: '' } : undefined,
+        id === 'codec-a1'
+          ? { runId: 'run-suspended', clientId: 'user-a', status: 'suspended', invocationId: '' }
+          : undefined,
+      );
+      (tree.getRunNode as ReturnType<typeof vi.fn>).mockImplementation((runId: string) =>
+        runId === 'run-suspended'
+          ? {
+              kind: 'run',
+              runId: 'run-suspended',
+              parentCodecMessageId: 'codec-u1',
+              state: { status: 'suspended' },
+              // The suspended run's projection — the fork seed source (the
+              // tool-call assistant, keyed on its codec-message-id 'codec-a1').
+              projection: {
+                messages: [{ codecMessageId: 'codec-a1', message: treeAssistant }],
+                trackers: new Map(),
+                pendingToolResolutions: [],
+              },
+            }
+          : undefined,
       );
 
       const chat = createChatTransport(session);
@@ -1332,12 +1420,16 @@ describe('createChatTransport', () => {
       mockRun.close();
       await streamPromise;
 
-      // The emitted tool-result targets the codec-message-id 'codec-a1', and
-      // the runId resolved (via runOf keyed on 'codec-a1') flows to sendOpts —
-      // never the domain id 'a1'.
+      // The fork's parent is the suspended run's input node ('codec-u1'),
+      // resolved via runOf keyed on 'codec-a1' → getRunNode('run-suspended') —
+      // never the domain id 'a1'. The fork is run-less (the agent mints the
+      // run-id) and addresses a fresh assistant codec-message-id.
       const [input, opts] = send.mock.calls[0] as [VercelInput[], SendOptions];
-      expect(input[0]?.codecMessageId).toBe('codec-a1');
-      expect(opts.runId).toBe('run-a1');
+      expect(opts.parent).toBe('codec-u1');
+      expect(opts.runId).toBeUndefined();
+      expect(opts.role).toBe('assistant');
+      expect(input[0]?.codecMessageId).not.toBe('codec-a1');
+      expect(input[0]?.codecMessageId).not.toBe('a1');
     });
 
     // useChat's `addToolApprovalResponse` sets the overlay part to
@@ -1409,6 +1501,117 @@ describe('createChatTransport', () => {
         });
       },
     );
+
+    // Regression (locks D10): a SEQUENTIAL second client tool call by one client
+    // must not lose the prior context. Because EVERY client tool-result forks,
+    // the fork seed must carry the suspended run's FULL projection — the prior
+    // resolved tool call AND the current one — so the second fork's prompt keeps
+    // the first tool call + result rather than starting blank.
+    it('seeds a sequential second fork with the FULL run — the prior resolved tool call AND the current one', async () => {
+      const { session, send, view, tree, mockRun } = createMockSession();
+
+      const user1 = makeMessage('u1');
+      // The suspended run's projection: a PRIOR tool call already resolved
+      // (tc-prior → Paris), plus the CURRENT tool call awaiting a result
+      // (tc-current) — the shape a sequential multi-step run carries after the
+      // first fork resumed and made a second client tool call.
+      const priorAssistant: AI.UIMessage = {
+        id: 'a-prior',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'dynamic-tool',
+            toolName: 'getLocation',
+            toolCallId: 'tc-prior',
+            state: 'output-available',
+            input: {},
+            output: { city: 'Paris' },
+          },
+        ],
+      };
+      const currentTreeAssistant = makeAssistantWithToolPart('a-current', {
+        type: 'dynamic-tool',
+        toolName: 'getLocation',
+        toolCallId: 'tc-current',
+        state: 'input-available',
+        input: {},
+      });
+      // useChat overlay: the current tool executed to output-available.
+      const currentOverlay: AI.UIMessage = {
+        id: 'a-current',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'dynamic-tool',
+            toolName: 'getLocation',
+            toolCallId: 'tc-current',
+            state: 'output-available',
+            input: {},
+            output: { city: 'Berlin' },
+          },
+        ],
+      };
+
+      // Visible tree: only the current tool call is unresolved (drives the fork).
+      (view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue(asPairs([user1, currentTreeAssistant]));
+      (view.runOf as ReturnType<typeof vi.fn>).mockReturnValue({
+        runId: 'run-suspended',
+        clientId: 'user-a',
+        status: 'suspended',
+        invocationId: '',
+      });
+      // The suspended run's projection carries BOTH messages.
+      (tree.getRunNode as ReturnType<typeof vi.fn>).mockReturnValue({
+        kind: 'run',
+        runId: 'run-suspended',
+        parentCodecMessageId: 'u1',
+        state: { status: 'suspended' },
+        projection: {
+          messages: [
+            { codecMessageId: 'a-prior', message: priorAssistant },
+            { codecMessageId: 'a-current', message: currentTreeAssistant },
+          ],
+          trackers: new Map(),
+          pendingToolResolutions: [],
+        },
+      });
+
+      const chat = createChatTransport(session);
+      const streamPromise = chat.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'chat-1',
+        messageId: undefined,
+        messages: [user1, priorAssistant, currentOverlay],
+        abortSignal: undefined,
+      });
+      mockRun.close();
+      await streamPromise;
+
+      const [input, opts] = send.mock.calls[0] as [VercelInput[], SendOptions];
+      const toolResult = input.find(
+        (i): i is Extract<VercelInput, { kind: 'tool-result' }> => i.kind === 'tool-result',
+      );
+      const seed = toolResult?.payload.forkSeed;
+      // The fork seeds the FULL run — context is NOT lost across sequential calls.
+      expect(seed?.messages).toHaveLength(2);
+      const priorSeed = seed?.messages.find((m) => m.message.id === 'a-prior');
+      const currentSeed = seed?.messages.find((m) => m.message.id === 'a-current');
+      // The prior tool call is carried in its RESOLVED state (context preserved).
+      expect(priorSeed?.message.parts).toContainEqual(
+        expect.objectContaining({ toolCallId: 'tc-prior', state: 'output-available' }),
+      );
+      // The current tool call is carried awaiting this result.
+      expect(currentSeed?.message.parts).toContainEqual(
+        expect.objectContaining({ toolCallId: 'tc-current', state: 'input-available' }),
+      );
+      // The result targets the fresh id of the CURRENT tool-call message, on a
+      // run-less fork rooted at the suspended run's input node (the agent mints
+      // the run-id).
+      expect(toolResult?.codecMessageId).toBe(currentSeed?.codecMessageId);
+      expect(opts.parent).toBe('u1');
+      expect(opts.runId).toBeUndefined();
+      expect(opts.role).toBe('assistant');
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -1573,6 +1776,113 @@ describe('createChatTransport', () => {
 
       await expect(drain(stream)).resolves.toEqual([]);
       expect(mock.send).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // sendMessages — concurrent client tool results for one suspended tool call
+  // -------------------------------------------------------------------------
+  //
+  // Two sessions with the SAME clientId (e.g. two browser tabs) each execute the
+  // same client-side tool call on the ONE suspended run and each submit a
+  // DIFFERENT result. Each result must be segregated onto its OWN reply-run
+  // branch — not collapsed onto the single suspended run, where the two results
+  // would contaminate each other (last-writer-wins on the tool-call assistant,
+  // both follow-ups piled into one run projection).
+  //
+  // At the transport boundary the segregation shows up as: each continuation is
+  // dispatched (via view.send) to a DISTINCT reply-run branch (a distinct
+  // runId), rather than both re-entering the one suspended run. The full
+  // tree-level outcome (each branch carries only its own result and follow-up,
+  // each agent invocation's prompt clean) is asserted over real Ably in
+  // chat-transport.integration.test.ts.
+  describe('sendMessages — concurrent client tool results for one suspended tool call', () => {
+    // The one suspended run both tabs' continuations resolve today.
+    const SUSPENDED_RUN_ID = 'run-suspended';
+
+    // Wire one tab: the suspended run's getLocation tool call is unresolved in
+    // the tree; this tab's useChat overlay has executed the tool to `output`.
+    const wireTab = (output: {
+      city: string;
+    }): { mock: ReturnType<typeof createMockSession>; overlay: AI.UIMessage[] } => {
+      const mock = createMockSession();
+      const user1 = makeMessage('u1');
+      const treeAssistant = makeAssistantWithToolPart('asst-tool', {
+        type: 'dynamic-tool',
+        toolName: 'getLocation',
+        toolCallId: 'tc-loc',
+        state: 'input-available',
+        input: {},
+      });
+      const overlayAssistant: AI.UIMessage = {
+        id: 'asst-tool',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'dynamic-tool',
+            toolName: 'getLocation',
+            toolCallId: 'tc-loc',
+            state: 'output-available',
+            input: {},
+            output,
+          },
+        ],
+      };
+      (mock.view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue(asPairs([user1, treeAssistant]));
+      // Both tabs resolve the SAME suspended run, looked up by the assistant's
+      // codec-message-id — the shared trunk both continuations reuse today.
+      (mock.view.runOf as ReturnType<typeof vi.fn>).mockReturnValue({
+        runId: SUSPENDED_RUN_ID,
+        clientId: 'user-a',
+        status: 'suspended',
+        invocationId: '',
+      });
+      // The suspended run is rooted at the prompt 'u1' (its input node). A fork
+      // roots there too and seeds from the run's projection (its single
+      // tool-call assistant).
+      (mock.tree.getRunNode as ReturnType<typeof vi.fn>).mockReturnValue({
+        kind: 'run',
+        runId: SUSPENDED_RUN_ID,
+        parentCodecMessageId: 'u1',
+        state: { status: 'suspended' },
+        projection: { messages: asPairs([treeAssistant]), trackers: new Map(), pendingToolResolutions: [] },
+      });
+      return { mock, overlay: [user1, overlayAssistant] };
+    };
+
+    it('routes each result to a distinct run-less fork branch instead of the one suspended run', async () => {
+      const tabHK = wireTab({ city: 'Hong Kong' });
+      const tabBerlin = wireTab({ city: 'Berlin' });
+
+      // Two tabs resolve the same suspended tool call concurrently.
+      await Promise.all([
+        sendContinuation(tabHK.mock, tabHK.overlay),
+        sendContinuation(tabBerlin.mock, tabBerlin.overlay),
+      ]);
+
+      // Each tab published its OWN result (nothing dropped, nothing overwritten).
+      expect(resultOutputOf(tabHK.mock)).toEqual({ city: 'Hong Kong' });
+      expect(resultOutputOf(tabBerlin.mock)).toEqual({ city: 'Berlin' });
+
+      // Both forks are published RUN-LESS (the agent mints each run-id) — neither
+      // reuses the suspended run's id.
+      expect(sendOptsOf(tabHK.mock)?.runId).toBeUndefined();
+      expect(sendOptsOf(tabBerlin.mock)?.runId).toBeUndefined();
+
+      const forkHK = forkTargetOf(tabHK.mock);
+      const forkBerlin = forkTargetOf(tabBerlin.mock);
+
+      // Segregation: the two concurrent results address two DISTINCT fork
+      // branches — each keyed by its own client-owned target codec-message-id,
+      // which the agent reconciles to a distinct minted run-id — NOT both
+      // re-entering the one suspended run (the contamination this ticket fixes).
+      expect(forkHK).toBeDefined();
+      expect(forkBerlin).toBeDefined();
+      expect(forkHK).not.toBe(forkBerlin);
+      // Both forks root at the suspended run's input node ('u1') — a same-parent
+      // sibling group — rather than the suspended run itself.
+      expect(sendOptsOf(tabHK.mock)?.parent).toBe('u1');
+      expect(sendOptsOf(tabBerlin.mock)?.parent).toBe('u1');
     });
   });
 });

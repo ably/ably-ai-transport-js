@@ -61,6 +61,10 @@ const newMessage = {
 await edit(messageId, createUIMessageCodec().createUserMessage(newMessage));
 ```
 
+## Client tool results
+
+Regenerate and edit are not the only ways a sibling reply run appears. When a [client-executed tool](tool-calling.md#client-executed-tools) resolves, its result forks the suspended tool call into a new reply run — parented at the same input node as the suspended run, the same shape as a regenerate. So when two clients (or two browser tabs) answer the same tool call, their answers coexist as segregated sibling branches, navigable exactly like a regenerated reply. See [Tool calling](tool-calling.md#multi-client-tool-execution) for the details.
+
 ## Branch navigation
 
 `useView()` provides branch navigation alongside message state. Most UIs render a flat list of messages and want to attach navigation arrows to a specific message bubble (the edited user prompt, or the regenerated assistant reply), so the View exposes message-anchored branch navigation keyed by codec-message-id:

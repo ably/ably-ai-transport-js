@@ -64,6 +64,17 @@ export type RunLifecycleEvent =
        * realises the replacement when materialising messages.
        */
       regenerates?: string;
+      /**
+       * The codec-message-id of the input event that triggered this run — the
+       * `input-codec-message-id` wire header the agent stamps on run-start. It
+       * is the handle the client owns at send time (before the agent mints the
+       * `runId`). The Tree uses it to reconcile a client-owned OPTIMISTIC fork
+       * run — a run-less client tool-result the Tree keyed by this same
+       * codec-message-id — onto the agent-minted `runId` (adopting the node so
+       * the fork's result and the agent's follow-up share one run). Absent on a
+       * fresh-send / regenerate run-start whose trigger backs no reply run.
+       */
+      inputCodecMessageId?: string;
     })
   | (RunLifecycleBase & {
       type: 'suspend';

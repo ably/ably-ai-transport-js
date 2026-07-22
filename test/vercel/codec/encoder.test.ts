@@ -13,7 +13,7 @@ import {
   HEADER_STREAM_ID,
 } from '../../../src/constants.js';
 import type { ChannelWriter } from '../../../src/core/codec/types.js';
-import { createUIMessageCodec } from '../../../src/vercel/codec/index.js';
+import { createUIMessageCodec, type ForkSeed } from '../../../src/vercel/codec/index.js';
 
 const UIMessageCodec = createUIMessageCodec();
 
@@ -787,6 +787,103 @@ describe('Vercel encoder', () => {
       // CAST: data is unknown — we know the encoder shape from above.
       const data = msg.data as { message: string };
       expect(data.message).toBe('geolocation denied');
+    });
+
+    it('round-trips a fork-continuation forkSeed on a tool-result through encode then decode', async () => {
+      const encoder = createEncoder(writer);
+      const decoder = createDecoder();
+      // A fork continuation carries a self-contained seed — the suspended run's
+      // full message list under fresh codec-message-ids — so the agent's reducer
+      // can reconstruct that run in the fork's own projection.
+      const seed: ForkSeed = {
+        messages: [
+          {
+            codecMessageId: 'fork-asst',
+            message: {
+              id: 'asst-tool',
+              role: 'assistant',
+              parts: [
+                {
+                  type: 'dynamic-tool',
+                  toolName: 'getLocation',
+                  toolCallId: 'tc-1',
+                  state: 'input-available',
+                  input: {},
+                },
+              ],
+            },
+          },
+        ],
+      };
+      await encoder.publishInput(
+        {
+          kind: 'tool-result',
+          codecMessageId: 'fork-asst',
+          payload: { toolCallId: 'tc-1', output: { city: 'Hong Kong' }, forkSeed: seed },
+        },
+        { messageId: 'fork-continuation-id' },
+      );
+
+      const wire = firstPublish(writer);
+      // CAST: the encoder's Ably.Message plus a create action satisfies the InboundMessage fields the decoder reads.
+      const inbound = { ...wire, action: 'message.create' } as unknown as Ably.InboundMessage;
+      const { inputs } = decoder.decode(inbound);
+      expect(inputs).toHaveLength(1);
+      const input = inputs[0];
+      expect(input?.kind).toBe('tool-result');
+      if (input?.kind !== 'tool-result') return;
+      expect(input.payload.toolCallId).toBe('tc-1');
+      expect(input.payload.output).toEqual({ city: 'Hong Kong' });
+      // The seed survives the wire round-trip: its one message (fresh id + domain
+      // id) and its tool-call part.
+      expect(input.payload.forkSeed?.messages).toHaveLength(1);
+      expect(input.payload.forkSeed?.messages[0]?.codecMessageId).toBe('fork-asst');
+      expect(input.payload.forkSeed?.messages[0]?.message.id).toBe('asst-tool');
+      expect(input.payload.forkSeed?.messages[0]?.message.parts).toEqual([
+        { type: 'dynamic-tool', toolName: 'getLocation', toolCallId: 'tc-1', state: 'input-available', input: {} },
+      ]);
+    });
+
+    it('drops a malformed forkSeed part on decode so it never reaches the reducer', async () => {
+      // Trust boundary: a tool-result whose forkSeed carries a malformed part
+      // (`[{}]` / `[null]` — no string `type`) must NOT crash the reducer. The
+      // wire guard filters the bad parts out on decode; the surviving decoded
+      // input then folds cleanly (the target simply pends for want of its tool
+      // part — a graceful degradation, not a crash).
+      const encoder = createEncoder(writer);
+      const decoder = createDecoder();
+      const malformedSeed = {
+        messages: [
+          // Deliberately malformed parts (an object with no `type`, and a null)
+          // to exercise the wire trust boundary.
+          // eslint-disable-next-line unicorn/no-null -- malformed wire data under test
+          { codecMessageId: 'fork-asst', message: { id: 'asst-tool', role: 'assistant', parts: [{}, null] } },
+        ],
+      } as unknown as ForkSeed;
+      await encoder.publishInput(
+        {
+          kind: 'tool-result',
+          codecMessageId: 'fork-asst',
+          payload: { toolCallId: 'tc-1', output: { city: 'Hong Kong' }, forkSeed: malformedSeed },
+        },
+        { messageId: 'fork-continuation-id' },
+      );
+
+      const wire = firstPublish(writer);
+      // CAST: the encoder's Ably.Message plus a create action satisfies the InboundMessage fields the decoder reads.
+      const inbound = { ...wire, action: 'message.create' } as unknown as Ably.InboundMessage;
+      const { inputs } = decoder.decode(inbound);
+      const input = inputs[0];
+      expect(input?.kind).toBe('tool-result');
+      if (input?.kind !== 'tool-result') return;
+      // Both malformed parts were dropped by the wire guard.
+      expect(input.payload.forkSeed?.messages[0]?.message.parts).toEqual([]);
+
+      // Folding the decoded input into a fresh projection does not throw — the
+      // reducer never sees a malformed part.
+      expect(() =>
+        UIMessageCodec.fold(UIMessageCodec.init(), { direction: 'input', event: input }, { serial: 's1' }),
+      ).not.toThrow();
     });
   });
 

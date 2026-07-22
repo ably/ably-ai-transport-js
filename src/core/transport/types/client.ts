@@ -121,6 +121,16 @@ export interface SendOptions {
    * mints a distinct `invocationId` per continuation POST.
    */
   runId?: string;
+  /**
+   * The wire `role` stamped on this send's input events. Defaults to `'user'`
+   * — a plain client send introduces a user message. A client tool-result
+   * **fork** sets `'assistant'`: it is published run-less (the agent mints the
+   * fork's run-id), and it reconstructs an assistant turn (the tool-call
+   * assistant carrying this result), so the tree reads the non-`'user'` role to
+   * classify the run-less fork as an optimistic reply run rather than a user
+   * input node. Applies to every input in the send.
+   */
+  role?: string;
 }
 
 // ---------------------------------------------------------------------------

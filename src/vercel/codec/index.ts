@@ -81,5 +81,12 @@ export const createUIMessageCodec = <
   >;
 };
 
-export type { VercelInput, VercelOutput } from './events.js';
+export type {
+  ForkSeed,
+  VercelInput,
+  VercelOutput,
+  VercelToolApprovalResponsePayload,
+  VercelToolResultErrorPayload,
+  VercelToolResultPayload,
+} from './events.js';
 export { type VercelProjection } from './reducer.js';

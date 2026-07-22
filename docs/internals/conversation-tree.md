@@ -108,6 +108,7 @@ Sibling grouping is **kind-split** - an edit produces a sibling input node, a re
 
 - **Edit (`edit(msgId)`)**: a new **input node** whose `forkOf` points at the input node being replaced. Input nodes that fork the same target (or transitively fork each other) form a sibling group of edit versions.
 - **Regenerate (`regenerate(msgId)`)**: a new **reply run** parented to the same input node as the original. Reply runs sharing a `parentCodecMessageId` are the regenerate group - no `forkOf` is stamped on a regenerate run, since sharing the input-node parent already groups them.
+- **Client tool-result continuation**: another producer of same-parent reply-run siblings — the regenerate shape. A client's tool result opens a new **reply run** parented to the suspended run's input node (sharing its `parentCodecMessageId`, no `forkOf`), joining that input's same-parent reply-run group. Concurrent results for one suspended tool call therefore form a reply-run sibling group; each run's projection reconstructs the suspended run's messages with **its own** result (from the resolution's `forkSeed` — a self-contained copy of that run's full message list), so the answers stay segregated and are navigable by selection like any regenerate group.
 
 A sibling group never mixes kinds.
 

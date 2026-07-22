@@ -42,7 +42,13 @@ import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import { LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
-import { createUIMessageCodec, type VercelInput, type VercelOutput, type VercelProjection } from '../codec/index.js';
+import {
+  createUIMessageCodec,
+  type ForkSeed,
+  type VercelInput,
+  type VercelOutput,
+  type VercelProjection,
+} from '../codec/index.js';
 import { isToolPart, type ToolPart } from '../tool-part.js';
 import { createDeferredContinuationStream, createRunOutputStream } from './run-output-stream.js';
 
@@ -276,15 +282,30 @@ const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'a
  *   (`approved` = `overlayPart.approval.approved`, i.e. approve or deny)
  * - `output-available` overlay vs unresolved tree → `tool-result`
  * - `output-error` overlay vs unresolved tree → `tool-result-error`
+ *
+ * **Fork mode** (`fork.seed` set): a client tool-result continuation opens its
+ * OWN reply run (a sibling of the suspended run) so that concurrent answers to
+ * one tool call become segregated branches rather than colliding on the shared
+ * run. The resolutions then address a FRESH per-message codec-message-id (from
+ * the seed) instead of the tree assistant's, and each tool-result /
+ * tool-result-error carries the {@link ForkSeed} — a copy of the suspended run's
+ * FULL message list under fresh ids — so the reducer reconstructs the whole run
+ * (prior resolved tool calls included) inside the fork's own projection before
+ * folding this client's result. Seeding the whole run keeps context across
+ * SEQUENTIAL client tool calls. Approval responses carry no seed: they land on
+ * the reconstructed assistant via the pending-resolution buffer once a
+ * co-resolved result seeds it.
  * @template TMetadata - Per-message metadata type carried by the produced inputs.
  * @template TDataParts - Custom data-part types carried by the produced inputs.
  * @template TTools - Tool set typing the produced inputs' tool parts.
  * @param codec - The codec whose well-known input factories build the resolutions.
  * @param codecMessages - The visible tree messages paired with their codec-message-ids.
  * @param messages - useChat's local overlay messages.
- * @returns The continuation inputs to publish, in tree order. Each input
- *   carries its own `codecMessageId` targeting the prior assistant it folds
- *   onto.
+ * @param fork - When set, produce fork-run inputs (fresh per-message ids + the
+ *   full seed per the description above); omit for an ordinary in-place resolution.
+ * @param fork.seed - The suspended run's full message list, each entry under a
+ *   fresh client-minted codec-message-id (one such seed per continuation).
+ * @returns The continuation inputs to publish, in tree order.
  */
 const deriveContinuationInputs = <TMetadata, TDataParts extends AI.UIDataTypes, TTools extends AI.UITools>(
   codec: DefinedCodec<
@@ -295,7 +316,15 @@ const deriveContinuationInputs = <TMetadata, TDataParts extends AI.UIDataTypes, 
   >,
   codecMessages: CodecMessage<AI.UIMessage>[],
   messages: AI.UIMessage[],
+  fork?: { seed: ForkSeed },
 ): VercelInput<TMetadata, TDataParts, TTools>[] => {
+  // In fork mode the result's target is the fresh codec-message-id of the seed
+  // message carrying the tool call (the message the reducer reconstructs and
+  // folds onto). Off the fork path the target is the tree assistant's own id.
+  const forkTargetOf = (toolCallId: string): string | undefined =>
+    fork?.seed.messages.find((m) => m.message.parts.some((p) => isToolPart(p) && p.toolCallId === toolCallId))
+      ?.codecMessageId;
+
   const inputs: VercelInput<TMetadata, TDataParts, TTools>[] = [];
   for (const overlay of messages) {
     if (overlay.role !== 'assistant') continue;
@@ -303,7 +332,8 @@ const deriveContinuationInputs = <TMetadata, TDataParts extends AI.UIDataTypes, 
     // reconstruct the same stream id), but address the emitted inputs by
     // the tree message's codec-message-id — the agent folds tool
     // resolutions onto the assistant by codec-message-id, never by the
-    // domain `message.id`.
+    // domain `message.id`. In fork mode the target is instead the fresh
+    // codec-message-id the reconstructed message takes.
     const treeEntry = codecMessages.find((p) => p.message.id === overlay.id);
     if (!treeEntry) continue;
     const { codecMessageId, message: treeMessage } = treeEntry;
@@ -318,13 +348,24 @@ const deriveContinuationInputs = <TMetadata, TDataParts extends AI.UIDataTypes, 
         (p: AI.UIMessage['parts'][number]): p is ToolPart => isToolPart(p) && p.toolCallId === overlayPart.toolCallId,
       );
 
+      // The target: in fork mode the fresh id of the seed message carrying this
+      // tool call; off the fork path the tree assistant's own codec-message-id.
+      // In fork mode a tool call the seed does NOT carry cannot be reconstructed
+      // (the seed's ids are fresh, so folding it onto the tree id would pend
+      // forever against a message the fork projection never holds) — skip it
+      // rather than emit a doomed resolution. Unreachable in the normal single-
+      // run continuation (the suspended tool call is always in the run's seed).
+      const forkTarget = fork ? forkTargetOf(overlayPart.toolCallId) : undefined;
+      if (fork !== undefined && forkTarget === undefined) continue;
+      const target = forkTarget ?? codecMessageId;
+
       // Approval response: useChat's `addToolApprovalResponse` flipped the
       // overlay part to `approval-responded` while the tree still sits on
       // `approval-requested`. Publish a `tool-approval-response` TInput so the
       // agent's projection sees the decision.
       if (overlayPart.state === 'approval-responded' && (!treePart || treePart.state === 'approval-requested')) {
         inputs.push(
-          codec.createToolApprovalResponse(codecMessageId, {
+          codec.createToolApprovalResponse(target, {
             toolCallId: overlayPart.toolCallId,
             approved: overlayPart.approval.approved,
             ...(overlayPart.approval.reason === undefined ? {} : { reason: overlayPart.approval.reason }),
@@ -344,16 +385,18 @@ const deriveContinuationInputs = <TMetadata, TDataParts extends AI.UIDataTypes, 
 
       if (overlayPart.state === 'output-available') {
         inputs.push(
-          codec.createToolResult(codecMessageId, {
+          codec.createToolResult(target, {
             toolCallId: overlayPart.toolCallId,
             output: overlayPart.output,
+            ...(fork === undefined ? {} : { forkSeed: fork.seed }),
           }),
         );
       } else {
         inputs.push(
-          codec.createToolResultError(codecMessageId, {
+          codec.createToolResultError(target, {
             toolCallId: overlayPart.toolCallId,
             message: overlayPart.errorText,
+            ...(fork === undefined ? {} : { forkSeed: fork.seed }),
           }),
         );
       }
@@ -361,6 +404,16 @@ const deriveContinuationInputs = <TMetadata, TDataParts extends AI.UIDataTypes, 
   }
   return inputs;
 };
+
+/**
+ * Whether a derived continuation input is a client tool result — the trigger
+ * that makes a continuation fork its own reply run (an approval response or an
+ * empty continuation does not).
+ * @param input - A derived continuation input.
+ * @returns True for `tool-result` / `tool-result-error`.
+ */
+const isToolResultInput = (input: VercelInput): boolean =>
+  input.kind === 'tool-result' || input.kind === 'tool-result-error';
 
 /**
  * Find the codec-message-id immediately preceding the message identified by
@@ -477,31 +530,74 @@ export const createChatTransport = <
     const isContinuation = trigger === 'submit-message' && lastMessage?.role === 'assistant' && lastMessageInTree;
 
     // For a continuation, derive the tool-resolution inputs up front so we can
-    // detect the "nothing to send" case before any send/POST work (and reuse
-    // them at dispatch below).
-    const continuationInputs = isContinuation ? deriveContinuationInputs(codec, codecMessages, messages) : [];
+    // detect the "nothing to send" case before any send/POST work, and decide
+    // whether this continuation forks.
+    const baseContinuationInputs = isContinuation ? deriveContinuationInputs(codec, codecMessages, messages) : [];
 
-    // The runId a continuation reuses — the suspended assistant's run, looked up
-    // by its codec-message-id. Resolved once; reused by the empty-continuation
-    // observe path and the `sendOpts.runId` dispatch below. `isContinuation`
-    // implies `lastMessage` is defined (it gates on `lastMessage?.role`, which
-    // TypeScript narrows here).
+    // A continuation carrying a CLIENT TOOL RESULT forks into its own reply run
+    // (a sibling of the suspended run) so that concurrent answers to one tool
+    // call become segregated branches instead of colliding on the shared run
+    // (last-writer-wins on the tool part + both follow-ups in one projection).
+    // Pure-approval / empty continuations keep re-entering the suspended run.
+    const shouldForkContinuation = isContinuation && baseContinuationInputs.some((input) => isToolResultInput(input));
+
+    // The suspended run this continuation targets — the assistant's run, looked
+    // up by its codec-message-id. `isContinuation` implies `lastMessage` is
+    // defined (it gates on `lastMessage?.role`, which TypeScript narrows here).
     let continuationRunId: string | undefined;
+    // The fork's structural parent: the suspended run's OWN input node, so the
+    // fork is a same-parent sibling (the trunk stays off the fork's branch).
+    let forkParent: string | undefined;
+    // The fork seed: the suspended run's FULL projection reconstructed under
+    // fresh client-minted codec-message-ids, so the fork run is self-contained
+    // with full history (prior resolved tool calls included, not just the
+    // current tool-call assistant) — preserving context across SEQUENTIAL
+    // client tool calls.
+    let forkSeed: ForkSeed | undefined;
     if (isContinuation) {
       const codecId = codecIdOf(lastMessage.id);
       continuationRunId = codecId === undefined ? undefined : session.view.runOf(codecId)?.runId;
+      if (shouldForkContinuation && continuationRunId !== undefined) {
+        const trunk = session.tree.getRunNode(continuationRunId);
+        if (trunk?.kind === 'run') {
+          forkParent = trunk.parentCodecMessageId;
+          forkSeed = {
+            messages: codec.getMessages(trunk.projection).map((rm) => ({
+              codecMessageId: crypto.randomUUID(),
+              message: rm.message,
+            })),
+          };
+        }
+      }
     }
 
-    // Empty continuation: every overlay tool resolution is already reflected in
-    // the Tree — typically because another tab (same clientId) published its
-    // result first and we folded it. There is nothing to send: view.send([])
-    // would throw, and returning an immediately-closing stream would make
-    // useChat's sendAutomaticallyWhen resubmit in a loop. Instead, observe the
-    // run that the other tab is driving and keep useChat in `streaming` until
-    // that run produces its next turn; closing then lets useMessageSync repaint
-    // the overlay from the Tree (the other tab's result plus the agent's reply),
-    // at which point sendAutomaticallyWhen is satisfied. We do NOT wake the
-    // agent — the other tab owns that.
+    // Whether this continuation forks its own reply run: a client tool result
+    // WITH a resolvable parent. Gate on the parent — never fork without one (a
+    // run-less fork with no parent would be a detached root, not a same-parent
+    // sibling); when unresolvable, fall back to the re-enter path below. The
+    // fork is published RUN-LESS: the AGENT mints the fork's run-id on
+    // `ai-run-start`, and the tree reconciles this client's optimistic reply run
+    // onto it by the tool-result's codec-message-id — so two tabs answering the
+    // same tool call open two independent branches with no client-minted-id
+    // clobber, restoring "agent owns run-ids, client owns codec-message-ids".
+    const isForkContinuation = shouldForkContinuation && forkParent !== undefined && forkSeed !== undefined;
+
+    // Fork inputs re-address the resolutions at fresh per-message codec-message-ids
+    // and carry the full reconstruction seed; the non-fork path keeps the inputs as-is.
+    const continuationInputs =
+      isForkContinuation && forkSeed !== undefined
+        ? deriveContinuationInputs(codec, codecMessages, messages, { seed: forkSeed })
+        : baseContinuationInputs;
+
+    // Empty continuation: every overlay tool resolution is already reflected on
+    // the visible branch — e.g. the client's own fork run has resolved and is
+    // the selected sibling, or another tab's fork is what the view shows. There
+    // is nothing to send: view.send([]) would throw, and returning an
+    // immediately-closing stream would make useChat's sendAutomaticallyWhen
+    // resubmit in a loop. Instead, observe the run driving that branch and keep
+    // useChat in `streaming` until it produces its next turn; closing then lets
+    // useMessageSync repaint the overlay from the Tree, at which point
+    // sendAutomaticallyWhen is satisfied. We do NOT wake the agent here.
     if (isContinuation && continuationInputs.length === 0) {
       const observe = createDeferredContinuationStream(session, continuationRunId);
 
@@ -615,10 +711,22 @@ export const createChatTransport = <
     const sendOpts: SendOptions = {};
     if (forkOf !== undefined) sendOpts.forkOf = forkOf;
     if (parent !== undefined) sendOpts.parent = parent;
-    // Continuations reuse the suspended assistant's runId (resolved once as
-    // `continuationRunId`) so the agent's existing run resumes under a fresh
-    // invocation rather than spinning up a brand-new run.
-    if (continuationRunId !== undefined) sendOpts.runId = continuationRunId;
+    if (isForkContinuation) {
+      // Fork continuation: published RUN-LESS (no runId). The agent mints the
+      // fork's run-id on `ai-run-start`; the tree reconciles this client's
+      // optimistic reply run onto it by the tool-result's codec-message-id.
+      // `parent` roots the fork at the suspended run's own input node (a
+      // same-parent sibling, so the trunk stays off the fork's branch), and
+      // `role: 'assistant'` marks the run-less input as a reconstructed
+      // assistant turn so the tree classifies it as a reply run, not an input
+      // node.
+      if (forkParent !== undefined) sendOpts.parent = forkParent;
+      sendOpts.role = 'assistant';
+    } else if (continuationRunId !== undefined) {
+      // Non-fork continuation (e.g. an approval response): re-enter the
+      // suspended run under a fresh invocation via `ai-run-resume`.
+      sendOpts.runId = continuationRunId;
+    }
 
     // Dispatch by mode:
     //

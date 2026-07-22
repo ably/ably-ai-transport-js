@@ -13,6 +13,7 @@ import {
   HEADER_STEP_ID,
   HEADER_STEP_START_SERIAL,
   HEADER_STREAM,
+  HEADER_SUPERSEDES,
 } from '../../../src/constants.js';
 import type { Codec, CodecEvent, CodecInputEvent, Regenerate, UserMessage } from '../../../src/core/codec/types.js';
 import type { TreeInternal } from '../../../src/core/transport/tree.js';
@@ -184,6 +185,7 @@ const applyForkInput = (
     message: TestMessage;
     serial?: string;
     clientId?: string;
+    supersedes?: string;
   },
 ): void => {
   const h: Record<string, string> = {
@@ -192,6 +194,7 @@ const applyForkInput = (
     [HEADER_PARENT]: opts.parent,
   };
   if (opts.clientId) h[HEADER_RUN_CLIENT_ID] = opts.clientId;
+  if (opts.supersedes) h[HEADER_SUPERSEDES] = opts.supersedes;
   tree.applyMessage({ inputs: [{ kind: 'append-input', message: opts.message }], outputs: [] }, h, opts.serial);
 };
 
@@ -2073,6 +2076,188 @@ describe('Tree', () => {
       expect(tree.getRunNode('R')?.parentCodecMessageId).toBe('U');
       expect(tree.getReplyRuns('U').map((n) => n.runId)).toEqual(['R']); // exactly ONE reply run
       expect(messagesOf(tree, 'R').map((m) => m.id)).toEqual(['seed', 'followup']); // both the seed AND the follow-up
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Superseded trunk hidden from branch selection
+  // -------------------------------------------------------------------------
+
+  describe('superseded trunk hidden from branch selection', () => {
+    // A client tool-result fork stamps `supersedes: <trunk run-id>`. The trunk
+    // is then dead (its answer went to the fork), so it is EXCLUDED from branch
+    // enumeration: a single response renders as ONE reply, concurrent forks
+    // (superseding the SAME trunk) branch, and a regenerate (no supersedes)
+    // still branches.
+
+    it('hides the superseded trunk so a single fork response is ONE reply run (no branching)', () => {
+      applyInput(tree, { codecMessageId: 'U', message: { id: 'U', content: 'prompt' }, serial: 's1' });
+      // Trunk run R1: streamed the tool call, then suspended awaiting the client.
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'A1',
+        parent: 'U',
+        role: 'assistant',
+        message: { id: 'trunk', content: 'getLocation pending' },
+        serial: 's2',
+      });
+      // The client fork resolves R1's tool call — it supersedes R1.
+      applyForkInput(tree, {
+        codecMessageId: 'F',
+        parent: 'U',
+        supersedes: 'R1',
+        message: { id: 'seed', content: 'toolcall+result' },
+        serial: 's3',
+      });
+      forkRunStart(tree, { runId: 'R2', parent: 'U', inputCodecMessageId: 'F', serial: 's4' });
+
+      // R1 is hidden from branch enumeration; R2 is the sole visible reply.
+      expect(tree.getReplyRuns('U').map((n) => n.runId)).toEqual(['R2']);
+      expect(tree.getSiblingNodes('R2')).toHaveLength(1); // no branching → linear
+      // The visible CHAIN excludes the superseded trunk entirely — R1 must not
+      // dangle alongside R2 for a single client (the one-fork dangling-trunk
+      // bug: R1's filtered sibling group is length 1, so sibling selection
+      // alone would not have dropped it from the walk).
+      expect(visibleKeys(tree)).toEqual(['U', 'R2']);
+      // The trunk node still EXISTS (retained for lookup / history) — only hidden.
+      expect(tree.getRunNode('R1')).toBeDefined();
+    });
+
+    it('keeps BOTH forks visible when two clients supersede the SAME trunk (concurrent → branch)', () => {
+      applyInput(tree, { codecMessageId: 'U', message: { id: 'U', content: 'prompt' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'A1',
+        parent: 'U',
+        role: 'assistant',
+        message: { id: 'trunk', content: 'getLocation pending' },
+        serial: 's2',
+      });
+      // Two tabs both resolve R1's tool call — both supersede R1.
+      applyForkInput(tree, {
+        codecMessageId: 'FA',
+        parent: 'U',
+        supersedes: 'R1',
+        message: { id: 'sa', content: 'a' },
+        serial: 's3',
+      });
+      applyForkInput(tree, {
+        codecMessageId: 'FB',
+        parent: 'U',
+        supersedes: 'R1',
+        message: { id: 'sb', content: 'b' },
+        serial: 's4',
+      });
+      forkRunStart(tree, { runId: 'RA', parent: 'U', inputCodecMessageId: 'FA', serial: 's5' });
+      forkRunStart(tree, { runId: 'RB', parent: 'U', inputCodecMessageId: 'FB', serial: 's6' });
+
+      // R1 hidden; the two forks are visible siblings — a real branch.
+      expect(
+        tree
+          .getReplyRuns('U')
+          .map((n) => n.runId)
+          .toSorted(),
+      ).toEqual(['RA', 'RB']);
+      expect(tree.getSiblingNodes('RA')).toHaveLength(2);
+      // The visible chain shows the user input + ONE selected fork — never the
+      // superseded trunk R1.
+      const visible = visibleKeys(tree);
+      expect(visible).not.toContain('R1');
+      expect(visible.filter((k) => k === 'RA' || k === 'RB')).toHaveLength(1);
+    });
+
+    it('shows only the live tip across a multi-step chain (each fork supersedes the prior)', () => {
+      applyInput(tree, { codecMessageId: 'U', message: { id: 'U', content: 'prompt' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'A1',
+        parent: 'U',
+        role: 'assistant',
+        message: { id: 't1', content: 's1' },
+        serial: 's2',
+      });
+      // Fork resolves step 1 → R2 (which then suspends at step 2).
+      applyForkInput(tree, {
+        codecMessageId: 'F1',
+        parent: 'U',
+        supersedes: 'R1',
+        message: { id: 'sd1', content: 'r1' },
+        serial: 's3',
+      });
+      forkRunStart(tree, { runId: 'R2', parent: 'U', inputCodecMessageId: 'F1', serial: 's4' });
+      // Fork resolves step 2 → R3, superseding R2.
+      applyForkInput(tree, {
+        codecMessageId: 'F2',
+        parent: 'U',
+        supersedes: 'R2',
+        message: { id: 'sd2', content: 'r2' },
+        serial: 's5',
+      });
+      forkRunStart(tree, { runId: 'R3', parent: 'U', inputCodecMessageId: 'F2', serial: 's6' });
+
+      // Both R1 and R2 are superseded; only the live tip R3 shows — linear.
+      expect(tree.getReplyRuns('U').map((n) => n.runId)).toEqual(['R3']);
+      expect(tree.getSiblingNodes('R3')).toHaveLength(1);
+      // The visible chain is the user input + the tip only — no dangling
+      // intermediate trunks.
+      expect(visibleKeys(tree)).toEqual(['U', 'R3']);
+    });
+
+    it('does NOT hide a regenerate sibling (no supersedes) — regenerate still branches', () => {
+      applyInput(tree, { codecMessageId: 'U', message: { id: 'U', content: 'prompt' }, serial: 's1' });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'A1',
+        parent: 'U',
+        role: 'assistant',
+        message: { id: 'r1', content: 'reply' },
+        serial: 's2',
+      });
+      // A regenerate: a same-parent reply run WITHOUT `supersedes`.
+      apply(tree, {
+        runId: 'R2',
+        codecMessageId: 'A2',
+        parent: 'U',
+        regenerates: 'A1',
+        role: 'assistant',
+        message: { id: 'r2', content: 'reply2' },
+        serial: 's3',
+      });
+
+      // Neither is superseded → both stay visible (a genuine branch).
+      expect(
+        tree
+          .getReplyRuns('U')
+          .map((n) => n.runId)
+          .toSorted(),
+      ).toEqual(['R1', 'R2']);
+      expect(tree.getSiblingNodes('R1')).toHaveLength(2);
+    });
+
+    it('hides the superseded trunk even when the fork input arrives BEFORE the trunk (history hydration)', () => {
+      applyInput(tree, { codecMessageId: 'U', message: { id: 'U', content: 'prompt' }, serial: 's1' });
+      // Newest-first: the fork input (superseding R1) folds BEFORE R1 is observed.
+      applyForkInput(tree, {
+        codecMessageId: 'F',
+        parent: 'U',
+        supersedes: 'R1',
+        message: { id: 'seed', content: 'tc+result' },
+        serial: 's3',
+      });
+      forkRunStart(tree, { runId: 'R2', parent: 'U', inputCodecMessageId: 'F', serial: 's4' });
+      // The trunk R1's assistant output arrives LAST (older history page).
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'A1',
+        parent: 'U',
+        role: 'assistant',
+        message: { id: 'trunk', content: 'pending' },
+        serial: 's2',
+      });
+
+      // R1 is still hidden — supersession is order-independent (checked at query time).
+      expect(tree.getReplyRuns('U').map((n) => n.runId)).toEqual(['R2']);
+      expect(tree.getSiblingNodes('R2')).toHaveLength(1);
     });
   });
 

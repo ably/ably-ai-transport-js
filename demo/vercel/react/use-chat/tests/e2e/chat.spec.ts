@@ -601,6 +601,21 @@ test.describe('use-chat demo - chat behaviour', () => {
       await expect(bubbleContaining(page, "what's the weather like?")).toBeVisible();
       await expect(locationCard).toBeVisible();
 
+      // AIT-1144 regression: a SINGLE client's single tool response must render
+      // as ONE linear reply. The fork supersedes the suspended run it resolves,
+      // so the tree HIDES that now-dead trunk — the assistant turn shows NO
+      // branch navigator. Pre-fix it spuriously jumped to "2 / 2": the dead
+      // trunk (stuck on "Calling getLocation") as branch 1, the resolved reply
+      // as branch 2. Only genuinely concurrent forks (multiple clients) branch.
+      await expect(page.locator('[data-testid="branch-navigator"]')).toHaveCount(0);
+
+      // And no DANGLING trunk: the superseded run — stuck on "Calling
+      // getLocation", its tool call never resolved on its own branch — must not
+      // linger beside the resolved reply. Pre-fix the single tab showed BOTH the
+      // stuck trunk and the resolved fork stacked; the trunk is now hidden from
+      // the visible chain, so only the resolved Location card remains.
+      await expect(page.locator('text=/Calling getLocation/')).toHaveCount(0);
+
       // A fresh page load must rebuild the same conversation from the
       // channel history. The bug repros even after refresh, which means
       // the published continuation state itself is unrenderable.
@@ -608,6 +623,10 @@ test.describe('use-chat demo - chat behaviour', () => {
       await page.goto(url);
       await expect(bubbleContaining(page, "what's the weather like?")).toBeVisible({ timeout: 30_000 });
       await expect(page.locator('text=/Location:\\s*51\\./').first()).toBeVisible({ timeout: 30_000 });
+      // The single-reply linearity survives history hydration (the superseded
+      // trunk stays hidden when rebuilt newest-first from the channel).
+      await expect(page.locator('[data-testid="branch-navigator"]')).toHaveCount(0);
+      await expect(page.locator('text=/Calling getLocation/')).toHaveCount(0);
     } finally {
       await context.close();
     }

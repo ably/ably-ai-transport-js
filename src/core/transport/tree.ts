@@ -38,6 +38,7 @@ import {
   HEADER_STEP_ID,
   HEADER_STEP_START_SERIAL,
   HEADER_STREAM,
+  HEADER_SUPERSEDES,
 } from '../../constants.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
@@ -408,6 +409,22 @@ export class DefaultTree<
    * node).
    */
   private readonly _replyRunsByInput = new Map<string, Set<string>>();
+
+  /**
+   * Run-ids SUPERSEDED by a client tool-result fork — the suspended runs whose
+   * pending tool call a fork resolved. A superseded run is dead (nothing
+   * resumes it: its answer went to the fork), so it is EXCLUDED from branch
+   * enumeration ({@link _getSiblingGroup} / {@link getReplyRuns}). This makes a
+   * single client's single response render as one linear reply (the dead trunk
+   * hidden), while genuinely concurrent forks from multiple clients — which
+   * each supersede the SAME trunk — stay as visible sibling branches. Populated
+   * from the fork input's `supersedes` header (see {@link HEADER_SUPERSEDES});
+   * order-independent — a run superseded before it is observed (newest-first
+   * history) is filtered once it is created, since membership is checked at
+   * query time. The node itself is retained (run lookup, prompt reconstruction,
+   * history all still see it) — this only hides it from branch selection.
+   */
+  private readonly _supersededRunIds = new Set<string>();
 
   /** Monotonically increasing counter for insertion sequence. */
   private _seqCounter = 0;
@@ -964,6 +981,9 @@ export class DefaultTree<
     const candidateKeys = this._parentIndex.get(parentKey);
     if (candidateKeys) {
       for (const childKey of candidateKeys) {
+        // A superseded run (a dead trunk a fork resolved) is not a selectable
+        // branch — exclude it so a single response renders linearly.
+        if (this._supersededRunIds.has(childKey)) continue;
         const childEntry = this._nodeIndex.get(childKey);
         if (childEntry && this._isSiblingOf(childEntry.node, original)) {
           siblings.push(childEntry);
@@ -1057,6 +1077,15 @@ export class DefaultTree<
       const node = internal.node;
       const key = nodeKey(node);
 
+      // A superseded run (a dead trunk a client tool-result fork resolved) is
+      // never on the visible chain — a single client's response renders as its
+      // fork alone, not the stuck trunk. Excluded here DIRECTLY, not only via
+      // the sibling-selection block below: with a single fork the trunk's
+      // (filtered) sibling group is length 1, so that block wouldn't drop it,
+      // and the trunk would dangle. (With two+ forks the block also drops it,
+      // but relying on that alone left the one-fork case showing the trunk.)
+      if (this._supersededRunIds.has(key)) continue;
+
       // Step 1: Parent reachability (kind-blind — the parent may be an input
       // node or a reply run; resolve its key and check the active path).
       const parentKey = this._parentKeyOf(node);
@@ -1114,6 +1143,9 @@ export class DefaultTree<
     if (!runIds) return [];
     const result: RunNode<TProjection>[] = [];
     for (const runId of runIds) {
+      // Hide a superseded run (a dead trunk a fork resolved) from branch
+      // selection — it is never the visible/selected reply.
+      if (this._supersededRunIds.has(runId)) continue;
       const node = this._nodeIndex.get(runId)?.node;
       if (node?.kind === 'run') result.push(node);
     }
@@ -1182,6 +1214,21 @@ export class DefaultTree<
     // Content-only folds (streaming chunks into an existing node) flow through
     // `output` instead, so they leave `_structuralVersion` untouched.
     const structuralBefore = this._structuralVersion;
+
+    // A client tool-result fork stamps the run-id it supersedes (the suspended
+    // run it resolves). Record it so branch enumeration hides that dead run —
+    // making a single client's single response render linearly while concurrent
+    // forks (each superseding the same trunk) still branch. Order-independent:
+    // the run may be observed later (newest-first history); membership is
+    // checked at query time. Bumping `_structuralVersion` invalidates the
+    // sibling cache and drives the `update` emit below.
+    if (forkRunCodecMessageId !== undefined) {
+      const supersedes = headers[HEADER_SUPERSEDES];
+      if (supersedes !== undefined && !this._supersededRunIds.has(supersedes)) {
+        this._supersededRunIds.add(supersedes);
+        this._structuralVersion++;
+      }
+    }
 
     if (inputNodeCodecMessageId !== undefined) {
       this._applyInputMessage(inputNodeCodecMessageId, headers, serial, timestamp, version, all);

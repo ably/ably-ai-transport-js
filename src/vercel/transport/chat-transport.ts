@@ -722,6 +722,11 @@ export const createChatTransport = <
       // node.
       if (forkParent !== undefined) sendOpts.parent = forkParent;
       sendOpts.role = 'assistant';
+      // Supersede the suspended run this fork resolves: it is now dead (nothing
+      // resumes it), so the tree hides it from branch selection. A single
+      // client's single response thus renders as ONE linear reply; only
+      // genuinely concurrent forks (each superseding the same trunk) branch.
+      if (continuationRunId !== undefined) sendOpts.supersedes = continuationRunId;
     } else if (continuationRunId !== undefined) {
       // Non-fork continuation (e.g. an approval response): re-enter the
       // suspended run under a fresh invocation via `ai-run-resume`.

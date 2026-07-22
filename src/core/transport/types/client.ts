@@ -131,6 +131,16 @@ export interface SendOptions {
    * input node. Applies to every input in the send.
    */
   role?: string;
+  /**
+   * The run-id this send SUPERSEDES — the suspended run whose pending tool call
+   * a client tool-result fork resolves. Set only on a fork send: the fork opens
+   * its own reply run, leaving the suspended run dead (nothing resumes it), so
+   * the tree marks the superseded run and hides it from branch selection. The
+   * result: a single client's single response renders as one linear reply,
+   * while genuinely concurrent forks from multiple clients still branch.
+   * Distinct from `forkOf` (which keeps both siblings navigable).
+   */
+  supersedes?: string;
 }
 
 // ---------------------------------------------------------------------------

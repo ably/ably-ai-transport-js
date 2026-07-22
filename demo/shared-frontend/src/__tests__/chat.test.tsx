@@ -68,6 +68,10 @@ vi.mock('../providers', () => ({
     ClientSessionProvider: ({ children }: { children: ReactNode }) => children,
     useClientSession: () => ({ session: mockSession, sessionError: undefined }),
     useAblyMessages: () => [],
+    // Chat reads the tree's getRunNode to seed a client-tool fork; with no
+    // suspended client tool in these fixtures the real useClientTools skips the
+    // getRunNode lookup (it guards a missing node), so a stub suffices.
+    useTree: () => ({ getRunNode: () => undefined }),
     useView: () => {
       const [messages, setMessages] = useState<AI.UIMessage[]>([]);
       useEffect(() => {

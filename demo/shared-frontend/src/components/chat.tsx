@@ -17,7 +17,7 @@ import { COMMON_SCENARIOS } from './intro-card';
 import { ChatShell, type HeaderLink } from './chat-shell';
 import { SessionHooks } from '../providers';
 
-const { useClientSession, useView, useAblyMessages } = SessionHooks;
+const { useClientSession, useView, useAblyMessages, useTree } = SessionHooks;
 const uiMessageCodec = createUIMessageCodec();
 
 interface ChatProps {
@@ -89,7 +89,11 @@ export function Chat({
   const view = useView({ limit: historyLimit ?? 30 });
   const { messages, hasOlder, loading, loadOlder, branchSelection, runOf } = view;
 
-  useClientTools(view, clientId, api, recordClientTool);
+  // The client-tool fork resolves its parent + the suspended run's messages
+  // authoritatively from the run node (not a positional guess), so thread the
+  // tree's `getRunNode` in.
+  const { getRunNode } = useTree();
+  useClientTools(view, getRunNode, clientId, api, recordClientTool);
 
   // Track active ClientRun handles by their resolved run-id so /steer can target
   // the live one. Cleaned up on run-end via the tree.on('run') hook below. A ref

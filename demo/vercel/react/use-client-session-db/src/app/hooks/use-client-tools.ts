@@ -28,7 +28,14 @@
 import { useEffect, useRef } from 'react';
 import { getToolName, isToolUIPart, type DynamicToolUIPart, type ToolUIPart, type UIMessage } from 'ai';
 import type { ClientView } from '@ably/ai-transport';
-import { createUIMessageCodec, type VercelInput } from '@ably/ai-transport/vercel';
+import type { CodecMessage, TreeHandle } from '@ably/ai-transport/react';
+import {
+  createToolResultFork,
+  createUIMessageCodec,
+  type ToolCallResolution,
+  type VercelInput,
+  type VercelProjection,
+} from '@ably/ai-transport/vercel';
 
 import { wakeAgent, type ClientToolLogEntry } from '@ably-ai-demos/frontend';
 
@@ -62,6 +69,7 @@ const clientTools: Record<string, ClientToolExecutor> = {
 
 export function useClientTools(
   view: ClientView<VercelInput, UIMessage>,
+  getRunNode: TreeHandle<VercelProjection>['getRunNode'],
   clientId: string | undefined,
   api: string,
   onExecute?: (entry: ClientToolLogEntry) => void,
@@ -95,6 +103,16 @@ export function useClientTools(
         const hasFollowUpAssistant = messages.slice(i + 1).some((m) => m.message.role === 'assistant');
         if (hasFollowUpAssistant) continue;
 
+        // Resolve the fork's parent AND the suspended run's full message list
+        // AUTHORITATIVELY from the run node — not a positional guess. The parent
+        // is the run's input node; the run messages seed the fork so it carries
+        // full history (context across SEQUENTIAL client tool calls).
+        const node = getRunNode(run.runId);
+        const parentCodecMessageId = node?.parentCodecMessageId;
+        // Defensive: without a resolvable parent we cannot fork — skip.
+        if (!node || parentCodecMessageId === undefined) continue;
+        const runMessages = uiMessageCodec.getMessages(node.projection);
+
         for (const part of msg.parts) {
           if (!isToolUIPart(part)) continue;
           // A statically-declared tool arrives as `tool-${name}` (name in the
@@ -117,7 +135,7 @@ export function useClientTools(
             status: 'executing',
           });
 
-          executeClientTool(view, api, run.runId, codecMessageId, part, { onExecute, startedAt });
+          executeClientTool(view, api, runMessages, parentCodecMessageId, run.runId, part, { onExecute, startedAt });
         }
       }
     };
@@ -131,17 +149,21 @@ export function useClientTools(
       offUpdate();
       offRun();
     };
-  }, [view, clientId, api, onExecute]);
+  }, [view, getRunNode, clientId, api, onExecute]);
 }
 
-// The tool result targets the suspended assistant message via
-// `codecMessageId`; the continuation reuses that run's runId so the
-// agent picks the result up off the channel and resumes generation.
+// The tool result FORKS the suspended tool call into its own reply run (via
+// createToolResultFork): a fresh client-minted run parented at the suspended
+// run's input node, carrying a self-contained copy of the suspended run's FULL
+// message list. So when two clients (or two tabs sharing a clientId) answer the
+// same tool call, their answers land on segregated sibling branches instead of
+// colliding — and sequential tool calls keep their prior context.
 async function executeClientTool(
   view: ClientView<VercelInput, UIMessage>,
   api: string,
-  runId: string,
-  codecMessageId: string,
+  runMessages: CodecMessage<UIMessage>[],
+  parentCodecMessageId: string,
+  supersedesRunId: string,
   toolPart: ToolUIPart | DynamicToolUIPart,
   log?: {
     onExecute?: (entry: ClientToolLogEntry) => void;
@@ -152,12 +174,12 @@ async function executeClientTool(
   const executor = clientTools[toolName];
   if (!executor) return;
 
-  // Compute the resolution input first so executor failure produces a
+  // Compute the resolution first so executor failure produces a
   // tool-result-error without entangling the publish/wake error handling.
-  let input: VercelInput;
+  let result: ToolCallResolution;
   try {
     const output = await executor(toolPart.input);
-    input = uiMessageCodec.createToolResult(codecMessageId, { toolCallId: toolPart.toolCallId, output });
+    result = { output };
     if (log?.onExecute) {
       log.onExecute({
         time: log.startedAt,
@@ -170,10 +192,7 @@ async function executeClientTool(
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Client tool execution failed';
-    input = uiMessageCodec.createToolResultError(codecMessageId, {
-      toolCallId: toolPart.toolCallId,
-      message,
-    });
+    result = { errorMessage: message };
     if (log?.onExecute) {
       log.onExecute({
         time: log.startedAt,
@@ -186,7 +205,15 @@ async function executeClientTool(
     }
   }
 
-  // Publish the resolution, then wake the agent so it picks it up and resumes.
-  const run = await view.send([input], { runId });
+  // Fork the tool call into its own reply run, then wake the agent so it picks
+  // up the result off the channel and resumes generation on the fork branch.
+  const { input, sendOptions } = createToolResultFork({
+    runMessages,
+    parentCodecMessageId,
+    toolCallId: toolPart.toolCallId,
+    result,
+    supersedesRunId,
+  });
+  const run = await view.send([input], sendOptions);
   await wakeAgent(api, run);
 }

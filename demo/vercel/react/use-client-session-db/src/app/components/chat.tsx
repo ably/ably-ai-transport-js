@@ -23,7 +23,7 @@ import {
 
 import { useClientTools } from '../hooks/use-client-tools';
 
-const { useClientSession, useAblyMessages } = SessionHooks;
+const { useClientSession, useAblyMessages, useTree } = SessionHooks;
 const uiMessageCodec = createUIMessageCodec();
 
 // The scenarios this linear database-hydration demo can drive. The three tool
@@ -117,8 +117,10 @@ export function Chat({ chatId, clientId, seed, api }: ChatProps) {
   const messages = useMessagesWithSeed({ view, seed });
 
   // The client-tool driver reads view.getMessages() directly (which carry
-  // codec-message-ids), independent of the linear list we render.
-  useClientTools(view, clientId, api, recordClientTool);
+  // codec-message-ids), independent of the linear list we render. The fork
+  // resolves its parent + the run's messages from the run node (getRunNode).
+  const { getRunNode } = useTree();
+  useClientTools(view, getRunNode, clientId, api, recordClientTool);
 
   // Track active ClientRun handles by their resolved run-id so /steer can
   // target the live one. Cleaned up on run-end via the tree.on('run') hook

@@ -8,10 +8,10 @@ Without a durable transport layer, tool call sequences break on disconnection. A
 
 Tools are defined in the AI SDK's `tool()` format and passed to `streamText()`. AI Transport handles two execution models:
 
-| Model               | Where it runs                       | How the result is published                                                                                                                                                           |
-| ------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Server-executed** | Inside `streamText()` on the server | Automatically - the AI SDK calls `execute`, and the result streams through `run.pipe()`                                                                                               |
-| **Client-executed** | In the browser (or any client)      | The client sends a `tool-result` input via [`view.send()`](../reference/react-hooks.md#useview), which amends the suspended assistant message and continues the run under its `runId` |
+| Model               | Where it runs                       | How the result is published                                                                                                                                                                                                |
+| ------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Server-executed** | Inside `streamText()` on the server | Automatically - the AI SDK calls `execute`, and the result streams through `run.pipe()`                                                                                                                                    |
+| **Client-executed** | In the browser (or any client)      | The client sends a `tool-result` input via [`view.send()`](../reference/react-hooks.md#useview), forking the suspended tool call into its own reply run (a sibling of the suspended run) that carries this client's result |
 
 Tool events flow through the codec like any other streaming content. The Vercel codec maps tool lifecycle to these wire events:
 
@@ -106,7 +106,10 @@ const tools = {
 Watch for tool parts in the `input-available` state, execute the browser API, then publish the result back to the channel:
 
 ```typescript
-import { createUIMessageCodec } from '@ably/ai-transport/vercel';
+import { createToolResultFork, createUIMessageCodec } from '@ably/ai-transport/vercel';
+
+// The codec is stateless — assemble one to reconstruct the run's messages.
+const codec = createUIMessageCodec();
 
 // 1. Find the pending tool call in the assistant message. Walk the flat
 //    list paired with codec-message-ids so we can address the result back to
@@ -123,51 +126,58 @@ const assistant = view
       message.role === 'assistant' &&
       message.parts.some((p) => p.type === 'tool-getLocation' && p.state === 'input-available'),
   );
-
 const toolPart = assistant?.message.parts.find((p) => p.type === 'tool-getLocation' && p.state === 'input-available');
 
-// 2. Resolve the owning Run so the continuation reuses its runId
+// 2. Resolve the suspended run node — its full projection (for the fork seed)
+//    and its input node (the fork's parent), both read authoritatively from the
+//    run, not guessed from message order.
 const run = view.runOf(assistant.codecMessageId);
-const runId = run?.runId;
+const node = session.tree.getRunNode(run.runId);
 
 // 3. Execute the browser API
 const position = await new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject));
 
-// 4. Send a continuation `tool-result` input under the existing runId.
-//    The codec-message-id (`assistant.codecMessageId`) addresses the assistant
-//    message holding the tool call, so the reducer folds the result onto it. The
-//    codec-supplied payload carries the domain-specific fields (`toolCallId`,
-//    `output`). Routing lives on the input itself - no wrapper object.
-await view.send(
-  createUIMessageCodec().createToolResult(assistant.codecMessageId, {
-    toolCallId: toolPart.toolCallId,
-    output: {
-      latitude: position.coords.latitude,
-      longitude: position.coords.longitude,
-    },
-  }),
-  { runId },
-);
+// 4. Fork the tool call into its own reply run and publish the result.
+//    `createToolResultFork` builds the tool-result input (carrying a
+//    self-contained copy of the suspended run's messages, so the fork
+//    reconstructs its full context) plus the RUN-LESS send options (the fork's
+//    parent = the suspended run's input node, and role: 'assistant'; NO run-id —
+//    the agent mints the fork's run-id). Publishing them forks a sibling reply
+//    run, so concurrent answers to one tool call stay segregated.
+const { input, sendOptions } = createToolResultFork({
+  runMessages: codec.getMessages(node.projection),
+  parentCodecMessageId: node.parentCodecMessageId,
+  toolCallId: toolPart.toolCallId,
+  result: { output: { latitude: position.coords.latitude, longitude: position.coords.longitude } },
+  // The run this fork resolves is superseded — the tree hides that now-dead run
+  // so a single response renders as one linear reply (only concurrent forks branch).
+  supersedesRunId: run.runId,
+});
+await view.send([input], sendOptions);
 ```
 
 When the LLM requests a client-executed tool (or an approval) the agent has no result to stream, so it **suspends** the run — publishing `ai-run-suspend` rather than the terminal `ai-run-end` — and the run stays live in the conversation tree awaiting the result.
 
-Client tool resolutions are `tool-result` (or `tool-result-error`) inputs - they ride the `ai-input` wire, the same direction as user messages, so the publisher matches the wire (client to input, agent to output). The continuation reuses the run's `runId` so the agent picks the result up off the channel and resumes `streamText()` with the tool result in history; it re-enters the run with an `ai-run-resume` lifecycle event (not a fresh `ai-run-start`). The reducer folds the result onto the assistant addressed by `codecMessageId`, and all clients see the tool part transition from `input-available` to `output-available`. On failure, send a `tool-result-error` input with a `message` field instead of `output`.
+Client tool resolutions are `tool-result` (or `tool-result-error`) inputs - they ride the `ai-input` wire, the same direction as user messages, so the publisher matches the wire (client to input, agent to output). Each resolution opens its **own reply run** — a _fork_ of the suspended run. The fork is published **run-less** (carrying `role: 'assistant'` and a `parent`, but no run-id): the tree treats it as a client-owned optimistic reply run keyed by the tool-result's codec-message-id, the **agent** mints the fork's run id and starts that run with `ai-run-start` (not `ai-run-resume`) parented as a same-parent sibling of the suspended run, and the tree reconciles the optimistic reply run onto the agent-minted id by that codec-message-id (via the `input-codec-message-id` the agent echoes on run-start). The resolution carries a self-contained copy of the suspended run's messages (so a multi-step run keeps its earlier resolved tool calls), and the fork run reconstructs them with **this** result folded in, then the agent resumes `streamText()` with the full history.
+
+The fork also carries `supersedes` — the run-id of the suspended run it resolves. That run is now dead (nothing resumes it; its answer went to the fork), so the tree marks it superseded and **hides it from branch selection**. The effect: a **single** client's single response renders as **one linear reply** (the dead trunk is not shown as a sibling), while **concurrent** forks from multiple clients — which each supersede the same trunk — remain **segregated sibling branches**. On failure, send a `tool-result-error` input with a `message` field instead of `output`. See [Branching](branching.md) and [Wire protocol](../internals/wire-protocol.md#run-id-on-a-continuation) for the fork mechanics.
 
 ## Multi-client tool execution
 
-When multiple clients share a channel, only the client that initiated the run should execute client-side tools. The `run-client-id` header on each message identifies which client started the run. Compare it against the local `clientId` to skip observer tool calls:
+When multiple clients share a channel, more than one may execute the same client-side tool — most commonly two tabs authenticated with the **same `clientId`**. AI Transport handles this gracefully: because each resolution forks its own reply run (above), two clients answering the same tool call produce two **segregated sibling branches** — one per answer — with no errors and no cross-contamination of either the agent's prompt or the rendered conversation. Navigate between them with [branch selection](branching.md#branch-navigation), exactly as with a regenerated reply.
+
+If you would rather have a single client respond (to avoid redundant executions across _different_ clientIds), gate execution on the run owner — the `run-client-id` header identifies which client started the run:
 
 ```typescript
 const run = view.runOf(assistant.codecMessageId);
 if (run?.clientId && run.clientId !== myClientId) {
-  // This tool call was triggered by another client - skip execution.
-  // That client will publish the result, and we'll see it via the channel.
+  // A different client owns this run - let it publish the result.
+  // (This is an optional optimization; letting both respond is safe too.)
   return;
 }
 ```
 
-Observer clients see the tool call arrive (the assistant message streams normally) and see the result appear when the initiating client publishes its `tool-result` input and the run resumes. No special handling is needed on the observer side.
+This gate skips only when a **different** client owns the run; it does not fire for two tabs sharing one `clientId`, where both execute — and the forking above keeps those answers cleanly separated. Observer clients that do not execute the tool see each answer's branch appear as its owning client publishes its `tool-result`.
 
 ## History and persistence
 

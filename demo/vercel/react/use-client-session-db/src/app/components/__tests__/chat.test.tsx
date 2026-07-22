@@ -75,6 +75,10 @@ vi.mock('@ably-ai-demos/frontend', async (importOriginal) => {
     SessionHooks: {
       useClientSession: () => ({ session }),
       useAblyMessages: () => [],
+      // Chat reads the tree's getRunNode to seed a client-tool fork; the
+      // useClientTools driver that consumes it is mocked to a no-op below, so a
+      // stub returning no node suffices here.
+      useTree: () => ({ getRunNode: () => undefined }),
     },
     userMessage: (text: string) => ({ id: 'new-user', role: 'user', parts: [{ type: 'text', text }] }),
     wakeAgent: mockWakeAgent,

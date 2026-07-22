@@ -11,8 +11,9 @@
 import type * as AI from 'ai';
 
 import type { ReducerMeta, ToolApprovalResponse, ToolResult, ToolResultError } from '../../core/codec/index.js';
-import type { ToolPart } from '../tool-part.js';
+import { isToolPart, type ToolPart } from '../tool-part.js';
 import type {
+  ForkSeed,
   VercelToolApprovalResponsePayload,
   VercelToolResultErrorPayload,
   VercelToolResultPayload,
@@ -82,7 +83,8 @@ export const foldClientToolResult = (
   state: VercelProjection,
   event: ToolResult<VercelToolResultPayload>,
 ): VercelProjection => {
-  const { toolCallId, output } = event.payload;
+  const { toolCallId, output, forkSeed } = event.payload;
+  seedForkIfAbsent(state, event.codecMessageId, forkSeed);
   return resolveOrPend(state, event.codecMessageId, toolCallId, { kind: 'tool-result', output });
 };
 
@@ -97,7 +99,8 @@ export const foldClientToolResultError = (
   state: VercelProjection,
   event: ToolResultError<VercelToolResultErrorPayload>,
 ): VercelProjection => {
-  const { toolCallId, message } = event.payload;
+  const { toolCallId, message, forkSeed } = event.payload;
+  seedForkIfAbsent(state, event.codecMessageId, forkSeed);
   return resolveOrPend(state, event.codecMessageId, toolCallId, { kind: 'tool-result-error', message });
 };
 
@@ -120,6 +123,49 @@ export const foldToolApprovalResponse = (
     approved,
     ...(reason === undefined ? {} : { reason }),
   });
+};
+
+/**
+ * Reconstruct the suspended run's full message list from a fork continuation's
+ * {@link ForkSeed} when the target assistant is absent from THIS projection —
+ * the seam that makes a fork run self-contained (see {@link ForkSeed}). A no-op
+ * when the seed is absent (an ordinary result folding onto an assistant the
+ * projection already holds) or when the target is already present (a refold
+ * whose earlier wire seeded it, or a non-fork result) — so it is idempotent
+ * across refolds.
+ *
+ * Every seed message is reconstructed under its OWN (fresh) codec-message-id,
+ * carrying its parts in their current state — earlier tool calls already
+ * resolved, the current one still awaiting this fork's result. Seeding the whole
+ * run (not just the current tool-call assistant) preserves context across
+ * SEQUENTIAL client tool calls. A tracker is registered for each tool part so
+ * resolution — and any later fold — locates it by `toolCallId`, exactly as the
+ * streaming tool-input fold would have. The caller then applies this fork's
+ * result onto the target via {@link resolveOrPend}.
+ * @param state - Projection to seed into.
+ * @param targetCodecMessageId - The result's target codec-message-id; the seed
+ *   is applied only when this target is absent (the guard against re-seeding).
+ * @param seed - The reconstruction seed, if the input carried one.
+ */
+const seedForkIfAbsent = (state: VercelProjection, targetCodecMessageId: string, seed: ForkSeed | undefined): void => {
+  if (seed === undefined) return;
+  // Guard on the TARGET's presence: once the fork's own wire (or a prior
+  // refold) has seeded the run, replaying the seed is a no-op.
+  if (state.messages.some((e) => e.codecMessageId === targetCodecMessageId)) return;
+  for (const { codecMessageId, message } of seed.messages) {
+    // Skip a message already present (defensive against a seed that overlaps
+    // an existing entry); reconstruct the rest.
+    if (state.messages.some((e) => e.codecMessageId === codecMessageId)) continue;
+    // Copy the parts array (the seed is shared wire data, replayed on every
+    // refold); resolutions REPLACE parts by index rather than mutating them, so
+    // a shallow array copy is sufficient and mirrors the existing input folds.
+    const parts = [...message.parts];
+    state.messages.push({ codecMessageId, message: { ...message, parts } });
+    const trackers = ensureTrackers(state, codecMessageId);
+    for (const [partIndex, part] of parts.entries()) {
+      if (isToolPart(part)) trackers.tools.set(part.toolCallId, { partIndex, inputText: '' });
+    }
+  }
 };
 
 /**

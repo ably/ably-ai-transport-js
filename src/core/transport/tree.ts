@@ -1138,22 +1138,27 @@ export class DefaultTree<
   ): void {
     const wireRunId = headers[HEADER_RUN_ID];
     const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
+    const role = headers[HEADER_ROLE];
 
-    // Classify: with NO run-id, a user message carrying a codec-message-id and
-    // at least one input event forms an INPUT node keyed by that
-    // codec-message-id — the client owns it; the agent mints the reply run-id
-    // separately. Everything else needs a run-id to route to a reply run.
-    // Capturing the id (not a boolean) narrows it to `string` for the input path.
-    const inputNodeCodecMessageId =
-      wireRunId === undefined &&
-      codecMessageId !== undefined &&
-      headers[HEADER_ROLE] === 'user' &&
-      events.inputs.length > 0
-        ? codecMessageId
-        : undefined;
+    // Classify a run-less wire (no run-id) that carries a codec-message-id and
+    // at least one input event, by its role:
+    // - `role === 'user'` → a fresh client input → an INPUT node keyed by that
+    //   codec-message-id (the client owns it; the agent mints the reply run-id
+    //   separately).
+    // - `role !== 'user'` → a client tool-result FORK, published run-less: it
+    //   reconstructs an ASSISTANT turn (the tool-call assistant carrying this
+    //   result), so it is a client-owned OPTIMISTIC reply run keyed by its
+    //   codec-message-id, awaiting the agent-minted run-id — the only wire
+    //   matching this shape. The agent's `ai-run-start` reconciles it onto its
+    //   minted run-id via `input-codec-message-id` (see `_applyRunStart`).
+    // Everything else needs a run-id to route to a reply run.
+    // Capturing the id (not a boolean) narrows it to `string` for each path.
+    const runLessInput = wireRunId === undefined && codecMessageId !== undefined && events.inputs.length > 0;
+    const inputNodeCodecMessageId = runLessInput && role === 'user' ? codecMessageId : undefined;
+    const forkRunCodecMessageId = runLessInput && role !== 'user' ? codecMessageId : undefined;
 
-    if (wireRunId === undefined && inputNodeCodecMessageId === undefined) {
-      this._logger.warn('Tree.applyMessage(); message has no run-id and is not a user input; skipping');
+    if (wireRunId === undefined && inputNodeCodecMessageId === undefined && forkRunCodecMessageId === undefined) {
+      this._logger.warn('Tree.applyMessage(); message has no run-id and is not a user input or fork; skipping');
       return;
     }
 
@@ -1164,7 +1169,9 @@ export class DefaultTree<
     // zero events and don't need a node at the tree level — the eventual reply
     // run is created later by run-start, and any regenerate / parent
     // information the wire carried is reread from the run-start headers.
-    // Skipping here avoids a phantom node that would inflate sibling counts.
+    // Skipping here avoids a phantom node that would inflate sibling counts. (A
+    // fork always carries a tool-result event, so `all.length > 0` — this skip
+    // never applies to it.)
     const existingKey = inputNodeCodecMessageId ?? wireRunId;
     if (all.length === 0 && existingKey !== undefined && !this._nodeIndex.has(existingKey)) {
       return;
@@ -1178,6 +1185,17 @@ export class DefaultTree<
 
     if (inputNodeCodecMessageId !== undefined) {
       this._applyInputMessage(inputNodeCodecMessageId, headers, serial, timestamp, version, all);
+    } else if (forkRunCodecMessageId !== undefined) {
+      // Run-less fork tool-result → a client-owned optimistic reply run keyed by
+      // its codec-message-id. When that codec-message-id ALREADY backs a reply
+      // run — the agent's `ai-run-start` (which carries it as
+      // `input-codec-message-id`) arrived first and mapped it — fold into that
+      // run instead, so the two arrival orders (fork-input-first vs
+      // run-start-first) converge on one node rather than duplicating.
+      const mappedKey = this._codecMessageIdToNodeKey.get(forkRunCodecMessageId);
+      const mapped = mappedKey === undefined ? undefined : this._nodeIndex.get(mappedKey);
+      const runKey = mapped?.node.kind === 'run' && mappedKey !== undefined ? mappedKey : forkRunCodecMessageId;
+      this._applyRunMessage(runKey, events, headers, serial, timestamp, version);
     } else if (wireRunId !== undefined) {
       this._applyRunMessage(wireRunId, events, headers, serial, timestamp, version);
     }
@@ -1268,6 +1286,15 @@ export class DefaultTree<
     // Fold inputs first, then outputs, preserving wire order.
     const all: CodecEvent<TInput, TOutput>[] = toCodecEvents(events);
     const outputs = events.outputs;
+
+    // Order-independent fork↔run convergence: when this agent wire names the
+    // fork's triggering codec-message-id (an agent output that folded before
+    // run-start), establish the linkage BEFORE resolving the run node — adopt an
+    // optimistic fork run onto `R` (so its seed lands here and no duplicate `R`
+    // node is created), else map `F → R` so a later fork input folds in. No-op
+    // for a normal run (its `input-codec-message-id` is its user input node's id)
+    // and for the run-less fork input itself (which carries no input-codec id).
+    this._linkForkInput(inputCodecMessageId, wireRunId);
 
     let run = this._nodeIndex.get(wireRunId);
 
@@ -1646,6 +1673,13 @@ export class DefaultTree<
     const existing = this._nodeIndex.get(event.runId);
     if (existing?.node.kind === 'run') {
       const node = existing.node;
+      // Backfill branch: `R` already exists (created by a prior output or step
+      // wire). Establish the fork↔run linkage here too so the run-start-carried
+      // `input-codec-message-id` maps `F → R` even when it never went through the
+      // create branch — routing a later run-less fork input into `R`. (`R` is
+      // present, so the re-key path declines by its distinct-`R` guard; this
+      // records the mapping.)
+      this._linkForkInput(event.inputCodecMessageId, event.runId);
       // Activate only a suspended run. A run-start can be observed AFTER the
       // run's terminal event (history pages replay newest-first, so an older
       // page delivers the start last) — like a stray resume, it must never
@@ -1701,10 +1735,175 @@ export class DefaultTree<
       this._recordActivity(existing, event.timestamp);
       this._maybeQueueSweep(existing);
     } else if (!existing) {
+      // Reconcile a client-owned OPTIMISTIC fork run (a run-less client
+      // tool-result the Tree keyed by the fork's codec-message-id) onto this
+      // agent-minted run-id, when the run-start names it as `inputCodecMessageId`
+      // — the fork-input-first arrival order.
+      if (this._adoptOptimisticForkRun(event)) return;
+
       const run = this._createRunFromLifecycle(event);
       this._insertNode(event.runId, run, run.node.parentCodecMessageId);
       this._indexReplyRun(run.node, event.runId);
       this._recordActivity(run, event.timestamp);
+      // Run-start-first arrival order: map the fork's triggering
+      // codec-message-id to this fresh run so a LATER run-less fork tool-result
+      // folds INTO it (via `applyMessage`) rather than creating a duplicate
+      // optimistic run. `_adoptOptimisticForkRun` above already returned false
+      // (no optimistic node to re-key), so this resolves to the mapping branch —
+      // guarded so a fresh user send's input node (which maps its own id) and an
+      // already-mapped id are never clobbered.
+      this._linkForkInput(event.inputCodecMessageId, event.runId);
+    }
+  }
+
+  /**
+   * Reconcile a client-owned OPTIMISTIC fork run onto the agent-minted run-id.
+   *
+   * A run-less client tool-result fork is classified by {@link applyMessage} as
+   * a reply run keyed by the fork's own codec-message-id `F` (the reconstructed
+   * tool-call assistant). The agent then mints the real run-id and publishes
+   * `ai-run-start` carrying `F` as `input-codec-message-id`. This adopts the
+   * optimistic node onto that run-id — RE-KEYING it `F → runId` across every
+   * index — so the fork's already-folded result and the agent's follow-up
+   * outputs (published under the minted run-id) share ONE run, restoring "agent
+   * owns run-ids, client owns codec-message-ids".
+   *
+   * Fires only when `event.inputCodecMessageId` resolves to a reply RUN node
+   * still keyed by that codec-message-id (its `runId` field equals the id, so it
+   * has never seen its own run-start). A FRESH USER SEND is unaffected — its
+   * `input-codec-message-id` backs an INPUT node, not a run — as is a regenerate
+   * (whose carrier backs no node). Idempotent under refold / hydration: once
+   * re-keyed, the node is keyed by `runId` and `F` maps to it, so a re-delivered
+   * run-start takes the existing-node path instead of re-adopting.
+   * @param event - The run-start lifecycle event.
+   * @returns True when an optimistic fork run was adopted (re-keyed).
+   */
+  private _adoptOptimisticForkRun(event: RunLifecycleEvent & { type: 'start' }): boolean {
+    const forkEntry = this._rekeyOptimisticForkRun(event.inputCodecMessageId, event.runId);
+    // `_rekeyOptimisticForkRun` only re-keys a run node; the `kind` check narrows
+    // `node` to `RunNode` for the metadata backfill below (never false at runtime).
+    if (forkEntry?.node.kind !== 'run') return false;
+    const node = forkEntry.node;
+
+    // Backfill structural metadata from the authoritative run-start (mirrors the
+    // existing-node branch). The fork tool-result already set `parent` (the
+    // forked run's input node) and the clientId; run-start is the source for
+    // forkOf / regenerates / invocationId when the fork wire didn't carry them.
+    if (node.parentCodecMessageId === undefined && event.parent !== undefined) {
+      node.parentCodecMessageId = event.parent;
+      this._removeFromParentIndex(undefined, event.runId);
+      this._addToParentIndex(node.parentCodecMessageId, event.runId);
+      this._indexReplyRun(node, event.runId);
+    }
+    if (node.forkOf === undefined && event.forkOf !== undefined) {
+      const forkOfKey = this._codecMessageIdToNodeKey.get(event.forkOf);
+      if (forkOfKey !== undefined && forkOfKey !== event.runId) node.forkOf = forkOfKey;
+    }
+    if (node.regeneratesCodecMessageId === undefined && event.regenerates !== undefined) {
+      node.regeneratesCodecMessageId = event.regenerates;
+    }
+    if (node.invocationId === '' && event.invocationId !== '') {
+      node.invocationId = event.invocationId;
+    }
+    // Promote startSerial only if the fork tool-result wire didn't already set
+    // it (the run sorts by its earliest wire's serial); re-sort when it changes.
+    if (event.serial && !node.startSerial) {
+      node.startSerial = event.serial;
+      this._promoteSerial(forkEntry);
+    }
+    // The run-start's serial floor is now observed; re-evaluate log sweeping.
+    forkEntry.runStartSeen = true;
+    this._recordActivity(forkEntry, event.timestamp);
+    this._maybeQueueSweep(forkEntry);
+    return true;
+  }
+
+  /**
+   * Re-key an optimistic fork run `F → R` across every index — the structural
+   * core shared by {@link _adoptOptimisticForkRun} (which adds run-start
+   * metadata backfill) and {@link _linkForkInput} (which fires from ANY agent
+   * wire carrying `input-codec-message-id`). Moves the node in `_nodeIndex`, the
+   * parent child-set, the reply→input reverse edge, and `_codecMessageIdToNodeKey`,
+   * then bumps the structural version.
+   *
+   * Fires only when `forkCodecMessageId` (`F`) backs a reply RUN node still keyed
+   * by that codec-message-id (its `runId` field equals the id, so it has never
+   * seen its own run-start), AND `runId` (`R`) does not already name a DISTINCT
+   * node. The distinct-`R` guard refuses to clobber an existing `R` (e.g. a bare
+   * node minted by a step event before run-start) — a two-node merge the design
+   * avoids by re-keying BEFORE `R` exists; the two target arrival orders always
+   * satisfy that, so this only declines a rare interleaving, leaving the caller's
+   * codec-message-id mapping to route later wires. A FRESH USER SEND (`F` backs
+   * an INPUT node) and a regenerate (`F` backs no node) are never re-keyed.
+   * @param forkCodecMessageId - The fork's codec-message-id `F` (an agent wire's
+   *   `input-codec-message-id`), or undefined.
+   * @param runId - The agent-minted run-id `R` to re-key onto.
+   * @returns The re-keyed internal node, or undefined when nothing was re-keyed.
+   */
+  private _rekeyOptimisticForkRun(
+    forkCodecMessageId: string | undefined,
+    runId: string,
+  ): InternalNode<TInput, TOutput, TProjection> | undefined {
+    if (forkCodecMessageId === undefined || forkCodecMessageId === runId) return undefined;
+    const forkEntry = this._nodeIndex.get(forkCodecMessageId);
+    // The optimistic fork run is keyed by the codec-message-id itself (created
+    // via `_applyRunMessage(codecMessageId, …)`), so its node key AND `runId`
+    // field both equal `F`. An INPUT node (fresh send) or no node (regenerate)
+    // is not a fork to adopt.
+    if (forkEntry?.node.kind !== 'run' || forkEntry.node.runId !== forkCodecMessageId) return undefined;
+    // Never overwrite a DISTINCT node already keyed by R (would drop its data).
+    const existingR = this._nodeIndex.get(runId);
+    if (existingR !== undefined && existingR !== forkEntry) return undefined;
+    const node = forkEntry.node;
+
+    // Re-key the node F → runId in the primary index.
+    this._nodeIndex.delete(forkCodecMessageId);
+    node.runId = runId;
+    this._nodeIndex.set(runId, forkEntry);
+
+    // Move the node's key within its parent's child-set (children still file
+    // under the raw `parentCodecMessageId`, which is unchanged).
+    this._removeFromParentIndex(node.parentCodecMessageId, forkCodecMessageId);
+    this._addToParentIndex(node.parentCodecMessageId, runId);
+
+    // Move the reply→input reverse edge (fork / regenerate sibling grouping).
+    if (node.parentCodecMessageId !== undefined) {
+      deleteFromSetMap(this._replyRunsByInput, node.parentCodecMessageId, forkCodecMessageId);
+      addToSetMap(this._replyRunsByInput, node.parentCodecMessageId, runId);
+    }
+
+    // The fork's codec-message-id now resolves to the run under its minted id.
+    this._codecMessageIdToNodeKey.set(forkCodecMessageId, runId);
+    this._structuralVersion++;
+    return forkEntry;
+  }
+
+  /**
+   * Establish the fork↔run linkage for ANY agent wire carrying the fork's
+   * triggering codec-message-id as `input-codec-message-id` (`F`) — a run-start
+   * (create OR backfill branch) or an agent output that folded before run-start.
+   * This makes the run-less-fork ⇒ agent-run convergence ORDER-INDEPENDENT:
+   *
+   * - If `F` backs an OPTIMISTIC fork run, re-key it `F → R` (via
+   *   {@link _rekeyOptimisticForkRun}) so the fork's already-folded seed lands in
+   *   `R` and no duplicate `R` node is created alongside it.
+   * - Otherwise record `F → R` in the codec-message-id index — but only when `F`
+   *   names no node yet, so a fresh user send's input node (which maps its own id
+   *   to itself) and an already-mapped id are never clobbered — so a LATER
+   *   run-less fork tool-result keyed `F` folds INTO `R` (via {@link applyMessage})
+   *   rather than spawning a duplicate optimistic run.
+   *
+   * A no-op when the wire carries no `input-codec-message-id`, when it equals the
+   * run-id, or for a normal run whose `input-codec-message-id` is its own user
+   * input node's id (that id already resolves to the input node).
+   * @param forkCodecMessageId - The wire's `input-codec-message-id` (`F`), or undefined.
+   * @param runId - The run-id the wire belongs to (`R`).
+   */
+  private _linkForkInput(forkCodecMessageId: string | undefined, runId: string): void {
+    if (forkCodecMessageId === undefined || forkCodecMessageId === runId) return;
+    if (this._rekeyOptimisticForkRun(forkCodecMessageId, runId) !== undefined) return;
+    if (this._codecMessageIdToNodeKey.get(forkCodecMessageId) === undefined) {
+      this._codecMessageIdToNodeKey.set(forkCodecMessageId, runId);
     }
   }
 

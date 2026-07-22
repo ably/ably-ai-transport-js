@@ -966,6 +966,16 @@ class DefaultAgentSession<
     };
 
     /**
+     * The reply run's STRUCTURAL parent for the opening `ai-run-start` and the
+     * optimistic run-node insert — where the run node hangs in the tree. Equals
+     * {@link assistantParentFallback} for a fresh run / regenerate (the run hangs
+     * off its triggering input node, which is also the leaf anchor). For a FORK
+     * continuation the two diverge: the run hangs off the FORKED run's input node
+     * (the `parent` the trigger carried), while the leaf anchor stays the fork's
+     * own reconstructed tool-call assistant so `run.view` walks into the fork.
+     */
+    let assistantRunParent: string | undefined;
+    /**
      * Remove this run from the session's routing maps and close its `run.view`.
      * Drops the `_registeredRuns` entry plus the `input-codec-message-id → run-id`
      * reverse index (and any stale deferred cancel still buffered for that
@@ -1014,10 +1024,20 @@ class DefaultAgentSession<
         // run's identity: present → a continuation re-entering that run, so adopt
         // the id, overriding the provisional one minted at construction, and
         // re-key the registration so cancel routing / deregistration resolve to
-        // the real run; absent → a fresh run, the provisional id stands and the
-        // run opens with run-start. For an ADOPTED run the run-id is fixed by the
-        // supplied identity and the trigger's run-id header NEVER re-keys it (a
-        // delegation trigger carries the PARENT's id).
+        // the real run; absent → a fresh run (a plain send OR a client tool-result
+        // fork, both run-less), the provisional id stands and the run opens with
+        // run-start. For an ADOPTED run the run-id is fixed by the supplied
+        // identity and the trigger's run-id header NEVER re-keys it (a delegation
+        // trigger carries the PARENT's id).
+        //
+        // A client-provided run-id is always a plain re-entry (a resume) of an
+        // existing run — an agent self-resume (durable suspend/resume), or a
+        // non-fork continuation such as an approval response that folds back onto
+        // the suspended run. A client tool-result FORK carries NO run-id: it is
+        // published run-less, so it takes the fresh-run path here and the agent
+        // mints the fork's run-id. Its optimistic reply run is reconciled onto
+        // that minted id by the triggering input's codec-message-id (see the
+        // run-node insert in `start()` and `Tree`'s run-start handling).
         const wireRunId = headers[HEADER_RUN_ID];
         resolvedContinuation = wireRunId !== undefined;
         if (!adopting && wireRunId !== undefined && wireRunId !== runId) {
@@ -1028,16 +1048,29 @@ class DefaultAgentSession<
         }
       }
 
-      // Compute the reply run's structural-parent fallback: the triggering user
-      // message's codec-message-id ONLY if that codec-message-id is backed by a
-      // real node in the Tree (the message decoded into at least one input
-      // event); otherwise — for regenerate carriers that are wire-only signals
-      // with no input events — fall back to the input message's own `parent`.
-      assistantParentFallback =
-        resolvedInputCodecMessageId !== undefined &&
-        getTree().getNodeByCodecMessageId(resolvedInputCodecMessageId) !== undefined
-          ? resolvedInputCodecMessageId
-          : resolvedParent;
+      // Whether the triggering input backs an existing Tree node, and of which
+      // kind. A fresh user send's trigger backs its INPUT node; a client
+      // tool-result FORK's trigger backs the optimistic reply RUN the Tree
+      // created from the run-less fork tool-result; a regenerate carrier is a
+      // wire-only signal backing NO node.
+      const triggerNode =
+        resolvedInputCodecMessageId === undefined
+          ? undefined
+          : getTree().getNodeByCodecMessageId(resolvedInputCodecMessageId);
+
+      // Compute the reply run's structural-parent fallback (the leaf anchor +
+      // the assistant outputs' default parent): the triggering input's
+      // codec-message-id when it is backed by a real node in the Tree (a fresh
+      // run's user input, or a fork's reconstructed tool-call assistant);
+      // otherwise — for regenerate carriers that are wire-only signals with no
+      // node — the input message's own `parent`.
+      assistantParentFallback = triggerNode === undefined ? resolvedParent : resolvedInputCodecMessageId;
+      // The run node's structural parent. A FORK — detected by its trigger
+      // backing a reply RUN node (the optimistic fork run) — hangs off the
+      // FORKED run's input node (the trigger's `parent`), keeping the leaf
+      // anchor on its own reconstructed assistant; every other run hangs where
+      // its leaf anchors.
+      assistantRunParent = triggerNode?.kind === 'run' ? resolvedParent : assistantParentFallback;
 
       // Pin run.view to this run's branch now the trigger is resolved — the same
       // anchor / run-id / regenerate-target the conversation getters use.
@@ -1458,12 +1491,13 @@ class DefaultAgentSession<
 
       await publishLifecycle('run-start', 'start', async () =>
         runManager.startRun(runId, resolvedClientId, controller, {
-          // Stamp the reply run's STRUCTURAL parent (its input node, M_user) —
-          // the same value the output path stamps — not the input message's own
-          // parent. Makes `parent` structural on every message so the Tree's two
-          // creation paths agree regardless of arrival order. Valid only now
-          // that M_user is a separate input node (the two-node flip).
-          parent: assistantParentFallback,
+          // Stamp the reply run's STRUCTURAL parent (its input node) — where the
+          // run node hangs in the tree. For a fresh run this is the triggering
+          // input node (== the leaf anchor); for a fork continuation it is the
+          // FORKED run's input node (the leaf anchor stays the fork's own
+          // reconstructed assistant). Makes `parent` structural on every message
+          // so the Tree's two creation paths agree regardless of arrival order.
+          parent: assistantRunParent,
           forkOf: resolvedForkOf,
           regenerates: resolvedRegenerates,
           invocationId,
@@ -1481,9 +1515,11 @@ class DefaultAgentSession<
       // run immediately rather than depending on the channel echo of the
       // run-start just published. The echo (or a history fold) reconciles
       // through the Tree's run-start handling, promoting startSerial onto
-      // this serial-less node. Continuations re-enter an existing run via
-      // run-resume, which creates no structure — their node comes from
-      // history hydration instead.
+      // this serial-less node. A resume continuation re-enters an existing run
+      // via run-resume, which creates no structure — its node comes from history
+      // hydration instead. A FORK continuation is NOT a resume: it opens a fresh
+      // run node here (`resolvedContinuation` is false for a fork), parented at
+      // the forked run's input node.
       if (!resolvedContinuation) {
         getTree().applyRunLifecycle({
           type: 'start',
@@ -1491,9 +1527,15 @@ class DefaultAgentSession<
           clientId: resolvedClientId ?? '',
           serial: undefined,
           invocationId,
-          ...(assistantParentFallback !== undefined && { parent: assistantParentFallback }),
+          ...(assistantRunParent !== undefined && { parent: assistantRunParent }),
           ...(resolvedForkOf !== undefined && { forkOf: resolvedForkOf }),
           ...(resolvedRegenerates !== undefined && { regenerates: resolvedRegenerates }),
+          // Carry the triggering input's codec-message-id so this optimistic
+          // insert RECONCILES an existing optimistic fork run the agent's own
+          // Tree already keyed by it (the run-less fork tool-result folded
+          // before run-start) — re-keying that node onto this minted run-id
+          // rather than creating a duplicate. The wire echo carries it too.
+          ...(resolvedInputCodecMessageId !== undefined && { inputCodecMessageId: resolvedInputCodecMessageId }),
         });
       }
 

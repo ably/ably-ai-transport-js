@@ -11,7 +11,7 @@ import type * as AI from 'ai';
 import { describe, expect, it } from 'vitest';
 
 import type { ReducerMeta } from '../../../src/core/codec/types.js';
-import type { VercelInput, VercelOutput } from '../../../src/vercel/codec/events.js';
+import type { ForkSeed, VercelInput, VercelOutput } from '../../../src/vercel/codec/events.js';
 import { createUIMessageCodec } from '../../../src/vercel/codec/index.js';
 import { fold as foldEvent, getMessages, init, type VercelProjection } from '../../../src/vercel/codec/reducer.js';
 import { isToolPart, type ToolPart } from '../../../src/vercel/tool-part.js';
@@ -73,6 +73,34 @@ const seedToolCall = (toolCallId: string, messageId: string): VercelProjection =
   );
   return state;
 };
+
+/**
+ * A dynamic-tool part in its pre-result `input-available` state — the shape a
+ * suspended tool-call assistant holds before any client answers it.
+ * @param toolCallId - The tool call the part represents.
+ * @returns The pre-result dynamic-tool part.
+ */
+const toolCallPart = (toolCallId: string): AI.DynamicToolUIPart => ({
+  type: 'dynamic-tool',
+  toolName: 'getLocation',
+  toolCallId,
+  state: 'input-available',
+  input: {},
+});
+
+/**
+ * A self-contained single-message fork seed: one seed message pairing the fresh
+ * fork codec-message-id with the tool-call assistant (its domain id + a tool
+ * part in pre-result state) — the copy a client carries to reconstruct that
+ * assistant in the fork's own projection.
+ * @param codecMessageId - The fresh fork codec-message-id the message takes (the result's target).
+ * @param domainId - The tool-call assistant's domain id.
+ * @param toolCallId - The tool call the seeded part represents.
+ * @returns The reconstruction seed.
+ */
+const seedFor = (codecMessageId: string, domainId: string, toolCallId: string): ForkSeed => ({
+  messages: [{ codecMessageId, message: { id: domainId, role: 'assistant', parts: [toolCallPart(toolCallId)] } }],
+});
 
 describe('Vercel reducer', () => {
   // -- init ----------------------------------------------------------------
@@ -389,6 +417,208 @@ describe('Vercel reducer', () => {
       const message = msgById(state, 'msg-1');
       const toolPart = message?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
       expect(toolPart?.state).toBe('output-available');
+      expect(state.pendingToolResolutions).toHaveLength(0);
+    });
+  });
+
+  // -- tool-result forkSeed reconstruction (fork continuations) -------------
+  //
+  // A client tool-result continuation forks into its own reply run, seeded from
+  // the suspend point: the input carries a `forkSeed` — the suspended run's FULL
+  // message list, each entry under a fresh codec-message-id. When the target
+  // assistant is absent from the fork's own projection, the reducer reconstructs
+  // every seed message (registering tool-part trackers), then applies this
+  // fork's result onto the target, so the fork run is self-contained (with full
+  // prior context) rather than depending on the suspended run it forked from.
+
+  describe('tool-result forkSeed reconstruction', () => {
+    it('reconstructs the tool-call assistant from the seed into an empty projection, then applies the result', () => {
+      let state = init();
+      const toolResult: VercelInput = {
+        kind: 'tool-result',
+        codecMessageId: 'fork-asst',
+        payload: {
+          toolCallId: 'tc-1',
+          output: { city: 'Hong Kong' },
+          forkSeed: seedFor('fork-asst', 'asst-tool', 'tc-1'),
+        },
+      };
+      state = fold(state, toolResult, meta('s1', 'fork-continuation'));
+
+      // The reconstructed assistant is keyed on the input's codec-message-id and
+      // carries the seed's domain id and the assistant role.
+      const message = msgById(state, 'fork-asst');
+      expect(message?.role).toBe('assistant');
+      expect(message?.id).toBe('asst-tool');
+
+      // Its tool part transitions to output-available carrying this fork's result.
+      const toolPart = toolPartOf(state, 'fork-asst', 'tc-1');
+      expect(toolPart?.state).toBe('output-available');
+      if (toolPart?.state !== 'output-available') throw new Error('expected output-available');
+      expect(toolPart.output).toEqual({ city: 'Hong Kong' });
+      // The result folds directly onto the reconstruction — nothing is buffered.
+      expect(state.pendingToolResolutions).toHaveLength(0);
+    });
+
+    it('reconstructs the assistant from the seed and applies a tool-result-error as output-error', () => {
+      let state = init();
+      const errorInput: VercelInput = {
+        kind: 'tool-result-error',
+        codecMessageId: 'fork-asst',
+        payload: {
+          toolCallId: 'tc-1',
+          message: 'geolocation denied',
+          forkSeed: seedFor('fork-asst', 'asst-tool', 'tc-1'),
+        },
+      };
+      state = fold(state, errorInput, meta('s1', 'fork-continuation'));
+
+      const message = msgById(state, 'fork-asst');
+      expect(message?.role).toBe('assistant');
+      expect(message?.id).toBe('asst-tool');
+
+      const toolPart = toolPartOf(state, 'fork-asst', 'tc-1');
+      expect(toolPart?.state).toBe('output-error');
+      if (toolPart?.state !== 'output-error') throw new Error('expected output-error');
+      expect(toolPart.errorText).toBe('geolocation denied');
+      expect(state.pendingToolResolutions).toHaveLength(0);
+    });
+
+    it('does not duplicate the assistant when the seed target is already present — folds onto the existing one', () => {
+      // The target assistant already holds the tool call (e.g. its own wire
+      // seeded it, or a refold re-runs the input). The seed is ignored: no
+      // duplicate is created and the existing assistant keeps its identity.
+      let state = seedToolCall('tc-1', 'asst-present');
+      const toolResult: VercelInput = {
+        kind: 'tool-result',
+        codecMessageId: 'asst-present',
+        payload: {
+          toolCallId: 'tc-1',
+          output: { city: 'Berlin' },
+          forkSeed: seedFor('seed-ignored-cm', 'seed-ignored', 'tc-1'),
+        },
+      };
+      state = fold(state, toolResult, meta('s2', 'fork-continuation'));
+
+      expect(state.messages).toHaveLength(1);
+      // The existing assistant's id is kept — the seed's id is not applied.
+      expect(msgById(state, 'asst-present')?.id).toBe('asst-present');
+      const toolPart = toolPartOf(state, 'asst-present', 'tc-1');
+      expect(toolPart?.state).toBe('output-available');
+      if (toolPart?.state !== 'output-available') throw new Error('expected output-available');
+      expect(toolPart.output).toEqual({ city: 'Berlin' });
+    });
+
+    it('still buffers a seedless result whose owner is absent, then promotes it when the assistant arrives', () => {
+      // Regression: with no seed and no existing owner, the result pends — the
+      // reducer does not fabricate an assistant.
+      let state = init();
+      const seedless: VercelInput = {
+        kind: 'tool-result',
+        codecMessageId: 'asst-1',
+        payload: { toolCallId: 'tc-1', output: { city: 'Paris' } },
+      };
+      state = fold(state, seedless, meta('s1', 'continuation'));
+      expect(state.messages).toHaveLength(0);
+      expect(state.pendingToolResolutions).toHaveLength(1);
+
+      // A later fold adds the owning assistant — the pending result promotes.
+      state = fold(
+        state,
+        { type: 'tool-input-start', toolCallId: 'tc-1', toolName: 'getLocation', dynamic: true },
+        meta('s2', 'asst-1'),
+      );
+      const toolPart = toolPartOf(state, 'asst-1', 'tc-1');
+      expect(toolPart?.state).toBe('output-available');
+      if (toolPart?.state !== 'output-available') throw new Error('expected output-available');
+      expect(toolPart.output).toEqual({ city: 'Paris' });
+      expect(state.pendingToolResolutions).toHaveLength(0);
+    });
+
+    it('reconstructs independently in two separate projections — two fork runs answering one tool call do not cross-talk', () => {
+      // Mirrors the concurrent case: two tabs each answer the SAME suspended tool
+      // call, each in its OWN fork-run projection with its own fresh assistant id
+      // and result. The per-projection reducer keeps them disjoint.
+      let forkA = init();
+      let forkB = init();
+
+      forkA = fold(
+        forkA,
+        {
+          kind: 'tool-result',
+          codecMessageId: 'fork-a-asst',
+          payload: {
+            toolCallId: 'tc-loc',
+            output: { city: 'Hong Kong' },
+            forkSeed: seedFor('fork-a-asst', 'asst-tool', 'tc-loc'),
+          },
+        },
+        meta('s1', 'fork-a'),
+      );
+      forkB = fold(
+        forkB,
+        {
+          kind: 'tool-result',
+          codecMessageId: 'fork-b-asst',
+          payload: {
+            toolCallId: 'tc-loc',
+            output: { city: 'Berlin' },
+            forkSeed: seedFor('fork-b-asst', 'asst-tool', 'tc-loc'),
+          },
+        },
+        meta('s1', 'fork-b'),
+      );
+
+      // Each fork carries exactly its own reconstructed assistant + result.
+      expect(getMessages(forkA)).toHaveLength(1);
+      expect(getMessages(forkB)).toHaveLength(1);
+      const partA = toolPartOf(forkA, 'fork-a-asst', 'tc-loc');
+      const partB = toolPartOf(forkB, 'fork-b-asst', 'tc-loc');
+      expect(partA?.state === 'output-available' && partA.output).toEqual({ city: 'Hong Kong' });
+      expect(partB?.state === 'output-available' && partB.output).toEqual({ city: 'Berlin' });
+      // No cross-talk: neither fork holds the other's assistant.
+      expect(msgById(forkA, 'fork-b-asst')).toBeUndefined();
+      expect(msgById(forkB, 'fork-a-asst')).toBeUndefined();
+    });
+
+    it('reconstructs a multi-message seed (a prior resolved tool call + the current one), then resolves the target', () => {
+      // A SEQUENTIAL multi-step client-tool run: an earlier tool call already
+      // resolved, plus the current one awaiting THIS result. The full seed
+      // carries BOTH, so the fork keeps prior context rather than losing it.
+      let state = init();
+      const priorResolved: AI.DynamicToolUIPart = {
+        type: 'dynamic-tool',
+        toolName: 'getLocation',
+        toolCallId: 'tc-prior',
+        state: 'output-available',
+        input: {},
+        output: { city: 'Paris' },
+      };
+      const seed: ForkSeed = {
+        messages: [
+          { codecMessageId: 'fork-prior', message: { id: 'asst-prior', role: 'assistant', parts: [priorResolved] } },
+          {
+            codecMessageId: 'fork-current',
+            message: { id: 'asst-current', role: 'assistant', parts: [toolCallPart('tc-current')] },
+          },
+        ],
+      };
+      const toolResult: VercelInput = {
+        kind: 'tool-result',
+        codecMessageId: 'fork-current',
+        payload: { toolCallId: 'tc-current', output: { city: 'Berlin' }, forkSeed: seed },
+      };
+      state = fold(state, toolResult, meta('s1', 'fork-continuation'));
+
+      // BOTH messages reconstructed — the prior resolved call is not lost.
+      expect(getMessages(state)).toHaveLength(2);
+      const prior = toolPartOf(state, 'fork-prior', 'tc-prior');
+      expect(prior?.state === 'output-available' && prior.output).toEqual({ city: 'Paris' });
+      // The target's tool call is resolved with THIS fork's result.
+      const current = toolPartOf(state, 'fork-current', 'tc-current');
+      expect(current?.state).toBe('output-available');
+      if (current?.state !== 'output-available') throw new Error('expected output-available');
+      expect(current.output).toEqual({ city: 'Berlin' });
       expect(state.pendingToolResolutions).toHaveLength(0);
     });
   });

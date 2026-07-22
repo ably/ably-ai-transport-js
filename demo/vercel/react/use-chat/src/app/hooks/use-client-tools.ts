@@ -28,7 +28,7 @@ import type { ClientToolLogEntry } from '@ably-ai-demos/frontend';
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
 
 const clientTools: Record<string, ClientToolExecutor> = {
-  getLocation: async (input) => {
+  getLocation: (input) => {
     const { highAccuracy } = (input ?? {}) as { highAccuracy?: boolean };
     return new Promise<unknown>((resolve) => {
       if (!navigator.geolocation) {

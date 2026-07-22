@@ -172,6 +172,48 @@ const applyInput = (
   );
 };
 
+// Apply a run-LESS fork tool-result wire: role 'assistant', a fresh
+// codec-message-id F (the reconstructed tool-call assistant), a `parent` (the
+// forked run's input node), and an input event carrying the seed. The Tree
+// classifies it as an optimistic reply run keyed by F.
+const applyForkInput = (
+  tree: TreeInternal<TestInput, TestOutput, TestProjection>,
+  opts: {
+    codecMessageId: string;
+    parent: string;
+    message: TestMessage;
+    serial?: string;
+    clientId?: string;
+  },
+): void => {
+  const h: Record<string, string> = {
+    [HEADER_ROLE]: 'assistant',
+    [HEADER_CODEC_MESSAGE_ID]: opts.codecMessageId,
+    [HEADER_PARENT]: opts.parent,
+  };
+  if (opts.clientId) h[HEADER_RUN_CLIENT_ID] = opts.clientId;
+  tree.applyMessage({ inputs: [{ kind: 'append-input', message: opts.message }], outputs: [] }, h, opts.serial);
+};
+
+// Apply an agent `ai-run-start` for a fork: mints run-id R, carries the fork's
+// triggering codec-message-id as `input-codec-message-id` (F) and the fork's
+// structural parent (the forked run's input node), so the Tree reconciles the
+// optimistic fork run keyed F onto R.
+const forkRunStart = (
+  tree: TreeInternal<TestInput, TestOutput, TestProjection>,
+  opts: { runId: string; parent: string; inputCodecMessageId: string; serial?: string },
+): void => {
+  tree.applyRunLifecycle({
+    type: 'start',
+    runId: opts.runId,
+    clientId: 'user-a',
+    invocationId: 'inv-1',
+    serial: opts.serial,
+    parent: opts.parent,
+    inputCodecMessageId: opts.inputCodecMessageId,
+  });
+};
+
 // Apply a run-start or run-end lifecycle event with a timestamp (retention tests).
 const lifecycle = (
   tree: TreeInternal<TestInput, TestOutput, TestProjection>,
@@ -1845,6 +1887,192 @@ describe('Tree', () => {
 
     it('a Run with no forks has no sibling runs', () => {
       expect(siblingRuns(tree, 'R1').length > 1).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Run-less fork tool-result → optimistic reply run reconciliation
+  // -------------------------------------------------------------------------
+  //
+  // A client tool-result FORK is published RUN-LESS with role 'assistant'. The
+  // tree classifies it as an OPTIMISTIC reply run keyed by the fork's own
+  // codec-message-id F (folding its reconstructed seed). The agent then mints
+  // the run-id and publishes ai-run-start carrying F as input-codec-message-id;
+  // the tree RECONCILES the optimistic run onto that minted id (re-keying F → R)
+  // — handling either arrival order — so the fork's result and the agent's
+  // follow-up share one run, and a fresh user send is never mistaken for a fork.
+
+  describe('run-less fork reconciliation', () => {
+    it('classifies a run-less fork tool-result as an optimistic reply run keyed by its codec-message-id', () => {
+      applyInput(tree, { codecMessageId: 'U', message: { id: 'U', content: 'prompt' }, serial: 's1' });
+      applyForkInput(tree, {
+        codecMessageId: 'F',
+        parent: 'U',
+        message: { id: 'seed', content: 'toolcall+result' },
+        serial: 's2',
+      });
+
+      const forkRun = tree.getNodeByCodecMessageId('F');
+      expect(forkRun?.kind).toBe('run');
+      expect(tree.getRunNode('F')?.parentCodecMessageId).toBe('U'); // optimistic, keyed by F, parented at the forked run's input node
+      expect(messagesOf(tree, 'F').map((m) => m.id)).toContain('seed'); // the reconstructed seed folded
+      expect(tree.getReplyRuns('U').map((n) => n.runId)).toEqual(['F']); // a reply run of the input node
+    });
+
+    it('reconciles the optimistic fork run onto the agent-minted run-id (fork input, then run-start)', () => {
+      applyInput(tree, { codecMessageId: 'U', message: { id: 'U', content: 'prompt' }, serial: 's1' });
+      applyForkInput(tree, { codecMessageId: 'F', parent: 'U', message: { id: 'seed', content: 'x' }, serial: 's2' });
+      expect(tree.getRunNode('F')).toBeDefined(); // optimistic, keyed by F
+
+      // The agent mints R and publishes run-start naming F as input-codec-message-id.
+      forkRunStart(tree, { runId: 'R', parent: 'U', inputCodecMessageId: 'F', serial: 's3' });
+
+      // Re-keyed F → R: addressable by R, no separate node keyed F, F still resolves to the run.
+      expect(tree.getRunNode('R')?.parentCodecMessageId).toBe('U');
+      expect(tree.getNode('F')).toBeUndefined();
+      expect(tree.getNodeByCodecMessageId('F')?.kind).toBe('run');
+      expect(messagesOf(tree, 'R').map((m) => m.id)).toContain('seed'); // the fork's seed survived the re-key
+      expect(tree.getReplyRuns('U').map((n) => n.runId)).toEqual(['R']); // exactly one reply run, no duplicate
+
+      // The agent's follow-up output (published under R) folds into the same run.
+      apply(tree, {
+        runId: 'R',
+        codecMessageId: 'A',
+        role: 'assistant',
+        message: { id: 'followup', content: 'reply' },
+        serial: 's4',
+      });
+      expect(messagesOf(tree, 'R').map((m) => m.id)).toEqual(['seed', 'followup']);
+    });
+
+    it('folds a late run-less fork input into the already-started reply run (run-start, then fork input)', () => {
+      applyInput(tree, { codecMessageId: 'U', message: { id: 'U', content: 'prompt' }, serial: 's1' });
+      // Run-start arrives FIRST (agent minted R), naming F as input-codec-message-id.
+      forkRunStart(tree, { runId: 'R', parent: 'U', inputCodecMessageId: 'F', serial: 's2' });
+      expect(tree.getRunNode('R')).toBeDefined();
+
+      // The run-less fork tool-result (keyed F) arrives later — it must fold INTO R.
+      applyForkInput(tree, { codecMessageId: 'F', parent: 'U', message: { id: 'seed', content: 'x' }, serial: 's3' });
+
+      expect(tree.getNode('F')).toBeUndefined(); // no duplicate optimistic run keyed F
+      expect(tree.getNodeByCodecMessageId('F')?.kind).toBe('run');
+      expect(messagesOf(tree, 'R').map((m) => m.id)).toContain('seed'); // folded into R
+      expect(tree.getReplyRuns('U').map((n) => n.runId)).toEqual(['R']);
+    });
+
+    it('leaves a fresh user send unaffected (its input-codec-message-id backs an INPUT node, not a run)', () => {
+      // Fresh user send: a run-less USER input keyed U.
+      applyInput(tree, { codecMessageId: 'U', message: { id: 'U', content: 'prompt' }, serial: 's1' });
+      expect(tree.getNodeByCodecMessageId('U')?.kind).toBe('input');
+
+      // The agent's run-start for the fresh run names U as input-codec-message-id.
+      forkRunStart(tree, { runId: 'R', parent: 'U', inputCodecMessageId: 'U', serial: 's2' });
+
+      // U stays an INPUT node (never re-keyed); R is a distinct reply run parented at U.
+      expect(tree.getNodeByCodecMessageId('U')?.kind).toBe('input');
+      expect(tree.getRunNode('R')?.parentCodecMessageId).toBe('U');
+      expect(tree.getReplyRuns('U').map((n) => n.runId)).toEqual(['R']);
+    });
+
+    it('segregates two concurrent forks into two sibling reply runs at one input node', () => {
+      applyInput(tree, { codecMessageId: 'U', message: { id: 'U', content: 'prompt' }, serial: 's1' });
+      // Two tabs fork the same tool call — two distinct client-owned fork ids.
+      applyForkInput(tree, {
+        codecMessageId: 'F1',
+        parent: 'U',
+        message: { id: 'seedA', content: 'HK' },
+        serial: 's2',
+      });
+      applyForkInput(tree, {
+        codecMessageId: 'F2',
+        parent: 'U',
+        message: { id: 'seedB', content: 'Berlin' },
+        serial: 's3',
+      });
+      expect(
+        tree
+          .getReplyRuns('U')
+          .map((n) => n.runId)
+          .toSorted(),
+      ).toEqual(['F1', 'F2']); // two optimistic siblings at U
+
+      // The agent mints a distinct run-id per fork.
+      forkRunStart(tree, { runId: 'RA', parent: 'U', inputCodecMessageId: 'F1', serial: 's4' });
+      forkRunStart(tree, { runId: 'RB', parent: 'U', inputCodecMessageId: 'F2', serial: 's5' });
+
+      expect(
+        tree
+          .getReplyRuns('U')
+          .map((n) => n.runId)
+          .toSorted(),
+      ).toEqual(['RA', 'RB']); // reconciled to minted ids
+      expect(messagesOf(tree, 'RA').map((m) => m.id)).toContain('seedA'); // each fork kept its own seed
+      expect(messagesOf(tree, 'RB').map((m) => m.id)).toContain('seedB');
+    });
+
+    // The two orders below interleave the agent's follow-up OUTPUT (run R,
+    // input-codec F) with run-start and the run-less fork input F. Before the
+    // order-independent linkage, neither the output path nor the run-start
+    // backfill branch mapped F → R, so the late fork input spawned a SECOND
+    // reply run keyed F — a split brain (getReplyRuns == ['F','R']). Both must
+    // now converge on the single agent-minted run R.
+
+    it('converges the fork onto one run when the follow-up output folds before run-start (output, run-start, fork-input)', () => {
+      applyInput(tree, { codecMessageId: 'U', message: { id: 'U', content: 'prompt' }, serial: 's1' });
+      // Newest-first hydration: the agent's follow-up OUTPUT folds first (highest
+      // serial), creating node R while naming F as input-codec-message-id.
+      apply(tree, {
+        runId: 'R',
+        codecMessageId: 'A',
+        role: 'assistant',
+        inputCodecMessageId: 'F',
+        message: { id: 'followup', content: 'reply' },
+        serial: 's4',
+      });
+      // run-start backfills the existing R (also naming F).
+      forkRunStart(tree, { runId: 'R', parent: 'U', inputCodecMessageId: 'F', serial: 's3' });
+      // The run-less fork tool-result (keyed F) arrives LAST — it must fold INTO R.
+      applyForkInput(tree, {
+        codecMessageId: 'F',
+        parent: 'U',
+        message: { id: 'seed', content: 'toolcall+result' },
+        serial: 's2',
+      });
+
+      expect(tree.getNode('F')).toBeUndefined(); // no duplicate reply run keyed F
+      expect(tree.getNodeByCodecMessageId('F')?.kind).toBe('run'); // F resolves to the run
+      expect(tree.getRunNode('R')?.parentCodecMessageId).toBe('U');
+      expect(tree.getReplyRuns('U').map((n) => n.runId)).toEqual(['R']); // exactly ONE reply run
+      expect(messagesOf(tree, 'R').map((m) => m.id)).toEqual(['seed', 'followup']); // both the seed AND the follow-up
+    });
+
+    it('converges the fork onto one run when the fork input folds before the output, run-start last (fork-input, output, run-start)', () => {
+      applyInput(tree, { codecMessageId: 'U', message: { id: 'U', content: 'prompt' }, serial: 's1' });
+      // The run-less fork tool-result folds FIRST → an optimistic run keyed F.
+      applyForkInput(tree, {
+        codecMessageId: 'F',
+        parent: 'U',
+        message: { id: 'seed', content: 'toolcall+result' },
+        serial: 's2',
+      });
+      // The agent's follow-up OUTPUT (run R, input-codec F) folds BEFORE run-start
+      // — it must ADOPT the optimistic F onto R rather than create a second node.
+      apply(tree, {
+        runId: 'R',
+        codecMessageId: 'A',
+        role: 'assistant',
+        inputCodecMessageId: 'F',
+        message: { id: 'followup', content: 'reply' },
+        serial: 's4',
+      });
+      // run-start arrives LAST and backfills the (already adopted) run.
+      forkRunStart(tree, { runId: 'R', parent: 'U', inputCodecMessageId: 'F', serial: 's3' });
+
+      expect(tree.getNode('F')).toBeUndefined(); // the optimistic F was re-keyed, not duplicated
+      expect(tree.getNodeByCodecMessageId('F')?.kind).toBe('run');
+      expect(tree.getRunNode('R')?.parentCodecMessageId).toBe('U');
+      expect(tree.getReplyRuns('U').map((n) => n.runId)).toEqual(['R']); // exactly ONE reply run
+      expect(messagesOf(tree, 'R').map((m) => m.id)).toEqual(['seed', 'followup']); // both the seed AND the follow-up
     });
   });
 

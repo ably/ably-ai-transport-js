@@ -104,6 +104,63 @@ async function editAndSubmit(page: Page, userBubble: Locator, newText: string): 
   await ta.press('Enter');
 }
 
+// The assistant turn's branch navigator. It is message-anchored on the HEAD
+// bubble of the currently-selected reply run (the getLocation tool bubble),
+// so exactly one is present. Re-resolved on every use so it keeps matching
+// after selecting a sibling re-renders the transcript.
+function branchNav(page: Page): Locator {
+  return page.locator('[data-testid="branch-navigator"]').first();
+}
+
+// Read the "current / total" pair off the branch counter, or null when absent.
+async function navCounter(page: Page): Promise<{ index: number; total: number } | null> {
+  const counter = branchNav(page).locator('[data-testid="branch-counter"]');
+  if ((await counter.count()) === 0) return null;
+  const txt = (await counter.first().innerText()).trim(); // e.g. "1 / 3"
+  const m = /^(\d+)\s*\/\s*(\d+)$/.exec(txt);
+  return m ? { index: Number(m[1]), total: Number(m[2]) } : null;
+}
+
+// Walk the assistant turn's branch navigator across every sibling and collect
+// each distinct resolved `getLocation` coordinate rendered — read ONLY from the
+// visible transcript (`[data-testid="messages"]`), never the debug pane (whose
+// raw wire JSON also carries the coordinates). Each fork branch renders its own
+// `Location: lat, lng` card; the suspended trunk sibling renders "Calling
+// getLocation" with no card and contributes nothing. Returns the sibling total
+// and the set of coordinate strings observed.
+async function walkForkBranchCoords(page: Page): Promise<{ total: number; coords: Set<string> }> {
+  await branchNav(page).waitFor({ state: 'visible', timeout: 60_000 });
+  const total = (await navCounter(page))?.total ?? 0;
+
+  const messages = page.locator('[data-testid="messages"]');
+  const coordOf = async (): Promise<string | null> => {
+    const body = await messages.innerText();
+    const m = /Location:\s*([-\d.]+,\s*[-\d.]+)/.exec(body);
+    return m ? m[1].replace(/\s+/g, ' ') : null;
+  };
+
+  // Rewind to the first sibling (Previous is disabled at index 0 / "1 / M").
+  for (let guard = 0; guard < total + 2; guard++) {
+    const cur = await navCounter(page);
+    if (!cur || cur.index <= 1) break;
+    await branchNav(page).locator('button[aria-label="Previous branch"]').click();
+    await expect.poll(async () => (await navCounter(page))?.index ?? 0).toBeLessThan(cur.index);
+  }
+
+  // Step forward through every sibling, capturing each branch's coordinate.
+  const coords = new Set<string>();
+  for (let i = 0; i < total; i++) {
+    await page.waitForTimeout(300); // let the selected branch settle
+    const c = await coordOf();
+    if (c) coords.add(c);
+    const cur = await navCounter(page);
+    if (!cur || cur.index >= cur.total) break;
+    await branchNav(page).locator('button[aria-label="Next branch"]').click();
+    await expect.poll(async () => (await navCounter(page))?.index ?? 0).toBeGreaterThan(cur.index);
+  }
+  return { total, coords };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1290,6 +1347,122 @@ test.describe('use-chat demo - chat behaviour', () => {
       // On tab B, every assistant bubble must reach status=finished.
       const observerStreaming = tabB.locator('span:has(span:text-is("status")):has(span:text-is("streaming"))');
       await expect(observerStreaming).toHaveCount(0, { timeout: 30_000 });
+    } finally {
+      await ctxA.close();
+      await ctxB.close();
+    }
+  });
+
+  // checks: two tabs sharing ONE clientId both resolve the SAME getLocation
+  // call with DISTINCT coordinates; the concurrent results segregate into
+  // sibling reply-run branches (each carrying its own coordinate), navigable
+  // via the assistant turn's branch navigator — never collapsing onto one run.
+  test('concurrent client-side tool results from two same-client tabs fork into segregated, navigable sibling branches', async ({
+    browser,
+  }) => {
+    // Both tabs use the SAME clientId, so the useClientTools owner gate
+    // (run.clientId !== clientId) lets BOTH execute getLocation. Each context
+    // is granted DISTINCT geolocation coordinates, so the two tool RESULTS
+    // differ even though the mock's follow-up weather text is fixed — the
+    // coordinate is the per-branch segregation discriminator.
+    //
+    // Pre-fix (re-enter): both continuations reuse the one suspended run; its
+    // projection folds both results onto the single tool-call assistant
+    // (last-writer-wins) → ONE run, NO siblings, ONE coordinate ever visible.
+    // Post-fix (fork): each continuation opens its own reply run as a
+    // same-parent sibling of the suspended trunk → the assistant turn shows a
+    // branch navigator, and navigating reveals BOTH distinct coordinates.
+    const channel = `ai:e2e-concurrent-tool-fork-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+    // London vs Tokyo — distinct latitudes that are trivial to tell apart.
+    const ctxA = await browser.newContext({
+      permissions: ['geolocation'],
+      geolocation: { latitude: 51.5074, longitude: -0.1278 },
+    });
+    const ctxB = await browser.newContext({
+      permissions: ['geolocation'],
+      geolocation: { latitude: 35.6762, longitude: 139.6503 },
+    });
+
+    // Delay geolocation resolution so BOTH tabs render the unresolved tool call
+    // and START executing it before EITHER fork echoes back. Without this, the
+    // first fork to land re-selects the visible branch and hides the unresolved
+    // trunk from the other tab, whose useClientTools (it keys off the
+    // branch-selected visible messages) then never fires — leaving only ONE
+    // fork. With the delay, each tab's getCurrentPosition is already pending
+    // when the forks fire, so both addToolResult calls run and both tabs fork
+    // concurrently — the same same-tick concurrency the SDK integration test
+    // drives directly. The wrapper defers Playwright's own (coordinate-
+    // injecting) implementation, so each context still resolves its distinct
+    // coordinates.
+    const delayGeolocation = (): void => {
+      const geo = navigator.geolocation;
+      const orig = geo.getCurrentPosition.bind(geo);
+      geo.getCurrentPosition = (success, error, options): void => {
+        setTimeout(() => {
+          orig(success, error, options);
+        }, 2000);
+      };
+    };
+    await ctxA.addInitScript(delayGeolocation);
+    await ctxB.addInitScript(delayGeolocation);
+
+    const tabA = await ctxA.newPage();
+    const tabB = await ctxB.newPage();
+    try {
+      // Both tabs join the SAME channel with the SAME clientId.
+      await tabA.goto(`/?channel=${channel}&clientId=user-a`);
+      await tabB.goto(`/?channel=${channel}&clientId=user-a`);
+      // Both tabs must be mounted/connected before the run suspends, so both
+      // observe the unresolved tool call and execute it concurrently (each
+      // starts executing on receiving the suspend, before either fork echoes
+      // back and re-selects the visible branch).
+      await tabA.getByPlaceholder('Type a message...').waitFor({ state: 'visible' });
+      await tabB.getByPlaceholder('Type a message...').waitFor({ state: 'visible' });
+
+      // Tab A drives the conversation; the agent streams getLocation and suspends.
+      const inputA = tabA.getByPlaceholder('Type a message...');
+      await inputA.fill("what's the weather like?");
+      await inputA.press('Enter');
+
+      // A fork resolves the tool (a Location card renders in the transcript) and
+      // the fixed weather follow-up streams. Then wait for ALL wire traffic to
+      // settle (awaitStreamingQuiesce reads document.body, which includes the
+      // debug pane's Ably-messages list), by which point BOTH forks have landed.
+      const messagesA = tabA.locator('[data-testid="messages"]');
+      await expect(messagesA.locator('text=/Location:/').first()).toBeVisible({ timeout: 60_000 });
+      await expect(bubbleContaining(tabA, 'sunny').first()).toBeVisible({ timeout: 60_000 });
+      await awaitStreamingQuiesce(tabA);
+
+      // The assistant turn must expose branch navigation — proof a sibling group
+      // was created. Pre-fix, both results re-enter the ONE suspended run, which
+      // has no siblings and therefore no navigator at all.
+      await expect
+        .poll(async () => (await navCounter(tabA))?.total ?? 0, { timeout: 30_000 })
+        .toBeGreaterThanOrEqual(2);
+
+      // Walk every sibling and collect the distinct resolved coordinates.
+      const { total, coords } = await walkForkBranchCoords(tabA);
+      const seen = [...coords].join(' | ');
+
+      // SEGREGATION: two DISTINCT resolved coordinates are reachable — one per
+      // fork — proving the two concurrent results landed on separate branches
+      // rather than collapsing onto one contaminated (last-writer-wins) run.
+      // (The sibling total is the two forks PLUS the still-suspended trunk, so
+      // it is >= 2 regardless of whether the trunk is later suppressed.)
+      expect(total, 'assistant turn must show a sibling group (>= 2 branches)').toBeGreaterThanOrEqual(2);
+      expect(coords.size, `expected two distinct resolved coordinates, saw: [${seen}]`).toBeGreaterThanOrEqual(2);
+      expect(seen, 'tab A (London) fork must be present').toMatch(/51\.5074/);
+      expect(seen, 'tab B (Tokyo) fork must be present').toMatch(/35\.6762/);
+
+      // NON-REGRESSION FLOOR: no run errored, and nothing is stuck — no bubble
+      // is left on "streaming" and the input bar is back to Send (not Stop).
+      const errorBadges = tabA.locator('span:has(span:text-is("status")):has(span:text-is("error"))');
+      await expect(errorBadges).toHaveCount(0);
+      const streamingBadges = tabA.locator('span:has(span:text-is("status")):has(span:text-is("streaming"))');
+      await expect(streamingBadges).toHaveCount(0, { timeout: 30_000 });
+      await expect(tabA.getByRole('button', { name: /Stop/i })).toHaveCount(0);
+      await expect(tabA.getByRole('button', { name: /Send/i })).toBeVisible();
     } finally {
       await ctxA.close();
       await ctxB.close();

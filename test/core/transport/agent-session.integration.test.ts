@@ -1425,7 +1425,8 @@ describe('AgentSession integration', () => {
           unsub();
           reject(new Error(`timed out waiting for run ${runId} to complete`));
         }, 10_000);
-        const unsub = agentSession.tree.on('update', () => {
+        // Check the condition each time a run lifecycle event is emitted.
+        const unsub = agentSession.tree.on('run', () => {
           if (done()) {
             clearTimeout(timer);
             unsub();

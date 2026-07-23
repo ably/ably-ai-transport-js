@@ -8,7 +8,54 @@
 
 import type { Logger } from '../../logger.js';
 import type { CodecInputEvent, CodecOutputEvent, Encoder } from '../codec/types.js';
-import type { StreamResult } from './types.js';
+import type { PipeSource, StreamResult } from './types.js';
+
+/** One pull from a normalized source: an output, or the terminal marker. */
+type PullResult<T> = { done: false; value: T } | { done: true; value?: T };
+
+/**
+ * A minimal pull-reader over either source shape {@link PipeSource} accepts.
+ * `read` yields one output or the terminal marker; `release` tears down the
+ * underlying source when the pipe ends, is cancelled, or errors.
+ */
+interface OutputPuller<T> {
+  /** Pull the next output, or the terminal marker once the source is exhausted. */
+  read(): Promise<PullResult<T>>;
+  /** Best-effort teardown: release a reader's lock or return the iterator. */
+  release(): void;
+}
+
+/**
+ * Normalize a {@link PipeSource} to a pull-reader. A `ReadableStream` is read
+ * through its reader (preferred where present, since the reader API is the
+ * portable one); any other source is driven through its async iterator, whose
+ * `return()` is called on release for best-effort upstream teardown.
+ * @param source - The stream or async-iterable to consume.
+ * @returns A pull-reader that yields outputs and tears the source down on release.
+ */
+const toPuller = <T extends CodecOutputEvent>(source: PipeSource<T>): OutputPuller<T> => {
+  if ('getReader' in source) {
+    const reader = source.getReader();
+    return {
+      // Bound method, not an arrow: preserves `reader.read`'s exact scheduling
+      // (no extra microtask tick) so the pull-vs-abort race resolves without a delay.
+      read: reader.read.bind(reader),
+      release: () => {
+        reader.releaseLock();
+      },
+    };
+  }
+  const iterator = source[Symbol.asyncIterator]();
+  return {
+    read: async () => {
+      const result = await iterator.next();
+      return result.done ? { done: true } : { done: false, value: result.value };
+    },
+    release: () => {
+      void iterator.return?.();
+    },
+  };
+};
 
 /**
  * Adapt an AbortSignal into a promise that resolves once the signal aborts,
@@ -43,7 +90,7 @@ const abortSignalToPromise = (signal: AbortSignal | undefined): { promise: Promi
  *
  * Returns when the stream completes, is cancelled (via signal), or errors.
  * The `reason` field of the result indicates which case occurred.
- * @param stream - The output stream to read from.
+ * @param source - The output source to read from: a `ReadableStream` or any `AsyncIterable` of outputs.
  * @param encoder - The encoder to publish outputs through.
  * @param signal - AbortSignal to monitor for cancellation.
  * @param onCancelled - Optional callback invoked when the stream is cancelled, before the stream ends.
@@ -52,7 +99,7 @@ const abortSignalToPromise = (signal: AbortSignal | undefined): { promise: Promi
  * @returns A {@link StreamResult}: `reason` is why the pipe ended, and `error` holds the caught error when `reason` is `'error'`.
  */
 export const pipeStream = async <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent>(
-  stream: ReadableStream<TOutput>,
+  source: PipeSource<TOutput>,
   encoder: Encoder<TInput, TOutput>,
   signal: AbortSignal | undefined,
   onCancelled?: (write: (output: TOutput) => Promise<void>) => void | Promise<void>,
@@ -61,7 +108,7 @@ export const pipeStream = async <TInput extends CodecInputEvent, TOutput extends
 ): Promise<StreamResult> => {
   logger?.trace('pipeStream();');
 
-  const reader = stream.getReader();
+  const puller = toPuller(source);
   const abort = abortSignalToPromise(signal);
 
   let reason: StreamResult['reason'] = 'complete';
@@ -74,7 +121,7 @@ export const pipeStream = async <TInput extends CodecInputEvent, TOutput extends
     while (true) {
       // .then() is intentional: transforms the AbortSignal into a discriminant
       // for Promise.race — no async/await equivalent for this pattern.
-      const result = await Promise.race([reader.read(), abort.promise.then(() => 'cancelled' as const)]);
+      const result = await Promise.race([puller.read(), abort.promise.then(() => 'cancelled' as const)]);
 
       if (result === 'cancelled') {
         reason = 'cancelled';
@@ -128,7 +175,7 @@ export const pipeStream = async <TInput extends CodecInputEvent, TOutput extends
     }
   } finally {
     abort.cleanup();
-    reader.releaseLock();
+    puller.release();
   }
 
   return { reason, error: caughtError };

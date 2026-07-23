@@ -7,14 +7,9 @@ export function userInput(text: string): Responses.ResponseInputItem[] {
   return [{ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }];
 }
 
-/** Read a stream to completion and collect its values in order. */
-export async function drain<T>(stream: ReadableStream<T>): Promise<T[]> {
+/** Read an async-iterable source to completion and collect its values in order. */
+export async function drain<T>(source: AsyncIterable<T>): Promise<T[]> {
   const out: T[] = [];
-  const reader = stream.getReader();
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    out.push(value);
-  }
+  for await (const value of source) out.push(value);
   return out;
 }

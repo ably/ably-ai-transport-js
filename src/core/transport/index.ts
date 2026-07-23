@@ -16,6 +16,7 @@ export type {
   InputNode,
   OpenableRun,
   OutputEvent,
+  PipeSource,
   RunEndParams,
   RunEndReason,
   RunInfo,

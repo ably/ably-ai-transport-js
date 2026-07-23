@@ -79,6 +79,18 @@ export interface AgentSessionOptions<
 // Run options
 // ---------------------------------------------------------------------------
 
+/**
+ * An output source accepted by {@link AgentRun.pipe} and {@link RunStep.pipe}:
+ * a `ReadableStream` or any `AsyncIterable` of codec outputs. A provider SDK
+ * stream that is async-iterable (the OpenAI Responses stream, for one) pipes in
+ * directly, with no hand-written `ReadableStream` wrapper. The transport pulls
+ * the source one output at a time and closes it when the pipe ends, is
+ * cancelled, or errors: it releases a stream reader's lock, or calls an
+ * iterator's `return()` for best-effort upstream teardown.
+ * @template TOutput - The codec output type carried by the source.
+ */
+export type PipeSource<TOutput extends CodecOutputEvent> = ReadableStream<TOutput> | AsyncIterable<TOutput>;
+
 /** Options for {@link Run.createStep}. */
 export interface StepOptions {
   /**
@@ -296,10 +308,11 @@ export interface RunStep<TOutput extends CodecOutputEvent> {
    * is cancelled, or errors. A stream error returns `{ reason: 'error' }` (it
    * does NOT throw) and marks the step `failed` when {@link RunStep.end} closes
    * it.
-   * @param stream - The output stream to pipe.
+   * @param source - The output source to pipe: a `ReadableStream` or any
+   *   `AsyncIterable` of outputs (see {@link PipeSource}).
    * @returns The {@link StreamResult} for this pipe.
    */
-  pipe(stream: ReadableStream<TOutput>): Promise<StreamResult>;
+  pipe(source: PipeSource<TOutput>): Promise<StreamResult>;
   /**
    * Publish a single discrete output as one assistant message on the channel,
    * stamped with this step's `step-id` and its attempt's `step-start-serial`.
@@ -451,8 +464,10 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
   hasInput(): boolean;
 
   /**
-   * Pipe a ReadableStream through the encoder to the channel.
-   * Returns when the stream completes, is cancelled, or errors.
+   * Pipe an output source through the encoder to the channel. The source is a
+   * `ReadableStream` or any `AsyncIterable` of outputs (see {@link PipeSource}),
+   * so a provider SDK's async-iterable stream pipes in without a wrapper.
+   * Returns when the source completes, is cancelled, or errors.
    * Does NOT call end() — the caller must call end() after pipe returns.
    *
    * Brackets the output in ONE implicit step (so all agent output is published
@@ -469,8 +484,10 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
    * supersede the first. Only an explicit, stable `stepId` supersedes, which
    * `pipe` never sets; for a re-attemptable unit whose retries must supersede
    * the prior attempt's output rather than appending it, use {@link AgentRun.createStep}.
+   * @param source - The output source to pipe (see {@link PipeSource}).
+   * @returns The {@link StreamResult} for this pipe.
    */
-  pipe(stream: ReadableStream<TOutput>): Promise<StreamResult>;
+  pipe(source: PipeSource<TOutput>): Promise<StreamResult>;
 
   /**
    * Create a step — a re-attemptable unit of agent work within this run, the

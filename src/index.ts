@@ -17,6 +17,7 @@ export type {
   InvocationData,
   OpenableRun,
   OutputEvent,
+  PipeSource,
   RunEndParams,
   RunEndReason,
   RunInfo,

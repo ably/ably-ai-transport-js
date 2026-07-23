@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ClientRun } from '@ably/ai-transport';
-import type { OpenAIMessage } from '@ably/ai-transport/openai';
+import type { OpenAIInput, OpenAIMessage } from '@ably/ai-transport/openai';
 import { ResponsesCodec } from '@ably/ai-transport/openai';
 
 import { userTurn, wakeAgent } from '../helpers';
@@ -42,7 +42,7 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
   // The core session never sends HTTP — the app owns the trigger. Send sites
   // pass the `view.send*` promise; a POST failure is surfaced in the log.
   const wake = useCallback(
-    (runPromise: Promise<ClientRun<OpenAIMessage>>) => {
+    (runPromise: Promise<ClientRun<OpenAIInput, OpenAIMessage>>) => {
       void runPromise
         .then((run) => wakeAgent(api, run))
         .catch((error: unknown) => {

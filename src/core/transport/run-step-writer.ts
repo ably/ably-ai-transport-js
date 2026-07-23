@@ -28,6 +28,7 @@ import { pipeStream } from './pipe-stream.js';
 import type { RunManager, StepClientScopes } from './run-manager.js';
 import type { DefaultTree } from './tree.js';
 import type {
+  PipeSource,
   RunEndReason,
   RunRuntime,
   RunStep,
@@ -155,8 +156,8 @@ export interface RunStepWriterContext<
 
 /** The output-producing surface of an agent run: stream piping and explicit step handles. */
 export interface RunStepWriter<TOutput extends CodecOutputEvent> {
-  /** Pipe a stream to the channel as the run's output (stepless). See {@link AgentRun.pipe}. */
-  pipe: (stream: ReadableStream<TOutput>) => Promise<StreamResult>;
+  /** Pipe an output source to the channel as the run's output (stepless). See {@link AgentRun.pipe}. */
+  pipe: (source: PipeSource<TOutput>) => Promise<StreamResult>;
   /** Create an explicit step handle that brackets its output with `ai-step-start` / `ai-step-end`. See {@link AgentRun.createStep}. */
   createStep: (options?: StepOptions) => RunStep<TOutput>;
   /** True while a step is open (started, not ended) — for {@link AgentRun.suspend}'s reject-while-active guard. */
@@ -454,7 +455,7 @@ export const createRunStepWriter = <
    * the outer layer's responsibility (`run.end()`, or `session.end()` for an
    * open run at teardown); a cancelled pipe closes only its own step bracket
    * (the caller's close-iff-opened / `step.end()`).
-   * @param stream - The output stream to pipe.
+   * @param source - The output source to pipe.
    * @param step - The step to stamp output under.
    * @param step.stepId - The step's id, stamped on every output.
    * @param step.stepStartSerialRef - Holds the step attempt's `step-start-serial`, stamped on every output once known.
@@ -464,7 +465,7 @@ export const createRunStepWriter = <
    * @returns The {@link StreamResult}.
    */
   const doPipe = async (
-    stream: ReadableStream<TOutput>,
+    source: PipeSource<TOutput>,
     step: {
       stepId: string;
       stepStartSerialRef: StepStartSerialRef;
@@ -493,7 +494,7 @@ export const createRunStepWriter = <
     const runId = ctx.getRunId();
     const encoder = createMessageEncoder(step);
 
-    const result = await pipeStream(stream, encoder, signal, onCancelled, logger, step.onFirstOutput);
+    const result = await pipeStream(source, encoder, signal, onCancelled, logger, step.onFirstOutput);
 
     if (result.error) {
       const errInfo = new Ably.ErrorInfo(
@@ -545,7 +546,7 @@ export const createRunStepWriter = <
   };
 
   // Spec: AIT-ST6, AIT-ST6a, AIT-ST6b, AIT-ST6b1, AIT-ST6b2, AIT-ST6b3, AIT-ST6c
-  const pipe = async (stream: ReadableStream<TOutput>): Promise<StreamResult> => {
+  const pipe = async (source: PipeSource<TOutput>): Promise<StreamResult> => {
     const runId = ctx.getRunId();
     logger?.trace('Run.pipe();', { runId });
 
@@ -600,7 +601,7 @@ export const createRunStepWriter = <
         await closeStep(stepId, stepStartSerialRef.value, reason, stepClientId);
       };
 
-      const result = await doPipe(stream, {
+      const result = await doPipe(source, {
         stepId,
         stepStartSerialRef,
         stepClientId,
@@ -716,7 +717,7 @@ export const createRunStepWriter = <
           opening = false;
         }
       },
-      pipe: async (stream: ReadableStream<TOutput>): Promise<StreamResult> => {
+      pipe: async (source: PipeSource<TOutput>): Promise<StreamResult> => {
         if (state !== 'active') {
           throw new Ably.ErrorInfo(
             'unable to pipe step; the step is not active — call start() first and do not pipe after end()',
@@ -724,7 +725,7 @@ export const createRunStepWriter = <
             400,
           );
         }
-        const result = await doPipe(stream, { stepId, stepStartSerialRef, stepClientId, steerIdsRef });
+        const result = await doPipe(source, { stepId, stepStartSerialRef, stepClientId, steerIdsRef });
         // A piped stream error marks the step failed without throwing — so the
         // common `vercelRunOutcome(...) -> run.end(outcome)` flow needs no
         // try/catch, while the step status still reflects the failure.

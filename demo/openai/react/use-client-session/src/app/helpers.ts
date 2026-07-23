@@ -1,5 +1,5 @@
 import type { ClientRun } from '@ably/ai-transport';
-import type { OpenAIItem, OpenAIMessage } from '@ably/ai-transport/openai';
+import type { OpenAIInput, OpenAIItem, OpenAIMessage } from '@ably/ai-transport/openai';
 
 /**
  * Construct a user turn from a text string. Callers wrap it for the wire at the
@@ -146,7 +146,7 @@ interface WakeAgentResult {
  * @returns The agent-minted run-id and invocation-id read back from the response.
  * @throws If the endpoint responds with a non-JSON body (e.g. an error page).
  */
-export async function wakeAgent(api: string, run: ClientRun<OpenAIMessage>): Promise<WakeAgentResult> {
+export async function wakeAgent(api: string, run: ClientRun<OpenAIInput, OpenAIMessage>): Promise<WakeAgentResult> {
   const response = await fetch(api, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

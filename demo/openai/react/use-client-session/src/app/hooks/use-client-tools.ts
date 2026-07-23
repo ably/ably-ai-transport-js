@@ -3,8 +3,11 @@
  * conversation and publishes their result so the suspended agent run resumes.
  *
  * Watches the view's messages for a `function_call` whose tool name is a client
- * tool (no server executor — see `isClientTool` in `../api/chat/tools`) that has
- * no `function_call_output` yet. It runs the tool in the browser, then publishes
+ * tool (no server executor; see `isClientTool` in `../api/chat/tools`) that has
+ * no `function_call_output` yet, on a run that has suspended. It waits for the
+ * run to suspend so a resume never races the run's still-streaming output (a
+ * server tool in the same turn whose result has not folded yet). It runs the
+ * tool in the browser, then publishes
  * a `tool-result` (or `tool-result-error`) via `view.send` addressed to the
  * function_call's codec-message-id. The codec's reducer folds the output onto
  * that message (matched by `call_id`) and records the client-result status, and
@@ -12,16 +15,15 @@
  * the channel and resumes.
  *
  * A `function_call_output` already present means the call was resolved (this
- * session or a prior one loaded from history), so it is skipped — no
- * re-execution on refresh. Only the initiating client runs the tool: the gate
- * on `run.clientId === clientId` keeps other tabs on the same channel, which see
- * the call but lack the browser context (geolocation), from answering it.
+ * session or a prior one loaded from history), so the hook skips it and does not
+ * re-execute on refresh. The `handledRef` dedup guards against a re-render
+ * re-running an in-flight executor.
  */
 
 import { useEffect, useRef } from 'react';
 import type { ViewHandle } from '@ably/ai-transport/react';
 import type { OpenAIInput, OpenAIItem, OpenAIMessage } from '@ably/ai-transport/openai';
-import { ResponsesCodec } from '@ably/ai-transport/openai';
+import { ResponsesCodec, resolvedCallIds } from '@ably/ai-transport/openai';
 
 import { wakeAgent } from '../helpers';
 import { isClientTool } from '../api/chat/tools';
@@ -59,27 +61,14 @@ function parseArgs(argumentsJson: string): Record<string, unknown> {
   return {};
 }
 
-/** The `call_id`s of every `function_call_output` already present across the messages. */
-function resolvedCallIds(messages: OpenAIMessage[]): Set<string> {
-  const ids = new Set<string>();
-  for (const message of messages) {
-    for (const item of message.items) {
-      if (item.type === 'function_call_output') ids.add(item.call_id);
-    }
-  }
-  return ids;
-}
-
 /**
  * Watch the view for unresolved client-tool calls and execute them.
  * @param view - The client view whose messages to watch and to publish results on.
- * @param clientId - This client's id; only calls from runs it initiated are executed.
  * @param api - The agent endpoint URL to POST the continuation to.
  * @param onLog - Optional callback to surface each execution in the demo's debug log.
  */
 export function useClientTools(
   view: ViewHandle<OpenAIInput, OpenAIMessage>,
-  clientId: string | undefined,
   api: string,
   onLog?: (summary: string) => void,
 ) {
@@ -94,11 +83,15 @@ export function useClientTools(
     for (const { codecMessageId, message } of messages) {
       if (message.role !== 'assistant') continue;
 
-      // Only run client tools for runs this client initiated — other tabs see
-      // the call but should not answer it.
       const run = view.runOf(codecMessageId);
       if (!run) continue;
-      if (run.clientId && run.clientId !== clientId) continue;
+      // Wait until the run is done streaming before executing a client tool and
+      // poking the agent to resume it. A single model turn can emit a server
+      // tool and a client tool in the same message; resuming while the run is
+      // still active races the run's own output (its server-tool result has not
+      // folded yet), and the provider rejects the resume for a missing output.
+      // The run flips to suspended once the agent pauses it awaiting this input.
+      if (run.status !== 'suspended') continue;
 
       for (const item of message.items) {
         if (item.type !== 'function_call') continue;
@@ -110,7 +103,7 @@ export function useClientTools(
         void executeClientTool(view, api, run.runId, codecMessageId, item, onLog);
       }
     }
-  }, [view, view.messages, clientId, api, onLog]);
+  }, [view, view.messages, api, onLog]);
 }
 
 /** Run one client-tool call and publish its result (or error) as a continuation. */

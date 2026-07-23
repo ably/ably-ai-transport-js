@@ -2,7 +2,12 @@ import type { Responses } from 'openai/resources/responses/responses';
 import { describe, expect, it } from 'vitest';
 
 import type { CodecEvent, ReducerMeta } from '../../../src/core/codec/index.js';
-import type { OpenAIInput, OpenAIOutput } from '../../../src/openai/codec/index.js';
+import type {
+  OpenAIToolApprovalResponsePayload,
+  OpenAIToolResultErrorPayload,
+  OpenAIToolResultPayload,
+} from '../../../src/openai/codec/events.js';
+import type { OpenAIInput, OpenAIMessage, OpenAIOutput } from '../../../src/openai/codec/index.js';
 import { fold, getMessages, init, type OpenAIProjection } from '../../../src/openai/codec/reducer.js';
 import {
   completed,
@@ -31,6 +36,7 @@ import {
   streamError,
   textDelta,
   textDone,
+  toolApprovalRequestEvent,
   userTurn,
 } from './fixtures.js';
 
@@ -59,6 +65,51 @@ const foldOutputsById = (pairs: [OpenAIOutput, string][]): OpenAIProjection => {
   }
   return state;
 };
+
+// Fold client-driven tool inputs (result, failure, approval decision) under one
+// codec-message-id, mirroring the client publishing a continuation on its own send.
+const foldToolResult = (
+  state: OpenAIProjection,
+  payload: OpenAIToolResultPayload,
+  messageId = 'run-1',
+): OpenAIProjection =>
+  fold(
+    state,
+    { direction: 'input', event: { kind: 'tool-result', codecMessageId: messageId, payload } },
+    { serial: '', messageId },
+  );
+
+const foldToolResultError = (
+  state: OpenAIProjection,
+  payload: OpenAIToolResultErrorPayload,
+  messageId = 'run-1',
+): OpenAIProjection =>
+  fold(
+    state,
+    { direction: 'input', event: { kind: 'tool-result-error', codecMessageId: messageId, payload } },
+    { serial: '', messageId },
+  );
+
+const foldToolApproval = (
+  state: OpenAIProjection,
+  payload: OpenAIToolApprovalResponsePayload,
+  messageId = 'run-1',
+): OpenAIProjection =>
+  fold(
+    state,
+    { direction: 'input', event: { kind: 'tool-approval-response', codecMessageId: messageId, payload } },
+    { serial: '', messageId },
+  );
+
+// The one message's tool-call state, keyed by call_id — undefined when the
+// message carries none (getMessages omits the key).
+const toolStatesOf = (state: OpenAIProjection): NonNullable<OpenAIMessage['toolCallStates']> | undefined =>
+  getMessages(state)[0]?.message.toolCallStates;
+
+const functionCallOutputs = (state: OpenAIProjection): Responses.ResponseInputItem.FunctionCallOutput[] =>
+  (getMessages(state)[0]?.message.items ?? []).filter(
+    (i): i is Responses.ResponseInputItem.FunctionCallOutput => i.type === 'function_call_output',
+  );
 
 const firstOutputText = (state: OpenAIProjection): string => {
   const message = getMessages(state)[0]?.message;
@@ -681,6 +732,88 @@ describe('OpenAI reducer', () => {
         (i): i is Responses.ResponseInputItem.FunctionCallOutput => i.type === 'function_call_output',
       );
       expect(output?.call_id).toBe('call_1');
+    });
+  });
+
+  // Tool-call state OpenAI's item model can't express — a plain-function approval
+  // decision and a client-side "failed" result — lives off the item array, keyed
+  // by call_id, and is surfaced by getMessages as message.toolCallStates. These
+  // fold from the codec's own tool-approval-request output and the client's
+  // tool-result / tool-result-error / tool-approval-response inputs.
+  describe('client-driven tool calls', () => {
+    it('marks a gated call pending on a tool-approval-request, carrying name and arguments', () => {
+      const state = foldOutputs([toolApprovalRequestEvent('call_1', 'getWeatherForecast', '{"location":"Paris"}')]);
+      expect(toolStatesOf(state)).toEqual({
+        call_1: { approval: 'pending', name: 'getWeatherForecast', arguments: '{"location":"Paris"}' },
+      });
+      // No item is added — the approval prompt renders from the state alone.
+      expect(getMessages(state)[0]?.message.items).toHaveLength(0);
+    });
+
+    it('folds a tool-result into a function_call_output and records result: ok', () => {
+      const state = foldToolResult(init(), { call_id: 'call_1', output: '{"latitude":51.5}' });
+      expect(functionCallOutputs(state)).toEqual([
+        { type: 'function_call_output', call_id: 'call_1', output: '{"latitude":51.5}' },
+      ]);
+      expect(toolStatesOf(state)).toEqual({ call_1: { result: 'ok' } });
+    });
+
+    it('folds a tool-result-error into a function_call_output carrying the message and records result: failed', () => {
+      const state = foldToolResultError(init(), { call_id: 'call_1', message: 'geolocation denied' });
+      expect(functionCallOutputs(state)).toEqual([
+        { type: 'function_call_output', call_id: 'call_1', output: 'geolocation denied' },
+      ]);
+      expect(toolStatesOf(state)).toEqual({ call_1: { result: 'failed' } });
+    });
+
+    it('upserts by call_id so a later result for the same call replaces the earlier one (last write wins)', () => {
+      let state = foldToolResult(init(), { call_id: 'call_1', output: 'first' });
+      state = foldToolResult(state, { call_id: 'call_1', output: 'second' });
+      expect(functionCallOutputs(state)).toEqual([
+        { type: 'function_call_output', call_id: 'call_1', output: 'second' },
+      ]);
+    });
+
+    it('flips a gated call to approved on approval, adding no output (the result arrives later)', () => {
+      let state = foldOutputs([toolApprovalRequestEvent('call_1', 'getWeatherForecast', '{}')]);
+      state = foldToolApproval(state, { call_id: 'call_1', approved: true });
+      expect(toolStatesOf(state)?.call_1?.approval).toBe('approved');
+      // Approval alone resolves nothing — the server runs the tool on resume.
+      expect(functionCallOutputs(state)).toHaveLength(0);
+    });
+
+    it('resolves a denial with a rejection function_call_output carrying the reason and flips to denied', () => {
+      const state = foldToolApproval(init(), { call_id: 'call_1', approved: false, reason: 'User denied' });
+      expect(functionCallOutputs(state)).toEqual([
+        { type: 'function_call_output', call_id: 'call_1', output: 'User denied' },
+      ]);
+      expect(toolStatesOf(state)).toEqual({ call_1: { approval: 'denied', reason: 'User denied' } });
+    });
+
+    it('uses the default rejection text when a denial gives no reason', () => {
+      const state = foldToolApproval(init(), { call_id: 'call_1', approved: false });
+      expect(functionCallOutputs(state)[0]?.output).toBe('Tool execution was not approved.');
+      expect(toolStatesOf(state)).toEqual({ call_1: { approval: 'denied' } });
+    });
+
+    it('merges approval and result state for one call rather than overwriting', () => {
+      // A gated call is approved, then the server result folds — both facets
+      // coexist under one call_id.
+      let state = foldOutputs([toolApprovalRequestEvent('call_1', 'getWeatherForecast', '{}')]);
+      state = foldToolApproval(state, { call_id: 'call_1', approved: true });
+      state = foldToolResult(state, { call_id: 'call_1', output: '{"forecast":[]}' });
+      expect(toolStatesOf(state)).toEqual({
+        call_1: { approval: 'approved', name: 'getWeatherForecast', arguments: '{}', result: 'ok' },
+      });
+    });
+
+    it('omits toolCallStates entirely for a message that never gated or client-ran a tool', () => {
+      const state = foldOutputs([
+        itemAdded(messageItem('msg_1')),
+        contentPartAdded('msg_1'),
+        textDone('msg_1', 'plain reply'),
+      ]);
+      expect('toolCallStates' in (getMessages(state)[0]?.message ?? {})).toBe(false);
     });
   });
 });

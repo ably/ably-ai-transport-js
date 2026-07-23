@@ -41,6 +41,28 @@ describe('toResponsesInput', () => {
     expect(input[3]).toBe(assistantMessage);
   });
 
+  it('feeds only the message items to the model, keeping out-of-band toolCallStates out of the input', () => {
+    // A denied gated call: the reducer records the decision in toolCallStates
+    // (out-of-band, for the client to render) and writes a rejection
+    // function_call_output into items (valid model input). Only the item may
+    // reach /responses — toolCallStates is not a ResponseInputItem and must not.
+    const rejection: Responses.ResponseInputItem.FunctionCallOutput = {
+      type: 'function_call_output',
+      call_id: 'c1',
+      output: 'User denied',
+    };
+    const assistant: OpenAIMessage = {
+      role: 'assistant',
+      items: [rejection],
+      toolCallStates: { c1: { approval: 'denied', reason: 'User denied' } },
+    };
+
+    const input = toResponsesInput([assistant]);
+
+    expect(input).toEqual([rejection]);
+    expect(input[0]).toBe(rejection);
+  });
+
   it('returns an empty array for an empty conversation', () => {
     expect(toResponsesInput([])).toEqual([]);
   });

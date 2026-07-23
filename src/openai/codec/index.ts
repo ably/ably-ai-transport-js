@@ -7,9 +7,11 @@
  * `defineCodec` builds the generic encoder/decoder from these.
  *
  * It streams assistant text, refusals, reasoning (summary and raw text) and
- * function-call arguments, handles a plain user message and server-side
- * function calls, and repairs mid-stream joins via `decoderSynthesiseLifecycle`.
- * Client-side tools and hosted tools are not yet supported.
+ * function-call arguments, handles a plain user message and both server-side
+ * and client-side function calls (results, failures, and human approvals), and
+ * repairs mid-stream joins via `decoderSynthesiseLifecycle`. Hosted tools (web /
+ * file search, code interpreter, image gen, MCP, custom tools) are not yet
+ * supported (AIT-1121).
  *
  * ```ts
  * import { ResponsesCodec } from '@ably/ai-transport/openai';
@@ -35,14 +37,21 @@ export const ResponsesCodec = defineCodec<OpenAIInput, OpenAIOutput>()({
   reducer: { init, fold, getMessages },
   output: outputs,
   input: inputs,
-  // Partial codec: its TInput carries no tool variants yet, so it exposes only
-  // the mandatory user-message and regenerate factories.
-  factories: (base) => ({
-    createUserMessage: base.createUserMessage,
-    createRegenerate: base.createRegenerate,
-  }),
+  // OpenAIInput carries all three client-driven tool variants, so the codec
+  // exposes the full well-known factory set unchanged.
+  factories: (base) => base,
   decoderSynthesiseLifecycle: createResponsesDecodeLifecycle,
 });
 
-export type { OpenAIInput, OpenAIItem, OpenAIMessage, OpenAIOutput } from './events.js';
+export type {
+  OpenAIInput,
+  OpenAIItem,
+  OpenAIMessage,
+  OpenAIOutput,
+  OpenAIToolApprovalResponsePayload,
+  OpenAIToolCallState,
+  OpenAIToolResultErrorPayload,
+  OpenAIToolResultPayload,
+  ToolApprovalRequestEvent,
+} from './events.js';
 export type { OpenAIProjection } from './reducer.js';

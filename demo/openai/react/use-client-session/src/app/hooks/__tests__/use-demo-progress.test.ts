@@ -46,6 +46,25 @@ const weatherTurn = (): OpenAIMessage => ({
   ],
 });
 
+// The same getWeather run split across separate messages, as the transport
+// publishes it: the call in one message and its output in a sibling message.
+const weatherCallTurn = (): OpenAIMessage => ({
+  role: 'assistant',
+  items: [
+    {
+      type: 'function_call',
+      call_id: 'c1',
+      name: 'getWeather',
+      arguments: '{"location":"Tokyo"}',
+      status: 'completed',
+    },
+  ],
+});
+const weatherOutputTurn = (): OpenAIMessage => ({
+  role: 'assistant',
+  items: [{ type: 'function_call_output', call_id: 'c1', output: '{"temperature":60}' }],
+});
+
 const paired = (turns: OpenAIMessage[]): CodecMessage<OpenAIMessage>[] =>
   turns.map((message, i) => ({ codecMessageId: `cm-${i}`, message }));
 
@@ -76,6 +95,12 @@ describe('useDemoProgress', () => {
 
   it('drops server-weather once a getWeather tool turn is present', () => {
     const messages = paired([textTurn('user', "what's the weather in Tokyo?"), weatherTurn()]);
+    const { result } = renderHook(() => useDemoProgress(messages, noBranch, () => undefined, []));
+    expect(idsOf(result.current)).not.toContain('server-weather');
+  });
+
+  it('drops server-weather when the call and its output are in separate messages', () => {
+    const messages = paired([textTurn('user', "what's the weather in Tokyo?"), weatherCallTurn(), weatherOutputTurn()]);
     const { result } = renderHook(() => useDemoProgress(messages, noBranch, () => undefined, []));
     expect(idsOf(result.current)).not.toContain('server-weather');
   });

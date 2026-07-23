@@ -144,11 +144,13 @@ test.describe('openai use-client-session demo - text chat behaviour', () => {
     // back as a weather card, then the model replies — no suspend.
     await waitForAssistantSettled(page);
 
-    // The WeatherCard renders the structured tool output (humidity/wind are
-    // distinctive to it); the trailing text reply names the location.
-    const assistant = assistantBubbles(page).last();
-    await expect(assistant).toContainText('Humidity:', { timeout: 30_000 });
-    await expect(assistant).toContainText('London');
+    // A tool run publishes three messages, each rendered as its own assistant
+    // bubble: the model turn carrying the getWeather call (where the WeatherCard
+    // renders its structured output — humidity/wind are distinctive to it), the
+    // tool output, then the trailing text reply. The card lands on the call
+    // bubble; the reply naming the location lands on the last bubble.
+    await expect(assistantBubbles(page).filter({ hasText: 'Humidity:' })).toBeVisible({ timeout: 30_000 });
+    await expect(assistantBubbles(page).last()).toContainText('London');
   });
 
   test('suggestion chip: prefills the weather prompt, and the step drops off once demonstrated', async ({
@@ -169,7 +171,9 @@ test.describe('openai use-client-session demo - text chat behaviour', () => {
 
     await input.press('Enter');
     await waitForAssistantSettled(page);
-    await expect(assistantBubbles(page).last()).toContainText('Humidity:', { timeout: 30_000 });
+    // The WeatherCard renders on the bubble carrying the getWeather call, not
+    // the trailing reply bubble.
+    await expect(assistantBubbles(page).filter({ hasText: 'Humidity:' })).toBeVisible({ timeout: 30_000 });
 
     // The completed step drops off the chip row.
     await expect(chip).toHaveCount(0);

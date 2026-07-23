@@ -63,17 +63,25 @@ import type {
 import { isModelledOutputItem } from './events.js';
 import {
   contentSlotStreamId,
+  fApproved,
+  fCallId,
   fContentIndex,
   fItem,
   fItemId,
+  fName,
   fOutputIndex,
   fPart,
+  fReason,
   fSummaryIndex,
   fSummaryPart,
 } from './fields.js';
 
 // Coerce arbitrary wire data to a string, defaulting to empty.
 const asString = (data: unknown): string => (typeof data === 'string' ? data : '');
+
+// Whether wire data is a non-null object, so its keys can be read at the decode
+// trust boundary.
+const isRecord = (data: unknown): data is Record<string, unknown> => typeof data === 'object' && data !== null;
 
 // The shared encode-boundary rejection for an output item type the codec
 // doesn't model, thrown identically by `assertModelledOutputItem` and
@@ -455,6 +463,18 @@ export const outputs = ({
     },
   }),
 
+  // --- tool-approval request (codec's own output event) --------------------
+  // Not a Responses stream event: OpenAI has no approval concept for plain
+  // function calls, so the agent authors this to gate a tool on a human
+  // decision (mirroring the Agents SDK's RunToolApprovalItem). call_id and name
+  // ride the headers; the tool's arguments ride the JSON wire data, so a client
+  // can render the approval prompt from the request alone. The reducer marks the
+  // call `pending` in the message's per-call_id tool-call state.
+  event('tool-approval-request', {
+    fields: [fCallId, fName],
+    data: { encode: (c) => c.arguments, decode: (d) => ({ arguments: asString(d) }) },
+  }),
+
   // --- not described → throw (opt-in hosted tools / modalities) -------------
   //
   // The content-bearing events are described above (streams, item envelopes,
@@ -498,6 +518,31 @@ export const outputs = ({
  * @returns The input descriptor table.
  */
 export const inputs = ({ event, batch }: InputBuilder<OpenAIInput>): readonly InputDescriptor<OpenAIInput>[] => [
+  // --- client-driven tool inputs: nested payload, codec-message-id-addressed --
+  // Each addresses the assistant codec-message holding the function_call (via
+  // the input's codecMessageId, stamped as the wire codec-message-id). call_id
+  // rides the headers; the reducer folds the result into a function_call_output
+  // item on that message and records status in its per-call_id tool-call state.
+
+  event('tool-result', {
+    fields: [fCallId],
+    data: {
+      encode: (p) => ({ output: p.output }),
+      // CAST: the wire envelope carries the FunctionCallOutput output shape under `output` (trust boundary).
+      decode: (d) => ({
+        output: isRecord(d) ? (d.output as Responses.ResponseInputItem.FunctionCallOutput['output']) : '',
+      }),
+    },
+  }),
+  event('tool-result-error', {
+    fields: [fCallId],
+    data: {
+      encode: (p) => ({ message: p.message }),
+      decode: (d) => ({ message: isRecord(d) && typeof d.message === 'string' ? d.message : '' }),
+    },
+  }),
+  event('tool-approval-response', { fields: [fCallId, fApproved, fReason] }),
+
   // Regenerate is a wire-only signal: it references an existing assistant
   // message by id, carries no payload, and folds to nothing. The agent reads
   // `target` / `parent` from the wire headers via the input-event lookup.

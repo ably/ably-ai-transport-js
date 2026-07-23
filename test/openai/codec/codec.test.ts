@@ -60,6 +60,7 @@ import {
   textDelta,
   textDone,
   textRun,
+  toolApprovalRequestEvent,
   userTurn,
 } from './fixtures.js';
 
@@ -101,6 +102,25 @@ const roundtrip = async (
   const outputs = messages.flatMap((msg) => decoder.decode(msg).outputs);
   return { inbound: messages, outputs };
 };
+
+// Decode + fold a whole inbound sequence into one projection, routing each
+// message to its codec-message-id via metaOf (the client-session read path).
+const foldAll = (messages: Ably.InboundMessage[]): OpenAIProjection => {
+  const decoder = ResponsesCodec.createDecoder();
+  let projection: OpenAIProjection = init();
+  for (const msg of messages) {
+    for (const event of toCodecEvents(decoder.decode(msg))) {
+      projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+    }
+  }
+  return projection;
+};
+
+// The first projected message's function_call_output items.
+const outputsOf = (projection: OpenAIProjection): Responses.ResponseInputItem.FunctionCallOutput[] =>
+  (ResponsesCodec.getMessages(projection)[0]?.message.items ?? []).filter(
+    (i): i is Responses.ResponseInputItem.FunctionCallOutput => i.type === 'function_call_output',
+  );
 
 describe('OpenAI codec roundtrip (offline)', () => {
   it('streams text as a streamed message with string appends', async () => {
@@ -718,6 +738,115 @@ describe('OpenAI codec roundtrip (offline)', () => {
       projection = ResponsesCodec.fold(projection, event, metaOf(msg));
     }
     expect(ResponsesCodec.getMessages(projection)[0]?.message.role).toBe('user');
+  });
+});
+
+// The client-driven tool descriptors carry no Responses stream event of their
+// own — the reducer folds cover the projection maths (see reducer.test.ts);
+// these prove the wire framing round-trips: the codec headers each descriptor
+// declares (call_id / name / approved / reason) and its data envelope survive
+// encode → wire → decode → fold, landing the same projection state.
+describe('OpenAI codec client-driven tool wire roundtrip (offline)', () => {
+  it('roundtrips a tool-approval-request: call_id/name on headers, arguments in data, folding to a pending gate', async () => {
+    const { writer, inbound } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    await encoder.publishOutput(toolApprovalRequestEvent('call_1', 'getWeatherForecast', '{"location":"Paris"}'));
+    await encoder.close();
+
+    const messages = inbound();
+    const wire = messages.find((m) => getCodecHeaders(m).kind === 'tool-approval-request');
+    expect(wire).toBeDefined();
+    expect(wire && getCodecHeaders(wire).call_id).toBe('call_1');
+    expect(wire && getCodecHeaders(wire).name).toBe('getWeatherForecast');
+    expect(wire?.data).toBe('{"location":"Paris"}');
+
+    const states = ResponsesCodec.getMessages(foldAll(messages))[0]?.message.toolCallStates;
+    expect(states?.call_1).toEqual({
+      approval: 'pending',
+      name: 'getWeatherForecast',
+      arguments: '{"location":"Paris"}',
+    });
+  });
+
+  it('roundtrips a tool-result: call_id on headers, output in data, folding to a function_call_output (result ok)', async () => {
+    const { writer, inbound } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    await encoder.publishInput(
+      ResponsesCodec.createToolResult('run-1', { call_id: 'call_1', output: '{"latitude":51.5}' }),
+    );
+    await encoder.close();
+
+    const messages = inbound();
+    const wire = messages.find((m) => m.name === EVENT_AI_INPUT);
+    expect(wire && getCodecHeaders(wire).kind).toBe('tool-result');
+    expect(wire && getCodecHeaders(wire).call_id).toBe('call_1');
+
+    const projection = foldAll(messages);
+    expect(outputsOf(projection)).toEqual([
+      { type: 'function_call_output', call_id: 'call_1', output: '{"latitude":51.5}' },
+    ]);
+    expect(ResponsesCodec.getMessages(projection)[0]?.message.toolCallStates?.call_1).toEqual({ result: 'ok' });
+  });
+
+  it('roundtrips a tool-result-error: the failure message rides the data, folding to a function_call_output (result failed)', async () => {
+    const { writer, inbound } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    await encoder.publishInput(
+      ResponsesCodec.createToolResultError('run-1', { call_id: 'call_1', message: 'geolocation denied' }),
+    );
+    await encoder.close();
+
+    const messages = inbound();
+    const wire = messages.find((m) => m.name === EVENT_AI_INPUT);
+    expect(wire && getCodecHeaders(wire).kind).toBe('tool-result-error');
+    expect(wire && getCodecHeaders(wire).call_id).toBe('call_1');
+
+    const projection = foldAll(messages);
+    expect(outputsOf(projection)).toEqual([
+      { type: 'function_call_output', call_id: 'call_1', output: 'geolocation denied' },
+    ]);
+    expect(ResponsesCodec.getMessages(projection)[0]?.message.toolCallStates?.call_1).toEqual({ result: 'failed' });
+  });
+
+  it('roundtrips an approval decision through request → approved response: no output, gate flips to approved', async () => {
+    const { writer, inbound } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    await encoder.publishOutput(toolApprovalRequestEvent('call_1', 'getWeatherForecast', '{}'));
+    await encoder.publishInput(
+      ResponsesCodec.createToolApprovalResponse('run-1', { call_id: 'call_1', approved: true }),
+    );
+    await encoder.close();
+
+    const messages = inbound();
+    const wire = messages.find((m) => m.name === EVENT_AI_INPUT);
+    expect(wire && getCodecHeaders(wire).kind).toBe('tool-approval-response');
+    expect(wire && getCodecHeaders(wire).approved).toBe('true');
+
+    const projection = foldAll(messages);
+    // Approval alone adds no output — the server runs the tool on resume.
+    expect(outputsOf(projection)).toHaveLength(0);
+    expect(ResponsesCodec.getMessages(projection)[0]?.message.toolCallStates?.call_1?.approval).toBe('approved');
+  });
+
+  it('roundtrips a denied approval response: the reason rides the header and becomes the rejection output', async () => {
+    const { writer, inbound } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    await encoder.publishInput(
+      ResponsesCodec.createToolApprovalResponse('run-1', { call_id: 'call_1', approved: false, reason: 'User denied' }),
+    );
+    await encoder.close();
+
+    const messages = inbound();
+    const wire = messages.find((m) => m.name === EVENT_AI_INPUT);
+    expect(wire && getCodecHeaders(wire).approved).toBe('false');
+    expect(wire && getCodecHeaders(wire).reason).toBe('User denied');
+
+    const projection = foldAll(messages);
+    expect(outputsOf(projection)).toEqual([{ type: 'function_call_output', call_id: 'call_1', output: 'User denied' }]);
+    expect(ResponsesCodec.getMessages(projection)[0]?.message.toolCallStates?.call_1).toEqual({
+      approval: 'denied',
+      reason: 'User denied',
+    });
   });
 });
 

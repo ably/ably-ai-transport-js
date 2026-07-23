@@ -75,6 +75,14 @@
  * `output_item.added` / `.done` seed and finalise each item;
  * `content_part.added` / `reasoning_summary_part.added` open a slot at its
  * `content_index` / `summary_index`.
+ * - a tool gated on a human decision — the codec's own `tool-approval-request`
+ *   (output) marks the call `pending`; the client's `tool-approval-response`
+ *   (input) flips it to `approved` or resolves a denial with a rejection output;
+ * - client-executed tool calls — the client's `tool-result` / `tool-result-error`
+ *   (input) upsert a `function_call_output` by `call_id` and record whether the
+ *   call succeeded. These per-call_id states (approval + result) live off the
+ *   item array — OpenAI's item model can express neither — surfaced by
+ *   `getMessages` as `message.toolCallStates` (see {@link OpenAIToolCallState}).
  *
  * Everything else folds to nothing (the `foldOutput` default branch mirrors
  * this): dropped-at-encode framing — the response-lifecycle events and the
@@ -85,8 +93,24 @@
 
 import type { Responses } from 'openai/resources/responses/responses';
 
-import type { CodecEvent, CodecMessage, ReducerMeta } from '../../core/codec/index.js';
-import type { OpenAIInput, OpenAIItem, OpenAIMessage, OpenAIOutput } from './events.js';
+import type {
+  CodecEvent,
+  CodecMessage,
+  ReducerMeta,
+  ToolApprovalResponse,
+  ToolResult,
+  ToolResultError,
+} from '../../core/codec/index.js';
+import type {
+  OpenAIInput,
+  OpenAIItem,
+  OpenAIMessage,
+  OpenAIOutput,
+  OpenAIToolApprovalResponsePayload,
+  OpenAIToolCallState,
+  OpenAIToolResultErrorPayload,
+  OpenAIToolResultPayload,
+} from './events.js';
 import { isModelledOutputItem } from './events.js';
 
 /**
@@ -109,6 +133,14 @@ interface MessageEntry {
   message: OpenAIMessage;
   /** Maps an output item's id to the live (mutable) item in `message.items`, for delta accumulation. */
   byItemId: Map<string, Responses.ResponseOutputItem>;
+  /**
+   * Out-of-band tool-call state for this message, keyed by `call_id` — a call's
+   * approval decision and client-side result status. Held here rather than in
+   * `message.items` because OpenAI's item model can express neither (see
+   * {@link OpenAIToolCallState}), so every item stays a valid
+   * `ResponseInputItem`. `getMessages` surfaces it as `message.toolCallStates`.
+   */
+  toolStates: Map<string, OpenAIToolCallState>;
 }
 
 /**
@@ -180,11 +212,46 @@ const resolveItem = (
 const ensureMessage = (state: OpenAIProjection, role: 'user' | 'assistant', codecMessageId: string): MessageEntry => {
   let entry = findMessage(state, codecMessageId);
   if (entry === undefined) {
-    entry = { codecMessageId, message: { role, items: [] }, byItemId: new Map() };
+    entry = { codecMessageId, message: { role, items: [] }, byItemId: new Map(), toolStates: new Map() };
     state.messages.push(entry);
   }
   return entry;
 };
+
+/**
+ * Merge a partial tool-call state into a message's per-`call_id` map. Approval
+ * status and result status are independent (a call can be `approved` then
+ * `ok`), so this merges into the existing entry rather than overwriting it,
+ * always writing a fresh object so a value surfaced by an earlier `getMessages`
+ * is never mutated in place.
+ * @param entry - The message entry whose tool-call state to update.
+ * @param callId - The `call_id` the state belongs to.
+ * @param patch - The fields to merge in.
+ */
+const mergeToolState = (entry: MessageEntry, callId: string, patch: Partial<OpenAIToolCallState>): void => {
+  entry.toolStates.set(callId, { ...entry.toolStates.get(callId), ...patch });
+};
+
+/**
+ * Find-or-replace a `function_call_output` by `call_id` within a message. Used
+ * by the client-driven folds (a result, a failure, a denial), where two
+ * conflicting resolutions for one `call_id` must not leave two outputs and
+ * break the `/responses` round-trip — last write wins, in serial order. The
+ * server-side `function_call_output` output arm appends instead, because each
+ * server output is distinct.
+ * @param entry - The message entry to upsert into.
+ * @param item - The function-call output item to store.
+ */
+const upsertFunctionCallOutput = (entry: MessageEntry, item: Responses.ResponseInputItem.FunctionCallOutput): void => {
+  const index = entry.message.items.findIndex(
+    (existing) => existing.type === 'function_call_output' && existing.call_id === item.call_id,
+  );
+  if (index === -1) entry.message.items.push(item);
+  else entry.message.items[index] = item;
+};
+
+/** The `function_call_output` text a denied approval authors when the client gives no reason. */
+const DENIED_TOOL_OUTPUT = 'Tool execution was not approved.';
 
 const isOutputMessage = (item: Responses.ResponseOutputItem | undefined): item is Responses.ResponseOutputMessage =>
   item?.type === 'message';
@@ -413,6 +480,23 @@ const foldOutput = (state: OpenAIProjection, event: OpenAIOutput, codecMessageId
       entry.message.items.push(structuredClone(event.item));
       return;
     }
+    case 'tool-approval-request': {
+      // The agent gates a tool on a human decision. No item is added — OpenAI
+      // has no approval item for plain function calls — only the per-call_id
+      // tool-call state is marked `pending`, carrying the tool name and
+      // arguments so a client can render the prompt without the streamed
+      // function_call. Routed by codec-message-id like every other event, so it
+      // lands on the same message the gated function_call streams into (its own
+      // send shares the id); on a mid-stream join where that call has not paged
+      // in, the entry holds only this state until it does.
+      const entry = ensureMessage(state, 'assistant', codecMessageId);
+      mergeToolState(entry, event.call_id, {
+        approval: 'pending',
+        name: event.name,
+        arguments: event.arguments,
+      });
+      return;
+    }
     default: {
       // Everything else folds to nothing, for the two reasons the top-of-file
       // comment sets out. First, never needed to build the projection, so
@@ -482,6 +566,81 @@ const foldUserMessage = (
 };
 
 /**
+ * Fold a client-side tool result into the projection. The client executed the
+ * tool and reports its output, which becomes a `function_call_output` on the
+ * message its codec-message-id names (upsert by `call_id`, so a later result for
+ * the same call replaces an earlier one — last write wins). The per-call_id tool
+ * state is marked `result: 'ok'` alongside, so a renderer can tell a resolved
+ * call from an outstanding one without scanning items.
+ * @param state - Projection to mutate.
+ * @param event - The tool-result input variant carrying the call's output.
+ * @param codecMessageId - The wire's codec-message-id, or undefined when the event carries none.
+ */
+const foldToolResult = (
+  state: OpenAIProjection,
+  event: ToolResult<OpenAIToolResultPayload>,
+  codecMessageId: string | undefined,
+): void => {
+  if (codecMessageId === undefined) return;
+  const { call_id, output } = event.payload;
+  const entry = ensureMessage(state, 'assistant', codecMessageId);
+  upsertFunctionCallOutput(entry, { type: 'function_call_output', call_id, output });
+  mergeToolState(entry, call_id, { result: 'ok' });
+};
+
+/**
+ * Fold a client-side tool failure into the projection. The client tried to
+ * execute the tool and it failed; OpenAI's `function_call_output` has no error
+ * channel, so the failure surfaces two ways: the human-readable message becomes
+ * the output text (upsert by `call_id`, last write wins) so the model sees it as
+ * next-turn input, and the per-call_id tool state is marked `result: 'failed'`
+ * so a renderer can style it as an error rather than a normal result.
+ * @param state - Projection to mutate.
+ * @param event - The tool-result-error input variant carrying the failure message.
+ * @param codecMessageId - The wire's codec-message-id, or undefined when the event carries none.
+ */
+const foldToolResultError = (
+  state: OpenAIProjection,
+  event: ToolResultError<OpenAIToolResultErrorPayload>,
+  codecMessageId: string | undefined,
+): void => {
+  if (codecMessageId === undefined) return;
+  const { call_id, message } = event.payload;
+  const entry = ensureMessage(state, 'assistant', codecMessageId);
+  upsertFunctionCallOutput(entry, { type: 'function_call_output', call_id, output: message });
+  mergeToolState(entry, call_id, { result: 'failed' });
+};
+
+/**
+ * Fold a human's tool-approval decision into the projection. On approval, only
+ * the per-call_id tool state flips to `approved` — no output item yet, the
+ * result arrives later on its own `tool-result`. On denial, the gated call is
+ * resolved immediately with a rejection `function_call_output` (the client's
+ * reason, or {@link DENIED_TOOL_OUTPUT} when none is given) so the `/responses`
+ * round-trip stays complete, and the tool state flips to `denied`. Both carry
+ * the client's optional reason through to the tool state for rendering.
+ * @param state - Projection to mutate.
+ * @param event - The tool-approval-response input variant carrying the decision.
+ * @param codecMessageId - The wire's codec-message-id, or undefined when the event carries none.
+ */
+const foldToolApprovalResponse = (
+  state: OpenAIProjection,
+  event: ToolApprovalResponse<OpenAIToolApprovalResponsePayload>,
+  codecMessageId: string | undefined,
+): void => {
+  if (codecMessageId === undefined) return;
+  const { call_id, approved, reason } = event.payload;
+  const entry = ensureMessage(state, 'assistant', codecMessageId);
+  const reasonPatch = reason === undefined ? {} : { reason };
+  if (approved) {
+    mergeToolState(entry, call_id, { approval: 'approved', ...reasonPatch });
+  } else {
+    upsertFunctionCallOutput(entry, { type: 'function_call_output', call_id, output: reason ?? DENIED_TOOL_OUTPUT });
+    mergeToolState(entry, call_id, { approval: 'denied', ...reasonPatch });
+  }
+};
+
+/**
  * Fold one direction-tagged input or output event into the projection.
  * @param state - Projection to fold into (mutated in place and returned).
  * @param event - The direction-tagged input or output event.
@@ -495,13 +654,29 @@ export const fold = (
 ): OpenAIProjection => {
   if (event.direction === 'output') {
     foldOutput(state, event.event, meta.messageId);
-  } else if (event.event.kind === 'user-message') {
-    foldUserMessage(state, event.event.message, meta.messageId);
+    return state;
   }
-  // The only other input variant is `regenerate` — a wire-only signal that
-  // decodes to nothing and so never reaches the reducer; it carries no
-  // projection state. Tool results and approvals (with their own dispatch)
-  // arrive in later increments.
+  switch (event.event.kind) {
+    case 'user-message': {
+      foldUserMessage(state, event.event.message, meta.messageId);
+      break;
+    }
+    case 'tool-result': {
+      foldToolResult(state, event.event, meta.messageId);
+      break;
+    }
+    case 'tool-result-error': {
+      foldToolResultError(state, event.event, meta.messageId);
+      break;
+    }
+    case 'tool-approval-response': {
+      foldToolApprovalResponse(state, event.event, meta.messageId);
+      break;
+    }
+    // The only remaining input variant is `regenerate` — a wire-only signal
+    // that decodes to nothing and so never reaches the reducer; it carries no
+    // projection state, so the default is a no-op.
+  }
   return state;
 };
 
@@ -561,9 +736,13 @@ const compactItem = (item: OpenAIItem): OpenAIItem => {
  * Returns every keyed message in publication order, unfiltered — matching the
  * Vercel codec, which returns its `messages` as-is. No emptiness filter is
  * needed: message creation is lazy (an entry is added only when an arm actually
- * pushes an item), so every entry already holds at least one item and no empty
- * message can surface — including the forward-compat unmodelled-item case
- * (AIT-1121), which folds to nothing and creates no entry.
+ * pushes an item or records tool-call state), so every surfaced entry carries
+ * content — either items, or a `toolCallStates` map (a mid-stream join that has
+ * seen only a `tool-approval-request` holds tool state but no items yet, and
+ * round-trips as a no-item message; `toResponsesInput` reads only `items`, so it
+ * contributes nothing to the model input until its gated call pages in). The
+ * forward-compat unmodelled-item case (AIT-1121) folds to nothing and creates no
+ * entry.
  * @param projection - A projection produced by `init` + repeated `fold`.
  * @returns One {@link CodecMessage} per distinct codec-message-id, in publication order.
  */
@@ -597,7 +776,16 @@ export const getMessages = (projection: OpenAIProjection): CodecMessage<OpenAIMe
   // once per change, not once per flatten. Caching the compacted result on the
   // projection would only pay off if profiling later showed this hot
   // independently of that; not worth it now.
-  projection.messages.map((entry) => ({
-    codecMessageId: entry.codecMessageId,
-    message: { ...entry.message, items: entry.message.items.map((item) => compactItem(item)) },
-  }));
+  projection.messages.map((entry) => {
+    const message: OpenAIMessage = {
+      ...entry.message,
+      items: entry.message.items.map((item) => compactItem(item)),
+    };
+    // Surface out-of-band tool-call state only when there is some, so a message
+    // that never gated or client-executed a tool carries no `toolCallStates` key
+    // (keeping it identical to a plain assistant/user message on the wire and in
+    // snapshots). Object.fromEntries copies the map, so a later fold that mutates
+    // the entry's map can't retroactively change an already-returned message.
+    if (entry.toolStates.size > 0) message.toolCallStates = Object.fromEntries(entry.toolStates);
+    return { codecMessageId: entry.codecMessageId, message };
+  });

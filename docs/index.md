@@ -6,13 +6,13 @@ The SDK is codec-parameterized: a generic transport core handles streaming, runs
 
 ## Entry points
 
-| Import path                       | What it provides                                                                                                                             |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@ably/ai-transport`              | Generic transport, codec interfaces, utilities. Framework-agnostic.                                                                          |
-| `@ably/ai-transport/react`        | React hooks for the generic transport (`useClientSession()`, `useView()`, etc.)                                                              |
-| `@ably/ai-transport/vercel`       | Vercel AI SDK integration - `UIMessageCodec` and pre-bound transport factories                                                               |
-| `@ably/ai-transport/vercel/react` | Vercel-specific React hooks - `useChatTransport()` for `useChat()`, `useMessageSync()`                                                       |
-| `@ably/ai-transport/openai`       | OpenAI Responses codec - `ResponsesCodec` (early preview; user prompts, streamed text/reasoning/refusal replies, server-side function calls) |
+| Import path                       | What it provides                                                                                                                                                                                                                           |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@ably/ai-transport`              | Generic transport, codec interfaces, utilities. Framework-agnostic.                                                                                                                                                                        |
+| `@ably/ai-transport/react`        | React hooks for the generic transport (`useClientSession()`, `useView()`, etc.)                                                                                                                                                            |
+| `@ably/ai-transport/vercel`       | Vercel AI SDK integration - `UIMessageCodec` and pre-bound transport factories                                                                                                                                                             |
+| `@ably/ai-transport/vercel/react` | Vercel-specific React hooks - `useChatTransport()` for `useChat()`, `useMessageSync()`                                                                                                                                                     |
+| `@ably/ai-transport/openai`       | OpenAI Responses codec - `ResponsesCodec` plus ergonomic helpers (`toResponsesInput`, loop correlation) (early preview; user prompts, streamed text/reasoning/refusal replies, server-side and client-side function calls, tool approvals) |
 
 Peer dependencies: `ably` (required), `ai` (for Vercel entry points), `openai` (for the OpenAI entry point), `react` (for React entry points).
 

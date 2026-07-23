@@ -12,7 +12,13 @@
 
 import type { Responses } from 'openai/resources/responses/responses';
 
-import type { Regenerate, UserMessage } from '../../core/codec/index.js';
+import type {
+  Regenerate,
+  ToolApprovalResponse,
+  ToolResult,
+  ToolResultError,
+  UserMessage,
+} from '../../core/codec/index.js';
 
 /**
  * A server-executed tool's result, published by the agent after it runs the
@@ -30,6 +36,94 @@ export interface FunctionCallOutputEvent {
   type: 'function_call_output';
   /** The function-call output item to append to its message. */
   item: Responses.ResponseInputItem.FunctionCallOutput;
+}
+
+/**
+ * A codec-authored request that a client approve a tool before it runs.
+ *
+ * The Responses API has no approval concept for plain function calls (only
+ * hosted MCP tools carry `mcp_approval_request` items), so this is a codec
+ * output event with no OpenAI-stream equivalent, mirroring the OpenAI Agents
+ * SDK's `RunToolApprovalItem`. That item exposes `name` / `arguments` getters
+ * over the raw `function_call`, so this event carries the same fields — a
+ * client can render the approval prompt from the request alone, without having
+ * received the streamed `function_call`. The reducer folds it into the
+ * per-`call_id` tool-call state of the message its codec-message-id names,
+ * marking the call `pending`. The client answers with a
+ * {@link ToolApprovalResponse}.
+ */
+export interface ToolApprovalRequestEvent {
+  /** Discriminator. Distinct from every `Responses.ResponseStreamEvent` `type` and from `function_call_output`. */
+  type: 'tool-approval-request';
+  /** The `call_id` of the `function_call` this approval gates. */
+  call_id: string;
+  /** The tool's name, so a client can render the prompt without the streamed `function_call`. */
+  name: string;
+  /** The tool's arguments as JSON text, mirroring the `function_call`'s `arguments`. */
+  arguments: string;
+}
+
+/**
+ * Domain payload for a client-published {@link ToolResult}. Folds into a
+ * `function_call_output` input item, which is already a `ResponseInputItem`, so
+ * the result round-trips to `/responses` unchanged. Uses OpenAI snake_case
+ * `call_id` to match the Responses item it becomes.
+ */
+export interface OpenAIToolResultPayload {
+  /** The `call_id` of the `function_call` this result answers. */
+  call_id: string;
+  /** The tool's output — text or a content list, exactly the `function_call_output.output` shape. */
+  output: Responses.ResponseInputItem.FunctionCallOutput['output'];
+}
+
+/**
+ * Domain payload for a client-published {@link ToolResultError}. OpenAI's
+ * `function_call_output` has no error field, so the failure message folds into
+ * the item's `output`; the reducer records `failed` in the per-`call_id`
+ * tool-call state so clients can render it as failed. Uses snake_case `call_id`.
+ */
+export interface OpenAIToolResultErrorPayload {
+  /** The `call_id` of the `function_call` that failed. */
+  call_id: string;
+  /** Human-readable description of the failure, folded into the `function_call_output.output`. */
+  message: string;
+}
+
+/**
+ * Domain payload for a client-published {@link ToolApprovalResponse}, the answer
+ * to a {@link ToolApprovalRequestEvent}. A denial folds a rejection
+ * `function_call_output` so the `/responses` round-trip has no dangling
+ * `function_call`; both decisions are recorded in the per-`call_id` tool-call
+ * state. Uses snake_case `call_id`.
+ */
+export interface OpenAIToolApprovalResponsePayload {
+  /** The `call_id` of the gated `function_call`. */
+  call_id: string;
+  /** Whether the user approved the tool execution. */
+  approved: boolean;
+  /** Optional human-readable reason, typically supplied on denial. */
+  reason?: string;
+}
+
+/**
+ * The out-of-band state of one tool call, keyed by `call_id` and surfaced on
+ * {@link OpenAIMessage.toolCallStates}. OpenAI's item model can express neither
+ * a plain-function approval decision nor a "failed" result, so both are held
+ * here rather than in a message's `items` — keeping every stored `OpenAIItem` a
+ * valid `ResponseInputItem`. Every field is optional: a call gains an `approval`
+ * only when gated, and a `result` only once a client result or error folds.
+ */
+export interface OpenAIToolCallState {
+  /** The gated call's approval status, set once the agent requests approval and updated by the client's response. */
+  approval?: 'pending' | 'approved' | 'denied';
+  /** The client-side execution result status, set once a `tool-result` or `tool-result-error` folds. */
+  result?: 'ok' | 'failed';
+  /** The tool name, carried on the approval request so a client can render the prompt without the streamed `function_call`. */
+  name?: string;
+  /** The tool arguments as JSON text, carried on the approval request. */
+  arguments?: string;
+  /** Optional human-readable reason accompanying an approval decision (typically a denial). */
+  reason?: string;
 }
 
 /**
@@ -178,9 +272,10 @@ type WireResponseEvent = WithoutTextDoneLogprobs<
  * needs, dropping the redundant framing events, and throwing at the encoder on
  * anything undescribed (see the descriptor table's inventory).
  * {@link AssertRealEventIsOpenAIOutput} checks the real-event-assignable claim
- * at compile time.
+ * at compile time. The codec-authored {@link ToolApprovalRequestEvent} is the
+ * second such addition, for gating a tool on a human decision.
  */
-export type OpenAIOutput = WireResponseEvent | FunctionCallOutputEvent;
+export type OpenAIOutput = WireResponseEvent | FunctionCallOutputEvent | ToolApprovalRequestEvent;
 
 /** A type-level assertion: `T` must be exactly `true`, or this fails to typecheck. */
 type Assert<T extends true> = T;
@@ -267,14 +362,30 @@ export interface OpenAIMessage {
   role: 'user' | 'assistant';
   /** The message's items, in wire order. */
   items: OpenAIItem[];
+  /**
+   * Out-of-band tool-call state, keyed by `call_id` — a call's approval
+   * decision and client-side result status (see {@link OpenAIToolCallState}).
+   * Held here rather than in `items` because OpenAI's item model can express
+   * neither, so every entry in `items` stays a valid `ResponseInputItem` and
+   * `toResponsesInput` ignores this field. Present only when the message has at
+   * least one such call; a renderer reads a call's state by its `call_id`.
+   */
+  toolCallStates?: Record<string, OpenAIToolCallState>;
 }
 
 /**
- * `TInput` — what the client publishes on the `ai-input` wire. The current
- * version of the OpenAI codec supports the well-known user-message variant
- * plus the {@link Regenerate} signal (a wire-only reference to the assistant
- * message being regenerated, which carries no projection state). Tool
- * results and approval responses will be added in a future update to the
- * codec.
+ * `TInput` — what the client publishes on the `ai-input` wire: the well-known
+ * user-message variant, the {@link Regenerate} signal (a wire-only reference to
+ * the assistant message being regenerated, which carries no projection state),
+ * and the three client-driven tool variants, parameterized by the OpenAI domain
+ * payloads. A {@link ToolResult} / {@link ToolResultError} carries a client-run
+ * tool's output or failure; a {@link ToolApprovalResponse} answers a codec
+ * {@link ToolApprovalRequestEvent}. Including these variants flips the matching
+ * `create*` factories on at the type level (see the codec's `factories` selector).
  */
-export type OpenAIInput = UserMessage<OpenAIMessage> | Regenerate;
+export type OpenAIInput =
+  | UserMessage<OpenAIMessage>
+  | Regenerate
+  | ToolResult<OpenAIToolResultPayload>
+  | ToolResultError<OpenAIToolResultErrorPayload>
+  | ToolApprovalResponse<OpenAIToolApprovalResponsePayload>;

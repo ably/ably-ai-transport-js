@@ -4,8 +4,9 @@
  * via the channel-backed history.
  *
  * Steps detected from tree state:
- * - server-weather: a turn ran the getWeather tool (a function_call paired with
- *   a function_call_output)
+ * - server-weather: the getWeather tool ran (a getWeather function_call paired
+ *   with its function_call_output). A tool run splits its work across separate
+ *   messages, so the call and its output are paired across turns, not within one.
  * - multi-tab: more than one distinct turn-client-id appears across turns
  * - regenerate: any assistant node has siblings (forked via Regenerate)
  * - edit: any user node has siblings (forked via Edit)
@@ -85,13 +86,20 @@ const ALL_STEPS: DemoStep[] = [
   },
 ];
 
-/** Whether a turn ran the getWeather tool — a function_call paired with its output. */
-function ranServerWeather(turn: OpenAIMessage): boolean {
+/**
+ * Whether the getWeather tool ran — a getWeather function_call paired with its
+ * function_call_output. A tool run splits its work across separate messages, so
+ * the call and its output are collected across all turns (mirroring the
+ * render-time pairing in helpers.ts), not within a single turn.
+ */
+function ranServerWeather(turns: OpenAIMessage[]): boolean {
   const weatherCallIds = new Set<string>();
   const outputCallIds = new Set<string>();
-  for (const item of turn.items) {
-    if (item.type === 'function_call' && item.name === 'getWeather') weatherCallIds.add(item.call_id);
-    else if (item.type === 'function_call_output') outputCallIds.add(item.call_id);
+  for (const turn of turns) {
+    for (const item of turn.items) {
+      if (item.type === 'function_call' && item.name === 'getWeather') weatherCallIds.add(item.call_id);
+      else if (item.type === 'function_call_output') outputCallIds.add(item.call_id);
+    }
   }
   for (const callId of weatherCallIds) if (outputCallIds.has(callId)) return true;
   return false;
@@ -117,9 +125,7 @@ export function useDemoProgress(
 
     if (ablyMessages.some((m) => m.name === EVENT_CANCEL)) completed.add('cancel');
 
-    for (const { message } of messages) {
-      if (message.role === 'assistant' && ranServerWeather(message)) completed.add('server-weather');
-    }
+    if (ranServerWeather(messages.map(({ message }) => message))) completed.add('server-weather');
 
     const turnClientIds = new Set<string>();
     for (const { codecMessageId } of messages) {

@@ -61,7 +61,7 @@ describe('runAgentLoop', () => {
     expect(messages).toHaveLength(3);
     const [callTurn, toolOutputs, finalTurn] = messages;
 
-    // The call rides the item envelopes in the first message.
+    // The call is carried by the item envelopes in the first message.
     const call = (callTurn ?? []).find(
       (e) => e.type === 'response.output_item.done' && e.item.type === 'function_call',
     );

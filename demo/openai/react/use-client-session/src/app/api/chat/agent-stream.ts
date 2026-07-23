@@ -129,7 +129,7 @@ export async function runAgentLoop(req: AgentLoopRequest): Promise<StreamResult>
 
     // Run each tool and publish its result. The calls themselves are already in
     // `input` via outputItems above, so only the outputs are added here. The
-    // whole batch rides one pipe, so it lands in its own message.
+    // whole batch goes through one pipe, so it lands in its own message.
     const toolOutputs = turn.calls.map(
       (call): Responses.ResponseInputItem.FunctionCallOutput => ({
         type: 'function_call_output',

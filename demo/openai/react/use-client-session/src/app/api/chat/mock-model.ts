@@ -9,7 +9,12 @@
  * (function_call, args empty) → `function_call_arguments.delta`* → `.done` →
  * `output_item.done` (function_call, full args): the agentic loop runs the tool
  * and calls the mock again, now with the tool result in the input, so the second
- * turn returns a text reply. A "think"/"reason" prompt streams a reasoning item
+ * turn returns a text reply. A location prompt emits the client-executed
+ * `getLocation` call (the run suspends until the browser answers) and a forecast
+ * prompt emits the approval-gated `getWeatherForecast` call (the run suspends for
+ * the user's decision) — each replies with a sentence on the loop's second turn,
+ * a forecast prompt acknowledging instead when the call was denied. A
+ * "think"/"reason" prompt streams a reasoning item
  * (its summary) first — ahead of a text reply, or ahead of the getWeather call
  * when the prompt is also about weather — which is the case that exercises the
  * loop feeding reasoning items back alongside the call. Response-lifecycle
@@ -70,9 +75,34 @@ function lastUserText(input: Responses.ResponseInputItem[]): string {
   return '';
 }
 
-/** Whether a server-side tool result is already present (the loop's 2nd turn). */
-function hasWeatherResult(input: Responses.ResponseInputItem[]): boolean {
-  return input.some((item) => item.type === 'function_call_output');
+/**
+ * The output of an answered call to the named tool — the `function_call_output`
+ * text of a `function_call` with that name whose output is present — or
+ * `undefined` when the tool has not been called or answered yet. Lets the mock
+ * tell which tool's result drives the loop's second turn (a conversation can
+ * hold several tools) and read its output.
+ */
+function answeredCall(input: Responses.ResponseInputItem[], name: string): string | undefined {
+  const callIds = new Set<string>();
+  for (const item of input) {
+    if (item.type === 'function_call' && item.name === name) callIds.add(item.call_id);
+  }
+  for (const item of input) {
+    if (item.type !== 'function_call_output' || !callIds.has(item.call_id)) continue;
+    return typeof item.output === 'string' ? item.output : JSON.stringify(item.output);
+  }
+  return undefined;
+}
+
+/** Whether a forecast output is the tool's JSON result (an approval) rather than a denial's rejection string. */
+function isForecastResult(output: string): boolean {
+  try {
+    // CAST: trust boundary — the tool output is parsed JSON.
+    const parsed = JSON.parse(output) as { forecast?: unknown };
+    return Array.isArray(parsed.forecast);
+  } catch {
+    return false;
+  }
 }
 
 /** Pull a place name out of a "weather in/for <place>?" prompt, defaulting to London. */
@@ -91,11 +121,36 @@ function planReply(input: Responses.ResponseInputItem[]): ReplyPlan {
   const word = /\bword\s+([A-Za-z]+)/i.exec(prompt);
   if (word) return { kind: 'text', text: word[1], slow: false };
 
+  // Forecast (approval-gated server tool): call getWeatherForecast first; the
+  // run suspends for the user's decision. On the loop's second turn its output
+  // is present — the tool's JSON forecast when approved (the ForecastCard
+  // renders it), or a rejection string when denied (acknowledge instead).
+  // Checked before plain weather, since a forecast prompt also says "weather".
+  if (/\bforecast\b/i.test(prompt)) {
+    const output = answeredCall(input, 'getWeatherForecast');
+    if (output !== undefined) {
+      return isForecastResult(output)
+        ? { kind: 'text', text: `Here is the 5-day forecast for ${extractLocation(prompt)}.`, slow: false }
+        : { kind: 'text', text: 'No problem, I will not fetch the forecast.', slow: false };
+    }
+    return { kind: 'tool', name: 'getWeatherForecast', args: { location: extractLocation(prompt) } };
+  }
+
+  // Location (client-executed tool): call getLocation first; the run suspends
+  // while the browser resolves geolocation. Once the client's result is in the
+  // input (the loop's second turn), reply with a sentence.
+  if (/\b(location|where\s+am\s+i|where\s+i\s+am)\b/i.test(prompt)) {
+    if (answeredCall(input, 'getLocation') !== undefined) {
+      return { kind: 'text', text: 'Here is your current location.', slow: false };
+    }
+    return { kind: 'tool', name: 'getLocation', args: { highAccuracy: false } };
+  }
+
   // Weather: call getWeather first; once its result is in the input (the loop's
   // second turn), reply with a sentence. The WeatherCard renders the structured
   // tool output alongside this text.
   if (/\bweather\b/i.test(prompt)) {
-    if (hasWeatherResult(input)) {
+    if (answeredCall(input, 'getWeather') !== undefined) {
       return { kind: 'text', text: `Here is the current weather for ${extractLocation(prompt)}.`, slow: false };
     }
     // A "think"/"reason" weather prompt streams a reasoning item before the

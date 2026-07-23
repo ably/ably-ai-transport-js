@@ -12,14 +12,17 @@
  * - server-weather: the getWeather tool ran (a getWeather function_call paired
  *   with its function_call_output). A tool run splits its work across separate
  *   messages, so the call and its output are paired across turns, not within one.
+ * - client-weather: the getLocation client tool ran (a function_call paired
+ *   with a client-published function_call_output)
+ * - approval-forecast: a getWeatherForecast call reached a decision (its
+ *   per-call state carries an approval, or its output is present)
  * - multi-tab: more than one distinct turn-client-id appears across turns
  * - regenerate: any assistant node has siblings (forked via Regenerate)
  * - edit: any user node has siblings (forked via Edit)
  * - cancel: a cancel signal was seen on the channel
  *
- * Client-side tools and approval-gated tools are not part of this demo yet, so
- * (unlike the Vercel demo) there are no chips for them. The Observability
- * scenario is local UI state, so it carries no `id` and is not tracked here.
+ * The Observability scenario is local UI state, so it carries no `id` and is not
+ * tracked here.
  */
 
 import { useMemo } from 'react';
@@ -30,21 +33,40 @@ import type { OpenAIMessage } from '@ably/ai-transport/openai';
 import type { DemoStepId, Scenario } from '@ably-ai-demos/frontend/lib/progress-steps';
 
 /**
- * Whether the getWeather tool ran — a getWeather function_call paired with its
+ * Whether the named tool ran — a function_call for it paired with its
  * function_call_output. A tool run splits its work across separate messages, so
  * the call and its output are collected across all turns (mirroring the
  * render-time pairing in helpers.ts), not within a single turn.
  */
-function ranServerWeather(turns: OpenAIMessage[]): boolean {
-  const weatherCallIds = new Set<string>();
+function ranTool(turns: OpenAIMessage[], name: string): boolean {
+  const callIds = new Set<string>();
   const outputCallIds = new Set<string>();
   for (const turn of turns) {
     for (const item of turn.items) {
-      if (item.type === 'function_call' && item.name === 'getWeather') weatherCallIds.add(item.call_id);
+      if (item.type === 'function_call' && item.name === name) callIds.add(item.call_id);
       else if (item.type === 'function_call_output') outputCallIds.add(item.call_id);
     }
   }
-  for (const callId of weatherCallIds) if (outputCallIds.has(callId)) return true;
+  for (const callId of callIds) if (outputCallIds.has(callId)) return true;
+  return false;
+}
+
+/**
+ * Whether a getWeatherForecast call reached an approval decision — its per-call
+ * state carries an `approval`, or its output is present (an approved run's
+ * forecast, or a denial's rejection). Collected across all turns, since a call
+ * and its output or state can be split across messages.
+ */
+function decidedForecast(turns: OpenAIMessage[]): boolean {
+  if (ranTool(turns, 'getWeatherForecast')) return true;
+  for (const turn of turns) {
+    const states = turn.toolCallStates ?? {};
+    for (const item of turn.items) {
+      if (item.type === 'function_call' && item.name === 'getWeatherForecast' && states[item.call_id]?.approval) {
+        return true;
+      }
+    }
+  }
   return false;
 }
 
@@ -71,7 +93,10 @@ export function useDemoProgress(
 
     if (ablyMessages.some((m) => m.name === EVENT_CANCEL)) completed.add('cancel');
 
-    if (ranServerWeather(messages.map(({ message }) => message))) completed.add('server-weather');
+    const turns = messages.map(({ message }) => message);
+    if (ranTool(turns, 'getWeather')) completed.add('server-weather');
+    if (ranTool(turns, 'getLocation')) completed.add('client-weather');
+    if (decidedForecast(turns)) completed.add('approval-forecast');
 
     const turnClientIds = new Set<string>();
     for (const { codecMessageId } of messages) {

@@ -1,10 +1,10 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 
-import type { RenderPart } from '../../helpers';
+import type { DisplayPart } from '../../display';
 import { ToolInvocation } from '../tool-invocation';
 
-type ToolPart = Extract<RenderPart, { kind: 'tool' }>;
+type ToolPart = Extract<DisplayPart, { kind: 'tool' }>;
 
 const toolPart = (over: Partial<ToolPart> = {}): ToolPart => ({
   kind: 'tool',

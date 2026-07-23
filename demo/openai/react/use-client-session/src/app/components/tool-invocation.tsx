@@ -1,128 +1,133 @@
 'use client';
 
-import { Loader2Icon } from 'lucide-react';
 import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@ably-ai-demos/frontend/components/ui/card';
-import { Marker, MarkerContent, MarkerIcon } from '@ably-ai-demos/frontend/components/ui/marker';
-// Type-only import (erased at build time) of the agent's tool-output shape, so
+  ForecastCard,
+  LocationCard,
+  ToolApprovalCard,
+  ToolDeniedCard,
+  ToolErrorCard,
+  ToolPendingCard,
+  ToolResultCard,
+  WeatherCard,
+} from '@ably-ai-demos/frontend/components/tool-cards';
+// Type-only import (erased at build time) of the agent's tool-output shapes, so
 // the renderer and the producer can't drift. No server runtime crosses over.
-import type { WeatherData } from '../api/chat/tools';
-import type { RenderPart } from '../helpers';
+import type { ForecastData, LocationData, WeatherData } from '../api/chat/tools';
+import type { DisplayPart } from '../display';
 
-// Tool activity renders as bordered rows so programmatic calls stand out from
-// the assistant's prose.
-const toolBoxClasses = 'my-1 rounded-md border bg-muted/50 px-2.5 py-1.5 text-xs';
-
-// ---------------------------------------------------------------------------
-// Weather card — generative UI for the getWeather tool result
-// ---------------------------------------------------------------------------
-
-const conditionIcon: Record<string, string> = {
-  Sunny: '☀️',
-  'Partly Cloudy': '⛅',
-  Cloudy: '☁️',
-  Rainy: '🌧️',
-  Thunderstorms: '⛈️',
-  Snowy: '❄️',
-};
-
-/** Narrow a parsed tool output to WeatherData, or return undefined. */
-function asWeatherData(output: string): WeatherData | undefined {
+/**
+ * Narrow a tool output's JSON text to `T` when `guard` accepts it. A tool output
+ * arrives as a JSON string off the wire, so each card's data has to be parsed
+ * and checked before it can be rendered.
+ */
+function parseOutput<T>(output: string, guard: (value: Partial<T>) => boolean): T | undefined {
   try {
     // CAST: trust boundary — the tool output is parsed JSON from the wire.
-    const data = JSON.parse(output) as Partial<WeatherData>;
-    if (typeof data.location === 'string' && typeof data.temperature === 'number') {
-      // CAST: the guard above confirmed the required fields are present.
-      return data as WeatherData;
-    }
+    const data = JSON.parse(output) as Partial<T>;
+    // CAST: the caller's guard confirmed the fields the card renders are present.
+    if (guard(data)) return data as T;
   } catch {
-    // fall through to undefined
+    // Not JSON — the caller falls back to the raw output.
   }
   return undefined;
 }
 
-function WeatherCard({ data }: { data: WeatherData }) {
-  const icon = conditionIcon[data.conditions] ?? '🌤️';
-  const tempC = Math.round(((data.temperature - 32) * 5) / 9);
-
-  return (
-    <Card
-      size="sm"
-      className="my-1 max-w-[280px] bg-transparent bg-gradient-to-br from-sky-100 to-indigo-100 ring-sky-200 dark:from-sky-900/40 dark:to-indigo-900/40 dark:ring-sky-800/30"
-    >
-      <CardHeader>
-        <CardDescription className="text-sky-700 dark:text-sky-400/80">{data.location}</CardDescription>
-        <CardTitle className="text-2xl">
-          {data.temperature}&deg;F
-          <span className="ml-1 text-sm font-normal text-muted-foreground">({tempC}&deg;C)</span>
-        </CardTitle>
-        <CardAction className="text-3xl">{icon}</CardAction>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-1">
-        <div className="text-muted-foreground">{data.conditions}</div>
-        <div className="flex gap-4 text-xs text-muted-foreground">
-          <span>Humidity: {data.humidity}%</span>
-          <span>Wind: {data.windSpeed} mph</span>
-        </div>
-      </CardContent>
-    </Card>
-  );
+/**
+ * Summarise a call's arguments for the approval prompt: the values of the parsed
+ * arguments object, else the raw string when it isn't a plain object.
+ */
+function argsSummary(args: string): string | undefined {
+  if (!args || args === '{}') return undefined;
+  try {
+    // CAST: trust boundary — the arguments string is parsed JSON.
+    const parsed = JSON.parse(args) as Record<string, unknown>;
+    if (parsed && typeof parsed === 'object') {
+      const values = Object.values(parsed);
+      return values.length > 0 ? values.join(', ') : undefined;
+    }
+  } catch {
+    // Not JSON — fall through to the raw string.
+  }
+  return args;
 }
 
-// ---------------------------------------------------------------------------
-// Generic tool states
-// ---------------------------------------------------------------------------
-
-function ToolPending({ name, args }: { name: string; args: string }) {
-  return (
-    <Marker className={toolBoxClasses}>
-      <MarkerIcon>
-        <Loader2Icon className="animate-spin" />
-      </MarkerIcon>
-      <MarkerContent>
-        Calling <span className="font-mono text-foreground">{name}</span>
-        {args && args !== '{}' && <span> ({args})</span>}
-      </MarkerContent>
-    </Marker>
-  );
+interface ToolInvocationProps {
+  /** The tool display part — the call plus its approval decision and output. */
+  part: Extract<DisplayPart, { kind: 'tool' }>;
+  /** Approve a pending gated call. Bound by the list to this call's codec-message-id + call_id. */
+  onApprove?: () => void;
+  /** Deny a pending gated call. Bound by the list to this call's codec-message-id + call_id. */
+  onDeny?: () => void;
 }
 
-function ToolResult({ name, output }: { name: string; output: string }) {
-  return (
-    <Marker className={toolBoxClasses}>
-      <MarkerContent>
-        <span className="font-mono">{name}</span>: {output}
-      </MarkerContent>
-    </Marker>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Dispatch
-// ---------------------------------------------------------------------------
-
-/** Render a server-side tool interaction: pending while running, a card once done. */
-export function ToolInvocation({ part }: { part: Extract<RenderPart, { kind: 'tool' }> }) {
-  if (part.output === undefined) {
+/**
+ * Render a tool interaction. A gated call awaiting a decision shows the approval
+ * card; a denied call shows a denied note; a call still running (no output yet)
+ * shows a pending row; a completed call shows its generative card — a failed
+ * client result shows the error instead.
+ */
+export function ToolInvocation({ part, onApprove, onDeny }: ToolInvocationProps) {
+  // A gated call awaiting a human decision: show approve / deny.
+  if (part.approval === 'pending') {
     return (
-      <ToolPending
+      <ToolApprovalCard
         name={part.name}
-        args={part.args}
+        argsSummary={argsSummary(part.args)}
+        onApprove={onApprove}
+        onDeny={onDeny}
       />
     );
   }
+
+  // A denied call carries a rejection output; render the denial, not the output.
+  if (part.approval === 'denied') {
+    return <ToolDeniedCard name={part.name} />;
+  }
+
+  // No output yet — the call is still running (a server tool) or suspended
+  // awaiting a client result (a client tool).
+  if (part.output === undefined) {
+    return (
+      <ToolPendingCard
+        name={part.name}
+        argsSummary={argsSummary(part.args)}
+      />
+    );
+  }
+
+  // A failed client result folds the failure message into the output.
+  if (part.result === 'failed') {
+    return (
+      <ToolErrorCard
+        name={part.name}
+        errorText={part.output}
+      />
+    );
+  }
+
   if (part.name === 'getWeather') {
-    const data = asWeatherData(part.output);
+    const data = parseOutput<WeatherData>(
+      part.output,
+      (d) => typeof d.location === 'string' && typeof d.temperature === 'number',
+    );
     if (data) return <WeatherCard data={data} />;
   }
+  if (part.name === 'getWeatherForecast') {
+    const data = parseOutput<ForecastData>(
+      part.output,
+      (d) => typeof d.location === 'string' && Array.isArray(d.forecast),
+    );
+    if (data) return <ForecastCard data={data} />;
+  }
+  if (part.name === 'getLocation') {
+    const data = parseOutput<LocationData>(
+      part.output,
+      (d) => typeof d.latitude === 'number' || typeof d.error === 'string',
+    );
+    if (data) return <LocationCard data={data} />;
+  }
   return (
-    <ToolResult
+    <ToolResultCard
       name={part.name}
       output={part.output}
     />

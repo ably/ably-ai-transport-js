@@ -67,6 +67,32 @@ const weatherOutputTurn = (): OpenAIMessage => ({
   items: [{ type: 'function_call_output', call_id: 'c1', output: '{"temperature":60}' }],
 });
 
+// An assistant turn that ran the getLocation client tool: the call paired with
+// a client-published output.
+const locationTurn = (): OpenAIMessage => ({
+  role: 'assistant',
+  items: [
+    { type: 'function_call', call_id: 'c1', name: 'getLocation', arguments: '{}', status: 'completed' },
+    { type: 'function_call_output', call_id: 'c1', output: '{"latitude":51.5,"longitude":-0.1}' },
+  ],
+});
+
+// An assistant turn whose getWeatherForecast call reached an approval decision,
+// carried in toolCallStates but with no output yet (approved, not yet run).
+const approvedForecastTurn = (): OpenAIMessage => ({
+  role: 'assistant',
+  items: [
+    {
+      type: 'function_call',
+      call_id: 'c1',
+      name: 'getWeatherForecast',
+      arguments: '{"location":"Paris"}',
+      status: 'completed',
+    },
+  ],
+  toolCallStates: { c1: { approval: 'approved' } },
+});
+
 const paired = (turns: OpenAIMessage[]): CodecMessage<OpenAIMessage>[] =>
   turns.map((message, i) => ({ codecMessageId: `cm-${i}`, message }));
 
@@ -90,9 +116,17 @@ const idsOf = (scenarios: Scenario[]): (DemoStepId | undefined)[] => scenarios.m
 // --- tests -------------------------------------------------------------------
 
 describe('useDemoProgress', () => {
-  it('lists all five steps when nothing has been demonstrated', () => {
+  it('lists every step when nothing has been demonstrated', () => {
     const { result } = renderHook(() => useDemoProgress(DEMO_SCENARIOS, [], noBranch, () => undefined, []));
-    expect(idsOf(result.current)).toEqual(['server-weather', 'multi-tab', 'edit', 'regenerate', 'cancel']);
+    expect(idsOf(result.current)).toEqual([
+      'server-weather',
+      'client-weather',
+      'approval-forecast',
+      'multi-tab',
+      'edit',
+      'regenerate',
+      'cancel',
+    ]);
   });
 
   it('drops server-weather once a getWeather tool turn is present', () => {
@@ -116,6 +150,31 @@ describe('useDemoProgress', () => {
       useDemoProgress(DEMO_SCENARIOS, paired([pending]), noBranch, () => undefined, []),
     );
     expect(idsOf(result.current)).toContain('server-weather');
+  });
+
+  it('drops client-weather once a getLocation tool turn is present', () => {
+    const messages = paired([textTurn('user', 'where am I?'), locationTurn()]);
+    const { result } = renderHook(() => useDemoProgress(DEMO_SCENARIOS, messages, noBranch, () => undefined, []));
+    expect(idsOf(result.current)).not.toContain('client-weather');
+  });
+
+  it('drops approval-forecast once a getWeatherForecast call reaches an approval decision', () => {
+    const messages = paired([textTurn('user', 'forecast for Paris?'), approvedForecastTurn()]);
+    const { result } = renderHook(() => useDemoProgress(DEMO_SCENARIOS, messages, noBranch, () => undefined, []));
+    expect(idsOf(result.current)).not.toContain('approval-forecast');
+  });
+
+  it('does not drop approval-forecast for a getWeatherForecast call still awaiting a decision', () => {
+    const pending: OpenAIMessage = {
+      role: 'assistant',
+      items: [
+        { type: 'function_call', call_id: 'c1', name: 'getWeatherForecast', arguments: '{}', status: 'completed' },
+      ],
+    };
+    const { result } = renderHook(() =>
+      useDemoProgress(DEMO_SCENARIOS, paired([pending]), noBranch, () => undefined, []),
+    );
+    expect(idsOf(result.current)).toContain('approval-forecast');
   });
 
   it('drops cancel when a cancel signal is on the channel', () => {

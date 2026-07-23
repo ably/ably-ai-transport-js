@@ -8,19 +8,22 @@
  * draining `run.view` yields the LLM-ready conversation as `OpenAIMessage[]`,
  * which `toResponsesInput` flattens into the `/responses` `input` array.
  *
- * Server-executed tools run inside the agentic loop (`runAgentLoop`): the run
- * does not suspend — the loop runs each tool, publishes its
+ * Tools run inside the agentic loop (`runAgentLoop`). A server-executed tool
+ * does not suspend the run — the loop runs it, publishes its
  * `function_call_output`, and continues `/responses` until the model produces a
- * final reply. The loop publishes each unit of work under its own `run.pipe`,
- * so a run that calls a tool produces several messages (the model turn, the
- * tool outputs, the final turn). Each pipe's stream goes to the run as-is: the
- * codec's descriptor table curates the wire, dropping the framing events no
- * consumer reads and throwing on any genuinely unexpected event.
+ * final reply. A client-executed or approval-gated tool suspends the run: the
+ * loop returns a `suspend` outcome and the route calls `run.suspend()`; a later
+ * continuation (the client's tool-result or approval) resumes the run under the
+ * same runId, re-entering this route. The loop publishes each unit of work under
+ * its own `run.pipe`, so a run that calls a tool produces several messages (the
+ * model turn, the tool outputs, the final turn). Each pipe's stream goes to the
+ * run as-is: the codec's descriptor table curates the wire, dropping the framing
+ * events no consumer reads and throwing on any genuinely unexpected event.
  *
- * Run outcome: `pipe` reports the terminal reason directly. A model failure
- * delivered in-band (a `response.failed` or stream-level `error` event) is not
- * mapped to a run-end error here — TODO(AIT-1113): a run-outcome mapper lands
- * with the client-side tool / approval increments.
+ * Run outcome: `runAgentLoop` returns an {@link AgentLoopOutcome}. Its `suspend`
+ * arm maps onto `run.suspend()`; every other arm is a `RunEndParams` (the error
+ * arm already carrying the wrapped `Ably.ErrorInfo`), forwarded to `run.end()`
+ * directly.
  */
 
 import { after } from 'next/server';
@@ -63,7 +66,8 @@ export async function POST(req: Request) {
   // into the /responses input array.
   while (run.view.hasOlder()) await run.view.loadOlder();
   await run.start();
-  const input = toResponsesInput(run.view.getMessages().map((m) => m.message));
+  const priorMessages = run.view.getMessages().map((m) => m.message);
+  const input = toResponsesInput(priorMessages);
 
   after(async () => {
     try {
@@ -71,17 +75,15 @@ export async function POST(req: Request) {
       // of work under its own pipe, so a run produces several messages. It emits
       // both the model's events and the codec's function_call_output events, and
       // returns the aggregate outcome. Run termination stays out-of-band.
-      const result = await runAgentLoop({ run, input });
-      // The ternary only discriminates RunEndParams (its 'error' arm is a
-      // separate shape). We don't attach the original failure: the loop's error
-      // is a plain Error, not an Ably.ErrorInfo, and the text-only run outcome is
-      // just complete/cancelled/error. TODO(AIT-1113): a run-outcome mapper that
-      // converts and forwards the error lands with the tool increments. Logged
-      // here in the meantime so a local run's real failure (e.g. an OpenAI API
-      // rejection) is visible somewhere, not just the client's generic
-      // "agent reported an error" fallback.
-      if (result.error) console.error('[openai-demo] agentic loop reported an error', result.error);
-      await run.end(result.reason === 'error' ? { reason: 'error' } : { reason: result.reason });
+      const outcome = await runAgentLoop({ run, input, priorMessages });
+      if (outcome.reason === 'suspend') {
+        // A client-executed or approval-gated tool paused the run. Suspend it
+        // (publishing the suspend signal); the client resolves the tool and
+        // sends a continuation that resumes this run under the same runId.
+        await run.suspend();
+      } else {
+        await run.end(outcome);
+      }
     } catch (error) {
       // Fire-and-forget background work: no active caller to surface this to, so
       // log it for local-demo visibility.

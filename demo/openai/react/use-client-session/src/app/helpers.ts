@@ -1,5 +1,7 @@
 import type { ClientRun } from '@ably/ai-transport';
-import type { OpenAIInput, OpenAIItem, OpenAIMessage } from '@ably/ai-transport/openai';
+import type { OpenAIInput, OpenAIMessage } from '@ably/ai-transport/openai';
+
+import { toDisplayParts } from './display';
 
 /**
  * Construct a user turn from a text string. Callers wrap it for the wire at the
@@ -14,114 +16,17 @@ export function userTurn(text: string): OpenAIMessage {
   };
 }
 
-/** Flatten a message item's content parts into rendered text (empty for non-message items). */
-function messageItemText(item: OpenAIItem): string {
-  if (item.type !== 'message') return '';
-  const content = item.content;
-  if (typeof content === 'string') return content;
-  let text = '';
-  for (const part of content) {
-    if (part.type === 'output_text' || part.type === 'input_text') text += part.text;
-    else if (part.type === 'refusal') text += part.refusal;
-  }
-  return text;
-}
-
 /**
- * Flatten a turn's items into their rendered text — the `input_text` /
- * `output_text` content parts of its message items, plus any `refusal`. Used to
- * seed the inline edit form and to render plain (text-only) turns. Tool items
- * contribute nothing here; {@link toRenderItems} renders those.
+ * Flatten a turn's message text: the `input_text` / `output_text` / `refusal`
+ * content of its message items. Callers use it to seed the inline edit form and
+ * to render plain (text-only) turns. It derives from {@link toDisplayParts},
+ * keeping only the `text` parts; reasoning and tool parts contribute nothing.
  */
 export function turnText(turn: OpenAIMessage): string {
-  let text = '';
-  for (const item of turn.items) text += messageItemText(item);
-  return text;
-}
-
-/**
- * A renderable part of a turn: a run of message text, or a server-side tool
- * interaction (the `getWeather` call and, once it has arrived, its result).
- */
-export type RenderPart =
-  | {
-      /** A run of assistant/user message text. */
-      kind: 'text';
-      /** The text content. */
-      text: string;
-    }
-  | {
-      /** A reasoning model's streamed summary — its "thinking". */
-      kind: 'reasoning';
-      /** The summary text (the reasoning item's summary parts joined). */
-      text: string;
-    }
-  | {
-      /** A server-side tool call. */
-      kind: 'tool';
-      /** The tool call's id, correlating the call with its output. */
-      callId: string;
-      /** The tool name (e.g. `getWeather`). */
-      name: string;
-      /** The call arguments as a JSON string (complete once the call is done). */
-      args: string;
-      /** The tool's output as a JSON string, or `undefined` while still running. */
-      output?: string;
-    };
-
-/**
- * Collect every `function_call_output` across the given messages into a
- * `call_id` → output-JSON map. A run splits its work across messages, so a
- * call and its output land in separate messages; this map lets a call pair
- * with an output that lives in a sibling message (see {@link toRenderItems}).
- */
-export function collectToolOutputs(turns: OpenAIMessage[]): Map<string, string> {
-  const outputByCallId = new Map<string, string>();
-  for (const turn of turns) {
-    for (const item of turn.items) {
-      if (item.type === 'function_call_output') {
-        outputByCallId.set(item.call_id, typeof item.output === 'string' ? item.output : JSON.stringify(item.output));
-      }
-    }
-  }
-  return outputByCallId;
-}
-
-/**
- * Project a turn's items into render parts in item order, pairing each
- * `function_call` with its matching `function_call_output` (by `call_id`,
- * order-independent) so a tool interaction renders as one part. The output item
- * is dropped from the flat stream — it is shown attached to its call. Pass
- * `toolOutputs` to pair a call with an output published in a sibling message;
- * when omitted, only this turn's own outputs pair. A turn holding only
- * `function_call_output` items therefore yields no parts — its outputs surface
- * on the calls' turns instead.
- */
-export function toRenderItems(turn: OpenAIMessage, toolOutputs?: Map<string, string>): RenderPart[] {
-  const outputByCallId = toolOutputs ?? collectToolOutputs([turn]);
-
-  const parts: RenderPart[] = [];
-  for (const item of turn.items) {
-    if (item.type === 'function_call') {
-      parts.push({
-        kind: 'tool',
-        callId: item.call_id,
-        name: item.name,
-        args: item.arguments,
-        output: outputByCallId.get(item.call_id),
-      });
-    } else if (item.type === 'reasoning') {
-      // The streamed summary (its parts joined) — the model's "thinking".
-      const text = item.summary.map((s) => s.text).join('\n\n');
-      if (text) parts.push({ kind: 'reasoning', text });
-    } else if (item.type === 'message') {
-      const text = messageItemText(item);
-      if (text) parts.push({ kind: 'text', text });
-    }
-    // function_call_output is shown with its call; other item types are not
-    // yet rendered.
-  }
-  return parts;
+  return toDisplayParts(turn)
+    .filter((part) => part.kind === 'text')
+    .map((part) => part.text)
+    .join('');
 }
 
 /** Shape of the agent endpoint's JSON response. */

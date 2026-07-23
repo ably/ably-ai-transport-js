@@ -11,6 +11,7 @@ import { MessageList } from './message-list';
 import type { CallbackLogEntry } from './debug-pane';
 import { DebugPane } from './debug-pane';
 import { useDemoProgress } from '../hooks/use-demo-progress';
+import { useClientTools } from '../hooks/use-client-tools';
 import { DEMO_SCENARIOS } from '../lib/intro-content';
 import { SessionHooks } from '../providers';
 
@@ -36,6 +37,16 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
 
   const view = useView({ limit: historyLimit ?? 30 });
   const { messages, hasOlder, loading, loadOlder, branchSelection, runOf } = view;
+
+  // Log a client-tool execution into the callback log so the demo shows which
+  // client ran the browser tool.
+  const logClientTool = useCallback((summary: string) => {
+    setCallbackLog((prev) => [...prev, { time: Date.now(), type: 'clientTool', summary }]);
+  }, []);
+
+  // Run client-executed tools (getLocation) when they appear unresolved and
+  // publish the result so the suspended run resumes.
+  useClientTools(view, clientId, api, logClientTool);
 
   // Wake the agent for a freshly-sent run by POSTing its invocation pointer.
   // The core session never sends HTTP — the app owns the trigger. Send sites
@@ -122,6 +133,41 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
     inputRef.current?.focus();
   }, []);
 
+  // Approve / deny a gated tool call. The codec-message-id addresses the
+  // function_call's message; the run's runId resumes the suspended run.
+  const handleToolApprove = useCallback(
+    (codecMessageId: string, callId: string) => {
+      const run = view.runOf(codecMessageId);
+      if (!run) return;
+      wake(
+        view.send([ResponsesCodec.createToolApprovalResponse(codecMessageId, { call_id: callId, approved: true })], {
+          runId: run.runId,
+        }),
+      );
+    },
+    [view, wake],
+  );
+
+  const handleToolDeny = useCallback(
+    (codecMessageId: string, callId: string) => {
+      const run = view.runOf(codecMessageId);
+      if (!run) return;
+      wake(
+        view.send(
+          [
+            ResponsesCodec.createToolApprovalResponse(codecMessageId, {
+              call_id: callId,
+              approved: false,
+              reason: 'User denied',
+            }),
+          ],
+          { runId: run.runId },
+        ),
+      );
+    },
+    [view, wake],
+  );
+
   return (
     <ChatShell
       title="Ably AI — OpenAI Responses"
@@ -142,6 +188,8 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
             wake(view.edit(codecMessageId, [ResponsesCodec.createUserMessage(userTurn(text))]))
           }
           scrollToEndRef={scrollToEndRef}
+          onApproveTool={handleToolApprove}
+          onDenyTool={handleToolDeny}
         />
       }
       debugPane={

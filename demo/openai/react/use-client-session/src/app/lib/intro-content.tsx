@@ -36,6 +36,29 @@ export const DEMO_SCENARIOS: readonly Scenario[] = [
       'The model calls the getWeather tool, the agent runs it server-side and streams the result back as a weather card, then the model replies — all within one run, no suspend.',
   },
   {
+    id: 'client-weather',
+    tag: 'Client tool',
+    title: 'Client-side tool call',
+    prompt: 'where am I?',
+    blurb:
+      'The model calls getLocation, which has no server executor: the run suspends, the browser resolves geolocation and publishes the result, and a continuation resumes the same run so the model can reply.',
+  },
+  {
+    id: 'approval-forecast',
+    tag: 'Approval tool',
+    title: 'Approval-gated tool call',
+    prompt: `what's the weather forecast for Paris?`,
+    action: (
+      <>
+        Ask for a forecast, e.g.{' '}
+        <span className="font-medium text-foreground">&ldquo;what&rsquo;s the weather forecast for Paris?&rdquo;</span>,
+        then Approve or Deny.
+      </>
+    ),
+    blurb:
+      'The model calls getWeatherForecast; the run suspends and shows an approval card. Approve and the agent runs the tool on resume; Deny and it skips it — either way the same run resumes.',
+  },
+  {
     id: 'multi-tab',
     tag: 'Multi-client sync',
     title: 'Multi-client sync',

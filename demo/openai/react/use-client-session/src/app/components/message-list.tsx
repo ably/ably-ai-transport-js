@@ -9,7 +9,7 @@ import { IntroCard } from '@ably-ai-demos/frontend/components/intro-card';
 import { useStickToBottom } from '@ably-ai-demos/frontend/hooks/use-stick-to-bottom';
 import { MessageBubble } from './message-bubble';
 import { DEMO_SCENARIOS, INTRO_DESCRIPTION, INTRO_TITLE } from '../lib/intro-content';
-import { collectToolOutputs, toRenderItems } from '../helpers';
+import { collectToolCallStates, collectToolOutputs, toDisplayParts } from '../display';
 
 interface ViewLookupApi {
   branchSelection: (codecMessageId: string) => BranchHandle<OpenAIMessage>;
@@ -30,6 +30,10 @@ interface MessageListProps {
   // Filled with a callback that re-pins the transcript to the bottom, so the
   // container can scroll to the latest after sending.
   scrollToEndRef: RefObject<(() => void) | null>;
+  // Approve / deny a gated tool call. The codec-message-id addresses the
+  // assistant message the approval folds onto; the call_id names the gated call.
+  onApproveTool: (codecMessageId: string, callId: string) => void;
+  onDenyTool: (codecMessageId: string, callId: string) => void;
 }
 
 function LoadingHistory() {
@@ -50,6 +54,8 @@ export function MessageList({
   onRegenerate,
   onEdit,
   scrollToEndRef,
+  onApproveTool,
+  onDenyTool,
 }: MessageListProps) {
   const { scrollRef, handleScroll, showJumpToLatest, jumpToLatest } = useStickToBottom(messages, scrollToEndRef, () => {
     // History pagination triggers only at the very top of the scrollback, and
@@ -61,12 +67,17 @@ export function MessageList({
   // function_call_output land in separate messages. Collect every output up
   // front, keyed by call_id, so a call's tool card can show a result published
   // in a sibling message.
-  const toolOutputs = collectToolOutputs(messages.map(({ message }) => message));
+  const allMessages = messages.map(({ message }) => message);
+  const toolOutputs = collectToolOutputs(allMessages);
+  // A gated call's approval state is published on its own message, separate from
+  // the function_call, so collect it up front too, keyed by call_id.
+  const toolStates = collectToolCallStates(allMessages);
 
   // Hide messages that render nothing — a message holding only
-  // function_call_output items produces no parts (its output shows on the
-  // call's message), so it would otherwise draw an empty bubble.
-  const visibleMessages = messages.filter(({ message }) => toRenderItems(message, toolOutputs).length > 0);
+  // function_call_output items, or only a tool-approval-request's state,
+  // produces no parts (its content shows on the call's message), so it would
+  // otherwise draw an empty bubble.
+  const visibleMessages = messages.filter(({ message }) => toDisplayParts(message, toolOutputs, toolStates).length > 0);
 
   // Runs whose output is visible carry their terminal error on their own
   // assistant bubble(s). A run that failed before producing any output has no
@@ -156,6 +167,7 @@ export function MessageList({
                 key={codecMessageId}
                 message={message}
                 toolOutputs={toolOutputs}
+                toolStates={toolStates}
                 clientId={run?.clientId || undefined}
                 runId={run?.runId}
                 status={bubbleStatus}
@@ -168,6 +180,8 @@ export function MessageList({
                 }}
                 onRegenerate={message.role === 'assistant' ? () => onRegenerate(codecMessageId) : undefined}
                 onEdit={message.role === 'user' ? (text) => onEdit(codecMessageId, text) : undefined}
+                onApproveTool={(callId) => onApproveTool(codecMessageId, callId)}
+                onDenyTool={(callId) => onDenyTool(codecMessageId, callId)}
               />
             );
           })}

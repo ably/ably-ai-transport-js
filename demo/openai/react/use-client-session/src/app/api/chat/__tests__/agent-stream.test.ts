@@ -1,5 +1,5 @@
 import type { StreamResult } from '@ably/ai-transport';
-import type { OpenAIOutput } from '@ably/ai-transport/openai';
+import type { OpenAIMessage, OpenAIOutput } from '@ably/ai-transport/openai';
 import type { Responses } from 'openai/resources/responses/responses';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
@@ -42,7 +42,7 @@ function makeRun(signal: AbortSignal): {
 describe('runAgentLoop', () => {
   it('publishes one message for a plain text reply with no tool calls', async () => {
     const { run, messages } = makeRun(new AbortController().signal);
-    const result = await runAgentLoop({ run, input: userInput('Say "hi" as your reply') });
+    const result = await runAgentLoop({ run, input: userInput('Say "hi" as your reply'), priorMessages: [] });
 
     expect(result.reason).toBe('complete');
     // No tools → a single model turn → a single message.
@@ -55,7 +55,7 @@ describe('runAgentLoop', () => {
 
   it('publishes the tool call, its output, and the final reply as separate messages', async () => {
     const { run, messages } = makeRun(new AbortController().signal);
-    await runAgentLoop({ run, input: userInput("what's the weather in London?") });
+    await runAgentLoop({ run, input: userInput("what's the weather in London?"), priorMessages: [] });
 
     // Three messages: the turn that emitted the call, the tool outputs, the final turn.
     expect(messages).toHaveLength(3);
@@ -98,7 +98,11 @@ describe('runAgentLoop', () => {
       return realCreate(req);
     });
     const { run } = makeRun(new AbortController().signal);
-    await runAgentLoop({ run, input: userInput('think it through and tell me the weather in London') });
+    await runAgentLoop({
+      run,
+      input: userInput('think it through and tell me the weather in London'),
+      priorMessages: [],
+    });
 
     // Two model turns: the reasoning+tool turn, then the reply after the tool result.
     expect(inputs).toHaveLength(2);
@@ -116,11 +120,75 @@ describe('runAgentLoop', () => {
     expect(types.filter((t) => t === 'function_call')).toHaveLength(1);
   });
 
+  it('emits a gated call and its approval request on ONE message, then suspends', async () => {
+    const { run, messages } = makeRun(new AbortController().signal);
+    const result = await runAgentLoop({
+      run,
+      input: userInput("what's the weather forecast for Paris?"),
+      priorMessages: [],
+    });
+
+    // The gated call needs a human decision, so the run suspends after one turn.
+    expect(result.reason).toBe('suspend');
+    expect(messages).toHaveLength(1);
+    const events = messages[0] ?? [];
+
+    // The function_call and its approval request ride the SAME message. Their
+    // shared codec-message-id is why the client's later approval-response — and
+    // its pending/decided state — fold onto one message rather than stranding.
+    // The full call — its name and call_id — rides the output_item.added
+    // envelope (the function_call_arguments stream's opener); output_item.done
+    // reduces to id/type/status, so read the correlation off `added`.
+    const call = events.find((e) => e.type === 'response.output_item.added' && e.item.type === 'function_call');
+    const request = events.find((e) => e.type === 'tool-approval-request');
+    expect(
+      call?.type === 'response.output_item.added' && call.item.type === 'function_call' ? call.item.name : '',
+    ).toBe('getWeatherForecast');
+    expect(request).toBeDefined();
+    if (
+      request?.type === 'tool-approval-request' &&
+      call?.type === 'response.output_item.added' &&
+      call.item.type === 'function_call'
+    ) {
+      expect(request.name).toBe('getWeatherForecast');
+      expect(request.call_id).toBe(call.item.call_id);
+    }
+  });
+
+  it('runs an approved gated call server-side on resume, then replies', async () => {
+    const call: Responses.ResponseFunctionToolCall = {
+      id: 'fc-forecast',
+      type: 'function_call',
+      call_id: 'call-forecast',
+      name: 'getWeatherForecast',
+      arguments: '{"location":"Paris, France"}',
+      status: 'completed',
+    };
+    // The hydrated conversation on resume: the gated call the user just approved
+    // (its function_call and approval state on one message), with no output yet.
+    const priorMessages: OpenAIMessage[] = [
+      { role: 'assistant', items: [call], toolCallStates: { 'call-forecast': { approval: 'approved' } } },
+    ];
+    const { run, messages } = makeRun(new AbortController().signal);
+    const result = await runAgentLoop({
+      run,
+      input: [...userInput("what's the weather forecast for Paris?"), call],
+      priorMessages,
+    });
+
+    expect(result.reason).toBe('complete');
+    // First the approved call runs server-side (its output), then the reply.
+    expect(messages).toHaveLength(2);
+    const output = (messages[0] ?? []).find((e) => e.type === 'function_call_output');
+    expect(output?.type === 'function_call_output' ? output.item.call_id : '').toBe('call-forecast');
+    expect((messages[1] ?? []).some((e) => e.type === 'response.output_text.done')).toBe(true);
+  });
+
   it('stops cleanly when the signal is already aborted', async () => {
     const controller = new AbortController();
     controller.abort();
     const { run, messages } = makeRun(controller.signal);
-    await runAgentLoop({ run, input: userInput("what's the weather in London?") });
+    await runAgentLoop({ run, input: userInput("what's the weather in London?"), priorMessages: [] });
     // Aborted before the first pipe → nothing published.
     expect(messages).toHaveLength(0);
   });

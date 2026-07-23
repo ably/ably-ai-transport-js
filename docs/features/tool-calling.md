@@ -179,6 +179,31 @@ if (run?.clientId && run.clientId !== myClientId) {
 
 This gate skips only when a **different** client owns the run; it does not fire for two tabs sharing one `clientId`, where both execute — and the forking above keeps those answers cleanly separated. Observer clients that do not execute the tool see each answer's branch appear as its owning client publishes its `tool-result`.
 
+## OpenAI codec
+
+The examples above use the Vercel codec, but the OpenAI Responses codec supports the same tool surface: server-executed function calls, client-executed tools, tool failures, and human tool approvals. The suspend/resume mechanics are identical, because they belong to the transport rather than the codec. The differences are the wire types and the factory payload field names.
+
+The OpenAI codec expresses tool state against `Responses` types. A tool call is a `function_call` item and its result is a `function_call_output` item. The client resolutions ride the same `ai-input` wire and reuse the run's `runId`, so a suspended run resumes exactly as it does with Vercel.
+
+The client-side factories take snake_case payloads keyed by `call_id`:
+
+```typescript
+import { ResponsesCodec } from '@ably/ai-transport/openai';
+
+// Client-executed tool succeeded.
+await view.send(ResponsesCodec.createToolResult(assistant.codecMessageId, { call_id, output }), { runId });
+
+// Client-executed tool failed. `message` becomes the output text the model sees next turn.
+await view.send(ResponsesCodec.createToolResultError(assistant.codecMessageId, { call_id, message }), { runId });
+
+// User approved or denied a gated tool. A denial resolves entirely client-side.
+await view.send(ResponsesCodec.createToolApprovalResponse(assistant.codecMessageId, { call_id, approved, reason }), {
+  runId,
+});
+```
+
+The Responses `function_call_output` item has no field for an approval decision or an error, so the codec holds that render-only state out of band. `getMessages` surfaces it on `OpenAIMessage.toolCallStates` (a map keyed by `call_id`), and `toResponsesInput` never reads it, so it cannot reach the model. See [OpenAI codec](../internals/openai-codec.md) for the reducer folds and the item/tool-state split.
+
 ## History and persistence
 
 Tool call events persist in Ably channel history. When a client loads history, the decoder reconstructs tool parts with their final state - including cross-run events. A tool that was called, executed, and resolved in a previous session appears with `state: 'output-available'` and the full output.

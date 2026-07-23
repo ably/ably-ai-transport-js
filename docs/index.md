@@ -28,4 +28,4 @@ Peer dependencies: `ably` (required), `ai` (for Vercel entry points), `openai` (
 
 ## Status
 
-This SDK is pre-release (v0.4.0). The Vercel AI SDK is the most complete framework integration today; an OpenAI Responses codec is in early preview (user prompts; streamed assistant replies including reasoning and refusals; and server-side function calls). The generic transport and codec interfaces support custom integrations, and more framework codecs are planned.
+This SDK is pre-release (v0.4.0). The Vercel AI SDK is the most complete framework integration today; an OpenAI Responses codec is in early preview (user prompts; streamed assistant replies including reasoning and refusals; server-side and client-side function calls; and human tool approvals). The generic transport and codec interfaces support custom integrations, and more framework codecs are planned.

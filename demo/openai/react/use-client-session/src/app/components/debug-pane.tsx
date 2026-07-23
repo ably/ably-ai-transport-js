@@ -14,7 +14,7 @@ export interface CallbackLogEntry {
   /** When the event was recorded (ms since epoch). */
   time: number;
   /** Which lifecycle event this is. */
-  type: 'runStart' | 'runSuspend' | 'runResume' | 'runEnd' | 'error';
+  type: 'runStart' | 'runSuspend' | 'runResume' | 'runEnd' | 'clientTool' | 'error';
   /** Human-readable one-line summary (ids, reason, error message). */
   summary: string;
 }
@@ -155,6 +155,7 @@ const callbackTypeColors: Record<string, string> = {
   runSuspend: 'text-amber-500',
   runResume: 'text-cyan-500',
   runEnd: 'text-emerald-500',
+  clientTool: 'text-violet-500',
   error: 'text-destructive',
 };
 

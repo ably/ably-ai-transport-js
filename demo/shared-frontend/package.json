@@ -18,6 +18,7 @@
     "./components/chat-shell": "./src/components/chat-shell.tsx",
     "./components/intro-card": "./src/components/intro-card.tsx",
     "./components/suggestion-chips": "./src/components/suggestion-chips.tsx",
+    "./components/tool-cards": "./src/components/tool-cards.tsx",
     "./components/ui/badge": "./src/components/ui/badge.tsx",
     "./components/ui/bubble": "./src/components/ui/bubble.tsx",
     "./components/ui/button": "./src/components/ui/button.tsx",

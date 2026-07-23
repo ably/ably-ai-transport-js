@@ -18,6 +18,17 @@ export type { MessageStatus } from './components/message-bubble';
 export { AvatarStack } from './components/avatar-stack';
 export { SuggestionChips } from './components/suggestion-chips';
 export { ToolInvocation } from './components/tool-invocation';
+export {
+  ForecastCard,
+  LocationCard,
+  ToolApprovalCard,
+  ToolDeniedCard,
+  ToolErrorCard,
+  ToolPendingCard,
+  ToolResultCard,
+  WeatherCard,
+} from './components/tool-cards';
+export type { ForecastCardData, ForecastCardDay, LocationCardData, WeatherCardData } from './components/tool-cards';
 export { DebugPane } from './components/debug-pane';
 export type { CallbackLogEntry, ClientToolLogEntry } from './components/debug-pane';
 export { IntroCard, COMMON_SCENARIOS } from './components/intro-card';

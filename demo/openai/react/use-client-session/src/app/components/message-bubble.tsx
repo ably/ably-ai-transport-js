@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, type CSSProperties } from 'react';
-import type { OpenAIMessage } from '@ably/ai-transport/openai';
+import type { OpenAIMessage, OpenAIToolCallState } from '@ably/ai-transport/openai';
 import { ChevronLeftIcon, ChevronRightIcon, Loader2Icon } from 'lucide-react';
 import { Badge } from '@ably-ai-demos/frontend/components/ui/badge';
 import { Bubble, BubbleContent } from '@ably-ai-demos/frontend/components/ui/bubble';
@@ -12,7 +12,8 @@ import { Textarea } from '@ably-ai-demos/frontend/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@ably-ai-demos/frontend/components/ui/tooltip';
 import { clientColor } from '@ably-ai-demos/frontend/lib/client-color';
 import { cn } from '@ably-ai-demos/frontend/lib/utils';
-import { toRenderItems, turnText } from '../helpers';
+import { toDisplayParts } from '../display';
+import { turnText } from '../helpers';
 import { ToolInvocation } from './tool-invocation';
 
 interface MessageBubbleProps {
@@ -22,6 +23,11 @@ interface MessageBubbleProps {
   // function_call in this message pairs with its output even when the output was
   // published in a sibling message.
   toolOutputs: Map<string, string>;
+  // Per-call tool state (approval decision, client-result status) collected
+  // across all visible messages, keyed by call_id. A gated call's approval
+  // state is published on its own message, so it must be paired cross-message
+  // like toolOutputs.
+  toolStates: Map<string, OpenAIToolCallState>;
   // Per-message metadata derived from the View at the list-glue layer
   // (see MessageList) and passed as primitives so the bubble stays a
   // pure renderer with no transport type dependencies.
@@ -38,6 +44,9 @@ interface MessageBubbleProps {
   onSelectSibling: (index: number) => void;
   onRegenerate?: () => void;
   onEdit?: (newText: string) => void;
+  // Approve / deny a gated tool call in this message, addressed by its call_id.
+  onApproveTool: (callId: string) => void;
+  onDenyTool: (callId: string) => void;
 }
 
 function BranchNavigator({
@@ -207,6 +216,7 @@ function EditForm({
 export function MessageBubble({
   message,
   toolOutputs,
+  toolStates,
   clientId,
   runId,
   status,
@@ -217,6 +227,8 @@ export function MessageBubble({
   onSelectSibling,
   onRegenerate,
   onEdit,
+  onApproveTool,
+  onDenyTool,
 }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const [isEditing, setIsEditing] = useState(false);
@@ -229,10 +241,10 @@ export function MessageBubble({
   const bubbleTheme = colors ? ({ '--primary': colors.primary } as CSSProperties) : undefined;
 
   const messageText = turnText(message);
-  const renderParts = toRenderItems(message, toolOutputs);
+  const displayParts = toDisplayParts(message, toolOutputs, toolStates);
   // An assistant turn that is streaming but has rendered nothing yet — show a
   // quiet loader instead of an empty bubble.
-  const showThinking = !isUser && status === 'streaming' && renderParts.length === 0;
+  const showThinking = !isUser && status === 'streaming' && displayParts.length === 0;
 
   return (
     <Message
@@ -265,7 +277,7 @@ export function MessageBubble({
                 <BubbleContent className="w-full whitespace-pre-wrap">{messageText}</BubbleContent>
               ) : (
                 <BubbleContent className="w-full">
-                  {renderParts.map((part, i) =>
+                  {displayParts.map((part, i) =>
                     part.kind === 'text' ? (
                       // The assistant reply is markdown; render it through
                       // Response (Streamdown) so lists, code, and emphasis
@@ -280,6 +292,8 @@ export function MessageBubble({
                       <ToolInvocation
                         key={i}
                         part={part}
+                        onApprove={() => onApproveTool(part.callId)}
+                        onDeny={() => onDenyTool(part.callId)}
                       />
                     ),
                   )}

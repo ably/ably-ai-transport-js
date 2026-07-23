@@ -254,4 +254,4 @@ To support a new AI framework, assemble a codec with [`defineCodec`](#defining-a
 
 You never implement the well-known input factory bodies (`createUserMessage`, `createRegenerate`, and the tool-result / tool-approval factories) - the core provides them and `defineCodec` hands them to your `factories` selector; you only choose which subset the codec exposes.
 
-See [Vercel codec](vercel-codec.md) for the concrete Vercel implementation details. See [Encoder](encoder.md) for the encoder core the descriptor drivers delegate to. See [Decoder](decoder.md) for the decoder core. See [Wire protocol](wire-protocol.md) for the transport vs domain header discipline.
+See [Vercel codec](vercel-codec.md) and [OpenAI codec](openai-codec.md) for the two concrete worked implementations. See [Encoder](encoder.md) for the encoder core the descriptor drivers delegate to. See [Decoder](decoder.md) for the decoder core. See [Wire protocol](wire-protocol.md) for the transport vs domain header discipline.

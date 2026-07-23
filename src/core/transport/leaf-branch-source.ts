@@ -191,6 +191,21 @@ export class LeafBranchSource<
     const pin = this._pin;
     if (pin === undefined) return [];
 
+    // The current run's node — the leaf we are serving — is normally keyed by
+    // `pin.runId`. A client tool-result FORK is the exception: it is served
+    // `run.view`-first (the caller pages `loadUntil`/`loadOlder` to bring the
+    // trigger in) BEFORE `run.start()` reconciles the optimistic fork run onto
+    // the agent-minted run-id. Until that reconciliation the fork run is keyed by
+    // its trigger's codec-message-id (`pin.anchor`), not `pin.runId`, so a
+    // `pin.runId` match alone would miss it. Resolve the leaf's live key off
+    // `pin.anchor` too — only a fork's trigger backs a run node (a fresh send
+    // backs an input node, a regenerate carrier backs none) — so the fork is
+    // recognised as the current run and exempted from the incomplete-ancestor
+    // drop below; otherwise it and its input are dropped and the prompt comes
+    // back empty (AIT-1144).
+    const anchorNode = pin.anchor === undefined ? undefined : this._getTree().getNodeByCodecMessageId(pin.anchor);
+    const leafRunId = anchorNode?.kind === 'run' ? anchorNode.runId : undefined;
+
     // Omit ancestor turns whose run did not complete successfully. An incomplete
     // run — one still streaming, suspended awaiting a client tool result, or
     // cancelled/errored mid-call — can carry an assistant tool call with no
@@ -200,15 +215,22 @@ export class LeafBranchSource<
     // user/assistant sequence rather than carrying an orphaned input. Read off
     // live `RunNode.state` on every call, so a run that later completes reappears
     // and a late history re-walk cannot reintroduce a still-incomplete one. The
-    // current run (`pin.runId`) is exempt — it is the leaf we are serving, its
-    // own as-yet-unresolved work is expected and its resolutions are applied
-    // before the prompt is built — so its input (`pin.anchor`) is never dropped.
-    // Two passes, and they must stay separate: the branch is root-first so an
-    // input precedes the run that replied to it, and pass two can only drop an
-    // input once pass one has collected every dropped run's `parentCodecMessageId`.
+    // current run (`pin.runId`, or `leafRunId` for a pre-reconciliation fork) is
+    // exempt — it is the leaf we are serving, its own as-yet-unresolved work is
+    // expected and its resolutions are applied before the prompt is built — so
+    // its input (`pin.anchor`) is never dropped. Two passes, and they must stay
+    // separate: the branch is root-first so an input precedes the run that
+    // replied to it, and pass two can only drop an input once pass one has
+    // collected every dropped run's `parentCodecMessageId`.
     const droppedInputIds = new Set<string>();
     const withoutIncompleteRuns = this._structuralBranch().filter((node) => {
-      if (node.kind !== 'run' || node.runId === pin.runId || node.state.status === 'complete') return true;
+      if (
+        node.kind !== 'run' ||
+        node.runId === pin.runId ||
+        node.runId === leafRunId ||
+        node.state.status === 'complete'
+      )
+        return true;
       if (node.parentCodecMessageId !== undefined) droppedInputIds.add(node.parentCodecMessageId);
       return false;
     });

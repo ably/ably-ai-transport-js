@@ -4146,6 +4146,49 @@ describe('agent leaf view — incomplete-run filtering (LeafBranchSource)', () =
 
     expect(source.selectedReplyRun('u1')?.runId).toBe('R1');
   });
+
+  it('keeps a client tool-result fork served run.view-first, before run-start reconciles it (AIT-1144)', () => {
+    // A client tool-result FORK is served run.view-first: the caller pages the
+    // trigger in (loadUntil/loadOlder) BEFORE run.start() reconciles the
+    // optimistic fork run onto the agent-minted run-id. Until then the fork run
+    // is keyed by its trigger's codec-message-id ('F'), not the pin's provisional
+    // run-id — so a `pin.runId` exemption alone misses it. The fork is the leaf
+    // we are serving, so it and its input must survive the incomplete-ancestor
+    // drop; otherwise the agent's prompt comes back empty and the model provider
+    // rejects it ("messages must not be empty").
+
+    // The suspended trunk R1 the fork resolves: u1 → tool-call, then suspend.
+    applyInput(tree, { codecMessageId: 'u1', message: { id: 'u1', content: 'weather?' }, serial: 's1' });
+    apply(tree, {
+      runId: 'R1',
+      codecMessageId: 'tc1',
+      parent: 'u1',
+      role: 'assistant',
+      message: { id: 'tc1', content: 'tool-call' },
+      serial: 's2',
+    });
+    tree.applyRunLifecycle({ type: 'suspend', runId: 'R1', clientId: 'c', invocationId: '', serial: 's3' });
+
+    // The run-less fork tool-result F: parent = the trunk's input node u1, role
+    // assistant, no run-id → an optimistic fork run node keyed by 'F', left
+    // without a run-end (so it reads as incomplete, like the pre-start state).
+    // (`supersedes` hides the dead trunk from the CLIENT's branch enumeration; it
+    // is irrelevant here — the leaf source walks F's own ancestor chain [u1, F],
+    // never the sibling R1 — so this repro omits it.)
+    tree.applyMessage(
+      { inputs: [{ kind: 'user-message', message: { id: 'F', content: 'here-is-the-location' } }], outputs: [] },
+      { [HEADER_CODEC_MESSAGE_ID]: 'F', [HEADER_ROLE]: 'assistant', [HEADER_PARENT]: 'u1' },
+      's4',
+    );
+
+    // Pin as the agent does pre-start: anchor = the fork's codec-message-id, but
+    // run-id = a distinct provisional id (the reconciliation is what would align
+    // them). The fork node's live key is still 'F'.
+    source.setPin('F', 'R_prov', undefined);
+
+    expect(nodeKeys()).toEqual(['u1', 'F']);
+    expect(promptIds()).toEqual(['u1', 'F']);
+  });
 });
 
 describe('agent leaf view — steer ordering (deferUnrespondedSteers)', () => {

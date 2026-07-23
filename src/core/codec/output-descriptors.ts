@@ -215,8 +215,8 @@ export interface OutputStreamDeltaPhase<U extends { type: string }, D extends U[
  * encode/decode hatches. The `encode` and `decode` hatches pair one-directionally:
  * a custom `encode` (the stream-close step) requires a matching `decode` (the
  * end-chunk rebuild), because a custom close writes a shape the default rebuild
- * cannot read back. A `decode` on its own is legal — the default close is
- * well-defined, so a custom rebuild needs no custom close.
+ * cannot read back. A `decode` on its own is legal, since the default close is
+ * well-defined and a custom rebuild reads back fine without one.
  * @template U - The codec's event union.
  * @template E - The end chunk `type` literal.
  */
@@ -402,10 +402,10 @@ export interface OutputBuilder<U extends { type: string }> {
     spec: OutputStreamSpec<U, S, D, E>,
   ) => OutputDescriptor<U>;
   /**
-   * Declare an output `type` the codec deliberately keeps off the wire — the
-   * codec's wire-curation policy. A dropped event is redundant on the wire — no
-   * projection folds it and no decode policy reads it — so the encoder publishes
-   * nothing for it, silently. Each entry should carry a
+   * Declare an output `type` the codec deliberately keeps off the wire, as part
+   * of the codec's wire-curation policy. A dropped event is redundant on the
+   * wire because no projection folds it and no decode policy reads it, so the
+   * encoder silently publishes nothing for it. Each entry should carry a
    * comment saying why the event is redundant (e.g. a lifecycle opener whose
    * snapshot re-echoes the request envelope no consumer reads). Any output type
    * that is neither described nor dropped still throws on encode, so a

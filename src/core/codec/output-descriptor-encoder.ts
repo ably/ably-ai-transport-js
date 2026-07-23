@@ -53,8 +53,8 @@ export const createOutputDescriptorEncoder = <U extends { type: string }>(
   // maps to a list of candidates; delta/end types are unique per group (1:1).
   const streamStartsByType = new Map<string, OutputStreamDescriptor<U>[]>();
   const streamDeltasOrEndsByType = new Map<string, { descriptor: OutputStreamDescriptor<U>; phase: 'delta' | 'end' }>();
-  // Types the codec deliberately keeps off the wire (see the `drop` construct):
-  // skipped silently, where any other undescribed type throws.
+  // Types the codec deliberately keeps off the wire (see the `drop` construct).
+  // The encoder skips these silently, and throws on any other undescribed type.
   const droppedTypes = new Set<string>();
 
   for (const descriptor of descriptors) {
@@ -121,8 +121,8 @@ export const createOutputDescriptorEncoder = <U extends { type: string }>(
       // is honoured before wildcard events, so a specific drop beats an
       // `event('x-*')` wildcard group. The drop check must also stay after the stream
       // dispatch above, so a dropped type can serve as a shared start's decline
-      // target. A type nothing dispatches to at all is a genuine surprise —
-      // reject it loudly rather than silently dropping content.
+      // target. A type nothing dispatches to at all is a surprise, so the driver
+      // rejects it loudly instead of silently dropping content.
       const exact = discreteByType.get(type);
       if (!exact && droppedTypes.has(type)) return;
       const descriptor = exact ?? wildcards.find((w) => w.match?.(type));

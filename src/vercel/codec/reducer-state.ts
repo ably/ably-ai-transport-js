@@ -1,13 +1,16 @@
 /**
- * Shared reducer state: the projection shape, its internal tracker types,
- * `init`, and the message/tracker lookup helpers the per-concern fold modules
- * build on. This module is the base of the reducer's import DAG — the fold
- * modules depend on it; it depends on none of them.
+ * Shared reducer state: the projection shape, its internal tracker types, and
+ * the tool-part lookup helper the per-concern fold modules build on. The
+ * projection, its entry store, and `init` are owned by the shared spine
+ * ({@link defineReducer}); this module names the Vercel-specific tracker and
+ * extra state-object types that parameterise it. This module is the base of the
+ * reducer's import DAG — the fold modules depend on it; it depends on none of
+ * them.
  */
 
 import type * as AI from 'ai';
 
-import type { CodecMessage } from '../../core/codec/index.js';
+import type { ReducerCtx, ReducerProjection } from '../../core/codec/index.js';
 import { isToolPart, type ToolPart } from '../tool-part.js';
 
 // ---------------------------------------------------------------------------
@@ -38,47 +41,53 @@ export interface MessageTrackers {
 }
 
 // ---------------------------------------------------------------------------
+// Extra state object
+// ---------------------------------------------------------------------------
+
+/**
+ * The Vercel reducer's projection-level state object: the buffer of tool
+ * resolutions that arrived before the assistant they target. Seeded by the
+ * reducer's `initExtra`; drained by `retryPendingResolutions` after every fold.
+ */
+export interface VercelExtra {
+  /**
+   * Tool-resolution events that arrived before any assistant in this
+   * projection had a matching `toolCallId`. Re-evaluated on every subsequent
+   * fold so an out-of-order tool output is folded as soon as the corresponding
+   * assistant lands.
+   */
+  pending: PendingToolResolution[];
+}
+
+// ---------------------------------------------------------------------------
 // Projection
 // ---------------------------------------------------------------------------
 
 /**
- * The per-Run state produced by the Vercel codec's reducer.
+ * The per-Run state produced by the Vercel codec's reducer: the shared spine's
+ * {@link ReducerProjection} specialised to the Vercel message, tracker, and
+ * extra state-object types. The SDK reads only the reconstructed `messages` (via
+ * `Codec.getMessages`); `trackers` and `extra` are internal reducer state.
  *
- * The SDK reads only `messages` (via `Codec.getMessages`). The remaining
- * fields are internal to the reducer; they happen to live on the
- * projection because the projection is the only thing the reducer can
- * carry from fold to fold (it has no instance state).
- *
- * The generic params thread through the `messages` field's `AI.UIMessage`,
- * each defaulting to the SDK default, so an unparameterized `VercelProjection` — as
+ * The generic params thread through the projected `AI.UIMessage`, each
+ * defaulting to the SDK default, so an unparameterized `VercelProjection` — as
  * the reducer internals use it — resolves to the all-defaults instantiation.
  * @template TMetadata - Per-message metadata type on the projected messages.
  * @template TDataParts - Custom data-part types on the projected messages.
  * @template TTools - Tool set typing the projected messages' tool parts.
  */
-export interface VercelProjection<
+export type VercelProjection<
   TMetadata = unknown,
   TDataParts extends AI.UIDataTypes = AI.UIDataTypes,
   TTools extends AI.UITools = AI.UITools,
-> {
-  /**
-   * UIMessages produced or modified in this Run, in publication order,
-   * each paired with its codec-message-id. The reducer correlates strictly
-   * on `codecMessageId`; `message.id` is preserved verbatim from the source
-   * (the AI SDK stream's `start.messageId` for assistants, the caller's id
-   * for user messages) and is never used as an identity key.
-   */
-  messages: CodecMessage<AI.UIMessage<TMetadata, TDataParts, TTools>>[];
-  /** Per-codecMessageId tracker state for streamed parts. Internal — do not access. */
-  trackers: Map<string, MessageTrackers>;
-  /**
-   * Tool-resolution events that arrived before any assistant in this
-   * projection had a matching `toolCallId`. Re-evaluated on every
-   * subsequent fold so that an out-of-order tool output is folded as
-   * soon as the corresponding assistant lands.
-   */
-  pendingToolResolutions: PendingToolResolution[];
-}
+> = ReducerProjection<AI.UIMessage<TMetadata, TDataParts, TTools>, MessageTrackers, VercelExtra>;
+
+/**
+ * The fold-body capability object the Vercel fold modules receive: the shared
+ * spine's {@link ReducerCtx} specialised to the Vercel message, tracker, and
+ * extra state-object types, with roles drawn from `AI.UIMessage`.
+ */
+export type VercelCtx = ReducerCtx<AI.UIMessage, MessageTrackers, VercelExtra, AI.UIMessage['role']>;
 
 /**
  * A buffered tool resolution waiting for its assistant message to arrive.
@@ -109,57 +118,8 @@ export interface OwnerLookup {
 }
 
 // ---------------------------------------------------------------------------
-// init
+// Tool-part helper
 // ---------------------------------------------------------------------------
-
-/**
- * Build an empty initial projection.
- * @returns A fresh VercelProjection with no messages and no tracker state.
- */
-export const init = (): VercelProjection => ({
-  messages: [],
-  trackers: new Map(),
-  pendingToolResolutions: [],
-});
-
-// ---------------------------------------------------------------------------
-// Message + tracker helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve the assistant message for a codec-message-id, creating an empty
- * placeholder when none exists yet.
- * @param state - Projection to read or extend.
- * @param codecMessageId - The codec-message-id to resolve.
- * @returns The existing or newly-seeded UIMessage for that id.
- */
-export const ensureMessage = (state: VercelProjection, codecMessageId: string): AI.UIMessage => {
-  let entry = state.messages.find((e) => e.codecMessageId === codecMessageId);
-  if (!entry) {
-    // No source id seen yet — seed the domain `message.id` with the
-    // codec-message-id as a fallback. The `start` chunk overwrites it with
-    // the stream's `messageId` when the stream provides one.
-    entry = { codecMessageId, message: { id: codecMessageId, role: 'assistant', parts: [] } };
-    state.messages.push(entry);
-  }
-  return entry.message;
-};
-
-/**
- * Resolve the stream trackers for a codec-message-id, creating empty maps
- * when none exist yet.
- * @param state - Projection to read or extend.
- * @param messageId - The codec-message-id whose trackers to resolve.
- * @returns The existing or newly-created tracker maps for that id.
- */
-export const ensureTrackers = (state: VercelProjection, messageId: string): MessageTrackers => {
-  let trackers = state.trackers.get(messageId);
-  if (!trackers) {
-    trackers = { text: new Map(), reasoning: new Map(), tools: new Map() };
-    state.trackers.set(messageId, trackers);
-  }
-  return trackers;
-};
 
 /**
  * Resolve the tool part tracked for a toolCallId within a message, in whichever

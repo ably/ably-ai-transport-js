@@ -286,8 +286,8 @@ describe('Vercel reducer', () => {
         payload: { toolCallId: 'tc-1', approved: true },
       };
       state = fold(state, approval, meta('s1', 'continuation-codec-message-id'));
-      expect(state.pendingToolResolutions).toHaveLength(1);
-      expect(state.pendingToolResolutions[0]?.toolCallId).toBe('tc-1');
+      expect(state.extra.pending).toHaveLength(1);
+      expect(state.extra.pending[0]?.toolCallId).toBe('tc-1');
 
       // Late assistant arrival with the matching tool part — pending entry drains.
       state = fold(
@@ -299,7 +299,7 @@ describe('Vercel reducer', () => {
       const message = msgById(state, 'msg-1');
       const toolPart = message?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
       expect(toolPart?.state).toBe('approval-responded');
-      expect(state.pendingToolResolutions).toHaveLength(0);
+      expect(state.extra.pending).toHaveLength(0);
     });
   });
 
@@ -377,7 +377,7 @@ describe('Vercel reducer', () => {
         payload: { toolCallId: 'tc-1', output: { v: 'x' } },
       };
       state = fold(state, orphan, meta('s1', 'continuation-codec-message-id-0'));
-      expect(state.pendingToolResolutions).toHaveLength(1);
+      expect(state.extra.pending).toHaveLength(1);
 
       // Late assistant arrival with the matching tool part — pending entry drains.
       state = fold(
@@ -389,7 +389,7 @@ describe('Vercel reducer', () => {
       const message = msgById(state, 'msg-1');
       const toolPart = message?.parts.find((p): p is AI.DynamicToolUIPart => p.type === 'dynamic-tool');
       expect(toolPart?.state).toBe('output-available');
-      expect(state.pendingToolResolutions).toHaveLength(0);
+      expect(state.extra.pending).toHaveLength(0);
     });
   });
 

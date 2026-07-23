@@ -7,62 +7,58 @@
 import type * as AI from 'ai';
 
 import { parseJson } from '../../utils.js';
-import { ensureMessage, ensureTrackers, getToolPart, type VercelProjection } from './reducer-state.js';
+import { getToolPart, type VercelCtx } from './reducer-state.js';
 import { toolBase, toolIdentity } from './tool-transitions.js';
 
 /**
  * Fold a tool-input streaming chunk into the projection.
- * @param state - Projection to fold into.
+ * @param ctx - The fold-body capability object.
  * @param chunk - The tool-input start, delta, available, or error chunk.
- * @param messageId - The target codec-message-id.
- * @returns The same projection reference.
  */
 export const foldToolInput = (
-  state: VercelProjection,
+  ctx: VercelCtx,
   chunk: Extract<
     AI.UIMessageChunk,
     { type: 'tool-input-start' | 'tool-input-delta' | 'tool-input-available' | 'tool-input-error' }
   >,
-  messageId: string,
-): VercelProjection => {
-  const message = ensureMessage(state, messageId);
-  const trackers = ensureTrackers(state, messageId);
+): void => {
+  const { message, tracker } = ctx.ensure('assistant');
 
   switch (chunk.type) {
     case 'tool-input-start': {
       const partIndex = message.parts.length;
       message.parts.push({ ...toolBase(chunk), state: 'input-streaming', input: undefined });
-      trackers.tools.set(chunk.toolCallId, { partIndex, inputText: '' });
-      return state;
+      tracker.tools.set(chunk.toolCallId, { partIndex, inputText: '' });
+      return;
     }
     case 'tool-input-delta': {
-      const tracker = trackers.tools.get(chunk.toolCallId);
-      if (!tracker) return state;
-      tracker.inputText += chunk.inputTextDelta;
+      const toolTracker = tracker.tools.get(chunk.toolCallId);
+      if (!toolTracker) return;
+      toolTracker.inputText += chunk.inputTextDelta;
 
-      const parsedInput = parseJson(tracker.inputText);
+      const parsedInput = parseJson(toolTracker.inputText);
 
-      const found = getToolPart(message, trackers, chunk.toolCallId);
-      if (!found) return state;
+      const found = getToolPart(message, tracker, chunk.toolCallId);
+      if (!found) return;
       message.parts[found.tracker.partIndex] = {
         ...toolIdentity(found.part),
         state: 'input-streaming',
         input: parsedInput,
       };
-      return state;
+      return;
     }
     case 'tool-input-available': {
-      const found = getToolPart(message, trackers, chunk.toolCallId);
-      if (!found) return state;
+      const found = getToolPart(message, tracker, chunk.toolCallId);
+      if (!found) return;
       message.parts[found.tracker.partIndex] = {
         ...toolIdentity(found.part),
         state: 'input-available',
         input: chunk.input,
       };
-      return state;
+      return;
     }
     case 'tool-input-error': {
-      const found = getToolPart(message, trackers, chunk.toolCallId);
+      const found = getToolPart(message, tracker, chunk.toolCallId);
       if (found) {
         message.parts[found.tracker.partIndex] = {
           ...toolIdentity(found.part),
@@ -78,9 +74,9 @@ export const foldToolInput = (
           input: chunk.input,
           errorText: chunk.errorText,
         });
-        trackers.tools.set(chunk.toolCallId, { partIndex, inputText: '' });
+        tracker.tools.set(chunk.toolCallId, { partIndex, inputText: '' });
       }
-      return state;
+      return;
     }
   }
 };

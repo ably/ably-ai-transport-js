@@ -109,7 +109,7 @@ export const pipeStream = async <TInput extends CodecInputEvent, TOutput extends
       // must bracket the output. An empty / errored / pre-output-cancelled
       // stream never reaches here, so the hook (and any resource it opens)
       // never fires. The triggering event may itself be a codec `drop` type
-      // that publishes nothing — the opened resource may bracket zero writes.
+      // that publishes nothing, so the opened resource may bracket zero writes.
       if (!firstWriteDone) {
         firstWriteDone = true;
         if (beforeFirstWrite) await beforeFirstWrite();

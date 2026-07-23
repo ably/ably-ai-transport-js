@@ -10,63 +10,42 @@
 
 import type * as AI from 'ai';
 
-import type { ReducerMeta, ToolApprovalResponse, ToolResult, ToolResultError } from '../../core/codec/index.js';
+import type { ToolApprovalResponse, ToolResult, ToolResultError } from '../../core/codec/index.js';
 import type { ToolPart } from '../tool-part.js';
 import type {
   VercelToolApprovalResponsePayload,
   VercelToolResultErrorPayload,
   VercelToolResultPayload,
 } from './events.js';
-import {
-  ensureTrackers,
-  getToolPart,
-  type OwnerLookup,
-  type PendingToolResolution,
-  type VercelProjection,
-} from './reducer-state.js';
+import { getToolPart, type OwnerLookup, type PendingToolResolution, type VercelCtx } from './reducer-state.js';
 import { toolIdentity, transitionToolPart } from './tool-transitions.js';
 
 /**
  * Fold a user message into the projection, correlating on the wire
- * codec-message-id (the caller's `message.id` is preserved verbatim). A
- * multi-part user message fans out into one wire event per part, all sharing
- * the codec-message-id — folding appends the incoming parts to the existing
- * entry, reassembling the message part by part. The transport delivers each
- * wire exactly once (its per-message version high-water-mark drops replays),
- * so the merge sees every part once and stays consistent.
+ * codec-message-id via `ctx.ensure` (the caller's `message.id` is preserved
+ * verbatim). A multi-part user message fans out into one wire event per part,
+ * all sharing the codec-message-id. The first fold seeds the entry with the
+ * incoming message verbatim; each later fold appends the incoming parts to the
+ * seeded entry, reassembling the message part by part. The transport delivers
+ * each wire exactly once (its per-message version high-water-mark drops
+ * replays), so the merge sees every part once and stays consistent.
  *
  * Optimistic (serial-less) seeds need no special handling here: the transport
  * refolds the node from its log when the echo's serial arrives, rebuilding the
  * projection from a fresh `init` so the seed never coexists with its echo.
- * @param state - Projection to fold into.
+ * @param ctx - The fold-body capability object.
  * @param message - The user message (or one decoded part of it) to add or merge.
- * @param meta - Transport-derived metadata carrying the codec-message-id.
- * @returns The same projection reference.
  */
-export const foldUserMessage = (
-  state: VercelProjection,
-  message: AI.UIMessage,
-  meta: ReducerMeta,
-): VercelProjection => {
-  // Correlate the projection entry on the wire codec-message-id; the
-  // caller-supplied `message.id` is preserved verbatim and surfaced to the
-  // application unchanged. Without a codec-message-id the message has no
-  // identity to key on, so it is appended as a fresh entry.
-  const codecMessageId = meta.messageId;
-  if (codecMessageId === undefined) {
-    state.messages.push({ codecMessageId: message.id, message });
-    return state;
+export const foldUserMessage = (ctx: VercelCtx, message: AI.UIMessage): void => {
+  // Seed the entry with the incoming message verbatim on first contact so the
+  // caller-supplied `message.id` and role are surfaced unchanged. `ensure`
+  // returns that same seed reference on the create, so a returned message that
+  // is not the incoming one identifies a subsequent part of a multi-part
+  // message; append its parts to the already-seeded entry.
+  const entry = ctx.ensure(message.role, message);
+  if (entry.message !== message) {
+    entry.message.parts.push(...message.parts);
   }
-  const existing = state.messages.find((e) => e.codecMessageId === codecMessageId);
-  if (existing === undefined) {
-    state.messages.push({ codecMessageId, message });
-  } else {
-    // Merge by codec-message-id: keep the existing envelope (id and role are
-    // stamped identically on every part of one message) and append the
-    // incoming parts in fold order — wire serials preserve publish order.
-    existing.message.parts.push(...message.parts);
-  }
-  return state;
 };
 
 /**
@@ -74,31 +53,26 @@ export const foldUserMessage = (
  * `codecMessageId` pointing at the assistant whose tool part holds the
  * matching `toolCallId`. If the assistant and its matching tool part are
  * both present, fold directly; otherwise pend until that tool part arrives.
- * @param state - Projection to fold into.
+ * @param ctx - The fold-body capability object.
  * @param event - The tool-result input (codecMessageId + domain payload).
- * @returns The same projection reference.
  */
-export const foldClientToolResult = (
-  state: VercelProjection,
-  event: ToolResult<VercelToolResultPayload>,
-): VercelProjection => {
+export const foldClientToolResult = (ctx: VercelCtx, event: ToolResult<VercelToolResultPayload>): void => {
   const { toolCallId, output } = event.payload;
-  return resolveOrPend(state, event.codecMessageId, toolCallId, { kind: 'tool-result', output });
+  resolveOrPend(ctx, event.codecMessageId, toolCallId, { kind: 'tool-result', output });
 };
 
 /**
  * Fold a client-published `ToolResultError`. Mirrors
  * {@link foldClientToolResult} but with the error transition.
- * @param state - Projection to fold into.
+ * @param ctx - The fold-body capability object.
  * @param event - The tool-result-error input (codecMessageId + domain payload).
- * @returns The same projection reference.
  */
 export const foldClientToolResultError = (
-  state: VercelProjection,
+  ctx: VercelCtx,
   event: ToolResultError<VercelToolResultErrorPayload>,
-): VercelProjection => {
+): void => {
   const { toolCallId, message } = event.payload;
-  return resolveOrPend(state, event.codecMessageId, toolCallId, { kind: 'tool-result-error', message });
+  resolveOrPend(ctx, event.codecMessageId, toolCallId, { kind: 'tool-result-error', message });
 };
 
 /**
@@ -106,16 +80,15 @@ export const foldClientToolResultError = (
  * `codecMessageId` pointing at the assistant whose tool part holds the
  * matching `toolCallId`. Approval → `approval-responded`;
  * denial → `output-denied` via {@link transitionToolPart}.
- * @param state - Projection to fold into.
+ * @param ctx - The fold-body capability object.
  * @param event - The approval-response input.
- * @returns The same projection reference.
  */
 export const foldToolApprovalResponse = (
-  state: VercelProjection,
+  ctx: VercelCtx,
   event: ToolApprovalResponse<VercelToolApprovalResponsePayload>,
-): VercelProjection => {
+): void => {
   const { toolCallId, approved, reason } = event.payload;
-  return resolveOrPend(state, event.codecMessageId, toolCallId, {
+  resolveOrPend(ctx, event.codecMessageId, toolCallId, {
     kind: 'tool-approval-response',
     approved,
     ...(reason === undefined ? {} : { reason }),
@@ -124,26 +97,24 @@ export const foldToolApprovalResponse = (
 
 /**
  * Apply a resolution when its tool part is present, otherwise buffer it in
- * `pendingToolResolutions` for {@link retryPendingResolutions}.
- * @param state - Projection to fold into.
+ * `ctx.extra.pending` for {@link retryPendingResolutions}.
+ * @param ctx - The fold-body capability object.
  * @param codecMessageId - The assistant the resolution targets.
  * @param toolCallId - The tool call being resolved.
  * @param resolution - The resolution variant to apply or buffer.
- * @returns The same projection reference.
  */
 const resolveOrPend = (
-  state: VercelProjection,
+  ctx: VercelCtx,
   codecMessageId: string,
   toolCallId: string,
   resolution: PendingToolResolution['resolution'],
-): VercelProjection => {
-  const owner = findOwner(state, codecMessageId, toolCallId);
+): void => {
+  const owner = findOwner(ctx, codecMessageId, toolCallId);
   if (owner) {
     applyResolution(owner, toolCallId, resolution);
   } else {
-    state.pendingToolResolutions.push({ targetCodecMessageId: codecMessageId, toolCallId, resolution });
+    ctx.extra.pending.push({ targetCodecMessageId: codecMessageId, toolCallId, resolution });
   }
-  return state;
 };
 
 /**
@@ -191,26 +162,25 @@ const applyResolution = (
  * Re-attempt every pending tool resolution against the current projection.
  * Successfully promoted entries are removed from the pending list. Cheap:
  * bounded by the number of pending entries.
- * @param state - Projection to walk and mutate.
+ * @param ctx - The fold-body capability object.
  */
-export const retryPendingResolutions = (state: VercelProjection): void => {
-  const next: VercelProjection['pendingToolResolutions'] = [];
-  for (const pending of state.pendingToolResolutions) {
-    const owner = findOwner(state, pending.targetCodecMessageId, pending.toolCallId);
+export const retryPendingResolutions = (ctx: VercelCtx): void => {
+  const next: PendingToolResolution[] = [];
+  for (const pending of ctx.extra.pending) {
+    const owner = findOwner(ctx, pending.targetCodecMessageId, pending.toolCallId);
     if (!owner) {
       next.push(pending);
       continue;
     }
     applyResolution(owner, pending.toolCallId, pending.resolution);
   }
-  state.pendingToolResolutions = next;
+  ctx.extra.pending = next;
 };
 
-const findOwner = (state: VercelProjection, codecMessageId: string, toolCallId: string): OwnerLookup | undefined => {
-  const entry = state.messages.find((e) => e.codecMessageId === codecMessageId);
+const findOwner = (ctx: VercelCtx, codecMessageId: string, toolCallId: string): OwnerLookup | undefined => {
+  const entry = ctx.lookup(codecMessageId);
   if (!entry) return undefined;
-  const trackers = ensureTrackers(state, codecMessageId);
-  const found = getToolPart(entry.message, trackers, toolCallId);
+  const found = getToolPart(entry.message, entry.tracker, toolCallId);
   if (!found) return undefined;
   return { message: entry.message, tracker: found.tracker, part: found.part };
 };

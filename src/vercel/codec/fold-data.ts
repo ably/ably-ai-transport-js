@@ -6,23 +6,17 @@
 import type * as AI from 'ai';
 
 import { stripUndefined } from '../../utils.js';
-import { ensureMessage, type VercelProjection } from './reducer-state.js';
+import { type VercelCtx } from './reducer-state.js';
 
 /**
  * Fold a `data-*` chunk into the projection.
- * @param state - Projection to fold into.
+ * @param ctx - The fold-body capability object.
  * @param chunk - The data-* chunk.
- * @param messageId - The target codec-message-id.
- * @returns The same projection reference.
  */
-export const foldDataPart = (
-  state: VercelProjection,
-  chunk: Extract<AI.UIMessageChunk, { type: `data-${string}` }>,
-  messageId: string,
-): VercelProjection => {
-  if (chunk.transient) return state;
+export const foldDataPart = (ctx: VercelCtx, chunk: Extract<AI.UIMessageChunk, { type: `data-${string}` }>): void => {
+  if (chunk.transient) return;
 
-  const message = ensureMessage(state, messageId);
+  const { message } = ctx.ensure('assistant');
 
   // CAST: chunk.type is `data-${string}` which satisfies DataUIPart, but
   // TypeScript cannot verify the template literal matches a specific
@@ -37,10 +31,9 @@ export const foldDataPart = (
     const idx = message.parts.findIndex((p) => p.type === chunk.type && 'id' in p && p.id === chunk.id);
     if (idx !== -1) {
       message.parts[idx] = dataPart;
-      return state;
+      return;
     }
   }
 
   message.parts.push(dataPart);
-  return state;
 };

@@ -6,26 +6,23 @@
 import type * as AI from 'ai';
 
 import { stripUndefined } from '../../utils.js';
-import { ensureMessage, type VercelProjection } from './reducer-state.js';
+import { type VercelCtx } from './reducer-state.js';
 
 /**
  * Fold a file or source content chunk into the projection.
- * @param state - Projection to fold into.
+ * @param ctx - The fold-body capability object.
  * @param chunk - The file, source-url, or source-document chunk.
- * @param messageId - The target codec-message-id.
- * @returns The same projection reference.
  */
 export const foldContentPart = (
-  state: VercelProjection,
+  ctx: VercelCtx,
   chunk: Extract<AI.UIMessageChunk, { type: 'file' | 'source-url' | 'source-document' }>,
-  messageId: string,
-): VercelProjection => {
-  const message = ensureMessage(state, messageId);
+): void => {
+  const { message } = ctx.ensure('assistant');
 
   switch (chunk.type) {
     case 'file': {
       message.parts.push({ type: 'file', mediaType: chunk.mediaType, url: chunk.url });
-      return state;
+      return;
     }
     case 'source-url': {
       message.parts.push(
@@ -36,7 +33,7 @@ export const foldContentPart = (
           title: chunk.title,
         }),
       );
-      return state;
+      return;
     }
     case 'source-document': {
       message.parts.push(
@@ -48,7 +45,7 @@ export const foldContentPart = (
           filename: chunk.filename,
         }),
       );
-      return state;
+      return;
     }
   }
 };

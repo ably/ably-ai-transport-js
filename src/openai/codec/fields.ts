@@ -5,7 +5,8 @@
  * `HeaderField` bindings); the output descriptors and the decode-lifecycle repair
  * read and write through these bindings, so a header key cannot drift between
  * the encode and decode side, and neither module redeclares them. Domain field
- * names live in the codec layer, not core, per the header-discipline rule.
+ * names live in the codec layer rather than core, per the header-discipline
+ * rule.
  */
 
 import type { Responses } from 'openai/resources/responses/responses';

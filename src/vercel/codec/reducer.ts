@@ -1,11 +1,12 @@
 /**
  * Vercel AI SDK reducer.
  *
- * Pure `(init, fold)` over the `VercelInput | VercelOutput` union. Folds
- * input variants (user-message, tool-result, tool-result-error,
- * tool-approval-response) and `UIMessageChunk` outputs into a
- * VercelProjection holding `UIMessage[]` plus internal stream-tracker
- * state.
+ * Assembled from the shared spine ({@link defineReducer}): the spine owns the
+ * entry store, the direction/drop dispatch, the well-known `user-message` /
+ * `regenerate` routing, and `getMessages`; this module supplies the
+ * Vercel-specific fold bodies. Folds input variants (user-message, tool-result,
+ * tool-result-error, tool-approval-response) and `UIMessageChunk` outputs into a
+ * VercelProjection holding `UIMessage[]` plus internal stream-tracker state.
  *
  * The reducer is stateless: every fold is `(state, event, meta) → state'`,
  * with no instance state. Mutation in place is allowed — the projection
@@ -21,19 +22,22 @@
  * Client-published tool resolutions (`ToolResult`, `ToolResultError`,
  * `ToolApprovalResponse`) carry `codecMessageId` targeting the assistant
  * they amend; the reducer applies the resolution onto that assistant's
- * tool part directly. If the assistant has not yet arrived in
- * the projection (out-of-order delivery), the resolution is buffered in
- * `pendingToolResolutions` and re-evaluated on each subsequent fold.
+ * tool part directly. If the assistant has not yet arrived in the projection
+ * (out-of-order delivery), the resolution is buffered in the projection's
+ * `extra.pending` state object and re-evaluated after every subsequent fold via
+ * `afterFold`.
  *
- * This file is the reducer's public facade and dispatch: `init`,
- * `getMessages`, `fold`, and the output-chunk router. The per-concern fold
- * logic lives in the sibling `fold-*` modules over a shared `reducer-state`
- * base; the import graph is an acyclic DAG rooted here.
+ * This file is the reducer's public facade: the `defineReducer` call and the
+ * output-chunk router. The per-concern fold logic lives in the sibling `fold-*`
+ * modules over a shared `reducer-state` base; the import graph is an acyclic
+ * DAG rooted here.
  */
 
+import * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import type { CodecEvent, CodecMessage, ReducerMeta } from '../../core/codec/index.js';
+import { defineReducer } from '../../core/codec/index.js';
+import { ErrorCode } from '../../errors.js';
 import type { VercelInput, VercelOutput } from './events.js';
 import { foldContentPart } from './fold-content.js';
 import { foldDataPart } from './fold-data.js';
@@ -48,82 +52,20 @@ import { foldLifecycle } from './fold-lifecycle.js';
 import { foldTextOrReasoning } from './fold-text.js';
 import { foldToolInput } from './fold-tool-input.js';
 import { foldToolOutput } from './fold-tool-output.js';
-import type { VercelProjection } from './reducer-state.js';
-
-// ---------------------------------------------------------------------------
-// fold
-// ---------------------------------------------------------------------------
-
-/**
- * Fold one input or output event into the projection. Mutates and returns
- * `state`.
- *
- * The transport invokes `fold` exactly once per event, in canonical order,
- * so the reducer folds unconditionally — no dedup or high-water-mark here.
- * Competing events resolve by order (the highest-serial event folds last
- * and wins). Orphan events (e.g. tool-output for an unknown toolCallId) are
- * dropped silently inside the per-variant fold helpers.
- * @param state - Projection to fold into (may be mutated in place).
- * @param event - Input or output event to fold.
- * @param meta - Transport-derived metadata (serial, optional messageId).
- * @returns The same projection reference, possibly mutated.
- */
-export const fold = (
-  state: VercelProjection,
-  event: CodecEvent<VercelInput, VercelOutput>,
-  meta: ReducerMeta,
-): VercelProjection => {
-  if (event.direction === 'input') {
-    const input = event.event;
-    switch (input.kind) {
-      case 'user-message': {
-        foldUserMessage(state, input.message, meta);
-        break;
-      }
-      case 'regenerate': {
-        // Regenerate input — wire-only signal. Carries no projection state;
-        // the agent reads `target` / `parent` from the wire headers via
-        // the input-event lookup path. No fold work to do here.
-        break;
-      }
-      case 'tool-result': {
-        foldClientToolResult(state, input);
-        break;
-      }
-      case 'tool-result-error': {
-        foldClientToolResultError(state, input);
-        break;
-      }
-      case 'tool-approval-response': {
-        foldToolApprovalResponse(state, input);
-        break;
-      }
-    }
-  } else {
-    foldChunk(state, event.event, meta);
-  }
-
-  // Re-evaluate pending tool resolutions in case the just-folded event
-  // produced the assistant they were waiting on. Cheap when the list is
-  // empty (the common case).
-  if (state.pendingToolResolutions.length > 0) {
-    retryPendingResolutions(state);
-  }
-
-  return state;
-};
+import type { MessageTrackers, VercelCtx, VercelExtra } from './reducer-state.js';
 
 // ---------------------------------------------------------------------------
 // UIMessageChunk dispatch
 // ---------------------------------------------------------------------------
 
-const foldChunk = (state: VercelProjection, chunk: VercelOutput, meta: ReducerMeta): VercelProjection => {
-  const messageId = meta.messageId;
-  if (messageId === undefined) {
-    // Without a target codec-message-id, a chunk has nowhere to land. Drop.
-    return state;
-  }
-
+/**
+ * Route one output chunk to the fold module owning its part concern. The
+ * spine has already dropped chunks with no codec-message-id and resolved the
+ * target entry into `ctx`, so this only dispatches by `chunk.type`.
+ * @param ctx - The fold-body capability object.
+ * @param chunk - The output chunk to route.
+ */
+const foldChunk = (ctx: VercelCtx, chunk: VercelOutput): void => {
   switch (chunk.type) {
     case 'start':
     case 'start-step':
@@ -132,7 +74,8 @@ const foldChunk = (state: VercelProjection, chunk: VercelOutput, meta: ReducerMe
     case 'abort':
     case 'error':
     case 'message-metadata': {
-      return foldLifecycle(state, chunk, messageId);
+      foldLifecycle(ctx, chunk);
+      return;
     }
 
     case 'text-start':
@@ -141,51 +84,100 @@ const foldChunk = (state: VercelProjection, chunk: VercelOutput, meta: ReducerMe
     case 'reasoning-start':
     case 'reasoning-delta':
     case 'reasoning-end': {
-      return foldTextOrReasoning(state, chunk, messageId);
+      foldTextOrReasoning(ctx, chunk);
+      return;
     }
 
     case 'tool-input-start':
     case 'tool-input-delta':
     case 'tool-input-available':
     case 'tool-input-error': {
-      return foldToolInput(state, chunk, messageId);
+      foldToolInput(ctx, chunk);
+      return;
     }
 
     case 'tool-output-available':
     case 'tool-output-error':
     case 'tool-output-denied':
     case 'tool-approval-request': {
-      return foldToolOutput(state, chunk, messageId);
+      foldToolOutput(ctx, chunk);
+      return;
     }
 
     case 'file':
     case 'source-url':
     case 'source-document': {
-      return foldContentPart(state, chunk, messageId);
+      foldContentPart(ctx, chunk);
+      return;
     }
 
     default: {
       if (chunk.type.startsWith('data-')) {
-        return foldDataPart(state, chunk, messageId);
+        foldDataPart(ctx, chunk);
       }
-      return state;
+      return;
     }
   }
 };
 
 // ---------------------------------------------------------------------------
-// getMessages
+// Reducer
 // ---------------------------------------------------------------------------
 
-/**
- * Extract the UIMessage list from a projection, each paired with its
- * codec-message-id. Client-published tool resolutions amend existing
- * assistants in place via `kind: 'tool-result'` etc. — they never
- * materialise as their own UIMessage in the projection, so no filtering is
- * needed here.
- * @param projection - Projection produced by `init` + repeated `fold` calls.
- * @returns The visible messages with their codec-message-ids, in publication order.
- */
-export const getMessages = (projection: VercelProjection): CodecMessage<AI.UIMessage>[] => projection.messages;
+const reducer = defineReducer<
+  VercelInput,
+  VercelOutput,
+  AI.UIMessage,
+  MessageTrackers,
+  AI.UIMessage['role'],
+  VercelExtra
+>({
+  createEntry: (role, codecMessageId) => ({
+    message: { id: codecMessageId, role, parts: [] },
+    tracker: { text: new Map(), reasoning: new Map(), tools: new Map() },
+  }),
+  initExtra: () => ({ pending: [] }),
+  foldOutput: foldChunk,
+  foldUserMessage: foldUserMessage,
+  foldInput: (ctx, event) => {
+    switch (event.kind) {
+      case 'tool-result': {
+        foldClientToolResult(ctx, event);
+        return;
+      }
+      case 'tool-result-error': {
+        foldClientToolResultError(ctx, event);
+        return;
+      }
+      case 'tool-approval-response': {
+        foldToolApprovalResponse(ctx, event);
+        return;
+      }
+      default: {
+        // The spine routes `user-message` and `regenerate` itself, so only
+        // the tool-resolution kinds reach here; anything else is an input
+        // the codec does not model and must fail loudly.
+        throw new Ably.ErrorInfo(
+          `unable to fold input; unmodelled Vercel input kind '${event.kind}'`,
+          ErrorCode.InvalidArgument,
+          400,
+        );
+      }
+    }
+  },
+  afterFold: (ctx) => {
+    // Re-evaluate buffered tool resolutions in case the just-folded event
+    // produced the assistant they were waiting on. Cheap when the buffer is
+    // empty (the common case).
+    if (ctx.extra.pending.length > 0) retryPendingResolutions(ctx);
+  },
+});
 
-export { init, type VercelProjection } from './reducer-state.js';
+/** The Vercel reducer's `init`: a fresh empty projection. */
+export const init = reducer.init;
+/** The Vercel reducer's `fold`: folds one input/output event into the projection. */
+export const fold = reducer.fold;
+/** The Vercel reducer's `getMessages`: the reconstructed messages, by reference. */
+export const getMessages = reducer.getMessages;
+
+export { type VercelProjection } from './reducer-state.js';

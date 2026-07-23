@@ -7,7 +7,7 @@
  * the canonical renderable form and valid model input.
  *
  * Hosted tools and additional modalities are added by extending the descriptor
- * table and reducer, not by changing these bindings.
+ * table and reducer, which leaves these bindings untouched.
  */
 
 import type { Responses } from 'openai/resources/responses/responses';
@@ -50,7 +50,7 @@ export interface FunctionCallOutputEvent {
  *
  * `Responses.ResponseStreamEvent` declares `sequence_number` as a required
  * `number` on every member, so without this these reconstructions would have
- * to invent a value that looks real but never is. This strips the field from
+ * to invent a value that could only ever be fake. This strips the field from
  * just these members, leaving every other member — which reaches this codec
  * only as genuine agent-published passthrough of the real OpenAI stream,
  * always carrying its real, meaningful `sequence_number` — untouched.
@@ -134,8 +134,8 @@ type UnmodelledOutputItem = Exclude<Responses.ResponseOutputItem, { type: Modell
 export type DoneItem = WireDoneItem | UnmodelledOutputItem;
 
 /**
- * `response.output_item.done`'s `item` is declared {@link DoneItem}, not the
- * full rich type the SDK gives the event: a genuine agent-published event
+ * `response.output_item.done`'s `item` is declared {@link DoneItem} rather than
+ * the full rich type the SDK gives the event. A genuine agent-published event
  * (any item type) is still assignable, since `DoneItem` only reduces the three
  * item types the decoder ever actually reconstructs and leaves every other
  * type at its real shape. `toWireItem` (`descriptors.ts`) accepts this same
@@ -146,9 +146,9 @@ type WithWireDoneItem<T> = T extends { type: 'response.output_item.done' } ? Omi
 /**
  * Distributes over the union, omitting `logprobs` from the reconstructed
  * `response.output_text.done`. The codec sources an output_text part's logprobs
- * from the finalised item (see {@link WireDoneItem}), never this streamed close,
- * so the reconstruction genuinely has none and the reducer never reads them
- * here. Stripping the field keeps the `end.decode` reconstruction honest — it
+ * from the finalised item (see {@link WireDoneItem}) and never from this
+ * streamed close, so the reconstruction genuinely has none and the reducer
+ * never reads them here. Stripping the field keeps the `end.decode` reconstruction honest — it
  * reflects what the codec actually carries — rather than fabricating an empty
  * `[]` just to satisfy the SDK's required-field type.
  */
@@ -204,11 +204,11 @@ type AssertRealEventIsOpenAIOutput = Assert<Responses.ResponseStreamEvent extend
  *
  * This is a deliberately small subset of OpenAI's `ResponseOutputItem` union.
  * That union also contains item types whose output shape is not assignable to
- * `ResponseInputItem` — e.g. `computer_call_output` and `additional_tools`,
- * whose output forms carry fields the input variant of the same item rejects (a
- * `'failed'` status, a wider `role`) — so `ResponseOutputItem` cannot be fed
- * back to the model wholesale. Every member of the set below, by contrast, is
- * itself a member of `ResponseInputItem`, so the items we store round-trip to
+ * `ResponseInputItem` (e.g. `computer_call_output` and `additional_tools`,
+ * whose output forms carry fields the input variant of the same item rejects: a
+ * `'failed'` status, a wider `role`), so `ResponseOutputItem` cannot be fed
+ * back to the model wholesale. We restrict the set to items that are themselves
+ * members of `ResponseInputItem`, so the items we store round-trip to
  * `/responses` untouched. The set grows as we add support for further streamed
  * item types.
  *
@@ -254,10 +254,10 @@ export type OpenAIItem =
  * `items` is a list because an **assistant** message can hold several output
  * items (an output message plus one or more function calls). A **user** message
  * is expected to be a single input message *item*; the input codec relies on
- * that (see `inputs`). Note "single message" is not "single part": that one
+ * that (see `inputs`). A single message is still not a single part: that one
  * input message item can carry multiple content parts (text today; image/file
- * later) in its `content` array — the multiplicity for a user message lives in
- * the parts, not the items.
+ * later) in its `content` array, so a user message's multiplicity lives in the
+ * parts rather than the items.
  *
  * The list does not encode that user/assistant asymmetry in the type — a
  * possible future tightening is a role-discriminated `TMessage`.

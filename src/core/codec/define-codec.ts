@@ -1,20 +1,20 @@
 /**
  * `defineCodec` — composition packaging for a codec.
  *
- * A codec author supplies only its **parts** — a reducer, a per-direction
+ * A codec author supplies only its **parts**: a reducer, a per-direction
  * descriptor table (the `output` and `input` builder functions), a `factories`
  * selector naming which well-known input factories the codec exposes, an
- * optional decode lifecycle policy, and an optional agent identifier — and
- * `defineCodec` assembles a fully-formed {@link Codec}: the generic
+ * optional decode lifecycle policy, and an optional agent identifier. From
+ * those parts `defineCodec` assembles a fully-formed {@link Codec}: the generic
  * encoder/decoder skeletons (built here, codec-agnostic), the reducer methods,
  * and the factory subset the `factories` selector returns.
  *
  * Both directions are declarative descriptor tables driven by the generic
  * encode/decode drivers. `defineCodec` hands each table a direction-scoped
- * builder typed to that direction's union — `{ event, stream, drop }` for
- * outputs, `{ event, batch }` for inputs — so each construct's spec stays
+ * builder typed to that direction's union (`{ event, stream, drop }` for
+ * outputs, `{ event, batch }` for inputs), so each construct's spec stays
  * type-correct per direction under shared construct names, with no per-entry
- * casts. Both sides build/read wire headers through the same shared field
+ * casts. Both sides build and read wire headers through the same shared field
  * bindings, so encode and decode cannot drift.
  */
 
@@ -139,9 +139,9 @@ export interface DefineCodecConfig<
    * full set of factory bodies (payload-typed to `TInput`) and returns the
    * subset the codec supports: `createUserMessage` and `createRegenerate` are
    * mandatory, and each tool factory may be included only when `TInput` carries
-   * the matching variant — the return type {@link DefinedCodecFactories}
-   * forbids exposing a factory the codec's `TInput` cannot represent. A full
-   * codec returns the set unchanged; a text-only codec returns just the two
+   * the matching variant, since the return type {@link DefinedCodecFactories}
+   * forbids exposing a factory the codec's `TInput` cannot represent. So a full
+   * codec returns the set unchanged, and a text-only codec returns just the two
    * mandatory factories.
    */
   factories: (base: WellKnownInputFactories<TInput>) => DefinedCodecFactories<TInput>;
@@ -155,16 +155,16 @@ export interface DefineCodecConfig<
 
 /**
  * A codec assembled by {@link defineCodec}: a conforming {@link Codec} whose
- * well-known input factory properties are typed by {@link DefinedCodecFactories}
- * — `createUserMessage`/`createRegenerate` always present, and each tool factory
- * present only when `TInput` carries the matching variant. Their payload types
- * come from {@link WellKnownInputFactories} (against `UserMessageOf<TInput>` /
- * `ToolResultPayloadOf<TInput>` — equal to the codec's `TMessage` / payloads for
- * every real codec, but not provably so to the generic type system). At a
+ * well-known input factory properties are typed by {@link DefinedCodecFactories},
+ * with `createUserMessage`/`createRegenerate` always present and each tool
+ * factory present only when `TInput` carries the matching variant. Their payload
+ * types come from {@link WellKnownInputFactories} (against `UserMessageOf<TInput>` /
+ * `ToolResultPayloadOf<TInput>`, which equals the codec's `TMessage` / payloads for
+ * every real codec but is not provably so to the generic type system). At a
  * concrete call site a `DefinedCodec` is assignable to the corresponding
- * `Codec` — including for a partial codec, because a tool factory `TInput`
- * cannot represent is typed absent, so a text-only codec satisfies `Codec`'s
- * optional tool factories rather than over-promising them.
+ * `Codec`, including for a partial codec: a tool factory `TInput` cannot
+ * represent is typed absent, so a text-only codec satisfies `Codec`'s optional
+ * tool factories without over-promising them.
  */
 export type DefinedCodec<
   TInput extends CodecInputEvent,
@@ -350,7 +350,7 @@ const rejectReservedFieldKeys = (fields: readonly HeaderField<unknown>[], owner:
  *
  * - duplicate wire `kind`s (discrete event types + stream group kinds, which
  *   drive decode dispatch);
- * - duplicate encode-dispatch chunk types — a stream delta/end phase, a discrete
+ * - duplicate encode-dispatch chunk types: a stream delta/end phase, a discrete
  *   event, or a dropped type must each be described by exactly one descriptor. A
  *   stream `start` chunk type is exempt: it may be shared across groups
  *   (resolved by `start.match`) and may double as a discrete event/drop (its
@@ -369,13 +369,13 @@ const validateTables = <TInput, TOutput>(
   // Encode dispatch. A chunk `type` is described by exactly one descriptor, with
   // one deliberate exception: a stream `start` chunk type may be **shared**
   // across groups (the encoder resolves it at encode time by each group's
-  // `start.match`) and may also back a discrete `event`/`drop` — a start whose
-  // discriminators all decline falls through to discrete dispatch. So starts
-  // are collected apart from the singly-described chunk types — a stream delta/end
-  // phase, a discrete event, a dropped type — which must each be described by
-  // exactly one descriptor. The one overlap a start must NOT have (being
-  // another group's delta/end, which the start-first dispatch would shadow)
-  // is checked after the loop.
+  // `start.match`) and may also back a discrete `event`/`drop`, since a start
+  // whose discriminators all decline falls through to discrete dispatch. So
+  // starts are collected apart from the singly-described chunk types (a stream
+  // delta/end phase, a discrete event, a dropped type), which must each be
+  // described by exactly one descriptor. The one overlap a start must NOT have
+  // (being another group's delta/end, which the start-first dispatch would
+  // shadow) is checked after the loop.
   const soleChunkTypes = new Map<string, { owner: string; isDeltaOrEnd: boolean }>();
   const startChunkTypes = new Map<string, string>();
   const reserveSoleChunkType = (literal: string, owner: string, { isDeltaOrEnd }: { isDeltaOrEnd: boolean }): void => {
@@ -493,8 +493,8 @@ export const defineCodec =
         ),
       // The codec's factories selector picks, from the full well-known set, the
       // subset its TInput supports; spreading its result means a partial codec
-      // carries only the factories it exposes — so there is no cast here and no
-      // runtime factory the typed surface denies.
+      // carries only the factories it exposes, so there is no cast here and the
+      // runtime never carries a factory the typed surface denies.
       ...config.factories(wellKnownInputs<TInput>()),
     };
   };

@@ -18,9 +18,9 @@
  *   discrete `output_item.done`, and the call's *result* is the codec's own
  *   `function_call_output` event (see below).
  * - **The terminal lifecycle events are bare discrete signals** (`response.completed`
- *   / `.incomplete` / `.failed`) — no payload. They carry only the signal the
- *   decode-lifecycle policy needs to free its opening-bracket tracking; run outcome is
- *   observed out-of-band. The lifecycle openers (`created` / `.in_progress` /
+ *   / `.incomplete` / `.failed`) carrying no payload. They carry only the signal
+ *   the decode-lifecycle policy needs to free its opening-bracket tracking; run
+ *   outcome is observed out-of-band. The lifecycle openers (`created` / `.in_progress` /
  *   `.queued`), the stream-level `error`, and the content-/summary-part close
  *   boundaries carry nothing the projection needs, so the codec `drop`s them —
  *   they encode to nothing and never reach the wire.

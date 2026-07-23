@@ -3,8 +3,8 @@
  *
  * The wire dispatch discriminator (`kind`) plus the symmetric field↔headers
  * write and read used by the descriptor drivers. Centralised so encode and
- * decode operate on the same record shape and the dispatch key has one home —
- * and so the input drivers can reuse the same primitives as the output drivers.
+ * decode operate on the same record shape, the dispatch key has one home, and
+ * the input drivers can reuse the same primitives as the output drivers.
  */
 
 import type { HeaderField } from './fields.js';

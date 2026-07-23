@@ -79,3 +79,7 @@ export type {
   OutputBuilder,
 } from './define-codec.js';
 export { defineCodec } from './define-codec.js';
+
+// Reducer spine
+export type { DefineReducerConfig, ReducerCtx, ReducerEntry, ReducerProjection } from './define-reducer.js';
+export { defineReducer } from './define-reducer.js';

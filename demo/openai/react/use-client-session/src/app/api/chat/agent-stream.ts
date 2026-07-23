@@ -60,52 +60,33 @@ interface ModelTurn {
 }
 
 /**
- * Build the stream for one model `/responses` turn, collecting its completed
- * output items into `turn` as the stream drains so the loop can decide whether
- * to run tools and continue.
+ * The output source for one model `/responses` turn, collecting its completed
+ * output items into `turn` as it drains so the loop can decide whether to run
+ * tools and continue. `run.pipe` consumes this async-iterable directly.
  */
-function createModelTurnStream(
+async function* modelTurnStream(
   input: Responses.ResponseInputItem[],
   signal: AbortSignal,
   turn: ModelTurn,
-): ReadableStream<OpenAIOutput> {
-  return new ReadableStream<OpenAIOutput>({
-    async start(controller) {
-      try {
-        const modelStream = await createResponseStream({ input, signal });
-        const reader = modelStream.getReader();
-        try {
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            controller.enqueue(value);
-            if (value.type === 'response.output_item.done') {
-              turn.outputItems.push(value.item);
-              if (value.item.type === 'function_call') turn.calls.push(value.item);
-            }
-          }
-        } finally {
-          reader.releaseLock();
-        }
-        controller.close();
-      } catch (error) {
-        // An abort surfaces as a stream error from the model SDK; treat it as a
-        // clean close (the run-end is published by the route's cancel path).
-        if (signal.aborted) controller.close();
-        else controller.error(error);
+): AsyncGenerator<OpenAIOutput> {
+  try {
+    for await (const value of await createResponseStream({ input, signal })) {
+      yield value;
+      if (value.type === 'response.output_item.done') {
+        turn.outputItems.push(value.item);
+        if (value.item.type === 'function_call') turn.calls.push(value.item);
       }
-    },
-  });
+    }
+  } catch (error) {
+    // An abort surfaces as a stream error from the model SDK; treat it as a
+    // clean end (the run-end is published by the route's cancel path).
+    if (!signal.aborted) throw error;
+  }
 }
 
-/** Build a stream that publishes the given tool outputs as one message, then closes. */
-function createToolOutputStream(outputs: OpenAIOutput[]): ReadableStream<OpenAIOutput> {
-  return new ReadableStream<OpenAIOutput>({
-    start(controller) {
-      for (const output of outputs) controller.enqueue(output);
-      controller.close();
-    },
-  });
+/** The output source that publishes the given tool outputs as one message. */
+async function* toolOutputStream(outputs: OpenAIOutput[]): AsyncGenerator<OpenAIOutput> {
+  for (const output of outputs) yield output;
 }
 
 /**
@@ -126,7 +107,7 @@ export async function runAgentLoop(req: AgentLoopRequest): Promise<StreamResult>
 
     // One model /responses turn = one assistant message.
     const turn: ModelTurn = { outputItems: [], calls: [] };
-    const modelResult = await run.pipe(createModelTurnStream(input, run.abortSignal, turn));
+    const modelResult = await run.pipe(modelTurnStream(input, run.abortSignal, turn));
     if (modelResult.error) terminalError = modelResult.error;
 
     // No tool calls (or aborted) → the model's reply is final. Done.
@@ -157,7 +138,7 @@ export async function runAgentLoop(req: AgentLoopRequest): Promise<StreamResult>
       }),
     );
     const toolResult = await run.pipe(
-      createToolOutputStream(toolOutputs.map((item) => ({ type: 'function_call_output', item }))),
+      toolOutputStream(toolOutputs.map((item) => ({ type: 'function_call_output', item }))),
     );
     if (toolResult.error) terminalError = toolResult.error;
     for (const item of toolOutputs) input.push(item);

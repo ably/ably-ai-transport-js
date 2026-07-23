@@ -1,7 +1,7 @@
 /**
  * Model selection for the agent route.
  *
- * Produces a `ReadableStream<ResponseStreamEvent>` for one model turn: the
+ * Produces an `AsyncIterable<ResponseStreamEvent>` for one model turn: the
  * deterministic mock behind `MOCK_LLM` (e2e tests), otherwise a real OpenAI
  * `/responses` stream with the server-executed tools advertised. The default
  * model is `gpt-5.5` (OpenAI's recommended default as of early July 2026).
@@ -42,13 +42,14 @@ export interface ResponseStreamRequest {
 }
 
 /**
- * Open a model stream for a request. Resolves to a `ReadableStream` of raw
- * Responses events, ready to filter and pipe.
+ * Open a model stream for a request. Resolves to an async-iterable of raw
+ * Responses events, ready to filter and pipe. The OpenAI SDK's stream is itself
+ * async-iterable, so it is returned as-is — `run.pipe` consumes it directly.
  * @throws If neither `MOCK_LLM` nor `OPENAI_API_KEY` is configured.
  */
 export async function createResponseStream(
   req: ResponseStreamRequest,
-): Promise<ReadableStream<Responses.ResponseStreamEvent>> {
+): Promise<AsyncIterable<Responses.ResponseStreamEvent>> {
   if (process.env.MOCK_LLM) {
     return createMockResponseStream(req);
   }
@@ -94,43 +95,8 @@ export async function createResponseStream(
     },
     { signal: req.signal },
   );
-  return iterableToStream(stream, req.signal);
-}
-
-/**
- * Adapt the OpenAI SDK's async-iterable stream into a `ReadableStream`. On abort
- * the stream closes cleanly (the underlying request is already aborted via the
- * signal passed to `responses.create`), so the pipe sees a normal end.
- *
- * Exported so its abort/error/cancel branches can be unit-tested directly (the
- * real-model path is never exercised under `MOCK_LLM`).
- */
-export function iterableToStream(
-  iterable: AsyncIterable<Responses.ResponseStreamEvent>,
-  signal: AbortSignal,
-): ReadableStream<Responses.ResponseStreamEvent> {
-  const iterator = iterable[Symbol.asyncIterator]();
-  return new ReadableStream<Responses.ResponseStreamEvent>({
-    async pull(controller) {
-      if (signal.aborted) {
-        await iterator.return?.();
-        controller.close();
-        return;
-      }
-      try {
-        const { done, value } = await iterator.next();
-        if (done) controller.close();
-        else controller.enqueue(value);
-      } catch (error) {
-        if (signal.aborted) {
-          controller.close();
-          return;
-        }
-        controller.error(error);
-      }
-    },
-    async cancel() {
-      await iterator.return?.();
-    },
-  });
+  // The SDK stream is async-iterable and `run.pipe` accepts that directly. On
+  // abort the transport stops pulling and calls the iterator's `return()`; the
+  // underlying request is already aborted via the signal passed above.
+  return stream;
 }

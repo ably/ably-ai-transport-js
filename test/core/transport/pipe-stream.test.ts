@@ -81,6 +81,56 @@ const errorStream = (events: TestEvent[], error: Error): ReadableStream<TestEven
     },
   });
 
+/**
+ * Create an async-iterable of events, recording when its iterator is closed
+ * early via `return()` (the pipe's best-effort upstream teardown on cancel).
+ * @param events - Events to yield in order.
+ * @returns The iterable plus a `returnCalled` flag flipped by `iterator.return()`.
+ */
+const asyncIterableOf = (
+  ...events: TestEvent[]
+): { iterable: AsyncIterable<TestEvent>; state: { returnCalled: boolean } } => {
+  const state = { returnCalled: false };
+  const iterable: AsyncIterable<TestEvent> = {
+    [Symbol.asyncIterator]: () => {
+      const remaining = [...events];
+      return {
+        // eslint-disable-next-line @typescript-eslint/require-await -- mock iterator
+        next: async () => {
+          const value = remaining.shift();
+          return value === undefined ? { done: true, value: undefined } : { done: false, value };
+        },
+        // eslint-disable-next-line @typescript-eslint/require-await -- mock iterator
+        return: async () => {
+          state.returnCalled = true;
+          return { done: true, value: undefined };
+        },
+      };
+    },
+  };
+  return { iterable, state };
+};
+
+/**
+ * Create an async-iterable that yields some events then throws.
+ * @param events - Events to yield before throwing.
+ * @param error - The error thrown from the next pull after the events drain.
+ * @returns An async-iterable that throws once the events are exhausted.
+ */
+const errorAsyncIterable = (events: TestEvent[], error: Error): AsyncIterable<TestEvent> => ({
+  [Symbol.asyncIterator]: () => {
+    const remaining = [...events];
+    return {
+      // eslint-disable-next-line @typescript-eslint/require-await -- mock iterator
+      next: async () => {
+        const value = remaining.shift();
+        if (value === undefined) throw error;
+        return { done: false, value };
+      },
+    };
+  },
+});
+
 // Signal placeholder for tests that don't use cancellation.
 const noSignal: AbortSignal | undefined = undefined;
 
@@ -403,6 +453,76 @@ describe('pipeStream', () => {
 
       expect(result.reason).toBe('cancelled');
       expect(beforeFirstWrite).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('async-iterable source', () => {
+    it('reads all events from an async-iterable and completes', async () => {
+      const events: TestEvent[] = [
+        { type: 'text', text: 'hello' },
+        { type: 'text', text: ' world' },
+      ];
+      const { iterable } = asyncIterableOf(...events);
+
+      const result = await pipeStream(iterable, encoder, noSignal);
+
+      expect(result.reason).toBe('complete');
+      expect(encoder.appendedEvents).toEqual(events);
+      expect(encoder.closed).toBe(true);
+    });
+
+    it('handles an empty async-iterable', async () => {
+      const { iterable } = asyncIterableOf();
+
+      const result = await pipeStream(iterable, encoder, noSignal);
+
+      expect(result.reason).toBe('complete');
+      expect(encoder.appendedEvents).toHaveLength(0);
+      expect(encoder.closed).toBe(true);
+    });
+
+    it('returns error when the async-iterable throws', async () => {
+      const iterable = errorAsyncIterable([{ type: 'text', text: 'ok' }], new Error('iterator broke'));
+
+      const result = await pipeStream(iterable, encoder, noSignal);
+
+      expect(result.reason).toBe('error');
+      expect(result.error?.message).toBe('iterator broke');
+      expect(encoder.closed).toBe(true);
+    });
+
+    it('calls iterator.return() for upstream teardown when cancelled', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      // A paused iterable whose next() never resolves, so the abort wins the
+      // pull-vs-abort race — mirroring the paused-ReadableStream cancel tests.
+      const state = { returnCalled: false };
+      const iterable: AsyncIterable<TestEvent> = {
+        [Symbol.asyncIterator]: () => ({
+          next: async () =>
+            new Promise<IteratorResult<TestEvent>>(() => {
+              /* never resolves — paused until the abort wins the race */
+            }),
+          // eslint-disable-next-line @typescript-eslint/require-await -- mock iterator
+          return: async () => {
+            state.returnCalled = true;
+            return { done: true, value: undefined };
+          },
+        }),
+      };
+
+      const result = await pipeStream(iterable, encoder, controller.signal);
+
+      expect(result.reason).toBe('cancelled');
+      expect(state.returnCalled).toBe(true);
+    });
+
+    it('calls iterator.return() on normal completion', async () => {
+      const { iterable, state } = asyncIterableOf({ type: 'text', text: 'done' });
+
+      await pipeStream(iterable, encoder, noSignal);
+
+      expect(state.returnCalled).toBe(true);
     });
   });
 });

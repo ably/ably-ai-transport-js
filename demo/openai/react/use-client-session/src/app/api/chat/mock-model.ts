@@ -143,63 +143,58 @@ function chunkWords(text: string): string[] {
 }
 
 /**
- * Enqueue a reasoning item ahead of a reply — its `output_item.added`, the
+ * Yield a reasoning item ahead of a reply — its `output_item.added`, the
  * summary stream (part.added → text.delta* → text.done), then the
  * `output_item.done` carrying the complete summary. Used before both a text
  * reply and a function_call, so the mock can stream "thinking" ahead of either.
- * @param controller - The stream controller to enqueue events onto.
  * @param text - The reasoning summary text to stream.
  * @param next - The stream's sequence-number allocator.
  */
-function enqueueReasoning(
-  controller: ReadableStreamDefaultController<ResponseStreamEvent>,
-  text: string,
-  next: () => number,
-): void {
+function* reasoningEvents(text: string, next: () => number): Generator<ResponseStreamEvent> {
   const reasoningId = crypto.randomUUID();
   const reasoning = (summary: Responses.ResponseReasoningItem['summary']): Responses.ResponseReasoningItem => ({
     id: reasoningId,
     type: 'reasoning',
     summary,
   });
-  controller.enqueue({
+  yield {
     type: 'response.output_item.added',
     item: reasoning([]),
     output_index: 0,
     sequence_number: next(),
-  });
-  controller.enqueue({
+  };
+  yield {
     type: 'response.reasoning_summary_part.added',
     item_id: reasoningId,
     output_index: 0,
     summary_index: 0,
     part: { type: 'summary_text', text: '' },
     sequence_number: next(),
-  });
+  };
   for (const delta of chunkWords(text)) {
-    controller.enqueue({
+    yield {
       type: 'response.reasoning_summary_text.delta',
       item_id: reasoningId,
       output_index: 0,
       summary_index: 0,
       delta,
       sequence_number: next(),
-    });
+    };
   }
-  controller.enqueue({
+  yield {
     type: 'response.reasoning_summary_text.done',
     item_id: reasoningId,
     output_index: 0,
     summary_index: 0,
     text,
     sequence_number: next(),
-  });
-  controller.enqueue({
+  };
+  yield {
     type: 'response.output_item.done',
     item: reasoning([{ type: 'summary_text', text }]),
     output_index: 0,
     sequence_number: next(),
-  });
+  };
 }
 
 /** Resolve after `ms`, or immediately once `signal` aborts. */
@@ -222,11 +217,11 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 /**
- * Build the mock `ResponseStreamEvent` stream for a request. Streams the reply
- * as a single assistant message item; closes early (a clean end) if the run's
- * signal aborts mid-stream, which the cancel test relies on.
+ * The mock `ResponseStreamEvent` stream for a request, as an async generator.
+ * Streams the reply as a single assistant message item; returns early (a clean
+ * end) if the run's signal aborts mid-stream, which the cancel test relies on.
  */
-export function createMockResponseStream(req: ResponseStreamRequest): ReadableStream<ResponseStreamEvent> {
+export async function* createMockResponseStream(req: ResponseStreamRequest): AsyncGenerator<ResponseStreamEvent> {
   const plan = planReply(req.input);
   const { signal } = req;
   const itemId = crypto.randomUUID();
@@ -255,108 +250,93 @@ export function createMockResponseStream(req: ResponseStreamRequest): ReadableSt
     // way a real model does (output_item.added → arg deltas → arg done → item done).
     const mid = Math.ceil(argsJson.length / 2);
     const argFragments = [argsJson.slice(0, mid), argsJson.slice(mid)];
-    return new ReadableStream<ResponseStreamEvent>({
-      start(controller) {
-        // A reasoning model may "think" before deciding to call a tool: stream
-        // the reasoning item first, then the function_call. The agent loop must
-        // feed this reasoning item back alongside the call on the next turn.
-        if (plan.reasoning !== undefined) enqueueReasoning(controller, plan.reasoning, next);
-        // output_item.added opens the function_call_arguments stream (args empty);
-        // the deltas stream the arguments; the done finalises them; output_item.done
-        // carries the complete item. The agentic loop reads the call off `done`.
-        controller.enqueue({
-          type: 'response.output_item.added',
-          item: call('in_progress', ''),
-          output_index: 0,
-          sequence_number: next(),
-        });
-        for (const delta of argFragments) {
-          controller.enqueue({
-            type: 'response.function_call_arguments.delta',
-            item_id: itemId,
-            output_index: 0,
-            delta,
-            sequence_number: next(),
-          });
-        }
-        controller.enqueue({
-          type: 'response.function_call_arguments.done',
-          item_id: itemId,
-          output_index: 0,
-          arguments: argsJson,
-          name: plan.name,
-          sequence_number: next(),
-        });
-        controller.enqueue({
-          type: 'response.output_item.done',
-          item: call('completed', argsJson),
-          output_index: 0,
-          sequence_number: next(),
-        });
-        controller.close();
-      },
-    });
+    // A reasoning model may "think" before deciding to call a tool: stream the
+    // reasoning item first, then the function_call. The agent loop must feed this
+    // reasoning item back alongside the call on the next turn.
+    if (plan.reasoning !== undefined) yield* reasoningEvents(plan.reasoning, next);
+    // output_item.added opens the function_call_arguments stream (args empty);
+    // the deltas stream the arguments; the done finalises them; output_item.done
+    // carries the complete item. The agentic loop reads the call off `done`.
+    yield {
+      type: 'response.output_item.added',
+      item: call('in_progress', ''),
+      output_index: 0,
+      sequence_number: next(),
+    };
+    for (const delta of argFragments) {
+      yield {
+        type: 'response.function_call_arguments.delta',
+        item_id: itemId,
+        output_index: 0,
+        delta,
+        sequence_number: next(),
+      };
+    }
+    yield {
+      type: 'response.function_call_arguments.done',
+      item_id: itemId,
+      output_index: 0,
+      arguments: argsJson,
+      name: plan.name,
+      sequence_number: next(),
+    };
+    yield {
+      type: 'response.output_item.done',
+      item: call('completed', argsJson),
+      output_index: 0,
+      sequence_number: next(),
+    };
+    return;
   }
 
-  return new ReadableStream<ResponseStreamEvent>({
-    async start(controller) {
-      // Optional reasoning summary streamed as a reasoning item before the reply
-      // (its own item id, so it folds beside the message).
-      if (plan.reasoning !== undefined) enqueueReasoning(controller, plan.reasoning, next);
+  // Optional reasoning summary streamed as a reasoning item before the reply
+  // (its own item id, so it folds beside the message).
+  if (plan.reasoning !== undefined) yield* reasoningEvents(plan.reasoning, next);
 
-      controller.enqueue({
-        type: 'response.output_item.added',
-        item: message('in_progress', []),
-        output_index: 0,
-        sequence_number: next(),
-      });
-      controller.enqueue({
-        type: 'response.content_part.added',
-        item_id: itemId,
-        output_index: 0,
-        content_index: 0,
-        part: { type: 'output_text', text: '', annotations: [] },
-        sequence_number: next(),
-      });
+  yield {
+    type: 'response.output_item.added',
+    item: message('in_progress', []),
+    output_index: 0,
+    sequence_number: next(),
+  };
+  yield {
+    type: 'response.content_part.added',
+    item_id: itemId,
+    output_index: 0,
+    content_index: 0,
+    part: { type: 'output_text', text: '', annotations: [] },
+    sequence_number: next(),
+  };
 
-      const pieces = plan.slow ? chunkWords(plan.text) : [plan.text];
-      for (const delta of pieces) {
-        if (signal.aborted) {
-          controller.close();
-          return;
-        }
-        controller.enqueue({
-          type: 'response.output_text.delta',
-          item_id: itemId,
-          output_index: 0,
-          content_index: 0,
-          delta,
-          logprobs: [],
-          sequence_number: next(),
-        });
-        if (plan.slow) await sleep(120, signal);
-      }
+  const pieces = plan.slow ? chunkWords(plan.text) : [plan.text];
+  for (const delta of pieces) {
+    if (signal.aborted) return;
+    yield {
+      type: 'response.output_text.delta',
+      item_id: itemId,
+      output_index: 0,
+      content_index: 0,
+      delta,
+      logprobs: [],
+      sequence_number: next(),
+    };
+    if (plan.slow) await sleep(120, signal);
+  }
 
-      if (signal.aborted) {
-        controller.close();
-        return;
-      }
-      controller.enqueue({
-        type: 'response.output_text.done',
-        item_id: itemId,
-        output_index: 0,
-        content_index: 0,
-        text: plan.text,
-        logprobs: [],
-        sequence_number: next(),
-      });
-      controller.enqueue({
-        type: 'response.output_item.done',
-        item: message('completed', [{ type: 'output_text', text: plan.text, annotations: [] }]),
-        output_index: 0,
-        sequence_number: next(),
-      });
-      controller.close();
-    },
-  });
+  if (signal.aborted) return;
+  yield {
+    type: 'response.output_text.done',
+    item_id: itemId,
+    output_index: 0,
+    content_index: 0,
+    text: plan.text,
+    logprobs: [],
+    sequence_number: next(),
+  };
+  yield {
+    type: 'response.output_item.done',
+    item: message('completed', [{ type: 'output_text', text: plan.text, annotations: [] }]),
+    output_index: 0,
+    sequence_number: next(),
+  };
 }

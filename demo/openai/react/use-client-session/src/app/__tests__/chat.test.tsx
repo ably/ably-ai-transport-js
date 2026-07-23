@@ -30,7 +30,9 @@ const mockState = vi.hoisted(() => ({
   // the demo derives a status (and thus the Stop / Send button state).
   runOf: (() => undefined) as (codecMessageId: string) => RunInfo | undefined,
   cancel: vi.fn(async () => {}),
-  send: vi.fn<(input: OpenAIInput | OpenAIInput[], opts?: SendOptions) => Promise<ClientRun<OpenAIMessage>>>(),
+  send: vi.fn<
+    (input: OpenAIInput | OpenAIInput[], opts?: SendOptions) => Promise<ClientRun<OpenAIInput, OpenAIMessage>>
+  >(),
 }));
 
 vi.mock('../providers', () => ({
@@ -119,7 +121,7 @@ const assistantTurn = (text: string): OpenAIMessage => ({
   ],
 });
 
-const clientRunStub = (): ClientRun<OpenAIMessage> => ({
+const clientRunStub = (): ClientRun<OpenAIInput, OpenAIMessage> => ({
   inputCodecMessageId: 'input-1',
   // The agent mints the run-id, so `runId` is empty until `started` resolves.
   runId: '',
@@ -129,6 +131,7 @@ const clientRunStub = (): ClientRun<OpenAIMessage> => ({
   started: Promise.resolve(),
   inputEventId: 'ev-1',
   cancel: async () => {},
+  steer: () => ({ published: Promise.resolve({ serial: undefined }), outcome: Promise.resolve({ consumed: false }) }),
   toInvocation: () => Invocation.fromJSON({ inputEventId: 'ev-1', sessionName: 'demo' }),
 });
 

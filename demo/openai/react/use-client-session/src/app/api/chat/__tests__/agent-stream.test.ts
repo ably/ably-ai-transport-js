@@ -25,14 +25,14 @@ afterEach(() => {
  * the loop published.
  */
 function makeRun(signal: AbortSignal): {
-  run: { abortSignal: AbortSignal; pipe: (stream: ReadableStream<OpenAIOutput>) => Promise<StreamResult> };
+  run: { abortSignal: AbortSignal; pipe: (source: AsyncIterable<OpenAIOutput>) => Promise<StreamResult> };
   messages: OpenAIOutput[][];
 } {
   const messages: OpenAIOutput[][] = [];
   const run = {
     abortSignal: signal,
-    pipe: async (stream: ReadableStream<OpenAIOutput>): Promise<StreamResult> => {
-      messages.push(await drain(stream));
+    pipe: async (source: AsyncIterable<OpenAIOutput>): Promise<StreamResult> => {
+      messages.push(await drain(source));
       return { reason: 'complete' };
     },
   };

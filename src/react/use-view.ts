@@ -147,6 +147,12 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
   const [hasOlder, setHasOlder] = useState(() => resolvedView?.hasOlder() ?? false);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<Ably.ErrorInfo | undefined>();
+  // Bumped on a run-lifecycle change so `runOf` / `run` / `runs` reads stay
+  // reactive. A run suspending or ending changes content within a run without
+  // changing the visible structure, so the View emits its `run` event without
+  // an accompanying `update`. Without this tick a consumer reading run status
+  // would never re-render when a run suspends or ends.
+  const [, setRunTick] = useState(0);
   const loadingRef = useRef(false);
 
   // Auto-load first page on mount when limit is provided (SWR-style).
@@ -172,11 +178,17 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
     setHasOlder(resolvedView.hasOlder());
     setLoadError(undefined);
 
-    const unsub = resolvedView.on('update', () => {
+    const unsubUpdate = resolvedView.on('update', () => {
       setMessages(resolvedView.getMessages());
       setHasOlder(resolvedView.hasOlder());
     });
-    return unsub;
+    const unsubRun = resolvedView.on('run', () => {
+      setRunTick((tick) => tick + 1);
+    });
+    return () => {
+      unsubUpdate();
+      unsubRun();
+    };
   }, [resolvedView]);
 
   const loadOlder = useCallback(async (): Promise<CodecMessage<TMessage>[]> => {

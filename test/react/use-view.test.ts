@@ -53,6 +53,26 @@ describe('useView', () => {
     expect(result.current.hasOlder).toBe(true);
   });
 
+  it('re-renders on a view run event so run-status reads stay reactive', () => {
+    const mock = createMockSession(['hello']);
+    let renders = 0;
+    renderHook(() => {
+      renders++;
+      return useView({ session: mock.session });
+    });
+    const before = renders;
+
+    // A run suspending or ending changes content within a run without changing
+    // the visible structure, so the View emits its `run` event without an
+    // accompanying `update`. The hook must still re-render so a consumer reading
+    // run status via runOf / run / runs sees the change.
+    act(() => {
+      mock.emitTree('run', { type: 'suspend', runId: 'run-1' });
+    });
+
+    expect(renders).toBeGreaterThan(before);
+  });
+
   it('loadOlder sets loading, calls view.loadOlder, then clears loading', async () => {
     const mock = createMockSession();
     let resolveFn: () => void;

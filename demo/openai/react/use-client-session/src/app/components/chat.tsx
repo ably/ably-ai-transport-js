@@ -46,7 +46,7 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
 
   // Run client-executed tools (getLocation) when they appear unresolved and
   // publish the result so the suspended run resumes.
-  useClientTools(view, clientId, api, logClientTool);
+  useClientTools(view, api, logClientTool);
 
   // Wake the agent for a freshly-sent run by POSTing its invocation pointer.
   // The core session never sends HTTP — the app owns the trigger. Send sites

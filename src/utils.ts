@@ -85,6 +85,25 @@ export const hasAiEnvelope = (message: Ably.InboundMessage): boolean => {
 };
 
 /**
+ * Extract the application's own user headers (`extras.headers`) from an Ably
+ * InboundMessage. This is Ably's user-header slot, outside the SDK's
+ * `extras.ai` envelope, so it can never collide with the transport or codec
+ * tiers.
+ * @param message - The Ably message to extract headers from.
+ * @returns The user headers record, or an empty object if absent.
+ */
+export const getUserHeaders = (message: Ably.InboundMessage): Record<string, string> => {
+  // CAST: Ably SDK types `extras` as `any`; runtime checks below guard access.
+  const extras = message.extras as unknown;
+  if (!extras || typeof extras !== 'object') return {};
+  const headers = (extras as { headers?: unknown }).headers;
+  if (!headers || typeof headers !== 'object') return {};
+  // CAST: Ably documents `extras.headers` as a flat string map when present,
+  // verified object-shaped by the runtime guards above.
+  return headers as Record<string, string>;
+};
+
+/**
  * Parse a JSON string, returning undefined on failure.
  * @param value - The JSON string to parse.
  * @returns The parsed value, or undefined if parsing fails.

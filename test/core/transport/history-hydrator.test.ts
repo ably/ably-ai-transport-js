@@ -2,30 +2,27 @@
  * HistoryHydrator unit tests.
  *
  * The hydrator pages one shared backward cursor over the channel and folds each
- * page into the Tree (chronological, oldest-first within a page) via the Tree's
- * applier. These tests cover the `foldUntil` stop predicate, truthful `hasNext`
- * exhaustion, the single-flight shared cursor (concurrent callers page the
- * channel once and resume one another), prompt cancel-mid-drain, and fetch-error
- * wrapping. The low-level `loadHistoryPages` cursor is mocked so the engine's
- * paging logic is exercised in isolation.
+ * page into the Tree (chronological, oldest-first within a page) via the
+ * injected `foldWire` callback. These tests cover the `foldUntil` stop
+ * predicate, truthful `hasNext` exhaustion, the single-flight shared cursor
+ * (concurrent callers page the channel once and resume one another), prompt
+ * cancel-mid-drain, and fetch-error wrapping. The low-level `loadHistoryPages`
+ * cursor is mocked so the engine's paging logic is exercised in isolation.
  */
 
 import type * as Ably from 'ably';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AblyMessageEmitter, WireApplier } from '../../../src/core/transport/decode-fold.js';
 import { createHistoryHydrator } from '../../../src/core/transport/history-hydrator.js';
 import type { HistoryPagesCursor } from '../../../src/core/transport/load-history-pages.js';
 import { loadHistoryPages } from '../../../src/core/transport/load-history-pages.js';
 import { ErrorCode } from '../../../src/errors.js';
-import { LogLevel, makeLogger } from '../../../src/logger.js';
 import { makeHistoryCursor as makeCursor } from '../../helper/history-cursor.js';
+import { silentLogger } from '../../helper/logger.js';
 
 vi.mock('../../../src/core/transport/load-history-pages.js', () => ({
   loadHistoryPages: vi.fn(),
 }));
-
-const silentLogger = makeLogger({ logLevel: LogLevel.Silent });
 
 const flushMicrotasks = async (): Promise<void> => {
   await new Promise<void>((resolve) => {
@@ -45,13 +42,17 @@ const wire = (): Ably.InboundMessage => {
   return { serial: `01H${String(serialCounter).padStart(10, '0')}` } as unknown as Ably.InboundMessage;
 };
 
-// A spy applier whose `apply` records the wires it folded, in order.
-const makeApplier = (): WireApplier & { folded: Ably.InboundMessage[] } => {
+// A fold spy whose `foldWire` records the wires it folded, in order.
+interface FoldSpy {
+  foldWire: (wire: Ably.InboundMessage) => void;
+  folded: Ably.InboundMessage[];
+}
+
+const makeFold = (): FoldSpy => {
   const folded: Ably.InboundMessage[] = [];
   return {
-    apply: (msg: Ably.InboundMessage) => {
+    foldWire: (msg: Ably.InboundMessage) => {
       folded.push(msg);
-      return;
     },
     folded,
   };
@@ -59,22 +60,18 @@ const makeApplier = (): WireApplier & { folded: Ably.InboundMessage[] } => {
 
 const serialsOf = (msgs: readonly Ably.InboundMessage[]): (string | undefined)[] => msgs.map((m) => m.serial);
 
-// Wire a hydrator over a fake cursor + applier, returning the `emitAblyMessage`
-// spy so a test can assert per-fold tree notifications.
+// Wire a hydrator over a fake cursor + fold callback.
 const newHydrator = (
   cursor: HistoryPagesCursor,
-  applier: WireApplier,
-): { hydrator: ReturnType<typeof createHistoryHydrator>; emitAblyMessage: ReturnType<typeof vi.fn> } => {
+  fold: { foldWire: (wire: Ably.InboundMessage) => void },
+): { hydrator: ReturnType<typeof createHistoryHydrator> } => {
   vi.mocked(loadHistoryPages).mockResolvedValue(cursor);
-  const emitAblyMessage = vi.fn();
-  const tree: AblyMessageEmitter = { emitAblyMessage };
   const hydrator = createHistoryHydrator({
     channel: {} as unknown as Ably.RealtimeChannel,
-    tree,
-    applier,
+    foldWire: fold.foldWire,
     logger: silentLogger,
   });
-  return { hydrator, emitAblyMessage };
+  return { hydrator };
 };
 
 // ---------------------------------------------------------------------------
@@ -96,20 +93,19 @@ describe('HistoryHydrator', () => {
       const w3 = wire();
       const w2 = wire();
       const w1 = wire();
-      const applier = makeApplier();
-      const { hydrator, emitAblyMessage } = newHydrator(makeCursor([[w3, w2, w1]]), applier);
+      const fold = makeFold();
+      const { hydrator } = newHydrator(makeCursor([[w3, w2, w1]]), fold);
 
       const { exhausted } = await hydrator.foldUntil(() => false);
 
-      expect(serialsOf(applier.folded)).toEqual(serialsOf([w1, w2, w3]));
-      // foldAndEmit notifies the tree after each apply.
-      expect(emitAblyMessage).toHaveBeenCalledTimes(3);
+      expect(serialsOf(fold.folded)).toEqual(serialsOf([w1, w2, w3]));
+      expect(fold.folded).toHaveLength(3);
       expect(exhausted).toBe(true);
     });
 
     it('opens the cursor only once and only on the first fold', async () => {
-      const applier = makeApplier();
-      const { hydrator } = newHydrator(makeCursor([[wire()]]), applier);
+      const fold = makeFold();
+      const { hydrator } = newHydrator(makeCursor([[wire()]]), fold);
 
       expect(loadHistoryPages).not.toHaveBeenCalled();
       await hydrator.foldUntil(() => false);
@@ -117,14 +113,14 @@ describe('HistoryHydrator', () => {
     });
 
     it('stops before fetching the next page once shouldStop returns true', async () => {
-      const applier = makeApplier();
+      const fold = makeFold();
       const cursor = makeCursor([[wire()], [wire()]]);
-      const { hydrator } = newHydrator(cursor, applier);
+      const { hydrator } = newHydrator(cursor, fold);
 
       // Predicate (polled before each page) trips once the first page is folded.
-      const { exhausted } = await hydrator.foldUntil(() => applier.folded.length > 0);
+      const { exhausted } = await hydrator.foldUntil(() => fold.folded.length > 0);
 
-      expect(applier.folded).toHaveLength(1);
+      expect(fold.folded).toHaveLength(1);
       expect(cursor.nextCalls()).toBe(1); // the second page was never fetched
       expect(exhausted).toBe(false);
       expect(hydrator.hasNext()).toBe(true); // paused, not exhausted
@@ -133,12 +129,12 @@ describe('HistoryHydrator', () => {
 
   describe('hasNext', () => {
     it('is true before the cursor is opened', () => {
-      const { hydrator } = newHydrator(makeCursor([[wire()]]), makeApplier());
+      const { hydrator } = newHydrator(makeCursor([[wire()]]), makeFold());
       expect(hydrator.hasNext()).toBe(true);
     });
 
     it('is false once the channel is drained to exhaustion', async () => {
-      const { hydrator } = newHydrator(makeCursor([[wire()], [wire()]]), makeApplier());
+      const { hydrator } = newHydrator(makeCursor([[wire()], [wire()]]), makeFold());
       await hydrator.foldUntil(() => false);
       expect(hydrator.hasNext()).toBe(false);
     });
@@ -146,19 +142,22 @@ describe('HistoryHydrator', () => {
 
   describe('isFolding', () => {
     it('is true only during the synchronous fold and false before and after', async () => {
-      const { hydrator, emitAblyMessage } = newHydrator(makeCursor([[wire()]]), makeApplier());
+      // Capture isFolding() inside the fold callback, at the moment a Tree
+      // subscriber would observe the emission.
+      let foldingDuringFold: boolean | undefined;
+      const holder: { hydrator?: ReturnType<typeof createHistoryHydrator> } = {};
+      const fold = {
+        foldWire: (): void => {
+          foldingDuringFold = holder.hydrator?.isFolding();
+        },
+      };
+      holder.hydrator = newHydrator(makeCursor([[wire()]]), fold).hydrator;
+      const { hydrator } = holder;
       expect(hydrator.isFolding()).toBe(false);
-
-      // foldAndEmit calls the tree's emitAblyMessage mid-fold, so this captures
-      // isFolding() at the moment a Tree subscriber would observe the emission.
-      let foldingDuringEmit: boolean | undefined;
-      emitAblyMessage.mockImplementation(() => {
-        foldingDuringEmit = hydrator.isFolding();
-      });
 
       await hydrator.foldUntil(() => false);
 
-      expect(foldingDuringEmit).toBe(true);
+      expect(foldingDuringFold).toBe(true);
       expect(hydrator.isFolding()).toBe(false);
     });
   });
@@ -167,19 +166,19 @@ describe('HistoryHydrator', () => {
     it('resumes the shared cursor across sequential calls (one open, no re-page)', async () => {
       const wA = wire();
       const wB = wire();
-      const applier = makeApplier();
+      const fold = makeFold();
       const cursor = makeCursor([[wA], [wB]]);
-      const { hydrator } = newHydrator(cursor, applier);
+      const { hydrator } = newHydrator(cursor, fold);
 
       // First call stops after the first page; the cursor pauses, not exhausted.
-      const first = await hydrator.foldUntil(() => applier.folded.length > 0);
+      const first = await hydrator.foldUntil(() => fold.folded.length > 0);
       expect(first.exhausted).toBe(false);
-      expect(serialsOf(applier.folded)).toEqual(serialsOf([wA]));
+      expect(serialsOf(fold.folded)).toEqual(serialsOf([wA]));
 
       // Second call resumes from the paused position and drains the rest.
       const second = await hydrator.foldUntil(() => false);
       expect(second.exhausted).toBe(true);
-      expect(serialsOf(applier.folded)).toEqual(serialsOf([wA, wB]));
+      expect(serialsOf(fold.folded)).toEqual(serialsOf([wA, wB]));
 
       // The channel was opened once and each page fetched exactly once.
       expect(loadHistoryPages).toHaveBeenCalledTimes(1);
@@ -189,14 +188,14 @@ describe('HistoryHydrator', () => {
     it('serialises concurrent calls so each wire folds exactly once', async () => {
       const wA = wire();
       const wB = wire();
-      const applier = makeApplier();
+      const fold = makeFold();
       const cursor = makeCursor([[wA], [wB]]);
-      const { hydrator } = newHydrator(cursor, applier);
+      const { hydrator } = newHydrator(cursor, fold);
 
       // Both fire before either awaits; the single-flight chain serialises them.
       await Promise.all([hydrator.foldUntil(() => false), hydrator.foldUntil(() => false)]);
 
-      expect(serialsOf(applier.folded)).toEqual(serialsOf([wA, wB]));
+      expect(serialsOf(fold.folded)).toEqual(serialsOf([wA, wB]));
       expect(loadHistoryPages).toHaveBeenCalledTimes(1);
     });
 
@@ -213,8 +212,8 @@ describe('HistoryHydrator', () => {
           return calls === 1 ? Promise.reject(new Error('boom')) : Promise.resolve([wire()]);
         },
       };
-      const applier = makeApplier();
-      const { hydrator } = newHydrator(cursor, applier);
+      const fold = makeFold();
+      const { hydrator } = newHydrator(cursor, fold);
 
       const first = hydrator.foldUntil(() => false);
       const second = hydrator.foldUntil(() => false);
@@ -222,14 +221,14 @@ describe('HistoryHydrator', () => {
       // The first walk fails; the second is unaffected and folds the recovered page.
       await expect(first).rejects.toBeErrorInfoWithCode(ErrorCode.SessionHistoryFetchFailed);
       await expect(second).resolves.toEqual({ exhausted: true });
-      expect(applier.folded).toHaveLength(1);
+      expect(fold.folded).toHaveLength(1);
       expect(loadHistoryPages).toHaveBeenCalledTimes(1); // one shared cursor
     });
   });
 
   describe('cancellation', () => {
     it('does not open the cursor when the signal is already aborted', async () => {
-      const { hydrator } = newHydrator(makeCursor([[wire()]]), makeApplier());
+      const { hydrator } = newHydrator(makeCursor([[wire()]]), makeFold());
       const controller = new AbortController();
       controller.abort();
 
@@ -246,15 +245,14 @@ describe('HistoryHydrator', () => {
       // Abort as soon as the first page is folded; the loop's between-page check
       // then halts before fetching the second page.
       const folded: Ably.InboundMessage[] = [];
-      const applier: WireApplier = {
-        apply: (msg) => {
+      const fold = {
+        foldWire: (msg: Ably.InboundMessage): void => {
           folded.push(msg);
           controller.abort();
-          return;
         },
       };
       const cursor = makeCursor([[wA], [wB]]);
-      const { hydrator } = newHydrator(cursor, applier);
+      const { hydrator } = newHydrator(cursor, fold);
 
       const { exhausted } = await hydrator.foldUntil(() => false, controller.signal);
 
@@ -276,7 +274,7 @@ describe('HistoryHydrator', () => {
             /* never settles — parks the leader inside _walk so it holds the cursor */
           }),
       };
-      const { hydrator } = newHydrator(cursor, makeApplier());
+      const { hydrator } = newHydrator(cursor, makeFold());
 
       // Leader: shouldStop never fires, so it sits in the parked fetch.
       const leader = hydrator.foldUntil(() => false);
@@ -301,33 +299,21 @@ describe('HistoryHydrator', () => {
   });
 
   describe('page size', () => {
-    it('passes the configured pageSize to loadHistoryPages as the per-page wire limit', async () => {
+    it.each<[string, number | undefined, number]>([
+      ['passes the configured pageSize', 7, 7],
+      ['defaults to 100 when pageSize is unset', undefined, 100],
+    ])('%s as the per-page wire limit to loadHistoryPages', async (_label, pageSize, pageLimit) => {
       vi.mocked(loadHistoryPages).mockResolvedValue(makeCursor([[wire()]]));
       const hydrator = createHistoryHydrator({
         channel: {} as unknown as Ably.RealtimeChannel,
-        tree: { emitAblyMessage: vi.fn() },
-        applier: makeApplier(),
-        pageSize: 7,
+        foldWire: makeFold().foldWire,
+        pageSize,
         logger: silentLogger,
       });
 
       await hydrator.foldUntil(() => false);
 
-      expect(loadHistoryPages).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ pageLimit: 7 }));
-    });
-
-    it('defaults the per-page wire limit to 100 when pageSize is unset', async () => {
-      vi.mocked(loadHistoryPages).mockResolvedValue(makeCursor([[wire()]]));
-      const hydrator = createHistoryHydrator({
-        channel: {} as unknown as Ably.RealtimeChannel,
-        tree: { emitAblyMessage: vi.fn() },
-        applier: makeApplier(),
-        logger: silentLogger,
-      });
-
-      await hydrator.foldUntil(() => false);
-
-      expect(loadHistoryPages).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ pageLimit: 100 }));
+      expect(loadHistoryPages).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ pageLimit }));
     });
   });
 
@@ -338,7 +324,7 @@ describe('HistoryHydrator', () => {
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock rejects
         next: () => Promise.reject(new Error('boom')),
       };
-      const { hydrator } = newHydrator(cursor, makeApplier());
+      const { hydrator } = newHydrator(cursor, makeFold());
 
       await expect(hydrator.foldUntil(() => false)).rejects.toBeErrorInfoWithCode(ErrorCode.SessionHistoryFetchFailed);
     });

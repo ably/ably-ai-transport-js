@@ -37,7 +37,6 @@ import { resolveChannelModes } from '../channel-options.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
 import { createBaseRun } from './base-run.js';
 import { readCancelTarget } from './cancel-envelope.js';
-import { foldAndEmit, type WireApplier } from './decode-fold.js';
 import { createHistoryHydrator, type HistoryHydrator } from './history-hydrator.js';
 import { locateInputEvent } from './input-event-locator.js';
 import { evictOldestIfFull } from './internal/bounded-map.js';
@@ -45,6 +44,7 @@ import type { Invocation } from './invocation.js';
 import { createLeafBranchSource } from './leaf-branch-source.js';
 import { publishLifecycleEvent } from './lifecycle-publish.js';
 import { createMaterialisation } from './materialisation.js';
+import type { ReceiveTransport } from './receive-transport.js';
 import type { RunManager } from './run-manager.js';
 import { createRunManager } from './run-manager.js';
 import { RunSteerTracker } from './run-steer-tracker.js';
@@ -208,8 +208,8 @@ class DefaultAgentSession<
   private readonly _deferredCancels = new Map<string, Ably.InboundMessage>();
   /**
    * Session-owned materialisation tree. Every message (live + history) folds
-   * through `this._applier.apply(msg)`; conversation state is read by
-   * walking parent pointers from the input node.
+   * through `this._foldWire(msg)`; conversation state is read by walking parent
+   * pointers from the input node.
    *
    * Replaced (not cleared in place) on channel continuity loss so that the
    * fresh tree starts empty. The old tree is abandoned to GC once in-flight
@@ -217,19 +217,19 @@ class DefaultAgentSession<
    */
   private _tree: DefaultTree<TInput, TOutput, TProjection>;
   /**
-   * The Tree's single decode-and-apply engine, binding one inbound decoder
-   * instance shared by every fold route (live + history). Streaming across
-   * pages folds correctly because the decoder keeps stream-tracker state
-   * across messages. Replaced alongside the Tree on continuity loss so the
-   * fresh Tree gets a fresh decoder. Outbound encoders (used by `Run.pipe`)
-   * manage their own decoders.
+   * The Tree's receive transport, binding one inbound decoder instance shared
+   * by every fold route (live + history) with the Tree subscribed to its event
+   * streams. Streaming across pages folds correctly because the decoder keeps
+   * stream-tracker state across messages. Replaced alongside the Tree on
+   * continuity loss so the fresh Tree gets a fresh decoder. Outbound encoders
+   * (used by `Run.pipe`) manage their own decoders.
    */
-  private _applier: WireApplier;
+  private _receiver: ReceiveTransport<TInput, TOutput>;
   /**
-   * The shared channel-history paging engine, bound to the current Tree/applier.
+   * The shared channel-history paging engine, bound to the current Tree/receiver.
    * Drives `run.view`'s `loadOlder()` pagination — the single history driver —
    * across the session's runs off ONE single-flight cursor. Recreated alongside
-   * the Tree/applier on continuity loss so the fresh Tree gets a fresh cursor and
+   * the Tree/receiver on continuity loss so the fresh Tree gets a fresh cursor and
    * exhaustion state.
    */
   private _hydrator: HistoryHydrator;
@@ -262,9 +262,10 @@ class DefaultAgentSession<
     this._runManager = createRunManager(this._channel, this._logger);
     this._historyPageSize = options.historyPageSize;
     this._reorderWindowMs = options.reorderWindowMs;
-    const { tree, applier } = createMaterialisation(this._codec, this._logger, this._reorderWindowMs);
+    const { tree, receiver } = createMaterialisation(this._codec, this._logger, this._reorderWindowMs);
     this._tree = tree;
-    this._applier = applier;
+    this._receiver = receiver;
+    this._subscribeReceiverErrors();
     this._hydrator = this._createHydrator();
 
     this._channelListener = (msg: Ably.InboundMessage) => {
@@ -288,16 +289,30 @@ class DefaultAgentSession<
   }
 
   /**
-   * Build a HistoryHydrator over the session's CURRENT Tree + applier. Called at
+   * Forward the current receiver's `error` stream to the session's own `error`.
+   * A decode failure drops the one message and emits (it never tears down the
+   * receive stream); a consumer sees it tagged `SessionSubscriptionError`. The
+   * old receiver is abandoned to GC on a continuity-loss swap, so its
+   * subscription needs no explicit teardown.
+   */
+  private _subscribeReceiverErrors(): void {
+    this._receiver.on('error', (err) => {
+      this._emitter.emit('error', err);
+    });
+  }
+
+  /**
+   * Build a HistoryHydrator over the session's CURRENT fold path. Called at
    * construction and again after a continuity-loss swap so the fresh Tree gets a
    * fresh single-flight cursor and exhaustion state.
-   * @returns A fresh hydrator over the current Tree/applier.
+   * @returns A fresh hydrator over the current Tree/receiver.
    */
   private _createHydrator(): HistoryHydrator {
     return createHistoryHydrator({
       channel: this._channel,
-      tree: this._tree,
-      applier: this._applier,
+      foldWire: (wire) => {
+        this._foldWire(wire);
+      },
       pageSize: this._historyPageSize,
       logger: this._logger,
     });
@@ -620,10 +635,11 @@ class DefaultAgentSession<
     // runs use the fresh Tree; lingering closures on the old Tree from
     // in-flight (now-aborted) lookups are bounded by the abort propagation.
     // Reapply the configured retention window so the fresh Tree matches.
-    const { tree, applier } = createMaterialisation(this._codec, this._logger, this._reorderWindowMs);
+    const { tree, receiver } = createMaterialisation(this._codec, this._logger, this._reorderWindowMs);
     this._tree = tree;
-    this._applier = applier;
-    // Rebuild the hydrator against the fresh Tree/applier — this resets its
+    this._receiver = receiver;
+    this._subscribeReceiverErrors();
+    // Rebuild the hydrator against the fresh Tree/receiver — this resets its
     // cursor and exhaustion state. Each run's leaf source reads the Tree via the
     // live `getTree()` accessor and its run.view reads the hydrator via
     // `getHydrator()`, so both observe the swap without being recreated.
@@ -641,10 +657,11 @@ class DefaultAgentSession<
 
   /**
    * Fold a single wire message into the session-owned Tree. Mirrors the
-   * ClientSession's live decode loop — same engine, same fold path. The
-   * applier decodes the message and applies the result to the Tree (or
-   * routes lifecycle messages through `applyRunLifecycle`);
-   * `emitAblyMessage` notifies Tree subscribers AND populates the event-id
+   * ClientSession's live decode loop — same engine, same fold path. The receive
+   * transport classifies the message and emits its typed `event` (the Tree, as a
+   * subscriber, folds it — a decoded message via `applyMessage`, a lifecycle
+   * message via `applyRunLifecycle` / `applyStepLifecycle`); the paired
+   * `ably-message` then notifies Tree subscribers AND populates the event-id
    * index the input-event lookup ({@link locateInputEvent}) reads.
    *
    * A message that surfaces via more than one path (the live listener and
@@ -655,9 +672,16 @@ class DefaultAgentSession<
    * re-decodes) at the correct per-delivery granularity — same-serial live
    * appends each carry their own version and fold exactly once.
    * @param wire - The inbound Ably message to fold.
+   * @returns False when a failed decode dropped the message, so the caller
+   *   skips its own follow-on handling of it; true otherwise.
    */
-  private _foldWire(wire: Ably.InboundMessage): void {
-    foldAndEmit(this._applier, this._tree, wire);
+  private _foldWire(wire: Ably.InboundMessage): boolean {
+    // A failed decode drops the message (the receiver emitted `error`); its raw
+    // `ably-message` is not emitted either, so subscribers never index a
+    // message the fold did not apply.
+    if (this._receiver.deliverEvent(wire).outcome === 'failed') return false;
+    this._receiver.deliverAblyMessage(wire);
+    return true;
   }
 
   // -------------------------------------------------------------------------
@@ -669,8 +693,9 @@ class DefaultAgentSession<
       () => {
         // Fold first (re-delivered content is dropped by the shared decoder's
         // version guard and the Tree's replay guard), then dispatch cancel
-        // control messages.
-        this._foldWire(msg);
+        // control messages. A message dropped by a failed decode is not
+        // dispatched either.
+        if (!this._foldWire(msg)) return;
 
         if (msg.name === EVENT_CANCEL) {
           // Fire-and-forget async handler — errors are caught internally.
@@ -1215,13 +1240,31 @@ class DefaultAgentSession<
     // the run opens or resolves. The writer never ends the run — a cancelled
     // pipe closes only its own step bracket; the run terminal is the run
     // object's (run.end, or session.end for an open run at teardown).
-    const stepWriter = createRunStepWriter<TInput, TOutput, TProjection, TMessage>({
+    const stepWriter = createRunStepWriter<TInput, TOutput>({
       getRunId: () => runId,
       invocationId,
       codec,
       channel,
       runManager,
-      getTree,
+      // Fold the writer's optimistic step-start / step-end seed into the session
+      // Tree, read live so a continuity-loss swap is observed. This is the same
+      // Tree the wire echo later folds into, so the seed and its echo reconcile.
+      emitStepLifecycle: (event) => {
+        getTree().applyStepLifecycle(event);
+      },
+      // Re-derive the sticky stepClientId from the hydrated Tree: the
+      // step-client-id of the run's latest preceding step that carries one,
+      // walking the run node's steps read-model from the tail. Empty in a fresh
+      // adopting process's cursor, but authoritative from the channel-hydrated
+      // Tree.
+      getPriorStepClientId: (priorRunId) => {
+        const steps = getTree().getRunNode(priorRunId)?.steps;
+        if (!steps) return;
+        for (let i = steps.length - 1; i >= 0; i--) {
+          const sc = steps[i]?.stepClientId;
+          if (sc !== undefined && sc !== '') return sc;
+        }
+      },
       hooks,
       signal,
       logger,

@@ -1,0 +1,74 @@
+/** Shared mock Ably channel and paginated-history fakes for transport unit tests. */
+
+import type * as Ably from 'ably';
+import { vi } from 'vitest';
+
+/** The mock surface a test drives and asserts on, alongside the channel cast. */
+export interface MockChannel {
+  /** Records the message and resolves with a deterministic per-publish serial (`serial-<n>`). */
+  publish: ReturnType<typeof vi.fn>;
+  /** Captures the listener into {@link MockChannel.listener}. */
+  subscribe: ReturnType<typeof vi.fn>;
+  /** Clears {@link MockChannel.listener} when called with the captured listener. */
+  unsubscribe: ReturnType<typeof vi.fn>;
+  /** Resolves immediately. */
+  attach: ReturnType<typeof vi.fn>;
+  /** Resolves with a paginated result over the pages given to {@link createMockChannel}. */
+  history: ReturnType<typeof vi.fn>;
+  /** Every message `publish` received, in order. */
+  publishCalls: Ably.Message[];
+  /** The wire names of {@link MockChannel.publishCalls}, in order. */
+  publishNames: () => string[];
+  /** The listener `subscribe` registered, or `undefined` once unsubscribed. */
+  listener?: (msg: Ably.InboundMessage) => void;
+}
+
+/**
+ * Build a chain of Ably paginated results over `pages` (newest page first,
+ * newest-first within each page — Ably's native history order).
+ * @param pages - The history pages.
+ * @returns The first paginated result.
+ */
+export const makePaginated = (pages: Ably.InboundMessage[][]): Ably.PaginatedResult<Ably.InboundMessage> => {
+  const make = (i: number): Ably.PaginatedResult<Ably.InboundMessage> =>
+    // CAST: the cursor only reads `items`, `hasNext()`, and `next()`.
+    ({
+      items: pages[i] ?? [],
+      hasNext: () => i + 1 < pages.length,
+      // eslint-disable-next-line @typescript-eslint/require-await -- mock returns a resolved promise
+      next: async () => (i + 1 < pages.length ? make(i + 1) : undefined),
+    }) as unknown as Ably.PaginatedResult<Ably.InboundMessage>;
+  return make(0);
+};
+
+/**
+ * Build a mock channel recording publishes, capturing the subscribed listener,
+ * and serving `pages` from `history()`.
+ * @param pages - History pages the channel serves (newest first).
+ * @returns The mock, cast to the channel interface the transports consume.
+ */
+export const createMockChannel = (pages: Ably.InboundMessage[][] = []): MockChannel & Ably.RealtimeChannel => {
+  const mock: MockChannel = {
+    publishCalls: [],
+    publishNames: () => mock.publishCalls.map((m) => m.name ?? ''),
+    // eslint-disable-next-line @typescript-eslint/require-await -- mock returns a resolved promise
+    publish: vi.fn(async (msg: Ably.Message): Promise<Ably.PublishResult> => {
+      mock.publishCalls.push(msg);
+      return { serials: [`serial-${String(mock.publishCalls.length)}`] };
+    }),
+    // eslint-disable-next-line @typescript-eslint/require-await -- mock returns a resolved promise
+    subscribe: vi.fn(async (listener: (msg: Ably.InboundMessage) => void): Promise<void> => {
+      mock.listener = listener;
+    }),
+    unsubscribe: vi.fn((listener: (msg: Ably.InboundMessage) => void): void => {
+      if (mock.listener === listener) mock.listener = undefined;
+    }),
+    // eslint-disable-next-line @typescript-eslint/require-await -- mock returns a resolved promise
+    attach: vi.fn(async (): Promise<void> => undefined),
+    // eslint-disable-next-line @typescript-eslint/require-await -- mock returns a resolved promise
+    history: vi.fn(async (): Promise<Ably.PaginatedResult<Ably.InboundMessage>> => makePaginated(pages)),
+  };
+  // CAST: tests only use publish/subscribe/unsubscribe/attach/history — other
+  // RealtimeChannel members are unused.
+  return mock as unknown as MockChannel & Ably.RealtimeChannel;
+};

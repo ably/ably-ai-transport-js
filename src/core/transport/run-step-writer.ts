@@ -22,12 +22,11 @@ import { HEADER_STEER_CODEC_MESSAGE_IDS, HEADER_STEP_START_SERIAL } from '../../
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { errorCause } from '../../utils.js';
-import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
+import type { CodecInputEvent, CodecOutputEvent, WireCodec } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
 import { publishLifecycleEvent } from './lifecycle-publish.js';
 import { pipeStream } from './pipe-stream.js';
 import type { RunManager, StepClientScopes } from './run-manager.js';
-import type { DefaultTree } from './tree.js';
 import type {
   PipeSource,
   RunEndReason,
@@ -35,6 +34,7 @@ import type {
   RunStep,
   StepEndParams,
   StepEndReason,
+  StepLifecycleEvent,
   StepOptions,
   StreamResult,
 } from './types.js';
@@ -102,24 +102,35 @@ export interface StepWriterAnchors {
  * (`assertPublishable` / `getAnchors`) keep the run's open / resolve policy in
  * the run object while the writer owns the step + pipe mechanics.
  */
-export interface RunStepWriterContext<
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-  TProjection,
-  TMessage,
-> {
+export interface RunStepWriterContext<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> {
   /** The run's id, read live (a continuation re-keys it as the run opens). */
   getRunId(): string;
   /** The run's invocation-id (stable), scoping the default `stepId` and stamped on every publish. */
   invocationId: string;
-  /** The codec, used to create a per-stream encoder. */
-  codec: Codec<TInput, TOutput, TProjection, TMessage>;
+  /** The wire tier of the codec, used to create a per-stream encoder. */
+  codec: WireCodec<TInput, TOutput>;
   /** The shared Ably channel the encoder publishes to. */
   channel: Ably.RealtimeChannel;
   /** The run manager, used to publish step lifecycle events and read the run owner's client-id. */
   runManager: RunManager;
-  /** Live accessor for the session Tree (re-created on continuity loss), used to seed optimistic step lifecycle. */
-  getTree: () => DefaultTree<TInput, TOutput, TProjection>;
+  /**
+   * Seed an optimistic step-lifecycle event locally, so a subscriber sees the
+   * step-start / step-end bracket before the wire echo arrives. The Tree-backed
+   * agent session folds it into its Tree; a standalone consumer re-emits it on
+   * its receive stream. Called once at each step open and close.
+   * @param event - The optimistic step-start / step-end event (its `serial` is `undefined`).
+   */
+  emitStepLifecycle(event: StepLifecycleEvent): void;
+  /**
+   * The sticky `stepClientId` to inherit for a run's next step: the
+   * `step-client-id` of the run's latest preceding step, re-derived from durable
+   * channel state. Backs the second rung of {@link resolveStepClientId}'s ladder
+   * so a fresh adopting process (whose in-process cursor is empty) still inherits
+   * the run's prior step's client rather than resetting to the default.
+   * @param runId - The run whose prior step's client to read.
+   * @returns The latest preceding step's client, or `undefined` when the run has no prior step yet.
+   */
+  getPriorStepClientId(runId: string): string | undefined;
   /** The run's callbacks — `onAblyMessage` (per published message), `onCancelled` (final write on cancel), `onError`. */
   hooks: RunHooks<TOutput>;
   /** The run's composite abort signal (internal controller composed with any external signal). */
@@ -173,15 +184,10 @@ export interface RunStepWriter<TOutput extends CodecOutputEvent> {
  * @param ctx - The run's dependencies (see {@link RunStepWriterContext}).
  * @returns The run's {@link RunStepWriter}.
  */
-export const createRunStepWriter = <
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-  TProjection,
-  TMessage,
->(
-  ctx: RunStepWriterContext<TInput, TOutput, TProjection, TMessage>,
+export const createRunStepWriter = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent>(
+  ctx: RunStepWriterContext<TInput, TOutput>,
 ): RunStepWriter<TOutput> => {
-  const { codec, channel, runManager, getTree, signal, logger, invocationId } = ctx;
+  const { codec, channel, runManager, signal, logger, invocationId } = ctx;
   const { onAblyMessage: runOnAblyMessage, onCancelled, onError: runOnError } = ctx.hooks;
 
   // Per-run step bookkeeping for default `stepId` resolution (see step()):
@@ -243,37 +249,16 @@ export const createRunStepWriter = <
   });
 
   /**
-   * Re-derive the sticky `stepClientId` from the channel: the `step-client-id`
-   * of the run's latest preceding step, read off the hydrated Tree (the same
-   * channel-as-truth source `load()` / `adoptRun` use). The fast-path
-   * {@link lastStepClientId} cursor is empty in a fresh adopting process whose
-   * prior steps ran elsewhere, but that process's `load()`-hydrated Tree carries
-   * those steps — so the sticky inheritance is authoritative from the channel,
-   * not the (empty) cursor. Reads `StepInfo.stepClientId` of the most-recent step
-   * that carries one (walking the read-model's first-observed order from the tail).
-   * @returns The latest preceding step's client, or undefined when the run has no
-   *   prior step on the channel yet (its first step).
-   */
-  const stepClientIdFromChannel = (): string | undefined => {
-    const steps = getTree().getRunNode(ctx.getRunId())?.steps;
-    if (!steps) return undefined;
-    for (let i = steps.length - 1; i >= 0; i--) {
-      const sc = steps[i]?.stepClientId;
-      if (sc !== undefined && sc !== '') return sc;
-    }
-    return undefined;
-  };
-
-  /**
    * Resolve a step's `stepClientId` at `ai-step-start` (the precedence ladder,
    * parallel to the `stepId` ladder), and update the {@link lastStepClientId}
    * cursor:
    *   1. an explicit {@link StepOptions.stepClientId} (the steer seam populates) wins;
    *   2. else inherit the prior step's client — STICKY — from the in-process
    *      cursor (the provisioned/serverless fast-path), falling back to
-   *      re-deriving it from the channel ({@link stepClientIdFromChannel}) so a
-   *      fresh-process step with no cursor still inherits the run's prior step's
-   *      client rather than resetting to the default;
+   *      re-deriving it from durable channel state
+   *      ({@link RunStepWriterContext.getPriorStepClientId}) so a fresh-process
+   *      step with no cursor still inherits the run's prior step's client rather
+   *      than resetting to the default;
    *   3. else (no prior step — the run's FIRST step) default to the triggering
    *      input's publisher (`input-client-id`), NOT the run owner: the two coincide
    *      on a fresh turn but diverge on a non-owner continuation, and the input's
@@ -282,15 +267,17 @@ export const createRunStepWriter = <
    * @returns The resolved step client (empty string when nothing resolves a value).
    */
   const resolveStepClientId = (explicit?: string): string => {
-    const resolved = explicit ?? lastStepClientId ?? stepClientIdFromChannel() ?? ctx.getAnchors().inputClientId ?? '';
+    const resolved =
+      explicit ?? lastStepClientId ?? ctx.getPriorStepClientId(ctx.getRunId()) ?? ctx.getAnchors().inputClientId ?? '';
     lastStepClientId = resolved;
     return resolved;
   };
 
   /**
-   * Publish `ai-step-start` and seed the optimistic step-start into the Tree
-   * with the ACK serial the publish returns — the attempt's identity (its
-   * `step-start-serial`). Shared by the eager open in createStep's start() and the
+   * Publish `ai-step-start` and seed the optimistic step-start locally (via
+   * {@link RunStepWriterContext.emitStepLifecycle}) with the ACK serial the
+   * publish returns — the attempt's identity (its `step-start-serial`). Shared
+   * by the eager open in createStep's start() and the
    * lazy first-output open in run.pipe. Stamps the step's invocation +
    * client-identity scopes (including the resolved `stepClientId`) on both the
    * wire event and the optimistic seed, and returns the step-start-serial so the
@@ -312,7 +299,7 @@ export const createRunStepWriter = <
       { phase: 'step-start', method: 'openStep', runId, logger, logContext: { stepId } },
       async () => runManager.startStep(runId, stepId, scopes),
     );
-    getTree().applyStepLifecycle({
+    ctx.emitStepLifecycle({
       type: 'step-start',
       runId,
       stepId,
@@ -326,8 +313,9 @@ export const createRunStepWriter = <
   };
 
   /**
-   * Publish `ai-step-end`, seed the optimistic step-end into the Tree, and
-   * record the step as the previous one so a following no-`stepId` retry can
+   * Publish `ai-step-end`, seed the optimistic step-end locally (via
+   * {@link RunStepWriterContext.emitStepLifecycle}), and record the step as the
+   * previous one so a following no-`stepId` retry can
    * coalesce. Shared by createStep and run.pipe's implicit step. Back-references
    * the attempt's `stepStartSerial` and stamps the SAME `stepClientId` the matching
    * `ai-step-start` carried (passed in by the caller, not re-resolved) so a
@@ -360,7 +348,7 @@ export const createRunStepWriter = <
       { phase: 'step-end', method: 'closeStep', runId, logger, logContext: { stepId } },
       async () => runManager.endStep(runId, stepId, stepStartSerial, reason, scopes),
     );
-    getTree().applyStepLifecycle({
+    ctx.emitStepLifecycle({
       type: 'step-end',
       runId,
       stepId,

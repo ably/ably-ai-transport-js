@@ -708,30 +708,20 @@ describe('ClientSession', () => {
       v.close();
     });
 
-    it('forwards historyPageSize to the channel-history fetch limit', async () => {
+    it.each<[string, number | undefined, number]>([
+      ['forwards the configured historyPageSize', 7, 7],
+      ['defaults to 100 when historyPageSize is unset', undefined, 100],
+    ])('%s as the channel-history fetch limit', async (_label, historyPageSize, limit) => {
       const ch = createMockChannel();
       const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client: createMockClient(ch),
         channelName: 'test-channel',
         codec: createMockCodec(),
-        historyPageSize: 7,
+        historyPageSize,
       });
       await s.connect();
       await s.view.loadOlder(1);
-      expect(ch.history).toHaveBeenCalledWith(expect.objectContaining({ limit: 7 }));
-      await s.close();
-    });
-
-    it('defaults the channel-history fetch limit to 100 when historyPageSize is unset', async () => {
-      const ch = createMockChannel();
-      const s = createClientSession<TestInput, TestOutput, TestProjection, TestMessage>({
-        client: createMockClient(ch),
-        channelName: 'test-channel',
-        codec: createMockCodec(),
-      });
-      await s.connect();
-      await s.view.loadOlder(1);
-      expect(ch.history).toHaveBeenCalledWith(expect.objectContaining({ limit: 100 }));
+      expect(ch.history).toHaveBeenCalledWith(expect.objectContaining({ limit }));
       await s.close();
     });
   });
@@ -1642,6 +1632,28 @@ describe('ClientSession', () => {
       const events: Ably.InboundMessage[] = [];
       fix.session.tree.on('ably-message', (m) => events.push(m));
 
+      simulateMessage(fix.channel, ablyMsg('some-event', { [HEADER_RUN_ID]: 'run-x' }));
+      expect(events).toHaveLength(1);
+    });
+
+    it('drops a message whose decode fails: error emitted, no ably-message, later messages still flow', () => {
+      const events: Ably.InboundMessage[] = [];
+      const errors: Ably.ErrorInfo[] = [];
+      fix.session.tree.on('ably-message', (m) => events.push(m));
+      fix.session.on('error', (e) => errors.push(e));
+
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- vi.mocked takes a method reference
+      vi.mocked(fix.decoder.decode).mockImplementationOnce(() => {
+        throw new Error('bad payload');
+      });
+      simulateMessage(fix.channel, ablyMsg('some-event', { [HEADER_RUN_ID]: 'run-x' }));
+
+      // The failed message is dropped whole: error surfaced, no raw emit.
+      expect(events).toHaveLength(0);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.SessionMessageProcessingFailed);
+
+      // The stream survives — the next message flows through.
       simulateMessage(fix.channel, ablyMsg('some-event', { [HEADER_RUN_ID]: 'run-x' }));
       expect(events).toHaveLength(1);
     });

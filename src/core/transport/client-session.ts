@@ -37,11 +37,11 @@ import { resolveChannelModes } from '../channel-options.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent, Encoder } from '../codec/types.js';
 import { createBaseRun } from './base-run.js';
 import { buildCancelMessage, type CancelTarget } from './cancel-envelope.js';
-import type { WireApplier } from './decode-fold.js';
 import { buildRunEndError, buildTransportHeaders } from './headers.js';
 import { createHistoryHydrator, type HistoryHydrator } from './history-hydrator.js';
 import { Invocation } from './invocation.js';
 import { createMaterialisation } from './materialisation.js';
+import type { ReceiveTransport } from './receive-transport.js';
 import {
   bestEffortDetach,
   ConnectGuard,
@@ -112,14 +112,15 @@ class DefaultClientSession<
   private readonly _view: ClientView<TInput, TMessage>;
   private readonly _views = new Set<ClientView<TInput, TMessage>>();
   /**
-   * The Tree's single decode-and-apply engine, binding the session's one
-   * decoder instance. Shared by the live decode loop and every View's history
-   * replay so an attach-boundary in-flight stream is continued (not
-   * re-started) by hydration, and re-delivered content decodes to nothing.
+   * The Tree's receive transport, binding the session's one decoder instance
+   * with the Tree subscribed to its event streams. Shared by the live decode
+   * loop and every View's history replay so an attach-boundary in-flight stream
+   * is continued (not re-started) by hydration, and re-delivered content decodes
+   * to nothing.
    */
-  private readonly _applier: WireApplier;
+  private readonly _receiver: ReceiveTransport<TInput, TOutput>;
   /**
-   * The session's shared history hydrator over the Tree/applier. Injected into
+   * The session's shared history hydrator over the Tree/receiver. Injected into
    * every View so the channel is paged once across views, and `hasOlder()`
    * reflects real cursor exhaustion.
    */
@@ -192,13 +193,20 @@ class DefaultClientSession<
     this._hasAttachedOnce = this._channel.state === 'attached';
 
     // Compose sub-components
-    const { tree, applier } = createMaterialisation(this._codec, this._logger, options.reorderWindowMs);
+    const { tree, receiver } = createMaterialisation(this._codec, this._logger, options.reorderWindowMs);
     this._tree = tree;
-    this._applier = applier;
+    this._receiver = receiver;
+    // A decode failure surfaces on the receiver's `error` stream (the message is
+    // dropped, not the stream); forward it to the session's own `error` so a
+    // consumer sees it exactly as before, tagged `SessionSubscriptionError`.
+    this._receiver.on('error', (err) => {
+      this._emitter.emit('error', err);
+    });
     this._hydrator = createHistoryHydrator({
       channel: this._channel,
-      tree: this._tree,
-      applier: this._applier,
+      foldWire: (wire) => {
+        this._foldWire(wire);
+      },
       pageSize: options.historyPageSize,
       logger: this._logger,
     });
@@ -301,6 +309,21 @@ class DefaultClientSession<
   // Message subscription handler
   // ---------------------------------------------------------------------------
 
+  /**
+   * Fold one wire message into the Tree via the receive transport, then notify
+   * Tree subscribers. The plain fold path (no live side-effects), shared by the
+   * history hydrator's page walk. A decode failure emits on the receiver's
+   * `error` stream (forwarded to the session) and drops that one message.
+   * @param wire - The inbound Ably message to fold.
+   */
+  private _foldWire(wire: Ably.InboundMessage): void {
+    // A failed decode drops the message (the receiver emitted `error`); its raw
+    // `ably-message` is not emitted either, so subscribers never index a
+    // message the fold did not apply.
+    if (this._receiver.deliverEvent(wire).outcome === 'failed') return;
+    this._receiver.deliverAblyMessage(wire);
+  }
+
   private _handleMessage(ablyMessage: Ably.InboundMessage): void {
     if (this._state === SessionState.CLOSED) return;
 
@@ -327,11 +350,22 @@ class DefaultClientSession<
           }
         }
 
-        // Reconstruct the tree via the Tree's single decode-and-apply engine —
-        // the same applier (and decoder instance) the Views' history replay
-        // uses, so the live loop can't drift from it and an attach-boundary
-        // stream isn't double-decoded.
-        const event = this._applier.apply(ablyMessage);
+        // Classify and fold via the Tree's receive transport — the same
+        // receiver (and decoder instance) the Views' history replay uses, so the
+        // live loop can't drift from it and an attach-boundary stream isn't
+        // double-decoded. `deliverEvent` emits the classified `event` (the Tree,
+        // as a subscriber, folds it) and returns it here for the session's own
+        // live side-effects.
+        const delivered = this._receiver.deliverEvent(ablyMessage);
+        // A failed decode drops the message: the receiver emitted `error`
+        // (forwarded to this session's own `error` event), and none of the
+        // live side-effects below may observe a message the fold never
+        // applied — no steer observation, no `ably-message` emit.
+        if (delivered.outcome === 'failed') return;
+        const event =
+          delivered.outcome === 'classified' && delivered.event.kind === 'run-lifecycle'
+            ? delivered.event.event
+            : undefined;
 
         // Live-only: resolve the pending `runId` promise on a fresh run-start or
         // a continuation run-resume. Key by the echoed `input-codec-message-id`
@@ -355,11 +389,12 @@ class DefaultClientSession<
         // stamps, and resolves steer outcomes on run-suspend / run-end.
         this._steer.observeMessage(ablyMessage);
 
-        // Emit ably-message AFTER the apply so View subscribers can find the
+        // Emit ably-message AFTER the fold so View subscribers can find the
         // owning node in `_lastVisibleNodeKeySet` (keyed by run-id for reply runs
         // and codec-message-id for inputs), which is refreshed by the tree
-        // 'update' events the apply triggers.
-        this._tree.emitAblyMessage(ablyMessage);
+        // 'update' events the fold triggers. The Tree, subscribed to the
+        // receiver's `ably-message`, forwards it to its own subscribers.
+        this._receiver.deliverAblyMessage(ablyMessage);
       },
       (error) => {
         this._emitter.emit('error', error);

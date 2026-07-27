@@ -17,6 +17,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { loadHistoryPages } from '../../../src/core/transport/load-history-pages.js';
 import { ErrorCode } from '../../../src/errors.js';
+import { createMockChannel, makePaginated } from '../../helper/mock-channel.js';
 
 let serialCounter = 0;
 const nextSerial = (): string => {
@@ -32,37 +33,6 @@ const ablyMsg = (): Ably.InboundMessage =>
     extras: { ai: { transport: {} } },
   }) as unknown as Ably.InboundMessage;
 
-interface MockPage {
-  items: Ably.InboundMessage[];
-  hasNext: () => boolean;
-  next: () => Promise<MockPage | undefined>;
-}
-
-const buildPageChain = (pages: Ably.InboundMessage[][]): MockPage => {
-  const build = (i: number): MockPage => ({
-    items: pages[i] ?? [],
-    hasNext: () => i < pages.length - 1,
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-    next: () => Promise.resolve(i < pages.length - 1 ? build(i + 1) : undefined),
-  });
-  return build(0);
-};
-
-const createMockChannel = (
-  pages: Ably.InboundMessage[][] = [],
-): { channel: Ably.RealtimeChannel; historyMock: ReturnType<typeof vi.fn> } => {
-  const historyMock = vi.fn(
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-    () => Promise.resolve(buildPageChain(pages)),
-  );
-  const channel = {
-    // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-    attach: vi.fn(() => Promise.resolve()),
-    history: historyMock,
-  };
-  return { channel: channel as unknown as Ably.RealtimeChannel, historyMock };
-};
-
 describe('loadHistoryPages', () => {
   beforeEach(() => {
     serialCounter = 0;
@@ -73,7 +43,7 @@ describe('loadHistoryPages', () => {
     const m3 = ablyMsg();
     const m2 = ablyMsg();
     const m1 = ablyMsg();
-    const { channel } = createMockChannel([
+    const channel = createMockChannel([
       [m4, m3],
       [m2, m1],
     ]);
@@ -94,23 +64,18 @@ describe('loadHistoryPages', () => {
   });
 
   it('passes `untilAttach: true` by default', async () => {
-    const { channel, historyMock } = createMockChannel([[ablyMsg()]]);
+    const channel = createMockChannel([[ablyMsg()]]);
     await loadHistoryPages(channel, { pageLimit: 10 });
-    expect(historyMock).toHaveBeenCalledWith({ limit: 10, untilAttach: true });
+    expect(channel.history).toHaveBeenCalledWith({ limit: 10, untilAttach: true });
   });
 
   it('retries the initial history call with backoff before rejecting `SessionHistoryFetchFailed`', async () => {
-    const channel = {
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-      attach: vi.fn(() => Promise.resolve()),
-      history: vi
-        .fn()
-        .mockRejectedValueOnce(new Error('transient'))
-        .mockRejectedValueOnce(new Error('transient'))
-        .mockResolvedValueOnce(buildPageChain([[ablyMsg()]])),
-    };
+    const channel = createMockChannel([[ablyMsg()]]);
+    // Two transient failures; the third call falls through to the mock's
+    // default implementation, which serves the page.
+    channel.history.mockRejectedValueOnce(new Error('transient')).mockRejectedValueOnce(new Error('transient'));
 
-    const cursor = await loadHistoryPages(channel as unknown as Ably.RealtimeChannel, {
+    const cursor = await loadHistoryPages(channel, {
       pageLimit: 1,
       maxRetries: 3,
       retryBackoffMs: 1,
@@ -134,16 +99,10 @@ describe('loadHistoryPages', () => {
     }) as typeof setTimeout);
 
     try {
-      const channel = {
-        // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-        attach: vi.fn(() => Promise.resolve()),
-        history: vi
-          .fn()
-          .mockRejectedValueOnce(new Error('transient'))
-          .mockResolvedValueOnce(buildPageChain([[ablyMsg()]])),
-      };
+      const channel = createMockChannel([[ablyMsg()]]);
+      channel.history.mockRejectedValueOnce(new Error('transient'));
 
-      await loadHistoryPages(channel as unknown as Ably.RealtimeChannel, {
+      await loadHistoryPages(channel, {
         pageLimit: 1,
         maxRetries: 1,
         retryBackoffMs: 1,
@@ -160,14 +119,10 @@ describe('loadHistoryPages', () => {
     const m1 = ablyMsg();
     const m2 = ablyMsg();
     let nextCalls = 0;
-    // `hasNext()` is false, so the cursor never calls `page2.next()`.
-    const page2: MockPage = {
-      items: [m2],
-      hasNext: () => false,
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-      next: () => Promise.resolve(page2),
-    };
-    const page1: MockPage = {
+    const page2 = makePaginated([[m2]]);
+    // CAST: the cursor only reads `items`, `hasNext()`, and `next()`; `next()`
+    // injects one transient failure before yielding the second page.
+    const page1 = {
       items: [m1],
       hasNext: () => true,
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
@@ -175,15 +130,11 @@ describe('loadHistoryPages', () => {
         nextCalls += 1;
         return nextCalls === 1 ? Promise.reject(new Error('transient')) : Promise.resolve(page2);
       },
-    };
-    const channel = {
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-      attach: vi.fn(() => Promise.resolve()),
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-      history: vi.fn(() => Promise.resolve(page1)),
-    };
+    } as unknown as Ably.PaginatedResult<Ably.InboundMessage>;
+    const channel = createMockChannel();
+    channel.history.mockResolvedValue(page1);
 
-    const cursor = await loadHistoryPages(channel as unknown as Ably.RealtimeChannel, {
+    const cursor = await loadHistoryPages(channel, {
       pageLimit: 1,
       maxRetries: 2,
       retryBackoffMs: 1,
@@ -197,20 +148,18 @@ describe('loadHistoryPages', () => {
 
   it('rejects `SessionHistoryFetchFailed` when a mid-walk page.next() exhausts retries', async () => {
     const m1 = ablyMsg();
-    const page1: MockPage = {
+    // CAST: the cursor only reads `items`, `hasNext()`, and `next()`; `next()`
+    // always fails so the walk exhausts its retries.
+    const page1 = {
       items: [m1],
       hasNext: () => true,
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
       next: () => Promise.reject(new Error('permanent')),
-    };
-    const channel = {
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-      attach: vi.fn(() => Promise.resolve()),
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-      history: vi.fn(() => Promise.resolve(page1)),
-    };
+    } as unknown as Ably.PaginatedResult<Ably.InboundMessage>;
+    const channel = createMockChannel();
+    channel.history.mockResolvedValue(page1);
 
-    const cursor = await loadHistoryPages(channel as unknown as Ably.RealtimeChannel, {
+    const cursor = await loadHistoryPages(channel, {
       pageLimit: 1,
       maxRetries: 1,
       retryBackoffMs: 1,
@@ -221,7 +170,7 @@ describe('loadHistoryPages', () => {
 
   it('hasNext() returns false once the signal aborts', async () => {
     const ctrl = new AbortController();
-    const { channel } = createMockChannel([[ablyMsg()], [ablyMsg()]]);
+    const channel = createMockChannel([[ablyMsg()], [ablyMsg()]]);
 
     const cursor = await loadHistoryPages(channel, { pageLimit: 1, signal: ctrl.signal });
     expect(cursor.hasNext()).toBe(true);
@@ -230,14 +179,11 @@ describe('loadHistoryPages', () => {
   });
 
   it('rejects `SessionHistoryFetchFailed` after retries are exhausted', async () => {
-    const channel = {
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-      attach: vi.fn(() => Promise.resolve()),
-      history: vi.fn().mockRejectedValue(new Error('permanent')),
-    };
+    const channel = createMockChannel();
+    channel.history.mockRejectedValue(new Error('permanent'));
 
     await expect(
-      loadHistoryPages(channel as unknown as Ably.RealtimeChannel, {
+      loadHistoryPages(channel, {
         pageLimit: 1,
         maxRetries: 1,
         retryBackoffMs: 1,
@@ -247,20 +193,17 @@ describe('loadHistoryPages', () => {
 
   it('throws `OperationCancelled` when the signal aborts during retry backoff', async () => {
     const ctrl = new AbortController();
-    const channel = {
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-      attach: vi.fn(() => Promise.resolve()),
-      // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
-      history: vi.fn(() => {
-        // Abort as the fetch fails, so the retry loop's backoff wait sees an
-        // already-aborted signal — deterministic, no timer races.
-        ctrl.abort();
-        return Promise.reject(new Error('transient'));
-      }),
-    };
+    const channel = createMockChannel();
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns Promise directly
+    channel.history.mockImplementation(() => {
+      // Abort as the fetch fails, so the retry loop's backoff wait sees an
+      // already-aborted signal — deterministic, no timer races.
+      ctrl.abort();
+      return Promise.reject(new Error('transient'));
+    });
 
     await expect(
-      loadHistoryPages(channel as unknown as Ably.RealtimeChannel, {
+      loadHistoryPages(channel, {
         pageLimit: 1,
         maxRetries: 2,
         retryBackoffMs: 1,
@@ -271,7 +214,7 @@ describe('loadHistoryPages', () => {
   });
 
   it('throws `OperationCancelled` when the signal is aborted on entry', async () => {
-    const { channel } = createMockChannel([[ablyMsg()]]);
+    const channel = createMockChannel([[ablyMsg()]]);
     const ctrl = new AbortController();
     ctrl.abort();
     await expect(loadHistoryPages(channel, { pageLimit: 1, signal: ctrl.signal })).rejects.toBeErrorInfoWithCode(
@@ -283,7 +226,7 @@ describe('loadHistoryPages', () => {
     const ctrl = new AbortController();
     const m1 = ablyMsg();
     const m2 = ablyMsg();
-    const { channel } = createMockChannel([[m1], [m2]]);
+    const channel = createMockChannel([[m1], [m2]]);
 
     const cursor = await loadHistoryPages(channel, { pageLimit: 1, signal: ctrl.signal });
     const first = await cursor.next();

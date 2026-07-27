@@ -121,7 +121,7 @@ export type RunLifecycleEvent =
  *
  * Both arms carry the run-id and the step-id (stable across retry attempts). An
  * attempt's identity is the channel serial of its `step-start` (its
- * `start-serial`): a `step-start` carries that as its own `serial`, and a
+ * `step-start-serial`): a `step-start` carries that as its own `serial`, and a
  * `step-end` back-references it. The canonical attempt for a step-id is the one
  * whose `step-start` has the latest `serial`; the Tree folds only the canonical
  * attempt's output into the run's projection.
@@ -168,7 +168,7 @@ export type StepLifecycleEvent =
       stepClientId: string;
       /**
        * Ably channel serial of the step-start message — the attempt's identity
-       * (its `start-serial`) — or `undefined` for an optimistic local event.
+       * (its `step-start-serial`) — or `undefined` for an optimistic local event.
        * Determines the canonical attempt: the latest serial for a given step-id
        * wins. An undefined serial sorts lowest (an optimistic seed), and the
        * concrete-serial echo promotes it.
@@ -185,10 +185,11 @@ export type StepLifecycleEvent =
       /** The step's id, matching the corresponding `step-start`. */
       stepId: string;
       /**
-       * The serial of the `step-start` this end closes (wire `start-serial`) —
-       * the attempt's identity. Matches that `step-start`'s own `serial`.
+       * The serial of the `step-start` this end closes (wire
+       * `step-start-serial`) — the attempt's identity. Matches that
+       * `step-start`'s own `serial`.
        */
-      startSerial: string;
+      stepStartSerial: string;
       /**
        * The invocation-id this step was published under (wire `invocation-id`).
        * Matches the corresponding `step-start`. Empty string if the wire didn't
@@ -237,7 +238,7 @@ export interface StepInfo {
    * canonical attempt's end reason.
    */
   status: 'active' | StepEndReason;
-  /** How many distinct start-serials (physical attempts) of this step have been observed. */
+  /** How many distinct step-start-serials (physical attempts) of this step have been observed. */
   attemptCount: number;
   /**
    * The clientId of the participant whose most-recently-incorporated input
@@ -458,13 +459,13 @@ export interface OutputEvent<TOutput extends CodecOutputEvent> {
    */
   stepId?: string;
   /**
-   * The `start-serial` of the step attempt that published these outputs (the
-   * serial of its `ai-step-start`), or `undefined` when the message belonged to
-   * no step. Set from the output's `start-serial` header. Lets consumers
-   * attribute live output to a step attempt; the Tree itself uses it to gate
-   * superseded attempts.
+   * The `step-start-serial` of the step attempt that published these outputs
+   * (the serial of its `ai-step-start`), or `undefined` when the message
+   * belonged to no step. Set from the output's `step-start-serial` header. Lets
+   * consumers attribute live output to a step attempt; the Tree itself uses it
+   * to gate superseded attempts.
    */
-  startSerial?: string;
+  stepStartSerial?: string;
   /**
    * The codec-message-ids this message stamped as responded steering messages
    * (from the output's `steer-codec-message-ids` header), or `undefined` when

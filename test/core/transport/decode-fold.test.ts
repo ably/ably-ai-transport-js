@@ -19,8 +19,8 @@ import {
   EVENT_STEP_END,
   EVENT_STEP_START,
   HEADER_RUN_ID,
-  HEADER_START_SERIAL,
   HEADER_STEP_ID,
+  HEADER_STEP_START_SERIAL,
 } from '../../../src/constants.js';
 import type { CodecInputEvent, Decoder } from '../../../src/core/codec/types.js';
 import { createWireApplier, foldAndEmit } from '../../../src/core/transport/decode-fold.js';
@@ -145,9 +145,9 @@ describe('WireApplier', () => {
       const event = createWireApplier(asTree(tree), decoder).apply(
         msg({
           name,
-          // step-end needs a start-serial back-ref to parse; step-start ignores
+          // step-end needs a step-start-serial back-ref to parse; step-start ignores
           // it (its own serial is the identity), so carrying it on both is safe.
-          headers: { [HEADER_RUN_ID]: 'R1', [HEADER_STEP_ID]: 'S', [HEADER_START_SERIAL]: 's0' },
+          headers: { [HEADER_RUN_ID]: 'R1', [HEADER_STEP_ID]: 'S', [HEADER_STEP_START_SERIAL]: 's0' },
           serial: 's1',
         }),
       );
@@ -167,7 +167,7 @@ describe('WireApplier', () => {
       expect(tree.applyStepLifecycle).not.toHaveBeenCalled();
     });
 
-    it('skips applyStepLifecycle for a step-end missing its start-serial back-ref', () => {
+    it('skips applyStepLifecycle for a step-end missing its step-start-serial back-ref', () => {
       const tree = makeTree();
       createWireApplier(asTree(tree), makeDecoder([], [])).apply(
         msg({ name: EVENT_STEP_END, headers: { [HEADER_RUN_ID]: 'R1', [HEADER_STEP_ID]: 'S' } }),

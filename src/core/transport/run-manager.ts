@@ -126,32 +126,32 @@ export interface RunManager {
    * Publish `ai-step-start` to open a step attempt within a run. Carries
    * `step-id` plus the step's invocation correlation and the three concentric
    * client-identity scopes ({@link StepClientScopes}). The published message's
-   * channel serial IS the attempt's identity (its `start-serial`), returned to
+   * channel serial IS the attempt's identity (its `step-start-serial`), returned to
    * the caller to back-reference on the step's output and `ai-step-end`. A retry
    * of a step publishes a fresh start with the same `stepId` and a new serial;
    * the latest-serial start is the canonical attempt.
    * @param runId - The run the step belongs to.
    * @param stepId - The step's id (stable across retry attempts).
    * @param scopes - The step's invocation + client-identity scopes, stamped on the wire.
-   * @returns The published `ai-step-start`'s channel serial (the `start-serial`),
+   * @returns The published `ai-step-start`'s channel serial (the `step-start-serial`),
    *   or `undefined` when the publish returned no serial.
    */
   startStep(runId: string, stepId: string, scopes?: StepClientScopes): Promise<string | undefined>;
   /**
    * Publish `ai-step-end` to close a step attempt, back-referencing the
-   * attempt's `start-serial` and stamping `step-reason` plus the same invocation
+   * attempt's `step-start-serial` and stamping `step-reason` plus the same invocation
    * correlation and client-identity scopes ({@link StepClientScopes}) as the
    * matching `ai-step-start`.
    * @param runId - The run the step belongs to.
    * @param stepId - The step's id.
-   * @param startSerial - The attempt's `start-serial` (its `ai-step-start`'s serial).
+   * @param stepStartSerial - The attempt's `step-start-serial` (its `ai-step-start`'s serial).
    * @param reason - Why the step attempt ended.
    * @param scopes - The step's invocation + client-identity scopes, stamped on the wire.
    */
   endStep(
     runId: string,
     stepId: string,
-    startSerial: string,
+    stepStartSerial: string,
     reason: StepEndReason,
     scopes?: StepClientScopes,
   ): Promise<void>;
@@ -305,24 +305,24 @@ class DefaultRunManager implements RunManager {
     const headers = buildStepHeaders({ runId, stepId, ...scopes });
     const result = await this._channel.publish({ name: EVENT_STEP_START, extras: { ai: { transport: headers } } });
     // The step-start's own channel serial is the attempt's identity (its
-    // `start-serial`); the caller back-references it on the step's output and
+    // `step-start-serial`); the caller back-references it on the step's output and
     // `ai-step-end`. May be undefined if the publish returned no serial.
-    const startSerial = result.serials[0] ?? undefined;
-    this._logger?.debug('DefaultRunManager.startStep(); step started', { runId, stepId, startSerial });
-    return startSerial;
+    const stepStartSerial = result.serials[0] ?? undefined;
+    this._logger?.debug('DefaultRunManager.startStep(); step started', { runId, stepId, stepStartSerial });
+    return stepStartSerial;
   }
 
   async endStep(
     runId: string,
     stepId: string,
-    startSerial: string,
+    stepStartSerial: string,
     reason: StepEndReason,
     scopes?: StepClientScopes,
   ): Promise<void> {
-    this._logger?.trace('DefaultRunManager.endStep();', { runId, stepId, startSerial, reason });
-    const headers = buildStepHeaders({ runId, stepId, startSerial, reason, ...scopes });
+    this._logger?.trace('DefaultRunManager.endStep();', { runId, stepId, stepStartSerial, reason });
+    const headers = buildStepHeaders({ runId, stepId, stepStartSerial, reason, ...scopes });
     await this._channel.publish({ name: EVENT_STEP_END, extras: { ai: { transport: headers } } });
-    this._logger?.debug('DefaultRunManager.endStep(); step ended', { runId, stepId, startSerial, reason });
+    this._logger?.debug('DefaultRunManager.endStep(); step ended', { runId, stepId, stepStartSerial, reason });
   }
 
   getClientId(runId: string): string | undefined {

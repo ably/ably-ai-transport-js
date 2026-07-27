@@ -19,10 +19,10 @@ import {
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
-  HEADER_START_SERIAL,
   HEADER_STEP_CLIENT_ID,
   HEADER_STEP_ID,
   HEADER_STEP_REASON,
+  HEADER_STEP_START_SERIAL,
 } from '../../../src/constants.js';
 import type { RunManager } from '../../../src/core/transport/run-manager.js';
 import { createRunManager } from '../../../src/core/transport/run-manager.js';
@@ -43,7 +43,7 @@ const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
     publish: vi.fn(async (msg: Ably.Message): Promise<Ably.PublishResult> => {
       mock.publishCalls.push(msg);
       // A deterministic per-publish serial so startStep can return the
-      // step-start's serial (the attempt's `start-serial`).
+      // step-start's serial (the attempt's `step-start-serial`).
       return { serials: [`serial-${String(mock.publishCalls.length)}`] };
     }),
   };
@@ -400,8 +400,8 @@ describe('RunManager', () => {
   });
 
   describe('startStep', () => {
-    it('publishes ai-step-start with run-id and step-id (no start-serial back-ref) and returns its serial', async () => {
-      const startSerial = await manager.startStep('run-1', 'step-0');
+    it('publishes ai-step-start with run-id and step-id (no step-start-serial back-ref) and returns its serial', async () => {
+      const stepStartSerial = await manager.startStep('run-1', 'step-0');
 
       expect(channel.publishCalls).toHaveLength(1);
       const [msg] = channel.publishCalls;
@@ -411,19 +411,19 @@ describe('RunManager', () => {
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
       expect(headers[HEADER_STEP_ID]).toBe('step-0');
       // A step-start carries no back-ref — its own serial is the identity.
-      expect(headers[HEADER_START_SERIAL]).toBeUndefined();
+      expect(headers[HEADER_STEP_START_SERIAL]).toBeUndefined();
       expect(headers[HEADER_STEP_REASON]).toBeUndefined();
-      // The publish ACK serial is returned as the attempt's start-serial.
-      expect(startSerial).toBe('serial-1');
+      // The publish ACK serial is returned as the attempt's step-start-serial.
+      expect(stepStartSerial).toBe('serial-1');
     });
 
     it('returns undefined when the publish yields no serial', async () => {
       // A publish that returns no serial (empty serials array) — startStep then
-      // has no `start-serial` to return.
+      // has no `step-start-serial` to return.
       const noSerialResult: Ably.PublishResult = { serials: [] };
       channel.publish.mockResolvedValueOnce(noSerialResult);
-      const startSerial = await manager.startStep('run-1', 'step-0');
-      expect(startSerial).toBeUndefined();
+      const stepStartSerial = await manager.startStep('run-1', 'step-0');
+      expect(stepStartSerial).toBeUndefined();
     });
 
     it('forwards the invocation correlation and the three client-identity scopes onto the wire', async () => {
@@ -444,7 +444,7 @@ describe('RunManager', () => {
   });
 
   describe('endStep', () => {
-    it('publishes ai-step-end stamping the start-serial back-ref and the step-reason', async () => {
+    it('publishes ai-step-end stamping the step-start-serial back-ref and the step-reason', async () => {
       await manager.endStep('run-1', 'step-0', 'serial-1', 'failed');
 
       expect(channel.publishCalls).toHaveLength(1);
@@ -454,7 +454,7 @@ describe('RunManager', () => {
       const headers = headersOf(msg!);
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
       expect(headers[HEADER_STEP_ID]).toBe('step-0');
-      expect(headers[HEADER_START_SERIAL]).toBe('serial-1');
+      expect(headers[HEADER_STEP_START_SERIAL]).toBe('serial-1');
       expect(headers[HEADER_STEP_REASON]).toBe('failed');
     });
 

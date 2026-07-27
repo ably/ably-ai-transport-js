@@ -403,7 +403,7 @@ export async function runToolStep(input: StepInput & { toolCall: ToolCallInfo })
   } catch (error) {
     // Detach on error: `tool.execute()` throws are typically retryable
     // (Temporal will re-run this activity under the same `stepId`, and the
-    // retry supersedes the failed attempt's output via the SDK's start-serial
+    // retry supersedes the failed attempt's output via the SDK's step-start-serial
     // supersede semantics). Ending the session would publish `ai-run-end` and
     // mark the run terminal — every retry would then fail with "run is
     // terminal (read-only)". Workflow-level `cleanupRun` marks the run

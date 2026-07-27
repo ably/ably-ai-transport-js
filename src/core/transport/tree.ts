@@ -34,9 +34,9 @@ import {
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
-  HEADER_START_SERIAL,
   HEADER_STEER_CODEC_MESSAGE_IDS,
   HEADER_STEP_ID,
+  HEADER_STEP_START_SERIAL,
   HEADER_STREAM,
 } from '../../constants.js';
 import { EventEmitter } from '../../event-emitter.js';
@@ -72,7 +72,7 @@ export const REORDER_WINDOW_MS = 120_000;
 
 /**
  * Per-step precedence record on a run node. Tracks the canonical attempt (the
- * one whose `ai-step-start` has the latest serial — its `start-serial`) and
+ * one whose `ai-step-start` has the latest serial — its `step-start-serial`) and
  * every attempt seen, so the read-model and the fold gate can be derived. The
  * canonical attempt's output is the only one folded into the run's projection.
  */
@@ -80,18 +80,18 @@ interface StepRecord {
   /**
    * Whether any `ai-step-start` has been observed for this step. Distinguishes
    * "no start seen yet" (a step known only from an out-of-order step-end or
-   * output) from a canonical attempt whose `start-serial` happens to be
+   * output) from a canonical attempt whose `step-start-serial` happens to be
    * `undefined` (a serial-less optimistic seed).
    */
   started: boolean;
   /**
-   * The canonical attempt's `start-serial` (the serial of its latest-serial
+   * The canonical attempt's `step-start-serial` (the serial of its latest-serial
    * `ai-step-start`) — the attempt's identity — or `undefined` for a serial-less
    * optimistic seed (the agent's own pre-echo start) or before any start is
    * seen. An undefined serial sorts lowest, so any concrete-serial start
    * promotes/supersedes it.
    */
-  canonicalStartSerial: string | undefined;
+  canonicalStepStartSerial: string | undefined;
   /**
    * The canonical attempt's `step-client-id` (the step's participant), surfaced
    * on {@link StepInfo.stepClientId}. Set from the canonical `ai-step-start`, so
@@ -100,13 +100,13 @@ interface StepRecord {
    */
   stepClientId: string | undefined;
   /**
-   * Every `start-serial` seen for this step — from step-starts (their own
+   * Every `step-start-serial` seen for this step — from step-starts (their own
    * serial) and step-ends (their back-ref). Its size is the read-model attempt
    * count (distinct physical attempts).
    */
-  startSerials: Set<string>;
-  /** Terminal reason per `start-serial`, from `ai-step-end`. The read-model status reads the canonical attempt's entry. */
-  endReasonByStartSerial: Map<string, StepEndReason>;
+  stepStartSerials: Set<string>;
+  /** Terminal reason per `step-start-serial`, from `ai-step-end`. The read-model status reads the canonical attempt's entry. */
+  endReasonByStepStartSerial: Map<string, StepEndReason>;
 }
 
 /**
@@ -119,9 +119,9 @@ interface StepState {
   steps: Map<string, StepRecord>;
   /** stepIds in first-observed order, for the {@link RunNode.steps} read-model. */
   order: string[];
-  /** Output wire serial -> the step/attempt (by `start-serial`) that published it (read from the output's headers). Drives the fold gate. */
-  attribution: Map<string, { stepId: string; startSerial: string }>;
-  /** stepId -> the set of attempt `start-serial`s that have published (attributed) output. Drives the refold-on-supersede trigger. */
+  /** Output wire serial -> the step/attempt (by `step-start-serial`) that published it (read from the output's headers). Drives the fold gate. */
+  attribution: Map<string, { stepId: string; stepStartSerial: string }>;
+  /** stepId -> the set of attempt `step-start-serial`s that have published (attributed) output. Drives the refold-on-supersede trigger. */
   outputAttempts: Map<string, Set<string>>;
 }
 
@@ -623,8 +623,8 @@ export class DefaultTree<
     const attr = ss.attribution.get(serial);
     if (!attr) return false;
     const rec = ss.steps.get(attr.stepId);
-    if (rec?.canonicalStartSerial === undefined) return false;
-    return attr.startSerial !== rec.canonicalStartSerial;
+    if (rec?.canonicalStepStartSerial === undefined) return false;
+    return attr.stepStartSerial !== rec.canonicalStepStartSerial;
   }
 
   /**
@@ -830,8 +830,8 @@ export class DefaultTree<
     for (const rec of ss.steps.values()) {
       if (!rec.started) continue;
       const settled =
-        rec.canonicalStartSerial !== undefined &&
-        rec.endReasonByStartSerial.get(rec.canonicalStartSerial) !== undefined;
+        rec.canonicalStepStartSerial !== undefined &&
+        rec.endReasonByStepStartSerial.get(rec.canonicalStepStartSerial) !== undefined;
       if (!settled) return true;
     }
     return false;
@@ -1301,11 +1301,11 @@ export class DefaultTree<
     // Record step attribution from the output's headers BEFORE the fold, so a
     // refold triggered by this same (out-of-order) wire sees its own attempt and
     // gates it correctly rather than folding it as stepless. Only agent outputs
-    // carry step-id/start-serial; inputs and stepless outputs leave it unset.
+    // carry step-id/step-start-serial; inputs and stepless outputs leave it unset.
     const stepId = headers[HEADER_STEP_ID];
-    const startSerial = headers[HEADER_START_SERIAL];
-    if (stepId !== undefined && startSerial !== undefined && serial !== undefined) {
-      this._recordStepAttribution(run, serial, stepId, startSerial);
+    const stepStartSerial = headers[HEADER_STEP_START_SERIAL];
+    if (stepId !== undefined && stepStartSerial !== undefined && serial !== undefined) {
+      this._recordStepAttribution(run, serial, stepId, stepStartSerial);
     }
 
     // The steer-responded stamp this output carried. It rides the emit so a
@@ -1333,7 +1333,7 @@ export class DefaultTree<
         events: outputs,
         inputs: events.inputs,
         ...(stepId !== undefined && { stepId }),
-        ...(startSerial !== undefined && { startSerial }),
+        ...(stepStartSerial !== undefined && { stepStartSerial }),
         ...(steerCodecMessageIds !== undefined && { steerCodecMessageIds }),
       });
     }
@@ -1431,26 +1431,26 @@ export class DefaultTree<
     if (!rec) {
       rec = {
         started: false,
-        canonicalStartSerial: undefined,
+        canonicalStepStartSerial: undefined,
         stepClientId: undefined,
-        startSerials: new Set(),
-        endReasonByStartSerial: new Map(),
+        stepStartSerials: new Set(),
+        endReasonByStepStartSerial: new Map(),
       };
       ss.steps.set(event.stepId, rec);
       ss.order.push(event.stepId);
     }
 
-    // The attempt's identity is its `start-serial`: a step-start's own serial,
+    // The attempt's identity is its `step-start-serial`: a step-start's own serial,
     // a step-end's back-ref. Count it only when defined — a serial-less
     // optimistic step-start seed has no identity to count yet (its concrete
     // echo will), so it must not inflate the attempt count.
-    const startSerial = event.type === 'step-start' ? event.serial : event.startSerial;
-    if (startSerial !== undefined) rec.startSerials.add(startSerial);
+    const stepStartSerial = event.type === 'step-start' ? event.serial : event.stepStartSerial;
+    if (stepStartSerial !== undefined) rec.stepStartSerials.add(stepStartSerial);
 
     if (event.type === 'step-start') {
       this._applyStepStart(entry, ss, rec, event.stepId, event.serial, event.stepClientId);
     } else {
-      rec.endReasonByStartSerial.set(event.startSerial, event.reason);
+      rec.endReasonByStepStartSerial.set(event.stepStartSerial, event.reason);
     }
 
     this._updateStepsReadModel(runNode, ss);
@@ -1486,12 +1486,12 @@ export class DefaultTree<
    * for the step, make it the canonical attempt, and if that supersedes a
    * different attempt whose output is already folded, refold the node to drop
    * the superseded output. The attempt's identity is its own `serial` (its
-   * `start-serial`).
+   * `step-start-serial`).
    * @param entry - The run node's internal entry.
    * @param ss - The node's step state.
    * @param rec - The step's record.
    * @param stepId - The step id.
-   * @param serial - This `step-start`'s serial — the attempt's `start-serial`
+   * @param serial - This `step-start`'s serial — the attempt's `step-start-serial`
    *   (undefined for an optimistic seed).
    * @param stepClientId - This `step-start`'s `step-client-id` (the step's
    *   participant), recorded on the record when the attempt becomes canonical so
@@ -1510,12 +1510,12 @@ export class DefaultTree<
     // (the same attempt's echo) or supersedes (a later start) it.
     const isCanonical =
       !rec.started ||
-      (rec.canonicalStartSerial === undefined && serial !== undefined) ||
-      (rec.canonicalStartSerial !== undefined && serial !== undefined && serial > rec.canonicalStartSerial);
+      (rec.canonicalStepStartSerial === undefined && serial !== undefined) ||
+      (rec.canonicalStepStartSerial !== undefined && serial !== undefined && serial > rec.canonicalStepStartSerial);
     rec.started = true;
     if (!isCanonical) return;
 
-    rec.canonicalStartSerial = serial;
+    rec.canonicalStepStartSerial = serial;
     rec.stepClientId = stepClientId;
 
     // Refold only when a different attempt's output is already folded (avoids a
@@ -1561,27 +1561,27 @@ export class DefaultTree<
 
   /**
    * Record which step attempt published an output wire, keyed by the wire's
-   * serial, plus the per-step set of attempt `start-serial`s that have published
+   * serial, plus the per-step set of attempt `step-start-serial`s that have published
    * output (the refold-on-supersede trigger). Allocates step state lazily.
    * @param entry - The run node's internal entry.
    * @param serial - The output wire's serial.
    * @param stepId - The publishing step's id.
-   * @param startSerial - The publishing attempt's `start-serial`.
+   * @param stepStartSerial - The publishing attempt's `step-start-serial`.
    */
   private _recordStepAttribution(
     entry: InternalNode<TInput, TOutput, TProjection>,
     serial: string,
     stepId: string,
-    startSerial: string,
+    stepStartSerial: string,
   ): void {
     const ss = (entry.stepState ??= this._newStepState());
-    ss.attribution.set(serial, { stepId, startSerial });
+    ss.attribution.set(serial, { stepId, stepStartSerial });
     let set = ss.outputAttempts.get(stepId);
     if (!set) {
       set = new Set();
       ss.outputAttempts.set(stepId, set);
     }
-    set.add(startSerial);
+    set.add(stepStartSerial);
   }
 
   /**
@@ -1612,7 +1612,7 @@ export class DefaultTree<
   /**
    * Recompute a run node's {@link RunNode.steps} read-model from its step state.
    * Each entry reflects the step's canonical attempt status; the attempt count
-   * is the number of distinct `start-serial`s seen (physical attempts).
+   * is the number of distinct `step-start-serial`s seen (physical attempts).
    * @param node - The run node to update.
    * @param ss - The node's step state.
    */
@@ -1622,14 +1622,14 @@ export class DefaultTree<
       const rec = ss.steps.get(stepId);
       if (!rec) continue;
       // 'active' until the canonical attempt's `ai-step-end` is observed — and
-      // also while its `start-serial` is unknown (a serial-less optimistic seed
+      // also while its `step-start-serial` is unknown (a serial-less optimistic seed
       // whose end reason cannot yet be keyed), or a step seen only via a step-end
       // / output with no step-start at all.
       const status: 'active' | StepEndReason =
-        !rec.started || rec.canonicalStartSerial === undefined
+        !rec.started || rec.canonicalStepStartSerial === undefined
           ? 'active'
-          : (rec.endReasonByStartSerial.get(rec.canonicalStartSerial) ?? 'active');
-      steps.push({ stepId, status, attemptCount: rec.startSerials.size, stepClientId: rec.stepClientId });
+          : (rec.endReasonByStepStartSerial.get(rec.canonicalStepStartSerial) ?? 'active');
+      steps.push({ stepId, status, attemptCount: rec.stepStartSerials.size, stepClientId: rec.stepClientId });
     }
     node.steps = steps;
   }

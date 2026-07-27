@@ -319,7 +319,7 @@ export interface RunStep<TOutput extends CodecOutputEvent> {
   start(): Promise<void>;
   /**
    * Pipe an output stream through the encoder to the channel, stamping every
-   * output with this step's `step-id` and its attempt's `start-serial`.
+   * output with this step's `step-id` and its attempt's `step-start-serial`.
    * Otherwise identical to {@link AgentRun.pipe}: returns when the stream completes,
    * is cancelled, or errors. A stream error returns `{ reason: 'error' }` (it
    * does NOT throw) and marks the step `failed` when {@link RunStep.end} closes
@@ -328,7 +328,7 @@ export interface RunStep<TOutput extends CodecOutputEvent> {
    * @param options - Per-stream overrides. A per-output `resolveWriteOptions`
    *   merges over the step's default headers, so a normal override (e.g. one
    *   that only redirects `codecMessageId`) leaves `step-id` intact. The SDK
-   *   stamps `start-serial` after the override is applied, so an override cannot
+   *   stamps `step-start-serial` after the override is applied, so an override cannot
    *   change it; do NOT set `step-id` in an override unless you intend to
    *   re-attribute that output to a different step.
    * @returns The {@link StreamResult} for this pipe.
@@ -336,7 +336,7 @@ export interface RunStep<TOutput extends CodecOutputEvent> {
   pipe(stream: ReadableStream<TOutput>, options?: PipeOptions<TOutput>): Promise<StreamResult>;
   /**
    * Publish a single discrete output as one assistant message on the channel,
-   * stamped with this step's `step-id` and its attempt's `start-serial`.
+   * stamped with this step's `step-id` and its attempt's `step-start-serial`.
    *
    * Use this when you have a chunk to publish already — a tool result, a
    * data payload, a metadata event — rather than a streamed source. Each
@@ -492,7 +492,7 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
    * Brackets the output in ONE implicit step (so all agent output is published
    * within a step), opened LAZILY at the first output: it publishes
    * `ai-step-start` immediately before the first chunk, stamps every chunk with
-   * that step's `step-id` and its attempt's `start-serial`, then publishes
+   * that step's `step-id` and its attempt's `step-start-serial`, then publishes
    * `ai-step-end` (`complete`, or `failed` if the stream errored). A pipe that
    * produces NO
    * output — an empty stream, or one that errors or is cancelled before any

@@ -199,10 +199,10 @@ interface MockEncoder extends Encoder<TestInput, TestOutput> {
   failPublishWith: Error | undefined;
   /**
    * The transport headers of each `publishOutput`, captured AFTER the encoder's
-   * `onAblyMessage` hook ran — so a test can observe the `start-serial` the
-   * writer's composed hook stamps per message (the encoder core invokes
-   * `onAblyMessage` on a message whose `extras.ai.transport` is the default
-   * headers; this mock mirrors that so the stamping path is exercised).
+   * `onAblyMessage` hook ran — so a test can observe the `step-start-serial` the writer's
+   * composed hook stamps per message (the encoder core invokes `onAblyMessage` on a
+   * message whose `extras.ai.transport` is the default headers; this mock
+   * mirrors that so the stamping path is exercised).
    */
   outputTransport: Record<string, string>[];
 }
@@ -232,8 +232,8 @@ const createMockEncoder = (failWith?: Error, encoderOpts?: EncoderOptions): Mock
       if (enc.failPublishWith) return Promise.reject(enc.failPublishWith);
       calls.push({ direction: 'output', event, opts });
       // Mirror the encoder core: build the message's transport tier from the
-      // default + per-write headers, run the `onAblyMessage` hook (which the
-      // writer composes to stamp `start-serial`), then record the resulting headers.
+      // default + per-write headers, run the `onAblyMessage` hook (which the writer
+      // composes to stamp `step-start-serial`), then record the resulting headers.
       const transport: Record<string, string> = {
         ...encoderOpts?.extras?.headers,
         ...opts?.extras?.headers,
@@ -1627,14 +1627,18 @@ describe('AgentSession', () => {
     it('invokes onAblyMessage per outbound message, after the SDK stamps its headers', async () => {
       // Snapshot inside the hook: the mock hands it one transport record that it
       // mutates in place, so reading it after the pipe cannot pin the ordering.
-      const seen: { name: string | undefined; startSerial: string | undefined; stepId: string | undefined }[] = [];
+      const seen: { name: string | undefined; stepStartSerial: string | undefined; stepId: string | undefined }[] = [];
       const run = createRunFromOpts(session, {
         runId: 'run-1',
         onAblyMessage: (message: Ably.Message) => {
           // CAST: the encoder always builds `extras.ai.transport` before invoking
           // the hook (Ably SDK types `extras` as `any`); narrow to that tier.
           const transport = (message.extras as { ai: { transport: Record<string, string> } }).ai.transport;
-          seen.push({ name: message.name, startSerial: transport['start-serial'], stepId: transport['step-id'] });
+          seen.push({
+            name: message.name,
+            stepStartSerial: transport['step-start-serial'],
+            stepId: transport['step-id'],
+          });
           transport['x-custom'] = 'from-hook';
         },
       });
@@ -1643,9 +1647,9 @@ describe('AgentSession', () => {
 
       expect(seen).toHaveLength(2);
       expect(seen.every((s) => s.name === EVENT_AI_OUTPUT)).toBe(true);
-      // The SDK stamps start-serial per message, so the hook seeing it pins the
-      // order (the mock ACKs the step-start publish as serial-1).
-      expect(seen.every((s) => s.startSerial === 'serial-1')).toBe(true);
+      // The SDK stamps step-start-serial per message, so the hook seeing it pins
+      // the order (the mock ACKs the step-start publish as serial-1).
+      expect(seen.every((s) => s.stepStartSerial === 'serial-1')).toBe(true);
       expect(seen.every((s) => s.stepId === 'run-1-inv-step-0')).toBe(true);
       expect(codec.lastEncoder()?.outputTransport[0]?.['x-custom']).toBe('from-hook');
     });
@@ -1655,7 +1659,7 @@ describe('AgentSession', () => {
     // -----------------------------------------------------------------------
 
     describe('implicit step bracket', () => {
-      it('brackets a producing pipe with ai-step-start -> ai-step-end(complete) and stamps step-id/start-serial on output', async () => {
+      it('brackets a producing pipe with ai-step-start -> ai-step-end(complete) and stamps step-id/step-start-serial on output', async () => {
         const run = createRunFromOpts(session, { runId: 'run-1' });
         await run.start();
         await run.pipe(streamOf({ type: 'text', text: 'hi' }));
@@ -1669,20 +1673,20 @@ describe('AgentSession', () => {
         // scoped to the invocation (createRunFromOpts pins it to `run-1-inv`).
         expect(starts[0]?.['step-id']).toBe('run-1-inv-step-0');
         // A step-start carries no back-ref — its own serial is the identity.
-        expect(starts[0]?.['start-serial']).toBeUndefined();
+        expect(starts[0]?.['step-start-serial']).toBeUndefined();
         expect(ends[0]?.['step-reason']).toBe('complete');
         // The step-end carries the same step-id and back-references the
         // step-start's serial (the mock channel ACKs every publish as serial-1).
         expect(ends[0]?.['step-id']).toBe(starts[0]?.['step-id']);
-        expect(ends[0]?.['start-serial']).toBe('serial-1');
+        expect(ends[0]?.['step-start-serial']).toBe('serial-1');
 
         // The piped output's default headers carry the step-id; the per-message
-        // start-serial is stamped by the writer's composed onAblyMessage hook.
+        // step-start-serial is stamped by the writer's composed onAblyMessage hook.
         const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
         expect(headers['step-id']).toBe(starts[0]?.['step-id']);
-        expect(headers['start-serial']).toBeUndefined();
-        // The composed hook stamps start-serial on every output message.
-        expect(codec.lastEncoder()?.outputTransport[0]?.['start-serial']).toBe('serial-1');
+        expect(headers['step-start-serial']).toBeUndefined();
+        // The composed hook stamps step-start-serial on every output message.
+        expect(codec.lastEncoder()?.outputTransport[0]?.['step-start-serial']).toBe('serial-1');
       });
 
       it('does not throw when the implicit step-end publish fails (best-effort close)', async () => {
@@ -1912,12 +1916,12 @@ describe('AgentSession', () => {
       // `run-1-inv`), so continuations of the same run never collide.
       expect(starts[0]?.['step-id']).toBe('run-1-inv-step-0');
       // A step-start carries no back-ref — its own serial is the identity.
-      expect(starts[0]?.['start-serial']).toBeUndefined();
+      expect(starts[0]?.['step-start-serial']).toBeUndefined();
       expect(ends[0]?.['step-reason']).toBe('complete');
       // The step-end carries the same step-id and back-references the
       // step-start's serial (the mock channel ACKs every publish as serial-1).
       expect(ends[0]?.['step-id']).toBe(starts[0]?.['step-id']);
-      expect(ends[0]?.['start-serial']).toBe('serial-1');
+      expect(ends[0]?.['step-start-serial']).toBe('serial-1');
     });
 
     it('resolves stepId synchronously at createStep, before start() publishes', async () => {
@@ -1935,7 +1939,7 @@ describe('AgentSession', () => {
       await step.end();
     });
 
-    it('stamps step-id (default header) and start-serial (composed hook) on output piped within the step', async () => {
+    it('stamps step-id (default header) and step-start-serial (composed hook) on output piped within the step', async () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
 
@@ -1947,11 +1951,11 @@ describe('AgentSession', () => {
 
       const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
       expect(headers['step-id']).toBe(seenStepId);
-      // start-serial is not a default header; the writer's composed onAblyMessage
+      // step-start-serial is not a default header; the writer's composed onAblyMessage
       // stamps it per output (the mock ACKs the step-start publish as serial-1).
-      expect(headers['start-serial']).toBeUndefined();
+      expect(headers['step-start-serial']).toBeUndefined();
       expect(headers[HEADER_ROLE]).toBe('assistant');
-      expect(codec.lastEncoder()?.outputTransport[0]?.['start-serial']).toBe('serial-1');
+      expect(codec.lastEncoder()?.outputTransport[0]?.['step-start-serial']).toBe('serial-1');
     });
 
     it('ends the step failed (with no explicit reason) when a piped stream errors', async () => {
@@ -2317,8 +2321,8 @@ describe('AgentSession', () => {
       expect(starts.map((h) => h['step-id'])).toEqual(['turn-1', 'turn-1']);
       // Each attempt is identified by its own step-start serial; the
       // latest-serial start is the canonical attempt and its output wins.
-      // (Neither step-start carries a `start-serial` back-ref of its own.)
-      expect(starts.every((h) => h['start-serial'] === undefined)).toBe(true);
+      // (Neither step-start carries a `step-start-serial` back-ref of its own.)
+      expect(starts.every((h) => h['step-start-serial'] === undefined)).toBe(true);
     });
 
     describe('step client-id scopes', () => {
@@ -2533,7 +2537,7 @@ describe('AgentSession', () => {
     });
 
     describe('send() — discrete publish', () => {
-      it('publishes one output via encoder.publishOutput, stamped with the step-id and start-serial', async () => {
+      it('publishes one output via encoder.publishOutput, stamped with the step-id and step-start-serial', async () => {
         const run = createRunFromOpts(session, { runId: 'run-1' });
         await run.start();
 
@@ -2551,11 +2555,11 @@ describe('AgentSession', () => {
         expect(enc?.publishCalls[0]?.event).toEqual({ type: 'text', text: 'hi' });
 
         // Default headers carry step-id (stamped up front); the writer's
-        // composed onAblyMessage stamps start-serial on each output (from the
+        // composed onAblyMessage stamps step-start-serial on each output (from the
         // step-start's channel serial, which the mock ACKs as 'serial-1').
         const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
         expect(headers['step-id']).toBe(stepId);
-        expect(enc?.outputTransport[0]?.['start-serial']).toBe('serial-1');
+        expect(enc?.outputTransport[0]?.['step-start-serial']).toBe('serial-1');
       });
 
       it('mints a fresh codec-message-id per send call (N calls, N messages)', async () => {
@@ -4744,7 +4748,7 @@ const deliverRunStart = (ch: MockChannel, runId: string, opts: { serial: string;
  * @param runId - The run the step belongs to.
  * @param opts - The step id, serial, and client scope.
  * @param opts.stepId - The prior step's id.
- * @param opts.serial - The Ably serial — the step-start's identity (its `start-serial`), making it canonical.
+ * @param opts.serial - The Ably serial — the step-start's identity (its `step-start-serial`), making it canonical.
  * @param opts.stepClientId - The prior step's `step-client-id`.
  */
 const deliverStepStart = (

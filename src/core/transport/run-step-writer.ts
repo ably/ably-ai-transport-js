@@ -55,8 +55,8 @@ export const stepEndReasonFor = (reason: RunEndReason): StepEndReason =>
  * its `ai-step-start`). The serial is known only AFTER the step-start publishes
  * — which for `run.pipe`'s lazy implicit step happens after the encoder is
  * already created — so the value is threaded through this ref rather than
- * captured up front: the composed encoder `onMessage` reads it live to stamp
- * every output, and the close reads it as the `ai-step-end` back-ref.
+ * captured up front: the composed encoder `onAblyMessage` reads it live to
+ * stamp every output, and the close reads it as the `ai-step-end` back-ref.
  */
 interface StartSerialRef {
   /** The attempt's `start-serial`, or `undefined` until its `ai-step-start` publishes (or if that publish returned no serial). */
@@ -68,8 +68,8 @@ interface StartSerialRef {
  * `steer-codec-message-ids`. Set per-pipe (in `doPipe` / `doSend`, which drain
  * {@link RunStepWriterContext.consumeSteerStampIds}) rather than once at step
  * open, so a step carrying more than one pipe stamps each steering message on
- * the pass that answers it. Read live by the composed encoder `onMessage`, so it is
- * threaded through this ref rather than baked into the encoder up front.
+ * the pass that answers it. Read live by the composed encoder `onAblyMessage`,
+ * so it is threaded through this ref rather than baked into the encoder up front.
  */
 interface SteerIdsRef {
   /** The steer codec-message-ids to stamp; empty until a pipe drains them (or when no steer was drained). */
@@ -119,7 +119,7 @@ export interface RunStepWriterContext<
   runManager: RunManager;
   /** Live accessor for the session Tree (re-created on continuity loss), used to seed optimistic step lifecycle. */
   getTree: () => DefaultTree<TInput, TOutput, TProjection>;
-  /** The run's runtime callbacks — `onMessage` (per published message), `onCancelled` (final write on cancel), `onError`. */
+  /** The run's runtime callbacks — `onAblyMessage` (per published message), `onCancelled` (final write on cancel), `onError`. */
   runtime: RunRuntime<TOutput>;
   /** The run's composite abort signal (internal controller composed with any external signal). */
   signal: AbortSignal;
@@ -181,7 +181,7 @@ export const createRunStepWriter = <
   ctx: RunStepWriterContext<TInput, TOutput, TProjection, TMessage>,
 ): RunStepWriter<TOutput> => {
   const { codec, channel, runManager, getTree, signal, logger, invocationId } = ctx;
-  const { onMessage, onCancelled, onError: runOnError } = ctx.runtime;
+  const { onAblyMessage: runOnAblyMessage, onCancelled, onError: runOnError } = ctx.runtime;
 
   // Per-run step bookkeeping for default `stepId` resolution (see step()):
   // a monotonic index for fresh steps, plus the previous step's id and
@@ -373,7 +373,7 @@ export const createRunStepWriter = <
    * `pipe` and `send` both call this per invocation — the encoder itself is
    * short-lived, not a per-step long-lived object. Extracted so `doPipe` and
    * `doSend` share one path for header composition and the composed
-   * `onMessage` that stamps the step attempt's `start-serial` (live via
+   * `onAblyMessage` that stamps the step attempt's `start-serial` (live via
    * {@link StartSerialRef}) and its drained `steer-codec-message-ids` (live via
    * {@link SteerIdsRef}) — both known only after `ai-step-start` publishes,
    * which for `run.pipe`'s lazy implicit step is AFTER this encoder is created.
@@ -400,7 +400,7 @@ export const createRunStepWriter = <
     // drained `steer-codec-message-ids` are both known only after the step-start
     // publishes (for the lazy implicit step, inside `onFirstOutput` — after this
     // encoder is created), so they are injected per-message by the composed
-    // `onMessage` rather than baked in here.
+    // `onAblyMessage` rather than baked in here.
     const defaultHeaders = buildTransportHeaders({
       role: 'assistant',
       runId,
@@ -423,7 +423,7 @@ export const createRunStepWriter = <
       stepId: step.stepId,
       stepClientId: step.stepClientId,
     });
-    // Compose the encoder's `onMessage`: stamp the step attempt's `start-serial`
+    // Compose the encoder's `onAblyMessage`: stamp the step attempt's `start-serial`
     // (once known) on the transport tier of every outbound message, THEN run the
     // developer's hook. Reads the ref live so it captures the value the lazy
     // implicit-step open sets before the first output is published.
@@ -441,9 +441,9 @@ export const createRunStepWriter = <
     };
     return codec.createEncoder(channel, {
       extras: { headers: defaultHeaders },
-      onMessage: (message: Ably.Message): void => {
+      onAblyMessage: (message: Ably.Message): void => {
         stampAttempt(message);
-        onMessage?.(message);
+        runOnAblyMessage?.(message);
       },
       messageId: codecMessageId,
     });
@@ -596,7 +596,7 @@ export const createRunStepWriter = <
       // so the cursor advances consistently and the value stamps every output.
       const stepClientId = resolveStepClientId();
       // Holds the attempt's `start-serial` once the lazy open publishes its
-      // `ai-step-start`. The composed encoder `onMessage` reads it to stamp
+      // `ai-step-start`. The composed encoder `onAblyMessage` reads it to stamp
       // every output, and the close uses it as the `ai-step-end` back-ref.
       const startSerialRef: StartSerialRef = { value: undefined };
       // Holds the steers this attempt drains at its lazy open, stamped on its
@@ -670,7 +670,7 @@ export const createRunStepWriter = <
       stepId = mintNextStepId();
     }
     // Holds the attempt's `start-serial` once start() publishes its
-    // `ai-step-start`. The composed encoder `onMessage` reads it to stamp every
+    // `ai-step-start`. The composed encoder `onAblyMessage` reads it to stamp every
     // output, and the close uses it as the `ai-step-end` back-ref.
     const startSerialRef: StartSerialRef = { value: undefined };
     // Holds the steers this step drains at start(), stamped on its outputs;

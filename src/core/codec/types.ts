@@ -240,7 +240,7 @@ export interface EncoderOptions {
   /** Default extras (e.g. headers) merged into every Ably message. */
   extras?: Extras;
   /** Hook called before each Ably message is published. Mutate the message in place to add transport-level headers under `extras.ai`. */
-  onMessage?: (message: Ably.Message) => void;
+  onAblyMessage?: (message: Ably.Message) => void;
   /**
    * Fallback domain message id surfaced to output escape hatches as
    * `ctx.messageId` (e.g. the Vercel `start` hatch injects it when a chunk

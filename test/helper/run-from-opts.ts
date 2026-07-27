@@ -16,7 +16,7 @@ interface RunOpts<TOutput extends CodecOutputEvent> {
   /** Input-event id the agent uses to locate the primary trigger event on the channel. */
   inputEventId?: string;
   signal?: AbortSignal;
-  onMessage?: (message: Ably.Message) => void;
+  onAblyMessage?: (message: Ably.Message) => void;
   onCancelled?: (write: (event: TOutput) => Promise<void>) => void | Promise<void>;
   onCancel?: (request: CancelRequest) => Promise<boolean>;
   onError?: (error: Ably.ErrorInfo) => void;
@@ -54,7 +54,7 @@ export const createRunFromOpts = <TOutput extends CodecOutputEvent, TProjection,
     runId: opts.runId,
     invocationId: opts.invocationId ?? `${opts.runId}-inv`,
     signal: opts.signal,
-    onMessage: opts.onMessage,
+    onAblyMessage: opts.onAblyMessage,
     onCancelled: opts.onCancelled,
     onCancel: opts.onCancel,
     onError: opts.onError,

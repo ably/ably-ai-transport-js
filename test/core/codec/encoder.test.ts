@@ -119,9 +119,9 @@ describe('createEncoderCore', () => {
       expect(headersOf(msg)['x-custom']).toBe('val');
     });
 
-    it('calls onMessage hook', async () => {
+    it('calls onAblyMessage hook', async () => {
       const hook = vi.fn();
-      const core = createEncoderCore(writer, { onMessage: hook });
+      const core = createEncoderCore(writer, { onAblyMessage: hook });
       await core.publishDiscrete(payload());
       expect(hook).toHaveBeenCalledOnce();
     });
@@ -519,12 +519,12 @@ describe('createEncoderCore', () => {
     });
   });
 
-  // -- onMessage hook isolation --------------------------------------------
+  // -- onAblyMessage hook isolation --------------------------------------------
 
-  describe('onMessage hook isolation', () => {
-    it('does not propagate errors from onMessage hook', async () => {
+  describe('onAblyMessage hook isolation', () => {
+    it('does not propagate errors from onAblyMessage hook', async () => {
       const core = createEncoderCore(writer, {
-        onMessage: () => {
+        onAblyMessage: () => {
           throw new Error('hook error');
         },
       });

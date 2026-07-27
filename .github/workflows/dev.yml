@@ -56,7 +56,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write
     strategy:
       fail-fast: false
       matrix:
@@ -73,22 +72,7 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Only collect coverage on the base Node version to avoid redundant work
-      - name: test with coverage
-        if: ${{ matrix.node-version == env.BASE_NODE_VERSION }}
-        run: pnpm test --coverage
-      - name: test
-        if: ${{ matrix.node-version != env.BASE_NODE_VERSION }}
-        run: pnpm test
-      # Post coverage summary as a PR comment. Restricted to PRs from the main
-      # repo (not forks) because the action needs write permissions that fork
-      # PRs don't have. Runs even if tests fail so we still get the report.
-      - uses: davelosert/vitest-coverage-report-action@02f3c2e641286b7fa308cd3e430783103ce6103b # v2.12.0
-        if: >-
-          github.event_name == 'pull_request' &&
-          github.event.pull_request.head.repo.full_name == 'ably/ably-ai-transport-js' &&
-          matrix.node-version == env.BASE_NODE_VERSION &&
-          (failure() || success())
+      - run: pnpm test
 
   test-integration:
     runs-on: ubuntu-latest

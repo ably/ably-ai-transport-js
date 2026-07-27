@@ -30,11 +30,11 @@ import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-clien
 const UIMessageCodec = createUIMessageCodec();
 
 /**
- * Create an onMessage hook that stamps run and message ID headers
+ * Create an onAblyMessage hook that stamps run and message ID headers
  * on every outgoing Ably message.
  * @param runId - The run ID to stamp.
  * @param messageId - The message ID to stamp.
- * @returns An onMessage callback for encoder options.
+ * @returns An onAblyMessage callback for encoder options.
  */
 const stampHeaders = (runId: string, messageId: string) => (msg: Ably.Message) => {
   // CAST: Ably SDK types `extras` as `any`; we trust the encoder always sets it.
@@ -125,7 +125,7 @@ describe('Vercel UIMessageCodec integration', () => {
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
-      onMessage: stampHeaders('run-1', messageId),
+      onAblyMessage: stampHeaders('run-1', messageId),
     });
 
     await encoder.publishOutput({ type: 'start', messageId });
@@ -194,7 +194,7 @@ describe('Vercel UIMessageCodec integration', () => {
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
-      onMessage: stampHeaders('run-tool-1', messageId),
+      onAblyMessage: stampHeaders('run-tool-1', messageId),
     });
 
     await encoder.publishOutput({ type: 'start', messageId });
@@ -282,7 +282,7 @@ describe('Vercel UIMessageCodec integration', () => {
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
-      onMessage: stampHeaders('run-tool-static-1', messageId),
+      onAblyMessage: stampHeaders('run-tool-static-1', messageId),
     });
 
     await encoder.publishOutput({ type: 'start', messageId });
@@ -354,7 +354,7 @@ describe('Vercel UIMessageCodec integration', () => {
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
-      onMessage: stampHeaders('run-dt-1', messageId),
+      onAblyMessage: stampHeaders('run-dt-1', messageId),
     });
 
     await encoder.publishOutput({ type: 'start', messageId });
@@ -428,7 +428,7 @@ describe('Vercel UIMessageCodec integration', () => {
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
-      onMessage: stampHeaders('run-abort-1', messageId),
+      onAblyMessage: stampHeaders('run-abort-1', messageId),
     });
 
     await encoder.publishOutput({ type: 'start', messageId });
@@ -467,7 +467,7 @@ describe('Vercel UIMessageCodec integration', () => {
     const textId = 'text-hist-1';
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
-      onMessage: stampHeaders('run-hist-1', messageId),
+      onAblyMessage: stampHeaders('run-hist-1', messageId),
     });
 
     await encoder.publishOutput({ type: 'start', messageId });
@@ -549,7 +549,7 @@ describe('Vercel UIMessageCodec integration', () => {
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
-      onMessage: stampHeaders('run-multi-1', messageId),
+      onAblyMessage: stampHeaders('run-multi-1', messageId),
     });
 
     await encoder.publishOutput({ type: 'start', messageId });
@@ -606,7 +606,7 @@ describe('Vercel UIMessageCodec integration', () => {
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
-      onMessage: stampHeaders('run-reason-1', messageId),
+      onAblyMessage: stampHeaders('run-reason-1', messageId),
     });
 
     await encoder.publishOutput({ type: 'start', messageId });
@@ -673,7 +673,7 @@ describe('Vercel UIMessageCodec integration', () => {
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
-      onMessage: stampHeaders('run-err-1', messageId),
+      onAblyMessage: stampHeaders('run-err-1', messageId),
     });
 
     await encoder.publishOutput({ type: 'start', messageId });
@@ -725,7 +725,7 @@ describe('Vercel UIMessageCodec integration', () => {
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
-      onMessage: stampHeaders('run-client-tool-1', continuationId),
+      onAblyMessage: stampHeaders('run-client-tool-1', continuationId),
     });
 
     await encoder.publishInput(
@@ -776,7 +776,7 @@ describe('Vercel UIMessageCodec integration', () => {
     });
 
     const encoder = UIMessageCodec.createEncoder(pubChannel, {
-      onMessage: stampHeaders('run-agent-tool-1', messageId),
+      onAblyMessage: stampHeaders('run-agent-tool-1', messageId),
     });
 
     await encoder.publishOutput({

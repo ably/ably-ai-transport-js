@@ -81,7 +81,7 @@ The codec tier is taken verbatim from `payload.codecHeaders` and is omitted from
 
 If `WriteOptions.messageId` is set, the encoder stamps it as [`codec-message-id`](wire-protocol.md#message-identity-codec-message-id) (a transport-tier header) during header merging. For streamed messages, this header is included in `persistentTransport` - so every append and the closing append carry the same codec-message-id, giving the entire message append lifecycle a single identity.
 
-After the headers are merged, the `onMessage` hook runs as a post-processing step - it receives the fully constructed `Ably.Message` object and can mutate it in place. The transport uses this hook to stamp [transport-level headers](wire-protocol.md#transport-headers) (run IDs, role, parent, fork-of) onto every message without the codec needing to know about them.
+After the headers are merged, the `onAblyMessage` hook runs as a post-processing step - it receives the fully constructed `Ably.Message` object and can mutate it in place. The transport uses this hook to stamp [transport-level headers](wire-protocol.md#transport-headers) (run IDs, role, parent, fork-of) onto every message without the codec needing to know about them.
 
 ### Closing appends repeat all headers
 

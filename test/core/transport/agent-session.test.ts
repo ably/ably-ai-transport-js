@@ -13,6 +13,7 @@ import * as Ably from 'ably';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  EVENT_AI_OUTPUT,
   EVENT_CANCEL,
   EVENT_RUN_END,
   EVENT_RUN_START,
@@ -198,10 +199,10 @@ interface MockEncoder extends Encoder<TestInput, TestOutput> {
   failPublishWith: Error | undefined;
   /**
    * The transport headers of each `publishOutput`, captured AFTER the encoder's
-   * `onMessage` hook ran — so a test can observe the `start-serial` the writer's
-   * composed hook stamps per message (the encoder core invokes `onMessage` on a
-   * message whose `extras.ai.transport` is the default headers; this mock
-   * mirrors that so the stamping path is exercised).
+   * `onAblyMessage` hook ran — so a test can observe the `start-serial` the
+   * writer's composed hook stamps per message (the encoder core invokes
+   * `onAblyMessage` on a message whose `extras.ai.transport` is the default
+   * headers; this mock mirrors that so the stamping path is exercised).
    */
   outputTransport: Record<string, string>[];
 }
@@ -231,14 +232,14 @@ const createMockEncoder = (failWith?: Error, encoderOpts?: EncoderOptions): Mock
       if (enc.failPublishWith) return Promise.reject(enc.failPublishWith);
       calls.push({ direction: 'output', event, opts });
       // Mirror the encoder core: build the message's transport tier from the
-      // default + per-write headers, run the `onMessage` hook (which the writer
-      // composes to stamp `start-serial`), then record the resulting headers.
+      // default + per-write headers, run the `onAblyMessage` hook (which the
+      // writer composes to stamp `start-serial`), then record the resulting headers.
       const transport: Record<string, string> = {
         ...encoderOpts?.extras?.headers,
         ...opts?.extras?.headers,
       };
-      const msg: Ably.Message = { name: 'ai-output', extras: { ai: { transport } } };
-      encoderOpts?.onMessage?.(msg);
+      const msg: Ably.Message = { name: EVENT_AI_OUTPUT, extras: { ai: { transport } } };
+      encoderOpts?.onAblyMessage?.(msg);
       outputTransport.push((msg.extras as { ai: { transport: Record<string, string> } }).ai.transport);
       return Promise.resolve();
     }),
@@ -1623,6 +1624,32 @@ describe('AgentSession', () => {
       expect(enc?.publishCalls[1]?.opts).toEqual({ messageId: 'override-b' });
     });
 
+    it('invokes onAblyMessage per outbound message, after the SDK stamps its headers', async () => {
+      // Snapshot inside the hook: the mock hands it one transport record that it
+      // mutates in place, so reading it after the pipe cannot pin the ordering.
+      const seen: { name: string | undefined; startSerial: string | undefined; stepId: string | undefined }[] = [];
+      const run = createRunFromOpts(session, {
+        runId: 'run-1',
+        onAblyMessage: (message: Ably.Message) => {
+          // CAST: the encoder always builds `extras.ai.transport` before invoking
+          // the hook (Ably SDK types `extras` as `any`); narrow to that tier.
+          const transport = (message.extras as { ai: { transport: Record<string, string> } }).ai.transport;
+          seen.push({ name: message.name, startSerial: transport['start-serial'], stepId: transport['step-id'] });
+          transport['x-custom'] = 'from-hook';
+        },
+      });
+      await run.start();
+      await run.pipe(streamOf({ type: 'text', text: 'a' }, { type: 'text', text: 'b' }));
+
+      expect(seen).toHaveLength(2);
+      expect(seen.every((s) => s.name === EVENT_AI_OUTPUT)).toBe(true);
+      // The SDK stamps start-serial per message, so the hook seeing it pins the
+      // order (the mock ACKs the step-start publish as serial-1).
+      expect(seen.every((s) => s.startSerial === 'serial-1')).toBe(true);
+      expect(seen.every((s) => s.stepId === 'run-1-inv-step-0')).toBe(true);
+      expect(codec.lastEncoder()?.outputTransport[0]?.['x-custom']).toBe('from-hook');
+    });
+
     // -----------------------------------------------------------------------
     // implicit step bracket (lazy at first output)
     // -----------------------------------------------------------------------
@@ -1650,7 +1677,7 @@ describe('AgentSession', () => {
         expect(ends[0]?.['start-serial']).toBe('serial-1');
 
         // The piped output's default headers carry the step-id; the per-message
-        // start-serial is stamped by the writer's composed onMessage hook.
+        // start-serial is stamped by the writer's composed onAblyMessage hook.
         const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
         expect(headers['step-id']).toBe(starts[0]?.['step-id']);
         expect(headers['start-serial']).toBeUndefined();
@@ -1920,7 +1947,7 @@ describe('AgentSession', () => {
 
       const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
       expect(headers['step-id']).toBe(seenStepId);
-      // start-serial is not a default header; the writer's composed onMessage
+      // start-serial is not a default header; the writer's composed onAblyMessage
       // stamps it per output (the mock ACKs the step-start publish as serial-1).
       expect(headers['start-serial']).toBeUndefined();
       expect(headers[HEADER_ROLE]).toBe('assistant');
@@ -2524,7 +2551,7 @@ describe('AgentSession', () => {
         expect(enc?.publishCalls[0]?.event).toEqual({ type: 'text', text: 'hi' });
 
         // Default headers carry step-id (stamped up front); the writer's
-        // composed onMessage stamps start-serial on each output (from the
+        // composed onAblyMessage stamps start-serial on each output (from the
         // step-start's channel serial, which the mock ACKs as 'serial-1').
         const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
         expect(headers['step-id']).toBe(stepId);

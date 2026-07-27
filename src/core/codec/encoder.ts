@@ -123,7 +123,7 @@ export interface EncoderCore {
 class DefaultEncoderCore implements EncoderCore {
   private readonly _writer: ChannelWriter;
   private readonly _defaultExtras: Extras | undefined;
-  private readonly _onMessageHook: (message: Ably.Message) => void;
+  private readonly _onAblyMessageHook: (message: Ably.Message) => void;
   private readonly _logger: Logger | undefined;
   private readonly _trackers = new Map<string, StreamState>();
   private _pending: PendingAppend[] = [];
@@ -133,8 +133,8 @@ class DefaultEncoderCore implements EncoderCore {
   constructor(writer: ChannelWriter, options: EncoderCoreOptions = {}) {
     this._writer = writer;
     this._defaultExtras = options.extras;
-    this._onMessageHook =
-      options.onMessage ??
+    this._onAblyMessageHook =
+      options.onAblyMessage ??
       (() => {
         /* noop */
       });
@@ -174,7 +174,7 @@ class DefaultEncoderCore implements EncoderCore {
       extras: { ai: this._aiExtras(transport, codec) },
     };
 
-    this._invokeOnMessage(msg);
+    this._invokeOnAblyMessage(msg);
     const result = await this._writer.publish(msg);
     const serial = result.serials[0];
 
@@ -226,7 +226,7 @@ class DefaultEncoderCore implements EncoderCore {
       extras: { ai: this._aiExtras({ ...tracker.persistentTransport }, { ...tracker.persistentCodec }) },
     };
 
-    this._invokeOnMessage(appendMsg);
+    this._invokeOnAblyMessage(appendMsg);
     const p = this._writer.appendMessage(appendMsg);
     this._pending.push({ promise: p, streamId });
   }
@@ -260,7 +260,7 @@ class DefaultEncoderCore implements EncoderCore {
       extras: { ai: this._aiExtras(transport, codec) },
     };
 
-    this._invokeOnMessage(msg);
+    this._invokeOnAblyMessage(msg);
     const p = this._writer.appendMessage(msg);
     this._pending.push({ promise: p, streamId });
 
@@ -290,7 +290,7 @@ class DefaultEncoderCore implements EncoderCore {
         extras: { ai: this._aiExtras(transport, codec) },
       };
 
-      this._invokeOnMessage(msg);
+      this._invokeOnAblyMessage(msg);
       const p = this._writer.appendMessage(msg);
       this._pending.push({ promise: p, streamId: tracker.streamId });
     }
@@ -395,11 +395,11 @@ class DefaultEncoderCore implements EncoderCore {
   // -------------------------------------------------------------------------
 
   // Spec: AIT-CD14
-  private _invokeOnMessage(msg: Ably.Message): void {
+  private _invokeOnAblyMessage(msg: Ably.Message): void {
     try {
-      this._onMessageHook(msg);
+      this._onAblyMessageHook(msg);
     } catch (error) {
-      this._logger?.error('DefaultEncoderCore._invokeOnMessage(); hook threw', { error });
+      this._logger?.error('DefaultEncoderCore._invokeOnAblyMessage(); hook threw', { error });
     }
   }
 
@@ -458,7 +458,7 @@ class DefaultEncoderCore implements EncoderCore {
       },
     };
 
-    this._invokeOnMessage(msg);
+    this._invokeOnAblyMessage(msg);
     return msg;
   }
 

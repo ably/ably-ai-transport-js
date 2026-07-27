@@ -226,10 +226,12 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
   signal?: AbortSignal;
 
   /**
-   * Called before each Ably message is published in this run.
-   * Mutate the Ably message in place to add custom headers under extras.ai.
+   * Called before each Ably message the run's encoder publishes, after the SDK
+   * stamps its own transport headers. Mutate the message in place to add custom
+   * headers under extras.ai. Run and step lifecycle messages publish straight to
+   * the channel, so they do not pass through this hook.
    */
-  onMessage?: (message: Ably.Message) => void;
+  onAblyMessage?: (message: Ably.Message) => void;
 
   /**
    * Called when the run's stream is cancelled (by client cancel or server).

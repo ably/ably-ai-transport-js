@@ -91,6 +91,6 @@ If `WriteOptions.messageId` is set, the encoder then stamps it as `codec-message
 
 The **codec tier** (`payload.codecHeaders`) is a separate tier taken verbatim and omitted from the wire entirely when empty. It is never merged into the transport priority chain.
 
-The `onMessage` hook is a generic, optional message-mutation callback (default noop) invoked once on the fully built `Ably.Message`; it does not perform transport stamping. Transport headers (run IDs, role, parent) come from `payload.transportHeaders` (produced by `buildTransportHeaders`), set while building the transport tier.
+The `onAblyMessage` hook is a generic, optional message-mutation callback (default noop) invoked once on the fully built `Ably.Message`; it does not perform transport stamping. Transport headers (run IDs, role, parent) come from `payload.transportHeaders` (produced by `buildTransportHeaders`), set while building the transport tier.
 
 See [Wire protocol](wire-protocol.md) for the complete header specification. See [Encoder](encoder.md#header-merging) for the merge implementation. See [Transport components: buildTransportHeaders](transport-components.md#buildtransportheaders) for the transport header builder.

@@ -109,6 +109,12 @@ describe('pipeStream', () => {
       expect(encoder.appendedEvents).toEqual(events);
     });
 
+    it('publishes every output with no write options', async () => {
+      await pipeStream(streamOf({ type: 'text', text: 'x' }), encoder, noSignal);
+
+      expect(encoder.appendedOpts).toEqual([undefined]);
+    });
+
     it('calls encoder.close() when stream completes', async () => {
       const stream = streamOf({ type: 'text', text: 'done' });
 
@@ -332,38 +338,6 @@ describe('pipeStream', () => {
     });
   });
 
-  describe('resolveWriteOptions hook', () => {
-    it('invokes the hook for each event and forwards the result to appendEvent', async () => {
-      const events: TestEvent[] = [
-        { type: 'text', text: 'a' },
-        { type: 'text', text: 'b' },
-      ];
-      const resolveWriteOptions = vi.fn((event: TestEvent): WriteOptions | undefined =>
-        event.text === 'b' ? { messageId: 'override-b' } : undefined,
-      );
-
-      await pipeStream(streamOf(...events), encoder, noSignal, undefined, resolveWriteOptions);
-
-      expect(resolveWriteOptions).toHaveBeenCalledTimes(2);
-      expect(encoder.appendedEvents).toEqual(events);
-      expect(encoder.appendedOpts).toEqual([undefined, { messageId: 'override-b' }]);
-    });
-
-    it('passes no options to appendEvent when the hook is not provided', async () => {
-      await pipeStream(streamOf({ type: 'text', text: 'x' }), encoder, noSignal);
-
-      expect(encoder.appendedOpts).toEqual([undefined]);
-    });
-
-    it('passes no options when the hook returns undefined', async () => {
-      const resolveWriteOptions = vi.fn((): WriteOptions | undefined => undefined);
-
-      await pipeStream(streamOf({ type: 'text', text: 'x' }), encoder, noSignal, undefined, resolveWriteOptions);
-
-      expect(encoder.appendedOpts).toEqual([undefined]);
-    });
-  });
-
   describe('beforeFirstWrite hook', () => {
     it('fires once, before the first output, and is awaited', async () => {
       const callOrder: string[] = [];
@@ -382,7 +356,6 @@ describe('pipeStream', () => {
         noSignal,
         undefined,
         undefined,
-        undefined,
         beforeFirstWrite,
       );
 
@@ -396,7 +369,7 @@ describe('pipeStream', () => {
         await Promise.resolve();
       });
 
-      const result = await pipeStream(streamOf(), encoder, noSignal, undefined, undefined, undefined, beforeFirstWrite);
+      const result = await pipeStream(streamOf(), encoder, noSignal, undefined, undefined, beforeFirstWrite);
 
       expect(result.reason).toBe('complete');
       expect(beforeFirstWrite).not.toHaveBeenCalled();
@@ -408,7 +381,7 @@ describe('pipeStream', () => {
       });
       const stream = errorStream([], new Error('upstream broke'));
 
-      const result = await pipeStream(stream, encoder, noSignal, undefined, undefined, undefined, beforeFirstWrite);
+      const result = await pipeStream(stream, encoder, noSignal, undefined, undefined, beforeFirstWrite);
 
       expect(result.reason).toBe('error');
       expect(beforeFirstWrite).not.toHaveBeenCalled();
@@ -426,15 +399,7 @@ describe('pipeStream', () => {
         },
       });
 
-      const result = await pipeStream(
-        stream,
-        encoder,
-        controller.signal,
-        undefined,
-        undefined,
-        undefined,
-        beforeFirstWrite,
-      );
+      const result = await pipeStream(stream, encoder, controller.signal, undefined, undefined, beforeFirstWrite);
 
       expect(result.reason).toBe('cancelled');
       expect(beforeFirstWrite).not.toHaveBeenCalled();

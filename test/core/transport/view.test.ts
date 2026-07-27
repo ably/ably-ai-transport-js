@@ -23,12 +23,12 @@ import type {
   Decoder,
   ReducerMeta,
 } from '../../../src/core/codec/types.js';
-import { createWireApplier } from '../../../src/core/transport/decode-fold.js';
 import { createHistoryHydrator, type HistoryHydrator } from '../../../src/core/transport/history-hydrator.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
 import { createLeafBranchSource, LeafBranchSource } from '../../../src/core/transport/leaf-branch-source.js';
 // Vitest hoists vi.mock above imports, so this static import gets the mock.
 import { type HistoryPagesCursor, loadHistoryPages } from '../../../src/core/transport/load-history-pages.js';
+import { applyTransportEventToTree, createReceiveTransport } from '../../../src/core/transport/receive-transport.js';
 import type { SteerOrdering } from '../../../src/core/transport/steer-ordering.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
@@ -36,10 +36,10 @@ import type { ClientRun, ClientView, RunLifecycleEvent, View } from '../../../sr
 import type { SendDelegate } from '../../../src/core/transport/view.js';
 import { createClientView, createLeafView } from '../../../src/core/transport/view.js';
 import { ErrorCode } from '../../../src/errors.js';
-import { LogLevel, makeLogger } from '../../../src/logger.js';
 import { getTransportHeaders, hasAiEnvelope } from '../../../src/utils.js';
 import { makeFakeLoadUntil } from '../../helper/fake-load-until.js';
 import { makeHistoryCursor } from '../../helper/history-cursor.js';
+import { silentLogger } from '../../helper/logger.js';
 
 vi.mock('../../../src/core/transport/load-history-pages.js', () => ({
   loadHistoryPages: vi.fn(),
@@ -99,8 +99,6 @@ const makeTestCodec = (): Codec<TestInput, TestOutput, TestProjection, TestMessa
   createRegenerate: (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }),
 });
 
-const silentLogger = makeLogger({ logLevel: LogLevel.Silent });
-
 // Drain the microtask queue. A busy microtask loop (the bug this guards against)
 // would never let the queued resolve run, so this never settles. Deliberately
 // distinct from test/helper/streams.ts#flushMicrotasks (a fixed two-tick
@@ -124,6 +122,38 @@ const createMockChannel = (): Ably.RealtimeChannel =>
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
     attach: vi.fn(() => Promise.resolve()),
   }) as unknown as Ably.RealtimeChannel;
+
+/**
+ * Build a history hydrator over `tree`, folding each wire through a
+ * ReceiveTransport bound to `decoder`. The hydrator drives the mocked
+ * `loadHistoryPages`, so the channel is a placeholder; the bound decoder
+ * determines how folded history wires become tree nodes. The receiver
+ * classifies each wire and folds it into `tree`, then emits the ably-message —
+ * the same fold path the sessions run in production.
+ * @param tree - The tree the hydrator folds into.
+ * @param decoder - The decoder to bind into the receiver.
+ * @returns A hydrator over `tree`.
+ */
+const makeFoldingHydrator = (
+  tree: DefaultTree<TestInput, TestOutput, TestProjection>,
+  decoder: Decoder<TestInput, TestOutput>,
+): HistoryHydrator => {
+  const receiver = createReceiveTransport<TestInput, TestOutput>(decoder, silentLogger);
+  receiver.on('event', (event) => {
+    applyTransportEventToTree(tree, event);
+  });
+  receiver.on('ably-message', (msg) => {
+    tree.emitAblyMessage(msg);
+  });
+  return createHistoryHydrator({
+    channel: createMockChannel(),
+    foldWire: (wire) => {
+      receiver.deliverEvent(wire);
+      receiver.deliverAblyMessage(wire);
+    },
+    logger: silentLogger,
+  });
+};
 
 // Build a ClientRun<TestInput, TestMessage> mock; override inputCodecMessageId / runId per case.
 const makeClientRun = (
@@ -482,24 +512,16 @@ describe('client view', () => {
   let codec: Codec<TestInput, TestOutput, TestProjection, TestMessage>;
 
   /**
-   * Build a history hydrator over `t`, binding an applier around `decoder`
-   * (defaults to the test codec's no-op decoder). The hydrator drives the mocked
-   * `loadHistoryPages`, so the channel is a placeholder; the bound decoder
-   * determines how folded history wires become tree nodes.
+   * Build a folding hydrator over `t` (see {@link makeFoldingHydrator}) with
+   * the decoder defaulting to the test codec's no-op decoder.
    * @param t - The tree the hydrator folds into.
-   * @param decoder - Optional decoder to bind into the hydrator's applier.
+   * @param decoder - Optional decoder to bind into the receiver.
    * @returns A hydrator over `t`.
    */
   const makeHydrator = (
     t: DefaultTree<TestInput, TestOutput, TestProjection>,
     decoder?: Decoder<TestInput, TestOutput>,
-  ): HistoryHydrator =>
-    createHistoryHydrator({
-      channel: createMockChannel(),
-      tree: t,
-      applier: createWireApplier(t, decoder ?? codec.createDecoder()),
-      logger: silentLogger,
-    });
+  ): HistoryHydrator => makeFoldingHydrator(t, decoder ?? codec.createDecoder());
 
   /**
    * Build a View over the shared tree with a hydrator bound around `decoder`
@@ -1985,7 +2007,7 @@ describe('client view', () => {
         extras: { ai: { transport: { [HEADER_RUN_ID]: 'R0', [HEADER_CODEC_MESSAGE_ID]: 'mh1' } } },
       } as unknown as Ably.InboundMessage;
 
-      // The hydrator folds pages through the View's applier (its bound decoder).
+      // The hydrator folds pages through the receiver bound to the View's decoder.
       // The test codec's decoder returns no events, so bind a view to a decoder
       // that produces one.
       const v = makeView(headerDecoder());
@@ -4298,12 +4320,7 @@ describe('agent leaf view — steer ordering (deferUnrespondedSteers)', () => {
     createLeafView<TestInput, TestOutput, TestProjection, TestMessage>({
       tree,
       codec,
-      hydrator: createHistoryHydrator({
-        channel: createMockChannel(),
-        tree,
-        applier: createWireApplier(tree, codec.createDecoder()),
-        logger: silentLogger,
-      }),
+      hydrator: makeFoldingHydrator(tree, codec.createDecoder()),
       branchSource: source,
       logger: silentLogger,
       steerOrdering,

@@ -48,21 +48,23 @@ import type {
   WriteOptions,
 } from '../../../src/core/codec/types.js';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
-import { createWireApplier } from '../../../src/core/transport/decode-fold.js';
 import { createHistoryHydrator } from '../../../src/core/transport/history-hydrator.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
+import { applyTransportEventToTree, createReceiveTransport } from '../../../src/core/transport/receive-transport.js';
 import type { RunManager } from '../../../src/core/transport/run-manager.js';
 import * as runManagerModule from '../../../src/core/transport/run-manager.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
-import type { AgentSession, ClientRun, RunIdentity } from '../../../src/core/transport/types.js';
+import type { AgentSession, ClientRun, OpenableRun, RunIdentity } from '../../../src/core/transport/types.js';
 import type { SendDelegate } from '../../../src/core/transport/view.js';
 import { createClientView } from '../../../src/core/transport/view.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
+import { getTransportHeaders } from '../../../src/utils.js';
 import { VERSION } from '../../../src/version.js';
 import { createMockClient } from '../../helper/mock-client.js';
 import { createRunFromOpts } from '../../helper/run-from-opts.js';
+import { pausedStream, streamOf } from '../../helper/streams.js';
 
 // ---------------------------------------------------------------------------
 // Shapes
@@ -286,31 +288,12 @@ const createMockCodec = (overrides?: { encoderFactory?: () => MockEncoder }): Mo
 // Helpers
 // ---------------------------------------------------------------------------
 
-const streamOf = (...events: TestOutput[]): ReadableStream<TestOutput> =>
-  new ReadableStream({
-    start: (controller) => {
-      for (const event of events) {
-        controller.enqueue(event);
-      }
-      controller.close();
-    },
-  });
-
 // A stream that enqueues one chunk then errors — drives a pipe to reason:'error'.
 const erroringStream = (): ReadableStream<TestOutput> =>
   new ReadableStream<TestOutput>({
     start: (controller) => {
       controller.enqueue({ type: 'text', text: 'partial' });
       controller.error(new Error('rate limit'));
-    },
-  });
-
-// A never-completing stream — a cancel mid-pipe wins the read race so the pipe
-// returns reason:'cancelled' WITHOUT any output (so no step opens).
-const pausedStream = (): ReadableStream<TestOutput> =>
-  new ReadableStream<TestOutput>({
-    start: () => {
-      /* never enqueues or closes */
     },
   });
 
@@ -368,12 +351,13 @@ const captureWarnLogger = (): {
  * codec. The decoder reads the codec-message-id header from each inbound message and
  * emits a `user-message` event carrying that id; `fold` appends it to the
  * projection's `messages` list so `getMessages` returns one message per
- * inbound Ably message.
+ * inbound Ably message. Encoder tracking (`lastEncoder()`, `encoderCalls`)
+ * comes from the underlying {@link createMockCodec}.
  * @returns A codec that decodes each inbound message into a single message whose id reflects the inbound codecMessageId header.
  */
-const codecWithFunctionalDecoder = (): Codec<TestInput, TestOutput, TestProjection, TestMessage> => ({
-  init: (): TestProjection => ({ messages: [] }),
-  fold: (state: TestProjection, codecEvent: CodecEvent<TestInput, TestOutput>): TestProjection => {
+const codecWithFunctionalDecoder = (): MockCodec => {
+  const codec = createMockCodec();
+  codec.fold = vi.fn((state: TestProjection, codecEvent: CodecEvent<TestInput, TestOutput>): TestProjection => {
     const event = codecEvent.event;
     // Inputs: `user-message` carries a message; `regenerate` is a wire-only
     // signal. Outputs (TestOutput) pass through unchanged.
@@ -382,12 +366,8 @@ const codecWithFunctionalDecoder = (): Codec<TestInput, TestOutput, TestProjecti
       return { messages: [...state.messages, { id: event.message.id, content: event.message.content }] };
     }
     return state;
-  },
-  getMessages: (p: TestProjection) => p.messages.map((m) => ({ codecMessageId: m.id, message: m })),
-  createUserMessage: (m: TestMessage) => ({ kind: 'user-message' as const, message: m }),
-  createRegenerate: (target: string, parent: string) => ({ kind: 'regenerate' as const, target, parent }),
-  createEncoder: vi.fn(() => createMockEncoder()),
-  createDecoder: vi.fn(() => ({
+  });
+  codec.createDecoder = vi.fn(() => ({
     decode: (m: Ably.InboundMessage) => {
       const hdrs = (m.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport ?? {};
       const id = hdrs[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
@@ -404,8 +384,9 @@ const codecWithFunctionalDecoder = (): Codec<TestInput, TestOutput, TestProjecti
         outputs: [],
       };
     },
-  })),
-});
+  }));
+  return codec;
+};
 
 interface DeliverInputEventOpts {
   /** The invocation-id header to stamp on the synthetic message. */
@@ -474,6 +455,24 @@ const deliverInputEvent = (ch: MockChannel, opts: DeliverInputEventOpts): void =
     version: { serial: opts.serial },
   } as unknown as Ably.InboundMessage;
   if (ch.listener) ch.listener(msg);
+};
+
+/**
+ * Start a run whose trigger arrives live: calls run.start(), delivers the
+ * given input event to the session's channel listener while the input-event
+ * lookup awaits it, then awaits start()'s resolution.
+ * @param run - The run to start.
+ * @param ch - The mock channel hosting the session's listener.
+ * @param trigger - Headers, serial, and message name for the trigger wire.
+ */
+const startRunWithTrigger = async (
+  run: OpenableRun<TestOutput, TestProjection, TestMessage>,
+  ch: MockChannel,
+  trigger: DeliverInputEventOpts,
+): Promise<void> => {
+  const startPromise = run.start();
+  deliverInputEvent(ch, trigger);
+  await startPromise;
 };
 
 /**
@@ -815,15 +814,13 @@ describe('AgentSession', () => {
       const invocationId = 'inv-cont';
       const inputEventId = 'p-cont';
       const run = createRunFromOpts(s, { runId, invocationId, inputEventId: inputEventId });
-      const startPromise = run.start();
-      deliverInputEvent(ch, {
+      await startRunWithTrigger(run, ch, {
         invocationId,
         runId,
         codecMessageId: 'm-cont',
         serial: 's-cont',
         inputEventId,
       });
-      await startPromise;
 
       expect(ch.publishCalls.find((m) => m.name === 'ai-run-resume')).toBeDefined();
       expect(ch.publishCalls.find((m) => m.name === 'ai-run-start')).toBeUndefined();
@@ -856,11 +853,10 @@ describe('AgentSession', () => {
       const invocationId = 'inv-regen';
       const inputEventId = 'p-regen';
       const run = createRunFromOpts(s, { runId, invocationId, inputEventId });
-      const startPromise = run.start();
       // Fresh run (regenerate opens a new run via ai-run-start) — the triggering
       // input carries NO wire run-id, so the agent stamps regenerate/parent on
       // run-start. The run's identity is pinned via createRunFromOpts above.
-      deliverInputEvent(ch, {
+      await startRunWithTrigger(run, ch, {
         invocationId,
         codecMessageId: 'm-regen',
         serial: 's-regen',
@@ -868,7 +864,6 @@ describe('AgentSession', () => {
         parent: 'orig-user',
         regenerates: 'orig-asst',
       });
-      await startPromise;
 
       const startMsg = ch.publishCalls.find((m) => m.name === 'ai-run-start');
       const headers = (startMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
@@ -923,18 +918,16 @@ describe('AgentSession', () => {
       const invocationId = 'inv-icid-start';
       const inputEventId = 'p-icid-start';
       const run = createRunFromOpts(session, { runId, invocationId, inputEventId: inputEventId });
-      const startPromise = run.start();
       // Fresh send — the triggering input carries NO wire run-id, so the agent
       // opens the run with ai-run-start. Run identity is pinned via
       // createRunFromOpts above.
-      deliverInputEvent(channel, {
+      await startRunWithTrigger(run, channel, {
         invocationId,
         codecMessageId: 'm-icid-start',
         serial: 's-icid-start',
         inputEventId,
         publisherClientId: 'user-b',
       });
-      await startPromise;
 
       const startMsg = channel.publishCalls.find((m) => m.name === 'ai-run-start');
       const headers = (startMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
@@ -947,8 +940,7 @@ describe('AgentSession', () => {
       const invocationId = 'inv-icid-end';
       const inputEventId = 'p-icid-end';
       const run = createRunFromOpts(session, { runId, invocationId, inputEventId: inputEventId });
-      const startPromise = run.start();
-      deliverInputEvent(channel, {
+      await startRunWithTrigger(run, channel, {
         invocationId,
         runId,
         codecMessageId: 'm-icid-end',
@@ -956,7 +948,6 @@ describe('AgentSession', () => {
         inputEventId,
         publisherClientId: 'user-b',
       });
-      await startPromise;
       await run.end({ reason: 'complete' });
 
       const endMsg = channel.publishCalls.find((m) => m.name === 'ai-run-end');
@@ -1001,8 +992,7 @@ describe('AgentSession', () => {
       const invocationId = 'inv-icid-suspend';
       const inputEventId = 'p-icid-suspend';
       const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
-      const startPromise = run.start();
-      deliverInputEvent(channel, {
+      await startRunWithTrigger(run, channel, {
         invocationId,
         runId,
         codecMessageId: 'm-icid-suspend',
@@ -1010,7 +1000,6 @@ describe('AgentSession', () => {
         inputEventId,
         publisherClientId: 'user-b',
       });
-      await startPromise;
       await run.suspend();
 
       const suspendMsg = channel.publishCalls.find((m) => m.name === 'ai-run-suspend');
@@ -1100,17 +1089,7 @@ describe('AgentSession', () => {
       // for delivered messages (the default mock decoder returns empty, so the
       // Tree-output listener's `event.inputs` filter would reject the steer).
       const ch = createMockChannel();
-      const functionalCodec = createMockCodec();
-      functionalCodec.createDecoder = vi.fn(() => ({
-        decode: (m: Ably.InboundMessage) => {
-          const hdrs = (m.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport ?? {};
-          const id = hdrs[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
-          return {
-            inputs: [{ kind: 'user-message' as const, message: { id, content: id } }],
-            outputs: [],
-          };
-        },
-      }));
+      const functionalCodec = codecWithFunctionalDecoder();
       const steerSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client: createMockClient(ch),
         channelName: 'test-channel',
@@ -1125,17 +1104,15 @@ describe('AgentSession', () => {
       const steerId = 'id-2';
 
       const run = createRunFromOpts(steerSession, { runId, invocationId, inputEventId });
-      const startPromise = run.start();
       // Trigger publishes — no run-id (the agent mints the run-id at start-time
       // for a fresh run).
-      deliverInputEvent(ch, {
+      await startRunWithTrigger(run, ch, {
         invocationId,
         codecMessageId: triggerId,
         serial: 'serial-1',
         inputEventId,
         publisherClientId: 'user-a',
       });
-      await startPromise;
 
       // pipe(1) — no steer has folded; the attempt's outputs carry no
       // `steer-codec-message-ids`.
@@ -1177,17 +1154,7 @@ describe('AgentSession', () => {
       // spurious follow-up pass (which would re-answer it against a conversation
       // ending in the assistant reply and error out).
       const ch = createMockChannel();
-      const functionalCodec = createMockCodec();
-      functionalCodec.createDecoder = vi.fn(() => ({
-        decode: (m: Ably.InboundMessage) => {
-          const hdrs = (m.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport ?? {};
-          const id = hdrs[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
-          return {
-            inputs: [{ kind: 'user-message' as const, message: { id, content: id } }],
-            outputs: [],
-          };
-        },
-      }));
+      const functionalCodec = codecWithFunctionalDecoder();
       const steerSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client: createMockClient(ch),
         channelName: 'test-channel',
@@ -1202,15 +1169,13 @@ describe('AgentSession', () => {
       const steerId = 'id-2';
 
       const run = createRunFromOpts(steerSession, { runId, invocationId, inputEventId });
-      const startPromise = run.start();
-      deliverInputEvent(ch, {
+      await startRunWithTrigger(run, ch, {
         invocationId,
         codecMessageId: triggerId,
         serial: 'serial-1',
         inputEventId,
         publisherClientId: 'user-a',
       });
-      await startPromise;
 
       // Steer folds in BEFORE any pipe — while the initial pass has yet to run.
       deliverInputEvent(ch, {
@@ -1247,17 +1212,7 @@ describe('AgentSession', () => {
       // clobbered by the single step-open, and that opening the step leaves the
       // steer pending for the pass that answers it.
       const ch = createMockChannel();
-      const functionalCodec = createMockCodec();
-      functionalCodec.createDecoder = vi.fn(() => ({
-        decode: (m: Ably.InboundMessage) => {
-          const hdrs = (m.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport ?? {};
-          const id = hdrs[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
-          return {
-            inputs: [{ kind: 'user-message' as const, message: { id, content: id } }],
-            outputs: [],
-          };
-        },
-      }));
+      const functionalCodec = codecWithFunctionalDecoder();
       const steerSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client: createMockClient(ch),
         channelName: 'test-channel',
@@ -1272,15 +1227,13 @@ describe('AgentSession', () => {
       const steerId = 'id-2';
 
       const run = createRunFromOpts(steerSession, { runId, invocationId, inputEventId });
-      const startPromise = run.start();
-      deliverInputEvent(ch, {
+      await startRunWithTrigger(run, ch, {
         invocationId,
         codecMessageId: triggerId,
         serial: 'serial-1',
         inputEventId,
         publisherClientId: 'user-a',
       });
-      await startPromise;
 
       // Open the one step. Opening must leave the trigger unanswered.
       const step = run.createStep();
@@ -1322,14 +1275,7 @@ describe('AgentSession', () => {
       // steer is never answered. seedSteers() (at start()) recovers it from the
       // observed-run-id buffer, so the next hasInput() drives a follow-up pass.
       const ch = createMockChannel();
-      const functionalCodec = createMockCodec();
-      functionalCodec.createDecoder = vi.fn(() => ({
-        decode: (m: Ably.InboundMessage) => {
-          const hdrs = (m.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport ?? {};
-          const id = hdrs[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
-          return { inputs: [{ kind: 'user-message' as const, message: { id, content: id } }], outputs: [] };
-        },
-      }));
+      const functionalCodec = codecWithFunctionalDecoder();
       const steerSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
         client: createMockClient(ch),
         channelName: 'test-channel',
@@ -1489,8 +1435,7 @@ describe('AgentSession', () => {
       const invocationId = 'inv-icid-pipe';
       const inputEventId = 'p-icid-pipe';
       const run = createRunFromOpts(session, { runId, invocationId, inputEventId: inputEventId });
-      const startPromise = run.start();
-      deliverInputEvent(channel, {
+      await startRunWithTrigger(run, channel, {
         invocationId,
         runId,
         codecMessageId: 'm-icid-pipe',
@@ -1498,7 +1443,6 @@ describe('AgentSession', () => {
         inputEventId,
         publisherClientId: 'user-b',
       });
-      await startPromise;
       await run.pipe(streamOf({ type: 'text', text: 'hi' }));
 
       const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
@@ -1536,11 +1480,7 @@ describe('AgentSession', () => {
       simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
       await new Promise((r) => setTimeout(r, 5));
 
-      const paused = new ReadableStream<TestOutput>({
-        start: () => {
-          /* never enqueues or closes */
-        },
-      });
+      const paused = pausedStream<TestOutput>();
       const result = await run.pipe(paused);
       expect(result.reason).toBe('cancelled');
 
@@ -1553,11 +1493,7 @@ describe('AgentSession', () => {
       simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
       await new Promise((r) => setTimeout(r, 5));
 
-      const paused = new ReadableStream<TestOutput>({
-        start: () => {
-          /* never enqueues or closes */
-        },
-      });
+      const paused = pausedStream<TestOutput>();
       // The cancelled pipe publishes no terminal; the developer's run.end is the
       // only ai-run-end on the wire.
       await run.pipe(paused);
@@ -1598,8 +1534,7 @@ describe('AgentSession', () => {
       const invocationId = 'inv-rg';
       const inputEventId = 'p-rg';
       const run = createRunFromOpts(s, { runId, invocationId, inputEventId });
-      const startPromise = run.start();
-      deliverInputEvent(ch, {
+      await startRunWithTrigger(run, ch, {
         invocationId,
         runId,
         codecMessageId: 'm-rg',
@@ -1608,7 +1543,6 @@ describe('AgentSession', () => {
         parent: 'orig-user',
         regenerates: 'orig-asst',
       });
-      await startPromise;
 
       await run.pipe(streamOf({ type: 'text', text: 'reply' }));
 
@@ -1646,9 +1580,13 @@ describe('AgentSession', () => {
       const runId = 'r-pp';
       const invocationId = 'inv-pp';
       const run = createRunFromOpts(s, { runId, invocationId, inputEventId: 'p-u1' });
-      const startPromise = run.start();
-      deliverInputEvent(ch, { invocationId, runId, codecMessageId: 'user-1', serial: '01', inputEventId: 'p-u1' });
-      await startPromise;
+      await startRunWithTrigger(run, ch, {
+        invocationId,
+        runId,
+        codecMessageId: 'user-1',
+        serial: '01',
+        inputEventId: 'p-u1',
+      });
 
       await run.pipe(streamOf({ type: 'text', text: 'reply' }));
 
@@ -1850,11 +1788,7 @@ describe('AgentSession', () => {
         simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
         await new Promise((r) => setTimeout(r, 5));
 
-        const paused = new ReadableStream<TestOutput>({
-          start: () => {
-            /* never enqueues or closes */
-          },
-        });
+        const paused = pausedStream<TestOutput>();
         const result = await run.pipe(paused);
 
         expect(result.reason).toBe('cancelled');
@@ -2045,11 +1979,7 @@ describe('AgentSession', () => {
       simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
       await new Promise((r) => setTimeout(r, 5));
 
-      const paused = new ReadableStream<TestOutput>({
-        start: () => {
-          /* never enqueues or closes */
-        },
-      });
+      const paused = pausedStream<TestOutput>();
       const step = run.createStep();
       await step.start();
       const result = await step.pipe(paused); // returns 'cancelled'
@@ -2324,11 +2254,7 @@ describe('AgentSession', () => {
       simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
       await new Promise((r) => setTimeout(r, 5));
 
-      const paused = new ReadableStream<TestOutput>({
-        start: () => {
-          /* never enqueues or closes */
-        },
-      });
+      const paused = pausedStream<TestOutput>();
       const step = run.createStep();
       await step.start();
       const result = await step.pipe(paused);
@@ -2379,8 +2305,7 @@ describe('AgentSession', () => {
           invocationId: 'inv-scopes',
           inputEventId: 'p-scopes',
         });
-        const startPromise = run.start();
-        deliverInputEvent(channel, {
+        await startRunWithTrigger(run, channel, {
           invocationId: 'inv-scopes',
           runId: 'run-scopes',
           codecMessageId: 'm-scopes',
@@ -2389,7 +2314,6 @@ describe('AgentSession', () => {
           runClientId: 'owner',
           publisherClientId: 'user-b',
         });
-        await startPromise;
 
         const s1 = run.createStep({ stepId: 'S1' });
         await s1.start();
@@ -2416,8 +2340,7 @@ describe('AgentSession', () => {
           invocationId: 'inv-out',
           inputEventId: 'p-out',
         });
-        const startPromise = run.start();
-        deliverInputEvent(channel, {
+        await startRunWithTrigger(run, channel, {
           invocationId: 'inv-out',
           runId: 'run-out',
           codecMessageId: 'm-out',
@@ -2426,7 +2349,6 @@ describe('AgentSession', () => {
           runClientId: 'owner',
           publisherClientId: 'user-b',
         });
-        await startPromise;
 
         const s1 = run.createStep({ stepId: 'S1' });
         await s1.start();
@@ -2445,8 +2367,7 @@ describe('AgentSession', () => {
           invocationId: 'inv-pipe-sc',
           inputEventId: 'p-pipe-sc',
         });
-        const startPromise = run.start();
-        deliverInputEvent(channel, {
+        await startRunWithTrigger(run, channel, {
           invocationId: 'inv-pipe-sc',
           runId: 'run-pipe-sc',
           codecMessageId: 'm-pipe-sc',
@@ -2455,7 +2376,6 @@ describe('AgentSession', () => {
           runClientId: 'owner',
           publisherClientId: 'user-b',
         });
-        await startPromise;
 
         await run.pipe(streamOf({ type: 'text', text: 'hi' }));
 
@@ -2475,8 +2395,7 @@ describe('AgentSession', () => {
           invocationId: 'inv-nonowner',
           inputEventId: 'p-nonowner',
         });
-        const startPromise = run.start();
-        deliverInputEvent(channel, {
+        await startRunWithTrigger(run, channel, {
           invocationId: 'inv-nonowner',
           runId: 'run-nonowner',
           codecMessageId: 'm-nonowner',
@@ -2485,7 +2404,6 @@ describe('AgentSession', () => {
           runClientId: 'owner',
           publisherClientId: 'user-b',
         });
-        await startPromise;
 
         const s1 = run.createStep({ stepId: 'S1' });
         await s1.start();
@@ -2509,8 +2427,7 @@ describe('AgentSession', () => {
           invocationId: 'inv-sticky',
           inputEventId: 'p-sticky',
         });
-        const startPromise = run.start();
-        deliverInputEvent(channel, {
+        await startRunWithTrigger(run, channel, {
           invocationId: 'inv-sticky',
           runId: 'run-sticky',
           codecMessageId: 'm-sticky',
@@ -2519,7 +2436,6 @@ describe('AgentSession', () => {
           runClientId: 'owner',
           publisherClientId: 'user-b',
         });
-        await startPromise;
 
         const s1 = run.createStep({ stepId: 'S1' });
         await s1.start();
@@ -2544,8 +2460,7 @@ describe('AgentSession', () => {
           invocationId: 'inv-explicit',
           inputEventId: 'p-explicit',
         });
-        const startPromise = run.start();
-        deliverInputEvent(channel, {
+        await startRunWithTrigger(run, channel, {
           invocationId: 'inv-explicit',
           runId: 'run-explicit',
           codecMessageId: 'm-explicit',
@@ -2554,7 +2469,6 @@ describe('AgentSession', () => {
           runClientId: 'owner',
           publisherClientId: 'user-b',
         });
-        await startPromise;
 
         // First step: default (publisher). Second step: a steer incorporates a
         // fresh input from 'user-c', supplied explicitly — it overrides the
@@ -2693,7 +2607,7 @@ describe('AgentSession', () => {
       await expect(
         (async () => {
           try {
-            await step.pipe(pausedStream()); // returns 'cancelled'
+            await step.pipe(pausedStream<TestOutput>()); // returns 'cancelled'
             throw new Error('boom'); // post-cancel cleanup fails
           } finally {
             await step.end(); // derives 'cancelled' from the cancelled pipe
@@ -2995,14 +2909,12 @@ describe('AgentSession', () => {
 
       // start() runs the lookup; delivering the input resolves the linkage and
       // pulls the buffered cancel.
-      const startPromise = run.start();
-      deliverInputEvent(ch, {
+      await startRunWithTrigger(run, ch, {
         invocationId: 'inv-early',
         codecMessageId: inputCodecMessageId,
         serial: 's-early',
         inputEventId,
       });
-      await startPromise;
 
       expect(run.abortSignal.aborted).toBe(true);
       await s.detach();
@@ -3029,25 +2941,19 @@ describe('AgentSession', () => {
       // therefore buffered by the time simulateCancel returns; no wait needed.
       simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: inputCodecMessageId });
 
-      const startPromise = run.start();
-      deliverInputEvent(ch, {
+      await startRunWithTrigger(run, ch, {
         invocationId: 'inv-early-end',
         codecMessageId: inputCodecMessageId,
         serial: 's-early-end',
         inputEventId,
       });
-      await startPromise;
 
       expect(run.abortSignal.aborted).toBe(true);
       // run-start WAS published (start() publishes it even though the pulled
       // cancel aborted the controller), so the run is observable.
       expect(ch.publishCalls.find((m) => m.name === 'ai-run-start')).toBeDefined();
 
-      const paused = new ReadableStream<TestOutput>({
-        start: () => {
-          /* never enqueues or closes */
-        },
-      });
+      const paused = pausedStream<TestOutput>();
       const result = await run.pipe(paused);
       expect(result.reason).toBe('cancelled');
       // pipe published no terminal — the run is still open at this point.
@@ -3091,15 +2997,13 @@ describe('AgentSession', () => {
       // start() runs the lookup; the continuation input carries the existing
       // run-id on the wire, so the agent adopts it (re-keying the registration)
       // and pulls the buffered cancel.
-      const startPromise = run.start();
-      deliverInputEvent(ch, {
+      await startRunWithTrigger(run, ch, {
         invocationId: 'inv-cont-early',
         runId: continuationRunId,
         codecMessageId: inputCodecMessageId,
         serial: 's-cont-early',
         inputEventId,
       });
-      await startPromise;
 
       expect(run.abortSignal.aborted).toBe(true);
       // The run adopted the existing run-id from the wire, not the provisional.
@@ -3125,14 +3029,12 @@ describe('AgentSession', () => {
       simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: inputCodecMessageId });
       await new Promise((r) => setTimeout(r, 5));
 
-      const startPromise = run.start();
-      deliverInputEvent(ch, {
+      await startRunWithTrigger(run, ch, {
         invocationId: 'inv-onc',
         codecMessageId: inputCodecMessageId,
         serial: 's-onc',
         inputEventId,
       });
-      await startPromise;
 
       expect(onCancel).toHaveBeenCalledTimes(1);
       expect(run.abortSignal.aborted).toBe(true);
@@ -3156,14 +3058,12 @@ describe('AgentSession', () => {
       simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: inputCodecMessageId });
       await new Promise((r) => setTimeout(r, 5));
 
-      const startPromise = run.start();
-      deliverInputEvent(ch, {
+      await startRunWithTrigger(run, ch, {
         invocationId: 'inv-deny',
         codecMessageId: inputCodecMessageId,
         serial: 's-deny',
         inputEventId,
       });
-      await startPromise;
 
       expect(run.abortSignal.aborted).toBe(false);
       await s.detach();
@@ -3177,14 +3077,12 @@ describe('AgentSession', () => {
       const inputCodecMessageId = 'm-live';
       const run = createRunFromOpts(s, { runId: 'run-live', invocationId: 'inv-live', inputEventId });
 
-      const startPromise = run.start();
-      deliverInputEvent(ch, {
+      await startRunWithTrigger(run, ch, {
         invocationId: 'inv-live',
         codecMessageId: inputCodecMessageId,
         serial: 's-live',
         inputEventId,
       });
-      await startPromise;
 
       // Cancel arrives AFTER start() resolved the input → run linkage; it
       // matches via the reverse index without any run-id.
@@ -3225,20 +3123,21 @@ describe('AgentSession', () => {
 
       // The evicted cancel ('m-0') no longer fires; the newest ('m-200') does.
       const evicted = createRunFromOpts(s, { runId: 'run-old', invocationId: 'inv-old', inputEventId: 'p-old' });
-      const evictedStart = evicted.start();
-      deliverInputEvent(ch, { invocationId: 'inv-old', codecMessageId: 'm-0', serial: 's-old', inputEventId: 'p-old' });
-      await evictedStart;
+      await startRunWithTrigger(evicted, ch, {
+        invocationId: 'inv-old',
+        codecMessageId: 'm-0',
+        serial: 's-old',
+        inputEventId: 'p-old',
+      });
       expect(evicted.abortSignal.aborted).toBe(false);
 
       const retained = createRunFromOpts(s, { runId: 'run-new', invocationId: 'inv-new', inputEventId: 'p-new' });
-      const retainedStart = retained.start();
-      deliverInputEvent(ch, {
+      await startRunWithTrigger(retained, ch, {
         invocationId: 'inv-new',
         codecMessageId: 'm-200',
         serial: 's-new',
         inputEventId: 'p-new',
       });
-      await retainedStart;
       expect(retained.abortSignal.aborted).toBe(true);
 
       await s.detach();
@@ -3260,14 +3159,12 @@ describe('AgentSession', () => {
       });
       await s2.connect();
       const run = createRunFromOpts(s2, { runId: 'run-fresh', invocationId: 'inv-fresh', inputEventId: 'p-fresh' });
-      const startPromise = run.start();
-      deliverInputEvent(ch, {
+      await startRunWithTrigger(run, ch, {
         invocationId: 'inv-fresh',
         codecMessageId: 'm-stale',
         serial: 's-fresh',
         inputEventId: 'p-fresh',
       });
-      await startPromise;
       expect(run.abortSignal.aborted).toBe(false);
       await s2.detach();
     });
@@ -3279,14 +3176,12 @@ describe('AgentSession', () => {
       const inputEventId = 'p-ended';
       const inputCodecMessageId = 'm-ended';
       const run = createRunFromOpts(s, { runId: 'run-ended', invocationId: 'inv-ended', inputEventId });
-      const startPromise = run.start();
-      deliverInputEvent(ch, {
+      await startRunWithTrigger(run, ch, {
         invocationId: 'inv-ended',
         codecMessageId: inputCodecMessageId,
         serial: 's-ended',
         inputEventId,
       });
-      await startPromise;
       await run.end({ reason: 'complete' });
 
       simulateCancel(ch, { [HEADER_INPUT_CODEC_MESSAGE_ID]: inputCodecMessageId });
@@ -4087,10 +3982,8 @@ describe('AgentSession', () => {
       await s.connect();
 
       const run = createRunFromOpts(s, { runId: 'r-route', invocationId: 'inv-expected', inputEventId: 'p-a' });
-      const startPromise = run.start();
-
       // Deliver the trigger event-id under a different invocation-id.
-      deliverInputEvent(ch, {
+      await startRunWithTrigger(run, ch, {
         invocationId: 'inv-DIFFERENT',
         runId: 'r-route',
         codecMessageId: 'a',
@@ -4098,7 +3991,6 @@ describe('AgentSession', () => {
         inputEventId: 'p-a',
       });
 
-      await startPromise;
       expect(run.view.getMessages().map((m) => m.codecMessageId)).toEqual(['a']);
       await s.detach();
     });
@@ -4460,22 +4352,20 @@ describe('AgentRun.messages', () => {
       invocationId: 'inv-1',
       inputEventId: 'p-fresh',
     });
-    const startPromise = run.start();
-    deliverInputEvent(ch, {
+    await startRunWithTrigger(run, ch, {
       invocationId: 'inv-1',
       runId: 'run-1',
       codecMessageId: 'user-new',
       serial: 's-1',
       inputEventId: 'p-fresh',
     });
-    await startPromise;
 
     // The functional decoder produces { id: codecMessageId, content: codecMessageId }.
     expect(run.messages).toEqual([{ id: 'user-new', content: 'user-new' }]);
     await session.detach();
   });
 
-  it('returns view messages after start() resolves on continuation (no history overlay)', async () => {
+  it('returns only the view messages from the input-event lookup after start() resolves on continuation', async () => {
     const ch = createMockChannel();
     const codec = codecWithFunctionalDecoder();
 
@@ -4490,46 +4380,16 @@ describe('AgentRun.messages', () => {
       invocationId: 'inv-cont',
       inputEventId: 'p-cont',
     });
-    const startPromise = run.start();
-    deliverInputEvent(ch, {
+    await startRunWithTrigger(run, ch, {
       invocationId: 'inv-cont',
       runId: 'run-1',
       codecMessageId: 'm-cont',
       serial: 's-cont',
       inputEventId: 'p-cont',
     });
-    await startPromise;
 
-    // Before loadProjection, messages are the view messages from the input-event lookup.
-    expect(run.messages).toEqual([{ id: 'm-cont', content: 'm-cont' }]);
-    await session.detach();
-  });
-
-  it('returns only view messages after start() on continuation (no history to pass through)', async () => {
-    const ch = createMockChannel();
-    const codec = codecWithFunctionalDecoder();
-
-    const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
-      client: createMockClient(ch),
-      channelName: 'cont-no-overlap',
-      codec,
-    });
-    await session.connect();
-    const run = createRunFromOpts(session, {
-      runId: 'run-1',
-      invocationId: 'inv-cont',
-      inputEventId: 'p-cont',
-    });
-    const startPromise = run.start();
-    deliverInputEvent(ch, {
-      invocationId: 'inv-cont',
-      runId: 'run-1',
-      codecMessageId: 'm-cont',
-      serial: 's-cont',
-      inputEventId: 'p-cont',
-    });
-    await startPromise;
-
+    // No history has been drained, so messages are exactly the view messages
+    // from the input-event lookup — nothing more.
     expect(run.messages).toEqual([{ id: 'm-cont', content: 'm-cont' }]);
     await session.detach();
   });
@@ -4564,10 +4424,9 @@ describe('AgentRun.messages', () => {
       invocationId: 'inv-cont',
       inputEventId: 'p-tool',
     });
-    const startPromise = run.start();
     // Deliver a continuation tool-resolution wire message — produces zero
     // MessageNodes but carries a wire run-id.
-    deliverInputEvent(ch, {
+    await startRunWithTrigger(run, ch, {
       invocationId: 'inv-cont',
       runId: 'run-1',
       codecMessageId: 'm-tool',
@@ -4575,7 +4434,6 @@ describe('AgentRun.messages', () => {
       inputEventId: 'p-tool',
       name: 'tool-output-available',
     });
-    await startPromise;
 
     // The wire run-id (read from the matched tool-resolution event's
     // headers) makes the agent re-enter the run with
@@ -4623,10 +4481,14 @@ describe('AgentRun.messages', () => {
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId, invocationId, inputEventId });
-    const startPromise = run.start();
     // Fresh-send ai-input carries no run-id on the wire (live-confirmed) — the agent mints the run separately.
-    deliverInputEvent(ch, { invocationId, codecMessageId: 'u2', serial: 's-05', inputEventId, parent: 'a1' });
-    await startPromise;
+    await startRunWithTrigger(run, ch, {
+      invocationId,
+      codecMessageId: 'u2',
+      serial: 's-05',
+      inputEventId,
+      parent: 'a1',
+    });
 
     // Before draining run.view: this run's triggering input only (run-2 has
     // streamed no output yet).
@@ -4667,15 +4529,13 @@ describe('AgentRun.messages', () => {
     expect(run.status).toBe('active');
     expect(run.error).toBeUndefined();
 
-    const startPromise = run.start();
-    deliverInputEvent(ch, {
+    await startRunWithTrigger(run, ch, {
       invocationId: 'inv-1',
       runId: 'run-1',
       codecMessageId: 'u1',
       serial: 's-1',
       inputEventId: 'p1',
     });
-    await startPromise;
 
     // After start the optimistic run node is active and carries no error.
     expect(run.status).toBe('active');
@@ -4797,14 +4657,6 @@ const makeInputMsg = (
 // ---------------------------------------------------------------------------
 
 /**
- * Extract the `extras.ai.transport` transport header fields from a synthetic inbound message.
- * @param m - The inbound message.
- * @returns The transport header record (empty if absent).
- */
-const transportHeadersOf = (m: Ably.InboundMessage): Record<string, string> =>
-  (m.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport ?? {};
-
-/**
  * Build a single-page history mock from a newest-first list of wire fixtures.
  * @param items - Wire fixtures in Ably history order (newest first).
  * @returns A history() implementation returning the items on one page.
@@ -4837,7 +4689,7 @@ const viewMessageIds = (wiresOldestFirst: Ably.InboundMessage[]): string[] => {
     // Lifecycle wires carry no codec content — apply them as run lifecycle so
     // the Tree backfills run structural metadata, exactly as the live path does.
     if (wire.name === EVENT_RUN_START) {
-      const h = transportHeadersOf(wire);
+      const h = getTransportHeaders(wire);
       tree.applyRunLifecycle({
         type: 'start',
         runId: h[HEADER_RUN_ID] ?? '',
@@ -4851,7 +4703,7 @@ const viewMessageIds = (wiresOldestFirst: Ably.InboundMessage[]): string[] => {
       continue;
     }
     if (wire.name === EVENT_RUN_END) {
-      const h = transportHeadersOf(wire);
+      const h = getTransportHeaders(wire);
       tree.applyRunLifecycle({
         type: 'end',
         runId: h[HEADER_RUN_ID] ?? '',
@@ -4865,7 +4717,7 @@ const viewMessageIds = (wiresOldestFirst: Ably.InboundMessage[]): string[] => {
       continue;
     }
     const decoded = decoder.decode(wire);
-    tree.applyMessage(decoded, transportHeadersOf(wire), wire.serial);
+    tree.applyMessage(decoded, getTransportHeaders(wire), wire.serial);
   }
   const sendDelegate: SendDelegate<TestInput, TestMessage> =
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
@@ -4887,13 +4739,22 @@ const viewMessageIds = (wiresOldestFirst: Ably.InboundMessage[]): string[] => {
         toInvocation: () => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' }),
       }),
     );
+  const receiver = createReceiveTransport<TestInput, TestOutput>(codec.createDecoder(), logger);
+  receiver.on('event', (event) => {
+    applyTransportEventToTree(tree, event);
+  });
+  receiver.on('ably-message', (msg) => {
+    tree.emitAblyMessage(msg);
+  });
   const view = createClientView<TestInput, TestOutput, TestProjection, TestMessage>({
     tree,
     codec,
     hydrator: createHistoryHydrator({
       channel: createMockChannel(),
-      tree,
-      applier: createWireApplier(tree, codec.createDecoder()),
+      foldWire: (wire) => {
+        receiver.deliverEvent(wire);
+        receiver.deliverAblyMessage(wire);
+      },
       logger,
     }),
     sendDelegate,
@@ -4930,9 +4791,12 @@ describe('agent run.view (shared read base)', () => {
     // No branch is pinned until the watcher matches the trigger, so run.view is empty here.
     expect(run.view.getMessages()).toEqual([]);
 
-    const startPromise = run.start();
-    deliverInputEvent(ch, { invocationId: 'inv-1', codecMessageId: 'u1', serial: 's-01', inputEventId: 'p-u1' });
-    await startPromise;
+    await startRunWithTrigger(run, ch, {
+      invocationId: 'inv-1',
+      codecMessageId: 'u1',
+      serial: 's-01',
+      inputEventId: 'p-u1',
+    });
 
     // The watcher pinned the branch when the trigger folded (here during start(),
     // as it arrives live) and nudged the view to recompute.
@@ -4967,15 +4831,13 @@ describe('agent run.view (shared read base)', () => {
     });
     await session.connect();
     const run = createRunFromOpts(session, { runId: 'run-2', invocationId: 'inv-2', inputEventId: 'p-u2' });
-    const startPromise = run.start();
-    deliverInputEvent(ch, {
+    await startRunWithTrigger(run, ch, {
       invocationId: 'inv-2',
       codecMessageId: 'u2',
       serial: 's-05',
       inputEventId: 'p-u2',
       parent: 'a1',
     });
-    await startPromise;
 
     // Page run.view back to the conversation root — the same loadOlder drain the
     // client uses — then read its branch.

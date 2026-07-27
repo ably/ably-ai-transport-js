@@ -24,3 +24,28 @@ export const flushMicrotasks = async (): Promise<void> => {
   await Promise.resolve();
   await Promise.resolve();
 };
+
+/**
+ * Build a stream that enqueues the given events and closes.
+ * @param events - The chunks to emit, in order.
+ * @returns The closed-after-emitting stream.
+ */
+export const streamOf = <T>(...events: T[]): ReadableStream<T> =>
+  new ReadableStream<T>({
+    start: (controller) => {
+      for (const event of events) controller.enqueue(event);
+      controller.close();
+    },
+  });
+
+/**
+ * Build a stream that never enqueues or closes — a pipe on it only ends via
+ * cancel or abort.
+ * @returns The paused stream.
+ */
+export const pausedStream = <T>(): ReadableStream<T> =>
+  new ReadableStream<T>({
+    start: () => {
+      /* never enqueues or closes */
+    },
+  });

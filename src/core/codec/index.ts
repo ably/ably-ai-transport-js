@@ -20,6 +20,7 @@ export type {
   ToolResult,
   ToolResultError,
   UserMessage,
+  WireCodec,
   WriteOptions,
 } from './types.js';
 

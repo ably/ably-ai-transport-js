@@ -546,11 +546,42 @@ export interface CodecMessage<TMessage> {
 }
 
 // ---------------------------------------------------------------------------
-// Codec — full contract for the transport
+// WireCodec — the wire tier: everything a transport needs
 // ---------------------------------------------------------------------------
 
 /**
- * The codec describes the wire and folds events into a per-node projection.
+ * The wire tier of a codec: encode and decode, nothing else. This is the
+ * whole contract the standalone transports require — they publish inputs and
+ * classify inbound messages without ever folding a projection, so they take a
+ * `WireCodec` and stay parameterized by `TInput` / `TOutput` alone. Every
+ * full {@link Codec} is a `WireCodec`.
+ * @template TInput - The union of input variants the client publishes on the
+ *   `ai-input` wire. Every variant extends {@link CodecInputEvent}.
+ * @template TOutput - The union of output variants the agent publishes on the
+ *   `ai-output` wire. Every variant extends {@link CodecOutputEvent}.
+ */
+export interface WireCodec<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> {
+  /**
+   * Optional Ably-Agent identifier. When present, the agent-registration path
+   * registers it on the channel (so traffic is attributed to this codec); when
+   * absent, the codec opts out of registration. Read directly by `registerAgent`.
+   */
+  readonly adapterTag?: string;
+  /** Create a stateful encoder bound to the given channel. */
+  createEncoder(channel: ChannelWriter, options?: EncoderOptions): Encoder<TInput, TOutput>;
+  /** Create a stateful decoder for converting Ably inbound messages into typed inputs and outputs. */
+  createDecoder(): Decoder<TInput, TOutput>;
+}
+
+// ---------------------------------------------------------------------------
+// Codec — full contract for the sessions and the Tree
+// ---------------------------------------------------------------------------
+
+/**
+ * The full codec: the {@link WireCodec} wire tier plus the reducer that folds
+ * events into a per-node projection and the projection-extraction surface the
+ * Tree consumes. The sessions require this contract; a transport-only
+ * consumer needs just the `WireCodec` slice.
  *
  * Type parameters:
  * - `TInput` — the union of input variants the client publishes on the
@@ -564,22 +595,8 @@ export interface CodecMessage<TMessage> {
  * - `TMessage` — the per-message shape consumed by the Tree. Returned from
  *   {@link Codec.getMessages}.
  */
-export interface Codec<
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-  TProjection,
-  TMessage,
-> extends Reducer<CodecEvent<TInput, TOutput>, TProjection> {
-  /**
-   * Optional Ably-Agent identifier. When present, the agent-registration path
-   * registers it on the channel (so traffic is attributed to this codec); when
-   * absent, the codec opts out of registration. Read directly by `registerAgent`.
-   */
-  readonly adapterTag?: string;
-  /** Create a stateful encoder bound to the given channel. */
-  createEncoder(channel: ChannelWriter, options?: EncoderOptions): Encoder<TInput, TOutput>;
-  /** Create a stateful decoder for converting Ably inbound messages into typed inputs and outputs. */
-  createDecoder(): Decoder<TInput, TOutput>;
+export interface Codec<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent, TProjection, TMessage>
+  extends WireCodec<TInput, TOutput>, Reducer<CodecEvent<TInput, TOutput>, TProjection> {
   /**
    * Extract the per-message list from a projection, each message paired
    * with its codec-message-id (see {@link CodecMessage}). The SDK uses the

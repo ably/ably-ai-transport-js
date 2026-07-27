@@ -2,11 +2,11 @@
  * HistoryHydrator — the single channel-history paging-and-fold engine.
  *
  * One backward `untilAttach` pagination over a channel that folds each wire
- * message straight into a Tree (through the Tree's shared {@link WireApplier},
- * via {@link foldAndEmit}) as it pages. Both the agent (input-event lookup +
- * ancestor hydration) and the client view drive this one engine, so the channel
- * is walked once across concurrent callers instead of each maintaining its own
- * paging loop, stop condition, and notion of exhaustion.
+ * message into a Tree (via the injected `foldWire` callback) as it pages. Both
+ * the agent (input-event lookup + ancestor hydration) and the client view drive
+ * this one engine, so the channel is walked once across concurrent callers
+ * instead of each maintaining its own paging loop, stop condition, and notion of
+ * exhaustion.
  *
  * The cursor is single-flight: concurrent {@link HistoryHydrator.foldUntil}
  * calls serialise behind one another so the cursor is advanced by one caller at
@@ -20,7 +20,7 @@
  * {@link HistoryHydrator.hasNext}.
  *
  * The hydrator follows the lifecycle of the Tree it folds into: the client
- * creates one per session; the agent recreates it alongside the Tree/applier on
+ * creates one per session; the agent recreates it alongside the Tree/receiver on
  * a channel continuity-loss swap (a fresh cursor and fresh exhaustion state).
  */
 
@@ -29,7 +29,6 @@ import * as Ably from 'ably';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
-import { type AblyMessageEmitter, foldAndEmit, type WireApplier } from './decode-fold.js';
 import { type HistoryPagesCursor, loadHistoryPages } from './load-history-pages.js';
 
 /**
@@ -107,10 +106,13 @@ export interface HistoryHydrator {
 export interface HistoryHydratorOptions {
   /** The Ably channel to page history from. */
   channel: Ably.RealtimeChannel;
-  /** The Tree to fold each paged wire into (notified via `emitAblyMessage`). */
-  tree: AblyMessageEmitter;
-  /** The Tree's decode-and-apply engine; each paged wire folds through it. */
-  applier: WireApplier;
+  /**
+   * Fold one paged wire message into the session's Tree. The session wires this
+   * to its receive transport (`deliverEvent` then `deliverAblyMessage`), so the
+   * hydrator stays unaware of how a wire is classified and folded. Called once
+   * per wire in chronological (oldest-first) order within a page.
+   */
+  foldWire: (wire: Ably.InboundMessage) => void;
   /**
    * Wire-message limit per `channel.history()` round trip. Defaults to
    * {@link DEFAULT_HISTORY_PAGE_SIZE} when unset; set from the session-level
@@ -127,8 +129,7 @@ export interface HistoryHydratorOptions {
  */
 class DefaultHistoryHydrator implements HistoryHydrator {
   private readonly _channel: Ably.RealtimeChannel;
-  private readonly _tree: AblyMessageEmitter;
-  private readonly _applier: WireApplier;
+  private readonly _foldWire: (wire: Ably.InboundMessage) => void;
   private readonly _pageSize: number;
   private readonly _logger?: Logger;
 
@@ -157,8 +158,7 @@ class DefaultHistoryHydrator implements HistoryHydrator {
 
   constructor(options: HistoryHydratorOptions) {
     this._channel = options.channel;
-    this._tree = options.tree;
-    this._applier = options.applier;
+    this._foldWire = options.foldWire;
     this._pageSize = options.pageSize ?? DEFAULT_HISTORY_PAGE_SIZE;
     this._logger = options.logger?.withContext({ component: 'HistoryHydrator' });
   }
@@ -237,8 +237,9 @@ class DefaultHistoryHydrator implements HistoryHydrator {
 
   /**
    * Advance the shared cursor (opening it lazily once per attach epoch) and fold
-   * each page into the Tree via {@link foldAndEmit}, stopping when `shouldStop`
-   * returns true, the channel is exhausted, or the signal aborts. The cursor is
+   * each page into the Tree via the injected `foldWire` callback, stopping when
+   * `shouldStop` returns true, the channel is exhausted, or the signal aborts.
+   * The cursor is
    * left paused (not closed) on a stop so a later caller resumes from here.
    * Records `_exhausted` when the cursor genuinely reaches attach.
    * @param shouldStop - Polled before each page; true pauses the walk.
@@ -267,7 +268,7 @@ class DefaultHistoryHydrator implements HistoryHydrator {
       this._folding = true;
       try {
         for (const wire of chunk.toReversed()) {
-          foldAndEmit(this._applier, this._tree, wire);
+          this._foldWire(wire);
         }
       } finally {
         this._folding = false;
@@ -283,8 +284,8 @@ class DefaultHistoryHydrator implements HistoryHydrator {
 }
 
 /**
- * Create a {@link HistoryHydrator} bound to a channel, Tree, and applier.
- * @param options - The channel, Tree, applier, and logger.
+ * Create a {@link HistoryHydrator} bound to a channel and a fold callback.
+ * @param options - The channel, fold callback, page size, and logger.
  * @returns A new hydrator.
  */
 export const createHistoryHydrator = (options: HistoryHydratorOptions): HistoryHydrator =>

@@ -1,5 +1,5 @@
 import * as Ably from 'ably';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   EVENT_RUN_END,
@@ -26,39 +26,20 @@ import {
 } from '../../../src/constants.js';
 import type { RunManager } from '../../../src/core/transport/run-manager.js';
 import { createRunManager } from '../../../src/core/transport/run-manager.js';
+import { getTransportHeaders } from '../../../src/utils.js';
+import { createMockChannel, type MockChannel } from '../../helper/mock-channel.js';
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-interface MockChannel {
-  publish: ReturnType<typeof vi.fn>;
-  publishCalls: Ably.Message[];
-}
-
-const createMockChannel = (): MockChannel & Ably.RealtimeChannel => {
-  const mock: MockChannel = {
-    publishCalls: [],
-    // eslint-disable-next-line @typescript-eslint/require-await -- mock returns resolved promise
-    publish: vi.fn(async (msg: Ably.Message): Promise<Ably.PublishResult> => {
-      mock.publishCalls.push(msg);
-      // A deterministic per-publish serial so startStep can return the
-      // step-start's serial (the attempt's `step-start-serial`).
-      return { serials: [`serial-${String(mock.publishCalls.length)}`] };
-    }),
-  };
-  // CAST: Tests only use publish — other RealtimeChannel members are unused.
-  return mock as unknown as MockChannel & Ably.RealtimeChannel;
-};
-
-const headersOf = (msg: Ably.Message): Record<string, string> => {
-  const ai = (msg.extras as { ai?: { transport?: Record<string, string>; codec?: Record<string, string> } }).ai;
-  return { ...ai?.transport, ...ai?.codec };
-};
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+/**
+ * Read the transport-tier headers off a recorded publish. The run manager
+ * writes only transport-tier headers, so this sees everything it stamps.
+ * @param msg - The recorded publish (undefined tolerated so call sites can
+ * index `publishCalls` directly after asserting its length).
+ * @returns The transport headers record.
+ */
+const headersOf = (msg: Ably.Message | undefined): Record<string, string> =>
+  // CAST: the mock records outbound Ably.Message publishes; getTransportHeaders
+  // reads only `extras`, which both message shapes carry.
+  getTransportHeaders(msg as Ably.InboundMessage);
 
 describe('RunManager', () => {
   let channel: MockChannel & Ably.RealtimeChannel;
@@ -78,8 +59,7 @@ describe('RunManager', () => {
       expect(msg).toBeDefined();
       expect(msg?.name).toBe(EVENT_RUN_START);
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- narrowed by expect above
-      const headers = headersOf(msg!);
+      const headers = headersOf(msg);
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
       expect(headers[HEADER_RUN_CLIENT_ID]).toBe('user-a');
     });
@@ -96,8 +76,7 @@ describe('RunManager', () => {
     it('defaults clientId to empty string when omitted', async () => {
       await manager.startRun('run-1');
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      const headers = headersOf(channel.publishCalls.at(0)!);
+      const headers = headersOf(channel.publishCalls.at(0));
       expect(headers[HEADER_RUN_CLIENT_ID]).toBe('');
     });
 
@@ -109,9 +88,8 @@ describe('RunManager', () => {
         inputCodecMessageId: 'trigger-msg',
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      const msg = channel.publishCalls.at(0)!;
-      expect(msg.name).toBe(EVENT_RUN_RESUME);
+      const msg = channel.publishCalls.at(0);
+      expect(msg?.name).toBe(EVENT_RUN_RESUME);
       const headers = headersOf(msg);
       // A resume carries the per-invocation correlation/attribution...
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
@@ -128,8 +106,7 @@ describe('RunManager', () => {
         regenerates: 'r',
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      const headers = headersOf(channel.publishCalls.at(0)!);
+      const headers = headersOf(channel.publishCalls.at(0));
       // ...but not structure — the original run-start owns that.
       expect(headers).not.toHaveProperty(HEADER_PARENT);
       expect(headers).not.toHaveProperty(HEADER_FORK_OF);
@@ -140,33 +117,27 @@ describe('RunManager', () => {
       await manager.startRun('run-1', 'user-a', undefined, { continuation: false });
       await manager.startRun('run-2', 'user-a');
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      expect(channel.publishCalls.at(0)!.name).toBe(EVENT_RUN_START);
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      expect(channel.publishCalls.at(1)!.name).toBe(EVENT_RUN_START);
+      expect(channel.publishNames()).toEqual([EVENT_RUN_START, EVENT_RUN_START]);
     });
 
     it('stamps input-client-id when inputClientId is set', async () => {
       await manager.startRun('run-1', 'user-a', undefined, { inputClientId: 'user-b' });
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      const headers = headersOf(channel.publishCalls.at(0)!);
+      const headers = headersOf(channel.publishCalls.at(0));
       expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
     });
 
     it('omits input-client-id when inputClientId is unset', async () => {
       await manager.startRun('run-1', 'user-a');
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      const headers = headersOf(channel.publishCalls.at(0)!);
+      const headers = headersOf(channel.publishCalls.at(0));
       expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
     });
 
     it('stamps fork-of when metadata.forkOf is set (edit run-start)', async () => {
       await manager.startRun('run-1', 'user-a', undefined, { forkOf: 'orig-user-msg' });
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      const headers = headersOf(channel.publishCalls.at(0)!);
+      const headers = headersOf(channel.publishCalls.at(0));
       expect(headers[HEADER_FORK_OF]).toBe('orig-user-msg');
       expect(headers[HEADER_MSG_REGENERATE]).toBeUndefined();
     });
@@ -174,8 +145,7 @@ describe('RunManager', () => {
     it('stamps msg-regenerate when metadata.regenerates is set (regenerate run-start)', async () => {
       await manager.startRun('run-1', 'user-a', undefined, { regenerates: 'orig-asst-msg' });
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      const headers = headersOf(channel.publishCalls.at(0)!);
+      const headers = headersOf(channel.publishCalls.at(0));
       expect(headers[HEADER_MSG_REGENERATE]).toBe('orig-asst-msg');
       expect(headers[HEADER_FORK_OF]).toBeUndefined();
     });
@@ -183,16 +153,14 @@ describe('RunManager', () => {
     it('stamps input-codec-message-id when metadata.inputCodecMessageId is set', async () => {
       await manager.startRun('run-1', 'user-a', undefined, { inputCodecMessageId: 'trigger-msg' });
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      const headers = headersOf(channel.publishCalls.at(0)!);
+      const headers = headersOf(channel.publishCalls.at(0));
       expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
     });
 
     it('omits input-codec-message-id when inputCodecMessageId is unset', async () => {
       await manager.startRun('run-1', 'user-a');
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      const headers = headersOf(channel.publishCalls.at(0)!);
+      const headers = headersOf(channel.publishCalls.at(0));
       expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
     });
   });
@@ -203,9 +171,8 @@ describe('RunManager', () => {
       await manager.endRun('run-1', 'complete');
 
       expect(channel.publishCalls).toHaveLength(2);
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      const msg = channel.publishCalls.at(1)!;
-      expect(msg.name).toBe(EVENT_RUN_END);
+      const msg = channel.publishCalls.at(1);
+      expect(msg?.name).toBe(EVENT_RUN_END);
 
       const headers = headersOf(msg);
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
@@ -224,8 +191,7 @@ describe('RunManager', () => {
         new Ably.ErrorInfo('invalid x-api-key', 104008, 500),
       );
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted by prior calls
-      const headers = headersOf(channel.publishCalls.at(1)!);
+      const headers = headersOf(channel.publishCalls.at(1));
       expect(headers[HEADER_RUN_REASON]).toBe('error');
       expect(headers[HEADER_ERROR_CODE]).toBe('104008');
       expect(headers[HEADER_ERROR_MESSAGE]).toBe('invalid x-api-key');
@@ -235,8 +201,7 @@ describe('RunManager', () => {
       await manager.startRun('run-1', 'user-a');
       await manager.endRun('run-1', 'error');
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted by prior calls
-      const headers = headersOf(channel.publishCalls.at(1)!);
+      const headers = headersOf(channel.publishCalls.at(1));
       expect(headers[HEADER_RUN_REASON]).toBe('error');
       expect(headers).not.toHaveProperty(HEADER_ERROR_CODE);
       expect(headers).not.toHaveProperty(HEADER_ERROR_MESSAGE);
@@ -246,8 +211,7 @@ describe('RunManager', () => {
       await manager.startRun('run-1', 'user-a');
       await manager.endRun('run-1', 'complete', undefined, undefined, undefined, new Ably.ErrorInfo('x', 104008, 500));
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted by prior calls
-      const headers = headersOf(channel.publishCalls.at(1)!);
+      const headers = headersOf(channel.publishCalls.at(1));
       expect(headers).not.toHaveProperty(HEADER_ERROR_CODE);
       expect(headers).not.toHaveProperty(HEADER_ERROR_MESSAGE);
     });
@@ -265,8 +229,7 @@ describe('RunManager', () => {
     it('defaults clientId to empty string for unknown run', async () => {
       await manager.endRun('unknown', 'error');
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      const headers = headersOf(channel.publishCalls.at(0)!);
+      const headers = headersOf(channel.publishCalls.at(0));
       expect(headers[HEADER_RUN_CLIENT_ID]).toBe('');
     });
 
@@ -274,8 +237,7 @@ describe('RunManager', () => {
       await manager.startRun('run-1', 'user-a');
       await manager.endRun('run-1', 'complete', 'inv-1', 'user-b');
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      const headers = headersOf(channel.publishCalls.at(1)!);
+      const headers = headersOf(channel.publishCalls.at(1));
       expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
     });
 
@@ -283,8 +245,7 @@ describe('RunManager', () => {
       await manager.startRun('run-1', 'user-a');
       await manager.endRun('run-1', 'complete');
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      const headers = headersOf(channel.publishCalls.at(1)!);
+      const headers = headersOf(channel.publishCalls.at(1));
       expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
     });
 
@@ -292,8 +253,7 @@ describe('RunManager', () => {
       await manager.startRun('run-1', 'user-a');
       await manager.endRun('run-1', 'complete', 'inv-1', 'user-b', 'trigger-msg');
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      const headers = headersOf(channel.publishCalls.at(1)!);
+      const headers = headersOf(channel.publishCalls.at(1));
       expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
     });
 
@@ -301,8 +261,7 @@ describe('RunManager', () => {
       await manager.startRun('run-1', 'user-a');
       await manager.endRun('run-1', 'complete');
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      const headers = headersOf(channel.publishCalls.at(1)!);
+      const headers = headersOf(channel.publishCalls.at(1));
       expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
     });
   });
@@ -313,9 +272,8 @@ describe('RunManager', () => {
       await manager.suspendRun('run-1', 'inv-1');
 
       expect(channel.publishCalls).toHaveLength(2);
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      const msg = channel.publishCalls.at(1)!;
-      expect(msg.name).toBe(EVENT_RUN_SUSPEND);
+      const msg = channel.publishCalls.at(1);
+      expect(msg?.name).toBe(EVENT_RUN_SUSPEND);
 
       const headers = headersOf(msg);
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
@@ -329,8 +287,7 @@ describe('RunManager', () => {
       await manager.startRun('run-1', 'user-a');
       await manager.suspendRun('run-1');
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      const headers = headersOf(channel.publishCalls.at(1)!);
+      const headers = headersOf(channel.publishCalls.at(1));
       expect(headers).not.toHaveProperty(HEADER_INVOCATION_ID);
     });
 
@@ -338,8 +295,7 @@ describe('RunManager', () => {
       await manager.startRun('run-1', 'user-a');
       await manager.suspendRun('run-1', 'inv-1', 'user-b', 'trigger-msg');
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      const headers = headersOf(channel.publishCalls.at(1)!);
+      const headers = headersOf(channel.publishCalls.at(1));
       expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
       expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
     });
@@ -348,8 +304,7 @@ describe('RunManager', () => {
       await manager.startRun('run-1', 'user-a');
       await manager.suspendRun('run-1', 'inv-1');
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      const headers = headersOf(channel.publishCalls.at(1)!);
+      const headers = headersOf(channel.publishCalls.at(1));
       expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
       expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
     });
@@ -368,8 +323,7 @@ describe('RunManager', () => {
     it('defaults run-client-id to empty string for an unknown run', async () => {
       await manager.suspendRun('unknown');
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- length asserted
-      const headers = headersOf(channel.publishCalls.at(0)!);
+      const headers = headersOf(channel.publishCalls.at(0));
       expect(headers[HEADER_RUN_CLIENT_ID]).toBe('');
     });
   });
@@ -406,8 +360,7 @@ describe('RunManager', () => {
       expect(channel.publishCalls).toHaveLength(1);
       const [msg] = channel.publishCalls;
       expect(msg?.name).toBe(EVENT_STEP_START);
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- narrowed by expect above
-      const headers = headersOf(msg!);
+      const headers = headersOf(msg);
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
       expect(headers[HEADER_STEP_ID]).toBe('step-0');
       // A step-start carries no back-ref — its own serial is the identity.
@@ -434,8 +387,7 @@ describe('RunManager', () => {
         stepClientId: 'stepper',
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- single publish
-      const headers = headersOf(channel.publishCalls.at(0)!);
+      const headers = headersOf(channel.publishCalls.at(0));
       expect(headers[HEADER_INVOCATION_ID]).toBe('inv-1');
       expect(headers[HEADER_RUN_CLIENT_ID]).toBe('owner');
       expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('invoker');
@@ -450,8 +402,7 @@ describe('RunManager', () => {
       expect(channel.publishCalls).toHaveLength(1);
       const [msg] = channel.publishCalls;
       expect(msg?.name).toBe(EVENT_STEP_END);
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- narrowed by expect above
-      const headers = headersOf(msg!);
+      const headers = headersOf(msg);
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
       expect(headers[HEADER_STEP_ID]).toBe('step-0');
       expect(headers[HEADER_STEP_START_SERIAL]).toBe('serial-1');
@@ -466,8 +417,7 @@ describe('RunManager', () => {
         stepClientId: 'stepper',
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- single publish
-      const headers = headersOf(channel.publishCalls.at(0)!);
+      const headers = headersOf(channel.publishCalls.at(0));
       expect(headers[HEADER_STEP_REASON]).toBe('complete');
       expect(headers[HEADER_INVOCATION_ID]).toBe('inv-1');
       expect(headers[HEADER_RUN_CLIENT_ID]).toBe('owner');

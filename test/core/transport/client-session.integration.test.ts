@@ -375,7 +375,7 @@ const publishRegenerateRun = async (
 
 /**
  * Publish one step attempt: `ai-step-start`, the attempt's streamed assistant
- * output (stamped with the step-id / start-serial), then `ai-step-end`. Used to
+ * output (stamped with the step-id / step-start-serial), then `ai-step-end`. Used to
  * seed a step-retry scenario into channel history.
  * @param channel - The channel to publish on.
  * @param opts - Attempt identifiers, content, and terminal reason.
@@ -402,13 +402,13 @@ const publishStepAttempt = async (
   },
 ): Promise<void> => {
   // The step-start's own channel serial is the attempt's identity (its
-  // `start-serial`); back-reference it on the output and step-end so the later
+  // `step-start-serial`); back-reference it on the output and step-end so the later
   // attempt (a higher serial) supersedes the earlier one.
   const startResult = await channel.publish({
     name: EVENT_STEP_START,
     extras: { ai: { transport: buildStepHeaders({ runId: opts.runId, stepId: opts.stepId }) } },
   });
-  const startSerial = startResult.serials[0] ?? undefined;
+  const stepStartSerial = startResult.serials[0] ?? undefined;
 
   const asstHeaders = buildTransportHeaders({
     role: 'assistant',
@@ -418,7 +418,7 @@ const publishStepAttempt = async (
     runClientId: opts.clientId,
     parent: opts.parent,
     stepId: opts.stepId,
-    startSerial,
+    stepStartSerial,
   });
   const encoder = UIMessageCodec.createEncoder(channel, {
     extras: { headers: asstHeaders },
@@ -439,7 +439,7 @@ const publishStepAttempt = async (
         transport: buildStepHeaders({
           runId: opts.runId,
           stepId: opts.stepId,
-          startSerial,
+          stepStartSerial,
           reason: opts.reason,
         }),
       },

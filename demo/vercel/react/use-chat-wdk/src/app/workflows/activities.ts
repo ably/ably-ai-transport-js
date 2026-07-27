@@ -101,7 +101,7 @@ export type InferenceOutcome =
  *
  * Retry-safe: the runId is pinned to the (replay-stable) workflow run id, so a
  * WDK retry re-enters the SAME run and its duplicate `ai-run-start` folds
- * idempotently onto the existing node (first start-serial wins) — it never opens
+ * idempotently onto the existing node (first startSerial wins) — it never opens
  * a parallel run.
  * @param invocationData - The invocation pointer the client POSTed.
  * @param workflowRunId - The WDK workflow run id (stable across replays).

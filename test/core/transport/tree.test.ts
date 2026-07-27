@@ -9,9 +9,9 @@ import {
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
-  HEADER_START_SERIAL,
   HEADER_STEER_CODEC_MESSAGE_IDS,
   HEADER_STEP_ID,
+  HEADER_STEP_START_SERIAL,
   HEADER_STREAM,
 } from '../../../src/constants.js';
 import type { Codec, CodecEvent, CodecInputEvent, Regenerate, UserMessage } from '../../../src/core/codec/types.js';
@@ -100,8 +100,8 @@ interface ApplyOpts {
   streamed?: boolean;
   /** Sets the `step-id` transport header (step-attributed output). */
   stepId?: string;
-  /** Sets the `start-serial` transport header (the back-ref to the owning step attempt's `ai-step-start` serial). */
-  startSerial?: string;
+  /** Sets the `step-start-serial` transport header (the back-ref to the owning step attempt's `ai-step-start` serial). */
+  stepStartSerial?: string;
   /** Sets the raw `steer-codec-message-ids` transport header (a JSON string, so malformed values can be exercised). */
   steerStamp?: string;
   message?: TestMessage;
@@ -123,7 +123,7 @@ const apply = (tree: TreeInternal<TestInput, TestOutput, TestProjection>, opts: 
   if (opts.inputCodecMessageId) h[HEADER_INPUT_CODEC_MESSAGE_ID] = opts.inputCodecMessageId;
   if (opts.streamed) h[HEADER_STREAM] = 'true';
   if (opts.stepId !== undefined) h[HEADER_STEP_ID] = opts.stepId;
-  if (opts.startSerial !== undefined) h[HEADER_START_SERIAL] = opts.startSerial;
+  if (opts.stepStartSerial !== undefined) h[HEADER_STEP_START_SERIAL] = opts.stepStartSerial;
   if (opts.steerStamp !== undefined) h[HEADER_STEER_CODEC_MESSAGE_IDS] = opts.steerStamp;
 
   const events: TreeEvent[] = opts.events ?? (opts.message ? [{ type: 'append-message', message: opts.message }] : []);
@@ -200,7 +200,7 @@ const lifecycle = (
 // asserting stepClientId surfacing supplies it via `opts.stepClientId`.
 //
 // An attempt's identity is the serial of its `ai-step-start`. A step-start's
-// `serial` IS that identity; a step-end carries it back as `startSerial` (which
+// `serial` IS that identity; a step-end carries it back as `stepStartSerial` (which
 // defaults to the step-end's own `serial` for the common in-order case where a
 // caller does not need to express a distinct back-ref).
 const applyStep = (
@@ -210,8 +210,8 @@ const applyStep = (
     runId: string;
     stepId: string;
     serial?: string;
-    /** The step-end's `start-serial` back-ref; defaults to `serial`. Ignored for step-start. */
-    startSerial?: string;
+    /** The step-end's `step-start-serial` back-ref; defaults to `serial`. Ignored for step-start. */
+    stepStartSerial?: string;
     timestamp?: number;
     reason?: StepEndReason;
     invocationId?: string;
@@ -241,7 +241,7 @@ const applyStep = (
       type: 'step-end',
       runId: opts.runId,
       stepId: opts.stepId,
-      startSerial: opts.startSerial ?? opts.serial ?? '',
+      stepStartSerial: opts.stepStartSerial ?? opts.serial ?? '',
       ...scopes,
       serial: opts.serial,
       reason: opts.reason ?? 'complete',
@@ -1240,7 +1240,7 @@ describe('Tree', () => {
         apply(t, {
           runId: 'R1',
           stepId: 'S',
-          startSerial: 's2',
+          stepStartSerial: 's2',
           message: { id: 'm1', content: 'partial' },
           serial: 's3',
           timestamp: 1000,
@@ -1262,7 +1262,7 @@ describe('Tree', () => {
         expect(idsOf(t, 'R1')).toEqual(['m1']);
         expect(warns).toEqual([]);
 
-        // The rescheduled attempt arrives much later (higher start-serial, same
+        // The rescheduled attempt arrives much later (higher step-start-serial, same
         // stepId): its step-start supersedes the s2 attempt and its output
         // replaces the dead partial — because the log was retained, the refold
         // drops m1 cleanly. Serials s8/s9 sort above the s2/s3 ones (single-digit,
@@ -1277,7 +1277,7 @@ describe('Tree', () => {
         apply(t, {
           runId: 'R1',
           stepId: 'S',
-          startSerial: 's8',
+          stepStartSerial: 's8',
           message: { id: 'm2', content: 'rescheduled' },
           serial: 's9',
           timestamp: 1100 + 500 * 4 + 2,
@@ -1302,7 +1302,7 @@ describe('Tree', () => {
         apply(t, {
           runId: 'R1',
           stepId: 'S',
-          startSerial: 's2',
+          stepStartSerial: 's2',
           message: { id: 'm1', content: 'x' },
           serial: 's3',
           timestamp: 1000,
@@ -1321,7 +1321,7 @@ describe('Tree', () => {
         apply(t, {
           runId: 'R1',
           stepId: 'S',
-          startSerial: 's2',
+          stepStartSerial: 's2',
           message: { id: 'm0', content: 'earlier' },
           serial: 's0',
           timestamp: 1000,
@@ -1330,7 +1330,14 @@ describe('Tree', () => {
         expect(warns).toEqual([]);
 
         // The step now settles — this re-queues the now-fully-settled run.
-        applyStep(t, { type: 'step-end', runId: 'R1', stepId: 'S', startSerial: 's2', serial: 's5', timestamp: 1100 });
+        applyStep(t, {
+          type: 'step-end',
+          runId: 'R1',
+          stepId: 'S',
+          stepStartSerial: 's2',
+          serial: 's5',
+          timestamp: 1100,
+        });
 
         // A further clock advance past the window drains the queue and sweeps R1
         // (proving the step-end re-queued it): a very late wire degrades to
@@ -1346,7 +1353,7 @@ describe('Tree', () => {
         apply(t, {
           runId: 'R1',
           stepId: 'S',
-          startSerial: 's2',
+          stepStartSerial: 's2',
           message: { id: 'm-1', content: 'earliest' },
           serial: 'r0',
           timestamp: 1000,
@@ -1365,7 +1372,7 @@ describe('Tree', () => {
         apply(t, {
           runId: 'R1',
           stepId: 'S',
-          startSerial: 's2',
+          stepStartSerial: 's2',
           message: { id: 'm1', content: 'partial' },
           serial: 's3',
           timestamp: 1000,
@@ -1383,16 +1390,23 @@ describe('Tree', () => {
         expect(idsOf(t, 'R1')).toEqual(['m1']);
         expect(warns).toEqual([]);
 
-        // The rescheduled attempt (start-serial s9) arrives REORDERED: its
+        // The rescheduled attempt (step-start-serial s9) arrives REORDERED: its
         // step-END and output land before its step-START (cross-publisher
-        // arrival). Both back-reference s9 — the start-serial the cleanup arm
+        // arrival). Both back-reference s9 — the step-start-serial the cleanup arm
         // closes, known regardless of arrival order. The step-end alone leaves
         // the canonical on the still-open s2 attempt, so the run stays held.
-        applyStep(t, { type: 'step-end', runId: 'R1', stepId: 'S', startSerial: 's9', serial: 's7', timestamp: 1100 });
+        applyStep(t, {
+          type: 'step-end',
+          runId: 'R1',
+          stepId: 'S',
+          stepStartSerial: 's9',
+          serial: 's7',
+          timestamp: 1100,
+        });
         apply(t, {
           runId: 'R1',
           stepId: 'S',
-          startSerial: 's9',
+          stepStartSerial: 's9',
           message: { id: 'm2', content: 'rescheduled' },
           serial: 's8',
           timestamp: 1100,
@@ -1419,7 +1433,7 @@ describe('Tree', () => {
         apply(t, {
           runId: 'R1',
           stepId: 'S',
-          startSerial: 's9',
+          stepStartSerial: 's9',
           message: { id: 'm-late', content: 'earliest' },
           serial: 'r0',
           timestamp: 1100,
@@ -2754,7 +2768,13 @@ describe('Tree', () => {
   describe('step precedence', () => {
     it('folds a single step attempt normally', () => {
       applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', serial: 's1' });
-      apply(tree, { runId: 'R1', stepId: 'S', startSerial: 's1', message: { id: 'm1', content: 'x' }, serial: 's2' });
+      apply(tree, {
+        runId: 'R1',
+        stepId: 'S',
+        stepStartSerial: 's1',
+        message: { id: 'm1', content: 'x' },
+        serial: 's2',
+      });
 
       expect(idsOf(tree, 'R1')).toEqual(['m1']);
     });
@@ -2764,13 +2784,13 @@ describe('Tree', () => {
       apply(tree, {
         runId: 'R1',
         stepId: 'S',
-        startSerial: 's1',
+        stepStartSerial: 's1',
         message: { id: 'm1', content: 'partial' },
         serial: 's2',
       });
       expect(idsOf(tree, 'R1')).toEqual(['m1']);
 
-      // Retry: same stepId, fresh start-serial, higher-serial start supersedes A1.
+      // Retry: same stepId, fresh step-start-serial, higher-serial start supersedes A1.
       applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', serial: 's3' });
       // A1's already-folded output is dropped by the supersede refold.
       expect(idsOf(tree, 'R1')).toEqual([]);
@@ -2778,7 +2798,7 @@ describe('Tree', () => {
       apply(tree, {
         runId: 'R1',
         stepId: 'S',
-        startSerial: 's3',
+        stepStartSerial: 's3',
         message: { id: 'm2', content: 'full' },
         serial: 's4',
       });
@@ -2786,13 +2806,13 @@ describe('Tree', () => {
     });
 
     it('drops a superseded attempt whose output arrives LATE (earlier serial, forcing a refold)', () => {
-      // Canonical attempt (start-serial s3) established first; its output folds.
+      // Canonical attempt (step-start-serial s3) established first; its output folds.
       applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', serial: 's1' });
       applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', serial: 's3' });
       apply(tree, {
         runId: 'R1',
         stepId: 'S',
-        startSerial: 's3',
+        stepStartSerial: 's3',
         message: { id: 'm2', content: 'full' },
         serial: 's4',
       });
@@ -2805,7 +2825,7 @@ describe('Tree', () => {
       apply(tree, {
         runId: 'R1',
         stepId: 'S',
-        startSerial: 's1',
+        stepStartSerial: 's1',
         message: { id: 'm1', content: 'stale' },
         serial: 's2',
       });
@@ -2815,9 +2835,15 @@ describe('Tree', () => {
     it('does not gate an optimistic (serial-less) step-start before its echo', () => {
       // The agent seeds its own step-start optimistically (no serial), then
       // streams output, then the wire echo promotes the start's serial. The
-      // optimistic seed and its echo share the same start-serial (the ACK).
+      // optimistic seed and its echo share the same step-start-serial (the ACK).
       applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', serial: undefined });
-      apply(tree, { runId: 'R1', stepId: 'S', startSerial: 's1', message: { id: 'm1', content: 'x' }, serial: 's2' });
+      apply(tree, {
+        runId: 'R1',
+        stepId: 'S',
+        stepStartSerial: 's1',
+        message: { id: 'm1', content: 'x' },
+        serial: 's2',
+      });
       expect(idsOf(tree, 'R1')).toEqual(['m1']);
 
       // Echo of the same start with the concrete serial — same attempt, promotes
@@ -2828,9 +2854,21 @@ describe('Tree', () => {
 
     it('keeps distinct stepIds independent (no cross-step precedence)', () => {
       applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S1', serial: 's1' });
-      apply(tree, { runId: 'R1', stepId: 'S1', startSerial: 's1', message: { id: 'm1', content: '1' }, serial: 's2' });
+      apply(tree, {
+        runId: 'R1',
+        stepId: 'S1',
+        stepStartSerial: 's1',
+        message: { id: 'm1', content: '1' },
+        serial: 's2',
+      });
       applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S2', serial: 's3' });
-      apply(tree, { runId: 'R1', stepId: 'S2', startSerial: 's3', message: { id: 'm2', content: '2' }, serial: 's4' });
+      apply(tree, {
+        runId: 'R1',
+        stepId: 'S2',
+        stepStartSerial: 's3',
+        message: { id: 'm2', content: '2' },
+        serial: 's4',
+      });
 
       // Both steps' output materialises — a later step never supersedes an
       // earlier, different step.
@@ -2839,7 +2877,13 @@ describe('Tree', () => {
 
     it('emits a projection-changed output (empty events) on a supersede so consumers repaint', () => {
       applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', serial: 's1' });
-      apply(tree, { runId: 'R1', stepId: 'S', startSerial: 's1', message: { id: 'm1', content: 'x' }, serial: 's2' });
+      apply(tree, {
+        runId: 'R1',
+        stepId: 'S',
+        stepStartSerial: 's1',
+        message: { id: 'm1', content: 'x' },
+        serial: 's2',
+      });
 
       const outputs: OutputEvent<TestOutput>[] = [];
       tree.on('output', (e) => outputs.push(e));
@@ -2848,6 +2892,38 @@ describe('Tree', () => {
 
       const repaint = outputs.find((e) => e.runId === 'R1' && e.events.length === 0);
       expect(repaint).toBeDefined();
+    });
+
+    it('surfaces the publishing step attempt (stepId + stepStartSerial) on the output event', () => {
+      // Consumers attribute live output to its step attempt purely from the
+      // emit, so both header-derived fields must ride the `output` event.
+      const outputs: OutputEvent<TestOutput>[] = [];
+      tree.on('output', (e) => outputs.push(e));
+
+      applyStep(tree, { type: 'step-start', runId: 'R1', stepId: 'S', serial: 's1' });
+      apply(tree, {
+        runId: 'R1',
+        codecMessageId: 'm1',
+        stepId: 'S',
+        stepStartSerial: 's1',
+        message: { id: 'm1', content: 'x' },
+        serial: 's2',
+      });
+
+      const emitted = outputs.find((e) => e.runId === 'R1' && e.codecMessageId === 'm1');
+      expect(emitted?.stepId).toBe('S');
+      expect(emitted?.stepStartSerial).toBe('s1');
+    });
+
+    it('omits stepId and stepStartSerial on the output event for stepless output', () => {
+      const outputs: OutputEvent<TestOutput>[] = [];
+      tree.on('output', (e) => outputs.push(e));
+
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'm1', content: 'x' }, serial: 's1' });
+
+      const emitted = outputs.find((e) => e.runId === 'R1' && e.codecMessageId === 'm1');
+      expect(emitted?.stepId).toBeUndefined();
+      expect(emitted?.stepStartSerial).toBeUndefined();
     });
 
     it('surfaces the steer-codec-message-ids stamp on the output event', () => {
@@ -2918,7 +2994,7 @@ describe('Tree', () => {
       apply(tree, {
         runId: 'R1',
         stepId: 'S',
-        startSerial: 's1',
+        stepStartSerial: 's1',
         message: { id: 'm1', content: 'stale' },
         serial: 's2',
       });
@@ -2926,11 +3002,11 @@ describe('Tree', () => {
       expect(outputs.filter((e) => e.events.length > 0)).toHaveLength(0);
     });
 
-    it('re-streams a step under the SAME stepId (fresh start-serial) without double-output', () => {
+    it('re-streams a step under the SAME stepId (fresh step-start-serial) without double-output', () => {
       // A re-execution of the same logical step that re-publishes its OWN
       // output under a fresh `ai-step-start` (a new serial). Each output carries
       // a DISTINCT codec-message-id (per-pipe random), so the version guard
-      // cannot dedup the two — only the start-serial supersede can. Because
+      // cannot dedup the two — only the step-start-serial supersede can. Because
       // every step-start has a distinct serial, the later start supersedes the
       // earlier attempt and exactly one output survives. (Keyed on a single
       // developer-supplied id, both would have folded — a double-output.)
@@ -2938,7 +3014,7 @@ describe('Tree', () => {
       apply(tree, {
         runId: 'R1',
         stepId: 'S',
-        startSerial: 's1',
+        stepStartSerial: 's1',
         message: { id: 'cm-a', content: 'first' },
         serial: 's2',
       });
@@ -2950,7 +3026,7 @@ describe('Tree', () => {
       apply(tree, {
         runId: 'R1',
         stepId: 'S',
-        startSerial: 's3',
+        stepStartSerial: 's3',
         message: { id: 'cm-b', content: 'second' },
         serial: 's4',
       });
@@ -2969,12 +3045,19 @@ describe('Tree', () => {
       apply(tree, {
         runId: 'R1',
         stepId: 'S',
-        startSerial: 's2',
+        stepStartSerial: 's2',
         message: { id: 'm1', content: 'x' },
         serial: 's3',
         timestamp: 1000,
       });
-      applyStep(tree, { type: 'step-end', runId: 'R1', stepId: 'S', startSerial: 's2', serial: 's4', timestamp: 1000 });
+      applyStep(tree, {
+        type: 'step-end',
+        runId: 'R1',
+        stepId: 'S',
+        stepStartSerial: 's2',
+        serial: 's4',
+        timestamp: 1000,
+      });
       lifecycle(tree, 'end', 'R1', 's5', 1000);
       // Advance the clock past the reorder window on an unrelated node to sweep R1.
       lifecycle(tree, 'start', 'R2', 's6', 1000 + T + 1);
@@ -2998,7 +3081,7 @@ describe('Tree', () => {
         type: 'step-end',
         runId: 'R1',
         stepId: 'S',
-        startSerial: 's1',
+        stepStartSerial: 's1',
         serial: 's2',
         reason: 'failed',
       });
@@ -3006,7 +3089,7 @@ describe('Tree', () => {
 
       let steps = tree.getRunNode('R1')?.steps ?? [];
       expect(steps).toHaveLength(1);
-      // attemptCount counts distinct start-serials (s1, s2-back-ref, s3) = 2
+      // attemptCount counts distinct step-start-serials (s1, s2-back-ref, s3) = 2
       // physical attempts. stepClientId is the empty string here (applyStep
       // defaults it); a dedicated test below asserts a non-empty value surfaces
       // and tracks the canonical attempt.
@@ -3016,12 +3099,12 @@ describe('Tree', () => {
         type: 'step-end',
         runId: 'R1',
         stepId: 'S',
-        startSerial: 's3',
+        stepStartSerial: 's3',
         serial: 's4',
         reason: 'complete',
       });
       steps = tree.getRunNode('R1')?.steps ?? [];
-      // Status reflects the CANONICAL attempt (start-serial s3), which completed.
+      // Status reflects the CANONICAL attempt (step-start-serial s3), which completed.
       expect(steps[0]).toEqual({ stepId: 'S', status: 'complete', attemptCount: 2, stepClientId: '' });
     });
 
@@ -3059,7 +3142,7 @@ describe('Tree', () => {
         type: 'step-end',
         runId: 'R1',
         stepId: 'S',
-        startSerial: 's2',
+        stepStartSerial: 's2',
         serial: 's2',
         reason: 'complete',
       });
@@ -3069,7 +3152,7 @@ describe('Tree', () => {
     });
 
     it('leaves stepless run output and input-node folds unchanged (gate is the identity)', () => {
-      // A stepless reply run: outputs carry no step-id/start-serial and all fold.
+      // A stepless reply run: outputs carry no step-id/step-start-serial and all fold.
       apply(tree, { runId: 'R1', message: { id: 'a1', content: '1' }, serial: 's1' });
       apply(tree, { runId: 'R1', message: { id: 'a2', content: '2' }, serial: 's2' });
       expect(idsOf(tree, 'R1')).toEqual(['a1', 'a2']);

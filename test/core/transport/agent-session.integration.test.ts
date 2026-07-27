@@ -35,10 +35,10 @@ import {
   HEADER_ROLE,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
-  HEADER_START_SERIAL,
   HEADER_STEP_CLIENT_ID,
   HEADER_STEP_ID,
   HEADER_STEP_REASON,
+  HEADER_STEP_START_SERIAL,
 } from '../../../src/constants.js';
 import { toCodecEvents } from '../../../src/core/codec/codec-event.js';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
@@ -562,7 +562,7 @@ describe('AgentSession integration', () => {
     expect(stepStart).toBeDefined();
     expect(stepEnd).toBeDefined();
 
-    // The assistant output carries the step's id / start-serial back-ref.
+    // The assistant output carries the step's id / step-start-serial back-ref.
     const output = wireMessages.find((m) => m.name === EVENT_AI_OUTPUT && getHeaders(m)[HEADER_ROLE] === 'assistant');
     expect(output).toBeDefined();
 
@@ -572,18 +572,18 @@ describe('AgentSession integration', () => {
       const outputHeaders = getHeaders(output);
       const stepId = startHeaders[HEADER_STEP_ID];
       // The step-start's own channel serial is the attempt's identity; the
-      // step-end and the output back-reference it as `start-serial`.
-      const startSerial = stepStart.serial;
+      // step-end and the output back-reference it as `step-start-serial`.
+      const stepStartSerial = stepStart.serial;
       expect(startHeaders[HEADER_RUN_ID]).toBe('run-pipe-step-1');
       expect(stepId).toBeDefined();
-      expect(startSerial).toBeDefined();
-      // A step-start carries no `start-serial` of its own.
-      expect(startHeaders[HEADER_START_SERIAL]).toBeUndefined();
+      expect(stepStartSerial).toBeDefined();
+      // A step-start carries no `step-start-serial` of its own.
+      expect(startHeaders[HEADER_STEP_START_SERIAL]).toBeUndefined();
       expect(endHeaders[HEADER_STEP_ID]).toBe(stepId);
-      expect(endHeaders[HEADER_START_SERIAL]).toBe(startSerial);
+      expect(endHeaders[HEADER_STEP_START_SERIAL]).toBe(stepStartSerial);
       expect(endHeaders[HEADER_STEP_REASON]).toBe('complete');
       expect(outputHeaders[HEADER_STEP_ID]).toBe(stepId);
-      expect(outputHeaders[HEADER_START_SERIAL]).toBe(startSerial);
+      expect(outputHeaders[HEADER_STEP_START_SERIAL]).toBe(stepStartSerial);
 
       // wire completeness: the client-identity scopes — invocation-id + the
       // step's client-identity scopes survive the real round-trip on both step

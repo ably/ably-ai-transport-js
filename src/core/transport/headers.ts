@@ -29,10 +29,10 @@ import {
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
-  HEADER_START_SERIAL,
   HEADER_STEP_CLIENT_ID,
   HEADER_STEP_ID,
   HEADER_STEP_REASON,
+  HEADER_STEP_START_SERIAL,
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { RunEndReason, RunLifecycleEvent, StepEndReason, StepLifecycleEvent } from './types.js';
@@ -67,14 +67,14 @@ import type { RunEndReason, RunLifecycleEvent, StepEndReason, StepLifecycleEvent
  *   the originating input by the id it owned at send time.
  * @param opts.stepId - The owning step's id, when the output is published within
  *   a `RunStep`. See {@link HEADER_STEP_ID}.
- * @param opts.startSerial - The owning step attempt's `start-serial` (the channel
+ * @param opts.stepStartSerial - The owning step attempt's `step-start-serial` (the channel
  *   serial of its `ai-step-start`), back-referenced on the output so it
- *   attributes to the right attempt. See {@link HEADER_START_SERIAL}.
+ *   attributes to the right attempt. See {@link HEADER_STEP_START_SERIAL}.
  * @param opts.stepClientId - The owning step's client (the innermost of the
  *   three concentric client-identity scopes; stamped as `step-client-id`).
  *   Stamped on every output of the step (initial + appends + close) so an
  *   output self-attributes to its step's participant even if that attempt's
- *   `ai-step-start` never arrived — mirroring the `step-id` / `start-serial`
+ *   `ai-step-start` never arrived — mirroring the `step-id` / `step-start-serial`
  *   invariant.
  * @returns A headers record with the transport headers set.
  */
@@ -91,7 +91,7 @@ export const buildTransportHeaders = (opts: {
   inputCodecMessageId?: string;
   inputEventId?: string;
   stepId?: string;
-  startSerial?: string;
+  stepStartSerial?: string;
   stepClientId?: string;
 }): Record<string, string> => {
   const h: Record<string, string> = {
@@ -108,7 +108,7 @@ export const buildTransportHeaders = (opts: {
   if (opts.inputCodecMessageId !== undefined) h[HEADER_INPUT_CODEC_MESSAGE_ID] = opts.inputCodecMessageId;
   if (opts.inputEventId) h[HEADER_EVENT_ID] = opts.inputEventId;
   if (opts.stepId !== undefined) h[HEADER_STEP_ID] = opts.stepId;
-  if (opts.startSerial !== undefined) h[HEADER_START_SERIAL] = opts.startSerial;
+  if (opts.stepStartSerial !== undefined) h[HEADER_STEP_START_SERIAL] = opts.stepStartSerial;
   if (opts.stepClientId !== undefined) h[HEADER_STEP_CLIENT_ID] = opts.stepClientId;
   return h;
 };
@@ -289,7 +289,7 @@ export const parseRunLifecycle = (
  * Build the transport header set for a step-lifecycle event (step-start /
  * step-end). Mirrors {@link buildLifecycleHeaders} for the step layer.
  * `run-id` and `step-id` are always present; `step-reason` is stamped on
- * step-end only. `start-serial` is the back-reference to the serial of the
+ * step-end only. `step-start-serial` is the back-reference to the serial of the
  * `ai-step-start` an `ai-step-end` closes — so it is supplied on step-end and
  * omitted on step-start, whose own channel serial IS the attempt's identity.
  *
@@ -304,7 +304,7 @@ export const parseRunLifecycle = (
  * @param opts - The step header values to include.
  * @param opts.runId - The run the step belongs to.
  * @param opts.stepId - The step's id (stable across retry attempts).
- * @param opts.startSerial - Back-reference to the serial of the `ai-step-start`
+ * @param opts.stepStartSerial - Back-reference to the serial of the `ai-step-start`
  *   this event closes; set on step-end, omitted on step-start.
  * @param opts.invocationId - The invocation-id the step is published under (correlation).
  * @param opts.runClientId - The run owner's clientId (the outermost client scope).
@@ -316,7 +316,7 @@ export const parseRunLifecycle = (
 export const buildStepHeaders = (opts: {
   runId: string;
   stepId: string;
-  startSerial?: string;
+  stepStartSerial?: string;
   invocationId?: string;
   runClientId?: string;
   invocationClientId?: string;
@@ -327,7 +327,7 @@ export const buildStepHeaders = (opts: {
     [HEADER_RUN_ID]: opts.runId,
     [HEADER_STEP_ID]: opts.stepId,
   };
-  if (opts.startSerial !== undefined) h[HEADER_START_SERIAL] = opts.startSerial;
+  if (opts.stepStartSerial !== undefined) h[HEADER_STEP_START_SERIAL] = opts.stepStartSerial;
   if (opts.invocationId !== undefined) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.runClientId !== undefined) h[HEADER_RUN_CLIENT_ID] = opts.runClientId;
   // `invocationClientId` rides the existing `input-client-id` wire name: it is
@@ -370,7 +370,7 @@ export const isStepLifecycleName = (name: string | undefined): name is StepLifec
  *   optimistic local event.
  * @returns The step-lifecycle event, or `undefined` when `name` is not a
  *   step-lifecycle name, the message is missing a `run-id` or `step-id`, or a
- *   step-end is missing its `start-serial` back-reference.
+ *   step-end is missing its `step-start-serial` back-reference.
  */
 export const parseStepLifecycle = (
   name: string,
@@ -395,18 +395,18 @@ export const parseStepLifecycle = (
   };
 
   if (name === EVENT_STEP_START) {
-    // A step-start's identity is its OWN serial — no `start-serial` back-ref.
+    // A step-start's identity is its own serial, so there is no back-ref to read.
     return { type: 'step-start', runId, stepId, ...clientScopes, serial, ...stamped };
   }
 
   if (name === EVENT_STEP_END) {
     // A step-end back-references its step-start's serial. Without it the event
     // cannot be attributed to an attempt, so drop it (mirrors run-id/step-id).
-    const startSerial = headers[HEADER_START_SERIAL];
-    if (!startSerial) return undefined;
+    const stepStartSerial = headers[HEADER_STEP_START_SERIAL];
+    if (!stepStartSerial) return undefined;
     // CAST: agent always writes a valid StepEndReason; default to 'complete' for robustness.
     const reason = (headers[HEADER_STEP_REASON] ?? 'complete') as StepEndReason;
-    return { type: 'step-end', runId, stepId, startSerial, ...clientScopes, serial, reason, ...stamped };
+    return { type: 'step-end', runId, stepId, stepStartSerial, ...clientScopes, serial, reason, ...stamped };
   }
 
   return undefined;

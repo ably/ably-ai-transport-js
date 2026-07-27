@@ -815,12 +815,11 @@ class DefaultAgentSession<
       steerOrdering: { isUnrespondedSteer: (_runId, cmid) => steerTracker.isUnrespondedSteer(cmid) },
     });
     /**
-     * The reply run's structural-parent fallback, computed by the input-event
-     * watcher (`resolveTriggerMetadata`) when the triggering input folds in, and
-     * consumed by every `Run.pipe()` publish. A per-stream `streamOpts.parent`
-     * still overrides it. Storing it here keeps it stable across pipes and
-     * decouples the assistant's structural parent from the run-start message's
-     * own `parent`.
+     * The reply run's structural parent, computed by the input-event watcher
+     * (`resolveTriggerMetadata`) when the triggering input folds in. Stamped on
+     * the run's assistant output and its `ai-run-start`, and used to pin
+     * `run.view` to this run's branch. Storing it here keeps it stable across
+     * pipes.
      */
     let assistantParentFallback: string | undefined;
     // Whether the run has produced any output yet. hasInput() reports the

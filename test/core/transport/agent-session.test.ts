@@ -1500,15 +1500,6 @@ describe('AgentSession', () => {
       expect(headers?.['run-reason']).toBe('cancelled');
     });
 
-    it('uses explicit parent from pipe options', async () => {
-      const run = createRunFromOpts(session, { runId: 'run-1' });
-      await run.start();
-      await run.pipe(streamOf({ type: 'text', text: 'a' }), { parent: 'parent-msg' });
-
-      const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
-      expect(headers[HEADER_PARENT]).toBe('parent-msg');
-    });
-
     it('echoes msg-regenerate from the input-event lookup onto the assistant pipe headers (race-condition safety)', async () => {
       // The lifecycle event is the canonical source for `regenerates`,
       // but if the assistant wire arrives before run-start on the client
@@ -1595,7 +1586,7 @@ describe('AgentSession', () => {
       await s.detach();
     });
 
-    it('omits parent header when the run has no resolved input and no pipe parent is supplied', async () => {
+    it('omits parent header when the run has no resolved input', async () => {
       // Per-message metadata is resolved from the input-event lookup result. With
       // no event-id (and thus no lookup), `run.view.getMessages()` stays empty
       // and pipe falls through with no parent header on the encoder defaults.
@@ -1605,23 +1596,6 @@ describe('AgentSession', () => {
 
       const headers = codec.lastEncoderOpts()?.extras?.headers ?? {};
       expect(headers[HEADER_PARENT]).toBeUndefined();
-    });
-
-    it('forwards resolveWriteOptions per-event overrides into encoder.publishOutput', async () => {
-      const run = createRunFromOpts(session, { runId: 'run-1' });
-      await run.start();
-      const events: TestOutput[] = [
-        { type: 'text', text: 'a' },
-        { type: 'text', text: 'b' },
-      ];
-      await run.pipe(streamOf(...events), {
-        resolveWriteOptions: (event: TestOutput) => (event.text === 'b' ? { messageId: 'override-b' } : undefined),
-      });
-
-      const enc = codec.lastEncoder();
-      expect(enc?.publishCalls).toHaveLength(2);
-      expect(enc?.publishCalls[0]?.opts).toBeUndefined();
-      expect(enc?.publishCalls[1]?.opts).toEqual({ messageId: 'override-b' });
     });
 
     it('invokes onAblyMessage per outbound message, after the SDK stamps its headers', async () => {

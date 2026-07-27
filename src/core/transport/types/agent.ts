@@ -5,7 +5,7 @@ import type * as Ably from 'ably';
 import type * as AblyObjects from 'ably/liveobjects';
 
 import type { Logger } from '../../../logger.js';
-import type { Codec, CodecInputEvent, CodecOutputEvent, WriteOptions } from '../../codec/types.js';
+import type { Codec, CodecInputEvent, CodecOutputEvent } from '../../codec/types.js';
 import type { Invocation } from '../invocation.js';
 import type { BaseRun } from './run.js';
 import type { CancelRequest, RunEndReason, StepEndReason } from './shared.js';
@@ -78,34 +78,6 @@ export interface AgentSessionOptions<
 // ---------------------------------------------------------------------------
 // Run options
 // ---------------------------------------------------------------------------
-
-/**
- * Options for `Run.pipe` — per-operation overrides for the assistant message.
- * @template TOutput - The codec output type carried by the stream; used by the `resolveWriteOptions` hook.
- */
-export interface PipeOptions<TOutput extends CodecOutputEvent> {
-  /** The codec-message-id of the immediately preceding message in this branch. */
-  parent?: string;
-  /** The codec-message-id of the message this response replaces (for regeneration). */
-  forkOf?: string;
-  /**
-   * Optional per-output hook invoked before each output is encoded. The
-   * returned {@link WriteOptions} (if any) override the stream's default
-   * headers and `codecMessageId` for that one encode call only; return `undefined`
-   * to use the stream defaults.
-   *
-   * Used to carry a subset of outputs within the stream to a different
-   * message (e.g. `tool-output-available` chunks that belong on a prior
-   * assistant message, stamped with `amend`). Must not be used
-   * for outputs that participate in the encoder's stream-append pipeline
-   * — streaming state (stream tracker, append ordering) is anchored to
-   * the stream's default identity and is not affected by per-output
-   * overrides.
-   * @param output - The output about to be encoded.
-   * @returns Per-write overrides for this output, or undefined.
-   */
-  resolveWriteOptions?: (output: TOutput) => WriteOptions | undefined;
-}
 
 /** Options for {@link Run.createStep}. */
 export interface StepOptions {
@@ -325,15 +297,9 @@ export interface RunStep<TOutput extends CodecOutputEvent> {
    * does NOT throw) and marks the step `failed` when {@link RunStep.end} closes
    * it.
    * @param stream - The output stream to pipe.
-   * @param options - Per-stream overrides. A per-output `resolveWriteOptions`
-   *   merges over the step's default headers, so a normal override (e.g. one
-   *   that only redirects `codecMessageId`) leaves `step-id` intact. The SDK
-   *   stamps `step-start-serial` after the override is applied, so an override cannot
-   *   change it; do NOT set `step-id` in an override unless you intend to
-   *   re-attribute that output to a different step.
    * @returns The {@link StreamResult} for this pipe.
    */
-  pipe(stream: ReadableStream<TOutput>, options?: PipeOptions<TOutput>): Promise<StreamResult>;
+  pipe(stream: ReadableStream<TOutput>): Promise<StreamResult>;
   /**
    * Publish a single discrete output as one assistant message on the channel,
    * stamped with this step's `step-id` and its attempt's `step-start-serial`.
@@ -504,7 +470,7 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
    * `pipe` never sets; for a re-attemptable unit whose retries must supersede
    * the prior attempt's output rather than appending it, use {@link AgentRun.createStep}.
    */
-  pipe(stream: ReadableStream<TOutput>, options?: PipeOptions<TOutput>): Promise<StreamResult>;
+  pipe(stream: ReadableStream<TOutput>): Promise<StreamResult>;
 
   /**
    * Create a step — a re-attemptable unit of agent work within this run, the

@@ -28,7 +28,6 @@ import { pipeStream } from './pipe-stream.js';
 import type { RunManager, StepClientScopes } from './run-manager.js';
 import type { DefaultTree } from './tree.js';
 import type {
-  PipeOptions,
   RunEndReason,
   RunRuntime,
   RunStep,
@@ -157,7 +156,7 @@ export interface RunStepWriterContext<
 /** The output-producing surface of an agent run: stream piping and explicit step handles. */
 export interface RunStepWriter<TOutput extends CodecOutputEvent> {
   /** Pipe a stream to the channel as the run's output (stepless). See {@link AgentRun.pipe}. */
-  pipe: (stream: ReadableStream<TOutput>, streamOpts?: PipeOptions<TOutput>) => Promise<StreamResult>;
+  pipe: (stream: ReadableStream<TOutput>) => Promise<StreamResult>;
   /** Create an explicit step handle that brackets its output with `ai-step-start` / `ai-step-end`. See {@link AgentRun.createStep}. */
   createStep: (options?: StepOptions) => RunStep<TOutput>;
   /** True while a step is open (started, not ended) — for {@link AgentRun.suspend}'s reject-while-active guard. */
@@ -382,15 +381,14 @@ export const createRunStepWriter = <
    * @param step.stepStartSerialRef - Holds the step attempt's `step-start-serial`, stamped on the message once known.
    * @param step.stepClientId - The step's resolved client, stamped as `step-client-id`.
    * @param step.steerIdsRef - Holds the steer codec-message-ids this attempt stamps under `steer-codec-message-ids`.
-   * @param opts - Per-publish overrides.
-   * @param opts.parent - Override for the assistant message's structural parent (from `PipeOptions.parent`).
-   * @param opts.forkOf - Override for the assistant message's `forkOf` anchor (from `PipeOptions.forkOf`).
    * @returns The encoder (single message; caller must publish then `close()`).
    */
-  const createMessageEncoder = (
-    step: { stepId: string; stepStartSerialRef: StepStartSerialRef; stepClientId: string; steerIdsRef: SteerIdsRef },
-    opts?: { parent?: string; forkOf?: string },
-  ) => {
+  const createMessageEncoder = (step: {
+    stepId: string;
+    stepStartSerialRef: StepStartSerialRef;
+    stepClientId: string;
+    steerIdsRef: SteerIdsRef;
+  }) => {
     const runId = ctx.getRunId();
     const anchors = ctx.getAnchors();
     const runOwnerClientId = runManager.getClientId(runId);
@@ -406,13 +404,11 @@ export const createRunStepWriter = <
       runId,
       codecMessageId,
       runClientId: runOwnerClientId,
-      // The assistant message's parent: an explicit per-publish override from
-      // the caller, else the reply run's structural-parent fallback computed
-      // once at run-start (`parentFallback`). Owning the default here means
-      // agent routes don't have to thread the parent to keep tree threading
-      // correct.
-      parent: opts?.parent ?? anchors.parentFallback,
-      forkOf: opts?.forkOf ?? anchors.forkOf,
+      // Resolved from the triggering input once at run-start. Owning it here
+      // means agent routes don't have to thread the parent to keep tree
+      // threading correct.
+      parent: anchors.parentFallback,
+      forkOf: anchors.forkOf,
       invocationId,
       inputClientId: anchors.inputClientId,
       inputCodecMessageId: anchors.inputCodecMessageId,
@@ -459,7 +455,6 @@ export const createRunStepWriter = <
    * open run at teardown); a cancelled pipe closes only its own step bracket
    * (the caller's close-iff-opened / `step.end()`).
    * @param stream - The output stream to pipe.
-   * @param streamOpts - Per-stream overrides.
    * @param step - The step to stamp output under.
    * @param step.stepId - The step's id, stamped on every output.
    * @param step.stepStartSerialRef - Holds the step attempt's `step-start-serial`, stamped on every output once known.
@@ -470,7 +465,6 @@ export const createRunStepWriter = <
    */
   const doPipe = async (
     stream: ReadableStream<TOutput>,
-    streamOpts: PipeOptions<TOutput> | undefined,
     step: {
       stepId: string;
       stepStartSerialRef: StepStartSerialRef;
@@ -497,17 +491,9 @@ export const createRunStepWriter = <
     step.steerIdsRef.value = ctx.consumeSteerStampIds?.() ?? [];
 
     const runId = ctx.getRunId();
-    const encoder = createMessageEncoder(step, { parent: streamOpts?.parent, forkOf: streamOpts?.forkOf });
+    const encoder = createMessageEncoder(step);
 
-    const result = await pipeStream(
-      stream,
-      encoder,
-      signal,
-      onCancelled,
-      streamOpts?.resolveWriteOptions,
-      logger,
-      step.onFirstOutput,
-    );
+    const result = await pipeStream(stream, encoder, signal, onCancelled, logger, step.onFirstOutput);
 
     if (result.error) {
       const errInfo = new Ably.ErrorInfo(
@@ -526,10 +512,8 @@ export const createRunStepWriter = <
 
   /**
    * Publish a single discrete output as one assistant message. Reuses the same
-   * per-message encoder path as {@link doPipe} but skips the pipe-stream loop
-   * — there is no stream to iterate, no cancellation-race machinery, and no
-   * `resolveWriteOptions` per-output hook (a single call would use it at most
-   * once).
+   * per-message encoder path as {@link doPipe}, but skips the pipe-stream loop:
+   * there is no stream to iterate and no cancellation-race machinery.
    * @param output - The single codec output to publish.
    * @param step - The step to stamp output under.
    * @param step.stepId - The step's id, stamped on the output.
@@ -561,7 +545,7 @@ export const createRunStepWriter = <
   };
 
   // Spec: AIT-ST6, AIT-ST6a, AIT-ST6b, AIT-ST6b1, AIT-ST6b2, AIT-ST6b3, AIT-ST6c
-  const pipe = async (stream: ReadableStream<TOutput>, streamOpts?: PipeOptions<TOutput>): Promise<StreamResult> => {
+  const pipe = async (stream: ReadableStream<TOutput>): Promise<StreamResult> => {
     const runId = ctx.getRunId();
     logger?.trace('Run.pipe();', { runId });
 
@@ -616,7 +600,7 @@ export const createRunStepWriter = <
         await closeStep(stepId, stepStartSerialRef.value, reason, stepClientId);
       };
 
-      const result = await doPipe(stream, streamOpts, {
+      const result = await doPipe(stream, {
         stepId,
         stepStartSerialRef,
         stepClientId,
@@ -732,7 +716,7 @@ export const createRunStepWriter = <
           opening = false;
         }
       },
-      pipe: async (stream: ReadableStream<TOutput>, streamOpts?: PipeOptions<TOutput>): Promise<StreamResult> => {
+      pipe: async (stream: ReadableStream<TOutput>): Promise<StreamResult> => {
         if (state !== 'active') {
           throw new Ably.ErrorInfo(
             'unable to pipe step; the step is not active — call start() first and do not pipe after end()',
@@ -740,7 +724,7 @@ export const createRunStepWriter = <
             400,
           );
         }
-        const result = await doPipe(stream, streamOpts, { stepId, stepStartSerialRef, stepClientId, steerIdsRef });
+        const result = await doPipe(stream, { stepId, stepStartSerialRef, stepClientId, steerIdsRef });
         // A piped stream error marks the step failed without throwing — so the
         // common `vercelRunOutcome(...) -> run.end(outcome)` flow needs no
         // try/catch, while the step status still reflects the failure.

@@ -7,7 +7,7 @@
  */
 
 import type { Logger } from '../../logger.js';
-import type { CodecInputEvent, CodecOutputEvent, Encoder, WriteOptions } from '../codec/types.js';
+import type { CodecInputEvent, CodecOutputEvent, Encoder } from '../codec/types.js';
 import type { StreamResult } from './types.js';
 
 /**
@@ -47,7 +47,6 @@ const abortSignalToPromise = (signal: AbortSignal | undefined): { promise: Promi
  * @param encoder - The encoder to publish outputs through.
  * @param signal - AbortSignal to monitor for cancellation.
  * @param onCancelled - Optional callback invoked when the stream is cancelled, before the stream ends.
- * @param resolveWriteOptions - Optional per-output hook returning {@link WriteOptions} overrides to pass to `encoder.publishOutput`.
  * @param logger - Optional logger for diagnostic output.
  * @param beforeFirstWrite - Optional hook awaited exactly once, immediately before the FIRST output event is handed to the encoder. Never fires for a stream that completes empty, errors, or is cancelled before producing any event. Note the event that triggers the hook may itself publish nothing (a codec `drop` type), so the resource the hook opens (e.g. `run.pipe`'s implicit step) can bracket zero wire writes.
  * @returns A {@link StreamResult}: `reason` is why the pipe ended, and `error` holds the caught error when `reason` is `'error'`.
@@ -57,7 +56,6 @@ export const pipeStream = async <TInput extends CodecInputEvent, TOutput extends
   encoder: Encoder<TInput, TOutput>,
   signal: AbortSignal | undefined,
   onCancelled?: (write: (output: TOutput) => Promise<void>) => void | Promise<void>,
-  resolveWriteOptions?: (output: TOutput) => WriteOptions | undefined,
   logger?: Logger,
   beforeFirstWrite?: () => Promise<void>,
 ): Promise<StreamResult> => {
@@ -115,7 +113,7 @@ export const pipeStream = async <TInput extends CodecInputEvent, TOutput extends
         if (beforeFirstWrite) await beforeFirstWrite();
       }
 
-      await encoder.publishOutput(value, resolveWriteOptions?.(value));
+      await encoder.publishOutput(value);
     }
   } catch (error) {
     reason = 'error';

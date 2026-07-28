@@ -36,7 +36,7 @@ function StatusIcon({ status }: { status: ChecklistItemRow['status'] }) {
   }
   return (
     <span
-      className="h-2.5 w-2.5 flex-shrink-0 rounded-full border border-zinc-600"
+      className="h-2.5 w-2.5 flex-shrink-0 rounded-full border border-muted-foreground"
       aria-label="pending"
     />
   );
@@ -45,10 +45,10 @@ function StatusIcon({ status }: { status: ChecklistItemRow['status'] }) {
 function StepItem({ step }: { step: ChecklistItemRow }) {
   const textClass =
     step.status === 'done'
-      ? 'text-xs text-zinc-500 line-through'
+      ? 'text-xs text-muted-foreground line-through'
       : step.status === 'active'
-        ? 'text-xs text-zinc-100'
-        : 'text-xs text-zinc-400';
+        ? 'text-xs text-foreground'
+        : 'text-xs text-muted-foreground';
   return (
     <li className="flex items-center gap-2">
       <StatusIcon status={step.status} />
@@ -60,7 +60,7 @@ function StepItem({ step }: { step: ChecklistItemRow }) {
 /** A segment per step, coloured by that step's status — no dynamic width. */
 function ProgressBar({ steps }: { steps: ChecklistItemRow[] }) {
   return (
-    <div className="flex h-1 flex-shrink-0 gap-px bg-zinc-900">
+    <div className="flex h-1 flex-shrink-0 gap-px bg-muted">
       {steps.map((step) => (
         <div
           key={step.index}
@@ -69,7 +69,7 @@ function ProgressBar({ steps }: { steps: ChecklistItemRow[] }) {
               ? 'flex-1 bg-emerald-500 transition-colors'
               : step.status === 'active'
                 ? 'flex-1 bg-amber-400/60 transition-colors'
-                : 'flex-1 bg-zinc-800 transition-colors'
+                : 'flex-1 bg-muted-foreground/30 transition-colors'
           }
         />
       ))}
@@ -88,15 +88,15 @@ export function ChecklistWidget({ session }: { session: ObjectSession }) {
   return (
     <section
       aria-label="Agent tasks"
-      className="mb-3 ml-4 w-fit min-w-[15rem] max-w-[26rem] self-start overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900/60"
+      className="mb-3 ml-4 w-fit min-w-[15rem] max-w-[26rem] self-start overflow-hidden rounded-lg border border-border bg-card"
     >
       <div className="flex items-center justify-between gap-6 px-3 py-2">
         <div className="flex items-center gap-2">
-          <span className="text-xs font-medium text-zinc-300">Agent tasks</span>
-          <span className="text-[10px] text-zinc-600">LiveObjects</span>
+          <span className="text-xs font-medium text-foreground">Agent tasks</span>
+          <span className="text-[10px] text-muted-foreground">LiveObjects</span>
         </div>
         {steps.length > 0 && (
-          <span className="font-mono text-[10px] text-zinc-500">
+          <span className="font-mono text-[10px] text-muted-foreground">
             {done} / {steps.length}
           </span>
         )}

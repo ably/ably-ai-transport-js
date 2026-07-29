@@ -1,5 +1,8 @@
 // Providers + hooks context
-export { Providers, useAblyReady, SessionHooks } from './providers';
+export { Providers, ThemeProvider, useAblyReady, SessionHooks } from './providers';
+
+// Theme selector
+export { ThemeToggle } from './components/theme-toggle';
 
 // Chat container + presentational shell
 export { Chat } from './components/chat';

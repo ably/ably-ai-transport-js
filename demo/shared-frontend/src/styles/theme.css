@@ -2,7 +2,9 @@
  * shadcn design tokens for the @ably/ai-transport demos. A consuming demo
  * imports this after `@import 'tailwindcss'` (+ tw-animate-css + shadcn/tailwind.css)
  * so Tailwind resolves `@theme`, `@custom-variant`, and the token variables.
- * The demos render dark-only (their layout sets `className="dark"`).
+ * `:root` is the light palette; `.dark` supplies the dark one. The shared
+ * ThemeToggle drives next-themes, which toggles the `dark` class on `<html>`
+ * (System / Dark / Light, System by default).
  */
 
 @custom-variant dark (&:is(.dark *));
@@ -128,5 +130,11 @@
   }
   html {
     @apply font-sans;
+  }
+  /* Tailwind v4's Preflight no longer makes buttons `cursor: pointer`; restore
+     the pointer on interactive controls (the theme toggle, composer, links). */
+  button:not(:disabled),
+  [role='button']:not(:disabled) {
+    cursor: pointer;
   }
 }

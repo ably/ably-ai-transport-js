@@ -7,6 +7,7 @@ import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } fro
 import { TooltipProvider } from './ui/tooltip';
 import { AvatarStack } from './avatar-stack';
 import { SuggestionChips } from './suggestion-chips';
+import { ThemeToggle } from './theme-toggle';
 import { clientColor } from '../lib/client-color';
 import type { Scenario } from '../hooks/use-demo-progress';
 
@@ -143,6 +144,7 @@ function Header({
           <h1 className="text-sm font-medium text-foreground">{title}</h1>
         </div>
         <div className="flex items-center gap-2 pl-4">
+          <ThemeToggle />
           {links.map((link) => (
             <Button
               key={link.href}

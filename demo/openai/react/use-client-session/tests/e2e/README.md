@@ -48,7 +48,7 @@ Responses API.
 
 ## The mock model
 
-`src/app/api/chat/mock-model.ts` builds a `ReadableStream<ResponseStreamEvent>`
+`src/app/api/chat/mock-model.ts` is an `AsyncGenerator<ResponseStreamEvent>`
 scripted from the last user prompt, wired in by `createResponseStream()` behind
 `MOCK_LLM`:
 

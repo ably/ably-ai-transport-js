@@ -45,6 +45,7 @@ export default [
       'react/**',
       'vercel/**',
       'temporal/**',
+      'openai/**',
     ],
   },
   ...fixupConfigRules(

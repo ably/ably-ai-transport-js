@@ -24,11 +24,14 @@ function phaseColor(phase: ActivityEvent['phase']): string {
 }
 
 // Emerald / amber / red carry the run-status semantics (done, in-flight,
-// failed); only the neutral fallback maps to a shadcn token.
+// failed); only the neutral fallback maps to a shadcn token. Each accent is a
+// raw palette colour (not a theme token), so it carries explicit light (soft
+// tint + deep text) and dark (deep bg + bright text) shades.
 function statusColor(status: string | undefined): string {
-  if (status === 'completed') return 'bg-emerald-950 text-emerald-400';
-  if (status === 'running' || status === 'pending') return 'bg-amber-950 text-amber-400';
-  if (status === 'failed' || status === 'cancelled') return 'bg-red-950 text-red-400';
+  if (status === 'completed') return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400';
+  if (status === 'running' || status === 'pending')
+    return 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-400';
+  if (status === 'failed' || status === 'cancelled') return 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-400';
   return 'bg-muted text-muted-foreground';
 }
 
@@ -40,9 +43,15 @@ function ActivityRow({ event, died }: { event: ActivityEvent; died: boolean }) {
     >
       <span className={`h-2 w-2 shrink-0 rounded-full ${died ? 'bg-red-500' : phaseColor(event.phase)}`} />
       <span className="w-16 shrink-0 font-medium text-foreground">{KIND_LABEL[event.kind]}</span>
-      {died && <span className="shrink-0 rounded bg-red-950 px-1 text-[10px] text-red-400">died</span>}
+      {died && (
+        <span className="shrink-0 rounded bg-red-100 px-1 text-[10px] text-red-700 dark:bg-red-950 dark:text-red-400">
+          died
+        </span>
+      )}
       {event.attempt > 1 && (
-        <span className="shrink-0 rounded bg-amber-950 px-1 text-[10px] text-amber-400">attempt {event.attempt}</span>
+        <span className="shrink-0 rounded bg-amber-100 px-1 text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-400">
+          attempt {event.attempt}
+        </span>
       )}
       <span
         className="truncate font-mono text-muted-foreground"

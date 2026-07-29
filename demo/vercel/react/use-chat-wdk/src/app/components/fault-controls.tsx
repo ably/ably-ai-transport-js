@@ -56,10 +56,12 @@ export function FaultControls({
               title={option.description}
               // Amber is a deliberate "armed / caution" accent (no semantic
               // warning token exists in the theme); the neutral resting state
-              // uses shadcn tokens so the row sits in the shared theme.
+              // uses shadcn tokens so the row sits in the shared theme. Amber is
+              // a raw palette colour, so it carries explicit light (soft tint +
+              // deep text) and dark (deep bg + bright text) shades.
               className={`rounded-full border px-2.5 py-0.5 transition-colors ${
                 active
-                  ? 'border-amber-600 bg-amber-950 text-amber-300'
+                  ? 'border-amber-500 bg-amber-100 text-amber-800 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-300'
                   : 'border-border text-muted-foreground hover:border-foreground/40 hover:text-foreground'
               }`}
             >
@@ -68,7 +70,9 @@ export function FaultControls({
           );
         })}
       </div>
-      {armed && <p className="mt-1.5 leading-snug text-amber-400/90">Armed — {armed.description}</p>}
+      {armed && (
+        <p className="mt-1.5 leading-snug text-amber-700 dark:text-amber-400/90">Armed — {armed.description}</p>
+      )}
     </div>
   );
 }

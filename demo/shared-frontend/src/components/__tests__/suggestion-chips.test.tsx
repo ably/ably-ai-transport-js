@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 
 import { SuggestionChips } from '../suggestion-chips';
-import type { Scenario } from '../../hooks/use-demo-progress';
+import type { Scenario } from '../../lib/progress-steps';
 
 // SuggestionChips renders the unfinished scenarios: prompt scenarios are
 // clickable buttons that prefill the composer; gesture scenarios are

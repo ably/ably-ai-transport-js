@@ -1,9 +1,14 @@
 /**
- * useDemoProgress — derives which intro-card demo steps are still unfinished
- * from the conversation tree, so suggestion chips stay in sync across clients
- * via the channel-backed history.
+ * useDemoProgress — given this demo's scenario list, derives which scenarios are
+ * still unfinished from the conversation tree, so the suggestion chips stay in
+ * sync across clients via the channel-backed history.
  *
- * Steps detected from tree state:
+ * A `Scenario` is the single source of truth for both the intro-card walkthrough
+ * and the chips: the intro renders every scenario; the chips render the
+ * trackable, still-unfinished ones. A scenario with no `id` is shown in the
+ * intro but never tracked and never offered as a chip.
+ *
+ * Completion detected from tree state:
  * - server-weather: the getWeather tool ran (a getWeather function_call paired
  *   with its function_call_output). A tool run splits its work across separate
  *   messages, so the call and its output are paired across turns, not within one.
@@ -13,8 +18,8 @@
  * - cancel: a cancel signal was seen on the channel
  *
  * Client-side tools and approval-gated tools are not part of this demo yet, so
- * (unlike the Vercel demo) there are no chips for them. The "open Debug pane"
- * intro step is local UI state, so it is not tracked here either.
+ * (unlike the Vercel demo) there are no chips for them. The Observability
+ * scenario is local UI state, so it carries no `id` and is not tracked here.
  */
 
 import { useMemo } from 'react';
@@ -22,69 +27,7 @@ import type * as Ably from 'ably';
 import type { BranchHandle, CodecMessage, RunInfo } from '@ably/ai-transport';
 import { EVENT_CANCEL } from '@ably/ai-transport';
 import type { OpenAIMessage } from '@ably/ai-transport/openai';
-
-export type DemoStepId = 'server-weather' | 'multi-tab' | 'edit' | 'regenerate' | 'cancel';
-
-export interface PromptDemoStep {
-  /** Which step this is. */
-  id: DemoStepId;
-  /** A prompt step: clicking the chip prefills {@link prompt}. */
-  type: 'prompt';
-  /** Short uppercase category shown before the label. */
-  tag: string;
-  /** The chip's human-readable label. */
-  label: string;
-  /** The prompt text the chip prefills into the input. */
-  prompt: string;
-}
-
-export interface GestureDemoStep {
-  /** Which step this is. */
-  id: DemoStepId;
-  /** A gesture step: a non-clickable hint describing a UI action. */
-  type: 'gesture';
-  /** Short uppercase category shown before the label. */
-  tag: string;
-  /** The hint's human-readable label. */
-  label: string;
-}
-
-/** One demo step: either a clickable prompt chip or a gesture hint. */
-export type DemoStep = PromptDemoStep | GestureDemoStep;
-
-const ALL_STEPS: DemoStep[] = [
-  {
-    id: 'server-weather',
-    type: 'prompt',
-    tag: 'Server tool',
-    label: `"what's the weather in Tokyo?"`,
-    prompt: `what's the weather in Tokyo?`,
-  },
-  {
-    id: 'multi-tab',
-    type: 'gesture',
-    tag: 'Multi-client sync',
-    label: 'open in new tab and chat from both',
-  },
-  {
-    id: 'edit',
-    type: 'gesture',
-    tag: 'Branching',
-    label: 'hover a user message, click edit',
-  },
-  {
-    id: 'regenerate',
-    type: 'gesture',
-    tag: 'Branching',
-    label: 'hover an assistant reply, click regenerate',
-  },
-  {
-    id: 'cancel',
-    type: 'gesture',
-    tag: 'Cancel mid-stream',
-    label: 'send a long prompt, click Stop while it streams',
-  },
-];
+import type { DemoStepId, Scenario } from '@ably-ai-demos/frontend/lib/progress-steps';
 
 /**
  * Whether the getWeather tool ran — a getWeather function_call paired with its
@@ -106,20 +49,23 @@ function ranServerWeather(turns: OpenAIMessage[]): boolean {
 }
 
 /**
- * Derive the still-unfinished demo steps from the conversation tree. Reruns when
- * the visible turns, branch state, run lookup, or channel messages change.
+ * Filter this demo's scenarios down to the trackable ones still unfinished, in
+ * the demo's own order. Drives the suggestion chips. Reruns when the visible
+ * turns, branch state, run lookup, or channel messages change.
+ * @param scenarios - The demo's scenarios; only those with an `id` are trackable.
  * @param messages - The visible turns paired with their codec-message-ids.
  * @param branchSelection - Branch handle lookup, for detecting forked (edited/regenerated) nodes.
  * @param runOf - Run lookup, for the client id that owns each turn.
  * @param ablyMessages - Raw channel messages, for detecting a cancel signal.
- * @returns The steps not yet demonstrated, in canonical order.
+ * @returns The scenarios not yet demonstrated, in the demo's order.
  */
 export function useDemoProgress(
+  scenarios: readonly Scenario[],
   messages: CodecMessage<OpenAIMessage>[],
   branchSelection: (codecMessageId: string) => BranchHandle<OpenAIMessage>,
   runOf: (codecMessageId: string) => RunInfo | undefined,
   ablyMessages: Ably.InboundMessage[],
-): DemoStep[] {
+): Scenario[] {
   return useMemo(() => {
     const completed = new Set<DemoStepId>();
 
@@ -140,6 +86,6 @@ export function useDemoProgress(
       if (message.role === 'user') completed.add('edit');
     }
 
-    return ALL_STEPS.filter((s) => !completed.has(s.id));
-  }, [messages, branchSelection, runOf, ablyMessages]);
+    return scenarios.filter((s) => s.id !== undefined && !completed.has(s.id));
+  }, [scenarios, messages, branchSelection, runOf, ablyMessages]);
 }

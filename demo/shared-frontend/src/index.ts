@@ -1,5 +1,7 @@
 // Providers + hooks context
-export { Providers, ThemeProvider, useAblyReady, SessionHooks } from './providers';
+export { Providers, useAblyReady } from './ably-provider';
+export { ThemeProvider } from './theme-provider';
+export { SessionHooks } from './providers';
 
 // Theme selector
 export { ThemeToggle } from './components/theme-toggle';
@@ -23,7 +25,7 @@ export { IntroCard, COMMON_SCENARIOS } from './components/intro-card';
 // Hooks
 export { useClientTools } from './hooks/use-client-tools';
 export { useDemoProgress } from './hooks/use-demo-progress';
-export type { Scenario, DemoStepId } from './hooks/use-demo-progress';
+export type { Scenario, DemoStepId } from './lib/progress-steps';
 
 // Utilities
 export { generateChannelSlug, generateClientName } from './lib/channel-name';

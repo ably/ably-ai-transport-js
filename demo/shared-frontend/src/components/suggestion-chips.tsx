@@ -1,7 +1,7 @@
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { ScrollArea } from './ui/scroll-area';
-import type { Scenario } from '../hooks/use-demo-progress';
+import type { Scenario } from '../lib/progress-steps';
 
 interface SuggestionChipsProps {
   /** The still-unfinished scenarios to offer, from {@link useDemoProgress}. */

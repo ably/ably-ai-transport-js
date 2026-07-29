@@ -11,7 +11,7 @@ vi.mock('ably/react', () => ({
 
 // Imported after vi.mock so it picks up the stubbed presence hooks.
 import { ChatShell } from '../chat-shell';
-import type { Scenario } from '../../hooks/use-demo-progress';
+import type { Scenario } from '../../lib/progress-steps';
 
 afterEach(cleanup);
 

@@ -40,7 +40,7 @@ spawns:
 | --------------------------- | ----------------- | ------------------------------------- |
 | `ABLY_API_KEY`              | sandbox key       | agent client, JWT auth route          |
 | `ABLY_ENDPOINT`             | `nonprod:sandbox` | agent client (`route.ts`)             |
-| `NEXT_PUBLIC_ABLY_ENDPOINT` | `nonprod:sandbox` | browser client (`providers.tsx`)      |
+| `NEXT_PUBLIC_ABLY_ENDPOINT` | `nonprod:sandbox` | browser client (`ably-provider.tsx`)  |
 | `MOCK_LLM`                  | `1`               | `createResponseStream()` (`model.ts`) |
 
 Unset (normal `pnpm dev`), the demo uses production Ably and the real OpenAI

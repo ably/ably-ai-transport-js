@@ -75,7 +75,8 @@
     "src/**",
     "react/**",
     "vercel/**",
-    "temporal/**"
+    "temporal/**",
+    "openai/**"
   ],
   "repository": {
     "type": "git",

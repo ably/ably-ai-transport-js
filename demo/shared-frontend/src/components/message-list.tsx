@@ -7,7 +7,7 @@ import type { BranchHandle, CodecMessage, RunInfo } from '@ably/ai-transport';
 import { Button } from './ui/button';
 import { MessageBubble, type MessageStatus } from './message-bubble';
 import { IntroCard } from './intro-card';
-import type { Scenario } from '../hooks/use-demo-progress';
+import type { Scenario } from '../lib/progress-steps';
 import { useStickToBottom } from '../hooks/use-stick-to-bottom';
 
 interface ViewLookupApi {

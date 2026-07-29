@@ -9,7 +9,7 @@ import { AvatarStack } from './avatar-stack';
 import { SuggestionChips } from './suggestion-chips';
 import { ThemeToggle } from './theme-toggle';
 import { clientColor } from '../lib/client-color';
-import type { Scenario } from '../hooks/use-demo-progress';
+import type { Scenario } from '../lib/progress-steps';
 
 /** A labelled external link shown in the header (e.g. SDK repo, docs). */
 export interface HeaderLink {

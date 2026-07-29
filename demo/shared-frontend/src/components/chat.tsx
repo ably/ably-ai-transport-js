@@ -8,7 +8,8 @@ import { createUIMessageCodec, type VercelInput } from '@ably/ai-transport/verce
 
 import { userMessage, wakeAgent } from '../helpers';
 import { useClientTools } from '../hooks/use-client-tools';
-import { useDemoProgress, type Scenario } from '../hooks/use-demo-progress';
+import { useDemoProgress } from '../hooks/use-demo-progress';
+import type { Scenario } from '../lib/progress-steps';
 import { BranchingMessageList } from './message-list';
 import type { CallbackLogEntry, ClientToolLogEntry } from './debug-pane';
 import { DebugPane } from './debug-pane';

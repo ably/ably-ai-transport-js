@@ -1,10 +1,19 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, type CSSProperties } from 'react';
 import type { OpenAIMessage } from '@ably/ai-transport/openai';
+import { ChevronLeftIcon, ChevronRightIcon, Loader2Icon } from 'lucide-react';
+import { Badge } from '@ably-ai-demos/frontend/components/ui/badge';
+import { Bubble, BubbleContent } from '@ably-ai-demos/frontend/components/ui/bubble';
+import { Button } from '@ably-ai-demos/frontend/components/ui/button';
+import { Message, MessageContent, MessageFooter } from '@ably-ai-demos/frontend/components/ui/message';
+import { Response } from '@ably-ai-demos/frontend/components/ui/response';
+import { Textarea } from '@ably-ai-demos/frontend/components/ui/textarea';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@ably-ai-demos/frontend/components/ui/tooltip';
+import { clientColor } from '@ably-ai-demos/frontend/lib/client-color';
+import { cn } from '@ably-ai-demos/frontend/lib/utils';
 import { toRenderItems, turnText } from '../helpers';
 import { ToolInvocation } from './tool-invocation';
-import { clientColor } from '../lib/client-color';
 
 interface MessageBubbleProps {
   // The conversation turn to render — its message items' text content parts.
@@ -41,85 +50,94 @@ function BranchNavigator({
   onSelect: (index: number) => void;
 }) {
   return (
-    <div className="inline-flex items-center gap-1 rounded bg-zinc-800/60 px-1.5 py-0.5">
-      <button
-        onClick={() => onSelect(current - 1)}
-        disabled={current === 0}
-        className="text-[11px] text-zinc-400 hover:text-zinc-200 disabled:text-zinc-700 disabled:cursor-not-allowed transition-colors px-0.5"
-        title="Previous branch"
+    <div
+      data-testid="branch-navigator"
+      className="inline-flex items-center gap-0.5 rounded-md bg-muted px-0.5"
+    >
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => onSelect(current - 1)}
+            disabled={current === 0}
+            aria-label="Previous branch"
+          >
+            <ChevronLeftIcon />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Previous branch</TooltipContent>
+      </Tooltip>
+      <span
+        data-testid="branch-counter"
+        className="min-w-[2.5rem] text-center text-[10px] text-muted-foreground tabular-nums"
       >
-        &lt;
-      </button>
-      <span className="text-[10px] text-zinc-500 tabular-nums min-w-[2.5rem] text-center">
         {current + 1} / {total}
       </span>
-      <button
-        onClick={() => onSelect(current + 1)}
-        disabled={current >= total - 1}
-        className="text-[11px] text-zinc-400 hover:text-zinc-200 disabled:text-zinc-700 disabled:cursor-not-allowed transition-colors px-0.5"
-        title="Next branch"
-      >
-        &gt;
-      </button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => onSelect(current + 1)}
+            disabled={current >= total - 1}
+            aria-label="Next branch"
+          >
+            <ChevronRightIcon />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Next branch</TooltipContent>
+      </Tooltip>
     </div>
   );
 }
 
-function Badge({ label, value, color }: { label: string; value: string; color: string }) {
+function InfoBadge({
+  label,
+  value,
+  variant = 'secondary',
+  className,
+}: {
+  label: string;
+  value: string;
+  variant?: 'secondary' | 'destructive';
+  className?: string;
+}) {
   return (
-    <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] leading-tight ${color}`}>
-      <span className="text-zinc-600">{label}</span>
+    <Badge
+      variant={variant}
+      className={cn('rounded-sm px-1.5 text-[10px]', className)}
+    >
+      <span className={variant === 'destructive' ? 'opacity-70' : 'text-muted-foreground'}>{label}</span>
       <span>{value}</span>
-    </span>
+    </Badge>
   );
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const color =
-    status === 'complete'
-      ? 'bg-emerald-950 text-emerald-400'
-      : status === 'streaming'
-        ? 'bg-amber-950 text-amber-400'
-        : status === 'cancelled' || status === 'error'
-          ? 'bg-red-950 text-red-400'
-          : 'bg-zinc-900 text-zinc-500';
+  // The status badge carries the run's lifecycle colour: the destructive
+  // variant when cancelled or failed, green once complete, amber while
+  // streaming.
   return (
-    <Badge
+    <InfoBadge
       label="status"
       value={status}
-      color={color}
+      variant={status === 'cancelled' || status === 'error' ? 'destructive' : 'secondary'}
+      className={status === 'complete' ? 'text-emerald-500' : status === 'streaming' ? 'text-amber-500' : undefined}
     />
   );
 }
 
 // A reasoning model's streamed summary ("thinking"), shown muted above the
-// answer it precedes.
+// answer it precedes. The Responses API exposes this as its own item type, so it
+// renders as its own block rather than as part of the reply text.
 function ReasoningBlock({ text }: { text: string }) {
   return (
-    <div className="mb-1.5 rounded-md border border-zinc-800 bg-zinc-950/40 px-2.5 py-1.5 text-xs italic text-zinc-500 whitespace-pre-wrap">
-      <span className="mr-1 select-none not-italic text-zinc-600">💭 thinking</span>
+    <div className="mb-1.5 rounded-md border border-border bg-background/40 px-2.5 py-1.5 text-xs whitespace-pre-wrap text-muted-foreground italic">
+      <span className="mr-1 !not-italic select-none">💭 thinking</span>
       {text}
     </div>
   );
-}
-
-function bubbleClasses(isUser: boolean, status: string | undefined, userBgClass?: string): string {
-  const base = 'rounded-lg px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap';
-
-  if (isUser) {
-    return `${base} ${userBgClass ?? 'bg-zinc-800'} text-zinc-100`;
-  }
-
-  if (status === 'streaming') {
-    return `${base} bg-zinc-900 text-zinc-300 border border-amber-900/40`;
-  }
-  if (status === 'complete') {
-    return `${base} bg-zinc-900 text-zinc-300 border border-emerald-900/40`;
-  }
-  if (status === 'cancelled' || status === 'error') {
-    return `${base} bg-zinc-900 text-zinc-300 border border-red-900/40`;
-  }
-  return `${base} bg-zinc-900 text-zinc-300 border border-zinc-800`;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,10 +169,10 @@ function EditForm({
       onSubmit={handleSubmit}
       className="w-full"
     >
-      <textarea
+      <Textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        className="w-full rounded-lg bg-zinc-800 border border-zinc-600 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-400 resize-none"
+        data-testid="edit-input"
         rows={Math.min(6, text.split('\n').length + 1)}
         autoFocus
         onKeyDown={(e) => {
@@ -165,21 +183,22 @@ function EditForm({
           }
         }}
       />
-      <div className="flex gap-2 mt-1.5">
-        <button
+      <div className="mt-1.5 flex gap-2">
+        <Button
           type="submit"
+          size="xs"
           disabled={!text.trim() || text.trim() === initialText}
-          className="rounded px-2.5 py-1 text-[11px] font-medium bg-zinc-700 text-zinc-200 hover:bg-zinc-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           Save &amp; Submit
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
+          size="xs"
+          variant="ghost"
           onClick={onCancel}
-          className="rounded px-2.5 py-1 text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors"
         >
           Cancel
-        </button>
+        </Button>
       </div>
     </form>
   );
@@ -204,13 +223,26 @@ export function MessageBubble({
 
   const role = message.role;
   const colors = clientId ? clientColor(clientId) : undefined;
+  // CAST: CSS custom properties are valid style keys but missing from React's
+  // CSSProperties type. The bubble sets --primary locally so shadcn's tinted
+  // variant derives the client-tinted background from it.
+  const bubbleTheme = colors ? ({ '--primary': colors.primary } as CSSProperties) : undefined;
 
   const messageText = turnText(message);
   const renderParts = toRenderItems(message, toolOutputs);
+  // An assistant turn that is streaming but has rendered nothing yet — show a
+  // quiet loader instead of an empty bubble.
+  const showThinking = !isUser && status === 'streaming' && renderParts.length === 0;
 
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className="max-w-[75%]">
+    <Message
+      align={isUser ? 'end' : 'start'}
+      data-testid="message-bubble"
+      data-role={role}
+    >
+      {/* Shrink-wrap the turn so the bubble stretches to the badge row's width
+          (never narrower), while long content stays capped at 75%. */}
+      <MessageContent className="w-fit max-w-[75%] gap-1.5">
         {isEditing && onEdit ? (
           <EditForm
             initialText={messageText}
@@ -219,27 +251,48 @@ export function MessageBubble({
           />
         ) : (
           <>
-            <div className={bubbleClasses(isUser, status, colors?.userBg)}>
-              {renderParts.map((part, i) =>
-                part.kind === 'text' ? (
-                  <span key={i}>{part.text}</span>
-                ) : part.kind === 'reasoning' ? (
-                  <ReasoningBlock
-                    key={i}
-                    text={part.text}
-                  />
-                ) : (
-                  <ToolInvocation
-                    key={i}
-                    part={part}
-                  />
-                ),
+            {/* The user's turn is a tinted bubble — the client's palette colour
+                becomes the bubble's --primary, and shadcn's tinted variant
+                derives the background from it. The assistant reply is a muted
+                bubble; its status colour lives on the status badge. */}
+            <Bubble
+              variant={isUser ? 'tinted' : 'muted'}
+              align={isUser ? 'end' : 'start'}
+              className="w-full max-w-full"
+              style={isUser ? bubbleTheme : undefined}
+            >
+              {isUser ? (
+                <BubbleContent className="w-full whitespace-pre-wrap">{messageText}</BubbleContent>
+              ) : (
+                <BubbleContent className="w-full">
+                  {renderParts.map((part, i) =>
+                    part.kind === 'text' ? (
+                      // The assistant reply is markdown; render it through
+                      // Response (Streamdown) so lists, code, and emphasis
+                      // format correctly.
+                      <Response key={i}>{part.text}</Response>
+                    ) : part.kind === 'reasoning' ? (
+                      <ReasoningBlock
+                        key={i}
+                        text={part.text}
+                      />
+                    ) : (
+                      <ToolInvocation
+                        key={i}
+                        part={part}
+                      />
+                    ),
+                  )}
+                  {showThinking && (
+                    <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+                      <Loader2Icon className="size-3.5 animate-spin" />
+                      <span className="shimmer">Thinking…</span>
+                    </span>
+                  )}
+                </BubbleContent>
               )}
-              {!isUser && status === 'streaming' && (
-                <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-amber-500/60 animate-pulse rounded-sm align-text-bottom" />
-              )}
-            </div>
-            <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+            </Bubble>
+            <MessageFooter className="flex flex-wrap items-center gap-1.5">
               {/* Branch navigator (when the message has siblings) */}
               {hasSiblings && (
                 <BranchNavigator
@@ -251,54 +304,56 @@ export function MessageBubble({
 
               {/* Edit button (user messages) */}
               {onEdit && status !== 'streaming' && (
-                <button
+                <Button
+                  variant="ghost"
+                  size="xs"
                   onClick={() => setIsEditing(true)}
-                  className="text-[10px] text-zinc-500 hover:text-zinc-200 transition-colors rounded bg-zinc-800/60 px-1.5 py-0.5"
                   title="Edit message"
+                  data-testid="edit-message"
                 >
                   edit
-                </button>
+                </Button>
               )}
 
               {/* Regenerate button (assistant messages) */}
               {onRegenerate && status !== 'streaming' && (
-                <button
+                <Button
+                  variant="ghost"
+                  size="xs"
                   onClick={onRegenerate}
-                  className="text-[10px] text-zinc-500 hover:text-zinc-200 transition-colors rounded bg-zinc-800/60 px-1.5 py-0.5"
                   title="Regenerate response"
+                  data-testid="regenerate-message"
                 >
                   regenerate
-                </button>
+                </Button>
               )}
 
               {/* Debug badges (only when we know which Run the message belongs to). */}
               {runId && (
                 <>
-                  <Badge
+                  <InfoBadge
                     label="role"
                     value={role}
-                    color="bg-zinc-900 text-zinc-500"
                   />
                   {clientId && (
-                    <Badge
+                    <InfoBadge
                       label="client"
                       value={clientId}
-                      color={`bg-zinc-900 ${colors?.text ?? 'text-zinc-500'}`}
+                      className={colors?.text}
                     />
                   )}
-                  <Badge
+                  <InfoBadge
                     label="run"
                     value={runId.slice(0, 8)}
-                    color="bg-zinc-900 text-zinc-500"
                   />
                   {status && !isUser && <StatusBadge status={status} />}
                 </>
               )}
-            </div>
-            {errorMessage && <div className="mt-1 text-[11px] text-red-300 break-words">{errorMessage}</div>}
+            </MessageFooter>
+            {errorMessage && <div className="mt-1 text-[11px] break-words text-destructive">{errorMessage}</div>}
           </>
         )}
-      </div>
-    </div>
+      </MessageContent>
+    </Message>
   );
 }

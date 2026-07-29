@@ -78,6 +78,9 @@ vi.mock('../providers', () => ({
       };
     },
   },
+}));
+
+vi.mock('@ably-ai-demos/frontend/ably-provider', () => ({
   Providers: ({ children }: { children: ReactNode }) => children,
   useAblyReady: () => true,
 }));
@@ -233,8 +236,8 @@ describe('<Chat>', () => {
 
     const errors = screen.getAllByText('agent reported an error');
     expect(errors).toHaveLength(1);
-    // Rendered on the user's (right-aligned) side of the conversation.
-    expect(errors[0].closest('.justify-end')).not.toBeNull();
+    // Rendered on the user's (end-aligned) side of the conversation.
+    expect(errors[0].closest('[data-align="end"]')).not.toBeNull();
   });
 
   it('renders a mid-output run error on the assistant bubble only, not the triggering user message', () => {
@@ -255,8 +258,8 @@ describe('<Chat>', () => {
 
     const errors = screen.getAllByText('agent reported an error');
     expect(errors).toHaveLength(1);
-    // Rendered on the assistant's (left-aligned) side of the conversation.
-    expect(errors[0].closest('.justify-start')).not.toBeNull();
+    // Rendered on the assistant's (start-aligned) side of the conversation.
+    expect(errors[0].closest('[data-align="start"]')).not.toBeNull();
   });
 
   it("renders a pre-output run error on the user message even when another run's assistant output is visible", () => {
@@ -280,8 +283,8 @@ describe('<Chat>', () => {
 
     const errors = screen.getAllByText('agent reported an error');
     expect(errors).toHaveLength(1);
-    // Rendered on the user's (right-aligned) side of the conversation.
-    expect(errors[0].closest('.justify-end')).not.toBeNull();
+    // Rendered on the user's (end-aligned) side of the conversation.
+    expect(errors[0].closest('[data-align="end"]')).not.toBeNull();
   });
 
   it('shows Stop while the latest run is actively streaming, and Stop publishes a cancel for it', async () => {

@@ -1,5 +1,5 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
-import type { Scenario } from '../hooks/use-demo-progress';
+import type { Scenario } from '../lib/progress-steps';
 
 /**
  * The baseline scenarios common to every weather-model demo built on Ably. A

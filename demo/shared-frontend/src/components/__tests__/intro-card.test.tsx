@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 
 import { IntroCard, COMMON_SCENARIOS } from '../intro-card';
-import type { Scenario } from '../../hooks/use-demo-progress';
+import type { Scenario } from '../../lib/progress-steps';
 
 // IntroCard renders the numbered walkthrough of a demo's scenarios under a
 // heading and blurb, with sensible ClientSession defaults.

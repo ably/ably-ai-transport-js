@@ -93,6 +93,9 @@ vi.mock('../providers', () => ({
       };
     },
   },
+}));
+
+vi.mock('../ably-provider', () => ({
   Providers: ({ children }: { children: ReactNode }) => children,
   useAblyReady: () => true,
 }));

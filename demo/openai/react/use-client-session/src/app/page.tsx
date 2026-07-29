@@ -1,11 +1,12 @@
 'use client';
 
-import { Providers, useAblyReady, SessionHooks } from './providers';
+import { Providers, useAblyReady } from '@ably-ai-demos/frontend/ably-provider';
+import { SessionHooks } from './providers';
 import { ResponsesCodec } from '@ably/ai-transport/openai';
 import { Chat } from './components/chat';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
-import { generateChannelSlug, generateClientName } from './lib/channel-name';
+import { generateChannelSlug, generateClientName } from '@ably-ai-demos/frontend/lib/channel-name';
 
 const { ClientSessionProvider } = SessionHooks;
 

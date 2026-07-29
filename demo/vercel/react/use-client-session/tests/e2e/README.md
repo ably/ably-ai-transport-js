@@ -32,12 +32,12 @@ pnpm run test:e2e:live                     # real Ably + LLM keys from .env.loca
 the sandbox app and sets, for the Playwright run and the Next.js dev server it
 spawns:
 
-| Variable                    | Value             | Used by                          |
-| --------------------------- | ----------------- | -------------------------------- |
-| `ABLY_API_KEY`              | sandbox key       | agent client, JWT auth route     |
-| `ABLY_ENDPOINT`             | `nonprod:sandbox` | agent client (`route.ts`)        |
-| `NEXT_PUBLIC_ABLY_ENDPOINT` | `nonprod:sandbox` | browser client (`providers.tsx`) |
-| `MOCK_LLM`                  | `1`               | `createModel()` (`model.ts`)     |
+| Variable                    | Value             | Used by                              |
+| --------------------------- | ----------------- | ------------------------------------ |
+| `ABLY_API_KEY`              | sandbox key       | agent client, JWT auth route         |
+| `ABLY_ENDPOINT`             | `nonprod:sandbox` | agent client (`route.ts`)            |
+| `NEXT_PUBLIC_ABLY_ENDPOINT` | `nonprod:sandbox` | browser client (`ably-provider.tsx`) |
+| `MOCK_LLM`                  | `1`               | `createModel()` (`model.ts`)         |
 
 Unset (normal `pnpm dev`), the demo uses production Ably and a real LLM provider.
 

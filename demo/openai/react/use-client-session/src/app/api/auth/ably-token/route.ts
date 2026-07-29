@@ -10,7 +10,7 @@
 import jwt from 'jsonwebtoken';
 import { NextResponse } from 'next/server';
 
-import { generateClientName } from '../../../lib/channel-name';
+import { generateClientName } from '@ably-ai-demos/frontend/lib/channel-name';
 
 export async function GET(req: Request) {
   const apiKey = process.env.ABLY_API_KEY;

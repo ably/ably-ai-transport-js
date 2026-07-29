@@ -4,7 +4,8 @@ import type * as Ably from 'ably';
 import type * as AI from 'ai';
 import { EVENT_CANCEL, type BranchHandle, type CodecMessage, type RunInfo } from '@ably/ai-transport';
 
-import { useDemoProgress, type Scenario } from '../use-demo-progress';
+import { useDemoProgress } from '../use-demo-progress';
+import type { Scenario } from '../../lib/progress-steps';
 
 // useDemoProgress filters a demo's scenario list down to the trackable ones
 // (those with an `id`) that are still unfinished, detecting completion from the

@@ -245,11 +245,11 @@ test.describe('openai use-client-session demo - text chat behaviour', () => {
     await expect.poll(async () => branchCounter(userBubbles(page).first())).toBe('3 / 3');
 
     // Navigate back through the chain.
-    await userBubbles(page).first().locator('button[title="Previous branch"]').click();
+    await userBubbles(page).first().locator('button[aria-label="Previous branch"]').click();
     await expect.poll(async () => bubbleText(userBubbles(page).first())).toContain('bravo');
     await expect.poll(async () => branchCounter(userBubbles(page).first())).toBe('2 / 3');
 
-    await userBubbles(page).first().locator('button[title="Previous branch"]').click();
+    await userBubbles(page).first().locator('button[aria-label="Previous branch"]').click();
     await expect.poll(async () => bubbleText(userBubbles(page).first())).toContain('alpha');
     await expect.poll(async () => branchCounter(userBubbles(page).first())).toBe('1 / 3');
   });

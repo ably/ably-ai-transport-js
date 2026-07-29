@@ -41,7 +41,7 @@ import { foldAndEmit, type WireApplier } from './decode-fold.js';
 import { createHistoryHydrator, type HistoryHydrator } from './history-hydrator.js';
 import { locateInputEvent } from './input-event-locator.js';
 import { evictOldestIfFull } from './internal/bounded-map.js';
-import { Invocation } from './invocation.js';
+import type { Invocation } from './invocation.js';
 import { createLeafBranchSource } from './leaf-branch-source.js';
 import { createMaterialisation } from './materialisation.js';
 import type { RunManager } from './run-manager.js';
@@ -61,7 +61,6 @@ import {
 import type { DefaultTree } from './tree.js';
 import type {
   AdoptedRun,
-  AdoptIdentity,
   AgentRun,
   AgentSession,
   AgentSessionOptions,
@@ -69,7 +68,8 @@ import type {
   OpenableRun,
   OutputEvent,
   RunEndParams,
-  RunRuntime,
+  RunHooks,
+  RunIdentity,
   RunStatus,
   Tree,
   View,
@@ -90,7 +90,7 @@ const DEFERRED_CANCEL_LIMIT = 200;
 
 interface RegisteredRun {
   runId: string;
-  /** Invocation-id this run is associated with, minted by the agent at `createRun` (or the `runtime.invocationId` override). */
+  /** Invocation-id this run is associated with — the supplied {@link RunIdentity.invocationId}, or the agent's mint. */
   invocationId: string;
   controller: AbortController;
   /** Composite signal that fires when either the internal controller or the external signal aborts. */
@@ -123,13 +123,13 @@ interface RegisteredRun {
 
 /**
  * How a run is opened, chosen by the construction factory and threaded into the
- * one internal run-object builder. `start` (from `createRun`) publishes the
+ * one internal run-object builder. `create` (from `createRun`) publishes the
  * opening event and may re-key the run-id from a continuation's trigger header;
  * `adopt` (from `adoptRun`) waits for the run-start to hydrate, status-gates,
  * seeds the owner, and opens WITHOUT publishing — its identity is authoritative,
  * so the trigger's run-id header never re-keys it.
  */
-type OpenStrategy = { open: 'start' } | { open: 'adopt'; identity: AdoptIdentity };
+type OpenStrategy = { open: 'create' } | { open: 'adopt' };
 
 /**
  * Whether a run status is terminal (no further publishing is valid). The
@@ -141,6 +141,26 @@ type OpenStrategy = { open: 'start' } | { open: 'adopt'; identity: AdoptIdentity
  */
 const isTerminalStatus = (status: RunStatus): boolean =>
   status === 'complete' || status === 'cancelled' || status === 'error';
+
+/**
+ * Reject an identity field that is present but empty. Optionality is expressed
+ * by a field's absence, so an empty string is a caller mistake — accepting it
+ * would key a run under an unusable id rather than generating one.
+ * @param operation - The operation to name in the error ('create run' / 'adopt run').
+ * @param identity - The identity supplied at `createRun` / `adoptRun`, if any.
+ * @throws {Ably.ErrorInfo} `InvalidArgument` when a present field is empty.
+ */
+const validateIdentity = (operation: string, identity: Partial<RunIdentity> | undefined): void => {
+  for (const field of ['runId', 'invocationId'] as const) {
+    if (identity?.[field] === '') {
+      throw new Ably.ErrorInfo(
+        `unable to ${operation}; ${field} must not be empty (omit it to have one generated)`,
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+  }
+};
 
 // Event map for the session's typed EventEmitter.
 interface AgentSessionEventsMap {
@@ -331,23 +351,27 @@ class DefaultAgentSession<
   }
 
   // Spec: AIT-ST3
-  createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): OpenableRun<TOutput, TProjection, TMessage> {
+  createRun(
+    invocation: Invocation,
+    identity?: Partial<RunIdentity>,
+    hooks?: RunHooks<TOutput>,
+  ): OpenableRun<TOutput, TProjection, TMessage> {
     this._logger?.trace('DefaultAgentSession.createRun();', { inputEventId: invocation.inputEventId });
-    return this._createRun(invocation, runtime ?? {}, { open: 'start' });
+    validateIdentity('create run', identity);
+    return this._createRun(invocation, identity ?? {}, hooks ?? {}, { open: 'create' });
   }
 
-  adoptRun(identity: AdoptIdentity, runtime?: RunRuntime<TOutput>): AdoptedRun<TOutput, TProjection, TMessage> {
+  adoptRun(
+    invocation: Invocation,
+    identity: RunIdentity,
+    hooks?: RunHooks<TOutput>,
+  ): AdoptedRun<TOutput, TProjection, TMessage> {
     this._logger?.trace('DefaultAgentSession.adoptRun();', {
       runId: identity.runId,
-      triggerEventId: identity.triggerEventId,
+      inputEventId: invocation.inputEventId,
     });
-    // The adopt path takes identity from `identity` (authoritative), not the
-    // runtime overrides — its run-id, invocation-id, and trigger come from the
-    // orchestration that opened the run. Build an Invocation pinned to the
-    // trigger event so the shared run-object body arms the input-event watcher
-    // for it.
-    const invocation = Invocation.fromJSON({ inputEventId: identity.triggerEventId, sessionName: '' });
-    return this._createRun(invocation, runtime ?? {}, { open: 'adopt', identity });
+    validateIdentity('adopt run', identity);
+    return this._createRun(invocation, identity, hooks ?? {}, { open: 'adopt' });
   }
 
   on(event: 'error', handler: (error: Ably.ErrorInfo) => void): () => void {
@@ -682,31 +706,32 @@ class DefaultAgentSession<
 
   private _createRun(
     invocation: Invocation,
-    runtime: RunRuntime<TOutput>,
-    strategy: { open: 'start' },
+    identity: Partial<RunIdentity>,
+    hooks: RunHooks<TOutput>,
+    strategy: { open: 'create' },
   ): OpenableRun<TOutput, TProjection, TMessage>;
   private _createRun(
     invocation: Invocation,
-    runtime: RunRuntime<TOutput>,
-    strategy: { open: 'adopt'; identity: AdoptIdentity },
+    identity: RunIdentity,
+    hooks: RunHooks<TOutput>,
+    strategy: { open: 'adopt' },
   ): AdoptedRun<TOutput, TProjection, TMessage>;
   private _createRun(
     invocation: Invocation,
-    runtime: RunRuntime<TOutput>,
+    identity: Partial<RunIdentity>,
+    hooks: RunHooks<TOutput>,
     strategy: OpenStrategy,
   ): OpenableRun<TOutput, TProjection, TMessage> | AdoptedRun<TOutput, TProjection, TMessage> {
-    // Identity. For a CREATED run the agent mints a provisional run-id (or takes
-    // the `runtime.runId` override for tests / in-process drivers) — this IS the
-    // id for a fresh run, and a continuation re-keys it in the watcher's
-    // `resolveTriggerMetadata` from the trigger's `run-id` header. For an ADOPTED
-    // run the identity is AUTHORITATIVE: its run-id / invocation-id come from
-    // `AdoptIdentity` and the trigger's run-id header NEVER re-keys it.
-    let runId = strategy.open === 'adopt' ? strategy.identity.runId : (runtime.runId ?? crypto.randomUUID());
-    // The invocation id is the agent's mint (one per HTTP request) for a created
-    // run, or the authoritative `AdoptIdentity.invocationId` for an adopted one.
-    const invocationId =
-      strategy.open === 'adopt' ? strategy.identity.invocationId : (runtime.invocationId ?? crypto.randomUUID());
-    const { onCancel, onError: runOnError, signal: externalSignal, onSteer } = runtime;
+    // Identity. Each supplied field stands, each absent one is generated. For a
+    // CREATED run the run-id is provisional: for a fresh run it IS the run's id,
+    // but for a continuation the run's id comes from the `run-id` header on the
+    // event `invocation.inputEventId` points at, and the id supplied here is
+    // ignored (the watcher re-keys the run when that trigger folds). For an ADOPTED run
+    // both fields are required by the public signature and AUTHORITATIVE: the
+    // trigger's run-id header NEVER re-keys it.
+    let runId = identity.runId ?? crypto.randomUUID();
+    const invocationId = identity.invocationId ?? crypto.randomUUID();
+    const { onCancel, onError: runOnError, signal: externalSignal, onSteer } = hooks;
 
     // Whether the run is being adopted (vs. created). Identity is authoritative
     // on the adopt path: the trigger's run-id header never re-keys the run (for a
@@ -990,8 +1015,8 @@ class DefaultAgentSession<
         // the id, overriding the provisional one minted at construction, and
         // re-key the registration so cancel routing / deregistration resolve to
         // the real run; absent → a fresh run, the provisional id stands and the
-        // run opens with run-start. For an ADOPTED run the run-id is fixed from
-        // `AdoptIdentity` and the trigger's run-id header NEVER re-keys it (a
+        // run opens with run-start. For an ADOPTED run the run-id is fixed by the
+        // supplied identity and the trigger's run-id header NEVER re-keys it (a
         // delegation trigger carries the PARENT's id).
         const wireRunId = headers[HEADER_RUN_ID];
         resolvedContinuation = wireRunId !== undefined;
@@ -1175,7 +1200,7 @@ class DefaultAgentSession<
       channel,
       runManager,
       getTree,
-      runtime,
+      hooks,
       signal,
       logger,
       requireConnected,
@@ -1496,7 +1521,7 @@ class DefaultAgentSession<
      * stopping at the run-start would leave `located` forever unresolved and the
      * subsequent `await located` in `load()` would hang (it has no deadline). The
      * predicate therefore also requires `locatedSettled`, driving the fold far
-     * enough back to surface the trigger too. An empty `triggerEventId` settles
+     * enough back to surface the trigger too. An empty `inputEventId` settles
      * `located` immediately, so this collapses to just the run-start wait.
      *
      * The bound is wired INTO the single history fold via a composed
@@ -1626,7 +1651,7 @@ class DefaultAgentSession<
       // (2) Await the trigger so the watcher's onMatched has resolved this run's
       // anchors (parent, forkOf, input-client-id) and pinned run.view. The
       // visibility-wait above already paged until the trigger folded (or an empty
-      // triggerEventId resolved `located` immediately), so this normally resolves
+      // inputEventId resolved `located` immediately), so this normally resolves
       // at once; awaiting it surfaces a `located` rejection (cancel / session
       // close), which deregisters and re-throws.
       try {

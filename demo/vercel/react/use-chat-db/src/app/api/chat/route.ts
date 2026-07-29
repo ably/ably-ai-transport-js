@@ -53,7 +53,9 @@ export async function POST(req: Request) {
 
   const session = createAgentSession({ client: ably, channelName: invocation.sessionName });
   await session.connect();
-  const run = session.createRun(invocation, { signal: req.signal });
+  // No identity is pinned: this run is not retried, so a generated run-id and
+  // invocation-id are correct.
+  const run = session.createRun(invocation, {}, { signal: req.signal });
 
   // Hydrate the model context the way the client does (see useMessageSync, which
   // this demo's client uses to seed useChat): seed the prior conversation from

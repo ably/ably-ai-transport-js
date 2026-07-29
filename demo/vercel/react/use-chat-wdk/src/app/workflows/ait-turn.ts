@@ -1,8 +1,8 @@
 import { getWorkflowMetadata } from 'workflow';
-import type { InvocationData } from '@ably/ai-transport';
+import type { InvocationData, RunIdentity } from '@ably/ai-transport';
 
 import type { FaultMode } from '../lib/fault';
-import { cleanupActivity, inferenceActivity, openActivity, toolActivity, type TurnIds } from './activities';
+import { cleanupActivity, inferenceActivity, openActivity, toolActivity } from './activities';
 
 /** Serializable input to the durable turn workflow. */
 export interface AitTurnInput {
@@ -41,7 +41,7 @@ export async function runAitTurn(input: AitTurnInput): Promise<void> {
   // The workflow run id is stable across replays; thread it to every activity
   // so their sidecar telemetry correlates to one workflow in the UI.
   const { workflowRunId } = getWorkflowMetadata();
-  let ids: TurnIds | undefined;
+  let ids: RunIdentity | undefined;
   try {
     ids = await openActivity(input.invocation, workflowRunId);
     let outcome = await inferenceActivity(input.invocation, ids, workflowRunId, input.fault);

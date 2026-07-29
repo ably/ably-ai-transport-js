@@ -8,21 +8,6 @@
 
 import type { InvocationData } from '@ably/ai-transport';
 
-/** Identity of an already-open run — the shape the SDK's `adoptRun` accepts. */
-export interface RunIds {
-  /**
-   * The run's authoritative id. Pinned to the Temporal workflowId (== the
-   * invocationId) at `openRun`, so a fresh-process retry re-enters the same run
-   * rather than opening a parallel one. Continuations keep the id from the
-   * trigger's wire headers instead.
-   */
-  runId: string;
-  /** The run's owner invocation id. Every activity stamps its own activity id on outputs. */
-  invocationId: string;
-  /** The event id of the run's triggering input. */
-  triggerEventId: string;
-}
-
 /** Args passed into the workflow at start. */
 export interface ChatWorkflowInput {
   /** The invocation pointer the client POSTed. */

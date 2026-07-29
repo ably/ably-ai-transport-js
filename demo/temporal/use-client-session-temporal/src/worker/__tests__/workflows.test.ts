@@ -11,16 +11,16 @@ import { fileURLToPath } from 'node:url';
 import { TestWorkflowEnvironment } from '@temporalio/testing';
 import { Worker } from '@temporalio/worker';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { InvocationData } from '@ably/ai-transport';
+import type { InvocationData, RunIdentity } from '@ably/ai-transport';
 
 import { chatWorkflow } from '../workflows';
-import type { InferenceOutcome, RunIds } from '../shared';
+import type { InferenceOutcome } from '../shared';
 
 const workflowsPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../workflows.ts');
 
 const invocation: InvocationData = { sessionName: 'ai:test', inputEventId: 'evt-1' };
 const invocationId = 'wf-1';
-const runIds: RunIds = { runId: 'run-1', invocationId, triggerEventId: 'evt-1' };
+const runIds: RunIdentity = { runId: 'run-1', invocationId };
 
 let env: TestWorkflowEnvironment;
 
@@ -41,7 +41,7 @@ function makeWorker(outcomes: InferenceOutcome[]) {
   const calls: string[] = [];
   let outcomeIdx = 0;
   const activities = {
-    openRun: vi.fn(async (): Promise<RunIds> => {
+    openRun: vi.fn(async (): Promise<RunIdentity> => {
       calls.push('openRun');
       return runIds;
     }),

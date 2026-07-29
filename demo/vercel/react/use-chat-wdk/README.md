@@ -8,7 +8,7 @@ It shows AIT and a durable execution framework working together: WDK gives the a
 
 ## What this demonstrates
 
-- **The durable pairing** — `session.adoptRun({ runId, invocationId, triggerEventId })` + `run.createStep({ stepId })`. Each activity is a fresh process: it rebuilds its own Ably client, reconstructs the run from the channel, and brackets its output in a step keyed on the WDK step id.
+- **The durable pairing** — `session.adoptRun(invocation, { runId, invocationId })` + `run.createStep({ stepId })`. Each activity is a fresh process: it rebuilds its own Ably client, reconstructs the run from the channel, and brackets its output in a step keyed on the WDK step id.
 - **A driver-owned agent loop** — the workflow runs one activity per unit of work: `open` (open the run), an `inference` per model call (the first and each follow-up), and one `tool` per server tool call — looping until the turn settles. `stripToolExecutes` stops the model from running tools inline, so the workflow owns the loop.
 - **Retry supersession** — a WDK retry re-runs the activity under the _same_ `stepId`, so the retried attempt's channel output cleanly supersedes the dead one: no duplicate reply, and `RunInfo.steps[].attemptCount` bumps.
 - **Suspend / resume across processes** — a client tool or an approval leaves the run suspended (`run.suspend()`); the client's continuation POST starts a fresh workflow that resumes the same run (`ai-run-resume`).

@@ -57,7 +57,7 @@ Errors reach you through different channels depending on context:
 | Channel continuity loss on the client (FAILED, SUSPENDED, DETACHED, resumed: false) | Emitted via `session.on('error')`; the Vercel chat transport errors its `useChat`-facing stream |
 | Channel continuity loss on the server (FAILED, SUSPENDED, DETACHED, resumed: false) | `onError` callback on `AgentSessionOptions` (in-flight runs are not auto-cancelled)             |
 | Channel subscription error                                                          | Emitted via `session.on('error')`                                                               |
-| Server-side run error                                                               | `onError` callback on `RunRuntime`                                                              |
+| Server-side run error                                                               | `onError` callback on `RunHooks`                                                                |
 | Session-level error (not scoped to a run)                                           | `onError` callback on `AgentSessionOptions`                                                     |
 
 ## Error message format

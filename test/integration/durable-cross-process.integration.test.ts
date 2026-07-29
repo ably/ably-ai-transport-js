@@ -11,7 +11,7 @@
  * connects, does its work, and closes both in a `finally` - so each activity is a
  * fresh process exactly as a durable workflow would run it. The drivers wrap only
  * the PUBLIC primitives (`session.createRun().start()`,
- * `session.adoptRun(identity).load()`, `run.createStep({ stepId })`,
+ * `session.adoptRun(invocation, identity).load()`, `run.createStep({ stepId })`,
  * `run.suspend()`, `run.end()`), with the same identity binding a durable
  * orchestrator would apply. There is no durable flag and no attempt id: a stable
  * `stepId` is what makes a cross-process retry supersede (its re-emitted
@@ -68,6 +68,7 @@ import type {
   AgentSession,
   ClientSession,
   RunEndParams,
+  RunIdentity,
   StreamResult,
 } from '../../src/core/transport/types.js';
 import { getCodecHeaders, getTransportHeaders } from '../../src/utils.js';
@@ -87,28 +88,18 @@ type ClientSessionT = ClientSession<VercelInput, VercelOutput, VercelProjection,
 type AgentSessionT = AgentSession<VercelOutput, VercelProjection, AI.UIMessage>;
 type AdoptedRunT = AdoptedRun<VercelOutput, VercelProjection, AI.UIMessage>;
 
-/** The two ids the open activity mints and the driver threads to every later activity of the turn. */
-interface TurnIds {
-  /** The run's id, minted by `createRun` + `start()` in {@link openActivity}. */
-  runId: string;
-  /** This turn's invocation id, stamped on every event the turn publishes. */
-  invocationId: string;
-}
-
 /**
- * The identity a fresh-process adopting activity threads: the {@link TurnIds}
- * plus the invocation (for the channel/session name) and the trigger event whose
- * headers resolve the run's write anchors. Mirrors the SDK's `AdoptIdentity`,
- * adding the invocation the driver needs to build the session.
+ * What a fresh-process adopting activity threads: the open run's identity, plus
+ * the invocation pinned to the event whose headers resolve the run's write
+ * anchors — the `ai-input` for a step / end / suspend, the `ai-cancel` for a
+ * cancel cleanup. The identity is the SDK's own {@link RunIdentity}: a driver
+ * threading a run across processes never redeclares the shape.
  */
-interface AdoptArgs extends TurnIds {
-  /** The invocation carrying the session (channel) name. */
+interface AdoptArgs {
+  /** The open run's identity, as returned by {@link openActivity}. */
+  identity: RunIdentity;
+  /** The invocation pinned to the trigger the adopt resolves anchors against. */
   invocation: Invocation;
-  /**
-   * The id of the event whose headers resolve the run's anchors. An `ai-input`
-   * for a step/end/suspend; the `ai-cancel` event for a cancel cleanup.
-   */
-  triggerEventId: string;
 }
 
 /** The framework's stable step identity, threaded to {@link stepActivity}. */
@@ -299,11 +290,13 @@ const pageUntilLocated = async (run: AdoptedRunT | ReturnType<AgentSessionT['cre
  * `located` contract documents — before awaiting `start()`.
  * @param invocation - The invocation that triggered this open.
  * @param opts - The activity options (channel + optional signal).
- * @returns The minted {@link TurnIds}.
+ * @returns The minted {@link RunIdentity}.
  */
-const openActivity = async (invocation: Invocation, opts: ActivityOptions): Promise<TurnIds> =>
+const openActivity = async (invocation: Invocation, opts: ActivityOptions): Promise<RunIdentity> =>
   withSession(opts, async (session) => {
-    const run = session.createRun(invocation, { ...(opts.signal !== undefined && { signal: opts.signal }) });
+    const run = session.createRun(invocation, undefined, {
+      ...(opts.signal !== undefined && { signal: opts.signal }),
+    });
     await pageUntilLocated(run);
     await run.start();
     return { runId: run.runId, invocationId: run.invocationId };
@@ -329,10 +322,9 @@ const runAdoptedActivity = async <T>(
   body: (run: AdoptedRunT) => Promise<T>,
 ): Promise<T> =>
   withSession(opts, async (session) => {
-    const run = session.adoptRun(
-      { runId: args.runId, invocationId: args.invocationId, triggerEventId: args.triggerEventId },
-      { ...(opts.signal !== undefined && { signal: opts.signal }) },
-    );
+    const run = session.adoptRun(args.invocation, args.identity, {
+      ...(opts.signal !== undefined && { signal: opts.signal }),
+    });
     // No caller pre-paging: load() is self-contained — its visibility-wait pages
     // channel history until BOTH the run-start and the (older) trigger have
     // folded, so a fresh process adopts correctly even when the trigger and the
@@ -463,34 +455,28 @@ const publishInput = async (
 };
 
 /**
- * Build the {@link AdoptArgs} the step / end / suspend activities thread.
- * @param ids - The run + invocation ids opened by {@link openActivity}.
- * @param invocation - The invocation carrying the session (channel) name.
- * @param triggerEventId - The trigger event the adopt resolves anchors against.
+ * Build the {@link AdoptArgs} the step / end / suspend activities thread. Those
+ * activities resolve their anchors against the turn's own triggering input, so
+ * the invocation passes straight through.
+ * @param identity - The run identity opened by {@link openActivity}.
+ * @param invocation - The invocation whose input event triggered the turn.
  * @returns The {@link AdoptArgs} for an adopting activity.
  */
-const adoptArgs = (ids: TurnIds, invocation: Invocation, triggerEventId: string): AdoptArgs => ({
-  runId: ids.runId,
-  invocationId: ids.invocationId,
-  invocation,
-  triggerEventId,
-});
+const adoptArgs = (identity: RunIdentity, invocation: Invocation): AdoptArgs => ({ identity, invocation });
 
 /**
- * Form the {@link AdoptArgs} for {@link cancelActivity} from the cancel POST's
- * ids: the cleanup arm resolves its anchors against the `ai-cancel` event (not
- * the original input) and stamps the cancel POST's own invocation id
- * (`I_cancel`).
- * @param turnIds - The cancelled run's id + the cancel POST's invocation id (`I_cancel`).
- * @param invocation - The invocation carrying the session (channel) name.
+ * Form the {@link AdoptArgs} for {@link cancelActivity}: the cleanup arm resolves
+ * its anchors against the `ai-cancel` event (not the original input), so the
+ * invocation is re-pinned to that event, and stamps the cancel POST's own
+ * invocation id (`I_cancel`).
+ * @param identity - The cancelled run's id + the cancel POST's invocation id (`I_cancel`).
+ * @param invocation - The turn's invocation, for the session (channel) name.
  * @param cancelEventId - The `ai-cancel` event's id (the trigger the cleanup resolves against).
  * @returns The {@link AdoptArgs} to pass to {@link cancelActivity}.
  */
-const adoptArgsFromCancel = (turnIds: TurnIds, invocation: Invocation, cancelEventId: string): AdoptArgs => ({
-  runId: turnIds.runId,
-  invocationId: turnIds.invocationId,
-  invocation,
-  triggerEventId: cancelEventId,
+const adoptArgsFromCancel = (identity: RunIdentity, invocation: Invocation, cancelEventId: string): AdoptArgs => ({
+  identity,
+  invocation: Invocation.fromJSON({ inputEventId: cancelEventId, sessionName: invocation.sessionName }),
 });
 
 // ---------------------------------------------------------------------------
@@ -655,7 +641,7 @@ describe('durable cross-process matrix', () => {
     const observer = await observeWire(channelName);
 
     // The client publishes the triggering input (out-of-band, like send()).
-    const { invocation, inputEventId } = await publishInput(channelName, publisher, {
+    const { invocation } = await publishInput(channelName, publisher, {
       text: 'Split me across processes',
       codecMessageId: 'u-split',
     });
@@ -667,7 +653,7 @@ describe('durable cross-process matrix', () => {
 
     // Process B: stepActivity (a FRESH client) adopts + loads + runs ONE step.
     const stepOutcome = await stepActivity(
-      adoptArgs(ids, invocation, inputEventId),
+      adoptArgs(ids, invocation),
       opts,
       () => fixtureResult('Hello from a separate step process'),
       { stepId: 'wf-step-1' },
@@ -675,7 +661,7 @@ describe('durable cross-process matrix', () => {
     expect(stepOutcome).toEqual({ reason: 'complete' });
 
     // Process C: endActivity (a FRESH client) adopts + loads + ends.
-    await endActivity(adoptArgs(ids, invocation, inputEventId), opts, asTerminal(stepOutcome));
+    await endActivity(adoptArgs(ids, invocation), opts, asTerminal(stepOutcome));
 
     await observer.until((m) => m.some((x) => x.name === EVENT_RUN_END), 'run-end');
 
@@ -724,7 +710,7 @@ describe('durable cross-process matrix', () => {
     // The witness subscribes BEFORE the run opens so it captures ai-run-start.
     const witness = await observeWire(channelName); // witnesses the run + both attempts
 
-    const { invocation, inputEventId } = await publishInput(channelName, publisher, {
+    const { invocation } = await publishInput(channelName, publisher, {
       text: 'Recover from a crashed step',
       codecMessageId: 'u-sup',
     });
@@ -739,7 +725,7 @@ describe('durable cross-process matrix', () => {
     const deadClient = ablyRealtimeClient();
 
     const abandonedStep = stepActivity(
-      adoptArgs(ids, invocation, inputEventId),
+      adoptArgs(ids, invocation),
       { channelName, signal: abandonController.signal, client: deadClient },
       () => ({
         // A stream that emits a partial chunk then never finishes - the abort
@@ -783,14 +769,14 @@ describe('durable cross-process matrix', () => {
     // re-emitted ai-step-start carries a NEW (later) channel serial, so it is the
     // canonical attempt and supersedes the dead one - no attempt id needed.
     const retryOutcome = await stepActivity(
-      adoptArgs(ids, invocation, inputEventId),
+      adoptArgs(ids, invocation),
       opts,
       () => fixtureResult('FULL recovered answer'),
       { stepId: 'wf-step-X' },
     );
     expect(retryOutcome).toEqual({ reason: 'complete' });
 
-    await endActivity(adoptArgs(ids, invocation, inputEventId), opts, asTerminal(retryOutcome));
+    await endActivity(adoptArgs(ids, invocation), opts, asTerminal(retryOutcome));
 
     // Two step-starts landed under the same stepId (the dead attempt and the
     // retry); the LATER-serial one is the canonical retry. Both carry the
@@ -833,7 +819,7 @@ describe('durable cross-process matrix', () => {
     const opts: ActivityOptions = { channelName };
     const publisher = ablyRealtimeClient({ clientId: 'user-err' });
 
-    const { invocation, inputEventId } = await publishInput(channelName, publisher, {
+    const { invocation } = await publishInput(channelName, publisher, {
       text: 'Make the step error',
       codecMessageId: 'u-err',
     });
@@ -843,13 +829,13 @@ describe('durable cross-process matrix', () => {
 
     // The step driver THROWS on a stream error (the throw-to-retry contract).
     await expect(
-      stepActivity(adoptArgs(ids, invocation, inputEventId), opts, () => erroringResult(), {
+      stepActivity(adoptArgs(ids, invocation), opts, () => erroringResult(), {
         stepId: 'wf-step-E',
       }),
     ).rejects.toBeTruthy();
 
     // The workflow's error arm publishes the terminal from a FRESH process.
-    await endActivity(adoptArgs(ids, invocation, inputEventId), opts, {
+    await endActivity(adoptArgs(ids, invocation), opts, {
       reason: 'error',
       error: new Ably.ErrorInfo('step failed after retries', 50000, 500),
     });
@@ -881,7 +867,7 @@ describe('durable cross-process matrix', () => {
     const cancelClient = ablyRealtimeClient();
     const observer = await observeWire(channelName);
 
-    const { invocation, inputEventId } = await publishInput(channelName, publisher, {
+    const { invocation } = await publishInput(channelName, publisher, {
       text: 'Cancel me mid-step',
       codecMessageId: 'u-cd',
     });
@@ -892,7 +878,7 @@ describe('durable cross-process matrix', () => {
     // runs after load(), when the session is subscribed and its cancel listener
     // is live). The activity hands off via session.detach() in its finally.
     const inFlight = stepActivity(
-      adoptArgs(ids, invocation, inputEventId),
+      adoptArgs(ids, invocation),
       opts,
       () => ({
         toUIMessageStream: (): ReadableStream<VercelOutput> =>
@@ -965,13 +951,13 @@ describe('durable cross-process matrix', () => {
     const ids = await openActivity(first.invocation, opts);
 
     const suspendOutcome = await stepActivity(
-      adoptArgs(ids, first.invocation, first.inputEventId),
+      adoptArgs(ids, first.invocation),
       opts,
       () => fixtureResult('Awaiting a tool result', 'tool-calls'),
       { stepId: 'wf-resume-step-1' },
     );
     expect(suspendOutcome).toEqual({ reason: 'suspend' });
-    await suspendActivity(adoptArgs(ids, first.invocation, first.inputEventId), opts);
+    await suspendActivity(adoptArgs(ids, first.invocation), opts);
     await observer.until((m) => m.some((x) => x.name === EVENT_RUN_SUSPEND), 'run-suspend');
 
     // Turn 2 (the continuation): a NEW input carrying the SAME run-id on the wire
@@ -988,12 +974,12 @@ describe('durable cross-process matrix', () => {
 
     // A new step under the resumed run, then end.
     const resumeStep = await stepActivity(
-      adoptArgs(resumeIds, cont.invocation, cont.inputEventId),
+      adoptArgs(resumeIds, cont.invocation),
       opts,
       () => fixtureResult('Resumed and finished'),
       { stepId: 'wf-resume-step-2' },
     );
-    await endActivity(adoptArgs(resumeIds, cont.invocation, cont.inputEventId), opts, asTerminal(resumeStep));
+    await endActivity(adoptArgs(resumeIds, cont.invocation), opts, asTerminal(resumeStep));
     await observer.until((m) => m.some((x) => x.name === EVENT_RUN_END), 'run-end');
 
     // Exactly one run-start, exactly one run-resume - the continuation re-entered
@@ -1017,7 +1003,7 @@ describe('durable cross-process matrix', () => {
     const publisher = ablyRealtimeClient({ clientId: 'user-sticky' });
     const observer = await observeWire(channelName);
 
-    const { invocation, inputEventId } = await publishInput(channelName, publisher, {
+    const { invocation } = await publishInput(channelName, publisher, {
       text: 'Sticky step client',
       codecMessageId: 'u-sticky',
     });
@@ -1032,11 +1018,7 @@ describe('durable cross-process matrix', () => {
       codec: UIMessageCodec,
     });
     await sessionB.connect();
-    const runB = sessionB.adoptRun({
-      runId: ids.runId,
-      invocationId: ids.invocationId,
-      triggerEventId: inputEventId,
-    });
+    const runB = sessionB.adoptRun(invocation, ids);
     await runB.load();
     const stepB = runB.createStep({
       stepId: 'wf-sticky-1',
@@ -1056,13 +1038,10 @@ describe('durable cross-process matrix', () => {
     // stepClientId, NO new input. Its in-memory cursor is empty (fresh process),
     // so it re-derives the SAME sticky stepClientId from the channel (the prior
     // step's step-client-id), NOT the empty default and NOT the run owner.
-    const step2 = await stepActivity(
-      adoptArgs(ids, invocation, inputEventId),
-      opts,
-      () => fixtureResult('second step'),
-      { stepId: 'wf-sticky-2' },
-    );
-    await endActivity(adoptArgs(ids, invocation, inputEventId), opts, asTerminal(step2));
+    const step2 = await stepActivity(adoptArgs(ids, invocation), opts, () => fixtureResult('second step'), {
+      stepId: 'wf-sticky-2',
+    });
+    await endActivity(adoptArgs(ids, invocation), opts, asTerminal(step2));
     await observer.until(
       (m) => m.some((x) => x.name === EVENT_STEP_END && headersOf(x)[HEADER_STEP_ID] === 'wf-sticky-2'),
       'step-2 end',
@@ -1106,12 +1085,12 @@ describe('durable cross-process matrix', () => {
       });
       const turnIds = await openActivity(turn.invocation, opts);
       const out = await stepActivity(
-        adoptArgs(turnIds, turn.invocation, turn.inputEventId),
+        adoptArgs(turnIds, turn.invocation),
         opts,
         () => fixtureResult(`prior turn ${String(n)} answer`),
         { stepId: `wf-rc-${String(n)}` },
       );
-      await endActivity(adoptArgs(turnIds, turn.invocation, turn.inputEventId), opts, asTerminal(out));
+      await endActivity(adoptArgs(turnIds, turn.invocation), opts, asTerminal(out));
     }
 
     // A third turn with a step retry: a failed first attempt, then a superseding
@@ -1123,17 +1102,17 @@ describe('durable cross-process matrix', () => {
     });
     const lastIds = await openActivity(last.invocation, opts);
     await expect(
-      stepActivity(adoptArgs(lastIds, last.invocation, last.inputEventId), opts, () => erroringResult(), {
+      stepActivity(adoptArgs(lastIds, last.invocation), opts, () => erroringResult(), {
         stepId: 'wf-rc-3',
       }),
     ).rejects.toBeTruthy();
     const recovered = await stepActivity(
-      adoptArgs(lastIds, last.invocation, last.inputEventId),
+      adoptArgs(lastIds, last.invocation),
       opts,
       () => fixtureResult('FINAL canonical answer'),
       { stepId: 'wf-rc-3' },
     );
-    await endActivity(adoptArgs(lastIds, last.invocation, last.inputEventId), opts, asTerminal(recovered));
+    await endActivity(adoptArgs(lastIds, last.invocation), opts, asTerminal(recovered));
 
     // A FRESH observer attaches now (AFTER the supersede) and hydrates from
     // history. It walks every turn and shows ONLY canonical output - the failed

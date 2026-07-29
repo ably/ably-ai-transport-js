@@ -46,6 +46,7 @@ import {
   type AgentRun,
   type AgentSession,
   type InvocationData,
+  type RunIdentity,
 } from '@ably/ai-transport';
 import { stepIdFor } from '@ably/ai-transport/temporal';
 
@@ -53,7 +54,7 @@ import { createModel } from '../app/api/chat/model.js';
 import { SYSTEM_PROMPT } from '../app/api/chat/prompt.js';
 import { tools } from '../app/api/chat/tools.js';
 import { safeSessionDetach, safeSessionEnd } from './safe-session-end.js';
-import type { InferenceOutcome, RunIds, ToolCallInfo } from './shared.js';
+import type { InferenceOutcome, ToolCallInfo } from './shared.js';
 
 // Concrete run/session type this file works with — every activity uses the Vercel codec.
 type VercelSession = AgentSession<VercelOutput, VercelProjection, UIMessage>;
@@ -94,7 +95,7 @@ const makeAbly = (): Ably.Realtime =>
 // opens a second, parallel run.
 // -----------------------------------------------------------------------------
 
-export async function openRun(input: { invocation: InvocationData; invocationId: string }): Promise<RunIds> {
+export async function openRun(input: { invocation: InvocationData; invocationId: string }): Promise<RunIdentity> {
   const cancelSignal = Context.current().cancellationSignal;
   const ably = makeAbly();
   let session: VercelSession | undefined;
@@ -102,19 +103,22 @@ export async function openRun(input: { invocation: InvocationData; invocationId:
     session = createAgentSession({ client: ably, channelName: input.invocation.sessionName, logger });
     await session.connect();
 
-    const run = session.createRun(Invocation.fromJSON(input.invocation), {
-      invocationId: input.invocationId,
-      // Stable run id, straight from the framework: invocationId IS the Temporal
-      // workflowId, constant across activity and workflow retries. A fresh-process
-      // retry of openRun then re-enters the SAME run rather than minting a new
-      // UUID and opening a parallel one — the SDK's durable-execution contract for
-      // RunRuntime.runId. The retry's ai-run-start folds idempotently onto the
-      // existing run node (first startSerial wins). Continuations ignore this:
-      // their run id comes from the trigger's wire headers, so it only pins the
-      // fresh-run case.
-      runId: input.invocationId,
-      signal: cancelSignal,
-    });
+    const run = session.createRun(
+      Invocation.fromJSON(input.invocation),
+      {
+        invocationId: input.invocationId,
+        // Stable run id, straight from the framework: invocationId IS the Temporal
+        // workflowId, constant across activity and workflow retries. A fresh-process
+        // retry of openRun then re-enters the SAME run rather than minting a new
+        // UUID and opening a parallel one — the SDK's durable-execution contract for
+        // RunIdentity.runId. The retry's ai-run-start folds idempotently onto the
+        // existing run node (first startSerial wins). Continuations ignore this:
+        // their run id comes from the trigger's wire headers, so it only pins the
+        // fresh-run case.
+        runId: input.invocationId,
+      },
+      { signal: cancelSignal },
+    );
 
     // Load the conversation history.
     while (run.view.hasOlder()) {
@@ -129,11 +133,7 @@ export async function openRun(input: { invocation: InvocationData; invocationId:
     // locate the trigger throws before publishing, leaving no orphaned run.
     await run.start();
 
-    const ids: RunIds = {
-      runId: run.runId,
-      invocationId: run.invocationId,
-      triggerEventId: input.invocation.inputEventId,
-    };
+    const ids: RunIdentity = { runId: run.runId, invocationId: run.invocationId };
 
     // detach (not end): the run is deliberately left active so the workflow's
     // first runInferenceStep can adopt it. session.end() would publish
@@ -202,7 +202,7 @@ async function _publishRunTerminal(run: VercelAgentRun, outcome: InferenceOutcom
 // -----------------------------------------------------------------------------
 
 interface StepInput {
-  ids: RunIds;
+  ids: RunIdentity;
   invocation: InvocationData;
 }
 
@@ -214,10 +214,7 @@ export async function runInferenceStep(input: StepInput): Promise<InferenceOutco
     session = createAgentSession({ client: ably, channelName: input.invocation.sessionName, logger });
     await session.connect();
 
-    const run = session.adoptRun(
-      { runId: input.ids.runId, invocationId: input.ids.invocationId, triggerEventId: input.ids.triggerEventId },
-      { signal: cancelSignal },
-    );
+    const run = session.adoptRun(Invocation.fromJSON(input.invocation), input.ids, { signal: cancelSignal });
 
     await run.load();
 
@@ -375,10 +372,7 @@ export async function runToolStep(input: StepInput & { toolCall: ToolCallInfo })
     session = createAgentSession({ client: ably, channelName: input.invocation.sessionName, logger });
     await session.connect();
 
-    const run = session.adoptRun(
-      { runId: input.ids.runId, invocationId: input.ids.invocationId, triggerEventId: input.ids.triggerEventId },
-      { signal: cancelSignal },
-    );
+    const run = session.adoptRun(Invocation.fromJSON(input.invocation), input.ids, { signal: cancelSignal });
     await run.load();
 
     const step = run.createStep({ stepId });
@@ -423,21 +417,18 @@ export async function runToolStep(input: StepInput & { toolCall: ToolCallInfo })
 // this shape will be refined before extracting to the SDK.
 // -----------------------------------------------------------------------------
 
-export async function cleanupRun(input: { ids: RunIds; channelName: string; errorMessage?: string }): Promise<void> {
+export async function cleanupRun(input: {
+  ids: RunIdentity;
+  invocation: InvocationData;
+  errorMessage?: string;
+}): Promise<void> {
   const ably = makeAbly();
   let session: VercelSession | undefined;
   try {
-    session = createAgentSession({ client: ably, channelName: input.channelName, logger });
+    session = createAgentSession({ client: ably, channelName: input.invocation.sessionName, logger });
     await session.connect();
 
-    const run = session.adoptRun(
-      {
-        runId: input.ids.runId,
-        invocationId: input.ids.invocationId,
-        triggerEventId: input.ids.triggerEventId,
-      },
-      {},
-    );
+    const run = session.adoptRun(Invocation.fromJSON(input.invocation), input.ids);
 
     try {
       // load() pages history to locate ai-run-start + the trigger. It

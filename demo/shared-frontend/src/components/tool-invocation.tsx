@@ -40,10 +40,10 @@ function WeatherCard({ data }: { data: WeatherData }) {
   return (
     <Card
       size="sm"
-      className="my-1 max-w-[280px] bg-transparent bg-gradient-to-br from-sky-900/40 to-indigo-900/40 ring-sky-800/30"
+      className="my-1 max-w-[280px] bg-transparent bg-gradient-to-br from-sky-100 to-indigo-100 ring-sky-200 dark:from-sky-900/40 dark:to-indigo-900/40 dark:ring-sky-800/30"
     >
       <CardHeader>
-        <CardDescription className="text-sky-400/80">{data.location}</CardDescription>
+        <CardDescription className="text-sky-700 dark:text-sky-400/80">{data.location}</CardDescription>
         <CardTitle className="text-2xl">
           {data.temperature}°F
           <span className="ml-1 text-sm font-normal text-muted-foreground">({tempC}°C)</span>
@@ -81,11 +81,11 @@ function ForecastCard({ data }: { data: ForecastData }) {
   return (
     <Card
       size="sm"
-      className="my-1 max-w-[320px] bg-transparent bg-gradient-to-br from-indigo-900/40 to-purple-900/40 ring-indigo-800/30"
+      className="my-1 max-w-[320px] bg-transparent bg-gradient-to-br from-indigo-100 to-purple-100 ring-indigo-200 dark:from-indigo-900/40 dark:to-purple-900/40 dark:ring-indigo-800/30"
     >
       <CardHeader>
         <CardTitle className="text-sm">5-day forecast</CardTitle>
-        <CardDescription className="text-indigo-400/80">{data.location}</CardDescription>
+        <CardDescription className="text-indigo-700 dark:text-indigo-400/80">{data.location}</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-1">
         {data.forecast.map((day) => {

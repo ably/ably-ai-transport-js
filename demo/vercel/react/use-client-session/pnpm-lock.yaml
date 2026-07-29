@@ -209,7 +209,7 @@ importers:
     dependencies:
       '@ably-ai-demos/frontend':
         specifier: file:../../../shared-frontend
-        version: file:../../../shared-frontend(@ably/ai-transport@+)(ably@2.23.0(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(ai@6.0.185(zod@4.4.3))(radix-ui@1.6.1(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+        version: file:../../../shared-frontend(@ably/ai-transport@+)(ably@2.23.0(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(ai@6.0.185(zod@4.4.3))(next-themes@0.4.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(radix-ui@1.6.1(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@ably/ai-transport':
         specifier: link:../../../..
         version: link:../../../..
@@ -234,6 +234,9 @@ importers:
       next:
         specifier: ^16
         version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      next-themes:
+        specifier: ^0.4.6
+        version: 0.4.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       radix-ui:
         specifier: ^1.6.0
         version: 1.6.1(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
@@ -307,6 +310,7 @@ packages:
       '@ably/ai-transport': '*'
       ably: ^2
       ai: ^6
+      next-themes: ^0.4.6
       radix-ui: ^1.6.0
       react: ^18.0.0 || ^19.0.0
       react-dom: ^18.0.0 || ^19.0.0
@@ -4224,6 +4228,12 @@ packages:
     resolution: {integrity: sha512-8Ofs/AUQh8MaEcrlq5xOX0CQ9ypTF5dl78mjlMNfOK08fzpgTHQRQPBxcPlEtIw0yRpws+Zo/3r+5WRby7u3Gg==}
     engines: {node: '>= 0.6'}
 
+  next-themes@0.4.6:
+    resolution: {integrity: sha512-pZvgD5L0IEvX5/9GWyHMf3m8BKiVQwsCMHfoFosXtXBMnaS0ZnIJ9ST4b4NqLVKDEm8QBxoNNGNaBv2JNF6XNA==}
+    peerDependencies:
+      react: ^16.8 || ^17 || ^18 || ^19 || ^19.0.0-rc
+      react-dom: ^16.8 || ^17 || ^18 || ^19 || ^19.0.0-rc
+
   next@16.2.6:
     resolution: {integrity: sha512-qOVgKJg1+At15NpeUP+eJgCHvTCgXsogweq87Ri/Ix7PkqQHg4sdaXmSFqKlgaIXE4kW0g25LE68W87UANlHtw==}
     engines: {node: '>=20.9.0'}
@@ -5365,7 +5375,7 @@ packages:
 
 snapshots:
 
-  '@ably-ai-demos/frontend@file:../../../shared-frontend(@ably/ai-transport@+)(ably@2.23.0(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(ai@6.0.185(zod@4.4.3))(radix-ui@1.6.1(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)':
+  '@ably-ai-demos/frontend@file:../../../shared-frontend(@ably/ai-transport@+)(ably@2.23.0(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(ai@6.0.185(zod@4.4.3))(next-themes@0.4.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(radix-ui@1.6.1(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)':
     dependencies:
       '@ably/ai-transport': link:../../../..
       ably: 2.23.0(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
@@ -5373,6 +5383,7 @@ snapshots:
       class-variance-authority: 0.7.1
       clsx: 2.1.1
       lucide-react: 1.23.0(react@19.2.6)
+      next-themes: 0.4.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       radix-ui: 1.6.1(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       react: 19.2.6
       react-dom: 19.2.6(react@19.2.6)
@@ -6930,7 +6941,7 @@ snapshots:
 
   '@testing-library/dom@10.4.1':
     dependencies:
-      '@babel/code-frame': 7.29.0
+      '@babel/code-frame': 7.29.7
       '@babel/runtime': 7.29.2
       '@types/aria-query': 5.0.4
       aria-query: 5.3.0
@@ -9709,6 +9720,11 @@ snapshots:
   natural-compare@1.4.0: {}
 
   negotiator@1.0.0: {}
+
+  next-themes@0.4.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6):
+    dependencies:
+      react: 19.2.6
+      react-dom: 19.2.6(react@19.2.6)
 
   next@16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.60.0)(react-dom@19.2.6(react@19.2.6))(react@19.2.6):
     dependencies:

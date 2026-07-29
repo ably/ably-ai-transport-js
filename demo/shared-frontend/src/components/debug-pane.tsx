@@ -145,10 +145,10 @@ const callbackTypeColors: Record<string, string> = {
 // status falls back to the default badge colour.
 const statusColors: Record<string, string> = {
   // ClientSession session status.
-  idle: 'text-muted-foreground/80',
+  idle: 'text-muted-foreground',
   running: 'text-emerald-400',
   // Vercel useChat status.
-  ready: 'text-muted-foreground/80',
+  ready: 'text-muted-foreground',
   submitted: 'text-amber-400',
   streaming: 'text-emerald-400',
   error: 'text-destructive',
@@ -179,7 +179,7 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
             className="rounded-md border bg-card p-2 font-mono text-[11px]"
           >
             <div className="mb-1 flex flex-wrap items-center gap-1.5 text-muted-foreground/80">
-              <span className="text-muted-foreground/60">#{idx}</span>
+              <span className="text-muted-foreground/80">#{idx}</span>
               <span>{entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString() : ''}</span>
               <Badge
                 variant="secondary"
@@ -202,22 +202,22 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
                   key={tier}
                   className="mb-1 ml-2 flex flex-col gap-0.5"
                 >
-                  <div className="text-muted-foreground/50">extras.ai.{tier}</div>
+                  <div className="text-muted-foreground/70">extras.ai.{tier}</div>
                   {Object.entries(tierHeaders).map(([k, v]) => (
                     <div
                       key={k}
-                      className="ml-2 text-muted-foreground/60"
+                      className="ml-2 text-muted-foreground/80"
                     >
-                      <span className="text-muted-foreground/80">{k}</span>
+                      <span className="text-muted-foreground">{k}</span>
                       <span>: </span>
-                      <span className="text-muted-foreground">{v}</span>
+                      <span className="text-foreground">{v}</span>
                     </div>
                   ))}
                 </div>
               );
             })}
             {entry.data !== undefined && entry.data !== null && (
-              <div className="mt-1 break-all whitespace-pre-wrap text-muted-foreground/60">
+              <div className="mt-1 break-all whitespace-pre-wrap text-muted-foreground/80">
                 {typeof entry.data === 'string' ? entry.data : JSON.stringify(entry.data, null, 2)}
               </div>
             )}
@@ -254,7 +254,7 @@ function UIMessagesTab({ messages, status }: { messages: UIMessage[]; status: st
       {messages.length === 0 ? (
         <p className="mt-8 text-center text-xs text-muted-foreground">Messages will appear here as JSON.</p>
       ) : (
-        <pre className="font-mono text-[11px] leading-4 break-all whitespace-pre-wrap text-muted-foreground/80">
+        <pre className="font-mono text-[11px] leading-4 break-all whitespace-pre-wrap text-foreground">
           {JSON.stringify(messages, null, 2)}
         </pre>
       )}
@@ -307,8 +307,8 @@ function LifecycleTab({
               key={idx}
               className="flex items-center gap-1"
             >
-              {idx > 0 && <span className="text-muted-foreground/50">→</span>}
-              <span className={statusColors[entry.status] ?? 'text-muted-foreground/80'}>{entry.status}</span>
+              {idx > 0 && <span className="text-muted-foreground/70">→</span>}
+              <span className={statusColors[entry.status] ?? 'text-muted-foreground'}>{entry.status}</span>
             </span>
           ))}
         </div>
@@ -335,7 +335,7 @@ function LifecycleTab({
                 {entry.type}
               </Badge>
             </div>
-            <div className="break-all whitespace-pre-wrap text-indigo-300">{entry.summary}</div>
+            <div className="break-all whitespace-pre-wrap text-indigo-700 dark:text-indigo-300">{entry.summary}</div>
           </div>
         ))
       )}
@@ -366,12 +366,12 @@ function LifecycleTab({
                 {entry.status}
               </Badge>
             </div>
-            <div className="break-all text-muted-foreground/60">id: {entry.toolCallId}</div>
-            <div className="break-all whitespace-pre-wrap text-muted-foreground/80">
-              in: {JSON.stringify(entry.input)}
-            </div>
+            <div className="break-all text-muted-foreground">id: {entry.toolCallId}</div>
+            <div className="break-all whitespace-pre-wrap text-foreground">in: {JSON.stringify(entry.input)}</div>
             {entry.status === 'done' && (
-              <div className="break-all whitespace-pre-wrap text-indigo-300">out: {JSON.stringify(entry.output)}</div>
+              <div className="break-all whitespace-pre-wrap text-indigo-700 dark:text-indigo-300">
+                out: {JSON.stringify(entry.output)}
+              </div>
             )}
             {entry.status === 'error' && (
               <div className="break-all whitespace-pre-wrap text-destructive">err: {entry.error}</div>

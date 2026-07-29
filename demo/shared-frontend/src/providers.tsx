@@ -4,11 +4,32 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import * as Ably from 'ably';
 import { LiveObjects } from 'ably/liveobjects';
 import { AblyProvider } from 'ably/react';
+import { ThemeProvider as NextThemesProvider } from 'next-themes';
 import { createSessionHooks } from '@ably/ai-transport/react';
 import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
 import type * as AI from 'ai';
 
 export const SessionHooks = createSessionHooks<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>();
+
+/**
+ * Wraps the app in `next-themes` so the shared {@link ThemeToggle} can switch
+ * between System / Dark / Light. It toggles the `dark` class on `<html>`, so
+ * mount it in the root layout (highest in the tree, to set the class before
+ * first paint) and give `<html>` `suppressHydrationWarning`. `system` follows
+ * the OS preference and is the default.
+ */
+export function ThemeProvider({ children }: { children: ReactNode }) {
+  return (
+    <NextThemesProvider
+      attribute="class"
+      defaultTheme="system"
+      enableSystem
+      disableTransitionOnChange
+    >
+      {children}
+    </NextThemesProvider>
+  );
+}
 
 const AblyReadyContext = createContext(false);
 

@@ -37,7 +37,7 @@
 import * as Ably from 'ably';
 import { convertToModelMessages, stepCountIs, streamText } from 'ai';
 import { RetryableError } from 'workflow';
-import { ErrorCode, type InvocationData } from '@ably/ai-transport';
+import { ErrorCode, type InvocationData, type RunIdentity } from '@ably/ai-transport';
 import {
   approvedPendingToolCalls,
   pendingToolCalls,
@@ -52,16 +52,6 @@ import type { FaultMode } from '../lib/fault';
 import { withActivity, type WdkAgentRun, type WdkAgentSession } from './activity-runtime';
 
 const SYSTEM_PROMPT = 'You are a helpful assistant running inside a durable Vercel Workflow. Keep replies concise.';
-
-/** The run identity the open activity mints and threads to every later activity of the turn. */
-export interface TurnIds {
-  /** The run's id — the durable key later activities `adoptRun` by. */
-  runId: string;
-  /** This turn's invocation id, stamped on every event the turn publishes. */
-  invocationId: string;
-  /** The event id of the run's triggering input — how an adopting activity locates the run in history. */
-  triggerEventId: string;
-}
 
 /** One server tool call the inference surfaced for the workflow to dispatch. */
 export interface ToolCallInfo {
@@ -106,11 +96,15 @@ export type InferenceOutcome =
  * @param invocationData - The invocation pointer the client POSTed.
  * @param workflowRunId - The WDK workflow run id (stable across replays).
  */
-export async function openActivity(invocationData: InvocationData, workflowRunId: string): Promise<TurnIds> {
+export async function openActivity(invocationData: InvocationData, workflowRunId: string): Promise<RunIdentity> {
   'use step';
   return withActivity(invocationData, workflowRunId, 'open', async ({ session, invocation, reportAitRun }) => {
-    const invocationId = `inv:${workflowRunId}`;
-    const run = session.createRun(invocation, { runId: `run:${workflowRunId}`, invocationId });
+    // Both ids are pinned to the replay-stable workflow run id, so a retry of this
+    // activity re-enters the same run under the same invocation.
+    const run = session.createRun(invocation, {
+      runId: `run:${workflowRunId}`,
+      invocationId: `inv:${workflowRunId}`,
+    });
 
     // Cold start: the trigger was published before this fresh process attached,
     // so drain history to fold it in; `start()` then reads its headers to open
@@ -119,7 +113,7 @@ export async function openActivity(invocationData: InvocationData, workflowRunId
     await run.start();
 
     reportAitRun(run.runId);
-    return { runId: run.runId, invocationId, triggerEventId: invocation.inputEventId };
+    return { runId: run.runId, invocationId: run.invocationId };
   });
 }
 
@@ -142,7 +136,7 @@ export async function openActivity(invocationData: InvocationData, workflowRunId
  */
 export async function inferenceActivity(
   invocationData: InvocationData,
-  ids: TurnIds,
+  ids: RunIdentity,
   workflowRunId: string,
   fault?: FaultMode,
 ): Promise<InferenceOutcome> {
@@ -151,9 +145,9 @@ export async function inferenceActivity(
     invocationData,
     workflowRunId,
     'inference',
-    async ({ session, stepId, attempt, reportAitRun }) => {
+    async ({ session, invocation, stepId, attempt, reportAitRun }) => {
       reportAitRun(ids.runId);
-      const run = session.adoptRun(ids);
+      const run = session.adoptRun(invocation, ids);
       await run.load({ timeoutMs: 15_000 });
       while (run.view.hasOlder()) await run.view.loadOlder();
 
@@ -180,14 +174,14 @@ export async function inferenceActivity(
  */
 export async function toolActivity(
   invocationData: InvocationData,
-  ids: TurnIds,
+  ids: RunIdentity,
   workflowRunId: string,
   toolCall: ToolCallInfo,
 ): Promise<void> {
   'use step';
-  await withActivity(invocationData, workflowRunId, 'tool', async ({ session, stepId, reportAitRun }) => {
+  await withActivity(invocationData, workflowRunId, 'tool', async ({ session, invocation, stepId, reportAitRun }) => {
     reportAitRun(ids.runId);
-    const run = session.adoptRun(ids);
+    const run = session.adoptRun(invocation, ids);
     await run.load({ timeoutMs: 15_000 });
 
     const step = run.createStep({ stepId });
@@ -211,14 +205,14 @@ export async function toolActivity(
  */
 export async function cleanupActivity(
   invocationData: InvocationData,
-  ids: TurnIds,
+  ids: RunIdentity,
   workflowRunId: string,
   errorMessage: string,
 ): Promise<void> {
   'use step';
-  await withActivity(invocationData, workflowRunId, 'cleanup', async ({ session, reportAitRun }) => {
+  await withActivity(invocationData, workflowRunId, 'cleanup', async ({ session, invocation, reportAitRun }) => {
     reportAitRun(ids.runId);
-    const run = session.adoptRun(ids);
+    const run = session.adoptRun(invocation, ids);
     try {
       await run.load({ timeoutMs: 15_000 });
     } catch {

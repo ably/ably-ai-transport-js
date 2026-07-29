@@ -21,22 +21,22 @@ npm install @ably/ai-transport ably @temporalio/activity @temporalio/worker @tem
 publish to the same run (suspend + continuation) without their step-1s
 colliding.
 
-For the `invocationId` you pass to `session.adoptRun({ invocationId })`,
+For the `invocationId` you pass in `session.adoptRun`'s `RunIdentity`,
 use the same invocation id the workflow was started with (returned to the
 HTTP caller and threaded through the workflow input as `input.ids.invocationId`).
 Every activity in that HTTP invocation stamps the same invocation-id on its
 events, matching the value the caller received.
 
 ```ts
+import { Invocation } from '@ably/ai-transport';
 import { stepIdFor } from '@ably/ai-transport/temporal';
 
 export async function myInferenceStep(input) {
   const session = createAgentSession({ client: ably, channelName, codec });
   await session.connect();
-  const run = session.adoptRun({
+  const run = session.adoptRun(Invocation.fromJSON(input.invocation), {
     runId: input.ids.runId,
     invocationId: input.ids.invocationId, // the HTTP invocation's id — shared by every activity
-    triggerEventId: input.ids.triggerEventId,
   });
   await run.load();
   const step = run.createStep({

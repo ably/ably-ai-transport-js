@@ -109,11 +109,16 @@ export interface SendOptions {
    */
   parent?: string;
   /**
-   * Reuse an existing `runId` (e.g. resume a suspended run). When set,
-   * the send is treated as a continuation: the run's existing observer
-   * state (router stream, tree run-tracking) is reused; no fresh
-   * `crypto.randomUUID()` is minted. Each continuation POST is woken by the
-   * agent, which mints a distinct `invocationId` per HTTP request.
+   * The run-id of an existing run this send continues (e.g. resolving a
+   * suspended run's tool call). The client stamps it on the published input's
+   * `run-id` transport header, which is what marks the invocation as a
+   * continuation: the Tree folds the input into that reply run rather than
+   * opening a new client-owned input node, and the returned handle's
+   * `cancel()` carries the run-id so the agent can match the run directly.
+   *
+   * Omit it for a fresh send. The agent mints the run-id and echoes it on
+   * `ai-run-start` — the client mints no run-id either way. The agent also
+   * mints a distinct `invocationId` per continuation POST.
    */
   runId?: string;
 }

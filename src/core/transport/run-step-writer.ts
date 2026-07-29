@@ -30,7 +30,7 @@ import type { DefaultTree } from './tree.js';
 import type {
   PipeSource,
   RunEndReason,
-  RunRuntime,
+  RunHooks,
   RunStep,
   StepEndParams,
   StepEndReason,
@@ -119,8 +119,8 @@ export interface RunStepWriterContext<
   runManager: RunManager;
   /** Live accessor for the session Tree (re-created on continuity loss), used to seed optimistic step lifecycle. */
   getTree: () => DefaultTree<TInput, TOutput, TProjection>;
-  /** The run's runtime callbacks — `onAblyMessage` (per published message), `onCancelled` (final write on cancel), `onError`. */
-  runtime: RunRuntime<TOutput>;
+  /** The run's callbacks — `onAblyMessage` (per published message), `onCancelled` (final write on cancel), `onError`. */
+  hooks: RunHooks<TOutput>;
   /** The run's composite abort signal (internal controller composed with any external signal). */
   signal: AbortSignal;
   /** The run's logger, if any. */
@@ -181,7 +181,7 @@ export const createRunStepWriter = <
   ctx: RunStepWriterContext<TInput, TOutput, TProjection, TMessage>,
 ): RunStepWriter<TOutput> => {
   const { codec, channel, runManager, getTree, signal, logger, invocationId } = ctx;
-  const { onAblyMessage: runOnAblyMessage, onCancelled, onError: runOnError } = ctx.runtime;
+  const { onAblyMessage: runOnAblyMessage, onCancelled, onError: runOnError } = ctx.hooks;
 
   // Per-run step bookkeeping for default `stepId` resolution (see step()):
   // a monotonic index for fresh steps, plus the previous step's id and

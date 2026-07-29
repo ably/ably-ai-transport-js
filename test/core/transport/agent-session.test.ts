@@ -55,7 +55,7 @@ import type { RunManager } from '../../../src/core/transport/run-manager.js';
 import * as runManagerModule from '../../../src/core/transport/run-manager.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
-import type { AgentSession, ClientRun } from '../../../src/core/transport/types.js';
+import type { AgentSession, ClientRun, RunIdentity } from '../../../src/core/transport/types.js';
 import type { SendDelegate } from '../../../src/core/transport/view.js';
 import { createClientView } from '../../../src/core/transport/view.js';
 import { ErrorCode } from '../../../src/errors.js';
@@ -499,6 +499,12 @@ const lookupSession = (): {
 // Tests
 // ---------------------------------------------------------------------------
 
+/**
+ * An invocation with no trigger event, so a run's `located` settles at once.
+ * @returns The trigger-less invocation.
+ */
+const noTrigger = (): Invocation => Invocation.fromJSON({ inputEventId: '', sessionName: 'test' });
+
 describe('AgentSession', () => {
   let channel: MockChannel & Ably.RealtimeChannel;
   let codec: MockCodec;
@@ -716,6 +722,70 @@ describe('AgentSession', () => {
   // -------------------------------------------------------------------------
   // run lifecycle
   // -------------------------------------------------------------------------
+
+  // -------------------------------------------------------------------------
+  // run identity
+  // -------------------------------------------------------------------------
+
+  describe('run identity', () => {
+    it('mints both ids when no identity is supplied', () => {
+      const run = session.createRun(noTrigger());
+
+      expect(run.runId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(run.invocationId).toMatch(/^[0-9a-f-]{36}$/);
+    });
+
+    it('pins both ids when a full identity is supplied', () => {
+      const run = session.createRun(noTrigger(), { runId: 'run-pinned', invocationId: 'inv-pinned' });
+
+      expect(run.runId).toBe('run-pinned');
+      expect(run.invocationId).toBe('inv-pinned');
+    });
+
+    it('mints only the absent field of a partial identity', () => {
+      const runIdOnly = session.createRun(noTrigger(), { runId: 'run-only' });
+      expect(runIdOnly.runId).toBe('run-only');
+      expect(runIdOnly.invocationId).toMatch(/^[0-9a-f-]{36}$/);
+
+      const invocationIdOnly = session.createRun(noTrigger(), { invocationId: 'inv-only' });
+      expect(invocationIdOnly.invocationId).toBe('inv-only');
+      expect(invocationIdOnly.runId).toMatch(/^[0-9a-f-]{36}$/);
+    });
+
+    // Optionality is expressed by absence, so an empty string is a caller
+    // mistake rather than a request to mint — accepting it would key the run
+    // under an unusable id.
+    it.each(['runId', 'invocationId'] as const)('rejects an empty %s on createRun', (field) => {
+      expect(() => session.createRun(noTrigger(), { [field]: '' })).toThrowErrorInfo({
+        code: ErrorCode.InvalidArgument,
+        message: `unable to create run; ${field} must not be empty (omit it to have one generated)`,
+      });
+    });
+
+    it.each(['runId', 'invocationId'] as const)('rejects an empty %s on adoptRun', (field) => {
+      const identity = { runId: 'run-a', invocationId: 'inv-a', [field]: '' };
+      // The message names the operation the caller invoked, not `create run`.
+      expect(() => session.adoptRun(noTrigger(), identity)).toThrowErrorInfo({
+        code: ErrorCode.InvalidArgument,
+        message: `unable to adopt run; ${field} must not be empty (omit it to have one generated)`,
+      });
+    });
+
+    it('takes hooks separately from identity, so both apply to the same run', async () => {
+      const seen: string[] = [];
+      const run = session.createRun(
+        noTrigger(),
+        { runId: 'run-split', invocationId: 'inv-split' },
+        { onAblyMessage: (message) => seen.push(message.name ?? '') },
+      );
+      await run.start();
+      await run.pipe(streamOf({ type: 'text', text: 'hello' }));
+
+      expect(run.runId).toBe('run-split');
+      expect(run.invocationId).toBe('inv-split');
+      expect(seen).toContain('ai-output');
+    });
+  });
 
   describe('run lifecycle', () => {
     it('start() publishes run-start with run headers', async () => {
@@ -2895,10 +2965,10 @@ describe('AgentSession', () => {
       const inputEventId = 'p-cont-early';
       const inputCodecMessageId = 'm-cont-early';
       const continuationRunId = 'run-cont-existing';
-      // Build the run directly with no `runtime.runId` so the agent mints a
+      // Build the run directly with no `identity.runId` so the agent mints a
       // provisional run-id — mirroring production, where it differs from the
       // existing run-id a continuation re-enters. (createRunFromOpts would pin
-      // runtime.runId to the same value, collapsing the distinction.)
+      // identity.runId to the same value, collapsing the distinction.)
       const run = s.createRun(Invocation.fromJSON({ inputEventId, sessionName: 'test' }), {
         invocationId: 'inv-cont-early',
       });
@@ -4677,14 +4747,15 @@ describe('agent run.view (shared read base)', () => {
 // adoptRun / load() — fresh-process run adoption
 //
 // A durable workflow runs each activity (open / step / end / cancel-cleanup) in
-// a FRESH process. `adoptRun(identity).load()` adopts an already-open run for
-// publishing in such a process WITHOUT republishing the opening event: it waits
-// for the run's `ai-run-start` to hydrate off the channel (so `startSerial` is
-// confirmed), status-gates (active adopt / suspended + terminal reject), seeds
-// the owner from the hydrated run-start, and opens.
+// a FRESH process. `adoptRun(invocation, identity).load()` adopts an
+// already-open run for publishing in such a process WITHOUT republishing the
+// opening event: it waits for the run's `ai-run-start` to hydrate off the
+// channel (so `startSerial` is confirmed), status-gates (active adopt /
+// suspended + terminal reject), seeds the owner from the hydrated run-start,
+// and opens.
 //
 // These unit tests isolate load()'s visibility-wait + status-gate + owner-seed
-// by adopting with an EMPTY triggerEventId (so `run.located` resolves
+// by adopting against an EMPTY trigger `inputEventId` (so `run.located` resolves
 // immediately — nothing to locate); the trigger-resolution path is exercised
 // end-to-end by the cross-process integration matrix.
 // ---------------------------------------------------------------------------
@@ -4793,18 +4864,26 @@ const adoptSession = (): {
 };
 
 /**
- * The adopt identity for a run. `triggerEventId` is EMPTY so `run.located`
- * resolves immediately (these tests isolate the visibility-wait + status-gate +
- * owner-seed, not trigger resolution). `invocationId` is distinct (a cleanup
+ * The identity of a run to adopt. `invocationId` is distinct (a cleanup
  * activity's id) so the terminal stamp can be asserted.
  * @param runId - The run to adopt.
- * @returns The adopt identity.
+ * @returns The run's identity.
  */
-const identityFor = (runId: string): { runId: string; invocationId: string; triggerEventId: string } => ({
+const identityFor = (runId: string): RunIdentity => ({
   runId,
   invocationId: `${runId}-icancel`,
-  triggerEventId: '',
 });
+
+/**
+ * The invocation an adopting activity resolves the run's anchors against.
+ * Defaults to an EMPTY `inputEventId` so `run.located` resolves immediately
+ * (these tests isolate the visibility-wait + status-gate + owner-seed, not
+ * trigger resolution).
+ * @param inputEventId - The trigger event to locate, if any.
+ * @returns The invocation to adopt with.
+ */
+const adoptTrigger = (inputEventId = ''): Invocation =>
+  Invocation.fromJSON({ inputEventId, sessionName: 'adopt-test' });
 
 /**
  * Assert a promise rejects with an `Ably.ErrorInfo` of the given code whose
@@ -4832,7 +4911,7 @@ describe('adoptRun / load()', () => {
     // A foreign process already opened run-1 (run-start on the channel).
     deliverRunStart(ch, 'run-1', { serial: 's-start-1', runClientId: 'owner-x' });
 
-    const run = session.adoptRun(identityFor('run-1'));
+    const run = session.adoptRun(adoptTrigger(), identityFor('run-1'));
     await run.load();
 
     // load() published nothing — adopt never re-opens the run.
@@ -4861,7 +4940,7 @@ describe('adoptRun / load()', () => {
     deliverRunStart(ch, 'run-s', { serial: 's-start-s' });
     deliverRunTerminal(ch, EVENT_RUN_SUSPEND, 'run-s', { serial: 's-suspend-s' });
 
-    const run = session.adoptRun(identityFor('run-s'));
+    const run = session.adoptRun(adoptTrigger(), identityFor('run-s'));
     await expectRejectsWithMessage(run.load(), ErrorCode.InvalidArgument, 'suspended');
 
     await session.detach();
@@ -4873,7 +4952,7 @@ describe('adoptRun / load()', () => {
     deliverRunStart(ch, 'run-t', { serial: 's-start-t' });
     deliverRunTerminal(ch, EVENT_RUN_END, 'run-t', { serial: 's-end-t', reason: 'complete' });
 
-    const run = session.adoptRun(identityFor('run-t'));
+    const run = session.adoptRun(adoptTrigger(), identityFor('run-t'));
     await expectRejectsWithMessage(run.load(), ErrorCode.InvalidArgument, 'terminal');
 
     await session.detach();
@@ -4884,7 +4963,7 @@ describe('adoptRun / load()', () => {
     await session.connect();
 
     // The run-start has NOT arrived yet — load() must wait for it.
-    const run = session.adoptRun(identityFor('run-late'));
+    const run = session.adoptRun(adoptTrigger(), identityFor('run-late'));
     const loadPromise = run.load({ timeoutMs: 5000 });
 
     // The foreign run-start folds in after load() began waiting.
@@ -4908,7 +4987,7 @@ describe('adoptRun / load()', () => {
     const { session, ch } = adoptSession();
     await session.connect();
 
-    const run = session.adoptRun(identityFor('run-missing'));
+    const run = session.adoptRun(adoptTrigger(), identityFor('run-missing'));
     const loadPromise = run.load({ timeoutMs: 1000 });
     // Attach the rejection expectation before advancing the timer so the
     // rejection is never momentarily unhandled.
@@ -4939,7 +5018,7 @@ describe('adoptRun / load()', () => {
     });
     await session.connect();
 
-    const run = session.adoptRun(identityFor('run-cause'));
+    const run = session.adoptRun(adoptTrigger(), identityFor('run-cause'));
     const loadPromise = run.load({ timeoutMs: 1000 });
     const expectation = expect(loadPromise).rejects.toBeErrorInfo({
       code: ErrorCode.InputEventNotFound,
@@ -4957,7 +5036,7 @@ describe('adoptRun / load()', () => {
     await session.connect();
     deliverRunStart(ch, 'run-step', { serial: 's-start-step', runClientId: 'owner-step' });
 
-    const run = session.adoptRun(identityFor('run-step'));
+    const run = session.adoptRun(adoptTrigger(), identityFor('run-step'));
     await run.load();
 
     // createStep() brackets output; pipe() inside the step publishes assistant
@@ -4994,7 +5073,7 @@ describe('adoptRun / load()', () => {
       stepClientId: 'user-prior',
     });
 
-    const run = session.adoptRun(identityFor('run-xproc'));
+    const run = session.adoptRun(adoptTrigger(), identityFor('run-xproc'));
     await run.load();
 
     // A NEW step with no explicit client and no fresh input: stickiness is
@@ -5027,14 +5106,14 @@ describe('adoptRun / load()', () => {
 
     const controller = new AbortController();
     controller.abort();
-    const run = session.adoptRun(identityFor('run-cx'), { signal: controller.signal });
+    const run = session.adoptRun(adoptTrigger(), identityFor('run-cx'), { signal: controller.signal });
     await expect(run.load()).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
 
     await session.detach();
   });
 
   it('pages history for a trigger older than a live run-start, without caller pre-paging', async () => {
-    // The page-split hazard: with a real triggerEventId, the trigger (`ai-input`)
+    // The page-split hazard: with a real trigger event, the trigger (`ai-input`)
     // is OLDER than the run-start. Here the run-start arrives LIVE (so its
     // startSerial is confirmed immediately) but the trigger sits only in channel
     // history. The input-event watcher is passive, so load() must drive the
@@ -5069,11 +5148,10 @@ describe('adoptRun / load()', () => {
     });
     await session.connect();
 
-    // A NON-empty triggerEventId — the trigger must be located off the channel.
-    const run = session.adoptRun({
+    // A NON-empty trigger inputEventId — the trigger must be located off the channel.
+    const run = session.adoptRun(adoptTrigger('trigger-hist'), {
       runId: 'run-hist',
       invocationId: 'run-hist-icancel',
-      triggerEventId: 'trigger-hist',
     });
     // The run-start folds LIVE (startSerial confirmed at once); only the trigger
     // requires paging.
@@ -5159,7 +5237,7 @@ describe('opening latch (concurrent re-entrancy)', () => {
     await session.connect();
     deliverRunStart(ch, 'run-conc-load', { serial: 's-start-conc', runClientId: 'owner-conc' });
 
-    const run = session.adoptRun(identityFor('run-conc-load'));
+    const run = session.adoptRun(adoptTrigger(), identityFor('run-conc-load'));
     const a = run.load();
     const b = run.load();
     await Promise.all([a, b]);
@@ -5191,7 +5269,7 @@ describe('opening latch (concurrent re-entrancy)', () => {
     await session.connect();
     deliverRunStart(ch, 'run-idem', { serial: 's-start-idem', runClientId: 'owner-idem' });
 
-    const run = session.adoptRun(identityFor('run-idem'));
+    const run = session.adoptRun(adoptTrigger(), identityFor('run-idem'));
     await run.load();
     await run.load();
 

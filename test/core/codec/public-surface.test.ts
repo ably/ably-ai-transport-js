@@ -2,7 +2,6 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import type {
   AdoptedRun,
-  AdoptIdentity,
   BatchSpec,
   CodecEvent,
   DataCodec,
@@ -16,6 +15,7 @@ import type {
   OutputDescriptor,
   OutputEventSpec,
   OutputStreamSpec,
+  RunIdentity,
   RunStep,
   StepEndParams,
   StepEndReason,
@@ -82,15 +82,16 @@ describe('public codec-authoring surface', () => {
   });
 
   // The run-adoption surface (durable cross-process execution) is public too:
-  // adoptRun returns an AdoptedRun, createRun an OpenableRun, and adoptRun takes
-  // an AdoptIdentity. All must be importable from the entry point, like the step
-  // vocabulary above.
+  // adoptRun returns an AdoptedRun, createRun an OpenableRun, and both take a
+  // RunIdentity. All must be importable from the entry point, like the step
+  // vocabulary above — an orchestration threading a run's identity across
+  // processes must never have to redeclare the shape.
   it('exports the run-adoption types', () => {
     interface Output {
       type: 'note';
       text: string;
     }
-    expectTypeOf<AdoptIdentity>().not.toBeNever();
+    expectTypeOf<RunIdentity>().toEqualTypeOf<{ runId: string; invocationId: string }>();
     expectTypeOf<AdoptedRun<Output, unknown, unknown>>().not.toBeNever();
     expectTypeOf<OpenableRun<Output, unknown, unknown>>().not.toBeNever();
   });

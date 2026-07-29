@@ -54,7 +54,7 @@ Pass `reason` to `end()` so all clients see why the run ended. To give clients s
 A fresh process continues an already-open run by adopting it rather than re-opening it:
 
 ```ts
-const run = session.adoptRun({ runId, invocationId, triggerEventId });
+const run = session.adoptRun(invocation, { runId, invocationId });
 await run.load(); // resolves the run's context off the channel; publishes no opening event
 const step = run.createStep({ stepId }); // a stable stepId makes a retry supersede, not append
 await step.start();
@@ -62,7 +62,9 @@ await step.pipe(stream);
 await step.end();
 ```
 
-`adoptRun(identity)` returns an `AdoptedRun` whose `load()` waits for the run's `ai-run-start` to be observed on the channel, adopts the run for publishing **without** republishing an opening event, and seeds the run owner so this process's output and terminal stamp the real `run-client-id`. The `AdoptIdentity.runId` you pass to `adoptRun(identity)` is the existing run's id (authoritative — the adopt path ignores `RunRuntime.runId` and never re-keys from the trigger). A stable `StepOptions.stepId` makes a step retry supersede the dead attempt's output instead of appending it — a re-emitted `ai-step-start` under the same `stepId` carries a later channel serial, so the latest-serial attempt is canonical (no developer-supplied attempt id is needed). There is no durable flag: the durable behaviour is a usage pattern. At teardown an in-flight activity hands the still-open run off with `session.detach()` (detach only, no terminal), and a separate cleanup activity publishes the terminal with an explicit `run.end({ reason: 'cancelled' })`. See [Agent session: durable cross-process execution](../internals/agent-session.md#durable-cross-process-execution).
+Both entry points take the same identity model: `createRun(invocation, identity?, hooks?)` mints whichever `RunIdentity` field you leave out, and `adoptRun(invocation, identity, hooks?)` requires both. So an orchestration that opens a run in one process and adopts it in another threads one `RunIdentity` — there is no separate shape to assemble by hand. The `invocation` names the event whose headers resolve the run's write anchors: the turn's own `ai-input` for a step / end / suspend, or the `ai-cancel` event for a cancel cleanup.
+
+`adoptRun()` returns an `AdoptedRun` whose `load()` waits for the run's `ai-run-start` to be observed on the channel, adopts the run for publishing **without** republishing an opening event, and seeds the run owner so this process's output and terminal stamp the real `run-client-id`. The `runId` you pass is the existing run's id and is authoritative — the adopt path never re-keys from the trigger, unlike `createRun().start()`, where a continuation's trigger supplies the run id. A stable `StepOptions.stepId` makes a step retry supersede the dead attempt's output instead of appending it — a re-emitted `ai-step-start` under the same `stepId` carries a later channel serial, so the latest-serial attempt is canonical (no developer-supplied attempt id is needed). There is no durable flag: the durable behaviour is a usage pattern. At teardown an in-flight activity hands the still-open run off with `session.detach()` (detach only, no terminal), and a separate cleanup activity publishes the terminal with an explicit `run.end({ reason: 'cancelled' })`. See [Agent session: durable cross-process execution](../internals/agent-session.md#durable-cross-process-execution).
 
 ### Client side
 

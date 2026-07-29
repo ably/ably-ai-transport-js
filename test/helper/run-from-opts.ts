@@ -1,8 +1,8 @@
 /**
  * Test helper that creates an {@link OpenableRun} from a flat options object,
  * keeping test bodies terse. Wraps the
- * `session.createRun(invocation, runtime)` API behind a single-argument
- * shape that captures both invocation identity and per-request runtime.
+ * `session.createRun(invocation, identity, hooks)` API behind a single-argument
+ * shape that captures the trigger, the run's identity, and its hooks.
  */
 
 import type * as Ably from 'ably';
@@ -34,7 +34,7 @@ interface RunOpts<TOutput extends CodecOutputEvent> {
  * an input event with that publisher `clientId` on the wire (e.g. via
  * `deliverInputEvent({ publisherClientId })`).
  * @param session - The agent session to create the run on.
- * @param opts - Run identity (runId, invocationId, inputEventIds) plus runtime hooks.
+ * @param opts - Run identity (runId, invocationId, inputEventIds) plus run hooks.
  * @returns The created OpenableRun.
  */
 export const createRunFromOpts = <TOutput extends CodecOutputEvent, TProjection, TMessage>(
@@ -45,18 +45,20 @@ export const createRunFromOpts = <TOutput extends CodecOutputEvent, TProjection,
     inputEventId: opts.inputEventId ?? '',
     sessionName: 'test',
   });
-  // The invocation body no longer carries a run-id. The agent mints a fresh
-  // run-id (or reads a continuation's off the channel); tests pin both the
-  // fresh run-id and the invocation-id deterministically via the runtime
-  // overrides. A continuation test additionally delivers an input event
-  // stamped with the wire run-id, which the agent adopts over runtime.runId.
-  return session.createRun(invocation, {
-    runId: opts.runId,
-    invocationId: opts.invocationId ?? `${opts.runId}-inv`,
-    signal: opts.signal,
-    onAblyMessage: opts.onAblyMessage,
-    onCancelled: opts.onCancelled,
-    onCancel: opts.onCancel,
-    onError: opts.onError,
-  });
+  // The invocation body carries no run-id. The agent mints a fresh run-id (or
+  // reads a continuation's off the channel); tests pin both the fresh run-id and
+  // the invocation-id deterministically through the identity argument. A
+  // continuation test additionally delivers an input event stamped with the wire
+  // run-id, which the agent adopts over the pinned identity.runId.
+  return session.createRun(
+    invocation,
+    { runId: opts.runId, invocationId: opts.invocationId ?? `${opts.runId}-inv` },
+    {
+      signal: opts.signal,
+      onAblyMessage: opts.onAblyMessage,
+      onCancelled: opts.onCancelled,
+      onCancel: opts.onCancel,
+      onError: opts.onError,
+    },
+  );
 };

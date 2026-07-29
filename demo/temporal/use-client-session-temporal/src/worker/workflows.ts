@@ -29,7 +29,9 @@
 
 import { proxyActivities } from '@temporalio/workflow';
 
-import type { ChatWorkflowInput, RunIds } from './shared.js';
+import type { RunIdentity } from '@ably/ai-transport';
+
+import type { ChatWorkflowInput } from './shared.js';
 import type * as activities from './activities.js';
 
 // Step activities: bounded retries so failures propagate to the workflow's
@@ -54,7 +56,7 @@ const { cleanupRun } = proxyActivities<typeof activities>({
 });
 
 export async function chatWorkflow(input: ChatWorkflowInput): Promise<void> {
-  let ids: RunIds | undefined;
+  let ids: RunIdentity | undefined;
   try {
     // openRun creates + starts the run (publishes ai-run-start / ai-run-resume)
     // without running inference, and returns the run's ids. The run id is now
@@ -100,7 +102,7 @@ export async function chatWorkflow(input: ChatWorkflowInput): Promise<void> {
       try {
         await cleanupRun({
           ids,
-          channelName: input.invocation.sessionName,
+          invocation: input.invocation,
           errorMessage: err instanceof Error ? err.message : 'workflow failed',
         });
       } catch {

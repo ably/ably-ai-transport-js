@@ -110,7 +110,7 @@ export interface StepOptions {
    * in-memory step history to reuse. Use the framework's own stable step
    * identity: a Vercel Workflow DevKit `getStepMetadata().stepId` (stable
    * across retries) or a Temporal activity id, and supply a matching stable
-   * {@link RunRuntime.runId} so the retry re-attempts the same run. **Omit it
+   * {@link RunIdentity.runId} so the retry re-attempts the same run. **Omit it
    * on a cross-process retry and the SDK mints a fresh id, so the retry's
    * output is appended beside the failed attempt's instead of superseding it —
    * a silent double-output.**
@@ -158,36 +158,40 @@ export interface StreamResult {
   error?: Error;
 }
 
-/** Per-run runtime hooks, signal, and overrides supplied at `createRun()` time. */
-export interface RunRuntime<TOutput extends CodecOutputEvent> {
+/**
+ * A run's identity — which run this is, and which invocation of it is
+ * publishing.
+ *
+ * Both fields are plain data, so an orchestration that opens a run in one
+ * process can thread its identity to another that adopts it; the run object
+ * itself does not cross processes (its read-model is reconstructible from the
+ * channel). {@link AgentSession.createRun} takes the identity as
+ * `Partial<RunIdentity>` and mints whichever field is absent — the normal
+ * one-request path passes none. {@link AgentSession.adoptRun} requires both:
+ * an adopted run's identity is AUTHORITATIVE.
+ *
+ * Neither field accepts the empty string; pass no field, or omit the identity
+ * entirely, to have it minted.
+ */
+export interface RunIdentity {
   /**
-   * Override the invocation id for this run. When omitted, the agent mints a
-   * fresh `crypto.randomUUID()` — the normal path (one per HTTP request).
-   * Supply a non-empty fixed value for deterministic ids in tests or
-   * in-process drivers; the empty string is not a valid override (it is the
-   * "unset" sentinel and does not fall through to minting).
-   */
-  invocationId?: string;
-
-  /**
-   * Override the run id for a FRESH run. When omitted, the agent mints a fresh
-   * `crypto.randomUUID()` — the normal path. A continuation IGNORES this: its
-   * run id is read from the triggering input event's wire headers, since a
-   * continuation re-enters a run that already exists. Supply a non-empty fixed
-   * value for deterministic ids in tests or in-process drivers; the empty
-   * string is not a valid override (it is the "unset" sentinel and does not
-   * fall through to minting).
+   * The run's id — the conversation turn's identity, and the durable key an
+   * adopting process re-enters the run by.
    *
-   * Under durable execution, supply a stable value so a fresh-process retry of
-   * a FRESH run re-enters that run instead of minting a new UUID and opening a
-   * parallel one. This is independent of {@link StepOptions.stepId}: a run id
-   * is the conversation turn's identity, a step id is one re-attemptable unit
-   * within the turn. Both want a stable source on retry, but they are distinct
-   * ids — do not treat the framework's step id as a run id across turns, and
-   * note a continuation needs no override at all (its run id comes from the
-   * channel).
+   * On the {@link AgentSession.createRun} path this is a FRESH run's id, and a
+   * continuation overrides it with the run id read off the triggering input
+   * event's wire headers — a continuation re-enters a run that already exists,
+   * so it needs no supplied id at all. On the {@link AgentSession.adoptRun}
+   * path it is authoritative and the trigger's header never re-keys it.
    *
-   * A run's lifecycle CAN span several processes under this stable id. `start()`
+   * Supply a stable value under durable execution so a fresh-process retry of a
+   * FRESH run re-enters that run instead of minting a new UUID and opening a
+   * parallel one. This is independent of {@link StepOptions.stepId}: a run id is
+   * the turn's identity, a step id is one re-attemptable unit within the turn.
+   * Both want a stable source on retry, but they are distinct ids — do not treat
+   * the framework's step id as a run id across turns.
+   *
+   * A run's lifecycle CAN span several processes under one stable id. `start()`
    * opens the run in one activity (publishing `ai-run-start` ONCE); a fresh
    * process then continues it via {@link AgentSession.adoptRun} + `load()`, which
    * resolves the run's anchors from the channel and adopts it for publishing
@@ -199,8 +203,21 @@ export interface RunRuntime<TOutput extends CodecOutputEvent> {
    * adopts and re-emits its `ai-step-start` under the same {@link StepOptions.stepId}
    * to supersede the dead attempt; it does NOT re-open the run.)
    */
-  runId?: string;
+  runId: string;
 
+  /**
+   * The id of the invocation publishing for the run — one per HTTP request on
+   * the normal path, or one per activity of a durable turn, stamped on every
+   * event that process publishes for the run. Independent of the run's owner
+   * identity: an adopting activity stamps its own id, not the opener's.
+   */
+  invocationId: string;
+}
+
+/**
+ * Per-run callbacks and abort signal — how a run behaves.
+ */
+export interface RunHooks<TOutput extends CodecOutputEvent> {
   /**
    * An external AbortSignal (typically the HTTP request's `req.signal`) that,
    * when fired, cancels this run. This allows platform-level cancellation —
@@ -549,35 +566,6 @@ export interface AgentRun<TOutput extends CodecOutputEvent, TProjection, TMessag
 }
 
 /**
- * The identity of an existing run, passed to {@link AgentSession.adoptRun} so a
- * fresh process can resolve that run's write context off the channel and adopt
- * it for publishing. The three fields are plain data threaded across the process
- * boundary by the orchestration that opened the run — the run object itself does
- * not cross processes (its read-model is reconstructible from the channel).
- */
-export interface AdoptIdentity {
-  /**
-   * The existing run's id. Authoritative: unlike {@link OpenableRun.start}'s
-   * continuation path, {@link AdoptedRun.load} does NOT re-key the run from the
-   * trigger event's `run-id` header (for a delegation trigger that header names
-   * the PARENT run, not this one).
-   */
-  runId: string;
-  /**
-   * This activity's invocation id — e.g. the step/end activity's id, or a
-   * distinct cancel-cleanup id. Stamped on every event this process publishes
-   * for the run. Independent of the run's owner identity.
-   */
-  invocationId: string;
-  /**
-   * The id of the event whose headers resolve the run's write-time anchors (an
-   * `ai-input` for a normal turn). The same trigger every activity of an
-   * invocation resolves against — a step carries no input event of its own.
-   */
-  triggerEventId: string;
-}
-
-/**
  * A created run: the OPENING role. {@link OpenableRun.start} publishes the run's
  * opening lifecycle event (`ai-run-start`, or `ai-run-resume` for a continuation
  * whose trigger carries a run-id) and opens the run for publishing. Returned by
@@ -623,8 +611,9 @@ export interface AdoptedRun<TOutput extends CodecOutputEvent, TProjection, TMess
    * in this process, WITHOUT publishing an opening event. Awaits the run's
    * `ai-run-start` to be observed so its `startSerial` is confirmed on the Tree
    * (bounded by `timeoutMs`, paging channel history as needed); awaits
-   * {@link AgentRun.located} so the trigger ({@link AdoptIdentity.triggerEventId})
-   * resolves the run's anchors and pins {@link AgentRun.view}; then status-gates:
+   * {@link AgentRun.located} so the trigger (the adopted invocation's
+   * `inputEventId`) resolves the run's anchors and pins {@link AgentRun.view};
+   * then status-gates:
    * an `active` run is adopted; a `suspended` or terminal run is rejected.
    * Idempotent — a second call is a no-op.
    *
@@ -710,28 +699,45 @@ export interface AgentSession<TOutput extends CodecOutputEvent, TProjection, TMe
    * pre-scan of the Tree plus a listener for the trigger's arrival (it publishes
    * nothing to the channel until start()). The run is registered for cancel
    * routing immediately so that early cancels fire the AbortSignal.
-   * @param invocation - The {@link Invocation} carrying run identity and
-   *   conversation messages.
-   * @param runtime - Optional runtime hooks and external AbortSignal
+   * @param invocation - The {@link Invocation} pointing at the input event that
+   *   triggered this run.
+   * @param identity - Optional {@link RunIdentity} fields to pin; each absent
+   *   field is minted. Omit it entirely for the normal one-request path.
+   * @param hooks - Optional per-run callbacks and external AbortSignal
    *   (e.g. the HTTP request's `req.signal`).
+   * @throws {Ably.ErrorInfo} `InvalidArgument` when a supplied identity field is
+   *   the empty string.
    */
-  createRun(invocation: Invocation, runtime?: RunRuntime<TOutput>): OpenableRun<TOutput, TProjection, TMessage>;
+  createRun(
+    invocation: Invocation,
+    identity?: Partial<RunIdentity>,
+    hooks?: RunHooks<TOutput>,
+  ): OpenableRun<TOutput, TProjection, TMessage>;
 
   /**
-   * Adopt an existing run by its {@link AdoptIdentity} — the CONTINUE role for a
-   * step / end / cancel-cleanup activity running in a fresh process. Returns an
-   * {@link AdoptedRun} whose `load()` resolves the run's write context off the
-   * channel and adopts it WITHOUT publishing an opening event. Returns
-   * synchronously, and arms the run's input-event watcher for the trigger (it
-   * publishes nothing to the channel until load()). The run is registered for
-   * cancel routing immediately so that early cancels fire the AbortSignal.
-   * @param identity - The existing run's {@link AdoptIdentity} (runId,
-   *   invocationId, triggerEventId).
-   * @param runtime - Optional runtime hooks and external AbortSignal. The
-   *   `runtime.runId` / `runtime.invocationId` overrides do not apply — identity
-   *   comes from `identity`.
+   * Adopt an existing run — the CONTINUE role for a step / end / cancel-cleanup
+   * activity running in a fresh process. Returns an {@link AdoptedRun} whose
+   * `load()` resolves the run's write context off the channel and adopts it
+   * WITHOUT publishing an opening event. Returns synchronously, and arms the
+   * run's input-event watcher for the trigger (it publishes nothing to the
+   * channel until load()). The run is registered for cancel routing immediately
+   * so that early cancels fire the AbortSignal.
+   * @param invocation - The {@link Invocation} pointing at the event whose
+   *   headers resolve the run's write-time anchors — the same trigger every
+   *   activity of a turn resolves against, since a step carries no input event
+   *   of its own.
+   * @param identity - The existing run's {@link RunIdentity}. Authoritative:
+   *   both fields are required, and the trigger's `run-id` header never re-keys
+   *   the run (for a delegation trigger that header names the PARENT run).
+   * @param hooks - Optional per-run callbacks and external AbortSignal.
+   * @throws {Ably.ErrorInfo} `InvalidArgument` when an identity field is the
+   *   empty string.
    */
-  adoptRun(identity: AdoptIdentity, runtime?: RunRuntime<TOutput>): AdoptedRun<TOutput, TProjection, TMessage>;
+  adoptRun(
+    invocation: Invocation,
+    identity: RunIdentity,
+    hooks?: RunHooks<TOutput>,
+  ): AdoptedRun<TOutput, TProjection, TMessage>;
 
   /**
    * Subscribe to non-fatal session-level errors not scoped to any run —

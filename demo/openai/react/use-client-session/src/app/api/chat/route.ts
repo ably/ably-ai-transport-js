@@ -54,7 +54,9 @@ export async function POST(req: Request) {
 
   const session = createAgentSession({ client: ably, channelName: invocation.sessionName, codec: ResponsesCodec });
   await session.connect();
-  const run = session.createRun(invocation, { signal: req.signal });
+  // No identity is pinned: this run is not retried, so a generated run-id and
+  // invocation-id are correct.
+  const run = session.createRun(invocation, {}, { signal: req.signal });
 
   // Drain run.view — the one history driver — for the full multi-turn
   // conversation to feed the model, then start. toResponsesInput flattens it

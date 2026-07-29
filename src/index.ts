@@ -1,7 +1,6 @@
 // Core transport
 export type {
   AdoptedRun,
-  AdoptIdentity,
   AgentRun,
   AgentSession,
   AgentSessionOptions,
@@ -20,11 +19,12 @@ export type {
   PipeSource,
   RunEndParams,
   RunEndReason,
+  RunHooks,
+  RunIdentity,
   RunInfo,
   RunLifecycleEvent,
   RunNode,
   RunNodeState,
-  RunRuntime,
   RunStatus,
   RunStep,
   SendOptions,

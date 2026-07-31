@@ -43,22 +43,27 @@ export enum ErrorCode {
   EncoderRecoveryFailed = 104000,
 
   /**
-   * The session's channel subscription failed — the subscribe/attach step
-   * failed, or a session-level subscription callback threw unexpectedly.
+   * The session could not subscribe to and attach its channel during
+   * `connect()`. Nothing sends or receives until the attach succeeds; whether a
+   * retry helps depends on the `cause` (a transient disconnect clears, a
+   * capability or auth rejection does not).
    */
   SessionSubscriptionError = 104001,
 
   /**
-   * A run-scoped developer callback threw while the SDK invoked it — the
-   * `onCancel` hook processing a cancel message, or the `onSteer` hook
-   * notifying that a steering message folded into the run.
+   * The run's `onCancel` hook threw while the SDK was processing a cancel
+   * message. The SDK never reaches the abort, so the run is **not** cancelled.
    */
-  CancelListenerError = 104002,
+  RunCancelHandlerFailed = 104002,
 
   /**
-   * A publish within a run failed (lifecycle event, message, or event).
+   * A lifecycle event publish failed, at either tier: a run's `ai-run-start` /
+   * `ai-run-suspend` / `ai-run-end`, or a step's `ai-step-start` /
+   * `ai-step-end`. The event is not on the channel, so clients do not observe
+   * the run or step entering that phase. The underlying publish failure is the
+   * `cause`.
    */
-  RunLifecycleError = 104003,
+  RunLifecycleEventPublishFailed = 104003,
 
   /**
    * An operation was attempted on a session, view, or encoder that has already
@@ -96,6 +101,14 @@ export enum ErrorCode {
   StreamError = 104008,
 
   /**
+   * Processing an inbound channel message threw — the codec folding it into
+   * session state, or a session-level subscription callback. The subscription
+   * survives and the session keeps sending and receiving; only that one
+   * message's processing failed. The thrown value is the `cause`.
+   */
+  SessionMessageProcessingFailed = 104009,
+
+  /**
    * A fresh process adopting an open run via {@link AdoptedRun.load} waited for
    * that run's `ai-run-start` to be observed on the channel — across the live
    * subscription and the bounded history scan — but the `timeoutMs` bound lapsed
@@ -113,6 +126,20 @@ export enum ErrorCode {
    * `cause` where available.
    */
   HistoryFetchFailed = 104011,
+
+  /**
+   * The run's `onSteer` hook threw while the SDK was notifying it that a
+   * steering message folded into the run. The steering message has already
+   * folded in by then, so the run is unaffected — only the notification failed.
+   */
+  RunSteerHandlerFailed = 104012,
+
+  /**
+   * Routing an inbound cancel message to its target run failed. Not a fault in
+   * a developer-supplied hook: the dispatch itself could not complete, so the
+   * cancel was neither honoured nor rejected and the run keeps running.
+   */
+  RunCancelRoutingFailed = 104013,
 }
 
 /**

@@ -104,15 +104,17 @@ export const subscribeAndAttach = async (
 
 /**
  * Wrap a failure thrown while processing an inbound channel message as a
- * `SessionSubscriptionError`, preserving the original as `cause`. Single source
- * of truth for the message-processing error shape both sessions surface.
+ * `SessionMessageProcessingFailed`, preserving the original as `cause`. Single source
+ * of truth for the message-processing error shape both sessions surface. Kept
+ * distinct from the connect-time `SessionSubscriptionError`: the subscription
+ * survives this, so the session stays usable and the fix is in the handler.
  * @param error - The thrown value.
  * @returns The wrapped error.
  */
 export const wrapMessageProcessingError = (error: unknown): Ably.ErrorInfo =>
   new Ably.ErrorInfo(
     `unable to process channel message; ${errorMessage(error)}`,
-    ErrorCode.SessionSubscriptionError,
+    ErrorCode.SessionMessageProcessingFailed,
     500,
     errorCause(error),
   );

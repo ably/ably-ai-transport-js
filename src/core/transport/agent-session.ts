@@ -43,6 +43,7 @@ import { locateInputEvent } from './input-event-locator.js';
 import { evictOldestIfFull } from './internal/bounded-map.js';
 import type { Invocation } from './invocation.js';
 import { createLeafBranchSource } from './leaf-branch-source.js';
+import { publishLifecycleEvent } from './lifecycle-publish.js';
 import { createMaterialisation } from './materialisation.js';
 import type { RunManager } from './run-manager.js';
 import { createRunManager } from './run-manager.js';
@@ -403,7 +404,7 @@ class DefaultAgentSession<
           'error',
           new Ably.ErrorInfo(
             `unable to end run ${reg.runId} on session end; ${errorMessage(error)}`,
-            ErrorCode.RunLifecycleError,
+            ErrorCode.RunLifecycleEventPublishFailed,
             500,
             errorCause(error),
           ),
@@ -565,7 +566,7 @@ class DefaultAgentSession<
     } catch (error) {
       const errInfo = new Ably.ErrorInfo(
         `unable to process cancel for run ${runId}; onCancel handler threw: ${errorMessage(error)}`,
-        ErrorCode.CancelListenerError,
+        ErrorCode.RunCancelHandlerFailed,
         500,
         errorCause(error),
       );
@@ -676,7 +677,7 @@ class DefaultAgentSession<
           this._handleCancelMessage(msg).catch((error: unknown) => {
             const errInfo = new Ably.ErrorInfo(
               `unable to route cancel message; ${errorMessage(error)}`,
-              ErrorCode.CancelListenerError,
+              ErrorCode.RunCancelRoutingFailed,
               500,
               errorCause(error),
             );
@@ -882,7 +883,7 @@ class DefaultAgentSession<
       } catch (error) {
         const errInfo = new Ably.ErrorInfo(
           `unable to notify steer for run ${runId}; onSteer handler threw: ${errorMessage(error)}`,
-          ErrorCode.CancelListenerError,
+          ErrorCode.RunSteerHandlerFailed,
           500,
           errorCause(error),
         );
@@ -1146,10 +1147,9 @@ class DefaultAgentSession<
     }
 
     /**
-     * Run a run-lifecycle publish (run-start / run-suspend / run-end) and wrap
-     * any failure as a `RunLifecycleError`, logging at error and rethrowing.
-     * Shared by start(), suspend(), and end() so the three publishes can't
-     * drift on the error code, message shape, or cause preservation.
+     * Run a run-lifecycle publish (run-start / run-suspend / run-end) through
+     * the shared lifecycle bracket, which the step-lifecycle publishes in
+     * {@link createRunStepWriter} also use.
      * @param phase - The lifecycle wire phase, used in the error message.
      * @param method - The Run method name, used in the log prefix.
      * @param publish - The RunManager publish to run.
@@ -1159,18 +1159,7 @@ class DefaultAgentSession<
       method: 'start' | 'suspend' | 'end',
       publish: () => Promise<void>,
     ): Promise<void> => {
-      try {
-        await publish();
-      } catch (error) {
-        const errInfo = new Ably.ErrorInfo(
-          `unable to publish ${phase} for run ${runId}; ${errorMessage(error)}`,
-          ErrorCode.RunLifecycleError,
-          500,
-          errorCause(error),
-        );
-        logger?.error(`Run.${method}(); failed to publish ${phase}`, { runId });
-        throw errInfo;
-      }
+      await publishLifecycleEvent({ phase, method, runId, logger }, publish);
     };
 
     // The shared run read-model (runId, status, error, whole-turn messages).

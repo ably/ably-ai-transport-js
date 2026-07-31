@@ -20,6 +20,7 @@ interface RunOpts<TOutput extends CodecOutputEvent> {
   onCancelled?: (write: (event: TOutput) => Promise<void>) => void | Promise<void>;
   onCancel?: (request: CancelRequest) => Promise<boolean>;
   onError?: (error: Ably.ErrorInfo) => void;
+  onSteer?: () => void;
 }
 
 /**
@@ -59,6 +60,7 @@ export const createRunFromOpts = <TOutput extends CodecOutputEvent, TProjection,
       onCancelled: opts.onCancelled,
       onCancel: opts.onCancel,
       onError: opts.onError,
+      onSteer: opts.onSteer,
     },
   );
 };

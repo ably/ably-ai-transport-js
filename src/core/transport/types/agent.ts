@@ -292,7 +292,11 @@ export interface RunHooks<TOutput extends CodecOutputEvent> {
    * - Stream failures in `pipe` — the underlying error is also returned on
    *   `StreamResult.error`, but this callback delivers it wrapped as an
    *   `Ably.ErrorInfo` (code `StreamError`) for standardized observability.
-   * - Failures in the `onCancel` handler.
+   * - A throw from the `onCancel` handler (code `RunCancelHandlerFailed`). The run
+   *   is NOT cancelled: the SDK never reaches the abort.
+   * - A throw from the `onSteer` handler (code `RunSteerHandlerFailed`). The run is
+   *   unaffected — the steering message has already folded in, so only the
+   *   notification failed.
    *
    * Publish failures in `start` and `end`
    * are not delivered here — those methods reject their returned promise
@@ -303,9 +307,9 @@ export interface RunHooks<TOutput extends CodecOutputEvent> {
    *
    * Channel-wide events (e.g. continuity loss) are delivered via the
    * session-level {@link AgentSession.on}('error'), not here. A failure in the
-   * `onCancel` handler with no `onError` set falls back to that session emitter
-   * so it is never silently dropped; a `pipe` stream failure with no `onError`
-   * is always still available on {@link StreamResult.error}.
+   * `onCancel` or `onSteer` handler with no `onError` set falls back to that
+   * session emitter so it is never silently dropped; a `pipe` stream failure
+   * with no `onError` is always still available on {@link StreamResult.error}.
    */
   onError?: (error: Ably.ErrorInfo) => void;
 
@@ -354,6 +358,7 @@ export interface RunStep<TOutput extends CodecOutputEvent> {
    * a second call is a no-op. Rejects if another step is already active on the
    * run (only one step may be open at a time), or if the run has ended.
    * @throws InvalidArgument if another step is active or the run has ended.
+   * @throws {Ably.ErrorInfo} `RunLifecycleEventPublishFailed` if the `ai-step-start` publish fails.
    */
   start(): Promise<void>;
   /**
@@ -397,6 +402,7 @@ export interface RunStep<TOutput extends CodecOutputEvent> {
    * auto-closes a still-open step, so a forgotten `end()` cannot strand
    * observers — but an explicit `end()` is clearer and lets you set the reason.
    * @param params - Optional {@link StepEndParams}; the reason is derived if omitted.
+   * @throws {Ably.ErrorInfo} `RunLifecycleEventPublishFailed` if the `ai-step-end` publish fails.
    */
   end(params?: StepEndParams): Promise<void>;
 }
@@ -625,7 +631,7 @@ export interface OpenableRun<TOutput extends CodecOutputEvent, TProjection, TMes
    * no-op. Propagates `located`'s rejection (cancel / session close).
    * @throws {Ably.ErrorInfo} `OperationCancelled` when the run was cancelled
    *   before `start()` (or `located` rejected on cancel); `SessionClosed` when
-   *   the session closed; `RunLifecycleError` when the opening publish fails.
+   *   the session closed; `RunLifecycleEventPublishFailed` when the opening publish fails.
    */
   start(): Promise<void>;
 }

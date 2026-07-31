@@ -2,6 +2,31 @@
 
 This contains only the most important and/or user-facing changes; for a full changelog, see the commit history.
 
+## [0.7.0](https://github.com/ably/ably-ai-transport-js/tree/0.7.0) (2026-07-31)
+
+[Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.6.0...0.7.0)
+
+This release adds support for a new codec: the `@ably/ai-transport/openai` entry point ships a codec for the OpenAI Responses streaming API, including client-executed tools and human tool approvals. The core codec output API is also redesigned, so a codec declares its wire shape declaratively. The release also includes a number of other improvements; see the full details below.
+
+### Breaking Changes
+
+- **The core codec output-descriptor API is redesigned.** An output stream now names a `streamId` extractor instead of `idField`, and its `start` / `delta` / `end` phases each group into one spec object; `OutputBuilder.drop` marks an event as curated off the wire, a codec selects the well-known input factories it supports through the new `factories` config, and `decodeLifecycle` becomes `decoderSynthesiseLifecycle`. [#273](https://github.com/ably/ably-ai-transport-js/pull/273)
+- **`createRun` and `adoptRun` take a shared, exported `RunIdentity`** (`{ runId, invocationId }`): `createRun(invocation, identity?, hooks?)` mints whichever id you omit, and `adoptRun(invocation, identity, hooks?)` requires both. `RunRuntime` is renamed `RunHooks` and no longer carries run ids, `AdoptIdentity` is removed with its `triggerEventId` moving onto the `Invocation` argument, and an empty-string id now throws `InvalidArgument` instead of minting a new one. [#286](https://github.com/ably/ably-ai-transport-js/pull/286)
+- `PipeOptions` is removed: `Run.pipe` and `RunStep.pipe` no longer take a second options argument. [#282](https://github.com/ably/ably-ai-transport-js/pull/282)
+- The pre-publish `onMessage` hooks - on a run's hooks object and on `EncoderOptions` - are renamed `onAblyMessage`. [#281](https://github.com/ably/ably-ai-transport-js/pull/281)
+- A step attempt's serial is renamed to `step-start-serial` on the wire, and with it `OutputEvent.stepStartSerial` and `buildTransportHeaders`'s `stepStartSerial` option. `RunNode.startSerial` (run ordering) is unchanged. [#283](https://github.com/ably/ably-ai-transport-js/pull/283)
+
+### New Features
+
+- **New `@ably/ai-transport/openai` entry point.** `ResponsesCodec` streams OpenAI Responses output - assistant text, refusals, reasoning, and function-call arguments - and `toResponsesInput` flattens a drained `run.view` into the `input` array for a `/v1/responses` call. Adds an optional `openai` peer dependency. [#274](https://github.com/ably/ably-ai-transport-js/pull/274)
+- **Client-side tools and approvals in the OpenAI codec.** `OpenAIInput` gains `ToolResult`, `ToolResultError`, and `ToolApprovalResponse` variants keyed by `call_id`, which turn on the matching `create*` factories, and a codec-authored `tool-approval-request` output event gates a function call on a human decision. The `unansweredCalls`, `approvedUnexecutedCalls`, and `resolvedCallIds` readers let an agent loop partition a turn's calls. [#278](https://github.com/ably/ably-ai-transport-js/pull/278)
+- `Run.pipe` and `RunStep.pipe` accept any `AsyncIterable<TOutput>` as well as a `ReadableStream`, via the new `PipeSource` union, so a provider stream that is already async-iterable can be piped straight in. [#274](https://github.com/ably/ably-ai-transport-js/pull/274)
+
+### Bug Fixes
+
+- **A client tool-result continuation now forks its own reply run** instead of re-entering the suspended run, so two clients answering the same tool call no longer overwrite each other's result or cross-contaminate the next prompt. The fork stamps `supersedes` and the suspended run is hidden from branch selection, so a single client's response still renders as one linear reply; raw `view.send` callers get `createToolResultFork` from `@ably/ai-transport/vercel`. [#271](https://github.com/ably/ably-ai-transport-js/pull/271)
+- `useView` re-renders its consumers when a run's status changes, including suspend and resume, so UI derived from a run's `status` no longer stays stuck in the streaming state after the run ends. [#284](https://github.com/ably/ably-ai-transport-js/pull/284)
+
 ## [0.6.0](https://github.com/ably/ably-ai-transport-js/tree/0.6.0) (2026-07-21)
 
 [Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.5.0...0.6.0)

@@ -153,6 +153,78 @@ test.describe('openai use-client-session demo - text chat behaviour', () => {
     await expect(assistantBubbles(page).last()).toContainText('London');
   });
 
+  test('approval-gated tool: approving runs the tool server-side and the reply lands', async ({ page }, testInfo) => {
+    await page.goto(channelUrl(freshChannel(testInfo.title)));
+
+    // A forecast prompt calls the gated getWeatherForecast, so the agent publishes
+    // an approval request on the call's own message and suspends the run.
+    await sendPrompt(page, "what's the weather forecast for Paris?");
+    const approve = page.getByRole('button', { name: 'Approve' });
+    await expect(approve).toHaveCount(1);
+
+    // Approving publishes the decision and wakes the run. The agent runs the
+    // approved call server-side on resume, so the ForecastCard renders its output
+    // (the 5-day rows) and the model's reply follows.
+    await approve.click();
+    await waitForAssistantSettled(page);
+    await expect(page.getByText('5-day forecast', { exact: true })).toBeVisible();
+    await expect(assistantBubbles(page).last()).toContainText('Paris');
+    // The approval card is answered, so the prompt is gone.
+    await expect(page.getByRole('button', { name: 'Approve' })).toHaveCount(0);
+  });
+
+  test('approval-gated tool: denying resolves the call without running it', async ({ page }, testInfo) => {
+    await page.goto(channelUrl(freshChannel(testInfo.title)));
+
+    await sendPrompt(page, "what's the weather forecast for Paris?");
+    const deny = page.getByRole('button', { name: 'Deny' });
+    await expect(deny).toHaveCount(1);
+
+    // A denial resolves the call with a rejection output rather than running the
+    // tool, so the run still resumes — the model acknowledges instead of
+    // forecasting, and no forecast card is rendered.
+    await deny.click();
+    await waitForAssistantSettled(page);
+    await expect(page.getByText(/getWeatherForecast\s*—\s*denied/)).toBeVisible();
+    await expect(page.getByText('5-day forecast', { exact: true })).toHaveCount(0);
+    await expect(assistantBubbles(page).last()).toContainText('not fetch the forecast');
+  });
+
+  test('client-side tool: getLocation runs in the browser and its result resumes the run', async ({
+    browser,
+  }, testInfo) => {
+    // The client tool needs real browser geolocation, so grant it and pin the
+    // coordinates the LocationCard should render.
+    const context = await browser.newContext({
+      permissions: ['geolocation'],
+      geolocation: { latitude: 51.5074, longitude: -0.1278 },
+    });
+    const page = await context.newPage();
+
+    try {
+      await page.goto(channelUrl(freshChannel(testInfo.title)));
+
+      // getLocation has no server executor, so the agent suspends the run and
+      // waits for the browser. useClientTools sees the unresolved call on a
+      // suspended run it initiated, runs geolocation, and publishes the result.
+      await sendPrompt(page, 'where am I?');
+      await expect(page.getByText(/Location:\s*51\.5074, -0\.1278/)).toBeVisible({ timeout: 60_000 });
+
+      // The published result answers the run's only call, so the continuation
+      // goes out and the model replies.
+      await waitForAssistantSettled(page);
+      await expect(assistantBubbles(page).last()).toContainText('current location');
+
+      // The resolved call is folded into channel history, so a fresh load rebuilds
+      // it — and the tool must not re-execute or sit unresolved.
+      await page.reload();
+      await expect(page.getByText(/Location:\s*51\.5074, -0\.1278/)).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByText(/Calling getLocation/)).toHaveCount(0);
+    } finally {
+      await context.close();
+    }
+  });
+
   test('two gated calls in one turn: the run resumes only after both are decided', async ({ page }, testInfo) => {
     await page.goto(channelUrl(freshChannel(testInfo.title)));
 

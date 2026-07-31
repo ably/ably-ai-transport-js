@@ -1,5 +1,5 @@
 import type { OpenAIMessage } from '@ably/ai-transport/openai';
-import { approvedUnexecutedCalls, resolvedCallIds } from '@ably/ai-transport/openai';
+import { approvedUnexecutedCalls, resolvedCallIds, unansweredCalls } from '@ably/ai-transport/openai';
 import type { Responses } from 'openai/resources/responses/responses';
 import { describe, expect, it } from 'vitest';
 
@@ -67,5 +67,64 @@ describe('approvedUnexecutedCalls', () => {
       },
     ];
     expect(approvedUnexecutedCalls(messages).map((c) => c.call_id)).toEqual(['c1', 'c2']);
+  });
+});
+
+describe('unansweredCalls', () => {
+  it('returns a call awaiting an approval decision', () => {
+    const messages: OpenAIMessage[] = [
+      { role: 'assistant', items: [gatedCall('c1')], toolCallStates: { c1: { approval: 'pending' } } },
+    ];
+    expect(unansweredCalls(messages).map((c) => c.call_id)).toEqual(['c1']);
+  });
+
+  it('returns a client-tool call whose result has not arrived', () => {
+    const messages: OpenAIMessage[] = [{ role: 'assistant', items: [gatedCall('c1', 'getLocation')] }];
+    expect(unansweredCalls(messages).map((c) => c.call_id)).toEqual(['c1']);
+  });
+
+  it('treats an approved call as answered even with no output yet', () => {
+    const messages: OpenAIMessage[] = [
+      { role: 'assistant', items: [gatedCall('c1')], toolCallStates: { c1: { approval: 'approved' } } },
+    ];
+    expect(unansweredCalls(messages)).toEqual([]);
+  });
+
+  it('treats a denied call as answered, via its rejection output', () => {
+    const messages: OpenAIMessage[] = [
+      { role: 'assistant', items: [gatedCall('c1')], toolCallStates: { c1: { approval: 'denied' } } },
+      { role: 'assistant', items: [{ type: 'function_call_output', call_id: 'c1', output: 'not approved' }] },
+    ];
+    expect(unansweredCalls(messages)).toEqual([]);
+  });
+
+  it('treats a call with a folded output as answered', () => {
+    const messages: OpenAIMessage[] = [
+      { role: 'assistant', items: [gatedCall('c1', 'getWeather')] },
+      { role: 'assistant', items: [{ type: 'function_call_output', call_id: 'c1', output: '{}' }] },
+    ];
+    expect(unansweredCalls(messages)).toEqual([]);
+  });
+
+  it('returns only the still-pending call when one of two gated calls is approved', () => {
+    const messages: OpenAIMessage[] = [
+      {
+        role: 'assistant',
+        items: [gatedCall('c1'), gatedCall('c2')],
+        toolCallStates: { c1: { approval: 'approved' }, c2: { approval: 'pending' } },
+      },
+    ];
+    expect(unansweredCalls(messages).map((c) => c.call_id)).toEqual(['c2']);
+  });
+
+  it('returns both gated calls of a turn while neither has been decided', () => {
+    const messages: OpenAIMessage[] = [
+      {
+        role: 'assistant',
+        items: [gatedCall('c1'), gatedCall('c2')],
+        toolCallStates: { c1: { approval: 'pending' }, c2: { approval: 'pending' } },
+      },
+    ];
+    expect(unansweredCalls(messages).map((c) => c.call_id)).toEqual(['c1', 'c2']);
   });
 });

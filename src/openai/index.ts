@@ -17,4 +17,4 @@ export { ResponsesCodec } from './codec/index.js';
 export { toResponsesInput } from './to-responses-input.js';
 
 // Loop correlation readers
-export { approvedUnexecutedCalls, resolvedCallIds } from './correlation.js';
+export { approvedUnexecutedCalls, resolvedCallIds, unansweredCalls } from './correlation.js';

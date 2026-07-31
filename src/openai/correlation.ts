@@ -33,6 +33,38 @@ export const resolvedCallIds = (messages: OpenAIMessage[]): Set<string> => {
 };
 
 /**
+ * Find the function calls that still owe the model an answer: a `function_call`
+ * with no `function_call_output` that is not approved either.
+ *
+ * An approved call counts as answered even though its output has not folded yet —
+ * the agent runs it server-side on resume (see {@link approvedUnexecutedCalls})
+ * before the next model turn, so its output exists by the time the model sees the
+ * conversation. A denial also counts, because the reducer resolves it with a
+ * rejection `function_call_output`, which the resolved check already covers. A
+ * call still `pending` a decision, and a client-executed call whose result has
+ * not arrived, are both unanswered.
+ *
+ * A caller resuming a run reads this to decide whether the run is ready to
+ * continue at all. Every open `function_call` must carry a matching output in the
+ * model input, so resuming while any call is unanswered makes the provider reject
+ * the request. Pass the messages of the run being resumed.
+ * @param messages - The conversation messages to scan.
+ * @returns The calls still awaiting an answer, in message/item order.
+ */
+export const unansweredCalls = (messages: OpenAIMessage[]): Responses.ResponseFunctionToolCall[] => {
+  const resolved = resolvedCallIds(messages);
+  const calls: Responses.ResponseFunctionToolCall[] = [];
+  for (const message of messages) {
+    const states = message.toolCallStates ?? {};
+    for (const item of message.items) {
+      if (item.type !== 'function_call' || resolved.has(item.call_id)) continue;
+      if (states[item.call_id]?.approval !== 'approved') calls.push(item);
+    }
+  }
+  return calls;
+};
+
+/**
  * Find the gated function calls the user has approved but the agent has not yet
  * run: a `function_call` whose `toolCallStates[call_id].approval === 'approved'`
  * with no `function_call_output` present. On resume the agent must run these

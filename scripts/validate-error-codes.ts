@@ -13,8 +13,19 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ERRORS_JSON_PATH = path.join(__dirname, '../ably-common/protocol/errors.json');
 
+/** One registry entry, as generated into errors.json from `errors/codes/*.md`. */
+interface ErrorEntry {
+  /** The registry's canonical snake_case name for the code. */
+  identifier: string;
+  /** Short human-readable title. */
+  title: string;
+  /** One-paragraph description of the failure. */
+  summary: string;
+}
+
 interface ErrorsJson {
-  [code: string]: string;
+  /** Registry entries keyed by numeric code. */
+  codes: Record<string, ErrorEntry | undefined>;
 }
 
 function main(): void {
@@ -29,6 +40,14 @@ function main(): void {
     process.exit(1);
   }
 
+  const registry = errorsJson.codes;
+  // A pin predating the `codes` envelope yields no registry at all — say so,
+  // rather than reporting every code as missing.
+  if (typeof registry !== 'object') {
+    console.error(`No "codes" object in ${ERRORS_JSON_PATH}; the ably-common submodule may be stale or uninitialised`);
+    process.exit(1);
+  }
+
   // Get all error codes from the enum
   const errorCodes = Object.values(ErrorCode).filter((value) => typeof value === 'number') as number[];
 
@@ -36,12 +55,12 @@ function main(): void {
 
   let hasErrors = false;
   const missingCodes: number[] = [];
-  const foundCodes: Array<{ code: number; message: string }> = [];
+  const foundCodes: Array<{ code: number; identifier: string }> = [];
 
   for (const code of errorCodes) {
-    const codeStr = code.toString();
-    if (errorsJson[codeStr]) {
-      foundCodes.push({ code, message: errorsJson[codeStr] });
+    const entry = registry[code.toString()];
+    if (entry) {
+      foundCodes.push({ code, identifier: entry.identifier });
     } else {
       missingCodes.push(code);
       hasErrors = true;
@@ -51,8 +70,8 @@ function main(): void {
   // Print results
   if (foundCodes.length > 0) {
     console.log('Found codes:');
-    for (const { code, message } of foundCodes) {
-      console.log(`  ${code}: ${message}`);
+    for (const { code, identifier } of foundCodes) {
+      console.log(`  ${code}: ${identifier}`);
     }
     console.log();
   }

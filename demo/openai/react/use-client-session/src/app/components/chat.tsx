@@ -12,6 +12,7 @@ import type { CallbackLogEntry } from './debug-pane';
 import { DebugPane } from './debug-pane';
 import { useDemoProgress } from '../hooks/use-demo-progress';
 import { useClientTools } from '../hooks/use-client-tools';
+import { useToolResolution } from '../hooks/use-tool-resolution';
 import { DEMO_SCENARIOS } from '../lib/intro-content';
 import { SessionHooks } from '../providers';
 
@@ -44,30 +45,42 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
     setCallbackLog((prev) => [...prev, { time: Date.now(), type: 'clientTool', summary }]);
   }, []);
 
-  // Run client-executed tools (getLocation) when they appear unresolved and
-  // publish the result so the suspended run resumes.
-  useClientTools(view, api, logClientTool);
+  const reportError = useCallback((error: unknown) => {
+    setCallbackLog((prev) => [
+      ...prev,
+      {
+        time: Date.now(),
+        type: 'error',
+        summary: error instanceof Error ? error.message : 'failed to wake agent',
+      },
+    ]);
+  }, []);
 
-  // Wake the agent for a freshly-sent run by POSTing its invocation pointer.
-  // The core session never sends HTTP — the app owns the trigger. Send sites
-  // pass the `view.send*` promise; a POST failure is surfaced in the log.
+  // Wake the agent for a run by POSTing its invocation pointer. The core session
+  // never sends HTTP — the app owns the trigger.
+  const wakeRun = useCallback(
+    (run: ClientRun<OpenAIInput, OpenAIMessage>) => {
+      void wakeAgent(api, run).catch(reportError);
+    },
+    [api, reportError],
+  );
+
+  // The same wake for send sites, which hold the `view.send*` promise rather
+  // than the run. A publish or POST failure is surfaced in the log.
   const wake = useCallback(
     (runPromise: Promise<ClientRun<OpenAIInput, OpenAIMessage>>) => {
-      void runPromise
-        .then((run) => wakeAgent(api, run))
-        .catch((error: unknown) => {
-          setCallbackLog((prev) => [
-            ...prev,
-            {
-              time: Date.now(),
-              type: 'error',
-              summary: error instanceof Error ? error.message : 'failed to wake agent',
-            },
-          ]);
-        });
+      void runPromise.then(wakeRun).catch(reportError);
     },
-    [api],
+    [wakeRun, reportError],
   );
+
+  // Publish a tool resolution, waking the agent only once every call on the run
+  // has an answer — a turn that gated two calls must not resume after the first.
+  const resolveToolCall = useToolResolution({ view, onWake: wakeRun });
+
+  // Run client-executed tools (getLocation) when they appear unresolved and
+  // publish the result through the same gate.
+  useClientTools(view, clientId, resolveToolCall, logClientTool);
 
   // Derive "is a run in progress?" from the latest visible message's owning
   // Run status. Stop is shown ONLY while the run is actively streaming
@@ -133,39 +146,33 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
     inputRef.current?.focus();
   }, []);
 
-  // Approve / deny a gated tool call. The codec-message-id addresses the
-  // function_call's message; the run's runId resumes the suspended run.
+  // Approve / deny a gated tool call. The resolution publishes immediately; the
+  // agent is only woken once every call on the run has an answer, so a turn that
+  // gated two calls resumes after the second decision rather than the first.
   const handleToolApprove = useCallback(
     (codecMessageId: string, callId: string) => {
-      const run = view.runOf(codecMessageId);
-      if (!run) return;
-      wake(
-        view.send([ResponsesCodec.createToolApprovalResponse(codecMessageId, { call_id: callId, approved: true })], {
-          runId: run.runId,
-        }),
-      );
+      void resolveToolCall({
+        codecMessageId,
+        callId,
+        input: ResponsesCodec.createToolApprovalResponse(codecMessageId, { call_id: callId, approved: true }),
+      });
     },
-    [view, wake],
+    [resolveToolCall],
   );
 
   const handleToolDeny = useCallback(
     (codecMessageId: string, callId: string) => {
-      const run = view.runOf(codecMessageId);
-      if (!run) return;
-      wake(
-        view.send(
-          [
-            ResponsesCodec.createToolApprovalResponse(codecMessageId, {
-              call_id: callId,
-              approved: false,
-              reason: 'User denied',
-            }),
-          ],
-          { runId: run.runId },
-        ),
-      );
+      void resolveToolCall({
+        codecMessageId,
+        callId,
+        input: ResponsesCodec.createToolApprovalResponse(codecMessageId, {
+          call_id: callId,
+          approved: false,
+          reason: 'User denied',
+        }),
+      });
     },
-    [view, wake],
+    [resolveToolCall],
   );
 
   return (

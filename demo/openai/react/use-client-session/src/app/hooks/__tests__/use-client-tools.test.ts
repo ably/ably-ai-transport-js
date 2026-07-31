@@ -6,10 +6,6 @@ import type { OpenAIInput, OpenAIMessage } from '@ably/ai-transport/openai';
 
 import { useClientTools } from '../use-client-tools';
 
-vi.mock('../../helpers', () => ({
-  wakeAgent: vi.fn(async () => ({ runId: 'r1', invocationId: 'i1' })),
-}));
-
 type Handle = ViewHandle<OpenAIInput, OpenAIMessage>;
 
 // An assistant turn holding an unresolved getLocation client-tool call (no
@@ -19,17 +15,13 @@ const locationCall = (): OpenAIMessage => ({
   items: [{ type: 'function_call', call_id: 'c1', name: 'getLocation', arguments: '{}', status: 'completed' }],
 });
 
-const makeView = (
-  status: 'active' | 'suspended' | 'complete' | 'cancelled',
-): { view: Handle; send: ReturnType<typeof vi.fn> } => {
-  const send = vi.fn(async () => ({ toInvocation: () => ({ toJSON: () => ({}) }) }));
+const makeView = (status: 'active' | 'suspended' | 'complete' | 'cancelled'): Handle => {
   const messages: CodecMessage<OpenAIMessage>[] = [{ codecMessageId: 'cm-0', message: locationCall() }];
   const runOf = vi.fn((id: string): RunInfo | undefined =>
     id === 'cm-0' ? { runId: 'r1', clientId: 'c', status, invocationId: 'i1', steps: [] } : undefined,
   );
-  // CAST: partial ViewHandle; the hook reads only messages, runOf, and send.
-  const view = { messages, runOf, send } as unknown as Handle;
-  return { view, send };
+  // CAST: partial ViewHandle; the hook reads only messages and runOf.
+  return { messages, runOf } as unknown as Handle;
 };
 
 describe('useClientTools', () => {
@@ -49,23 +41,31 @@ describe('useClientTools', () => {
     vi.clearAllMocks();
   });
 
-  it('does not execute or poke while the run is still active', async () => {
-    const { view, send } = makeView('active');
-    renderHook(() => useClientTools(view, '/api/chat'));
+  it('does not execute while the run is still active', async () => {
+    const resolve = vi.fn(async () => {});
+    renderHook(() => useClientTools(makeView('active'), 'c', resolve));
     // This lets any (unwanted) async execution run.
     await Promise.resolve();
-    expect(send).not.toHaveBeenCalled();
+    expect(resolve).not.toHaveBeenCalled();
   });
 
-  it('executes and pokes once the run is suspended', async () => {
-    const { view, send } = makeView('suspended');
-    renderHook(() => useClientTools(view, '/api/chat'));
+  it('hands the tool result to the resolution gate once the run is suspended', async () => {
+    const resolve = vi.fn(async () => {});
+    renderHook(() => useClientTools(makeView('suspended'), 'c', resolve));
     await waitFor(() => {
-      expect(send).toHaveBeenCalledTimes(1);
+      expect(resolve).toHaveBeenCalledTimes(1);
     });
-    expect(send).toHaveBeenCalledWith(
-      [expect.objectContaining({ kind: 'tool-result' })],
-      expect.objectContaining({ runId: 'r1' }),
-    );
+    expect(resolve).toHaveBeenCalledWith({
+      codecMessageId: 'cm-0',
+      callId: 'c1',
+      input: expect.objectContaining({ kind: 'tool-result' }),
+    });
+  });
+
+  it('does not execute a call from a run another client initiated', async () => {
+    const resolve = vi.fn(async () => {});
+    renderHook(() => useClientTools(makeView('suspended'), 'other-client', resolve));
+    await Promise.resolve();
+    expect(resolve).not.toHaveBeenCalled();
   });
 });

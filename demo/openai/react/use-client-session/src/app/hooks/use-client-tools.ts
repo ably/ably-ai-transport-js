@@ -7,17 +7,20 @@
  * no `function_call_output` yet, on a run that has suspended. It waits for the
  * run to suspend so a resume never races the run's still-streaming output (a
  * server tool in the same turn whose result has not folded yet). It runs the
- * tool in the browser, then publishes
- * a `tool-result` (or `tool-result-error`) via `view.send` addressed to the
- * function_call's codec-message-id. The codec's reducer folds the output onto
- * that message (matched by `call_id`) and records the client-result status, and
- * the continuation reuses the run's runId so the agent picks the result up off
- * the channel and resumes.
+ * tool in the browser, then hands a `tool-result` (or `tool-result-error`)
+ * addressed to the function_call's codec-message-id to `resolve`, which publishes
+ * it and wakes the agent only once every call on the run is answered. The codec's
+ * reducer folds the output onto that message (matched by `call_id`) and records
+ * the client-result status, and the continuation reuses the run's runId so the
+ * agent picks the result up off the channel and resumes.
  *
  * A `function_call_output` already present means the call was resolved (this
  * session or a prior one loaded from history), so the hook skips it and does not
  * re-execute on refresh. The `handledRef` dedup guards against a re-render
- * re-running an in-flight executor.
+ * re-running an in-flight executor. Only the initiating client runs the tool:
+ * the gate on `run.clientId === clientId` keeps other tabs on the same channel,
+ * which see the call but lack the browser context (geolocation), from answering
+ * it.
  */
 
 import { useEffect, useRef } from 'react';
@@ -25,8 +28,11 @@ import type { ViewHandle } from '@ably/ai-transport/react';
 import type { OpenAIInput, OpenAIItem, OpenAIMessage } from '@ably/ai-transport/openai';
 import { ResponsesCodec, resolvedCallIds } from '@ably/ai-transport/openai';
 
-import { wakeAgent } from '../helpers';
 import { isClientTool } from '../api/chat/tools';
+import type { ToolResolution } from './use-tool-resolution';
+
+/** Publishes one tool resolution, waking the agent only when the run's last call is answered. */
+type ResolveToolCall = (resolution: ToolResolution) => Promise<void>;
 
 /** A client tool executor: takes the call's parsed arguments and returns its output payload. */
 type ClientToolExecutor = (args: Record<string, unknown>) => Promise<unknown>;
@@ -64,12 +70,14 @@ function parseArgs(argumentsJson: string): Record<string, unknown> {
 /**
  * Watch the view for unresolved client-tool calls and execute them.
  * @param view - The client view whose messages to watch and to publish results on.
- * @param api - The agent endpoint URL to POST the continuation to.
+ * @param clientId - This client's id; only calls from runs it initiated are executed.
+ * @param resolve - Publishes the tool result and owns the decision to wake the agent.
  * @param onLog - Optional callback to surface each execution in the demo's debug log.
  */
 export function useClientTools(
   view: ViewHandle<OpenAIInput, OpenAIMessage>,
-  api: string,
+  clientId: string | undefined,
+  resolve: ResolveToolCall,
   onLog?: (summary: string) => void,
 ) {
   // Track handled call_ids so a re-render doesn't re-run an in-flight executor.
@@ -83,8 +91,11 @@ export function useClientTools(
     for (const { codecMessageId, message } of messages) {
       if (message.role !== 'assistant') continue;
 
+      // Only run client tools for runs this client initiated — other tabs see
+      // the call but should not answer it.
       const run = view.runOf(codecMessageId);
       if (!run) continue;
+      if (run.clientId && run.clientId !== clientId) continue;
       // Wait until the run is done streaming before executing a client tool and
       // poking the agent to resume it. A single model turn can emit a server
       // tool and a client tool in the same message; resuming while the run is
@@ -100,17 +111,15 @@ export function useClientTools(
         if (handledRef.current.has(item.call_id)) continue;
 
         handledRef.current.add(item.call_id);
-        void executeClientTool(view, api, run.runId, codecMessageId, item, onLog);
+        void executeClientTool(resolve, codecMessageId, item, onLog);
       }
     }
-  }, [view, view.messages, api, onLog]);
+  }, [view, view.messages, clientId, resolve, onLog]);
 }
 
-/** Run one client-tool call and publish its result (or error) as a continuation. */
+/** Run one client-tool call and hand its result (or error) to the resolution gate. */
 async function executeClientTool(
-  view: ViewHandle<OpenAIInput, OpenAIMessage>,
-  api: string,
-  runId: string,
+  resolve: ResolveToolCall,
   codecMessageId: string,
   call: Extract<OpenAIItem, { type: 'function_call' }>,
   onLog?: (summary: string) => void,
@@ -136,7 +145,5 @@ async function executeClientTool(
     onLog?.(`${call.name} error: ${message}`);
   }
 
-  // Publish the resolution, then wake the agent so it resumes the run.
-  const run = await view.send([input], { runId });
-  await wakeAgent(api, run);
+  await resolve({ codecMessageId, callId: call.call_id, input });
 }

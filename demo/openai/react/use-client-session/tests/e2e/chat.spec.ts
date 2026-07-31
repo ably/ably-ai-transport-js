@@ -153,6 +153,29 @@ test.describe('openai use-client-session demo - text chat behaviour', () => {
     await expect(assistantBubbles(page).last()).toContainText('London');
   });
 
+  test('two gated calls in one turn: the run resumes only after both are decided', async ({ page }, testInfo) => {
+    await page.goto(channelUrl(freshChannel(testInfo.title)));
+
+    // A forecast prompt naming two places emits two approval-gated calls on one
+    // model turn, so the run suspends holding two undecided calls.
+    await sendPrompt(page, "what's the weather forecast for Paris and London?");
+    await expect(page.getByRole('button', { name: 'Approve' })).toHaveCount(2);
+
+    // Deciding one call must NOT wake the agent: resuming now would hand the
+    // model a function_call with no output, which the provider rejects. Give the
+    // agent time to respond if it were woken, then assert it was not.
+    await page.getByRole('button', { name: 'Approve' }).first().click();
+    await page.waitForTimeout(3000);
+    await expect(page.getByRole('button', { name: 'Approve' })).toHaveCount(1);
+    await expect(page.getByText(/5-day forecast/i)).toHaveCount(0);
+
+    // The second decision answers the run's last call, so the continuation goes
+    // out, both approved calls run server-side, and the reply covers both places.
+    await page.getByRole('button', { name: 'Approve' }).click();
+    await waitForAssistantSettled(page);
+    await expect(assistantBubbles(page).last()).toContainText('Paris and London');
+  });
+
   test('suggestion chip: prefills the weather prompt, and the step drops off once demonstrated', async ({
     page,
   }, testInfo) => {

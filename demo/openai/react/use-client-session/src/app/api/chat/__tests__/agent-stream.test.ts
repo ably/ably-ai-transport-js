@@ -155,6 +155,62 @@ describe('runAgentLoop', () => {
     }
   });
 
+  it('emits one gated call per place when a turn asks about two, and suspends once', async () => {
+    const { run, messages } = makeRun(new AbortController().signal);
+    const result = await runAgentLoop({
+      run,
+      input: userInput("what's the weather forecast for Paris and London?"),
+      priorMessages: [],
+    });
+
+    // Both calls ride one model turn, so the run suspends once holding two
+    // undecided calls — the case where resuming after a single approval would
+    // send the model a function_call with no output.
+    expect(result.reason).toBe('suspend');
+    expect(messages).toHaveLength(1);
+    const events = messages[0] ?? [];
+    const calls = events.filter((e) => e.type === 'response.output_item.added' && e.item.type === 'function_call');
+    const requests = events.filter((e) => e.type === 'tool-approval-request');
+    expect(calls).toHaveLength(2);
+    expect(requests).toHaveLength(2);
+    // Distinct call_ids, so each decision addresses exactly one call.
+    const callIds = requests.flatMap((e) => (e.type === 'tool-approval-request' ? [e.call_id] : []));
+    expect(new Set(callIds).size).toBe(2);
+  });
+
+  it('runs every approved gated call server-side on resume, then replies', async () => {
+    const gatedCall = (suffix: string, location: string): Responses.ResponseFunctionToolCall => ({
+      id: `fc-${suffix}`,
+      type: 'function_call',
+      call_id: `call-${suffix}`,
+      name: 'getWeatherForecast',
+      arguments: JSON.stringify({ location }),
+      status: 'completed',
+    });
+    const paris = gatedCall('paris', 'Paris');
+    const london = gatedCall('london', 'London');
+    // The hydrated conversation on resume: both gated calls approved, neither run
+    // yet. The agent owes the model an output for each before the next turn.
+    const priorMessages: OpenAIMessage[] = [
+      {
+        role: 'assistant',
+        items: [paris, london],
+        toolCallStates: { 'call-paris': { approval: 'approved' }, 'call-london': { approval: 'approved' } },
+      },
+    ];
+    const { run, messages } = makeRun(new AbortController().signal);
+    const result = await runAgentLoop({
+      run,
+      input: [...userInput("what's the weather forecast for Paris and London?"), paris, london],
+      priorMessages,
+    });
+
+    expect(result.reason).toBe('complete');
+    const outputs = (messages[0] ?? []).flatMap((e) => (e.type === 'function_call_output' ? [e.item.call_id] : []));
+    expect(outputs).toEqual(['call-paris', 'call-london']);
+    expect((messages[1] ?? []).some((e) => e.type === 'response.output_text.done')).toBe(true);
+  });
+
   it('runs an approved gated call server-side on resume, then replies', async () => {
     const call: Responses.ResponseFunctionToolCall = {
       id: 'fc-forecast',

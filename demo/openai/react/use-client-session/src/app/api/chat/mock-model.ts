@@ -13,7 +13,9 @@
  * `getLocation` call (the run suspends until the browser answers) and a forecast
  * prompt emits the approval-gated `getWeatherForecast` call (the run suspends for
  * the user's decision) — each replies with a sentence on the loop's second turn,
- * a forecast prompt acknowledging instead when the call was denied. A
+ * a forecast prompt acknowledging instead when the call was denied. A forecast
+ * prompt naming two places ("Paris and London") emits one gated call per place, so
+ * a single turn suspends on two decisions. A
  * "think"/"reason" prompt streams a reasoning item
  * (its summary) first — ahead of a text reply, or ahead of the getWeather call
  * when the prompt is also about weather — which is the case that exercises the
@@ -49,13 +51,11 @@ type ReplyPlan =
       reasoning?: string;
     }
   | {
-      /** A server-executed function call. */
+      /** One or more function calls emitted in a single turn. */
       kind: 'tool';
-      /** The tool name to call. */
-      name: string;
-      /** The call's arguments. */
-      args: Record<string, unknown>;
-      /** Optional reasoning-summary "thinking" streamed as a reasoning item before the call. */
+      /** The calls to emit, in order. A turn may call the same tool more than once. */
+      calls: { name: string; args: Record<string, unknown> }[];
+      /** Optional reasoning-summary "thinking" streamed as a reasoning item before the calls. */
       reasoning?: string;
     };
 
@@ -76,39 +76,56 @@ function lastUserText(input: Responses.ResponseInputItem[]): string {
 }
 
 /**
- * The output of an answered call to the named tool — the `function_call_output`
- * text of a `function_call` with that name whose output is present — or
- * `undefined` when the tool has not been called or answered yet. Lets the mock
- * tell which tool's result drives the loop's second turn (a conversation can
- * hold several tools) and read its output.
+ * The outputs of every answered call to the named tool — the
+ * `function_call_output` text of each `function_call` with that name whose output
+ * is present — in call order. Empty when the tool has not been called, or has been
+ * called but not answered. Lets the mock tell which tool's results drive the
+ * loop's second turn (a conversation can hold several tools, and one turn can call
+ * the same tool for several locations) and read each output.
  */
-function answeredCall(input: Responses.ResponseInputItem[], name: string): string | undefined {
-  const callIds = new Set<string>();
+function answeredCallOutputs(input: Responses.ResponseInputItem[], name: string): string[] {
+  const callIds: string[] = [];
   for (const item of input) {
-    if (item.type === 'function_call' && item.name === name) callIds.add(item.call_id);
+    if (item.type === 'function_call' && item.name === name) callIds.push(item.call_id);
   }
+  const outputs = new Map<string, string>();
   for (const item of input) {
-    if (item.type !== 'function_call_output' || !callIds.has(item.call_id)) continue;
-    return typeof item.output === 'string' ? item.output : JSON.stringify(item.output);
+    if (item.type !== 'function_call_output' || !callIds.includes(item.call_id)) continue;
+    outputs.set(item.call_id, typeof item.output === 'string' ? item.output : JSON.stringify(item.output));
   }
-  return undefined;
-}
-
-/** Whether a forecast output is the tool's JSON result (an approval) rather than a denial's rejection string. */
-function isForecastResult(output: string): boolean {
-  try {
-    // CAST: trust boundary — the tool output is parsed JSON.
-    const parsed = JSON.parse(output) as { forecast?: unknown };
-    return Array.isArray(parsed.forecast);
-  } catch {
-    return false;
-  }
+  return callIds.flatMap((callId) => {
+    const output = outputs.get(callId);
+    return output === undefined ? [] : [output];
+  });
 }
 
 /** Pull a place name out of a "weather in/for <place>?" prompt, defaulting to London. */
 function extractLocation(text: string): string {
   const match = /\b(?:in|for|at)\s+([A-Za-z][A-Za-z .,'-]*?)\s*[?.!]?$/.exec(text.trim());
   return match ? match[1].trim() : 'London, UK';
+}
+
+/**
+ * The place names in a prompt, splitting an "X and Y" phrase into one entry each.
+ * A prompt naming two places is how the demo drives a turn that emits two calls.
+ */
+function extractLocations(text: string): string[] {
+  return extractLocation(text)
+    .split(/\s+and\s+/i)
+    .map((place) => place.trim())
+    .filter((place) => place.length > 0);
+}
+
+/** The `location` a forecast tool result was for, or undefined if the output isn't one. */
+function forecastLocation(output: string): string | undefined {
+  try {
+    // CAST: trust boundary — the tool output is parsed JSON.
+    const parsed = JSON.parse(output) as { location?: unknown; forecast?: unknown };
+    if (!Array.isArray(parsed.forecast)) return undefined;
+    return typeof parsed.location === 'string' ? parsed.location : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Script the reply from the conversation, mirroring the prompts the e2e suite sends. */
@@ -121,36 +138,45 @@ function planReply(input: Responses.ResponseInputItem[]): ReplyPlan {
   const word = /\bword\s+([A-Za-z]+)/i.exec(prompt);
   if (word) return { kind: 'text', text: word[1], slow: false };
 
-  // Forecast (approval-gated server tool): call getWeatherForecast first; the
-  // run suspends for the user's decision. On the loop's second turn its output
-  // is present — the tool's JSON forecast when approved (the ForecastCard
-  // renders it), or a rejection string when denied (acknowledge instead).
-  // Checked before plain weather, since a forecast prompt also says "weather".
+  // Forecast (approval-gated server tool): call getWeatherForecast for each place
+  // named, then suspend for the user's decisions. A prompt naming two places emits
+  // two gated calls in one turn, and the client only resumes the run once both are
+  // decided. On the loop's second turn the outputs are present — the tool's JSON
+  // forecast for each approved call (the ForecastCard renders it), or a rejection
+  // string for a denied one (acknowledge instead). Checked before plain weather,
+  // since a forecast prompt also says "weather".
   if (/\bforecast\b/i.test(prompt)) {
-    const output = answeredCall(input, 'getWeatherForecast');
-    if (output !== undefined) {
-      return isForecastResult(output)
-        ? { kind: 'text', text: `Here is the 5-day forecast for ${extractLocation(prompt)}.`, slow: false }
-        : { kind: 'text', text: 'No problem, I will not fetch the forecast.', slow: false };
+    const outputs = answeredCallOutputs(input, 'getWeatherForecast');
+    if (outputs.length > 0) {
+      const places = outputs.flatMap((output) => {
+        const place = forecastLocation(output);
+        return place === undefined ? [] : [place];
+      });
+      return places.length === 0
+        ? { kind: 'text', text: 'No problem, I will not fetch the forecast.', slow: false }
+        : { kind: 'text', text: `Here is the 5-day forecast for ${places.join(' and ')}.`, slow: false };
     }
-    return { kind: 'tool', name: 'getWeatherForecast', args: { location: extractLocation(prompt) } };
+    return {
+      kind: 'tool',
+      calls: extractLocations(prompt).map((location) => ({ name: 'getWeatherForecast', args: { location } })),
+    };
   }
 
   // Location (client-executed tool): call getLocation first; the run suspends
   // while the browser resolves geolocation. Once the client's result is in the
   // input (the loop's second turn), reply with a sentence.
   if (/\b(location|where\s+am\s+i|where\s+i\s+am)\b/i.test(prompt)) {
-    if (answeredCall(input, 'getLocation') !== undefined) {
+    if (answeredCallOutputs(input, 'getLocation').length > 0) {
       return { kind: 'text', text: 'Here is your current location.', slow: false };
     }
-    return { kind: 'tool', name: 'getLocation', args: { highAccuracy: false } };
+    return { kind: 'tool', calls: [{ name: 'getLocation', args: { highAccuracy: false } }] };
   }
 
   // Weather: call getWeather first; once its result is in the input (the loop's
   // second turn), reply with a sentence. The WeatherCard renders the structured
   // tool output alongside this text.
   if (/\bweather\b/i.test(prompt)) {
-    if (answeredCall(input, 'getWeather') !== undefined) {
+    if (answeredCallOutputs(input, 'getWeather').length > 0) {
       return { kind: 'text', text: `Here is the current weather for ${extractLocation(prompt)}.`, slow: false };
     }
     // A "think"/"reason" weather prompt streams a reasoning item before the
@@ -160,7 +186,11 @@ function planReply(input: Responses.ResponseInputItem[]): ReplyPlan {
     const reasoning = /\b(think|reason)\b/i.test(prompt)
       ? 'The answer needs current conditions, so I should call the weather tool for that location.'
       : undefined;
-    return { kind: 'tool', name: 'getWeather', args: { location: extractLocation(prompt) }, reasoning };
+    return {
+      kind: 'tool',
+      calls: [{ name: 'getWeather', args: { location: extractLocation(prompt) } }],
+      ...(reasoning === undefined ? {} : { reasoning }),
+    };
   }
 
   if (/\b(story|dragon)\b/i.test(prompt) || /\blong\b/i.test(prompt)) {
@@ -289,58 +319,64 @@ export async function* createMockResponseStream(req: ResponseStreamRequest): Asy
   ): Responses.ResponseOutputMessage => ({ id: itemId, type: 'message', role: 'assistant', status, content });
 
   if (plan.kind === 'tool') {
-    const call = (
-      status: Responses.ResponseFunctionToolCall['status'],
-      args: string,
-    ): Responses.ResponseFunctionToolCall => ({
-      id: itemId,
-      type: 'function_call',
-      call_id: `call-${itemId}`,
-      name: plan.name,
-      arguments: args,
-      status,
-    });
-    const argsJson = JSON.stringify(plan.args);
-    // Split the arguments into a couple of fragments so the mock streams them the
-    // way a real model does (output_item.added → arg deltas → arg done → item done).
-    const mid = Math.ceil(argsJson.length / 2);
-    const argFragments = [argsJson.slice(0, mid), argsJson.slice(mid)];
     // A reasoning model may "think" before deciding to call a tool: stream the
     // reasoning item first, then the function_call. The agent loop must feed this
     // reasoning item back alongside the call on the next turn.
     if (plan.reasoning !== undefined) yield* reasoningEvents(plan.reasoning, next);
-    // output_item.added opens the function_call_arguments stream (args empty);
-    // the deltas stream the arguments; the done finalises them; output_item.done
-    // carries the complete item. The agentic loop reads the call off `done`.
-    yield {
-      type: 'response.output_item.added',
-      item: call('in_progress', ''),
-      output_index: 0,
-      sequence_number: next(),
-    };
-    for (const delta of argFragments) {
+
+    // Each call is its own output item, with its own id and output_index — the
+    // shape a real turn calling one tool for two locations produces.
+    for (const [index, planned] of plan.calls.entries()) {
+      const callItemId = `${itemId}-${index}`;
+      const call = (
+        status: Responses.ResponseFunctionToolCall['status'],
+        args: string,
+      ): Responses.ResponseFunctionToolCall => ({
+        id: callItemId,
+        type: 'function_call',
+        call_id: `call-${callItemId}`,
+        name: planned.name,
+        arguments: args,
+        status,
+      });
+      const argsJson = JSON.stringify(planned.args);
+      // Split the arguments into a couple of fragments so the mock streams them the
+      // way a real model does (output_item.added → arg deltas → arg done → item done).
+      const mid = Math.ceil(argsJson.length / 2);
+      const argFragments = [argsJson.slice(0, mid), argsJson.slice(mid)];
+      // output_item.added opens the function_call_arguments stream (args empty);
+      // the deltas stream the arguments; the done finalises them; output_item.done
+      // carries the complete item. The agentic loop reads the call off `done`.
       yield {
-        type: 'response.function_call_arguments.delta',
-        item_id: itemId,
-        output_index: 0,
-        delta,
+        type: 'response.output_item.added',
+        item: call('in_progress', ''),
+        output_index: index,
+        sequence_number: next(),
+      };
+      for (const delta of argFragments) {
+        yield {
+          type: 'response.function_call_arguments.delta',
+          item_id: callItemId,
+          output_index: index,
+          delta,
+          sequence_number: next(),
+        };
+      }
+      yield {
+        type: 'response.function_call_arguments.done',
+        item_id: callItemId,
+        output_index: index,
+        arguments: argsJson,
+        name: planned.name,
+        sequence_number: next(),
+      };
+      yield {
+        type: 'response.output_item.done',
+        item: call('completed', argsJson),
+        output_index: index,
         sequence_number: next(),
       };
     }
-    yield {
-      type: 'response.function_call_arguments.done',
-      item_id: itemId,
-      output_index: 0,
-      arguments: argsJson,
-      name: plan.name,
-      sequence_number: next(),
-    };
-    yield {
-      type: 'response.output_item.done',
-      item: call('completed', argsJson),
-      output_index: 0,
-      sequence_number: next(),
-    };
     return;
   }
 

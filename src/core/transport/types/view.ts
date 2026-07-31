@@ -273,13 +273,24 @@ export interface View<TMessage> {
 
   // --- Observation ---
 
-  /** The visible message list changed (new visible node, branch switch, window shift). */
+  /**
+   * The visible message list changed (new visible node, branch switch, window
+   * shift). Scoped to the message list alone: a visible Run's status moving —
+   * suspending, resuming, or reaching a terminal reason — leaves the list
+   * unchanged and so fires `run`, not this. Render Run status from `run`.
+   */
   on(event: 'update', handler: () => void): () => void;
 
   /** A raw Ably message arrived that corresponds to a visible node. */
   on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
 
-  /** A run event occurred for a run with visible messages in the window. */
+  /**
+   * A run event occurred for a run with visible messages in the window. The
+   * event to render Run status from: a status transition doesn't change the
+   * message list, so `update` does not announce it. Subscribe here to keep
+   * anything gated on {@link View.runOf} / {@link View.runs} status in step.
+   * The Run's state is already updated when the handler runs.
+   */
   on(event: 'run', handler: (event: RunLifecycleEvent) => void): () => void;
 
   /** Tear down the view — unsubscribe from tree events and clear internal state. */

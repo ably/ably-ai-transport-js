@@ -11,6 +11,38 @@ import { ClientSessionContext } from '../../src/react/contexts/client-session-co
 import { useView } from '../../src/react/use-view.js';
 import { createMockSession } from './helper/mock-session.js';
 
+/**
+ * Build a {@link RunInfo} with the given status. Restricted to the non-error
+ * statuses, which is the arm of the union that carries no `error`.
+ * @param status - The lifecycle status to report.
+ * @returns A RunInfo for the single Run the reactivity tests track.
+ */
+const runInfo = (status: Exclude<RunInfo['status'], 'error'>): RunInfo => ({
+  runId: 'run-1',
+  clientId: 'c1',
+  status,
+  invocationId: 'inv-1',
+  steps: [],
+});
+
+/**
+ * Render `useView` and record the status a consumer derives in its render
+ * body — the documented pattern for gating a Stop button on the owning Run.
+ * The recorded tail is the value the component last rendered with, so a status
+ * change that never re-renders shows up as a stale entry.
+ * @param mock - The mock session backing the view.
+ * @returns The recorded statuses alongside the renderHook result.
+ */
+const renderDerivingStatus = (mock: ReturnType<typeof createMockSession>) => {
+  const derived: (RunInfo['status'] | undefined)[] = [];
+  const rendered = renderHook(() => {
+    const view = useView({ session: mock.session });
+    derived.push(view.runOf('hello')?.status);
+    return view;
+  });
+  return { derived, ...rendered };
+};
+
 describe('useView', () => {
   it('returns empty messages, hasOlder=false, loading=false when no source and no nearest session', () => {
     const { result } = renderHook(() => useView());
@@ -487,6 +519,207 @@ describe('useView', () => {
           statusCode: 400,
         });
       });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Run lifecycle reactivity
+  // ---------------------------------------------------------------------------
+
+  describe('Run lifecycle reactivity', () => {
+    it('re-renders on run-end so a runOf-derived status is current', () => {
+      const mock = createMockSession(['hello']);
+      (mock.view.runOf as ReturnType<typeof vi.fn>).mockReturnValue(runInfo('active'));
+
+      const { derived } = renderDerivingStatus(mock);
+      expect(derived.at(-1)).toBe('active');
+
+      (mock.view.runOf as ReturnType<typeof vi.fn>).mockReturnValue(runInfo('complete'));
+      act(() => {
+        mock.emitTree('run', {
+          type: 'end',
+          runId: 'run-1',
+          clientId: 'c1',
+          invocationId: 'inv-1',
+          serial: 'serial-1',
+          reason: 'complete',
+        });
+      });
+
+      expect(derived.at(-1)).toBe('complete');
+    });
+
+    it('re-renders on suspend and resume', () => {
+      const mock = createMockSession(['hello']);
+      (mock.view.runOf as ReturnType<typeof vi.fn>).mockReturnValue(runInfo('active'));
+
+      const { derived } = renderDerivingStatus(mock);
+
+      (mock.view.runOf as ReturnType<typeof vi.fn>).mockReturnValue(runInfo('suspended'));
+      act(() => {
+        mock.emitTree('run', {
+          type: 'suspend',
+          runId: 'run-1',
+          clientId: 'c1',
+          invocationId: 'inv-1',
+          serial: 'serial-1',
+        });
+      });
+      expect(derived.at(-1)).toBe('suspended');
+
+      (mock.view.runOf as ReturnType<typeof vi.fn>).mockReturnValue(runInfo('active'));
+      act(() => {
+        mock.emitTree('run', {
+          type: 'resume',
+          runId: 'run-1',
+          clientId: 'c1',
+          invocationId: 'inv-1',
+          serial: 'serial-2',
+        });
+      });
+      expect(derived.at(-1)).toBe('active');
+    });
+
+    it('holds the Run lookups stable across a message-only update', () => {
+      const mock = createMockSession(['hello']);
+      const { result } = renderHook(() => useView({ session: mock.session }));
+      const before = result.current.runOf;
+
+      (mock.view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([
+        { codecMessageId: 'cmid-1', message: 'hello' },
+        { codecMessageId: 'cmid-2', message: 'world' },
+      ]);
+      act(() => {
+        mock.emitTree('update');
+      });
+
+      expect(result.current.messages).toHaveLength(2);
+      expect(result.current.runOf).toBe(before);
+    });
+
+    it('unsubscribes from run events on unmount', () => {
+      const mock = createMockSession(['hello']);
+      const { unmount } = renderHook(() => useView({ session: mock.session }));
+      expect(mock.viewHandlerCount('run')).toBe(1);
+
+      unmount();
+
+      expect(mock.viewHandlerCount('run')).toBe(0);
+    });
+
+    it('does not subscribe to run events when skip is true', () => {
+      const mock = createMockSession(['hello']);
+      renderHook(() => useView({ session: mock.session, skip: true }));
+
+      expect(mock.viewHandlerCount('run')).toBe(0);
+    });
+
+    it('re-renders on run-start', () => {
+      // The mock's `runOf` answers undefined until stubbed — the pre-run state.
+      const mock = createMockSession(['hello']);
+
+      const { derived } = renderDerivingStatus(mock);
+      expect(derived.at(-1)).toBeUndefined();
+
+      (mock.view.runOf as ReturnType<typeof vi.fn>).mockReturnValue(runInfo('active'));
+      act(() => {
+        mock.emitTree('run', {
+          type: 'start',
+          runId: 'run-1',
+          clientId: 'c1',
+          invocationId: 'inv-1',
+          serial: 'serial-1',
+        });
+      });
+
+      expect(derived.at(-1)).toBe('active');
+    });
+
+    it('re-renders when a run ends in error', () => {
+      const mock = createMockSession(['hello']);
+      (mock.view.runOf as ReturnType<typeof vi.fn>).mockReturnValue(runInfo('active'));
+
+      const { derived } = renderDerivingStatus(mock);
+
+      const error = new Ably.ErrorInfo('unable to complete run; model failed', ErrorCode.BadRequest, 400);
+      (mock.view.runOf as ReturnType<typeof vi.fn>).mockReturnValue({
+        runId: 'run-1',
+        clientId: 'c1',
+        status: 'error',
+        invocationId: 'inv-1',
+        steps: [],
+        error,
+      });
+      act(() => {
+        mock.emitTree('run', {
+          type: 'end',
+          runId: 'run-1',
+          clientId: 'c1',
+          invocationId: 'inv-1',
+          serial: 'serial-1',
+          reason: 'error',
+          error,
+        });
+      });
+
+      expect(derived.at(-1)).toBe('error');
+    });
+
+    it('holds every handle callback stable across a run event', () => {
+      const mock = createMockSession(['hello']);
+      const { result } = renderHook(() => useView({ session: mock.session }));
+      const before = {
+        runOf: result.current.runOf,
+        run: result.current.run,
+        runs: result.current.runs,
+        send: result.current.send,
+        regenerate: result.current.regenerate,
+        edit: result.current.edit,
+        branchSelection: result.current.branchSelection,
+        loadOlder: result.current.loadOlder,
+      };
+
+      act(() => {
+        mock.emitTree('run', {
+          type: 'end',
+          runId: 'run-1',
+          clientId: 'c1',
+          invocationId: 'inv-1',
+          serial: 'serial-1',
+          reason: 'complete',
+        });
+      });
+
+      expect(result.current.runOf).toBe(before.runOf);
+      expect(result.current.run).toBe(before.run);
+      expect(result.current.runs).toBe(before.runs);
+      expect(result.current.send).toBe(before.send);
+      expect(result.current.regenerate).toBe(before.regenerate);
+      expect(result.current.edit).toBe(before.edit);
+      expect(result.current.branchSelection).toBe(before.branchSelection);
+      expect(result.current.loadOlder).toBe(before.loadOlder);
+    });
+
+    it('re-reads Run state once it has subscribed', () => {
+      const mock = createMockSession(['hello']);
+      // Hold the message snapshot reference-stable, as the real view does, so
+      // the effect's message sync is an Object.is no-op and React bails out of
+      // it. Any render past the first is then attributable to the Run re-read.
+      (mock.view.getMessages as ReturnType<typeof vi.fn>).mockReturnValue([
+        { codecMessageId: 'hello', message: 'hello' },
+      ]);
+
+      let renders = 0;
+      renderHook(() => {
+        renders += 1;
+        return useView({ session: mock.session });
+      });
+
+      // A lifecycle event landing between the first render and the
+      // subscription reaches no handler, and nothing follows a terminal event
+      // to correct it — so subscribing re-reads rather than trusting the
+      // status the first render saw.
+      expect(renders).toBeGreaterThan(1);
     });
   });
 });

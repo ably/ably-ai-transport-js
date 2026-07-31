@@ -43,7 +43,7 @@ When the client session receives a message from the channel, it decodes it and f
 
 Every fold emits the tree's `output` event — `{ runId?, inputCodecMessageId?, codecMessageId?, serial?, events }` — carrying that message's decoded output events (empty for inputs-only folds). An input fold carries `inputCodecMessageId` and no `runId` (the agent mints run-ids, so an input node has none). This is the single fan-out point for streaming outputs. Two consumers subscribe to it:
 
-- The **View** consumes it and, when the run is on the visible branch, recomputes its message list and emits an `update` event — the signal hooks render from. (The View does not re-expose `output`; it surfaces only `update`.)
+- The **View** consumes it and, when the run is on the visible branch, recomputes its message list and emits an `update` event — the signal hooks render from. (The View does not re-expose `output`; content folds surface as `update`, and a visible run's lifecycle transitions surface as `run`.)
 - The Vercel [chat transport](chat-transport.md) builds a per-run `ReadableStream<UIMessageChunk>` from it (via `createRunOutputStream`), which is what `useChat` consumes. Streaming is a useChat-integration concern owned by the Vercel layer — the generic core exposes only the `output` event, not a stream.
 
 For most application code, the accumulated messages via `view.getMessages()` / `view.on('update')` are the right consumption path — the tree updates on every event, so the view always reflects the latest partial state while streaming. Subscribing to `tree.on('output')` directly is for the narrow cases that need raw per-event granularity: non-rendering side effects (e.g. playing a sound per token) or custom projection logic that differs from the codec's.
@@ -71,6 +71,8 @@ useEffect(() => {
 ```
 
 Every `'update'` event reads the View's pre-computed visible message snapshot via `getMessages()`. The hooks that follow this pattern: `useView()`, `useMessageSync()`.
+
+Run status is a second, disjoint signal. A run suspending, resuming, or reaching a terminal status changes what `runOf()` / `runs()` report while leaving the message list byte-identical, so the tree classifies it as content rather than structure and the View routes it to `'run'` — `'update'` does not fire. A consumer that renders from Run status therefore subscribes to both; `useView()` does this internally, ticking on `'run'` events to re-render the component so its Run lookups answer with the new status.
 
 ## History hydration path
 

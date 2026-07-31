@@ -107,6 +107,12 @@ view.on('update', () => {
   // the last assistant message grows as tokens stream in
 });
 
+// Subscribe to run status separately - a run reaching a terminal status
+// leaves the message list unchanged, so it fires 'run', not 'update'
+view.on('run', () => {
+  // re-read view.runOf(...) / view.runs() for the current status
+});
+
 // For raw per-event granularity, subscribe to the tree's `output` event
 // (routed by inputCodecMessageId). Framework adapters like Vercel's useChat
 // build a ReadableStream from it; most apps use the view instead.

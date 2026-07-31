@@ -1,34 +1,25 @@
 ---
 name: release
-description: Cut a new release - create release branch, bump version in package.json and src/version.ts, refresh root and demo lockfiles, regenerate CHANGELOG, and stage for review. Usage: /release patch|minor|major or /release <exact-version>.
-allowed-tools: Bash(git checkout *), Bash(git branch *), Bash(git status *), Bash(git diff *), Bash(git add *), Bash(git log *), Bash(pnpm install *), Bash(pnpm run *), Bash(rm *), Bash(ls *), Read, Edit, Glob, Grep, Skill, AskUserQuestion
+description: Cut a new release - create the release branch, bump the version in package.json and src/version.ts, regenerate the CHANGELOG entry, commit, and open the release PR. Usage: /release patch|minor|major or /release <exact-version>.
+allowed-tools: Bash(git checkout *), Bash(git branch *), Bash(git status *), Bash(git diff *), Bash(git add *), Bash(git log *), Bash(git rev-parse *), Bash(git commit *), Bash(git push *), Bash(gh pr create *), Bash(gh pr list *), Bash(gh pr view *), Bash(pnpm run *), Read, Edit, Glob, Grep, Skill, AskUserQuestion
 ---
 
 # Release: Cut a New Release Branch
 
-Create a `release/NEW_VERSION` branch, bump the version in `package.json`
-and `src/version.ts`, refresh lockfiles, regenerate the `CHANGELOG.md`
-entry for the new version, and stage everything for review. Do **not** commit — committing and pushing
-remain human actions per `CLAUDE.md` workflow rules.
+A release PR is an **ordinary PR**. It changes exactly three files —
+`package.json`, `src/version.ts`, `CHANGELOG.md` — and nothing else. Treat it
+as the small, boring change it is: no extra validation ceremony, no CI
+babysitting, no narrative.
 
 ## Step 1: Pre-flight checks
 
-Run in parallel:
+1. `git status --porcelain` — must be empty (clean working tree).
+2. `git rev-parse main origin/main` — the release must be cut from the current
+   `origin/main` tip. If the local `main` is behind, branch from `origin/main`
+   and say so in one line.
 
-1. `git branch --show-current` — must be `main`.
-2. `git status --porcelain` — must be empty (clean working tree).
-3. `git log -1 --format=%cI main` — show the timestamp of the current tip
-   so the user can sanity-check that `main` is up-to-date.
-
-If either of the first two checks fails, stop and tell the user what to
-fix. If the current branch is already a `release/*` branch, stop — this
-skill only cuts new releases from `main`.
-
-Per `CLAUDE.md`, never run `git fetch`, `git pull`, or `git push` from this
-skill. Warn the user that the local `main` may be behind the remote and
-should be refreshed manually before continuing. Also remind the user to
-verify that CI is green on `main` (per `CONTRIBUTING.md` release step 1)
-— this skill does not check CI status.
+If the working tree is dirty, stop and say what to fix. If the current branch
+is already a `release/*` branch, stop — this skill only cuts new releases.
 
 ## Step 2: Read the current version
 
@@ -53,188 +44,125 @@ Per `CONTRIBUTING.md`:
 - Minor: new functionality or features.
 - Patch: bug fixes requiring no consumer action.
 
-Record the result as `NEW_VERSION` and show the user:
-
-```
-Releasing: OLD_VERSION -> NEW_VERSION
-```
-
 ## Step 4: Create the release branch
 
-```
-git checkout -b release/NEW_VERSION
-```
+`git checkout -b release/NEW_VERSION <base>`, where `<base>` is the
+`origin/main` tip from Step 1.
 
-If the branch already exists, stop and ask the user to delete it or pick a
-different version — never `--force` over an existing branch.
+If `release/NEW_VERSION` already exists, stop and ask the user to delete it or
+pick a different version. Never `--force` over it and never reuse it blindly:
+it may hold work in progress — a worktree checked out on it, uncommitted edits,
+an earlier attempt at this release.
 
-## Step 5: Bump the version in package.json and src/version.ts
+## Step 5: Bump the version
 
-Use **Edit** to change the `version` field in `package.json` only. Do NOT
-use `pnpm version` — it creates a tag and commit, and we want the human
-to control both.
+Use **Edit** on:
 
-Then use **Edit** to update the `VERSION` constant in `src/version.ts` to
-the same `NEW_VERSION` string. This file is the source of the
-`ai-transport-js` agent identifier value sent to Ably for SDK usage
-tracking — it must stay in lockstep with `package.json`.
+1. `package.json` — the `version` field. Do NOT use `pnpm version`; it creates
+   a tag and a commit, and the human controls both.
+2. `src/version.ts` — the `VERSION` constant, same string. It is the
+   `ai-transport-js` agent identifier sent to Ably for SDK usage tracking and
+   must stay in lockstep with `package.json`.
 
-## Step 6: Refresh the root lockfile
+**No lockfile work.** `pnpm-lock.yaml` does not record the package's own
+version, and every demo app depends on the SDK through a `link:` specifier
+rather than a version range, so no root or demo lockfile changes. Do not run
+`pnpm install`, do not delete `node_modules`, and do not stage any lockfile.
 
-Run `pnpm install` at the repo root. This regenerates `pnpm-lock.yaml`
-with the new version.
-
-Watch for unrelated lockfile churn (transitive updates, metadata drift).
-If the `git diff pnpm-lock.yaml` looks unusually large, surface it to
-the user before continuing — don't hide it under the version bump.
-
-## Step 7: Refresh demo app lockfiles
-
-Per `CONTRIBUTING.md` release step 4.3, every demo app picks up the new
-version:
-
-1. Use **Glob** with pattern `demo/**/package.json` to enumerate demo app
-   directories. Filter out any path containing `node_modules/`. Record
-   the absolute directory of each match — these are the demo app roots.
-2. For each demo app root, in its own **Bash** invocation (one per app,
-   because `cd` does not persist between tool calls):
-   - `rm -rf <abs-app-dir>/node_modules`
-   - `pnpm install --dir <abs-app-dir>` — prefer this over
-     `cd <abs-app-dir> && pnpm install` for reliability across shells.
-3. Read each demo's `package.json`. If it references `@ably/ai-transport`
-   via a `file:` path (e.g. `"file:../.."`), note it in the summary — its
-   lockfile will pick up local unpublished code rather than the new
-   published version.
-
-If the Glob returns no matches, skip this step.
-
-## Step 8: Regenerate the CHANGELOG entry
+## Step 6: Regenerate the CHANGELOG entry
 
 Invoke the **changelog** skill via the **Skill** tool with
-`skill: "changelog"` and `args: "NEW_VERSION invoked-by-release"`. The
-second arg signals the changelog skill that it is being invoked as part
-of the release flow so its closing "use `/commit`" advice is suppressed
-(see that skill's Step 7).
+`skill: "changelog"` and `args: "NEW_VERSION invoked-by-release"`.
 
-The changelog skill will:
+It finds the previous tag, collects the PRs merged since it, and inserts a new
+`## [NEW_VERSION]` block above the existing entries. Keep its "Skipped PRs"
+output — Step 8 reuses it verbatim for the PR description.
 
-- Find the previous tag (`OLD_VERSION`).
-- Fetch merged PRs since that tag's date via `gh`.
-- Format and insert a new `## [NEW_VERSION]` block in `CHANGELOG.md`,
-  preserving the intro paragraph above all version blocks.
+If it reports no PRs found (placeholder `-` bullet), say so and fill the
+bullets in before committing.
 
-If the changelog skill reports no PRs found (placeholder `-` bullet),
-note this in the final summary and remind the user to fill it in.
+## Step 7: Commit
 
-The changelog is end-user-facing and must never contain internal-only
-references — Jira `AIT-*` ticket/epic ids, `AIT-*` / `RSA*`-style spec
-points, `AITDR-*` / `AITRFC-*` RFC/DR documents, internal Slack threads,
-or standup notes. The changelog skill enforces this; if any slip through
-into the generated entry, strip them before staging in Step 10.
+Run `pnpm run format` (prettier over the repo — it is EOL-safe on this
+checkout even though `format:check` is noisy locally), then stage **only** the
+three release files:
 
-**Contract after this step:** `CHANGELOG.md` is modified but not staged.
-The working tree also contains the `package.json` and `src/version.ts`
-edits from Step 5 and the lockfile changes from Steps 6-7, all unstaged.
-Step 10 stages them.
+```
+git add package.json src/version.ts CHANGELOG.md
+```
 
-## Step 9: Validate
+Verify with `git diff --cached --stat` that exactly those three appear, then
+commit.
 
-Run `pnpm run precommit` (format:check + lint + typecheck).
+**The commit message is one line:**
 
-- If it fails on files this skill touched (lockfile formatting, CHANGELOG
-  formatting), fix them and re-run.
-- If it fails on unrelated files, stop and surface the failure — do not
-  paper over pre-existing errors.
+```
+Release vNEW_VERSION
+```
 
-## Step 10: Stage and present for review
+No body. Nothing to explain — the CHANGELOG entry in the same commit is the
+explanation. This matches every prior release commit; the repo does not use
+conventional-commit prefixes for releases. The only additional line is the
+`Co-Authored-By:` trailer.
 
-Stage the files this skill modified:
+Never put any of the following in a release commit message: a summary of the
+changelog, a list of PRs, or a note that some PR still has to merge or that
+the branch has to be rebased. That text becomes permanent history and is
+wrong the moment it lands.
 
-1. Always stage: `git add package.json pnpm-lock.yaml src/version.ts CHANGELOG.md`
-2. For each demo app directory recorded in Step 7, stage its lockfile
-   explicitly using its path — for example
-   `git add demo/vercel/react/use-chat/pnpm-lock.yaml`. Do **not**
-   rely on shell globs like `demo/**/pnpm-lock.yaml` — `**` is not
-   reliably expanded without `globstar` and misses nested paths.
+## Step 8: Push and open the PR
 
-Then run `git status` and `git diff --cached --stat`, and show the user:
+Push the branch and open the PR against `main`, titled `Release vNEW_VERSION`.
+Open it as a draft if the changelog documents a PR that has not merged yet —
+silently; the draft state is the signal, no explanatory note in the body.
 
-- `Version: OLD_VERSION -> NEW_VERSION`
-- `Branch: release/NEW_VERSION`
-- Files staged (from `git diff --cached --stat`)
-- CHANGELOG summary: N PRs since OLD_VERSION, or "placeholder bullet
-  (fill in manually)"
-- Any flags raised earlier (large lockfile diff, file: demo references).
+The body is short. Four paragraphs, in this order:
 
-**Do NOT commit.** Per `CLAUDE.md`: "Never commit changes. All changes
-must be reviewed by a human before committing." Instruct the user to
-review and run `/commit` (or commit manually) to finalise the version
-bump.
+1. What the PR changes: the version bump in `package.json` / `src/version.ts`
+   and the new `CHANGELOG.md` entry. One or two sentences.
+2. The headline change in this release. One or two sentences.
+3. `PRs included since OLD_VERSION`, split into two labelled lists:
+   - **User-facing (in changelog)** — every PR that produced a `CHANGELOG.md`
+     bullet. One `#number` per line; add a two-or-three-word parenthetical
+     only for the headline and for breaking changes.
+   - **Not user-facing (not in changelog)** — every other PR in the window,
+     each with a one-word reason (`CI`, `demo`, `docs`, `test-only`,
+     `internal tooling`, `internal refactor`). This is the changelog skill's
+     "Skipped PRs" output.
 
-## Step 11: Post-commit reminder
+   The union of the two lists is every PR in the window, so nothing is
+   silently dropped.
 
-After presenting the staged changes, remind the user of the remaining
-steps from `CONTRIBUTING.md` that are out of scope for this skill:
+4. Optional, only when true: any change this PR makes beyond the three release
+   files — for example an edit to this skill. One or two sentences.
 
-1. Verify CI is green on `main` before opening the release PR (if not
-   already confirmed in Step 1).
-2. Commit the staged changes with `/commit`.
-3. Open a PR for `release/NEW_VERSION` → `main` and get it reviewed and
-   merged. Write the PR body using the structure in "Release PR
-   description" below, and open it as a **draft** when it depends on
-   not-yet-merged PRs.
-4. Create a [GitHub release](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository#creating-a-release):
-   - Tag: `NEW_VERSION` (no `v` prefix).
-   - Title: `vNEW_VERSION`.
-   - Use "Generate release notes" to populate the description.
-5. Verify the npm publish workflow (`release.yml`) and the CDN publish workflow (`publish.cdn.yml`) both complete successfully.
-6. Update the [Ably Changelog](https://changelog.ably.com/) via
+Nothing else goes in the body. No validation report, no test counts, no
+merge-order or rebase notes, no "worth your attention" section.
+
+## Step 9: What is left for a human
+
+Report the PR link, then this list, and stop. Do not summarise the diff back —
+not the version numbers, not the file list, not what validation ran.
+
+1. Merge the PR.
+2. Create a [GitHub release](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository#creating-a-release):
+   tag `NEW_VERSION` (no `v` prefix), title `vNEW_VERSION`, description from
+   "Generate release notes".
+3. The npm (`release.yml`) and CDN (`publish.cdn.yml`) publish workflows fire
+   on release publication.
+4. Update the [Ably Changelog](https://changelog.ably.com/) via
    [Headway](https://headwayapp.co/).
 
-### Release PR description
+## Do not
 
-The release PR body must make the changelog's coverage auditable at a
-glance: a reviewer should see every PR that was considered and why each one
-did or did not reach the `CHANGELOG.md`. Follow the structure of
-[#255](https://github.com/ably/ably-ai-transport-js/pull/255) and
-[#270](https://github.com/ably/ably-ai-transport-js/pull/270):
-
-1. A one-paragraph summary: what the bump touches (`package.json`,
-   `src/version.ts`, `CHANGELOG.md`) and the headline change.
-2. A `PRs included since OLD_VERSION` section with two labelled lists:
-   - **User-facing (in changelog)**: every PR that produced a `CHANGELOG.md`
-     bullet, one `#number` per line. Add a short parenthetical for the
-     headline and for any breaking change.
-   - **Not user-facing (not in changelog)**: every other PR in the release
-     window, each with a one-line reason (`CI`, `demo`, `test-only`,
-     `internal tooling`, `internal refactor`, ...). This is exactly the
-     changelog skill's "Skipped PRs" (its Step 7), plus any PR dropped by the
-     net-change rule; reuse that output so the two skills stay consistent.
-
-   The union of the two lists should be every PR in the release window
-   (`git log OLD_VERSION..main`, plus any not-yet-merged PR the release
-   deliberately documents ahead of merge). Nothing is silently dropped.
-
-3. When any changelog entry is for a PR that has not merged yet
-   (ahead-of-merge), or the branch was cut from an earlier `main`, add a
-   blockquote **"Rebase before cutting"** note: list the PRs to merge first,
-   and instruct a rebase of `release/NEW_VERSION` onto the updated `main` so
-   the released tree matches the changelog before the tag is cut.
-
-## Things to watch for
-
-- **`pnpm install` side effects.** Transitive dependency updates can
-  produce large `pnpm-lock.yaml` diffs unrelated to the version bump.
-  Surface these — do not hide them.
-- **Demo apps with `file:` references.** `demo/*/package.json` that
-  imports `@ably/ai-transport` via a local path picks up unpublished
-  code. Flag it so the user knows the demo isn't exercising the released
-  artifact.
-- **CLAUDE.md remote policy.** Never run `git push`, `git pull`,
-  `git fetch`, or any network-modifying git command.
-- **Commit policy.** The skill stages but does not commit. The Python
-  reference (`ably-python` PR 677) commits directly — we intentionally
-  deviate.
-- **Branch already exists.** If `release/NEW_VERSION` already exists
-  locally, stop rather than overwriting — the user may have work in
-  progress there.
+- **Do not watch, poll, or wait for CI** — not on `main`, not on the release
+  PR. A version bump plus a markdown edit cannot break the build; if a check
+  does fail, a human sees it on the PR and deals with it separately.
+- **Do not touch lockfiles or `node_modules`** (see Step 5).
+- **Do not run the test suite, typecheck, or lint** for a release. `prettier`
+  on the changelog is the only formatting that matters.
+- **Do not write memory entries about the release** — not the version, not the
+  PR number, not which PRs still need to merge. A release is routine work with
+  no durable lesson in it.
+- **Do not restate what the user already told you** — if they asked for a
+  specific PR to be included, they know it is not merged yet.

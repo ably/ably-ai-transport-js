@@ -8,7 +8,8 @@ allowed-tools: Bash(git tag *), Bash(git log *), Bash(gh pr list *), Bash(date *
 
 Generate a `CHANGELOG.md` entry for a new version by summarising merged PRs
 since the last release tag. Insert the entry at the top of the existing
-changelog. Do not commit — leave the change staged for review.
+changelog and leave it uncommitted — the `release` skill commits it as part of
+the release commit.
 
 ## Step 1: Determine the target version and invocation mode
 
@@ -16,9 +17,8 @@ Parse `$ARGUMENTS`:
 
 - First token, if it looks like semver (e.g. `0.2.0`), is `NEW_VERSION`.
 - If the literal token `invoked-by-release` appears anywhere in the args,
-  set `INVOKED_BY_RELEASE = true`. This suppresses the trailing
-  "use `/commit`" reminder in Step 7 because the calling `release` skill
-  will present its own summary.
+  set `INVOKED_BY_RELEASE = true`. The calling `release` skill owns the
+  commit and the summary, so Step 7 stops after reporting the entry.
 
 If no semver is present in `$ARGUMENTS`, read the `version` field from
 `package.json`. Use **AskUserQuestion** to ask whether to generate
@@ -172,12 +172,9 @@ Print:
   to fill in the `### What's Changed` bullets before merging.
 
 If `INVOKED_BY_RELEASE` is true (Step 1), **stop here** — the calling
-`release` skill will present its own staging summary and commit
-instructions. Do not print a `/commit` reminder.
+`release` skill owns the commit and its own summary.
 
-Otherwise, remind the user that `CHANGELOG.md` is modified but not
-staged. Per `CLAUDE.md`, committing is a human action — use `/commit`
-(or commit manually) after review.
+Otherwise, say that `CHANGELOG.md` is edited and uncommitted, and stop.
 
 ## Things to watch for
 

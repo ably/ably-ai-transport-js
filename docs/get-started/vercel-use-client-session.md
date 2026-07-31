@@ -61,12 +61,13 @@ function ChatInner({ chatId, clientId }: { chatId: string; clientId?: string }) 
   } = useView({ session, limit: 30 });
 
   // Read streaming state and the runId-to-cancel off the Run that owns the
-  // latest visible message. Terminal statuses ('complete' / 'cancelled') hide
-  // the Stop button.
-  const latestRun = runOf(messages.at(-1)?.id ?? '');
+  // latest visible message. Stop shows only while the run is actively
+  // streaming: a 'suspended' run is paused awaiting input, so there is no live
+  // stream to abort, and the terminal statuses are done. useView re-renders on
+  // these transitions, so the derivation stays current.
+  const latestRun = runOf(messages.at(-1)?.codecMessageId ?? '');
   const latestRunId = latestRun?.runId;
-  const latestStatus = latestRun?.status;
-  const isStreaming = latestRunId !== undefined && latestStatus !== 'complete' && latestStatus !== 'cancelled';
+  const isStreaming = latestRun?.status === 'active';
 
   const handleSend = async () => {
     const text = input.trim();

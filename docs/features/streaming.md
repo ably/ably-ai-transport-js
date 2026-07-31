@@ -84,9 +84,17 @@ const unsubscribe = view.on('update', () => {
   const messages = view.getMessages();
   // the last assistant message grows as tokens arrive
 });
+
+// Run status transitions arrive separately - a run reaching 'complete' does
+// not change the message list, so it fires 'run', not 'update'. Subscribe to
+// both to keep a Stop button or a disabled composer in step with the run.
+const unsubscribeRun = view.on('run', () => {
+  const latestRun = view.runOf(view.getMessages().at(-1)?.codecMessageId ?? '');
+  const isStreaming = latestRun?.status === 'active';
+});
 ```
 
-This is the primary consumption path. In React, the `useView()` hook handles the subscription automatically.
+This is the primary consumption path. In React, the `useView()` hook handles both subscriptions automatically.
 
 ### The output event
 

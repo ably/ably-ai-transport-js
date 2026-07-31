@@ -9,6 +9,8 @@ import { Invocation } from '../../../src/core/transport/invocation.js';
 import type { BranchHandle, ClientRun, ClientSession, ClientView, Tree } from '../../../src/core/transport/types.js';
 
 type TreeEventType = 'update' | 'ably-message' | 'run' | 'output';
+/** The events a View exposes — the Tree's set minus `output`, which the View does not re-expose. */
+type ViewEventType = Exclude<TreeEventType, 'output'>;
 type SessionEventType = 'error';
 type Handler = ((...args: never[]) => void) | (() => void);
 
@@ -33,6 +35,8 @@ export interface MockSession {
   emit: (event: SessionEventType, ...args: unknown[]) => void;
   /** Fire an event on tree/view (update, ably-message, run, output). */
   emitTree: (event: TreeEventType, ...args: unknown[]) => void;
+  /** How many handlers are currently subscribed to `event` on the view — lets a test assert (un)subscription directly. */
+  viewHandlerCount: (event: ViewEventType) => number;
   tree: Tree<CodecOutputEvent, unknown>;
   view: ClientView<CodecInputEvent, string>;
 }
@@ -61,6 +65,8 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
       }
     }
   };
+
+  const viewHandlerCount = (event: ViewEventType): number => viewHandlers.get(event)?.size ?? 0;
 
   const on = vi.fn((event: string, handler: Handler) => {
     let set = sessionHandlers.get(event);
@@ -167,6 +173,7 @@ export const createMockSession = (initialMessages: string[] = []): MockSession =
     on,
     emit,
     emitTree,
+    viewHandlerCount,
     tree,
     view,
   };

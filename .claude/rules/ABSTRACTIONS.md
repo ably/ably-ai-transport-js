@@ -71,7 +71,13 @@ of truth:
   history) and active-run tracking. Emits unfiltered events for every change.
 - **View** — a read-only pagination projection over the Tree (`View<TMessage>`):
   which history-loaded nodes are visible, re-emitting the Tree's events scoped
-  to the visible window. The branch a View walks is supplied by an injected
+  to the visible window. Those events are **disjoint by kind**, not graded by
+  importance: content folds announce themselves on the message-list event, run
+  lifecycle on the run event. A status-only transition changes what the Run
+  reads report while leaving the message list identical, so it fires the latter
+  and _only_ the latter — anything rendering Run state must subscribe to it, and
+  a consumer watching the message-list event alone will never see a run end.
+  The branch a View walks is supplied by an injected
   **BranchSource** strategy, so one projection serves both sides — the client's
   whole-tree branch navigation and the agent's leaf-pinned read. The client's
   `session.view` extends the base as `ClientView` (branch navigation + the write

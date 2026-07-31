@@ -52,14 +52,34 @@ Both runs produce independent event streams. The message list grows with respons
 
 ## Detecting whether a run is streaming
 
-Read the lifecycle status from the latest visible run. `RunInfo.status` is `'active'` while the run is producing chunks, `'suspended'` while it is paused awaiting input (still live), and one of the terminal `RunEndReason` values — `'complete'`, `'cancelled'`, or `'error'` — once it ends. When the status is `'error'`, `RunInfo.error` carries the `Ably.ErrorInfo` describing the failure. Treat `'active'` and `'suspended'` as "in progress":
+Read the lifecycle status from the latest visible run. `RunInfo.status` is `'active'` while the run is producing chunks, `'suspended'` while it is paused awaiting input (still live), and one of the terminal `RunEndReason` values — `'complete'`, `'cancelled'`, or `'error'` — once it ends. When the status is `'error'`, `RunInfo.error` carries the `Ably.ErrorInfo` describing the failure.
+
+Two different questions read the same status, and they have different answers for a suspended run:
 
 ```typescript
-const latest = session.view.runs().at(-1);
-const isStreaming = latest?.status === 'active' || latest?.status === 'suspended';
+const { runs } = useView({ session });
+
+const latest = runs().at(-1);
+
+// Live — the run still exists on the wire, so it is worth cancelling.
+const isLive = latest?.status === 'active' || latest?.status === 'suspended';
+
+// Streaming — chunks are arriving. A suspended run is paused awaiting input,
+// so there is no stream to abort: gate a Stop button on 'active' alone and let
+// the user proceed via the approval or tool-result affordance.
+const isStreaming = latest?.status === 'active';
 ```
 
-Use this to toggle between "Send" and "Stop" buttons, or to queue messages for later delivery.
+Use `isStreaming` to toggle between "Send" and "Stop" buttons, or to queue messages for later delivery; use `isLive` to decide whether there is a run to cancel.
+
+Take the status from the `runs()` the hook returns rather than reading `session.view` in the render body: the hook re-renders on run lifecycle transitions, so the derivation is current the moment the run ends. Outside React, subscribe to the view's `run` event for the same reason — a status change leaves the message list untouched, so `update` does not fire:
+
+```typescript
+view.on('run', () => {
+  const latest = view.runs().at(-1);
+  // re-render from latest.status
+});
+```
 
 ## UI pattern: queue while streaming
 

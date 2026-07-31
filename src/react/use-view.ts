@@ -1,11 +1,12 @@
 /**
  * useView — reactive paginated view of the conversation.
  *
- * Subscribes to view updates and exposes the visible messages, msg-anchored
- * branch navigation, write operations, pagination state, and a `loadOlder`
- * callback. Pass `session` to use a session's default view, or `view` to
- * subscribe to a specific {@link View} directly. When both are omitted,
- * defaults to the nearest {@link ClientSessionProvider}'s session via context.
+ * Subscribes to view updates and run lifecycle events, and exposes the visible
+ * messages, msg-anchored branch navigation, write operations, pagination state,
+ * and a `loadOlder` callback. Pass `session` to use a session's default view, or
+ * `view` to subscribe to a specific {@link View} directly. When both are
+ * omitted, defaults to the nearest {@link ClientSessionProvider}'s session via
+ * context.
  */
 
 import * as Ably from 'ably';
@@ -68,18 +69,25 @@ export interface ViewHandle<TInput extends CodecInputEvent, TMessage> {
   /**
    * Look up the {@link RunInfo} for the Run that owns `codecMessageId`.
    * Returns `undefined` when the codec-message-id hasn't been observed.
+   *
+   * Call this during render: a visible Run starting, suspending, resuming, or
+   * ending re-renders the component, and the call then reports the new status.
+   * The callback itself is referentially stable across those transitions, so
+   * deriving from it inside a `useMemo` or `useEffect` keyed on it holds a
+   * stale status.
    * See {@link View.runOf}.
    */
   runOf: (codecMessageId: string) => RunInfo | undefined;
   /**
    * Direct lookup by runId. Returns `undefined` when the Run hasn't been
-   * observed. See {@link View.run}.
+   * observed. Call it during render — see {@link ViewHandle.runOf}.
+   * See {@link View.run}.
    */
   run: (runId: string) => RunInfo | undefined;
   /**
    * Snapshot of the visible Runs along the selected branch, in
    * chronological order. Returns `[]` when the view isn't resolved.
-   * See {@link View.runs}.
+   * Call it during render — see {@link ViewHandle.runOf}. See {@link View.runs}.
    */
   runs: () => RunInfo[];
   /**
@@ -161,7 +169,7 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
   const autoLoad = limit !== undefined;
   const autoLoadedRef = useRef(false);
 
-  // Subscribe to view updates
+  // Subscribe to view updates and run lifecycle transitions
   useEffect(() => {
     if (!resolvedView) {
       setMessages([]);
@@ -185,6 +193,14 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
     const unsubRun = resolvedView.on('run', () => {
       setRunTick((tick) => tick + 1);
     });
+
+    // Re-read the Run state on subscribe, mirroring the message sync above. A
+    // lifecycle event landing between the render that read the status and this
+    // subscription reaches no handler, and nothing follows a terminal event to
+    // correct it — so a run ending in that window would strand the UI on a
+    // status that never moves again.
+    setRunTick((tick) => tick + 1);
+
     return () => {
       unsubUpdate();
       unsubRun();
@@ -224,7 +240,9 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
     void loadOlder();
   }, [autoLoad, resolvedView, loadOlder]);
 
-  // Run lookups
+  // Run lookups. Referentially stable, and they read through to the view on
+  // every call — so call them during render; the re-render is what refreshes
+  // the answer. Memoising on their identity holds a stale one.
   const runOf = useCallback(
     (codecMessageId: string): RunInfo | undefined => resolvedView?.runOf(codecMessageId),
     [resolvedView],

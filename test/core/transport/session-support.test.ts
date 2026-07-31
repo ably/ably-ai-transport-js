@@ -266,10 +266,10 @@ describe('subscribeAndAttach', () => {
 });
 
 describe('wrapMessageProcessingError', () => {
-  it('wraps a thrown value as a SessionSubscriptionError preserving the cause', () => {
+  it('wraps a thrown value as a SessionMessageProcessingFailed preserving the cause', () => {
     const cause = new Ably.ErrorInfo('boom', 50000, 500);
     expect(wrapMessageProcessingError(cause)).toBeErrorInfo({
-      code: ErrorCode.SessionSubscriptionError,
+      code: ErrorCode.SessionMessageProcessingFailed,
       statusCode: 500,
       message: 'unable to process channel message; boom',
       cause,
@@ -293,7 +293,7 @@ describe('handleWireMessage', () => {
     }, onError);
     expect(onError).toHaveBeenCalledOnce();
     expect(onError.mock.calls[0]?.[0]).toBeErrorInfo({
-      code: ErrorCode.SessionSubscriptionError,
+      code: ErrorCode.SessionMessageProcessingFailed,
       statusCode: 500,
       message: 'unable to process channel message; bad message',
     });

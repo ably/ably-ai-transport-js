@@ -3371,7 +3371,7 @@ describe('AgentSession', () => {
       failSession.on('error', onError);
       await failSession.connect();
       const run = createRunFromOpts(failSession, { runId: 'run-1', onError });
-      await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.RunLifecycleError);
+      await expect(run.start()).rejects.toBeErrorInfoWithCode(ErrorCode.RunLifecycleEventPublishFailed);
       expect(onError).not.toHaveBeenCalled();
       await failSession.detach();
     });
@@ -3380,7 +3380,9 @@ describe('AgentSession', () => {
       const run = createRunFromOpts(session, { runId: 'run-1' });
       await run.start();
       vi.mocked(channel.publish).mockRejectedValueOnce(new Error('publish failed'));
-      await expect(run.end({ reason: 'complete' })).rejects.toBeErrorInfoWithCode(ErrorCode.RunLifecycleError);
+      await expect(run.end({ reason: 'complete' })).rejects.toBeErrorInfoWithCode(
+        ErrorCode.RunLifecycleEventPublishFailed,
+      );
     });
 
     it('pipe() calls onError when the stream errors', async () => {
@@ -3441,7 +3443,147 @@ describe('AgentSession', () => {
       simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
       await new Promise((r) => setTimeout(r, 5));
 
-      expect(sessionOnError).toHaveBeenCalledWith(expect.toBeErrorInfo({ code: ErrorCode.CancelListenerError }));
+      expect(sessionOnError).toHaveBeenCalledWith(expect.toBeErrorInfo({ code: ErrorCode.RunCancelHandlerFailed }));
+    });
+
+    it('a cancel-dispatch failure surfaces as RunCancelRoutingFailed, not as a handler error', async () => {
+      // Distinct from RunCancelHandlerFailed: the dispatch itself could not
+      // complete, so the cancel was neither honoured nor rejected. Reached when
+      // the run's own onError throws while reporting an onCancel failure — the
+      // throw escapes the cancel handler and lands in the routing bracket.
+      const sessionOnError = vi.fn();
+      session.on('error', sessionOnError);
+      const run = createRunFromOpts(session, {
+        runId: 'run-1',
+        // eslint-disable-next-line @typescript-eslint/require-await -- mock
+        onCancel: async () => {
+          throw new Error('handler boom');
+        },
+        onError: () => {
+          throw new Error('reporter boom');
+        },
+      });
+      await run.start();
+
+      simulateCancel(channel, { [HEADER_RUN_ID]: 'run-1' });
+      await new Promise((r) => setTimeout(r, 5));
+
+      expect(sessionOnError).toHaveBeenCalledWith(
+        expect.toBeErrorInfo({
+          code: ErrorCode.RunCancelRoutingFailed,
+          statusCode: 500,
+          message: 'unable to route cancel message; reporter boom',
+        }),
+      );
+      // The run was never aborted — the cancel did not take effect.
+      expect(run.abortSignal.aborted).toBe(false);
+    });
+
+    it('onSteer throws → RunSteerHandlerFailed on the run onError, and the run is unaffected', async () => {
+      // Distinct from RunCancelHandlerFailed: the steering message has already
+      // folded in by the time onSteer is notified, so only the notification
+      // failed. A functional decoder is needed so the delivered steer yields a
+      // real input event (the default mock decoder returns none).
+      const ch = createMockChannel();
+      const functionalCodec = createMockCodec();
+      functionalCodec.createDecoder = vi.fn(() => ({
+        decode: (m: Ably.InboundMessage) => {
+          const hdrs = (m.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport ?? {};
+          const id = hdrs[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
+          return {
+            inputs: [{ kind: 'user-message' as const, message: { id, content: id } }],
+            outputs: [],
+          };
+        },
+      }));
+      const steerSession = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
+        client: createMockClient(ch),
+        channelName: 'test-channel',
+        codec: functionalCodec,
+      });
+      await steerSession.connect();
+
+      const runId = 'run-steer-throw';
+      const invocationId = 'inv-steer-throw';
+      const inputEventId = 'p-steer-throw';
+      const onError = vi.fn();
+      const run = createRunFromOpts(steerSession, {
+        runId,
+        invocationId,
+        inputEventId,
+        onError,
+        onSteer: () => {
+          throw new Error('steer hint boom');
+        },
+      });
+      const startPromise = run.start();
+      deliverInputEvent(ch, {
+        invocationId,
+        codecMessageId: 'id-1',
+        serial: 'serial-1',
+        inputEventId,
+        publisherClientId: 'user-a',
+      });
+      await startPromise;
+
+      // The steer folds into the open run, firing the throwing onSteer hint.
+      deliverInputEvent(ch, {
+        invocationId,
+        runId,
+        codecMessageId: 'id-2',
+        serial: 'serial-2',
+        inputEventId: 'p-id-2',
+        publisherClientId: 'user-a',
+      });
+
+      expect(onError).toHaveBeenCalledWith(
+        expect.toBeErrorInfo({
+          code: ErrorCode.RunSteerHandlerFailed,
+          statusCode: 500,
+          message: `unable to notify steer for run ${runId}; onSteer handler threw: steer hint boom`,
+        }),
+      );
+      // Only the notification failed: the steer still folded in, so the run
+      // still sees it as fresh input, and the run was not aborted.
+      expect(run.hasInput()).toBe(true);
+      expect(run.abortSignal.aborted).toBe(false);
+
+      await steerSession.detach();
+    });
+
+    it('step.start() throws RunLifecycleEventPublishFailed on a step-start publish failure', async () => {
+      // A step-lifecycle publish failure surfaces identically to a
+      // run-lifecycle one — same code, same message shape, cause preserved.
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      const cause = new Ably.ErrorInfo('publish refused', 40160, 401);
+      vi.mocked(channel.publish).mockRejectedValueOnce(cause);
+      const step = run.createStep();
+
+      await expect(step.start()).rejects.toBeErrorInfo({
+        code: ErrorCode.RunLifecycleEventPublishFailed,
+        statusCode: 500,
+        message: 'unable to publish step-start for run run-1; publish refused',
+        cause,
+      });
+    });
+
+    it('step.end() throws RunLifecycleEventPublishFailed on a step-end publish failure', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+      const step = run.createStep();
+      await step.start();
+
+      const cause = new Ably.ErrorInfo('publish refused', 40160, 401);
+      vi.mocked(channel.publish).mockRejectedValueOnce(cause);
+
+      await expect(step.end()).rejects.toBeErrorInfo({
+        code: ErrorCode.RunLifecycleEventPublishFailed,
+        statusCode: 500,
+        message: 'unable to publish step-end for run run-1; publish refused',
+        cause,
+      });
     });
   });
 
@@ -3637,7 +3779,7 @@ describe('AgentSession', () => {
 
     it('surfaces a per-run terminal publish failure via on(error) and still tears the rest down', async () => {
       // A run-end publish that fails on session.end() must NOT abort the teardown:
-      // it is logged + emitted as RunLifecycleError on the session emitter, and
+      // it is logged + emitted as RunLifecycleEventPublishFailed on the session emitter, and
       // the OTHER open runs are still ended and the channel still detached
       // (best-effort per run).
       const ch = createMockChannel();
@@ -3662,10 +3804,10 @@ describe('AgentSession', () => {
       await s.end();
 
       // Both runs' terminal failures surfaced on the session emitter as
-      // RunLifecycleError (one per run), never silently dropped.
+      // RunLifecycleEventPublishFailed (one per run), never silently dropped.
       expect(onError).toHaveBeenCalledTimes(2);
       for (const [emitted] of onError.mock.calls) {
-        expect(emitted).toBeErrorInfoWithCode(ErrorCode.RunLifecycleError);
+        expect(emitted).toBeErrorInfoWithCode(ErrorCode.RunLifecycleEventPublishFailed);
       }
       // Teardown still completed: both controllers aborted and the channel detached.
       expect(run1.abortSignal.aborted).toBe(true);

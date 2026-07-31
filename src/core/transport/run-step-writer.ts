@@ -24,6 +24,7 @@ import type { Logger } from '../../logger.js';
 import { errorCause } from '../../utils.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
+import { publishLifecycleEvent } from './lifecycle-publish.js';
 import { pipeStream } from './pipe-stream.js';
 import type { RunManager, StepClientScopes } from './run-manager.js';
 import type { DefaultTree } from './tree.js';
@@ -307,7 +308,10 @@ export const createRunStepWriter = <
     // inference runs. markOutputProduced fires per-pass in doPipe/doSend instead.
     // The steers to stamp are likewise drained per-pipe, not here.
     const scopes = stepScopes(stepClientId);
-    const stepStartSerial = await runManager.startStep(runId, stepId, scopes);
+    const stepStartSerial = await publishLifecycleEvent(
+      { phase: 'step-start', method: 'openStep', runId, logger, logContext: { stepId } },
+      async () => runManager.startStep(runId, stepId, scopes),
+    );
     getTree().applyStepLifecycle({
       type: 'step-start',
       runId,
@@ -352,7 +356,10 @@ export const createRunStepWriter = <
       return;
     }
     const scopes = stepScopes(stepClientId);
-    await runManager.endStep(runId, stepId, stepStartSerial, reason, scopes);
+    await publishLifecycleEvent(
+      { phase: 'step-end', method: 'closeStep', runId, logger, logContext: { stepId } },
+      async () => runManager.endStep(runId, stepId, stepStartSerial, reason, scopes),
+    );
     getTree().applyStepLifecycle({
       type: 'step-end',
       runId,

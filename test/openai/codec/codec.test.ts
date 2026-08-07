@@ -741,6 +741,51 @@ describe('OpenAI codec roundtrip (offline)', () => {
   });
 });
 
+/**
+ * Build a foreign wire — an application's own publish on a channel it shares
+ * with a session. It carries no `extras.ai` envelope.
+ * @param serial - The wire serial.
+ * @param overrides - Fields overriding the foreign message defaults.
+ * @returns The foreign InboundMessage.
+ */
+const foreignMessage = (serial: string, overrides: Partial<Ably.InboundMessage> = {}): Ably.InboundMessage =>
+  ({
+    serial,
+    action: 'message.create',
+    name: 'chat.message',
+    data: { text: 'hello from the app' },
+    version: { serial },
+    extras: { headers: { topic: 'support' } },
+    ...overrides,
+    // CAST: minimal InboundMessage stub — only the fields the decoder reads.
+  }) as unknown as Ably.InboundMessage;
+
+// An application may publish its own messages on a channel it shares with a
+// session. They carry neither the SDK's wire names nor its `extras.ai`
+// envelope; interleaving them through the decode + fold path must leave the
+// projection byte-for-byte identical to the clean sequence.
+describe('OpenAI codec foreign messages (offline)', () => {
+  it('folds an assistant turn identically with foreign messages interleaved', async () => {
+    const { inbound } = await roundtrip(textRun('msg_1', 'Hello, world!'));
+
+    // One foreign wire between every SDK wire, including an append the decoder
+    // has no create for (an application streaming its own message).
+    const polluted = inbound.flatMap((msg, i) => [
+      foreignMessage(`foreign-${String(i)}`),
+      foreignMessage(`foreign-${String(i)}-stream`, { action: 'message.append', data: 'their chunk' }),
+      msg,
+    ]);
+
+    expect(ResponsesCodec.getMessages(foldAll(polluted))).toEqual(ResponsesCodec.getMessages(foldAll(inbound)));
+  });
+
+  it('decodes a foreign message to no events', () => {
+    const decoder = ResponsesCodec.createDecoder();
+
+    expect(decoder.decode(foreignMessage('foreign-1'))).toEqual({ inputs: [], outputs: [] });
+  });
+});
+
 // The client-driven tool descriptors carry no Responses stream event of their
 // own — the reducer folds cover the projection maths (see reducer.test.ts);
 // these prove the wire framing round-trips: the codec headers each descriptor

@@ -37,6 +37,7 @@ import type { SendDelegate } from '../../../src/core/transport/view.js';
 import { createClientView, createLeafView } from '../../../src/core/transport/view.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
+import { getTransportHeaders, hasAiEnvelope } from '../../../src/utils.js';
 import { makeFakeLoadUntil } from '../../helper/fake-load-until.js';
 import { makeHistoryCursor } from '../../helper/history-cursor.js';
 
@@ -431,6 +432,21 @@ const contentWire = (runId: string, msgId: string, serial: string): Ably.Inbound
   }) as unknown as Ably.InboundMessage;
 
 /**
+ * A foreign wire — an application's own publish on a channel it shares with a
+ * session. It carries no `extras.ai` envelope, so it decodes to nothing.
+ * @param serial - The wire serial.
+ * @returns The foreign InboundMessage.
+ */
+const foreignWire = (serial: string): Ably.InboundMessage =>
+  ({
+    name: 'chat.message',
+    serial,
+    version: { serial },
+    data: { text: 'hello from the app' },
+    extras: { headers: { topic: 'support' } },
+  }) as unknown as Ably.InboundMessage;
+
+/**
  * A run-lifecycle wire (`name`) for `runId`. Pass `reason` on a run-end to mark
  * the run terminal.
  * @param name - The lifecycle event name (run-start/run-end/etc.).
@@ -507,10 +523,11 @@ describe('client view', () => {
    */
   const headerDecoder = (): Decoder<TestInput, TestOutput> => ({
     decode: (msg: Ably.InboundMessage) => {
-      // CAST: test fixtures always stamp extras.ai.transport.
-      const id =
-        (msg.extras as { ai: { transport: Record<string, string> } }).ai.transport[HEADER_CODEC_MESSAGE_ID] ??
-        'unknown';
+      // Foreign wires — an application's own publishes on the shared channel —
+      // carry no `extras.ai` envelope and decode to nothing, as the real
+      // decoder does.
+      if (!hasAiEnvelope(msg)) return { inputs: [], outputs: [] };
+      const id = getTransportHeaders(msg)[HEADER_CODEC_MESSAGE_ID] ?? 'unknown';
       return {
         inputs: [],
         outputs: [{ type: 'append-message' as const, message: { id, content: id } }],
@@ -1684,6 +1701,27 @@ describe('client view', () => {
       expect(handler).toHaveBeenCalledWith(fakeMsg);
     });
 
+    it('forwards a foreign ably-message so the application can consume its own traffic', () => {
+      apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
+      const ablyMessage = vi.fn();
+      const update = vi.fn();
+      view.on('ably-message', ablyMessage);
+      view.on('update', update);
+      // An application's own publish: no `extras.ai` envelope, so no run or
+      // message identity to scope it to — it forwards like a control event.
+      const foreignMsg = {
+        name: 'chat.message',
+        data: { text: 'hello from the app' },
+        extras: { headers: { topic: 'support' } },
+      } as unknown as Ably.InboundMessage;
+
+      tree.emitAblyMessage(foreignMsg);
+
+      expect(ablyMessage).toHaveBeenCalledWith(foreignMsg);
+      // Nothing was folded, so the visible window did not change.
+      expect(update).not.toHaveBeenCalled();
+    });
+
     it('forwards run lifecycle events for visible runs', () => {
       apply(tree, { runId: 'R1', codecMessageId: 'm1', message: { id: 'a', content: 'hi' }, serial: 's1' });
       const handler = vi.fn();
@@ -1956,6 +1994,29 @@ describe('client view', () => {
 
       await v.loadOlder(10);
       expect(v.runs().map((r) => r.runId)).toContain('R0');
+    });
+
+    it('pages past foreign history messages to reveal the same runs', async () => {
+      // A channel shared with the application interleaves its publishes into
+      // history. They fold to nothing, so the walk must keep paging until the
+      // message target is met rather than counting them toward it.
+      const [rootWire, replyWire] = makeChain([0, 1]);
+      if (!rootWire || !replyWire) throw new Error('expected two chain wires');
+
+      const v = makeView(headerDecoder());
+      vi.mocked(loadHistoryPages).mockResolvedValueOnce(
+        // Cursor pages, newest page first; each padded with the application's
+        // own publishes on either side of the SDK wire.
+        makeCursor([
+          [foreignWire('s02'), replyWire, foreignWire('s03')],
+          [foreignWire('s00'), rootWire, foreignWire('s01')],
+        ]),
+      );
+
+      await v.loadOlder(2);
+
+      expect(v.runs().map((r) => r.runId)).toEqual(['R0', 'R1']);
+      expect(v.getMessages().map((m) => m.codecMessageId)).toEqual(['mh0', 'mh1']);
     });
 
     it('hasOlder stays true when the cursor has more pages after the target is met', async () => {

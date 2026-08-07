@@ -168,7 +168,12 @@ Default*` directly.
    `extras.ai` envelope split into a transport tier (`extras.ai.transport`,
    always present) and an optional codec tier (`extras.ai.codec`). The generic
    layer reads and writes only the transport tier; codec-specific metadata
-   belongs in the codec tier, owned by the codec layer.
+   belongs in the codec tier, owned by the codec layer. The envelope is also
+   what marks a wire as ours: a session shares its channel with the
+   application, so a message without `extras.ai` is **foreign** — it decodes
+   to no events, creates no tree node, and drives no run, while still
+   surfacing raw on `ably-message`. Classify foreign traffic by the envelope,
+   never by the wire `name`, which the platform does not echo on appends.
 8. **Explicit exports** — only what an `index.ts` re-exports is public API.
 9. **Self-contained features** — each manages its own subscriptions, state, and
    cleanup.

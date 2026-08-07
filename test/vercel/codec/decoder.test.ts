@@ -240,6 +240,77 @@ describe('Vercel decoder', () => {
     });
   });
 
+  // -- foreign messages -----------------------------------------------------
+  //
+  // An application sharing the session's channel publishes its own messages
+  // there. They carry neither the SDK's wire names nor its `extras.ai`
+  // envelope, and must decode to nothing without disturbing a live stream.
+
+  describe('foreign messages', () => {
+    const foreignMessage = (msg: Partial<Ably.InboundMessage>): Ably.InboundMessage =>
+      ({
+        serial: 'foreign-1',
+        action: 'message.create',
+        name: 'chat.message',
+        data: { text: 'hello from the app' },
+        version: { serial: 'foreign-1' },
+        extras: { headers: { topic: 'support' } },
+        ...msg,
+        // CAST: Tests construct a minimal Ably.InboundMessage stub; full shape isn't needed.
+      }) as Ably.InboundMessage;
+
+    it.each<[string, Partial<Ably.InboundMessage>]>([
+      ['a create', { action: 'message.create' }],
+      ['an append', { action: 'message.append', data: 'chunk' }],
+      ['an update', { action: 'message.update', data: 'edited' }],
+      ['a delete', { action: 'message.delete' }],
+      ['a summary', { action: 'message.summary' }],
+      ['an unnamed publish', { name: undefined }],
+      ['a message with no extras at all', { extras: undefined }],
+    ])('decodes %s to no events', (_label, overrides) => {
+      const decoder = createDecoder();
+
+      const { inputs, outputs } = decoder.decode(foreignMessage(overrides));
+
+      expect(inputs).toEqual([]);
+      expect(outputs).toEqual([]);
+    });
+
+    it('leaves an in-flight text stream intact when foreign wires interleave', () => {
+      const decoder = createDecoder();
+      decoder.decode(
+        withHeaders(
+          { action: 'message.create', serial: 's1', name: EVENT_AI_OUTPUT, data: '' },
+          {
+            [HEADER_STREAM]: 'true',
+            [HEADER_STATUS]: 'streaming',
+            [HEADER_STREAM_ID]: 'txt-1',
+            [HEADER_RUN_ID]: 'run-1',
+            kind: 'text',
+            id: 'txt-1',
+          },
+        ),
+      );
+
+      // The application publishes its own message — and streams one of its own,
+      // whose appends the decoder has no create for — mid-response.
+      expect(decoder.decode(foreignMessage({ serial: 'foreign-1' }))).toEqual({ inputs: [], outputs: [] });
+      expect(
+        decoder.decode(foreignMessage({ serial: 'foreign-2', action: 'message.append', data: 'their text' })),
+      ).toEqual({ inputs: [], outputs: [] });
+
+      const { outputs } = decoder.decode(
+        withHeaders(
+          { action: 'message.append', serial: 's1', name: EVENT_AI_OUTPUT, data: 'hello' },
+          { [HEADER_STATUS]: 'complete', [HEADER_RUN_ID]: 'run-1' },
+        ),
+      );
+
+      expect(eventTypesOf(outputs)).toEqual(['text-delta', 'text-end']);
+      expect(outputs[0]).toEqual(expect.objectContaining({ type: 'text-delta', id: 'txt-1', delta: 'hello' }));
+    });
+  });
+
   // -- streamed reasoning ---------------------------------------------------
 
   describe('streamed reasoning', () => {

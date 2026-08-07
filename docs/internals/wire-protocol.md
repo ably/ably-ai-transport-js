@@ -267,6 +267,19 @@ Each wire message can carry `parent`. The value comes from different sources dep
 
 The agent resolves this itself, chaining the assistant under the user prompt that triggered it, which is what the conversation tree needs to keep edit-then-regenerate sibling resolution correct - see [What renders](conversation-tree.md#what-renders).
 
+## Foreign messages
+
+A session does not own its channel exclusively. An application is free to publish its own messages there — a chat message, a notification, its own streamed content — and the SDK ignores all of it.
+
+The `extras.ai` envelope is what marks a wire as the SDK's. A message without it carries no transport or codec headers, so it decodes to no codec events, creates no node in the [conversation tree](conversation-tree.md), and starts, resumes, or ends no run. This holds for every message action a foreign wire can arrive under: `message.create`, `message.append`, `message.update`, `message.delete`, and `message.summary`.
+
+Two consequences worth knowing:
+
+- **Foreign messages still reach `ably-message`.** Sessions subscribe to the channel unfiltered, so an application can consume its own traffic off the same subscription — `session.tree.on('ably-message', ...)`, `view.on('ably-message', ...)`, or the `useAblyMessages` hook — without opening a second one. The events the conversation is built from (`update`, `run`, `output`) fire only for SDK wires.
+- **`extras.headers` cannot reach the transport.** Application headers live in their own namespace, which the SDK never reads. Putting `run-id` (or any other transport header) there has no effect on the session.
+
+Foreign messages in channel history are skipped the same way: the [history hydrator](history.md) pages past them, so `loadOlder(n)` reveals `n` conversation messages regardless of how much application traffic sits between them.
+
 ## Header persistence on appends
 
 Ably replaces the entire `extras` object on each append. The encoder must repeat all persistent headers (transport + domain) on every append, including the closing append. This is handled internally by the [encoder core](encoder.md), which captures headers from `startStream()` and replays them on every subsequent append and close.

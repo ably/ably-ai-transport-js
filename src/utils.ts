@@ -69,6 +69,22 @@ export const getTransportHeaders = (message: Ably.InboundMessage): Record<string
 export const getCodecHeaders = (message: Ably.InboundMessage): Record<string, string> => getAiTier(message, 'codec');
 
 /**
+ * Whether an Ably message carries the SDK's reserved `extras.ai` envelope.
+ * Every wire the SDK publishes carries it — including stream appends, whose
+ * `name` the platform does not echo — so its absence identifies a foreign
+ * message: an application's own publish on a channel it shares with a session.
+ * @param message - The Ably message to inspect.
+ * @returns True when the message carries an `extras.ai` envelope.
+ */
+export const hasAiEnvelope = (message: Ably.InboundMessage): boolean => {
+  // CAST: Ably SDK types `extras` as `any`; runtime checks below guard access.
+  const extras = message.extras as unknown;
+  if (!extras || typeof extras !== 'object') return false;
+  const ai = (extras as { ai?: unknown }).ai;
+  return Boolean(ai) && typeof ai === 'object';
+};
+
+/**
  * Parse a JSON string, returning undefined on failure.
  * @param value - The JSON string to parse.
  * @returns The parsed value, or undefined if parsing fails.

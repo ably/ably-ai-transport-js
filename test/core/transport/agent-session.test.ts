@@ -2870,6 +2870,110 @@ describe('AgentSession', () => {
   });
 
   // -------------------------------------------------------------------------
+  // foreign messages
+  //
+  // An application may publish its own messages on the channel its agent
+  // session uses. The agent subscribes unfiltered, so every one of them reaches
+  // the channel listener — none may be mistaken for a cancel, an input event,
+  // or conversation content.
+  // -------------------------------------------------------------------------
+
+  describe('foreign messages', () => {
+    /**
+     * Build a foreign wire — an application's own publish on the shared
+     * channel. It carries no `extras.ai` envelope; `appHeaders` land under the
+     * application's own `extras.headers`, which the transport never reads.
+     * @param name - The application's message name, or undefined for an unnamed publish.
+     * @param appHeaders - The application's own message headers.
+     * @param overrides - Fields overriding the foreign message defaults.
+     * @returns The foreign InboundMessage.
+     */
+    const foreignMsg = (
+      name: string | undefined = 'chat.message',
+      appHeaders: Record<string, string> = {},
+      overrides: Partial<Ably.InboundMessage> = {},
+    ): Ably.InboundMessage =>
+      ({
+        name,
+        action: 'message.create',
+        serial: 'foreign-1',
+        data: { text: 'hello from the app' },
+        extras: { headers: appHeaders },
+        version: { serial: 'foreign-1' },
+        ...overrides,
+        // CAST: minimal InboundMessage stub — only the fields the session reads.
+      }) as unknown as Ably.InboundMessage;
+
+    const deliver = (ch: MockChannel, msg: Ably.InboundMessage): void => {
+      if (ch.listener) ch.listener(msg);
+    };
+
+    it.each<[string, Partial<Ably.InboundMessage>]>([
+      ['a create', { action: 'message.create' }],
+      ['an append', { action: 'message.append', data: 'chunk' }],
+      ['an update', { action: 'message.update', data: 'edited' }],
+      ['a delete', { action: 'message.delete' }],
+      ['a summary', { action: 'message.summary' }],
+      ['a message with no extras at all', { extras: undefined }],
+    ])('folds %s without erroring or aborting a live run', async (_label, overrides) => {
+      const errors: Ably.ErrorInfo[] = [];
+      session.on('error', (e) => errors.push(e));
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      deliver(channel, foreignMsg('chat.message', {}, overrides));
+      await new Promise((r) => setTimeout(r, 5));
+
+      expect(errors).toEqual([]);
+      expect(run.abortSignal.aborted).toBe(false);
+      expect(run.view.getMessages()).toEqual([]);
+    });
+
+    it('does not route a foreign message as a cancel, even under the cancel wire name', async () => {
+      const run = createRunFromOpts(session, { runId: 'run-1' });
+      await run.start();
+
+      // The cancel envelope lives in `extras.ai.transport`; the same keys in
+      // the application's own header namespace carry no transport meaning.
+      deliver(channel, foreignMsg(EVENT_CANCEL, { [HEADER_RUN_ID]: 'run-1' }));
+      await new Promise((r) => setTimeout(r, 5));
+
+      expect(run.abortSignal.aborted).toBe(false);
+    });
+
+    it('does not satisfy the input-event lookup, then resolves on the real trigger', async () => {
+      const { session: s, ch } = lookupSession();
+      await s.connect();
+
+      const run = createRunFromOpts(s, { runId: 'r-foreign', invocationId: 'inv-foreign', inputEventId: 'p-real' });
+      const startPromise = run.start();
+      let started = false;
+      void startPromise.then(
+        () => (started = true),
+        () => (started = true),
+      );
+
+      // Foreign traffic — including a wire whose application headers name the
+      // expected event-id — must not resolve the lookup.
+      deliver(ch, foreignMsg());
+      deliver(ch, foreignMsg('chat.message', { [HEADER_EVENT_ID]: 'p-real' }));
+      await new Promise((r) => setTimeout(r, 5));
+      expect(started).toBe(false);
+
+      deliverInputEvent(ch, {
+        invocationId: 'inv-foreign',
+        codecMessageId: 'm-real',
+        serial: 's-real',
+        inputEventId: 'p-real',
+      });
+
+      await startPromise;
+      expect(run.view.getMessages().map((m) => m.codecMessageId)).toEqual(['m-real']);
+      await s.detach();
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // cancel before run-start (deferred-cancel buffer)
   // -------------------------------------------------------------------------
 

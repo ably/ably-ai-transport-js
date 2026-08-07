@@ -6,6 +6,7 @@ import {
   errorMessage,
   getCodecHeaders,
   getTransportHeaders,
+  hasAiEnvelope,
   mergeHeaders,
   parseBool,
   parseJson,
@@ -103,6 +104,35 @@ describe('getCodecHeaders', () => {
   it('returns empty object when extras is not an object', () => {
     const msg = { extras: 'string' } as Ably.InboundMessage;
     expect(getCodecHeaders(msg)).toEqual({});
+  });
+});
+
+describe('hasAiEnvelope', () => {
+  it('is true for a message carrying either tier', () => {
+    expect(hasAiEnvelope({ extras: { ai: { transport: { 'run-id': 'r1' } } } } as Ably.InboundMessage)).toBe(true);
+    expect(hasAiEnvelope({ extras: { ai: { codec: { kind: 'text' } } } } as Ably.InboundMessage)).toBe(true);
+  });
+
+  it('is true for an empty envelope — the envelope itself is the marker', () => {
+    expect(hasAiEnvelope({ extras: { ai: {} } } as Ably.InboundMessage)).toBe(true);
+  });
+
+  it('is false for a foreign message carrying only application headers', () => {
+    expect(hasAiEnvelope({ extras: { headers: { topic: 'support' } } } as Ably.InboundMessage)).toBe(false);
+  });
+
+  it('is false when extras is absent, falsy, or not an object', () => {
+    expect(hasAiEnvelope({ extras: undefined } as Ably.InboundMessage)).toBe(false);
+    // CAST: testing the runtime guard against non-object extras values.
+    expect(hasAiEnvelope({ extras: 0 } as unknown as Ably.InboundMessage)).toBe(false);
+    expect(hasAiEnvelope({ extras: 'string' } as Ably.InboundMessage)).toBe(false);
+    expect(hasAiEnvelope({} as Ably.InboundMessage)).toBe(false);
+  });
+
+  it('is false when ai is present but not an object', () => {
+    // CAST: testing the runtime guard against a non-object `ai` value.
+    expect(hasAiEnvelope({ extras: { ai: 'nope' } } as unknown as Ably.InboundMessage)).toBe(false);
+    expect(hasAiEnvelope({ extras: { ai: 0 } } as unknown as Ably.InboundMessage)).toBe(false);
   });
 });
 

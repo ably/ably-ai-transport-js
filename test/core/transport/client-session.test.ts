@@ -188,6 +188,32 @@ const ablyMsg = (
   } as unknown as Ably.InboundMessage;
 };
 
+/**
+ * Build a foreign wire — an application's own publish on the channel it shares
+ * with the session. It carries no `extras.ai` envelope; `appHeaders` land under
+ * the application's own `extras.headers`, which the transport never reads.
+ * @param name - The application's message name, or undefined for an unnamed publish.
+ * @param appHeaders - The application's own message headers.
+ * @param overrides - Fields overriding the foreign message defaults.
+ * @returns The foreign InboundMessage.
+ */
+const foreignMsg = (
+  name: string | undefined = 'chat.message',
+  appHeaders: Record<string, string> = {},
+  overrides: Partial<Ably.InboundMessage> = {},
+): Ably.InboundMessage => {
+  const wireSerial = nextSerial();
+  return {
+    name,
+    data: { text: 'hello from the app' },
+    action: 'message.create',
+    extras: { headers: appHeaders },
+    serial: wireSerial,
+    version: { serial: wireSerial },
+    ...overrides,
+  } as unknown as Ably.InboundMessage;
+};
+
 // ---------------------------------------------------------------------------
 // Mock codec — direction-split encoder (publishInput / publishOutput)
 // ---------------------------------------------------------------------------
@@ -411,6 +437,42 @@ const createFixture = async (overrides?: { clientId?: string }): Promise<Session
 const cancelHeadersOf = (channel: MockChannel): Record<string, string> | undefined => {
   const cancelMsg = channel.publishCalls.find((m) => m.name === 'ai-cancel');
   return (cancelMsg?.extras as { ai?: { transport?: Record<string, string> } } | undefined)?.ai?.transport;
+};
+
+/**
+ * Drive a complete run through a fixture's channel — run-start, one
+ * assistant text message, run-end — optionally interleaving a foreign wire
+ * before each.
+ * @param on - The fixture to drive.
+ * @param interleaveForeign - Whether to precede each SDK wire with a foreign one.
+ */
+const driveRun = (on: SessionFixture, interleaveForeign: boolean): void => {
+  const foreign = (): void => {
+    if (interleaveForeign) simulateMessage(on.channel, foreignMsg());
+  };
+
+  foreign();
+  simulateMessage(on.channel, ablyMsg(EVENT_RUN_START, { [HEADER_RUN_ID]: 'run-F', [HEADER_RUN_CLIENT_ID]: 'agent' }));
+  foreign();
+  on.decoder.queue.push({ type: 'text', text: 'hello' });
+  simulateMessage(
+    on.channel,
+    ablyMsg('text', {
+      [HEADER_RUN_ID]: 'run-F',
+      [HEADER_RUN_CLIENT_ID]: 'agent',
+      [HEADER_CODEC_MESSAGE_ID]: 'm-1',
+    }),
+  );
+  foreign();
+  simulateMessage(
+    on.channel,
+    ablyMsg(EVENT_RUN_END, {
+      [HEADER_RUN_ID]: 'run-F',
+      [HEADER_RUN_CLIENT_ID]: 'agent',
+      [HEADER_RUN_REASON]: 'complete',
+    }),
+  );
+  foreign();
 };
 
 // ---------------------------------------------------------------------------
@@ -2208,6 +2270,118 @@ describe('ClientSession', () => {
       // CAST: tuple shape comes from vi.mocked.
       const lastFold = foldCalls.at(-1) as unknown as [TestProjection, TestEvent, ReducerMeta];
       expect(lastFold[2].messageId).toBe('m-1');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // foreign messages
+  //
+  // An application may publish its own messages on the channel its session
+  // uses. Those wires carry no `extras.ai` envelope, so the transport folds
+  // none of them into the conversation — while still surfacing them raw, so
+  // the application can consume its own traffic off the same subscription.
+  // -------------------------------------------------------------------------
+
+  describe('foreign messages', () => {
+    it('leaves the conversation identical to the same run with no foreign traffic', async () => {
+      const clean = await createFixture();
+      try {
+        driveRun(fix, true);
+        driveRun(clean, false);
+
+        // The run really did produce content — otherwise this compares nothing.
+        expect(clean.session.view.getMessages()).toEqual([
+          { codecMessageId: 'm-1', message: { id: 'm-1', content: 'hello' } },
+        ]);
+        expect(fix.session.view.getMessages()).toEqual(clean.session.view.getMessages());
+        expect(fix.session.view.runs().map((r) => ({ runId: r.runId, status: r.status }))).toEqual(
+          clean.session.view.runs().map((r) => ({ runId: r.runId, status: r.status })),
+        );
+      } finally {
+        await clean.session.close();
+      }
+    });
+
+    it('emits no run lifecycle events of its own', () => {
+      const lifecycle: RunLifecycleEvent[] = [];
+      fix.session.tree.on('run', (e) => lifecycle.push(e));
+
+      simulateMessage(fix.channel, foreignMsg());
+      simulateMessage(fix.channel, foreignMsg('notification'));
+      simulateMessage(fix.channel, foreignMsg(undefined, {}));
+
+      expect(lifecycle).toEqual([]);
+      expect(fix.session.view.runs()).toEqual([]);
+    });
+
+    it.each<[string, Partial<Ably.InboundMessage>]>([
+      ['a create', { action: 'message.create' }],
+      ['an append', { action: 'message.append', data: 'chunk' }],
+      ['an update', { action: 'message.update', data: 'edited' }],
+      ['a delete', { action: 'message.delete' }],
+      ['a summary', { action: 'message.summary' }],
+      ['a message with no extras at all', { extras: undefined }],
+      ['a message with no data', { data: undefined }],
+    ])('surfaces %s raw without emitting a session error', (_label, overrides) => {
+      const errors: Ably.ErrorInfo[] = [];
+      fix.session.on('error', (e) => errors.push(e));
+      const raw: Ably.InboundMessage[] = [];
+      fix.session.tree.on('ably-message', (m) => raw.push(m));
+
+      const wire = foreignMsg('chat.message', {}, overrides);
+      simulateMessage(fix.channel, wire);
+
+      expect(errors).toEqual([]);
+      expect(raw).toEqual([wire]);
+      expect(fix.session.view.getMessages()).toEqual([]);
+    });
+
+    it('does not resolve a pending send through a foreign wire', async () => {
+      const run = await fix.session.view.send({ kind: 'user-message', text: 'hi' });
+      let settled = false;
+      void run.started.then(
+        () => (settled = true),
+        () => (settled = true),
+      );
+
+      // A foreign message carries no run identity, so it can neither be
+      // mistaken for the agent's run-start nor resolve the handle.
+      simulateMessage(fix.channel, foreignMsg());
+      await Promise.resolve();
+
+      expect(settled).toBe(false);
+      expect(run.runId).toBe('');
+    });
+
+    it('cannot spoof transport headers through the application header namespace', async () => {
+      const run = await fix.session.view.send({ kind: 'user-message', text: 'hi' });
+      const lifecycle: RunLifecycleEvent[] = [];
+      fix.session.tree.on('run', (e) => lifecycle.push(e));
+
+      // The transport reads only `extras.ai.transport`. An application putting
+      // the same keys in its own `extras.headers` namespace is not seen.
+      simulateMessage(
+        fix.channel,
+        foreignMsg(EVENT_RUN_START, {
+          [HEADER_RUN_ID]: 'spoofed-run',
+          [HEADER_RUN_CLIENT_ID]: 'agent',
+          [HEADER_INPUT_CODEC_MESSAGE_ID]: run.inputCodecMessageId,
+        }),
+      );
+
+      expect(lifecycle).toEqual([]);
+      expect(fix.session.view.runs()).toEqual([]);
+    });
+
+    it('keeps serving the run after foreign traffic interleaves mid-stream', async () => {
+      const run = await fix.session.view.send({ kind: 'user-message', text: 'hi' });
+      simulateMessage(fix.channel, foreignMsg());
+      const { runId } = await ackPendingSend(fix.channel, fix.codec);
+      simulateMessage(fix.channel, foreignMsg());
+
+      await run.started;
+      expect(run.runId).toBe(runId);
+      expect(fix.session.view.run(runId)?.status).toBe('active');
     });
   });
 

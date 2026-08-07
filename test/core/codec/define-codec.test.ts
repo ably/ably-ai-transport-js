@@ -141,6 +141,56 @@ describe('defineCodec — decoder direction routing', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Foreign messages
+//
+// An application may publish its own messages on a channel it shares with a
+// session — a chat message, a presence-adjacent notification, its own streamed
+// content. None of it carries the SDK's wire names or `extras.ai` envelope, and
+// every action it can arrive under must decode to nothing.
+// ---------------------------------------------------------------------------
+
+describe('defineCodec — foreign messages', () => {
+  const foreignMessage = (msg: Partial<Ably.InboundMessage>): Ably.InboundMessage =>
+    ({
+      serial: 'foreign-1',
+      action: 'message.create',
+      name: 'chat.message',
+      data: { text: 'hello from the app' },
+      version: { serial: 'foreign-1' },
+      extras: { headers: { topic: 'support' } },
+      ...msg,
+      // CAST: minimal InboundMessage stub — only the fields the decoder reads.
+    }) as Ably.InboundMessage;
+
+  it.each<[string, Partial<Ably.InboundMessage>]>([
+    ['a create', { action: 'message.create', data: { text: 'hi' } }],
+    ['an append', { action: 'message.append', data: 'chunk' }],
+    ['an update', { action: 'message.update', data: 'edited' }],
+    ['a delete', { action: 'message.delete' }],
+    ['a summary', { action: 'message.summary' }],
+    ['an unnamed publish', { name: undefined }],
+    ['a string payload', { data: 'plain text' }],
+    ['a message with no extras at all', { extras: undefined }],
+  ])('decodes %s to no events', (_label, overrides) => {
+    const decoder = codec.createDecoder();
+
+    const { inputs, outputs } = decoder.decode(foreignMessage(overrides));
+
+    expect(inputs).toEqual([]);
+    expect(outputs).toEqual([]);
+  });
+
+  it('keeps decoding SDK wires after a foreign message', () => {
+    const decoder = codec.createDecoder();
+
+    decoder.decode(foreignMessage({}));
+    const { outputs } = decoder.decode(aiMessage(EVENT_AI_OUTPUT, { kind: 'quirky' }));
+
+    expect(outputs).toEqual([{ type: 'quirky', kind: 'looks-like-input' }]);
+  });
+});
+
 describe('defineCodec — encoder wiring', () => {
   it('publishes an output event as an ai-output message carrying its wire kind', async () => {
     const writer = createMockWriter();

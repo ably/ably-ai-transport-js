@@ -48,6 +48,25 @@ const withHeaders = (msg: Partial<Ably.InboundMessage>, headers: Record<string, 
   }) as Ably.InboundMessage;
 
 /**
+ * Build a foreign wire — an application's own publish on a channel it shares
+ * with a session. It carries no `extras.ai` envelope; anything under
+ * `extras.headers` belongs to the application.
+ * @param msg - Fields overriding the foreign message defaults.
+ * @returns The foreign InboundMessage.
+ */
+const foreignMessage = (msg: Partial<Ably.InboundMessage>): Ably.InboundMessage =>
+  ({
+    serial: 'foreign-1',
+    action: 'message.create',
+    name: 'chat.message',
+    data: { text: 'hello from the app' },
+    version: { serial: 'foreign-1' },
+    extras: { headers: { topic: 'support' } },
+    ...msg,
+    // CAST: Tests construct a minimal Ably.InboundMessage stub; full shape isn't needed.
+  }) as Ably.InboundMessage;
+
+/**
  * Capture-friendly Logger stub: records `warn` calls, no-ops everything else,
  * and returns itself from `withContext` so the decoder's child logger shares
  * the same spies.
@@ -432,6 +451,72 @@ describe('createDecoderCore', () => {
     it('returns empty array', () => {
       const decoder = createDecoderCore(hooks);
       expect(decoder.decode(withHeaders({ action: 'message.summary' }, {}))).toEqual([]);
+    });
+  });
+
+  // -- foreign messages ----------------------------------------------------
+  //
+  // An application may publish its own messages on a channel it shares with a
+  // session. Those wires carry no `extras.ai` envelope, and the core must fold
+  // none of them into codec events or stream state.
+
+  describe('foreign messages', () => {
+    it('ignores a foreign append instead of treating it as a first-contact stream', () => {
+      const { logger, warn } = createMockLogger();
+      const decoder = createDecoderCore(hooks, { logger });
+
+      // An application streaming its own message publishes appends the core has
+      // no create for. Ably does not echo `name` on an append, so the missing
+      // `extras.ai` envelope is what identifies it as foreign.
+      const outputs = decoder.decode(foreignMessage({ action: 'message.append', serial: 'f1', data: 'chunk' }));
+
+      expect(outputs).toEqual([]);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('opens no stream state for a foreign create, so its later appends stay foreign', () => {
+      const { logger, warn } = createMockLogger();
+      const decoder = createDecoderCore(hooks, { logger });
+
+      decoder.decode(foreignMessage({ action: 'message.create', serial: 'f1', data: 'chunk one' }));
+      const outputs = decoder.decode(foreignMessage({ action: 'message.append', serial: 'f1', data: 'chunk two' }));
+
+      expect(outputs).toEqual([]);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('still warns for a trackerless append that carries the ai envelope', () => {
+      const { logger, warn } = createMockLogger();
+      const decoder = createDecoderCore(hooks, { logger });
+
+      decoder.decode(withHeaders({ action: 'message.append', serial: 's1', name: 'text', data: 'chunk' }, {}));
+
+      expect(warn).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves an in-flight stream untouched when foreign wires interleave', () => {
+      const decoder = createDecoderCore(hooks);
+      decoder.decode(
+        withHeaders(
+          { action: 'message.create', serial: 's1', name: 'text' },
+          { [HEADER_STREAM]: 'true', [HEADER_STATUS]: 'streaming', [HEADER_STREAM_ID]: 'id-1' },
+        ),
+      );
+
+      decoder.decode(withHeaders({ action: 'message.append', serial: 's1', data: 'Hel' }, {}));
+      decoder.decode(foreignMessage({ action: 'message.create', serial: 'f1', data: { text: 'unrelated' } }));
+      decoder.decode(foreignMessage({ action: 'message.append', serial: 'f2', data: 'unrelated' }));
+
+      const outputs = decoder.decode(
+        withHeaders({ action: 'message.append', serial: 's1', data: 'lo' }, { [HEADER_STATUS]: 'complete' }),
+      );
+
+      // The stream accumulated exactly its own deltas: the closing append is a
+      // clean continuation, not a replacement.
+      expect(outputs).toEqual([
+        { type: 'delta', streamId: 'id-1', delta: 'lo' },
+        { type: 'end', streamId: 'id-1' },
+      ]);
     });
   });
 

@@ -81,6 +81,25 @@ const msg = (opts: {
     version: { serial: opts.version },
   }) as unknown as Ably.InboundMessage;
 
+/**
+ * Build a foreign wire — an application's own publish on a channel it shares
+ * with a session. It carries no `extras.ai` envelope.
+ * @param overrides - Fields overriding the foreign message defaults.
+ * @returns The foreign InboundMessage.
+ */
+const foreignWire = (overrides: Partial<Ably.InboundMessage> = {}): Ably.InboundMessage =>
+  ({
+    name: 'chat.message',
+    action: 'message.create',
+    serial: 'foreign-1',
+    timestamp: 1000,
+    version: { serial: 'foreign-1' },
+    data: { text: 'hello from the app' },
+    extras: { headers: { topic: 'support' } },
+    ...overrides,
+    // CAST: minimal InboundMessage stub — only the fields the applier reads.
+  }) as unknown as Ably.InboundMessage;
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -225,6 +244,35 @@ describe('WireApplier', () => {
     it('skips a wire-only carrier that decodes to nothing and carries no run-id', () => {
       const tree = makeTree();
       createWireApplier(asTree(tree), makeDecoder([], [])).apply(msg({ headers: {} }));
+      expect(tree.applyMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  // An application's own publish on a channel it shares with a session: it
+  // carries no SDK wire name and no `extras.ai` envelope, so the codec decoder
+  // yields nothing and there is no run-id to make it a wire-only carrier. It
+  // must reach the tree as neither a lifecycle event nor a fold.
+  describe('foreign messages', () => {
+    it('applies nothing to the tree and returns undefined', () => {
+      const tree = makeTree();
+
+      const event = createWireApplier(asTree(tree), makeDecoder([], [])).apply(foreignWire());
+
+      expect(event).toBeUndefined();
+      expect(tree.applyRunLifecycle).not.toHaveBeenCalled();
+      expect(tree.applyStepLifecycle).not.toHaveBeenCalled();
+      expect(tree.applyMessage).not.toHaveBeenCalled();
+    });
+
+    it('still reaches tree subscribers through foldAndEmit', () => {
+      const tree = makeTree();
+      const wire = foreignWire();
+
+      foldAndEmit(createWireApplier(asTree(tree), makeDecoder([], [])), asTree(tree), wire);
+
+      // The application can observe its own traffic via `ably-message`; only the
+      // conversation fold is skipped.
+      expect(tree.emitAblyMessage).toHaveBeenCalledWith(wire);
       expect(tree.applyMessage).not.toHaveBeenCalled();
     });
   });

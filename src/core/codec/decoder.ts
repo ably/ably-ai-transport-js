@@ -19,7 +19,7 @@ import type * as Ably from 'ably';
 
 import { HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../constants.js';
 import type { Logger } from '../../logger.js';
-import { getCodecHeaders, getTransportHeaders } from '../../utils.js';
+import { getCodecHeaders, getTransportHeaders, hasAiEnvelope } from '../../utils.js';
 import type { MessagePayload, StreamSequenceState } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -319,6 +319,15 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
 
     const tracker = this._serialState.get(serial);
     if (!tracker) {
+      // An append is the one action whose `name` the platform does not echo, so
+      // a foreign append — an application streaming its own message on a
+      // channel it shares with a session — is identified by the absence of the
+      // SDK's `extras.ai` envelope. It decodes to nothing, and says so at
+      // debug: it is expected traffic, not the out-of-contract case below.
+      if (!hasAiEnvelope(message)) {
+        this._logger?.debug('DefaultDecoderCore._decodeAppend(); foreign append, ignoring', { serial });
+        return [];
+      }
       // Out of contract: the platform converts the first post-attach append
       // of an in-flight message into a full-contents update, so an append
       // should never be a stream's first contact. Keep the first-contact

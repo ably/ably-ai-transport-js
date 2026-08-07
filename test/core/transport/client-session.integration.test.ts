@@ -125,6 +125,39 @@ const waitForMessages = async (ct: ClientSessionT, expected: number, timeout = 1
     });
   });
 
+/**
+ * Collect the payloads of an application's own messages off the session's raw
+ * `ably-message` event, resolving once `expected` of them have arrived.
+ * Cross-publisher ordering is not guaranteed, so callers assert membership.
+ * @param ct - The client session to observe.
+ * @param name - The application message name to collect.
+ * @param expected - How many to wait for.
+ * @param timeout - Milliseconds to wait before rejecting.
+ * @returns The collected payloads in arrival order.
+ */
+const collectForeign = async (
+  ct: ClientSessionT,
+  name: string,
+  expected: number,
+  timeout = 10_000,
+): Promise<string[]> =>
+  new Promise<string[]>((resolve, reject) => {
+    const seen: string[] = [];
+    const timer = setTimeout(() => {
+      unsub();
+      reject(new Error(`timed out waiting for ${String(expected)} ${name} messages (got ${String(seen.length)})`));
+    }, timeout);
+    const unsub = ct.tree.on('ably-message', (msg) => {
+      if (msg.name !== name) return;
+      seen.push(String(msg.data));
+      if (seen.length >= expected) {
+        clearTimeout(timer);
+        unsub();
+        resolve(seen);
+      }
+    });
+  });
+
 const waitForRunEvent = async (
   ct: ClientSessionT,
   runId: string,
@@ -792,6 +825,112 @@ describe('ClientSession integration', () => {
     expect(asstMsg).toBeDefined();
     const textPart = asstMsg?.parts.find((p): p is AI.TextUIPart => p.type === 'text');
     expect(textPart?.text).toBe('History answer');
+  });
+
+  // An application may share the session's channel with its own messages. They
+  // carry neither the SDK's wire names nor its `extras.ai` envelope, so they
+  // must leave the conversation untouched — while still reaching the raw
+  // `ably-message` event, so the application can consume them off the same
+  // subscription.
+  it('is unaffected by an application publishing its own messages on the channel', async () => {
+    const channelName = uniqueChannelName('ct-foreign');
+    const serverClient = ablyRealtimeClient();
+    const clientClient = ablyRealtimeClient();
+    const appClient = ablyRealtimeClient();
+    const appChannel = appClient.channels.get(channelName);
+
+    agentSession = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+      client: serverClient,
+      channelName,
+      codec: UIMessageCodec,
+    });
+    await agentSession.connect();
+
+    clientSession = createClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+      client: clientClient,
+      channelName,
+      codec: UIMessageCodec,
+    });
+    await clientSession.connect();
+
+    const sessionErrors: Ably.ErrorInfo[] = [];
+    clientSession.on('error', (e) => sessionErrors.push(e));
+    const foreignSeen = collectForeign(clientSession, 'app.notification', 3);
+
+    await appChannel.publish({ name: 'app.notification', data: 'before', extras: { headers: { topic: 'support' } } });
+
+    const activeRun = await sendUserMessage(clientSession.view, {
+      id: 'user-foreign-1',
+      role: 'user',
+      parts: [{ type: 'text', text: 'Hello!' }],
+    });
+
+    const serverRun = createRunFromOpts(agentSession, {
+      runId: crypto.randomUUID(),
+      inputEventId: activeRun.inputEventId,
+    });
+    await serverRun.start();
+    await activeRun.started;
+
+    const outputsPromise = collectRunOutputs(clientSession, activeRun.runId);
+
+    await appChannel.publish({ name: 'app.notification', data: 'during' });
+
+    await serverRun.pipe(textResponseStream('asst-foreign-1', 'text-foreign-1', 'Hello, how can I help?'));
+    await serverRun.end({ reason: 'complete' });
+
+    await outputsPromise;
+    await appChannel.publish({ name: 'app.notification', data: 'after' });
+
+    await waitForMessages(clientSession, 2);
+
+    // The conversation holds exactly the user turn and the assistant reply.
+    const messages = clientSession.view.getMessages().map((m) => m.message);
+    expect(messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+    expect(textOfMessage(messages[0] as AI.UIMessage)).toBe('Hello!');
+    expect(textOfMessage(messages[1] as AI.UIMessage)).toBe('Hello, how can I help?');
+    expect(clientSession.view.runs().map((r) => r.status)).toEqual(['complete']);
+    expect(sessionErrors).toEqual([]);
+
+    // The application's own messages reached the raw subscription. Ordering
+    // across publishers is not guaranteed, so assert membership.
+    const seen = await foreignSeen;
+    expect(seen.toSorted()).toEqual(['after', 'before', 'during']);
+  });
+
+  it("hydrates history containing an application's own messages", async () => {
+    const channelName = uniqueChannelName('ct-foreign-history');
+    const seedClient = ablyRealtimeClient();
+    const seedChannel = seedClient.channels.get(channelName);
+    const appChannel = ablyRealtimeClient().channels.get(channelName);
+
+    await appChannel.publish({ name: 'app.notification', data: 'before the run' });
+    await publishCompleteRun(seedChannel, {
+      runId: 'run-foreign-hist',
+      invocationId: 'inv-foreign-hist',
+      clientId: 'seed',
+      userMsgId: 'user-foreign-hist',
+      userText: 'History question',
+      asstMsgId: 'asst-foreign-hist',
+      asstText: 'History answer',
+    });
+    await appChannel.publish({ name: 'app.notification', data: 'after the run' });
+
+    const historyClient = ablyRealtimeClient();
+    clientSession = createClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+      client: historyClient,
+      channelName,
+      codec: UIMessageCodec,
+    });
+    await clientSession.connect();
+
+    await clientSession.view.loadOlder(10);
+
+    // The hydrator pages past the application's wires; only the run's own
+    // messages materialise.
+    const messages = clientSession.view.getMessages().map((m) => m.message);
+    expect(messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+    expect(textOfMessage(messages[1] as AI.UIMessage)).toBe('History answer');
   });
 
   it('hydrates a step retry showing only the canonical (latest-serial) attempt output', async () => {

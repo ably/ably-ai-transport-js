@@ -1,3 +1,4 @@
+![Ably AI Transport Header](/images/JavaScriptSDK-AITransport-github.png)
 [![npm version](https://img.shields.io/npm/v/@ably/ai-transport.svg?style=flat)](https://www.npmjs.com/package/@ably/ai-transport)
 [![License](https://img.shields.io/github/license/ably/ably-ai-transport-js.svg)](https://github.com/ably/ably-ai-transport-js/blob/main/LICENSE)
 

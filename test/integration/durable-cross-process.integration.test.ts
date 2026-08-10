@@ -2,15 +2,15 @@
  * Durable cross-process integration matrix.
  *
  * The framework-free proof that the durable spine composes ACROSS PROCESSES over
- * real Ably, driven entirely through the RAW SDK primitives (no durable helper).
- * Each test is an in-process "workflow driver": the test body holds the run's
- * identity (`{ runId, invocationId }`) and calls small TEST-LOCAL activity
- * drivers (`openActivity` / `stepActivity` / `suspendActivity` / `endActivity` /
- * `cancelActivity`) across SEPARATE sessions. Every driver call mints a FRESH
- * client via `ablyRealtimeClient()`, builds a fresh `createAgentSession`,
- * connects, does its work, and closes both in a `finally` - so each activity is a
- * fresh process exactly as a durable workflow would run it. The drivers wrap only
- * the PUBLIC primitives (`session.createRun().start()`,
+ * real Ably. Each test is an in-process "workflow driver": the test body holds
+ * the run's identity (`{ runId, invocationId }`) and calls small TEST-LOCAL
+ * activity drivers (`openActivity` / `stepActivity` / `suspendActivity` /
+ * `endActivity` / `cancelActivity`) across SEPARATE sessions. Every driver call
+ * mints a FRESH client via `ablyRealtimeClient()` and hands the session lifecycle
+ * to `withAgentSession`, which connects, runs the activity's body, and detaches -
+ * so each activity is a fresh process exactly as a durable workflow would run it,
+ * and this matrix doubles as that helper's real-Ably coverage. The drivers wrap
+ * only the PUBLIC primitives (`session.createRun().start()`,
  * `session.adoptRun(invocation, identity).load()`, `run.createStep({ stepId })`,
  * `run.suspend()`, `run.end()`), with the same identity binding a durable
  * orchestrator would apply. There is no durable flag and no attempt id: a stable
@@ -71,6 +71,7 @@ import type {
   RunIdentity,
   StreamResult,
 } from '../../src/core/transport/types.js';
+import { withAgentSession } from '../../src/core/transport/with-agent-session.js';
 import { getCodecHeaders, getTransportHeaders } from '../../src/utils.js';
 import type { VercelInput, VercelOutput, VercelProjection } from '../../src/vercel/codec/index.js';
 import { createUIMessageCodec } from '../../src/vercel/codec/index.js';
@@ -197,7 +198,11 @@ interface VercelStreamResult {
 
 /** Per-activity options: the channel, plus an optional in-flight abort signal and reusable client. */
 interface ActivityOptions {
-  /** The shared session channel the activity attaches. */
+  /**
+   * The shared session channel, used by the out-of-band publish/observe helpers.
+   * The activity's own session takes its channel from `invocation.sessionName`,
+   * which every invocation here is built with (see `publishInput`).
+   */
   channelName: string;
   /**
    * An external AbortSignal forwarded to the run's runtime, cancelling it while
@@ -213,36 +218,35 @@ interface ActivityOptions {
 }
 
 /**
- * Build + connect a fresh-client agent session, run `body` against it, and close
- * BOTH the session and the client in a `finally` - UNLESS the caller supplied
- * their own `client` (then the caller owns close). A fresh client per activity is
- * a fresh "process", exactly how a durable workflow invokes each activity.
+ * Mint a fresh client for this "process", then hand the session lifecycle to the
+ * SDK's `withAgentSession` — which connects, runs `body`, and detaches (never
+ * ends, so an open run is handed off rather than terminated). This driver adds
+ * only the client lifecycle: it closes the client it minted, and leaves a
+ * caller-supplied one alone (used to stage a mid-step process death by closing
+ * the shared client externally; the `afterEach` cleanup closes any leftover).
+ *
+ * A fresh client per activity is a fresh "process", exactly how a durable
+ * workflow invokes each activity.
  * @template T - The body's return type.
- * @param opts - The activity options (channel + optional signal + optional reused client).
+ * @param invocation - The invocation this activity serves; its `sessionName` is the channel.
+ * @param opts - The activity options (optional signal + optional reused client).
  * @param body - Runs against the connected session; its value is returned.
  * @returns Whatever `body` resolves to.
  */
-const withSession = async <T>(opts: ActivityOptions, body: (session: AgentSessionT) => Promise<T>): Promise<T> => {
+const withSession = async <T>(
+  invocation: Invocation,
+  opts: ActivityOptions,
+  body: (session: AgentSessionT) => Promise<T>,
+): Promise<T> => {
   const ownsClient = opts.client === undefined;
   const client = opts.client ?? ablyRealtimeClient();
-  const session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
-    client,
-    channelName: opts.channelName,
-    codec: UIMessageCodec,
-  });
   try {
-    await session.connect();
-    return await body(session);
+    return await withAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage, T>(
+      { client, invocation, codec: UIMessageCodec },
+      async ({ session }) => body(session),
+    );
   } finally {
-    // Close the session, then the client. The client close is its OWN finally so
-    // it runs even if `session.detach()` rejects. Only close the client this
-    // activity minted; a caller-supplied client is the caller's to close (the
-    // registered cleanup in `afterEach` closes any leftover).
-    try {
-      await session.detach();
-    } finally {
-      if (ownsClient) client.close();
-    }
+    if (ownsClient) client.close();
   }
 };
 
@@ -293,7 +297,7 @@ const pageUntilLocated = async (run: AdoptedRunT | ReturnType<AgentSessionT['cre
  * @returns The minted {@link RunIdentity}.
  */
 const openActivity = async (invocation: Invocation, opts: ActivityOptions): Promise<RunIdentity> =>
-  withSession(opts, async (session) => {
+  withSession(invocation, opts, async (session) => {
     const run = session.createRun(invocation, undefined, {
       ...(opts.signal !== undefined && { signal: opts.signal }),
     });
@@ -321,7 +325,7 @@ const runAdoptedActivity = async <T>(
   opts: ActivityOptions,
   body: (run: AdoptedRunT) => Promise<T>,
 ): Promise<T> =>
-  withSession(opts, async (session) => {
+  withSession(args.invocation, opts, async (session) => {
     const run = session.adoptRun(args.invocation, args.identity, {
       ...(opts.signal !== undefined && { signal: opts.signal }),
     });

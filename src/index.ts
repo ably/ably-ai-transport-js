@@ -3,6 +3,7 @@ export type {
   AdoptedRun,
   AgentRun,
   AgentSession,
+  AgentSessionContext,
   AgentSessionOptions,
   BaseRun,
   BranchHandle,
@@ -37,8 +38,15 @@ export type {
   StreamResult,
   Tree,
   View,
+  WithAgentSessionOptions,
 } from './core/transport/index.js';
-export { buildTransportHeaders, createAgentSession, createClientSession, Invocation } from './core/transport/index.js';
+export {
+  buildTransportHeaders,
+  createAgentSession,
+  createClientSession,
+  Invocation,
+  withAgentSession,
+} from './core/transport/index.js';
 
 // Channel modes
 export { OBJECT_MODES } from './core/channel-options.js';

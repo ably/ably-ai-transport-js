@@ -37,9 +37,12 @@ export default [
       'scripts/**',
       '**/vitest.config.ts',
       '**/vitest.config.integration.ts',
+      '**/vitest.config.temporal.ts',
       '**/vite.config.ts',
       '**/__mocks__',
       '**/coverage/',
+      // Generated API-docs output (gitignored); never source to lint.
+      'typedoc/**',
       '.github',
       '.claude/worktrees/**',
       'react/**',
@@ -143,6 +146,31 @@ export default [
     rules: {
       // tsconfig target is es6 which does not support top-level await
       'unicorn/prefer-top-level-await': 'off',
+    },
+  },
+  {
+    files: ['src/temporal/workflow/**/*.ts'],
+
+    rules: {
+      // This bundle runs inside Temporal's workflow sandbox, where `ably` and
+      // the worker-side Temporal packages do not exist. The activity contract
+      // may only arrive here as types (`import type`), which erase.
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            { name: 'ably', message: 'Workflow code runs in a sandbox without `ably`. Pass plain data instead.' },
+            {
+              name: '@temporalio/activity',
+              message: 'Activity-side only. Workflow code cannot reach the activity Context.',
+            },
+            {
+              name: '@temporalio/worker',
+              message: 'Worker-side only. Workflow code must not import worker APIs.',
+            },
+          ],
+        },
+      ],
     },
   },
   {

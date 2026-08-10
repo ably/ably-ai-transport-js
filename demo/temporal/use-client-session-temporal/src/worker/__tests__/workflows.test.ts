@@ -13,6 +13,7 @@ import { Worker } from '@temporalio/worker';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { InvocationData, RunIdentity } from '@ably/ai-transport';
 
+import { bundlerOptions } from '../bundler';
 import { chatWorkflow } from '../workflows';
 import type { InferenceOutcome } from '../shared';
 
@@ -68,6 +69,7 @@ async function runWorkflow(activities: ReturnType<typeof makeWorker>['activities
     connection: env.nativeConnection,
     taskQueue,
     workflowsPath,
+    bundlerOptions,
     activities,
   });
   await worker.runUntil(

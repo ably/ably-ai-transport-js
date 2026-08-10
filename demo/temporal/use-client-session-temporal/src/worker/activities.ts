@@ -1,25 +1,30 @@
 /**
- * Temporal activities that own every I/O side effect of a chat turn:
- * opening the run (`openRun` — createRun + start, no inference), driving each
- * inference (`runInferenceStep`, including the first), running a single server
- * tool (`runToolStep`), and a workflow-level `cleanupRun` for catch-block
- * cleanup.
+ * The APPLICATION's Temporal activities: driving each inference
+ * (`runInferenceStep`, including the first) and running a single server tool
+ * (`runToolStep`). This is the half of a durable agent the SDK cannot own — the
+ * model, the system prompt, the tool registry, `stopWhen`, and the steering
+ * policy are all decisions this app makes.
  *
- * Each activity is fresh-process safe: it constructs its own `Ably.Realtime`
- * and `AgentSession`, does its work, publishes its terminal (`ai-run-end` /
- * `ai-run-suspend`) inline in the same session, then closes.
+ * The run's FRAMING — opening it, and closing it when a turn fails — comes from
+ * the SDK's Temporal plugin, registered in `index.ts`. Those activities carry no
+ * application logic, so there is nothing here to write.
  *
- * Common boilerplate — `safeSessionDetach`, `safeSessionEnd`,
- * `stripToolExecutes`, `pendingToolCalls`, `stepIdFor`, `step.send` —
- * lives in the SDK across three subpaths:
+ * Each activity is fresh-process safe: it builds its own `Ably.Realtime`, gets a
+ * session from `withAgentSession`, does its work, publishes its terminal
+ * (`ai-run-end` / `ai-run-suspend`) inline in that same session, then closes the
+ * client. Publishing the terminal here is free, because this activity already has
+ * the run loaded; doing it from the workflow instead would pay a fresh adopt.
  *
- *   - `@ably/ai-transport`          — safeSessionDetach, safeSessionEnd, step.send (method)
- *   - `@ably/ai-transport/vercel`   — stripToolExecutes, pendingToolCalls
- *   - `@ably/ai-transport/temporal` — stepIdFor
+ * `withAgentSession` owns the session lifecycle: connect, run the body, and
+ * detach on both success and failure. Detaching rather than ending is what makes
+ * a Temporal retry work — ending would mark the run terminal, and the retry would
+ * have nothing to publish onto.
  *
- * The `cleanupRun` activity below and `waitForRunStart` in `route.ts` are
- * demo-local for now — they will move into the SDK once we've refined
- * their shapes.
+ * Boilerplate lives in the SDK across three subpaths:
+ *
+ *   - `@ably/ai-transport`          — step.send (method)
+ *   - `@ably/ai-transport/vercel`   — withAgentSession, stripToolExecutes, pendingToolCalls
+ *   - `@ably/ai-transport/temporal` — stepIdFor, the plugin
  *
  * Cancels arrive as `ai-cancel` on the channel; each activity's own
  * `AgentSession` routes them to `run.abortSignal` via the SDK's built-in
@@ -33,124 +38,23 @@ import { convertToModelMessages, stepCountIs, streamText, type UIMessage } from 
 import type { VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
 import {
   approvedPendingToolCalls,
-  createAgentSession,
   pendingToolCalls,
   stripToolExecutes,
   vercelRunOutcome,
+  withAgentSession,
 } from '@ably/ai-transport/vercel';
-import {
-  ErrorCode,
-  Invocation,
-  LogLevel,
-  makeLogger,
-  type AgentRun,
-  type AgentSession,
-  type InvocationData,
-  type RunIdentity,
-} from '@ably/ai-transport';
+import { ErrorCode, type AgentRun, type InvocationData, type RunIdentity } from '@ably/ai-transport';
 import { stepIdFor } from '@ably/ai-transport/temporal';
 
 import { createModel } from '../app/api/chat/model.js';
 import { SYSTEM_PROMPT } from '../app/api/chat/prompt.js';
 import { tools } from '../app/api/chat/tools.js';
-import { safeSessionDetach, safeSessionEnd } from './safe-session-end.js';
+import { logger, makeAbly } from './ably.js';
 import type { InferenceOutcome, ToolCallInfo } from './shared.js';
 
-// Concrete run/session type this file works with — every activity uses the Vercel codec.
-type VercelSession = AgentSession<VercelOutput, VercelProjection, UIMessage>;
+// Concrete run type this file works with — every activity uses the Vercel codec.
 type VercelAgentRun = AgentRun<VercelOutput, VercelProjection, UIMessage>;
 type VercelRunStep = ReturnType<VercelAgentRun['createStep']>;
-
-const logger = makeLogger({
-  logLevel: process.env.WORKER_LOG_LEVEL === 'trace' ? LogLevel.Trace : LogLevel.Debug,
-});
-
-const ABLY_KEY = (): string => {
-  const key = process.env.ABLY_API_KEY;
-  if (!key) throw new Error('ABLY_API_KEY is not set');
-  return key;
-};
-
-const ABLY_ENDPOINT = (): string | undefined => process.env.ABLY_ENDPOINT;
-
-const makeAbly = (): Ably.Realtime =>
-  new Ably.Realtime({
-    key: ABLY_KEY(),
-    ...(ABLY_ENDPOINT() ? { endpoint: ABLY_ENDPOINT() } : {}),
-  });
-
-// -----------------------------------------------------------------------------
-// openRun — createRun + start, and nothing else. It publishes the opening event
-// (`ai-run-start` for a fresh run, `ai-run-resume` for a continuation) and
-// returns the run's ids. It deliberately does NOT run the first inference: that
-// is a separate `runInferenceStep` the workflow drives, so an inference failure
-// retries the inference alone and never re-opens (re-publishes the opening event
-// for) the run. Keeping the two apart also means openRun's ids reach the
-// workflow before any inference runs, so a later inference failure past retries
-// still has ids to hand `cleanupRun` — the run gets ended 'error' instead of
-// being orphaned active.
-//
-// Retry-safe: the run id is pinned to the Temporal workflowId (see the createRun
-// call), so a fresh-process retry of openRun re-enters the same run — it never
-// opens a second, parallel run.
-// -----------------------------------------------------------------------------
-
-export async function openRun(input: { invocation: InvocationData; invocationId: string }): Promise<RunIdentity> {
-  const cancelSignal = Context.current().cancellationSignal;
-  const ably = makeAbly();
-  let session: VercelSession | undefined;
-  try {
-    session = createAgentSession({ client: ably, channelName: input.invocation.sessionName, logger });
-    await session.connect();
-
-    const run = session.createRun(
-      Invocation.fromJSON(input.invocation),
-      {
-        invocationId: input.invocationId,
-        // Stable run id, straight from the framework: invocationId IS the Temporal
-        // workflowId, constant across activity and workflow retries. A fresh-process
-        // retry of openRun then re-enters the SAME run rather than minting a new
-        // UUID and opening a parallel one — the SDK's durable-execution contract for
-        // RunIdentity.runId. The retry's ai-run-start folds idempotently onto the
-        // existing run node (first startSerial wins). Continuations ignore this:
-        // their run id comes from the trigger's wire headers, so it only pins the
-        // fresh-run case.
-        runId: input.invocationId,
-      },
-      { signal: cancelSignal },
-    );
-
-    // Load the conversation history.
-    while (run.view.hasOlder()) {
-      await run.view.loadOlder();
-    }
-
-    // Start the run, including locating the trigger event and publishing the start.
-    // The trigger event could be received live, or more likely it will be in history.
-    // The above calls to load conversation history using view.loadOlder give access
-    // to the trigger event from history. This method will block without publishing
-    // the run start until the trigger event is located — so a retry that fails to
-    // locate the trigger throws before publishing, leaving no orphaned run.
-    await run.start();
-
-    const ids: RunIdentity = { runId: run.runId, invocationId: run.invocationId };
-
-    // detach (not end): the run is deliberately left active so the workflow's
-    // first runInferenceStep can adopt it. session.end() would publish
-    // `ai-run-end` and mark the run terminal.
-    await session.detach();
-
-    return ids;
-  } catch (error) {
-    // Detach (not end) on error: the activity may be retried by Temporal.
-    // Ending would publish `ai-run-end` and mark the run terminal, so a
-    // retry's `run.start()` would republish onto a terminal run.
-    await safeSessionDetach(session);
-    throw error;
-  } finally {
-    ably.close();
-  }
-}
 
 async function _publishRunTerminal(run: VercelAgentRun, outcome: InferenceOutcome): Promise<void> {
   switch (outcome.kind) {
@@ -180,7 +84,8 @@ async function _publishRunTerminal(run: VercelAgentRun, outcome: InferenceOutcom
 // -----------------------------------------------------------------------------
 // runInferenceStep — ONE turn's inference, published as exactly one SDK step.
 // Drives every inference in the turn, first and follow-ups alike: it adopts the
-// run openRun (or a prior step) left active, loads it, and runs the model.
+// run the SDK's openRun (or a prior step) left active, loads it, and runs the
+// model.
 // Client steering (a follow-up user-message folded into the active run while we
 // stream) loops another inference pass into the SAME step inside this activity,
 // rather than round-tripping through the workflow. One step per activity keeps
@@ -189,7 +94,8 @@ async function _publishRunTerminal(run: VercelAgentRun, outcome: InferenceOutcom
 // stripped so the AI SDK stops after the call and we drive the tool exec via
 // runToolStep.
 //
-// Resume-visibility race: when the turn is a continuation, openRun published
+// Resume-visibility race: when the turn is a continuation, the SDK's openRun
+// published
 // `ai-run-resume` on its own session and detached. This fresh session's
 // `run.load()` pages channel history to status-gate the run, and may read the
 // pre-resume `ai-run-suspend` before the `ai-run-resume` has propagated into
@@ -209,29 +115,28 @@ interface StepInput {
 export async function runInferenceStep(input: StepInput): Promise<InferenceOutcome> {
   const cancelSignal = Context.current().cancellationSignal;
   const ably = makeAbly();
-  let session: VercelSession | undefined;
   try {
-    session = createAgentSession({ client: ably, channelName: input.invocation.sessionName, logger });
-    await session.connect();
+    // This body publishes the run's terminal itself when it reaches one; the
+    // session is only ever detached. Ending it would publish `ai-run-end` and
+    // mark the run terminal, which would break both the hand-off to the next
+    // activity and any Temporal retry of this one.
+    return await withAgentSession<InferenceOutcome>(
+      { client: ably, invocation: input.invocation, logger },
+      async ({ session, invocation }) => {
+        const run = session.adoptRun(invocation, input.ids, { signal: cancelSignal });
 
-    const run = session.adoptRun(Invocation.fromJSON(input.invocation), input.ids, { signal: cancelSignal });
+        await run.load();
 
-    await run.load();
+        // Load history for the LLM conversation.
+        while (run.view.hasOlder()) await run.view.loadOlder();
 
-    // Load history for the LLM conversation.
-    while (run.view.hasOlder()) await run.view.loadOlder();
+        const outcome = await _runInferenceStep(run, stepIdFor(input.ids.invocationId));
 
-    const outcome = await _runInferenceStep(run, stepIdFor(input.ids.invocationId));
+        await _publishRunTerminal(run, outcome);
 
-    await _publishRunTerminal(run, outcome);
-    // detach (not end): see openRun for why we don't want session.end() here.
-    await session.detach();
-
-    return outcome;
-  } catch (error) {
-    // Detach on error — see openRun for why we don't end the run here.
-    await safeSessionDetach(session);
-    throw error;
+        return outcome;
+      },
+    );
   } finally {
     ably.close();
   }
@@ -367,89 +272,37 @@ export async function runToolStep(input: StepInput & { toolCall: ToolCallInfo })
   const cancelSignal = Context.current().cancellationSignal;
   const ably = makeAbly();
 
-  let session: VercelSession | undefined;
   try {
-    session = createAgentSession({ client: ably, channelName: input.invocation.sessionName, logger });
-    await session.connect();
+    // `tool.execute()` throws are typically retryable: Temporal re-runs this
+    // activity under the same `stepId`, and the retry supersedes the failed
+    // attempt's output via the SDK's step-start-serial supersede semantics. That
+    // only works because the session is detached rather than ended — ending
+    // would publish `ai-run-end` and every retry would fail with "run is
+    // terminal (read-only)". Workflow-level `cleanupRun` marks the run 'error'
+    // once retries are truly exhausted.
+    await withAgentSession<void>(
+      { client: ably, invocation: input.invocation, logger },
+      async ({ session, invocation }) => {
+        const run = session.adoptRun(invocation, input.ids, { signal: cancelSignal });
+        await run.load();
 
-    const run = session.adoptRun(Invocation.fromJSON(input.invocation), input.ids, { signal: cancelSignal });
-    await run.load();
+        const step = run.createStep({ stepId });
+        await step.start();
 
-    const step = run.createStep({ stepId });
-    await step.start();
+        const tool = (tools as Record<string, { execute?: (input: unknown) => Promise<unknown> }>)[
+          input.toolCall.toolName
+        ];
+        if (!tool?.execute) throw new Error(`tool '${input.toolCall.toolName}' has no execute`);
+        const output = await tool.execute(input.toolCall.input);
 
-    // Execute the tool. Throws propagate through Temporal for retry; the
-    // outer catch below runs session.end() as a safety net so a permanent
-    // failure doesn't leave the run active with a pending tool call.
-    const tool = (tools as Record<string, { execute?: (input: unknown) => Promise<unknown> }>)[input.toolCall.toolName];
-    if (!tool?.execute) throw new Error(`tool '${input.toolCall.toolName}' has no execute`);
-    const output = await tool.execute(input.toolCall.input);
-
-    await step.send({
-      type: 'tool-output-available',
-      toolCallId: input.toolCall.toolCallId,
-      output,
-    });
-    await step.end();
-    // detach (not end): the run is deliberately left active so the follow-up
-    // runInferenceStep can adopt it.
-    await session.detach();
-  } catch (error) {
-    // Detach on error: `tool.execute()` throws are typically retryable
-    // (Temporal will re-run this activity under the same `stepId`, and the
-    // retry supersedes the failed attempt's output via the SDK's step-start-serial
-    // supersede semantics). Ending the session would publish `ai-run-end` and
-    // mark the run terminal — every retry would then fail with "run is
-    // terminal (read-only)". Workflow-level `cleanupRun` marks the run
-    // 'error' after retries are truly exhausted.
-    await safeSessionDetach(session);
-    throw error;
-  } finally {
-    ably.close();
-  }
-}
-
-// -----------------------------------------------------------------------------
-// cleanupRun — workflow-level failure cleanup. Register on the worker and
-// schedule from the workflow's outer catch when an activity has failed past
-// its retry policy. Best-effort: adopt the run, status-gate via load(),
-// publish `run.end('error')` if still active. Kept demo-local for now —
-// this shape will be refined before extracting to the SDK.
-// -----------------------------------------------------------------------------
-
-export async function cleanupRun(input: {
-  ids: RunIdentity;
-  invocation: InvocationData;
-  errorMessage?: string;
-}): Promise<void> {
-  const ably = makeAbly();
-  let session: VercelSession | undefined;
-  try {
-    session = createAgentSession({ client: ably, channelName: input.invocation.sessionName, logger });
-    await session.connect();
-
-    const run = session.adoptRun(Invocation.fromJSON(input.invocation), input.ids);
-
-    try {
-      // load() pages history to locate ai-run-start + the trigger. It
-      // status-gates: rejects if the run is already suspended (client will
-      // resume) or terminal (already ended). Either way, nothing to clean up.
-      await run.load();
-    } catch {
-      await session.detach();
-      return;
-    }
-
-    await run.end({
-      reason: 'error',
-      error: new Ably.ErrorInfo(input.errorMessage ?? 'workflow failed', ErrorCode.StreamError, 500),
-    });
-    await session.detach();
-  } catch (error) {
-    // safeSessionEnd (not detach) here — cleanupRun is the workflow-level
-    // terminal path (retries exhausted), so ending open runs is the intent.
-    await safeSessionEnd(session);
-    throw error;
+        await step.send({
+          type: 'tool-output-available',
+          toolCallId: input.toolCall.toolCallId,
+          output,
+        });
+        await step.end();
+      },
+    );
   } finally {
     ably.close();
   }

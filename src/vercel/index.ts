@@ -17,10 +17,12 @@ export type {
   ChatTransport,
   ChatTransportOptions,
   SendMessagesRequestContext,
+  VercelAgentSessionContext,
   VercelAgentSessionOptions,
   VercelClientSessionOptions,
+  VercelWithAgentSessionOptions,
 } from './transport/index.js';
-export { createAgentSession, createChatTransport, createClientSession } from './transport/index.js';
+export { createAgentSession, createChatTransport, createClientSession, withAgentSession } from './transport/index.js';
 
 // Client tool-result forking (for callers that drive `view.send` directly)
 export type { ToolCallResolution } from './transport/fork-tool-result.js';

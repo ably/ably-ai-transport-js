@@ -3,6 +3,7 @@ export type {
   AdoptedRun,
   AgentRun,
   AgentSession,
+  AgentSessionContext,
   AgentSessionOptions,
   BaseRun,
   BranchHandle,
@@ -36,6 +37,7 @@ export type {
   StreamResult,
   Tree,
   View,
+  WithAgentSessionOptions,
 } from './types.js';
 
 // Invocation
@@ -44,6 +46,7 @@ export { Invocation } from './invocation.js';
 
 // Agent session
 export { createAgentSession } from './agent-session.js';
+export { withAgentSession } from './with-agent-session.js';
 
 // Client session
 export { createClientSession } from './client-session.js';

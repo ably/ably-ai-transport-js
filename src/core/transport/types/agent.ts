@@ -6,7 +6,7 @@ import type * as AblyObjects from 'ably/liveobjects';
 
 import type { Logger } from '../../../logger.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../../codec/types.js';
-import type { Invocation } from '../invocation.js';
+import type { Invocation, InvocationData } from '../invocation.js';
 import type { BaseRun } from './run.js';
 import type { CancelRequest, RunEndReason, StepEndReason } from './shared.js';
 import type { Tree } from './tree.js';
@@ -73,6 +73,44 @@ export interface AgentSessionOptions<
    * sweeps. Defaults to 120000 (2 minutes).
    */
   reorderWindowMs?: number;
+}
+
+/**
+ * Options for {@link withAgentSession}: every {@link AgentSessionOptions} field
+ * except `channelName`, which the helper takes from the invocation.
+ * @template TInput - The codec input event type.
+ * @template TOutput - The codec output event type.
+ * @template TProjection - The codec projection type.
+ * @template TMessage - The codec message type.
+ */
+export interface WithAgentSessionOptions<
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+  TMessage,
+> extends Omit<AgentSessionOptions<TInput, TOutput, TProjection, TMessage>, 'channelName'> {
+  /**
+   * The invocation this session serves. Its `sessionName` is the channel the
+   * session attaches; the parsed form is handed to the body.
+   */
+  invocation: InvocationData;
+}
+
+/**
+ * The context {@link withAgentSession} hands to its body.
+ * @template TOutput - The codec output event type.
+ * @template TProjection - The codec projection type.
+ * @template TMessage - The codec message type.
+ */
+export interface AgentSessionContext<TOutput extends CodecOutputEvent, TProjection, TMessage> {
+  /**
+   * The connected session. It is detached, never ended, once the body settles,
+   * so a run the body leaves open stays open on the wire for a later attempt to
+   * adopt. Call `end()` on it directly when ending the run is the intent.
+   */
+  session: AgentSession<TOutput, TProjection, TMessage>;
+  /** The parsed invocation, ready to pass to `createRun` or `adoptRun`. */
+  invocation: Invocation;
 }
 
 // ---------------------------------------------------------------------------

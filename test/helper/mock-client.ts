@@ -13,6 +13,9 @@ import { vi } from 'vitest';
  * anonymous connection, and pass `'*'` to model a wildcard token — both of
  * which a client session treats as having no concrete identity. Agent sessions
  * never read it.
+ *
+ * `close` is a spy, so a test can assert that SDK code left the injected client
+ * alone — the caller owns the client's lifecycle.
  * @param channel - The mock channel to return from `channels.get(...)`.
  * @param clientId - The mock connection identity exposed as `auth.clientId`;
  *   `undefined` (the default) models an anonymous connection.
@@ -31,9 +34,10 @@ export const createMockClient = (channel: Ably.RealtimeChannel, clientId?: strin
     },
     auth: { clientId },
     options: {} as { agents?: Record<string, string | undefined> },
+    close: vi.fn(),
   };
-  // CAST: minimal stub — only `channels.get`, `auth.clientId`, and
-  // `options.agents` are exercised in unit tests; other Ably.Realtime members
-  // are unused.
+  // CAST: minimal stub — only `channels.get`, `auth.clientId`,
+  // `options.agents`, and `close` are exercised in unit tests; other
+  // Ably.Realtime members are unused.
   return client as unknown as Ably.Realtime;
 };

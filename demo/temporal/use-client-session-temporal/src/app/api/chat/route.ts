@@ -3,7 +3,8 @@
  * starts a Temporal workflow to drive the agent side. The workflow ID equals
  * the invocation ID.
  *
- * The workflow's `openRun` activity activates the run on the Ably channel
+ * The SDK plugin's `openRun` activity, which the workflow schedules first,
+ * activates the run on the Ably channel
  * (`ai-run-start` for a fresh run, `ai-run-resume` for a continuation); the
  * client resolves `run.started` from that channel event, not from this
  * response, so the route returns as soon as the workflow is started.

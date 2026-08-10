@@ -1,44 +1,39 @@
 /**
  * The chat workflow. One workflow instance per HTTP POST (workflowId ==
- * invocationId). The workflow opens the run in one activity (`openRun` —
- * createRun + start, no inference), runs the first inference as its own
- * `runInferenceStep`, then loops follow-up activities — server-tool steps and
- * further inference passes after them — until a terminal outcome comes back.
- * (Client steering is answered inside the inference activity's own loop, so it
- * never reaches the workflow.) Splitting open from the first inference
- * keeps the two independently retryable: an inference failure retries the
- * inference alone, never re-opening the run.
+ * invocationId).
  *
- * Activities are fully self-contained on the happy path: each publishes its
- * own terminal (`ai-run-end` / `ai-run-suspend`) inline in the session it
- * used for its step output. Two layers of failure handling wrap the workflow:
+ * `withRun` owns the run's bookends. It opens the run — creating it, or resuming
+ * an existing one when the turn is a continuation — and on a failure makes a
+ * best-effort attempt to end it `error`, so a failed turn doesn't leave the
+ * browser waiting on a stream that never ends. That attempt survives a cancel or
+ * terminate of this workflow, which is when it matters most.
  *
- *   - Per-activity `session.end()` safety net (in each activity's catch)
- *     closes any still-open run as `cancelled` before the throw propagates.
- *   - Workflow-level catch below, which schedules a one-shot `cleanupRun`
- *     if activity retries are exhausted (Temporal has given up).
- *     `cleanupRun` publishes `run.end('error')` so the client's UI
- *     unstucks; it has a tight timeout and no retry so it can't cascade.
+ * What is left here is this app's own algorithm: run an inference, and while it
+ * comes back asking for server tools, run those tools and infer again.
  *
- * Cancels: no listener activity or workflow signal. When the client
- * publishes `ai-cancel` on the channel, whichever activity is running (or
- * the next one to open its own session) picks it up via the SDK's built-in
- * cancel routing, aborts, publishes `run.end('cancelled')` inline, and
+ * Activities publish their own terminals. The inference activity already holds a
+ * loaded run, so publishing `ai-run-end` / `ai-run-suspend` there costs nothing;
+ * doing it from here via `run.end()` would pay a fresh adopt and load. The
+ * handle exposes `end()` and `suspend()` for orchestrations that prefer it.
+ *
+ * Cancels need no signal or listener activity. When the client publishes
+ * `ai-cancel` on the channel, whichever activity is attached picks it up through
+ * the SDK's cancel routing, aborts, publishes `ai-run-end{cancelled}` inline, and
  * returns `{ kind: 'cancelled' }`.
  */
 
 import { proxyActivities } from '@temporalio/workflow';
 
-import type { RunIdentity } from '@ably/ai-transport';
+import { withRun } from '@ably/ai-transport/temporal/workflow';
 
 import type { ChatWorkflowInput } from './shared.js';
 import type * as activities from './activities.js';
 
-// Step activities: bounded retries so failures propagate to the workflow's
-// catch instead of hanging forever. runToolStep gets more attempts because
-// the demo's `getStockPrice` throws on an odd price (~50% of attempts), so it
-// may need several retries before it rolls an even one.
-const { openRun, runInferenceStep } = proxyActivities<typeof activities>({
+// Bounded retries so a failure reaches `withRun`'s cleanup instead of hanging
+// forever. runToolStep gets more attempts because the demo's `getStockPrice`
+// throws on an odd price (~50% of attempts), so it may need several before it
+// rolls an even one.
+const { runInferenceStep } = proxyActivities<typeof activities>({
   startToCloseTimeout: '5 minutes',
   retry: { maximumAttempts: 3 },
 });
@@ -48,67 +43,42 @@ const { runToolStep } = proxyActivities<typeof activities>({
   retry: { maximumAttempts: 5 },
 });
 
-// Cleanup is best-effort and short: one attempt, tight timeout — if it fails
-// we've done what we can, don't cascade the failure further.
-const { cleanupRun } = proxyActivities<typeof activities>({
-  startToCloseTimeout: '30 seconds',
-  retry: { maximumAttempts: 1 },
-});
-
 export async function chatWorkflow(input: ChatWorkflowInput): Promise<void> {
-  let ids: RunIdentity | undefined;
-  try {
-    // openRun creates + starts the run (publishes ai-run-start / ai-run-resume)
-    // without running inference, and returns the run's ids. The run id is now
-    // part of the durable execution state, so it can be resumed on failure or restart.
-    ids = await openRun({
-      invocation: input.invocation,
+  // withRun opens the run — creating it, or RESUMING an existing one when this
+  // turn is a continuation — runs the body, and on a throw makes a best-effort
+  // attempt to end the run 'error' so a waiting client unsticks. Best-effort is
+  // literal: that attempt is non-cancellable, gets one shot with a short timeout,
+  // and no-ops when the run is already terminal or parked suspended.
+  //
+  // It does NOT adopt the run for the activities below. A session cannot cross an
+  // activity boundary, so each activity re-adopts and re-loads from `run.ids` —
+  // which is why ids are what gets threaded through the loop, not a session.
+  await withRun(
+    input.invocation,
+    {
       invocationId: input.invocationId,
-    });
+      activityOptions: {
+        // Cleanup keeps the SDK's fail-fast default; opening a run is worth a
+        // couple of retries, since a continuation can race the resume it needs.
+        openRun: { startToCloseTimeout: '5 minutes', retry: { maximumAttempts: 3 } },
+      },
+    },
+    async (run) => {
+      // The main loop: run inference, and while it comes back asking for server tools,
+      // process each tool call and infer again. The inference activity publishes the 'end' when done.
+      let outcome = await runInferenceStep({ ids: run.ids, invocation: input.invocation });
 
-    // First inference. Every inference — first and follow-ups — goes through the
-    // same adopt-load-infer activity, so the loop below handles them uniformly.
-    let outcome = await runInferenceStep({ ids, invocation: input.invocation });
-
-    while (true) {
-      // Any terminal outcome — the activity that produced it already
-      // published ai-run-end / ai-run-suspend on the wire in its own session.
-      if (
-        outcome.kind === 'complete' ||
-        outcome.kind === 'suspend' ||
-        outcome.kind === 'error' ||
-        outcome.kind === 'cancelled'
-      ) {
-        return;
+      while (outcome.kind === 'server-tools') {
+        // The only non-terminal outcome: run one activity per tool call, then
+        // infer again. The follow-up inference publishes the terminal when done.
+        for (const toolCall of outcome.serverToolCalls) {
+          await runToolStep({ ids: run.ids, invocation: input.invocation, toolCall });
+        }
+        outcome = await runInferenceStep({ ids: run.ids, invocation: input.invocation });
       }
 
-      // Non-terminal (server-tools, the only one): run one activity per tool
-      // call, then loop with a follow-up inference (which publishes the terminal
-      // when it's done).
-      for (const toolCall of outcome.serverToolCalls) {
-        await runToolStep({ ids, invocation: input.invocation, toolCall });
-      }
-
-      outcome = await runInferenceStep({ ids, invocation: input.invocation });
-    }
-  } catch (err) {
-    // Activity retries exhausted. Schedule cleanup only if openRun returned ids
-    // — a failure before that means no run to clean up. Because openRun no
-    // longer runs inference, an inference failure past retries still leaves ids
-    // set, so cleanupRun reliably ends the run 'error' and unsticks the client
-    // instead of orphaning an active run. Swallow the cleanup's own error so the
-    // workflow still surfaces the original failure to Temporal.
-    if (ids) {
-      try {
-        await cleanupRun({
-          ids,
-          invocation: input.invocation,
-          errorMessage: err instanceof Error ? err.message : 'workflow failed',
-        });
-      } catch {
-        /* best-effort */
-      }
-    }
-    throw err;
-  }
+      // Every other outcome is terminal, and the activity that produced it has
+      // already published `ai-run-end` / `ai-run-suspend` on the wire.
+    },
+  );
 }

@@ -19,12 +19,12 @@ import { Context } from '@temporalio/activity';
 import * as Ably from 'ably';
 
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
+import { pageUntilLocated } from '../core/transport/page-until-located.js';
 import type { RunIdentity } from '../core/transport/types/agent.js';
 import { withAgentSession } from '../core/transport/with-agent-session.js';
 import { ErrorCode } from '../errors.js';
 import type { Logger } from '../logger.js';
 import { withHeartbeat } from './heartbeat.js';
-import { pageUntilLocated } from './page-until-located.js';
 import type {
   CleanupRunInput,
   EndRunInput,

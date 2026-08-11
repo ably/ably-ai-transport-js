@@ -1,21 +1,22 @@
 /**
  * Bounded history paging for a freshly created run.
  *
- * A durable activity opens its run in a fresh process, so the input event that
- * triggered it was published before this process attached and sits in channel
- * history rather than the live stream. The input watcher is passive — it never
- * pages itself — so something has to page history until the trigger surfaces.
+ * A process that opens a run may not have been attached when the triggering
+ * input was published, so that event sits in channel history rather than the
+ * live stream. The input watcher is passive and never pages itself, so
+ * something has to page history until the trigger surfaces. A durable activity
+ * hits this every time, because each attempt is a fresh process.
  *
- * This pages until `run.located` settles, and no further: an opening activity
- * runs no inference, so it never needs the rest of the conversation, and the
- * trigger is the newest thing in that history. Opening a run therefore costs
- * about one history page whatever the conversation's length.
+ * This pages until `run.located` settles, and no further: opening a run needs
+ * no inference, so it never needs the rest of the conversation, and the trigger
+ * is the newest thing in that history. Opening a run therefore costs about one
+ * history page whatever the conversation's length.
  */
 
 import * as Ably from 'ably';
 
-import { ErrorCode } from '../errors.js';
-import type { Logger } from '../logger.js';
+import { ErrorCode } from '../../errors.js';
+import type { Logger } from '../../logger.js';
 
 /**
  * The part of a run this needs. A structural upper bound so callers do not have

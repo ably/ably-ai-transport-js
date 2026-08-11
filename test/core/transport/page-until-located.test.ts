@@ -3,15 +3,15 @@
  * in a fresh process and its trigger event sits in channel history.
  */
 
-import '../helper/expectations.js';
+import '../../helper/expectations.js';
 
 import * as Ably from 'ably';
 import { describe, expect, it, vi } from 'vitest';
 
-import { ErrorCode } from '../../src/errors.js';
-import type { LocatableRun } from '../../src/temporal/page-until-located.js';
-import { pageUntilLocated } from '../../src/temporal/page-until-located.js';
-import { flushMicrotasks } from '../helper/streams.js';
+import type { LocatableRun } from '../../../src/core/transport/page-until-located.js';
+import { pageUntilLocated } from '../../../src/core/transport/page-until-located.js';
+import { ErrorCode } from '../../../src/errors.js';
+import { flushMicrotasks } from '../../helper/streams.js';
 
 /**
  * A run whose trigger folds in after `locateAfterPages` pages.

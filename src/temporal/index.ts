@@ -18,7 +18,6 @@
  */
 
 export type { FramingActivitiesOptions } from './activities.js';
-export type { PageUntilLocatedOptions } from './page-until-located.js';
 export type { AblyTransportPlugin, AblyTransportPluginOptions } from './plugin.js';
 export { createAblyTransportPlugin } from './plugin.js';
 export { stepIdFor } from './step-id.js';

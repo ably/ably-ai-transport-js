@@ -46,6 +46,8 @@ export { Invocation } from './invocation.js';
 
 // Agent session
 export { createAgentSession } from './agent-session.js';
+export type { LocatableRun, PageUntilLocatedOptions } from './page-until-located.js';
+export { pageUntilLocated } from './page-until-located.js';
 export { withAgentSession } from './with-agent-session.js';
 
 // Client session

@@ -40,11 +40,13 @@ export type {
   View,
   WithAgentSessionOptions,
 } from './core/transport/index.js';
+export type { LocatableRun, PageUntilLocatedOptions } from './core/transport/index.js';
 export {
   buildTransportHeaders,
   createAgentSession,
   createClientSession,
   Invocation,
+  pageUntilLocated,
   withAgentSession,
 } from './core/transport/index.js';
 

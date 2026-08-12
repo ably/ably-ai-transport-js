@@ -6,11 +6,11 @@
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ToolCallOptions } from 'ai';
+import type { ToolExecutionOptions } from 'ai';
 
 import { tools } from '../tools';
 
-const callOptions: ToolCallOptions = { toolCallId: 'call-1', messages: [] };
+const callOptions: ToolExecutionOptions<unknown> = { toolCallId: 'call-1', messages: [], context: undefined };
 
 function runGetStockPrice(symbol: string) {
   const execute = tools.getStockPrice.execute;

@@ -8,3 +8,4 @@ tsconfig.tsbuildinfo
 test-results/
 playwright-report/
 .next-e2e/
+/.swc

@@ -23,6 +23,6 @@ minimumReleaseAgeExclude:
 # tsc sees a single Tool / UIMessage / RealtimeChannel type identity between
 # the demo's node_modules and the SDK's dist declarations.
 overrides:
-  ai: '6.0.185'
+  ai: '7.0.32'
   react: '19.2.6'
   react-dom: '19.2.6'

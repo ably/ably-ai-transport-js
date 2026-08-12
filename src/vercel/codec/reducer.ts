@@ -36,7 +36,7 @@ import type * as AI from 'ai';
 import type { CodecEvent, CodecMessage, ReducerMeta } from '../../core/codec/index.js';
 import type { VercelInput, VercelOutput } from './events.js';
 import { foldContentPart } from './fold-content.js';
-import { foldDataPart } from './fold-data.js';
+import { foldDataPart, isDataChunk } from './fold-data.js';
 import {
   foldClientToolResult,
   foldClientToolResultError,
@@ -165,10 +165,10 @@ const foldChunk = (state: VercelProjection, chunk: VercelOutput, meta: ReducerMe
     }
 
     default: {
-      if (chunk.type.startsWith('data-')) {
-        return foldDataPart(state, chunk, messageId);
-      }
-      return state;
+      // Everything the cases above don't claim: the `data-*` family folds as a
+      // data part; any other chunk type the installed `ai` major carries that
+      // this codec does not project is dropped.
+      return isDataChunk(chunk) ? foldDataPart(state, chunk, messageId) : state;
     }
   }
 };

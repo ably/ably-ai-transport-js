@@ -74,6 +74,43 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
 
+  # The `ai` peer range spans two majors, so typecheck and test against each of
+  # them. The lockfile pins one; this job overrides the AI SDK packages to the
+  # major under test. Without this, only the pinned major is ever exercised and
+  # the declared range is an untested claim.
+  test-ai-peer-range:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ai: '^6'
+            ai-sdk-react: '^3'
+          - ai: '^7'
+            ai-sdk-react: '^4'
+    name: test ai@${{ matrix.ai }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: true
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.BASE_NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # `@ai-sdk/react` majors move in lockstep with `ai` (ai 6 -> react 3,
+      # ai 7 -> react 4), so both are pinned per matrix row.
+      - name: install ai@${{ matrix.ai }}
+        run: pnpm add -D "ai@${{ matrix.ai }}" "@ai-sdk/react@${{ matrix.ai-sdk-react }}"
+      - name: verify the resolved major
+        run: node -e "console.log('ai', require('ai/package.json').version)"
+      - run: pnpm run typecheck
+      - run: pnpm test
+
   test-integration:
     runs-on: ubuntu-latest
     permissions:

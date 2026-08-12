@@ -34,7 +34,7 @@ Detailed guidance lives in `.claude/rules/`. These files state durable **princip
 | `TYPES.md`        | Type safety rules, import conventions, no `any`/`as`/`!` policy                            |
 | `TESTS.md`        | Unit vs integration tests, mocking strategy, coverage expectations                         |
 | `COMMENTS.md`     | Comments, JSDoc, and test descriptions anchor to present state, not prior/removed code     |
-| `AISDK.md`        | Vercel AI SDK v6 specifics                                                                 |
+| `AISDK.md`        | Vercel AI SDK: supported majors, cross-major gotchas, dual-version discipline              |
 
 Additional conventions not covered by rule files:
 

@@ -58,7 +58,6 @@ Project-specific concerns — the local skills in this repo:
 | Concern           | Skill                           |
 | ----------------- | ------------------------------- |
 | Demos             | `code-review-demos`             |
-| Documentation     | `code-review-docs`              |
 | Rules conformance | `code-review-rules-conformance` |
 | Rules drift       | `code-review-rules-drift`       |
 

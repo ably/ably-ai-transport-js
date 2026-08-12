@@ -127,6 +127,20 @@ describe('withRun', () => {
     expect(recorded.inputs.openRun).toEqual({ invocation, invocationId });
   });
 
+  it('defaults the invocation id to the workflow id', async () => {
+    const recorded = recordActivities();
+
+    await expect(runWorkflow('defaultsInvocationId', recorded)).resolves.toBe('run-1');
+
+    // The harness passes `wf-1` in the args but starts the execution under
+    // `wf-1-<n>`, so seeing the latter proves the default fired rather than the
+    // fixture reading its input.
+    expect(recorded.inputs.openRun).toEqual({
+      invocation,
+      invocationId: `${invocationId}-${String(taskQueueCounter)}`,
+    });
+  });
+
   it('publishes nothing on the success path', async () => {
     const recorded = recordActivities();
 

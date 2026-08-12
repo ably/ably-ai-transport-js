@@ -87,7 +87,7 @@ const { runInferenceStep, runToolStep } = proxyActivities<typeof activities>({
 });
 
 export async function chatWorkflow(input: ChatWorkflowInput): Promise<void> {
-  await withRun(input.invocation, { invocationId: input.invocationId }, async (run) => {
+  await withRun(input.invocation, async (run) => {
     let outcome = await runInferenceStep({ ids: run.ids, invocation: input.invocation });
 
     while (outcome.kind === 'server-tools') {
@@ -119,9 +119,12 @@ not always a new run.
 
 On success `withRun` publishes nothing — see below.
 
-`invocationId` must be the id the client was handed, which in practice means the
-workflow id. Nothing validates it; if the two diverge, a retry opens a second
-parallel run on the same channel.
+`invocationId` defaults to the workflow id, which is right when you start one
+workflow per POST, as the demo does. Pass it explicitly when one workflow serves
+several turns: the workflow id is the same for all of them, so every turn would
+otherwise fold onto the first one's run. Whatever you pass must be the id the
+client was handed. Nothing validates it, and if the two diverge a retry opens a
+second parallel run on the same channel.
 
 ### Activity options
 
@@ -133,7 +136,6 @@ worker-process state and stay deterministic.
 await withRun(
   invocation,
   {
-    invocationId,
     activityOptions: {
       default: { startToCloseTimeout: '2 minutes' },
       openRun: { retry: { maximumAttempts: 5 } },

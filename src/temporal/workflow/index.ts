@@ -6,7 +6,7 @@
  * plumbing:
  *
  * ```ts
- * await withRun(input.invocation, { invocationId: input.invocationId }, async (run) => {
+ * await withRun(input.invocation, async (run) => {
  *   let outcome = await myInference(run.ids);
  *   // ...
  * });
@@ -21,7 +21,7 @@
  * first framing activity with "activity type not registered".
  */
 
-import { type ActivityOptions, CancellationScope, proxyActivities } from '@temporalio/workflow';
+import { type ActivityOptions, CancellationScope, proxyActivities, workflowInfo } from '@temporalio/workflow';
 
 import type { InvocationData } from '../../core/transport/invocation.js';
 import type { RunIdentity } from '../../core/transport/types/agent.js';
@@ -49,10 +49,14 @@ export interface RunActivityOptions {
 export interface OpenRunOptions {
   /**
    * The run's invocation id. Used as the run id too, so a fresh-process retry
-   * re-enters the same run. It must be the id the client was handed — in
-   * practice the workflow id — or a retry opens a second parallel run.
+   * re-enters the same run. Defaults to the workflow id.
+   *
+   * Whatever is passed must be stable across retries and distinct per turn, so
+   * the default only holds where one workflow serves one turn. A workflow
+   * serving several turns keeps one workflow id across all of them, and must
+   * pass a per-turn id here or every turn folds onto the first one's run.
    */
-  invocationId: string;
+  invocationId?: string;
   /** Per-activity timeouts and retry policies. */
   activityOptions?: RunActivityOptions;
 }
@@ -130,10 +134,10 @@ const optionsFor = (
  * apart from the trigger's `run-id` header, which is also why the run-id pinning
  * below only applies to a fresh run.
  * @param invocation - The invocation the client POSTed.
- * @param options - The invocation id to pin the run to, and activity options.
+ * @param options - Activity options, and the invocation id to pin the run to.
  * @returns A handle on the open run.
  */
-export const openRun = async (invocation: InvocationData, options: OpenRunOptions): Promise<RunHandle> => {
+export const openRun = async (invocation: InvocationData, options: OpenRunOptions = {}): Promise<RunHandle> => {
   const overrides = options.activityOptions;
   // One proxy per activity so each carries its own options. Read each function
   // off its proxy by name — `proxyActivities` returns a Proxy with no own
@@ -155,7 +159,10 @@ export const openRun = async (invocation: InvocationData, options: OpenRunOption
     ).cleanupRun,
   };
 
-  const ids = await activities.openRun({ invocation, invocationId: options.invocationId });
+  const ids = await activities.openRun({
+    invocation,
+    invocationId: options.invocationId ?? workflowInfo().workflowId,
+  });
 
   return {
     ids,
@@ -196,15 +203,30 @@ export const openRun = async (invocation: InvocationData, options: OpenRunOption
  * which is free inside an activity that already has the run loaded.
  * @template T - The body's return type.
  * @param invocation - The invocation the client POSTed.
- * @param options - The invocation id to pin the run to, and activity options.
  * @param body - The turn's work. Receives the run handle.
  * @returns Whatever `body` returns.
  */
-export const withRun = async <T>(
+export function withRun<T>(invocation: InvocationData, body: (run: RunHandle) => Promise<T>): Promise<T>;
+/**
+ * Open a run with explicit options, run `body` against it, and make a
+ * best-effort attempt to close the run if `body` fails.
+ * @template T - The body's return type.
+ * @param invocation - The invocation the client POSTed.
+ * @param options - Activity options, and the invocation id to pin the run to.
+ * @param body - The turn's work. Receives the run handle.
+ * @returns Whatever `body` returns.
+ */
+export function withRun<T>(
   invocation: InvocationData,
   options: OpenRunOptions,
   body: (run: RunHandle) => Promise<T>,
-): Promise<T> => {
+): Promise<T>;
+export async function withRun<T>(
+  invocation: InvocationData,
+  ...rest: [(run: RunHandle) => Promise<T>] | [OpenRunOptions, (run: RunHandle) => Promise<T>]
+): Promise<T> {
+  const [options, body] = rest.length === 1 ? [{}, rest[0]] : rest;
+
   // Deliberately outside the try: if opening fails there is no run to clean up.
   const run = await openRun(invocation, options);
 
@@ -220,7 +242,7 @@ export const withRun = async <T>(
     });
     throw error;
   }
-};
+}
 
 export type {
   CleanupRunInput,

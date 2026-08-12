@@ -31,7 +31,7 @@ const meta = (serial: string, messageId?: string): ReducerMeta =>
  * @returns The updated projection.
  */
 const fold = (state: VercelProjection, event: VercelInput | VercelOutput, m: ReducerMeta): VercelProjection =>
-  foldEvent(state, 'kind' in event ? { direction: 'input', event } : { direction: 'output', event }, m);
+  foldEvent(state, 'type' in event ? { direction: 'output', event } : { direction: 'input', event }, m);
 
 /**
  * Look up a reconstructed message by its codec-message-id — the only key
@@ -755,6 +755,32 @@ describe('Vercel reducer', () => {
       state = fold(state, { type: 'data-weather', id: 'd-2', data: { temp: 2 } }, meta('s2', 'msg-1'));
       expect(msgById(state, 'msg-1')?.parts).toHaveLength(2);
     });
+  });
+
+  // -- chunk types this codec knowingly does not project ---------------------
+
+  describe('unprojected chunk types', () => {
+    // The reducer identifies the `data-*` family by prefix instead of naming
+    // every variant that is not a data part, because naming a variant absent
+    // from the older supported `ai` major is a compile error there. The cost is
+    // that a chunk type with no fold is dropped rather than caught by
+    // exhaustiveness checking, so the dropped set is pinned here: adding a fold
+    // (or a new variant) has to come through this list, making it a decision
+    // rather than an oversight.
+    const unprojected: Record<string, unknown>[] = [
+      { type: 'custom', kind: 'vendor.widget' },
+      { type: 'reasoning-file', url: 'https://example.invalid/r', mediaType: 'text/plain' },
+      { type: 'tool-approval-response', approvalId: 'ap-1', approved: true },
+    ];
+
+    for (const chunk of unprojected) {
+      it(`drops '${String(chunk.type)}' without creating a message`, () => {
+        // CAST: a real chunk variant of the `ai` major under test, kept untyped
+        // so this file also compiles against a major whose union omits it.
+        const state = fold(init(), chunk as VercelOutput, meta('s1', 'msg-1'));
+        expect(state.messages).toHaveLength(0);
+      });
+    }
   });
 
   // -- tool-input streaming folds -------------------------------------------

@@ -42,6 +42,18 @@ export const happyPath = async (input: FixtureInput): Promise<string> =>
   );
 
 /**
+ * Opens a run without an invocation id or options, so the shim must default the
+ * id to the workflow id.
+ * @param input - The invocation. Its `invocationId` is deliberately unused.
+ * @returns The opened run's id.
+ */
+export const defaultsInvocationId = async (input: FixtureInput): Promise<string> =>
+  withRun(input.invocation, async (run) => {
+    await sleep(1);
+    return run.ids.runId;
+  });
+
+/**
  * Opens a run, then fails, so cleanup must fire. Throws `ApplicationFailure` so
  * the workflow FAILS: a plain `Error` thrown in workflow code is a workflow-task
  * failure, which Temporal retries forever.

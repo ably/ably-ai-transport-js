@@ -22,6 +22,7 @@ import {
   HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
   HEADER_INPUT_CODEC_MESSAGE_ID,
+  HEADER_INPUT_CODEC_MESSAGE_IDS,
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
@@ -141,6 +142,10 @@ export const buildTransportHeaders = (opts: {
  * @param opts.inputClientId - ClientId of the triggering input event.
  * @param opts.inputCodecMessageId - Codec-message-id of the triggering input event.
  * @param opts.reason - Terminal reason; stamped on run-end only.
+ * @param opts.consideredInputIds - Codec-message-ids of every input the run's
+ *   output considered (trigger + stamped steers), stamped as the
+ *   `input-codec-message-ids` bracket receipt on run-suspend / run-end.
+ *   Omitted when absent or empty.
  * @param opts.errorCode - Numeric error code stamped as `error-code` on
  *   run-end. Set only when the run ended in error and the agent supplied an
  *   error to surface; gives codec-agnostic consumers a baseline failure detail.
@@ -158,6 +163,7 @@ export const buildLifecycleHeaders = (opts: {
   inputClientId?: string;
   inputCodecMessageId?: string;
   reason?: RunEndReason;
+  consideredInputIds?: string[];
   errorCode?: number;
   errorMessage?: string;
 }): Record<string, string> => {
@@ -172,9 +178,35 @@ export const buildLifecycleHeaders = (opts: {
   if (opts.invocationId !== undefined) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.inputClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.inputClientId;
   if (opts.inputCodecMessageId !== undefined) h[HEADER_INPUT_CODEC_MESSAGE_ID] = opts.inputCodecMessageId;
+  if (opts.consideredInputIds !== undefined && opts.consideredInputIds.length > 0) {
+    h[HEADER_INPUT_CODEC_MESSAGE_IDS] = JSON.stringify(opts.consideredInputIds);
+  }
   if (opts.errorCode !== undefined) h[HEADER_ERROR_CODE] = String(opts.errorCode);
   if (opts.errorMessage !== undefined) h[HEADER_ERROR_MESSAGE] = opts.errorMessage;
   return h;
+};
+
+/**
+ * Parse a JSON-array-of-codec-message-ids header — the encoding shared by the
+ * per-output `steer-codec-message-ids` stamp and the run-bracket
+ * `input-codec-message-ids` receipt. Returns `undefined` when the header is
+ * absent, malformed, or empty after filtering non-strings, so a bad value
+ * degrades to "no header" rather than poisoning the consumer.
+ * @param value - The raw header value, or undefined when unset.
+ * @returns The parsed codec-message-ids, or undefined.
+ */
+export const parseCodecMessageIdsHeader = (value: string | undefined): string[] | undefined => {
+  if (value === undefined) return undefined;
+  try {
+    // CAST: trust boundary. The agent stamps a JSON array of strings, and a
+    // malformed value degrades to "no header" for this message.
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return undefined;
+    const ids = parsed.filter((id): id is string => typeof id === 'string');
+    return ids.length > 0 ? ids : undefined;
+  } catch {
+    return undefined;
+  }
 };
 
 /** The four run-lifecycle Ably message names. */

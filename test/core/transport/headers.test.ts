@@ -14,6 +14,7 @@ import {
   HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
   HEADER_INPUT_CODEC_MESSAGE_ID,
+  HEADER_INPUT_CODEC_MESSAGE_IDS,
   HEADER_INVOCATION_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
@@ -21,6 +22,7 @@ import {
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
+  HEADER_STEER_CODEC_MESSAGE_IDS,
   HEADER_STEP_CLIENT_ID,
   HEADER_STEP_ID,
   HEADER_STEP_REASON,
@@ -32,6 +34,7 @@ import {
   buildStepHeaders,
   buildTransportHeaders,
   isStepLifecycleName,
+  parseCodecMessageIdsHeader,
   parseRunLifecycle,
   parseStepLifecycle,
 } from '../../../src/core/transport/headers.js';
@@ -164,6 +167,34 @@ describe('buildTransportHeaders', () => {
   });
 });
 
+describe('parseCodecMessageIdsHeader', () => {
+  it('parses a JSON array of ids', () => {
+    expect(parseCodecMessageIdsHeader('["s1","s2"]')).toEqual(['s1', 's2']);
+  });
+
+  it('returns undefined for an absent header', () => {
+    const transport: Record<string, string> = {};
+    expect(parseCodecMessageIdsHeader(transport[HEADER_STEER_CODEC_MESSAGE_IDS])).toBeUndefined();
+  });
+
+  it('returns undefined for malformed JSON', () => {
+    expect(parseCodecMessageIdsHeader('not-json')).toBeUndefined();
+  });
+
+  it('returns undefined for valid JSON that is not an array', () => {
+    expect(parseCodecMessageIdsHeader('{"s1":true}')).toBeUndefined();
+  });
+
+  it('filters non-string entries, keeping the rest', () => {
+    expect(parseCodecMessageIdsHeader('["s1",2,null,"s2"]')).toEqual(['s1', 's2']);
+  });
+
+  it('returns undefined when nothing survives filtering', () => {
+    expect(parseCodecMessageIdsHeader('[]')).toBeUndefined();
+    expect(parseCodecMessageIdsHeader('[1,null]')).toBeUndefined();
+  });
+});
+
 describe('buildLifecycleHeaders', () => {
   it('always stamps run-id and run-client-id', () => {
     const headers = buildLifecycleHeaders({ runId: 'run-1', runClientId: 'user-a' });
@@ -210,6 +241,20 @@ describe('buildLifecycleHeaders', () => {
     const headers = buildLifecycleHeaders({ runId: 'run-1', runClientId: '', inputClientId: '' });
     expect(headers[HEADER_RUN_CLIENT_ID]).toBe('');
     expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('');
+  });
+
+  it('stamps the input receipt as a JSON array when non-empty, omitting it otherwise', () => {
+    const headers = buildLifecycleHeaders({
+      runId: 'run-1',
+      runClientId: 'user-a',
+      consideredInputIds: ['in-1', 'steer-1'],
+    });
+    expect(headers[HEADER_INPUT_CODEC_MESSAGE_IDS]).toBe(JSON.stringify(['in-1', 'steer-1']));
+
+    expect(buildLifecycleHeaders({ runId: 'r', runClientId: '' })).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_IDS);
+    expect(buildLifecycleHeaders({ runId: 'r', runClientId: '', consideredInputIds: [] })).not.toHaveProperty(
+      HEADER_INPUT_CODEC_MESSAGE_IDS,
+    );
   });
 
   it('stamps error-code (as a string) and error-message when provided', () => {

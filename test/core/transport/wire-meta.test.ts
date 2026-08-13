@@ -1,10 +1,13 @@
 /**
- * wireMetaFromMessage unit tests.
+ * WireMeta builder unit tests.
  *
- * The builder reads one inbound Ably message into its transport-tier WireMeta:
- * the raw `transport` / `codec` header buckets verbatim, plus a typed
+ * `wireMetaFromMessage` reads one inbound Ably message into its transport-tier
+ * WireMeta: the raw `transport` / `codec` header buckets verbatim, plus a typed
  * convenience projection of the transport tier's identity and structure fields
  * and the message's own Ably fields. It never interprets structure fields.
+ * `wireMetaFromLocalEcho` builds the same projection off client-stamped
+ * transport headers for an optimistic echo, with the wire-assigned fields
+ * absent.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -13,14 +16,16 @@ import {
   HEADER_CODEC_MESSAGE_ID,
   HEADER_FORK_OF,
   HEADER_INPUT_CODEC_MESSAGE_ID,
+  HEADER_INPUT_CODEC_MESSAGE_IDS,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_ID,
+  HEADER_STEER_CODEC_MESSAGE_IDS,
   HEADER_STEP_ID,
   HEADER_STEP_START_SERIAL,
 } from '../../../src/constants.js';
-import { wireMetaFromMessage } from '../../../src/core/transport/wire-meta.js';
+import { wireMetaFromLocalEcho, wireMetaFromMessage } from '../../../src/core/transport/wire-meta.js';
 import { inboundMessage } from '../../helper/wire-messages.js';
 
 describe('wireMetaFromMessage', () => {
@@ -89,6 +94,29 @@ describe('wireMetaFromMessage', () => {
     expect(meta).toMatchObject({ parent: 'p1', forkOf: 'f1', regenerates: 'r1', inputCodecMessageId: 'i1' });
   });
 
+  it('parses the steer-codec-message-ids stamp into the typed field', () => {
+    const meta = wireMetaFromMessage(
+      inboundMessage({ transport: { [HEADER_STEER_CODEC_MESSAGE_IDS]: '["s1","s2"]' } }),
+    );
+
+    expect(meta.steerCodecMessageIds).toEqual(['s1', 's2']);
+  });
+
+  it('parses the input-codec-message-ids receipt into the typed field', () => {
+    const meta = wireMetaFromMessage(
+      inboundMessage({ transport: { [HEADER_INPUT_CODEC_MESSAGE_IDS]: '["in-1","steer-1"]' } }),
+    );
+
+    expect(meta.inputCodecMessageIds).toEqual(['in-1', 'steer-1']);
+  });
+
+  it('degrades a malformed steer stamp to undefined, keeping the raw header', () => {
+    const meta = wireMetaFromMessage(inboundMessage({ transport: { [HEADER_STEER_CODEC_MESSAGE_IDS]: '{bad' } }));
+
+    expect(meta.steerCodecMessageIds).toBeUndefined();
+    expect(meta.transport[HEADER_STEER_CODEC_MESSAGE_IDS]).toBe('{bad');
+  });
+
   it('leaves every typed field undefined when the headers and Ably fields are absent', () => {
     const meta = wireMetaFromMessage(inboundMessage({}));
 
@@ -103,5 +131,21 @@ describe('wireMetaFromMessage', () => {
     expect(meta.transport).toEqual({});
     expect(meta.codec).toEqual({});
     expect(meta.headers).toEqual({});
+  });
+});
+
+describe('wireMetaFromLocalEcho', () => {
+  it('parses the id-list headers into the typed fields, like the wire builder', () => {
+    const meta = wireMetaFromLocalEcho(
+      {
+        [HEADER_STEER_CODEC_MESSAGE_IDS]: '["s1"]',
+        [HEADER_INPUT_CODEC_MESSAGE_IDS]: '["in-1"]',
+      },
+      'client-1',
+      {},
+    );
+
+    expect(meta.steerCodecMessageIds).toEqual(['s1']);
+    expect(meta.inputCodecMessageIds).toEqual(['in-1']);
   });
 });

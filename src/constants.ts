@@ -193,6 +193,22 @@ export const HEADER_INPUT_CODEC_MESSAGE_ID = 'input-codec-message-id';
  */
 export const HEADER_STEER_CODEC_MESSAGE_IDS = 'steer-codec-message-ids';
 
+/**
+ * Header: JSON-stringified array of codec-message-ids of every input the
+ * run's output considered — the triggering input plus each steer a step
+ * attempt stamped as `steer-codec-message-ids`. Stamped on the run's bracket
+ * events (`ai-run-end` and `ai-run-suspend`); a suspend carries the ids
+ * considered so far, and a later end carries the full accumulated list.
+ * Omitted when the run produced no output (nothing was considered).
+ *
+ * The bracket is the run's consumption receipt: it is published after every
+ * output of the run, so a client (live or hydrating from history) resolves
+ * "was this input processed?" from one event by id membership, without
+ * scanning the run's outputs. Checklist semantics — the list only contains
+ * ids an attempt actually took, so a skipped input is never falsely claimed.
+ */
+export const HEADER_INPUT_CODEC_MESSAGE_IDS = 'input-codec-message-ids';
+
 // ---------------------------------------------------------------------------
 // Run-end error headers (set on `ai-run-end` when `run-reason: error`)
 // ---------------------------------------------------------------------------

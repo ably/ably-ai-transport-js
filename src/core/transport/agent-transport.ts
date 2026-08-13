@@ -10,9 +10,13 @@
  * `deliverAblyMessage`), so a consumer subscribes to the transport directly.
  * The same listener dispatches `ai-cancel` envelopes onto the registered run
  * (consulting the run's `onCancel` hook, and buffering a fresh-send cancel
- * that races ahead of its `openRun`). Everything else the client publishes —
- * including a steering message under an open run's run-id — surfaces as
- * ordinary events on the receive stream for the agent to fold itself.
+ * that races ahead of its `openRun`) and routes a steering message — a
+ * client input under an open run's run-id — onto the run's steer tracker,
+ * flipping the handle's `hasInput()` and firing its `onSteer` hint. The
+ * steering message also surfaces as an ordinary event on the receive stream
+ * for the agent to fold into its own context; a steer that lands before its
+ * run's `openRun` is buffered and reconciled at registration. Everything
+ * else the client publishes surfaces as ordinary events only.
  *
  * `locateInput` scans channel history on a throwaway decoder to find the input
  * event a durable invocation must resume from. `history` pages the channel
@@ -39,6 +43,7 @@ import { evictOldestIfFull } from './internal/bounded-map.js';
 import { type HistoryPagesCursor, loadHistoryPages } from './load-history-pages.js';
 import { createReceiveTransport } from './receive-transport.js';
 import { createRunManager } from './run-manager.js';
+import { RunSteerTracker } from './run-steer-tracker.js';
 import { createRunStepWriter, stepEndReasonFor } from './run-step-writer.js';
 import { ConnectGuard, subscribeAndAttach } from './session-support.js';
 import type {
@@ -71,6 +76,13 @@ const DEFAULT_HISTORY_PAGE_SIZE = 100;
 const DEFERRED_CANCEL_LIMIT = 200;
 
 /**
+ * Maximum number of run-ids the pre-open steer buffers hold (steers and
+ * responded stamps observed before their run's `openRun`). FIFO-evicts the
+ * oldest run's buffer beyond this.
+ */
+const PRE_OPEN_STEER_LIMIT = 200;
+
+/**
  * A run registered for cancel routing, from `openRun` until it ends. A
  * suspended run stays registered — a cancel addressed to it should still fire
  * its abort signal, since a later invocation may be about to continue it.
@@ -84,6 +96,12 @@ interface RegisteredRun {
   onCancel?: (request: CancelRequest) => Promise<boolean>;
   /** The triggering input's codec-message-id, from {@link OpenRunOptions.inputCodecMessageId}. */
   inputCodecMessageId?: string;
+  /**
+   * Called with a live steering message's codec-message-id — a client input
+   * observed under this run's run-id. The run's closure tracks it (skipping
+   * the trigger and already-answered steers) and fires its `onSteer` hint.
+   */
+  onSteerMessage: (codecMessageId: string) => void;
 }
 
 /**
@@ -143,6 +161,27 @@ export const createAgentTransport = <TInput extends CodecInputEvent, TOutput ext
   const runIdByInputCodecMessageId = new Map<string, string>();
   /** Cancels that arrived before their target run was opened, keyed by input codec-message-id. */
   const deferredCancels = new Map<string, Ably.InboundMessage>();
+  /** Steering-message codec-message-ids observed before their run was opened, keyed by run-id. */
+  const preOpenSteersByRunId = new Map<string, Set<string>>();
+
+  /**
+   * Union a steer's codec-message-id into the bounded pre-open buffer,
+   * FIFO-evicting the oldest run's buffer at {@link PRE_OPEN_STEER_LIMIT}.
+   * @param runId - The run the steer belongs to.
+   * @param codecMessageId - The steer's codec-message-id.
+   */
+  const bufferPreOpenSteerId = (runId: string, codecMessageId: string): void => {
+    const evicted = evictOldestIfFull(preOpenSteersByRunId, runId, PRE_OPEN_STEER_LIMIT);
+    if (evicted !== undefined) {
+      logger.warn('AgentTransport.bufferPreOpenSteerId(); pre-open steer buffer full, dropping oldest run', {
+        evictedRunId: evicted,
+        limit: PRE_OPEN_STEER_LIMIT,
+      });
+    }
+    const set = preOpenSteersByRunId.get(runId);
+    if (set) set.add(codecMessageId);
+    else preOpenSteersByRunId.set(runId, new Set([codecMessageId]));
+  };
 
   /**
    * Fire a cancel against a registered run: consult its `onCancel`
@@ -244,12 +283,38 @@ export const createAgentTransport = <TInput extends CodecInputEvent, TOutput ext
   // Channel listener and lifecycle
   // ---------------------------------------------------------------------------
 
+  /**
+   * Route a classified `message` event into steer tracking. A client input
+   * under a registered run's run-id goes onto that run's closure (which skips
+   * the trigger and already-tracked steers); with no registered run yet, the
+   * steer id buffers per run-id for `openRun` to pull — a steer can land
+   * between `connect()` and a continuation's `openRun`, after the attach
+   * point where `history()` no longer sees it.
+   * @param event - The classified event the receive fold produced.
+   */
+  const observeRunSteer = (event: TransportEvent<TInput, TOutput>): void => {
+    if (event.kind !== 'message') return;
+    const { meta } = event;
+    const eventRunId = meta.runId;
+    if (eventRunId === undefined) return;
+    if (event.inputs.length === 0 || meta.codecMessageId === undefined) return;
+
+    const reg = registeredRuns.get(eventRunId);
+    if (reg) {
+      reg.onSteerMessage(meta.codecMessageId);
+      return;
+    }
+    bufferPreOpenSteerId(eventRunId, meta.codecMessageId);
+  };
+
   const onMessage = (message: Ably.InboundMessage): void => {
     if (closed) return;
     // A failed decode drops the message (the receiver emitted `error`); its
     // raw `ably-message` is not emitted, and cancel dispatch does not run for
     // a message the fold never applied.
-    if (receiver.deliverEvent(message).outcome === 'failed') return;
+    const delivery = receiver.deliverEvent(message);
+    if (delivery.outcome === 'failed') return;
+    if (delivery.outcome === 'classified') observeRunSteer(delivery.event);
     receiver.deliverAblyMessage(message);
     if (message.name === EVENT_CANCEL) {
       // Fire-and-forget async dispatch — onCancel errors are surfaced inside
@@ -369,11 +434,71 @@ export const createAgentTransport = <TInput extends CodecInputEvent, TOutput ext
     // until resume() re-opens, 'ended' is terminal.
     let state: 'open' | 'suspended' | 'ended' = 'open';
 
+    // The run's steer state: the tracker drives hasInput()'s drain contract
+    // and the per-attempt stamp delta; hasProducedOutput gates the initial
+    // pass; knownSteerIds dedups a redelivered steer; consideredSteerIds
+    // accumulates the ids step attempts took for stamping — the steer half of
+    // the input-codec-message-ids bracket receipt on suspend/end.
+    const steerTracker = new RunSteerTracker();
+    let hasProducedOutput = false;
+    const knownSteerIds = new Set<string>();
+    const consideredSteerIds: string[] = [];
+
+    /**
+     * Track one steering message for this run. Skips the run's own triggering
+     * input (the initial pass answers it) and a steer already tracked.
+     * @param codecMessageId - The steering message's codec-message-id.
+     * @returns True iff the steer became pending.
+     */
+    const trackSteer = (codecMessageId: string): boolean => {
+      if (codecMessageId === inputCodecMessageId) return false;
+      if (knownSteerIds.has(codecMessageId)) return false;
+      knownSteerIds.add(codecMessageId);
+      steerTracker.addPending(codecMessageId);
+      return true;
+    };
+
+    /**
+     * The `input-codec-message-ids` bracket receipt for this run's terminal
+     * events: the trigger plus every steer a step attempt took for stamping.
+     * `undefined` until the run has produced output — a run that published
+     * nothing considered nothing, so its bracket claims nothing.
+     * @returns The considered input ids, or undefined to omit the header.
+     */
+    const consideredInputIds = (): string[] | undefined => {
+      if (!hasProducedOutput) return undefined;
+      return inputCodecMessageId === undefined ? [...consideredSteerIds] : [inputCodecMessageId, ...consideredSteerIds];
+    };
+
+    /**
+     * Fire the run's `onSteer` hint, isolating a throwing handler onto the
+     * transport's `error` stream so a bad handler can't kill steer tracking.
+     */
+    const notifySteer = (): void => {
+      const onSteer = hooks?.onSteer;
+      if (!onSteer) return;
+      try {
+        onSteer();
+      } catch (error) {
+        const errInfo = new Ably.ErrorInfo(
+          `unable to notify steer for run ${runId}; onSteer handler threw: ${errorMessage(error)}`,
+          ErrorCode.RunSteerHandlerFailed,
+          500,
+          errorCause(error),
+        );
+        logger.error('AgentTransport.notifySteer(); onSteer threw', { runId });
+        receiver.emitError(errInfo);
+      }
+    };
+
     const registration: RegisteredRun = {
       runId,
       controller,
       onCancel: hooks?.onCancel,
       inputCodecMessageId,
+      onSteerMessage: (codecMessageId) => {
+        if (trackSteer(codecMessageId)) notifySteer();
+      },
     };
     registeredRuns.set(runId, registration);
     if (inputCodecMessageId !== undefined) {
@@ -388,6 +513,7 @@ export const createAgentTransport = <TInput extends CodecInputEvent, TOutput ext
      */
     const deregister = (): void => {
       registeredRuns.delete(runId);
+      preOpenSteersByRunId.delete(runId);
       if (inputCodecMessageId !== undefined) {
         if (runIdByInputCodecMessageId.get(inputCodecMessageId) === runId) {
           runIdByInputCodecMessageId.delete(inputCodecMessageId);
@@ -395,6 +521,23 @@ export const createAgentTransport = <TInput extends CodecInputEvent, TOutput ext
         deferredCancels.delete(inputCodecMessageId);
       }
     };
+
+    // Pull the steers that landed before this openRun (between connect() and
+    // here, after the attach point). One onSteer hint covers the batch.
+    {
+      const bufferedSteers = preOpenSteersByRunId.get(runId);
+      if (bufferedSteers) {
+        preOpenSteersByRunId.delete(runId);
+        let seededAny = false;
+        for (const id of bufferedSteers) {
+          if (trackSteer(id)) seededAny = true;
+        }
+        if (seededAny) {
+          logger.debug('AgentTransport.openRun(); seeded pre-open steers', { runId });
+          notifySteer();
+        }
+      }
+    }
 
     // Honour a cancel that arrived before this openRun established the
     // input-codec-message-id → run linkage. Fire-and-forget: with no onCancel
@@ -462,6 +605,18 @@ export const createAgentTransport = <TInput extends CodecInputEvent, TOutput ext
       // return instead).
       hooks: hooks ?? {},
       signal,
+      markOutputProduced: () => {
+        hasProducedOutput = true;
+      },
+      consumeSteerStampIds: () => {
+        // The moment a step attempt takes drained steers for stamping is the
+        // moment they count as considered — the same transfer point the
+        // per-output steer-codec-message-ids stamp uses, so the bracket
+        // receipt and the stamps agree.
+        const ids = steerTracker.consumeRecentlyProcessed();
+        consideredSteerIds.push(...ids);
+        return ids;
+      },
       logger: options.logger,
       requireConnected,
       assertPublishable: (verb) => {
@@ -528,6 +683,18 @@ export const createAgentTransport = <TInput extends CodecInputEvent, TOutput ext
       get abortSignal() {
         return signal;
       },
+      hasInput: (): boolean => {
+        // Loop driver: run at least once for the triggering input, then again
+        // for each steering message tracked since the previous pass. A cancel
+        // (aborted signal) stops the loop. Reading DRAINS pending steers into
+        // the set the next step attempt stamps, so there is no observe-only
+        // check.
+        if (signal.aborted) return false;
+        const hadPending = steerTracker.hasPending();
+        if (hadPending) steerTracker.drainPending();
+        if (!hasProducedOutput) return true;
+        return hadPending;
+      },
       pipe: stepWriter.pipe,
       createStep,
       suspend: async (): Promise<void> => {
@@ -544,7 +711,7 @@ export const createAgentTransport = <TInput extends CodecInputEvent, TOutput ext
           );
         }
         state = 'suspended';
-        await runManager.suspendRun(runId, invocationId);
+        await runManager.suspendRun(runId, invocationId, undefined, undefined, consideredInputIds());
       },
       resume: async (): Promise<void> => {
         logger.trace('AgentRunTransport.resume();', { runId });
@@ -577,7 +744,7 @@ export const createAgentTransport = <TInput extends CodecInputEvent, TOutput ext
           logger.error('AgentRunTransport.end(); failed to auto-close active step', { runId });
         }
         const error = params.reason === 'error' ? params.error : undefined;
-        await runManager.endRun(runId, params.reason, invocationId, undefined, undefined, error);
+        await runManager.endRun(runId, params.reason, invocationId, undefined, undefined, error, consideredInputIds());
       },
     };
   };

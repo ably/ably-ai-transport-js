@@ -169,6 +169,7 @@ jobs:
           - demo/vercel/react/use-chat-db
           - demo/vercel/react/use-client-session-db
           - demo/vercel/react/use-chat-wdk
+          - demo/temporal/use-client-session-temporal
           - demo/openai/react/use-client-session
     name: demo ${{ matrix.demo }}
     steps:

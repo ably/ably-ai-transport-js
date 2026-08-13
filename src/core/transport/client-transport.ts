@@ -13,17 +13,25 @@
  * input carries (`buildTransportHeaders`), publishes the event through the
  * codec's encoder, and emits an optimistic local `message` echo so the sender
  * sees its own input before the wire round-trips. `cancel` publishes a
- * stateless `ai-cancel` envelope for a run the caller names.
+ * stateless `ai-cancel` envelope for a run the caller names. `steer` publishes
+ * a steering input into an open run through the {@link SteerCoordinator},
+ * which matches the steer's own channel echo (resolving `published` with the
+ * Ably-assigned serial), accumulates the `steer-codec-message-ids` stamps the
+ * agent puts on the run's outputs, and resolves each steer's `outcome` by id
+ * membership at the run's next lifecycle bracket. A channel state listener
+ * drains in-flight steers on continuity loss — post-loss the channel will not
+ * deliver the echoes or lifecycle events that would resolve them.
  *
  * `history` pages the channel backwards from the attach point and returns each
  * older slice as a batch of classified events — decoded on the same decoder as
  * the live stream, so a stream spanning the attach boundary is never
  * double-decoded.
  *
- * The transport holds no run registry and no cross-message reconciliation
- * state: a consumer keying on `codecMessageId` reconciles the local echo
- * against the later wire echo, and sources a cancel's `runId` from the receive
- * stream's run-lifecycle events.
+ * The transport holds no run registry: a consumer keying on `codecMessageId`
+ * reconciles the local echo against the later wire echo, and sources a
+ * cancel's or steer's `runId` from `publishInput`'s returned `runId` promise
+ * (resolved from the first `ai-run-start` whose `input-codec-message-id`
+ * matches the publish) or from the receive stream's run-lifecycle events.
  */
 
 import * as Ably from 'ably';
@@ -37,7 +45,9 @@ import { buildTransportHeaders } from './headers.js';
 import { walkHistoryBatch } from './history-walk.js';
 import { type HistoryPagesCursor, loadHistoryPages } from './load-history-pages.js';
 import { createReceiveTransport, type ReceiveTransport } from './receive-transport.js';
-import { ConnectGuard, subscribeAndAttach } from './session-support.js';
+import { ConnectGuard, continuityLostError, isContinuityLost, subscribeAndAttach } from './session-support.js';
+import { SteerCoordinator } from './steer-coordinator.js';
+import type { SteerResult } from './types/steer.js';
 import type {
   ClientTransport,
   PublishInputOptions,
@@ -117,6 +127,29 @@ class DefaultClientTransport<
   private readonly _connectGuard = new ConnectGuard();
   /** The channel listener — one bound reference so `close()` can unsubscribe it. */
   private readonly _onMessage: (message: Ably.InboundMessage) => void;
+  /** The steer ledger behind {@link steer} — see the file header for its wiring. */
+  private readonly _steer: SteerCoordinator<TInput>;
+  /**
+   * Pending {@link PublishInputResult.runId} watches, keyed by the publish's
+   * codec-message-id. An array per key: repeat publishes under one pinned id
+   * each get their own promise, all resolved by the same run-start. Entries
+   * resolve on the first matching `ai-run-start` and reject on `close()` or
+   * continuity loss; an input that triggers no run leaves its watch pending
+   * until then.
+   */
+  private readonly _runIdWatches = new Map<
+    string,
+    { resolve: (runId: string) => void; reject: (err: Ably.ErrorInfo) => void }[]
+  >();
+  /** The channel state listener — one bound reference so `close()` can remove it. */
+  private readonly _onChannelStateChange: Ably.channelEventCallback;
+  /**
+   * Whether the channel has attached at least once. Before that there is no
+   * continuity to lose, so state changes are ignored (recording the initial
+   * attach when it arrives). Seeded from the channel's current state so a
+   * pre-attached channel is handled correctly.
+   */
+  private _hasAttachedOnce: boolean;
   private _closed = false;
   /**
    * The shared backward history cursor, opened lazily on the first `history()`
@@ -147,9 +180,33 @@ class DefaultClientTransport<
       // A failed decode drops the message (the receiver emitted `error`); its
       // raw `ably-message` is not emitted either, so subscribers never see a
       // wire whose typed event never fired.
-      if (this._receiver.deliverEvent(message).outcome === 'failed') return;
+      const delivery = this._receiver.deliverEvent(message);
+      if (delivery.outcome === 'failed') return;
+      if (delivery.outcome === 'classified') this._resolveRunIdWatches(delivery.event);
       this._receiver.deliverAblyMessage(message);
+      // Feed the steer ledger every delivered message: it matches steer echoes
+      // (for the publish serial), accumulates `steer-codec-message-ids`
+      // stamps, and resolves steer outcomes on run-suspend / run-end.
+      this._steer.observeMessage(message);
     };
+    this._steer = new SteerCoordinator<TInput>({
+      publish: async (input, opts) => {
+        const encoder = this._codec.createEncoder(this._channel);
+        try {
+          await encoder.publishInput(input, opts);
+        } finally {
+          await encoder.close();
+        }
+      },
+      clientId: () => this._clientId,
+      isSessionClosed: () => this._closed,
+      logger: this._logger,
+    });
+    this._hasAttachedOnce = this._channel.state === 'attached';
+    this._onChannelStateChange = (stateChange: Ably.ChannelStateChange) => {
+      this._handleChannelStateChange(stateChange);
+    };
+    this._channel.on(this._onChannelStateChange);
   }
 
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- preserve reference equality across calls
@@ -248,9 +305,13 @@ class DefaultClientTransport<
           }
         : undefined,
     );
+    // Watch before the publish so a run-start racing the publish's own ack can
+    // never slip past; a failed publish removes the watch again.
+    const { runId, unwatch } = this._watchRunId(codecMessageId);
     try {
       await encoder.publishInput(event, { extras: { headers }, messageId: codecMessageId });
     } catch (error) {
+      unwatch();
       const cause = errorCause(error);
       const isPermission = cause?.statusCode === 401 || cause?.statusCode === 403;
       throw new Ably.ErrorInfo(
@@ -266,13 +327,26 @@ class DefaultClientTransport<
     }
 
     this._logger.debug('ClientTransport.publishInput(); published', { codecMessageId, eventId });
-    return { codecMessageId, eventId };
+    return { codecMessageId, eventId, runId };
   }
 
   async cancel(runId: string): Promise<void> {
     this._logger.trace('ClientTransport.cancel();', { runId });
     await this._requireOpen('cancel');
     await this._channel.publish(buildCancelMessage({ runId }));
+  }
+
+  steer(runId: string | Promise<string>, event: TInput): SteerResult {
+    this._logger.trace('ClientTransport.steer();', {
+      runId: typeof runId === 'string' ? runId : '(pending promise)',
+    });
+    // .then(): steer() returns its promise pair synchronously, so the open
+    // guard folds into the runId promise the coordinator awaits instead of
+    // being awaited here. A promise-valued runId (e.g. a publishInput
+    // result's) flattens through the .then, so the coordinator always awaits
+    // one Promise<string>.
+    const runIdWhenOpen = this._requireOpen('steer').then((): string | Promise<string> => runId);
+    return this._steer.steer(runIdWhenOpen, event);
   }
 
   async history(opts?: TransportHistoryOptions): Promise<TransportHistoryResult<TInput, TOutput>> {
@@ -301,6 +375,9 @@ class DefaultClientTransport<
     this._logger.info('ClientTransport.close();');
     this._closed = true;
     this._channel.unsubscribe(this._onMessage);
+    this._channel.off(this._onChannelStateChange);
+    this._steer.drainClosed();
+    this._drainRunIdWatches(this._closedError('await run start'));
   }
 
   /**
@@ -332,6 +409,99 @@ class DefaultClientTransport<
       },
       opts,
     );
+  }
+
+  /**
+   * Drain in-flight steers on a continuity-breaking channel state change:
+   * post-loss the channel will not deliver the steer echoes or lifecycle
+   * events that would resolve their promises, so they would otherwise hang
+   * until `close()`. State changes before the first attach are ignored —
+   * there is no continuity to lose yet.
+   * @param stateChange - The channel state change to classify.
+   */
+  private _handleChannelStateChange(stateChange: Ably.ChannelStateChange): void {
+    if (this._closed) return;
+    if (!this._hasAttachedOnce) {
+      if (stateChange.current === 'attached') this._hasAttachedOnce = true;
+      return;
+    }
+    if (!isContinuityLost(stateChange)) return;
+    this._logger.warn('ClientTransport._handleChannelStateChange(); channel continuity lost, draining steers', {
+      current: stateChange.current,
+      resumed: stateChange.resumed,
+    });
+    this._steer.drainContinuityLost(continuityLostError(stateChange, 'await steer outcome'));
+    this._drainRunIdWatches(continuityLostError(stateChange, 'await run start'));
+  }
+
+  /**
+   * Register a {@link PublishInputResult.runId} watch for a publish under
+   * `codecMessageId`. The returned promise carries a pre-attached no-op
+   * rejection handler, so a caller that never observes it cannot leak an
+   * unhandled rejection when the watch is drained.
+   * @param codecMessageId - The publish's codec-message-id to match against
+   *   incoming run-starts' `input-codec-message-id`.
+   * @returns The runId promise and an `unwatch` to deregister it (used when
+   *   the publish itself fails).
+   */
+  private _watchRunId(codecMessageId: string): { runId: Promise<string>; unwatch: () => void } {
+    let resolve!: (runId: string) => void;
+    let reject!: (err: Ably.ErrorInfo) => void;
+    const runId = new Promise<string>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    runId.catch(() => {
+      /* the caller may ignore runId entirely */
+    });
+    const entry = { resolve, reject };
+    const entries = this._runIdWatches.get(codecMessageId) ?? [];
+    entries.push(entry);
+    this._runIdWatches.set(codecMessageId, entries);
+    return {
+      runId,
+      unwatch: () => {
+        const current = this._runIdWatches.get(codecMessageId);
+        if (!current) return;
+        const idx = current.indexOf(entry);
+        if (idx !== -1) current.splice(idx, 1);
+        if (current.length === 0) this._runIdWatches.delete(codecMessageId);
+      },
+    };
+  }
+
+  /**
+   * Resolve pending runId watches from a classified live event: the first
+   * `ai-run-start` whose `input-codec-message-id` matches a watched publish's
+   * codec-message-id resolves every watch under that key with the run's id.
+   * @param event - The classified transport event to inspect.
+   */
+  private _resolveRunIdWatches(event: TransportEvent<TInput, TOutput>): void {
+    if (event.kind !== 'run-lifecycle' || event.event.type !== 'start') return;
+    const key = event.event.inputCodecMessageId;
+    if (key === undefined) return;
+    const entries = this._runIdWatches.get(key);
+    if (!entries) return;
+    this._runIdWatches.delete(key);
+    const startedRunId = event.event.runId;
+    this._logger.debug('ClientTransport._resolveRunIdWatches(); run started for published input', {
+      runId: startedRunId,
+      inputCodecMessageId: key,
+    });
+    for (const { resolve } of entries) resolve(startedRunId);
+  }
+
+  /**
+   * Reject every pending runId watch — on `close()` and on channel continuity
+   * loss, after which the run-start that would resolve them can no longer be
+   * observed.
+   * @param err - The error each watch rejects with.
+   */
+  private _drainRunIdWatches(err: Ably.ErrorInfo): void {
+    if (this._runIdWatches.size === 0) return;
+    const drained = [...this._runIdWatches.values()].flat();
+    this._runIdWatches.clear();
+    for (const { reject } of drained) reject(err);
   }
 
   /**

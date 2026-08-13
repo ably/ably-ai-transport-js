@@ -13,6 +13,7 @@ import type * as Ably from 'ably';
 
 import type { CodecInputEvent, CodecOutputEvent } from '../../codec/types.js';
 import type { PipeSource, RunEndParams, RunHooks, StepEndParams, StepOptions, StreamResult } from './agent.js';
+import type { SteerResult } from './steer.js';
 import type { RunLifecycleEvent, StepLifecycleEvent } from './tree.js';
 
 // ---------------------------------------------------------------------------
@@ -94,6 +95,22 @@ export interface WireMeta {
   regenerates: string | undefined;
   /** Structure header `input-codec-message-id` — the codec-message-id of the input that triggered this run. Carried verbatim; only the Tree interprets it. */
   inputCodecMessageId: string | undefined;
+  /**
+   * The parsed `input-codec-message-ids` bracket receipt — on an
+   * `ai-run-end` / `ai-run-suspend` event, the codec-message-ids of every
+   * input the run's output considered (trigger + stamped steers).
+   * `undefined` on other messages, when the run produced no output, or when
+   * the header is malformed (the raw value stays on {@link transport}).
+   * Resolve "was this input processed?" by id membership.
+   */
+  inputCodecMessageIds: string[] | undefined;
+  /**
+   * The parsed `steer-codec-message-ids` stamp — the steer codec-message-ids
+   * the agent drained before the step attempt that produced this output, or
+   * `undefined` when the wire carried no stamp (a malformed stamp degrades to
+   * `undefined`; the raw value stays on {@link transport}).
+   */
+  steerCodecMessageIds: string[] | undefined;
 }
 
 /**
@@ -200,6 +217,17 @@ export interface PublishInputResult {
   codecMessageId: string;
   /** The per-publish `event-id` stamped on the wire — distinct from `codecMessageId`, this is what an agent's `locateInput` matches to find the input that woke an invocation. */
   eventId: string;
+  /**
+   * The run-id of the run this input triggers. Resolves when the transport
+   * observes the first `ai-run-start` whose `input-codec-message-id` header
+   * matches this publish's {@link codecMessageId} — stamped when the agent
+   * opens its run with `inputCodecMessageId`, the same threading cancel
+   * routing relies on. Never resolves for an input that triggers no run.
+   * Rejects on {@link ClientTransport.close} and on channel continuity loss;
+   * a rejection handler is pre-attached, so a caller that ignores `runId`
+   * never sees an unhandled rejection.
+   */
+  runId: Promise<string>;
 }
 
 /** Options for {@link ClientTransport.history} and {@link AgentTransport.history}. */
@@ -247,10 +275,12 @@ export interface TransportHistoryResult<TInput extends CodecInputEvent, TOutput 
  * starts delivery, {@link subscribe} observes classified events, and
  * {@link history} pages older events on demand.
  *
- * Holds no run registry and no cross-message reconciliation state — a
- * cancel's `runId` is sourced by the consumer from `run-lifecycle` events off
- * the receive stream, and an optimistic echo is reconciled against its wire
- * echo by `codecMessageId`.
+ * Holds no run registry — a cancel's or steer's `runId` is sourced from
+ * {@link PublishInputResult.runId} (resolved from the triggering input's
+ * `ai-run-start`) or from `run-lifecycle` events off the receive stream, and
+ * an optimistic echo is reconciled against its wire echo by `codecMessageId`.
+ * The only cross-message state is the steer ledger behind {@link steer} and
+ * the pending `runId` watches behind {@link publishInput}.
  * @template TInput - The codec's input-event domain type accepted by
  *   {@link publishInput}.
  * @template TOutput - The codec's output-event domain type carried on
@@ -285,7 +315,8 @@ export interface ClientTransport<
    * so a consumer keying on it reconciles the two. Requires {@link connect}.
    * @param event - The codec input event to publish.
    * @param opts - Optional per-publish overrides; see {@link PublishInputOptions}.
-   * @returns The assigned `codecMessageId` and `eventId`.
+   * @returns The assigned `codecMessageId` and `eventId`, plus a `runId`
+   *   promise resolved from the triggering input's `ai-run-start`.
    */
   publishInput(event: TInput, opts?: PublishInputOptions): Promise<PublishInputResult>;
   /**
@@ -296,6 +327,27 @@ export interface ClientTransport<
    * @param runId - The run to cancel.
    */
   cancel(runId: string): Promise<void>;
+  /**
+   * Publish a steering input into an open run and observe whether the run's
+   * output considered it. Returns synchronously with two promises:
+   * `published` resolves with the publish's Ably-assigned serial once the
+   * transport observes the steer's own channel echo, and `outcome` resolves
+   * at the run's next lifecycle bracket by membership of the steer's
+   * codec-message-id in the `steer-codec-message-ids` stamps observed on the
+   * run's outputs — consumed on membership; not-consumed only at
+   * `ai-run-end` (a suspend leaves it pending for a later resume to
+   * consume). Steering a run whose `ai-run-end` this transport has already
+   * received rejects both promises without publishing. Requires
+   * {@link connect}; in-flight outcomes reject on {@link close} and on
+   * channel continuity loss.
+   * @param runId - The open run to steer: a run-id string from a
+   *   `run-lifecycle` start event, or a promise of one (typically
+   *   {@link PublishInputResult.runId}) — the steer publishes once it
+   *   resolves, and both promises reject if it rejects.
+   * @param event - The codec input event to publish as the steer.
+   * @returns The `published` / `outcome` promise pair.
+   */
+  steer(runId: string | Promise<string>, event: TInput): SteerResult;
   /**
    * Page the channel's history backwards from the attach point and return the
    * classified events as a batch — never emitted to `subscribe` handlers.
@@ -313,8 +365,9 @@ export interface ClientTransport<
   /**
    * Unsubscribe the transport's listener from the channel and stop all
    * delivery. Terminal: every subsequent `connect`, `publishInput`, `cancel`,
-   * or `history` call rejects; existing subscriptions simply receive nothing
-   * further. The channel itself is caller-owned and is not detached.
+   * `steer`, or `history` call rejects; in-flight steer outcomes reject; and
+   * existing subscriptions simply receive nothing further. The channel itself
+   * is caller-owned and is not detached.
    */
   close(): void;
 }
@@ -349,19 +402,21 @@ export interface OpenRunOptions {
 
 /**
  * The per-run hooks {@link AgentTransport.openRun} accepts — the subset of the
- * session's {@link RunHooks} that applies on the standalone surface. `onError`
- * is excluded: a pipe failure returns on {@link StreamResult.error} and a
- * cancel-hook failure surfaces on the transport's `error` stream. `onSteer` is
- * excluded: steering messages surface as ordinary events on the receive
- * stream for the agent to fold itself.
+ * session's {@link RunHooks} that applies on the standalone surface. Only
+ * `onError` is excluded: a pipe failure returns on {@link StreamResult.error}
+ * and a cancel-hook failure surfaces on the transport's `error` stream.
  *
- * On this surface a throwing `onCancel` rejects nothing: the error is emitted
- * on the transport's `error` stream and the cancel is dropped.
+ * On this surface a throwing `onCancel` or `onSteer` rejects nothing: the
+ * error is emitted on the transport's `error` stream and the run continues.
+ * `onSteer` is a hint — it fires once per steering message tracked for this
+ * run, letting the agent race the arrival against an in-flight model call;
+ * authoritative visibility of pending steering is via
+ * {@link AgentRunTransport.hasInput}.
  * @template TOutput - The codec's output-event domain type.
  */
 export type OpenRunHooks<TOutput extends CodecOutputEvent> = Pick<
   RunHooks<TOutput>,
-  'signal' | 'onAblyMessage' | 'onCancelled' | 'onCancel'
+  'signal' | 'onAblyMessage' | 'onCancelled' | 'onCancel' | 'onSteer'
 >;
 
 /** The located input that woke an invocation, returned by {@link AgentTransport.locateInput}. */
@@ -375,10 +430,11 @@ export interface LocatedInput<TInput extends CodecInputEvent> {
 /**
  * The agent transport: open runs, locate the input that woke an invocation,
  * page the conversation's history for LLM context, and observe the channel —
- * cancel signals route onto the matching run handle; everything else the
- * client publishes (including a steering message under an open run's run-id)
- * surfaces as ordinary events on the receive stream for the agent to fold
- * itself. Exposes no Tree-read accessors (`view`, `messages`, `status`).
+ * cancel signals route onto the matching run handle, and a steering message
+ * under an open run's run-id both surfaces as an ordinary event on the
+ * receive stream (for the agent to fold itself) and flips the run handle's
+ * {@link AgentRunTransport.hasInput}. Exposes no Tree-read accessors
+ * (`view`, `messages`, `status`).
  * @template TInput - The codec's input-event domain type, located by {@link locateInput}.
  * @template TOutput - The codec's output-event domain type, published by the run/step handles.
  */
@@ -471,6 +527,17 @@ export interface AgentRunTransport<TOutput extends CodecOutputEvent> {
    */
   readonly abortSignal: AbortSignal;
   /**
+   * The agent's loop driver: whether the run has input awaiting a response
+   * pass. Returns `true` until the run's first step attempt opens (the
+   * initial pass answers the triggering input), then `true` iff a steering
+   * message has been tracked since the previous call. Reading DRAINS pending
+   * steering messages into the set the next step attempt stamps as
+   * `steer-codec-message-ids`, so there is no observe-only check — call it
+   * once per loop iteration, immediately before assembling the pass's
+   * context. Returns `false` once {@link abortSignal} has fired.
+   */
+  hasInput(): boolean;
+  /**
    * Pipe an output stream through the encoder to the channel, bracketed in one
    * implicit step. Returns when the stream completes, is cancelled, or errors.
    * @param source - The output source to pipe: a `ReadableStream` or any
@@ -491,7 +558,10 @@ export interface AgentRunTransport<TOutput extends CodecOutputEvent> {
    * blocks output while suspended; {@link resume} re-opens it, {@link end} may
    * still end it, and a later invocation can also continue it under the same
    * run-id via a fresh `openRun`. Throws while a step is active — end the step
-   * first. No-op once suspended or ended.
+   * first. No-op once suspended or ended. When the run has produced output,
+   * the suspend carries the `input-codec-message-ids` receipt — the
+   * codec-message-ids of every input considered so far (trigger + stamped
+   * steers).
    */
   suspend(): Promise<void>;
   /**
@@ -502,7 +572,11 @@ export interface AgentRunTransport<TOutput extends CodecOutputEvent> {
   resume(): Promise<void>;
   /**
    * Publish `ai-run-end`, ending the run. Terminal. Auto-closes a still-open
-   * step first so observers are never stranded.
+   * step first so observers are never stranded. When the run has produced
+   * output, the end carries the `input-codec-message-ids` receipt — the
+   * codec-message-ids of every input the run considered (trigger + stamped
+   * steers, accumulated across suspend/resume). A client resolves whether a
+   * steering message was processed by id membership in this receipt.
    * @param params - How the run ended; see {@link RunEndParams}.
    */
   end(params: RunEndParams): Promise<void>;

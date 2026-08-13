@@ -102,8 +102,17 @@ export interface RunManager {
    * Carries the same per-invocation attribution as {@link endRun}
    * (`inputClientId`, `inputCodecMessageId`), since a suspend is the terminal
    * event of the suspending invocation just as run-end is of an ending one.
+   * When `consideredInputIds` is supplied and non-empty, it is stamped as the
+   * `input-codec-message-ids` bracket receipt — the codec-message-ids of every
+   * input the run's output has considered so far.
    */
-  suspendRun(runId: string, invocationId?: string, inputClientId?: string, inputCodecMessageId?: string): Promise<void>;
+  suspendRun(
+    runId: string,
+    invocationId?: string,
+    inputClientId?: string,
+    inputCodecMessageId?: string,
+    consideredInputIds?: string[],
+  ): Promise<void>;
   /**
    * End a run. Publishes run-end on the channel (stamping `reason` as the
    * run-reason header) and drops the run's active-run entry. Carries the same
@@ -113,6 +122,9 @@ export interface RunManager {
    * supplied, its `code` and `message` are additionally stamped as the
    * `error-code` / `error-message` headers — a codec-agnostic baseline failure
    * detail for consumers; omitting `error` publishes a bare `reason: 'error'`.
+   * When `consideredInputIds` is supplied and non-empty, it is stamped as the
+   * `input-codec-message-ids` bracket receipt — the codec-message-ids of every
+   * input the run's output considered.
    */
   endRun(
     runId: string,
@@ -121,6 +133,7 @@ export interface RunManager {
     inputClientId?: string,
     inputCodecMessageId?: string,
     error?: Ably.ErrorInfo,
+    consideredInputIds?: string[],
   ): Promise<void>;
   /**
    * Publish `ai-step-start` to open a step attempt within a run. Carries
@@ -237,9 +250,15 @@ class DefaultRunManager implements RunManager {
     invocationId?: string,
     inputClientId?: string,
     inputCodecMessageId?: string,
+    consideredInputIds?: string[],
   ): Promise<void> {
     this._logger?.trace('DefaultRunManager.suspendRun();', { runId });
-    await this._publishTerminal(EVENT_RUN_SUSPEND, runId, { invocationId, inputClientId, inputCodecMessageId });
+    await this._publishTerminal(EVENT_RUN_SUSPEND, runId, {
+      invocationId,
+      inputClientId,
+      inputCodecMessageId,
+      consideredInputIds,
+    });
     this._logger?.debug('DefaultRunManager.suspendRun(); run suspended', { runId });
   }
 
@@ -250,6 +269,7 @@ class DefaultRunManager implements RunManager {
     inputClientId?: string,
     inputCodecMessageId?: string,
     error?: Ably.ErrorInfo,
+    consideredInputIds?: string[],
   ): Promise<void> {
     this._logger?.trace('DefaultRunManager.endRun();', { runId, reason });
     // Stamp error detail only for a terminal error the agent chose to surface
@@ -261,6 +281,7 @@ class DefaultRunManager implements RunManager {
       invocationId,
       inputClientId,
       inputCodecMessageId,
+      consideredInputIds,
       ...errorAttribution,
     });
     this._logger?.debug('DefaultRunManager.endRun(); run ended', { runId, reason });
@@ -279,6 +300,9 @@ class DefaultRunManager implements RunManager {
    * @param attribution.invocationId - The invocation's id.
    * @param attribution.inputClientId - ClientId of the triggering input event.
    * @param attribution.inputCodecMessageId - Codec-message-id of the triggering input event.
+   * @param attribution.consideredInputIds - Codec-message-ids of every input the
+   *   run's output considered, stamped as the `input-codec-message-ids` bracket
+   *   receipt. Omitted when absent or empty.
    * @param attribution.errorCode - Numeric error code; set for run-end only when a terminal error is surfaced.
    * @param attribution.errorMessage - Error message; paired with errorCode.
    */
@@ -290,6 +314,7 @@ class DefaultRunManager implements RunManager {
       invocationId?: string;
       inputClientId?: string;
       inputCodecMessageId?: string;
+      consideredInputIds?: string[];
       errorCode?: number;
       errorMessage?: string;
     },

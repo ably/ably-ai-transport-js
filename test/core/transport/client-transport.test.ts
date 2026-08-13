@@ -8,26 +8,40 @@
  * one message onto `error`). `publishInput` stamps `user` transport headers,
  * publishes through the codec encoder, and emits an optimistic local echo
  * (serial / versionSerial `undefined`) for fresh content; a wire-only input
- * gets no echo. `history()` returns older events as chronological batches
+ * gets no echo. Its result carries a `runId` promise, resolved from the first
+ * `ai-run-start` whose `input-codec-message-id` matches the publish and
+ * rejected on close or continuity loss. `history()` returns older events as chronological batches
  * without emitting them — the batch walk itself is pinned in
  * history-walk.test.ts, so the history tests here cover only the transport's
  * wiring: no live emission, a cursor kept across calls, and decode failures
  * routed onto `error`. `cancel` publishes a stateless `ai-cancel` envelope.
- * `close()` unsubscribes and is terminal. These tests pin that contract
- * against a mock channel and a minimal codec double.
+ * `steer` publishes a steering user input into an open run: `published`
+ * resolves on the steer's own channel echo, `outcome` by membership of the
+ * steer's codec-message-id in the `steer-codec-message-ids` stamps at the
+ * run's next lifecycle bracket; close and continuity loss drain in-flight
+ * steers. The steer state machine itself is pinned in
+ * steer-coordinator.test.ts — the steer tests here cover only the
+ * transport's wiring. `close()` unsubscribes and is terminal. These tests
+ * pin that contract against a mock channel and a minimal codec double.
  */
 
 import * as Ably from 'ably';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  EVENT_RUN_END,
+  EVENT_RUN_START,
+  EVENT_RUN_SUSPEND,
   HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
+  HEADER_INPUT_CODEC_MESSAGE_ID,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
+  HEADER_RUN_REASON,
+  HEADER_STEER_CODEC_MESSAGE_IDS,
 } from '../../../src/constants.js';
 import type { ChannelWriter, Encoder, WireCodec, WriteOptions } from '../../../src/core/codec/types.js';
 import { createClientTransport } from '../../../src/core/transport/client-transport.js';
@@ -35,7 +49,7 @@ import type { TransportEvent } from '../../../src/core/transport/types/transport
 import { ErrorCode } from '../../../src/errors.js';
 import { getTransportHeaders } from '../../../src/utils.js';
 import { createMockChannel, type MockChannel } from '../../helper/mock-channel.js';
-import { boomMsg, outputMsg } from '../../helper/wire-messages.js';
+import { boomMsg, inboundMessage, outputMsg } from '../../helper/wire-messages.js';
 
 interface TestInput {
   kind: string;
@@ -120,6 +134,93 @@ const noiseMsg = (serial: string): Ably.InboundMessage =>
     version: {},
   }) as unknown as Ably.InboundMessage;
 
+// Settle the microtask queue so the steer publish path (open guard, then the
+// coordinator's async IIFE) makes progress.
+const flush = async (n = 8): Promise<void> => {
+  for (let i = 0; i < n; i += 1) await Promise.resolve();
+};
+
+/**
+ * Build the channel echo of a steer's own publish.
+ * @param steerId - The codec-message-id the steer publish minted.
+ * @param runId - The run the steer targets.
+ * @param serial - The Ably-assigned channel serial.
+ * @returns The wire message.
+ */
+const steerEcho = (steerId: string, runId: string, serial: string): Ably.InboundMessage =>
+  inboundMessage({
+    name: 'ai-input',
+    transport: { [HEADER_CODEC_MESSAGE_ID]: steerId, [HEADER_RUN_ID]: runId, [HEADER_ROLE]: 'user' },
+    serial,
+  });
+
+/**
+ * Build a run output stamped with the steers its producing step consumed.
+ * @param runId - The producing run.
+ * @param steerIds - The consumed steers' codec-message-ids.
+ * @param serial - The channel serial.
+ * @returns The wire message.
+ */
+const stampedOutput = (runId: string, steerIds: string[], serial: string): Ably.InboundMessage =>
+  inboundMessage({
+    name: 'ai-output',
+    transport: { [HEADER_RUN_ID]: runId, [HEADER_STEER_CODEC_MESSAGE_IDS]: JSON.stringify(steerIds) },
+    serial,
+  });
+
+/**
+ * Build a run lifecycle bracket (`ai-run-end` / `ai-run-suspend`).
+ * @param name - The lifecycle wire name.
+ * @param runId - The run the bracket closes.
+ * @param reason - The run-end reason header, when present.
+ * @returns The wire message.
+ */
+const runBracket = (name: string, runId: string, reason?: string): Ably.InboundMessage =>
+  inboundMessage({
+    name,
+    transport: { [HEADER_RUN_ID]: runId, ...(reason === undefined ? {} : { [HEADER_RUN_REASON]: reason }) },
+    serial: `s-${name}`,
+  });
+
+/**
+ * Build a run-start, optionally attributing the run to its triggering input.
+ * @param runId - The started run.
+ * @param inputCodecMessageId - The triggering input's codec-message-id header,
+ *   when the agent stamped one.
+ * @returns The wire message.
+ */
+const runStart = (runId: string, inputCodecMessageId?: string): Ably.InboundMessage =>
+  inboundMessage({
+    name: EVENT_RUN_START,
+    transport: {
+      [HEADER_RUN_ID]: runId,
+      ...(inputCodecMessageId === undefined ? {} : { [HEADER_INPUT_CODEC_MESSAGE_ID]: inputCodecMessageId }),
+    },
+    serial: `s-start-${runId}`,
+  });
+
+/**
+ * Start a steer against `run-1` on a connected fixture and flush so the
+ * coordinator's publish lands in `encoderCalls`.
+ * @param fixture - The connected setup fixture.
+ * @param fixture.transport - The transport under test.
+ * @param fixture.encoderCalls - The encoder's recorded publishes.
+ * @returns The steer result pair and its minted codec-message-id.
+ */
+const startSteer = async (fixture: {
+  transport: ReturnType<typeof createClientTransport<TestInput, TestOutput>>;
+  encoderCalls: EncoderCall[];
+}): Promise<{ result: ReturnType<typeof fixture.transport.steer>; steerId: string }> => {
+  const result = fixture.transport.steer('run-1', { kind: 'user-message', content: 'go' });
+  await flush();
+  const steerId = fixture.encoderCalls[0]?.options?.messageId;
+  if (steerId === undefined) throw new Error('expected the steer to publish');
+  return { result, steerId };
+};
+
+/** Sentinel for asserting a promise has not settled yet. */
+const pending = Symbol('pending');
+
 /**
  * Build a transport over the mocks, subscribing collectors for events, raw
  * messages, and errors, and connect it unless told otherwise.
@@ -200,6 +301,9 @@ describe('createClientTransport', () => {
       });
       await expect(transport.cancel('run-1')).rejects.toMatchObject({ code: ErrorCode.InvalidArgument });
       await expect(transport.history()).rejects.toMatchObject({ code: ErrorCode.InvalidArgument });
+      const steer = transport.steer('run-1', { kind: 'user-message', content: 'go' });
+      await expect(steer.published).rejects.toMatchObject({ code: ErrorCode.InvalidArgument });
+      await expect(steer.outcome).rejects.toMatchObject({ code: ErrorCode.InvalidArgument });
     });
   });
 
@@ -358,6 +462,66 @@ describe('createClientTransport', () => {
     });
   });
 
+  describe('publishInput runId', () => {
+    it('resolves from the first run-start carrying the publish codec-message-id', async () => {
+      const fixture = await setup();
+      const sent = await fixture.transport.publishInput({ kind: 'user-message', content: 'hi' });
+      await expect(Promise.race([sent.runId, Promise.resolve(pending)])).resolves.toBe(pending);
+
+      fixture.channel.listener?.(runStart('run-9', sent.codecMessageId));
+
+      await expect(sent.runId).resolves.toBe('run-9');
+    });
+
+    it('stays pending on run-starts attributed to other inputs, or to none', async () => {
+      const fixture = await setup();
+      const sent = await fixture.transport.publishInput({ kind: 'user-message', content: 'hi' });
+
+      fixture.channel.listener?.(runStart('run-8', 'someone-elses-input'));
+      fixture.channel.listener?.(runStart('run-7'));
+      await flush();
+
+      await expect(Promise.race([sent.runId, Promise.resolve(pending)])).resolves.toBe(pending);
+    });
+
+    it('resolves every publish pinned to one codec-message-id from the same run-start', async () => {
+      const fixture = await setup();
+      const first = await fixture.transport.publishInput(
+        { kind: 'user-message', content: 'a' },
+        { codecMessageId: 'm-1' },
+      );
+      const second = await fixture.transport.publishInput(
+        { kind: 'user-message', content: 'b' },
+        { codecMessageId: 'm-1' },
+      );
+
+      fixture.channel.listener?.(runStart('run-9', 'm-1'));
+
+      await expect(first.runId).resolves.toBe('run-9');
+      await expect(second.runId).resolves.toBe('run-9');
+    });
+
+    it('rejects a pending runId when the transport closes', async () => {
+      const fixture = await setup();
+      const sent = await fixture.transport.publishInput({ kind: 'user-message', content: 'hi' });
+
+      fixture.transport.close();
+
+      await expect(sent.runId).rejects.toMatchObject({ code: ErrorCode.SessionClosed });
+    });
+
+    it('rejects a pending runId on channel continuity loss', async () => {
+      const fixture = await setup();
+      const sent = await fixture.transport.publishInput({ kind: 'user-message', content: 'hi' });
+
+      fixture.channel.emitStateChange({ current: 'attached', previous: 'attached', resumed: false });
+
+      await expect(sent.runId).rejects.toMatchObject({ code: ErrorCode.SessionContinuityNotGuaranteed });
+      // The drain is watch-scoped: the transport surfaces no error event.
+      expect(fixture.errors).toHaveLength(0);
+    });
+  });
+
   describe('cancel', () => {
     it('publishes a stateless ai-cancel envelope targeting the run', async () => {
       const { transport, channel } = await setup();
@@ -368,6 +532,145 @@ describe('createClientTransport', () => {
       const [msg] = channel.publishCalls;
       const headers = getTransportHeaders(msg as Ably.InboundMessage);
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
+    });
+  });
+
+  describe('steer', () => {
+    it('publishes a steering user input and resolves published with the echoed serial', async () => {
+      const fixture = await setup({ clientId: 'client-a' });
+      const { result, steerId } = await startSteer(fixture);
+
+      const headers = fixture.encoderCalls[0]?.options?.extras?.headers ?? {};
+      expect(headers[HEADER_ROLE]).toBe('user');
+      expect(headers[HEADER_RUN_ID]).toBe('run-1');
+      expect(headers[HEADER_CODEC_MESSAGE_ID]).toBe(steerId);
+      expect(headers[HEADER_RUN_CLIENT_ID]).toBe('client-a');
+
+      fixture.channel.listener?.(steerEcho(steerId, 'run-1', 's-echo'));
+
+      await expect(result.published).resolves.toEqual({ serial: 's-echo' });
+    });
+
+    it('resolves the outcome consumed at run-end when the run stamped the steer', async () => {
+      const fixture = await setup();
+      const { result, steerId } = await startSteer(fixture);
+      fixture.channel.listener?.(steerEcho(steerId, 'run-1', 's-echo'));
+
+      fixture.channel.listener?.(stampedOutput('run-1', [steerId], 's-out'));
+      fixture.channel.listener?.(runBracket(EVENT_RUN_END, 'run-1', 'complete'));
+
+      await expect(result.outcome).resolves.toEqual({ consumed: true, runTerminalReason: 'complete' });
+    });
+
+    it('resolves the outcome not-consumed at run-end when the run never stamped the steer', async () => {
+      const fixture = await setup();
+      const { result, steerId } = await startSteer(fixture);
+      fixture.channel.listener?.(steerEcho(steerId, 'run-1', 's-echo'));
+
+      fixture.channel.listener?.(runBracket(EVENT_RUN_END, 'run-1', 'complete'));
+
+      await expect(result.outcome).resolves.toEqual({ consumed: false, runTerminalReason: 'complete' });
+    });
+
+    it('leaves an unconsumed outcome pending across run-suspend, resolving at the eventual run-end', async () => {
+      const fixture = await setup();
+      const { result, steerId } = await startSteer(fixture);
+      fixture.channel.listener?.(steerEcho(steerId, 'run-1', 's-echo'));
+
+      fixture.channel.listener?.(runBracket(EVENT_RUN_SUSPEND, 'run-1'));
+      await flush();
+      // Only run-end can definitively report not-consumed; a later resume may
+      // still take the steer.
+      await expect(Promise.race([result.outcome, Promise.resolve(pending)])).resolves.toBe(pending);
+
+      fixture.channel.listener?.(stampedOutput('run-1', [steerId], 's-out'));
+      fixture.channel.listener?.(runBracket(EVENT_RUN_END, 'run-1', 'complete'));
+      await expect(result.outcome).resolves.toEqual({ consumed: true, runTerminalReason: 'complete' });
+    });
+
+    it('rejects a steer targeting a run whose run-end the transport has observed', async () => {
+      const fixture = await setup();
+      fixture.channel.listener?.(runBracket(EVENT_RUN_END, 'run-1', 'complete'));
+
+      const result = fixture.transport.steer('run-1', { kind: 'user-message', content: 'go' });
+
+      await expect(result.published).rejects.toMatchObject({ code: ErrorCode.InvalidArgument });
+      await expect(result.outcome).rejects.toMatchObject({ code: ErrorCode.InvalidArgument });
+      expect(fixture.encoderCalls).toHaveLength(0);
+    });
+
+    it('accepts a runId promise, publishing once the triggering run-start resolves it', async () => {
+      const fixture = await setup();
+      const sent = await fixture.transport.publishInput({ kind: 'user-message', content: 'book a flight' });
+
+      const result = fixture.transport.steer(sent.runId, { kind: 'user-message', content: 'business class' });
+      await flush();
+      // The input publish is the only encoder call so far — the steer waits on
+      // the runId promise.
+      expect(fixture.encoderCalls).toHaveLength(1);
+
+      fixture.channel.listener?.(runStart('run-9', sent.codecMessageId));
+      await flush();
+
+      const headers = fixture.encoderCalls[1]?.options?.extras?.headers ?? {};
+      expect(headers[HEADER_RUN_ID]).toBe('run-9');
+      const steerId = fixture.encoderCalls[1]?.options?.messageId;
+      if (steerId === undefined) throw new Error('expected the steer to publish');
+      fixture.channel.listener?.(steerEcho(steerId, 'run-9', 's-echo'));
+      await expect(result.published).resolves.toEqual({ serial: 's-echo' });
+    });
+
+    it('rejects both promises when the runId promise rejects, without publishing', async () => {
+      const fixture = await setup();
+
+      const result = fixture.transport.steer(Promise.reject(new Error('no run')), {
+        kind: 'user-message',
+        content: 'go',
+      });
+
+      await expect(result.published).rejects.toMatchObject({ code: ErrorCode.InvalidArgument });
+      await expect(result.outcome).rejects.toMatchObject({ code: ErrorCode.InvalidArgument });
+      expect(fixture.encoderCalls).toHaveLength(0);
+    });
+
+    it('drains in-flight steers on continuity loss without emitting a transport error', async () => {
+      const fixture = await setup();
+      const { result, steerId } = await startSteer(fixture);
+      fixture.channel.listener?.(steerEcho(steerId, 'run-1', 's-echo'));
+      // A second steer whose echo never lands stays in the pending-echo ledger.
+      const unechoed = fixture.transport.steer('run-1', { kind: 'user-message', content: 'again' });
+      await flush();
+
+      fixture.channel.emitStateChange({ current: 'attached', previous: 'attached', resumed: false });
+
+      await expect(result.outcome).rejects.toMatchObject({ code: ErrorCode.SessionContinuityNotGuaranteed });
+      await expect(unechoed.published).resolves.toEqual({ serial: undefined });
+      await expect(unechoed.outcome).rejects.toMatchObject({ code: ErrorCode.SessionContinuityNotGuaranteed });
+      // The drain is steer-scoped: the transport surfaces no error event.
+      expect(fixture.errors).toHaveLength(0);
+    });
+
+    it('ignores channel state changes before the first attach', async () => {
+      const channel = createMockChannel();
+      channel.state = 'initialized';
+      const encoderCalls: EncoderCall[] = [];
+      const transport = createClientTransport<TestInput, TestOutput>({
+        channel,
+        codec: createMockCodec(encoderCalls, []),
+      });
+      await transport.connect();
+      const { result, steerId } = await startSteer({ transport, encoderCalls });
+      channel.listener?.(steerEcho(steerId, 'run-1', 's-echo'));
+
+      // A discontinuity before the channel has ever attached is not a loss.
+      channel.emitStateChange({ current: 'suspended', previous: 'attaching', resumed: false });
+      await flush();
+      await expect(Promise.race([result.outcome, Promise.resolve(pending)])).resolves.toBe(pending);
+
+      // The first attach arms the detector; the next loss drains.
+      channel.emitStateChange({ current: 'attached', previous: 'attaching', resumed: false });
+      channel.emitStateChange({ current: 'failed', previous: 'attached', resumed: false });
+      await expect(result.outcome).rejects.toMatchObject({ code: ErrorCode.SessionContinuityNotGuaranteed });
     });
   });
 
@@ -437,6 +740,24 @@ describe('createClientTransport', () => {
       });
       await expect(transport.connect()).rejects.toMatchObject({ code: ErrorCode.SessionClosed });
       await expect(transport.history()).rejects.toMatchObject({ code: ErrorCode.SessionClosed });
+      const steer = transport.steer('run-1', { kind: 'user-message', content: 'go' });
+      await expect(steer.published).rejects.toMatchObject({ code: ErrorCode.SessionClosed });
+      await expect(steer.outcome).rejects.toMatchObject({ code: ErrorCode.SessionClosed });
+    });
+
+    it('drains an in-flight steer outcome and removes the channel state listener', async () => {
+      const { transport, channel, encoderCalls } = await setup();
+      const result = transport.steer('run-1', { kind: 'user-message', content: 'go' });
+      await flush();
+      const steerId = encoderCalls[0]?.options?.messageId;
+      if (steerId === undefined) throw new Error('expected the steer to publish');
+      channel.listener?.(steerEcho(steerId, 'run-1', 's-echo'));
+      await expect(result.published).resolves.toEqual({ serial: 's-echo' });
+
+      transport.close();
+
+      await expect(result.outcome).rejects.toMatchObject({ code: ErrorCode.SessionClosed });
+      expect(channel.stateListeners.size).toBe(0);
     });
   });
 });

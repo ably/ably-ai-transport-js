@@ -16,9 +16,15 @@
  * as a chronological batch — the batch walk itself is pinned in
  * history-walk.test.ts, so the history tests here cover only the transport's
  * wiring: no live emission, a cursor kept across calls, and decode failures
- * routed onto `error`. `close()` unsubscribes and is terminal. These tests
- * pin that contract against a mock channel and a minimal codec double,
- * driving the real `createRunManager` and `createRunStepWriter` underneath.
+ * routed onto `error`. A steering message — a client input under an open
+ * run's run-id — routes onto the run's steer tracking (`hasInput()`, the
+ * `onSteer` hint, and the `steer-codec-message-ids` stamp on the next step
+ * attempt), buffering pre-open arrivals; the run's terminal (`ai-run-end` /
+ * `ai-run-suspend`) carries the `input-codec-message-ids` receipt naming the
+ * trigger and every stamped steer once the run has produced output.
+ * `close()` unsubscribes and is terminal. These tests pin that
+ * contract against a mock channel and a minimal codec double, driving the
+ * real `createRunManager` and `createRunStepWriter` underneath.
  */
 
 import * as Ably from 'ably';
@@ -26,11 +32,14 @@ import { describe, expect, it } from 'vitest';
 
 import {
   EVENT_CANCEL,
+  HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
   HEADER_INPUT_CODEC_MESSAGE_ID,
+  HEADER_INPUT_CODEC_MESSAGE_IDS,
   HEADER_INVOCATION_ID,
   HEADER_PARENT,
   HEADER_RUN_ID,
+  HEADER_STEER_CODEC_MESSAGE_IDS,
 } from '../../../src/constants.js';
 import type { ChannelWriter, Decoder, Encoder, EncoderOptions, WireCodec } from '../../../src/core/codec/types.js';
 import { createAgentTransport } from '../../../src/core/transport/agent-transport.js';
@@ -102,6 +111,37 @@ const cancelMsg = (headers: Record<string, string>): Ably.InboundMessage =>
     extras: { ai: { transport: { [HEADER_EVENT_ID]: 'cancel-evt', ...headers } } },
     version: {},
   }) as unknown as Ably.InboundMessage;
+
+/**
+ * Build an inbound steering wire: a client input under a run's run-id.
+ * @param runId - The run the steer targets.
+ * @param codecMessageId - The steering message's codec-message-id.
+ * @returns The wire message.
+ */
+const steerMsg = (runId: string, codecMessageId: string): Ably.InboundMessage =>
+  wireMsg({ [HEADER_RUN_ID]: runId, [HEADER_CODEC_MESSAGE_ID]: codecMessageId });
+
+/**
+ * Read the steer stamp the writer put on a published output message.
+ * @param message - The message the per-run `onAblyMessage` hook observed.
+ * @returns The raw `steer-codec-message-ids` header, or `undefined`.
+ */
+const steerStampOf = (message: Ably.Message): string | undefined =>
+  // CAST: the hook observes the outbound message; only its extras are read.
+  getTransportHeaders(message as Ably.InboundMessage)[HEADER_STEER_CODEC_MESSAGE_IDS];
+
+/**
+ * Read the input receipt off a published run lifecycle message.
+ * @param channel - The mock channel that captured the publish.
+ * @param name - The lifecycle message name (`ai-run-end` or `ai-run-suspend`).
+ * @returns The raw `input-codec-message-ids` header, or `undefined`.
+ */
+const receiptOf = (channel: MockChannel, name: string): string | undefined => {
+  const msg = channel.publishCalls.find((m) => m.name === name);
+  if (!msg) throw new Error(`expected ${name}`);
+  // CAST: the mock captured the outbound message; only its extras are read.
+  return getTransportHeaders(msg as Ably.InboundMessage)[HEADER_INPUT_CODEC_MESSAGE_IDS];
+};
 
 /**
  * Build an agent transport over the mocks, subscribing collectors for events
@@ -405,6 +445,265 @@ describe('createAgentTransport', () => {
 
       expect(result.reason).toBe('cancelled');
       expect(writes).toEqual([{ type: 'out', text: 'final' }]);
+    });
+  });
+
+  describe('steering', () => {
+    it('fires onSteer and flips hasInput for a live steering message', async () => {
+      const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
+      let steers = 0;
+
+      const run = transport.openRun({ runId: 'run-1' }, { onSteer: () => steers++ });
+      await run.pipe(streamOf({ type: 'out' }));
+      channel.listener?.(steerMsg('run-1', 'steer-1'));
+
+      expect(steers).toBe(1);
+      expect(run.hasInput()).toBe(true);
+      // Reading drained the steer; nothing further is pending.
+      expect(run.hasInput()).toBe(false);
+    });
+
+    it('never tracks the run triggering input as a steer', async () => {
+      const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
+      let steers = 0;
+
+      const run = transport.openRun({ runId: 'run-1', inputCodecMessageId: 'in-1' }, { onSteer: () => steers++ });
+      await run.pipe(streamOf({ type: 'out' }));
+      channel.listener?.(steerMsg('run-1', 'in-1'));
+
+      expect(steers).toBe(0);
+      expect(run.hasInput()).toBe(false);
+    });
+
+    it('hasInput reports the initial pass until output is produced, then follows steers', async () => {
+      const { transport } = await setup();
+
+      const run = transport.openRun({ runId: 'run-1' });
+      expect(run.hasInput()).toBe(true);
+      // Repeat reads before output keep reporting the initial pass.
+      expect(run.hasInput()).toBe(true);
+
+      await run.pipe(streamOf({ type: 'out' }));
+      expect(run.hasInput()).toBe(false);
+    });
+
+    it('hasInput is false once the run abort signal has fired', async () => {
+      const { transport } = await setup();
+
+      const run = transport.openRun({ runId: 'run-1' }, { signal: AbortSignal.abort() });
+
+      expect(run.hasInput()).toBe(false);
+    });
+
+    it('stamps drained steers on the next pipe, each id on exactly one attempt', async () => {
+      const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
+      const stamps: (string | undefined)[] = [];
+
+      const run = transport.openRun({ runId: 'run-1' }, { onAblyMessage: (m) => stamps.push(steerStampOf(m)) });
+      await run.pipe(streamOf({ type: 'out' }));
+      channel.listener?.(steerMsg('run-1', 'steer-1'));
+      expect(run.hasInput()).toBe(true);
+      await run.pipe(streamOf({ type: 'out' }));
+      await run.pipe(streamOf({ type: 'out' }));
+
+      expect(stamps).toEqual([undefined, JSON.stringify(['steer-1']), undefined]);
+    });
+
+    it('stamps drained steers on an explicit step send', async () => {
+      const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
+      const stamps: (string | undefined)[] = [];
+
+      const run = transport.openRun({ runId: 'run-1' }, { onAblyMessage: (m) => stamps.push(steerStampOf(m)) });
+      await run.pipe(streamOf({ type: 'out' }));
+      channel.listener?.(steerMsg('run-1', 'steer-1'));
+      expect(run.hasInput()).toBe(true);
+      const step = run.createStep();
+      await step.send({ type: 'out' });
+      await step.end({});
+
+      expect(stamps).toEqual([undefined, JSON.stringify(['steer-1'])]);
+    });
+
+    it('seeds a steer buffered before its openRun and stamps it on the first pass', async () => {
+      const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
+      let steers = 0;
+      const stamps: (string | undefined)[] = [];
+
+      channel.listener?.(steerMsg('run-1', 'steer-1'));
+      const run = transport.openRun(
+        { runId: 'run-1' },
+        { onSteer: () => steers++, onAblyMessage: (m) => stamps.push(steerStampOf(m)) },
+      );
+      expect(steers).toBe(1);
+      // The first pass's context already contains the buffered steer, so the
+      // drain folds it into that pass and its outputs carry the stamp.
+      expect(run.hasInput()).toBe(true);
+      await run.pipe(streamOf({ type: 'out' }));
+
+      expect(stamps).toEqual([JSON.stringify(['steer-1'])]);
+      expect(run.hasInput()).toBe(false);
+    });
+
+    it('FIFO-evicts the oldest run pre-open buffer at the limit', async () => {
+      const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
+      let steers = 0;
+
+      channel.listener?.(steerMsg('run-evicted', 'steer-1'));
+      for (let i = 0; i < 200; i++) {
+        channel.listener?.(steerMsg(`run-fill-${String(i)}`, `steer-fill-${String(i)}`));
+      }
+      transport.openRun({ runId: 'run-evicted' }, { onSteer: () => steers++ });
+
+      expect(steers).toBe(0);
+    });
+
+    it('tracks a steer arriving while the run is suspended', async () => {
+      const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
+      let steers = 0;
+
+      const run = transport.openRun({ runId: 'run-1' }, { onSteer: () => steers++ });
+      await run.pipe(streamOf({ type: 'out' }));
+      await run.suspend();
+      channel.listener?.(steerMsg('run-1', 'steer-1'));
+      await run.resume();
+
+      expect(steers).toBe(1);
+      expect(run.hasInput()).toBe(true);
+    });
+
+    it('stops tracking steers once the run has ended', async () => {
+      const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
+      let steers = 0;
+
+      const run = transport.openRun({ runId: 'run-1' }, { onSteer: () => steers++ });
+      await run.end({ reason: 'complete' });
+      channel.listener?.(steerMsg('run-1', 'steer-1'));
+
+      expect(steers).toBe(0);
+    });
+
+    it('surfaces a throwing onSteer as CancelListenerError and keeps the steer tracked', async () => {
+      const { transport, channel, errors } = await setup({ decoded: [{ kind: 'user' }] });
+
+      const run = transport.openRun(
+        { runId: 'run-1' },
+        {
+          onSteer: () => {
+            throw new Error('steer hook blew up');
+          },
+        },
+      );
+      channel.listener?.(steerMsg('run-1', 'steer-1'));
+
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.RunSteerHandlerFailed);
+      await run.pipe(streamOf({ type: 'out' }));
+      expect(run.hasInput()).toBe(true);
+    });
+
+    it('tracks a duplicate live steer once', async () => {
+      const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
+      let steers = 0;
+
+      const run = transport.openRun({ runId: 'run-1' }, { onSteer: () => steers++ });
+      await run.pipe(streamOf({ type: 'out' }));
+      channel.listener?.(steerMsg('run-1', 'steer-1'));
+      channel.listener?.(steerMsg('run-1', 'steer-1'));
+
+      expect(steers).toBe(1);
+      expect(run.hasInput()).toBe(true);
+      expect(run.hasInput()).toBe(false);
+    });
+  });
+
+  describe('input receipt', () => {
+    it('stamps the trigger and every stamped steer on the run-end', async () => {
+      const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
+
+      const run = transport.openRun({ runId: 'run-1', inputCodecMessageId: 'in-1' });
+      await run.pipe(streamOf({ type: 'out' }));
+      channel.listener?.(steerMsg('run-1', 'steer-1'));
+      expect(run.hasInput()).toBe(true);
+      await run.pipe(streamOf({ type: 'out' }));
+      await run.end({ reason: 'complete' });
+
+      expect(receiptOf(channel, 'ai-run-end')).toBe(JSON.stringify(['in-1', 'steer-1']));
+    });
+
+    it('excludes an undrained pending steer from the run-end receipt', async () => {
+      const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
+
+      const run = transport.openRun({ runId: 'run-1', inputCodecMessageId: 'in-1' });
+      await run.pipe(streamOf({ type: 'out' }));
+      channel.listener?.(steerMsg('run-1', 'steer-1'));
+      await run.end({ reason: 'complete' });
+
+      expect(receiptOf(channel, 'ai-run-end')).toBe(JSON.stringify(['in-1']));
+    });
+
+    it('excludes a drained steer no step attempt has taken for stamping', async () => {
+      const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
+
+      const run = transport.openRun({ runId: 'run-1', inputCodecMessageId: 'in-1' });
+      await run.pipe(streamOf({ type: 'out' }));
+      channel.listener?.(steerMsg('run-1', 'steer-1'));
+      expect(run.hasInput()).toBe(true);
+      await run.end({ reason: 'complete' });
+
+      expect(receiptOf(channel, 'ai-run-end')).toBe(JSON.stringify(['in-1']));
+    });
+
+    it('omits the receipt when the run produced no output', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({ runId: 'run-1', inputCodecMessageId: 'in-1' });
+      await run.end({ reason: 'complete' });
+
+      expect(receiptOf(channel, 'ai-run-end')).toBeUndefined();
+    });
+
+    it('omits the receipt when there is no trigger and no steer', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({ runId: 'run-1' });
+      await run.pipe(streamOf({ type: 'out' }));
+      await run.end({ reason: 'complete' });
+
+      expect(receiptOf(channel, 'ai-run-end')).toBeUndefined();
+    });
+
+    it('stamps considered-so-far on the suspend and accumulates onto the final end', async () => {
+      const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
+
+      const run = transport.openRun({ runId: 'run-1', inputCodecMessageId: 'in-1' });
+      await run.pipe(streamOf({ type: 'out' }));
+      channel.listener?.(steerMsg('run-1', 'steer-1'));
+      expect(run.hasInput()).toBe(true);
+      await run.pipe(streamOf({ type: 'out' }));
+      await run.suspend();
+
+      expect(receiptOf(channel, 'ai-run-suspend')).toBe(JSON.stringify(['in-1', 'steer-1']));
+
+      await run.resume();
+      channel.listener?.(steerMsg('run-1', 'steer-2'));
+      expect(run.hasInput()).toBe(true);
+      await run.pipe(streamOf({ type: 'out' }));
+      await run.end({ reason: 'complete' });
+
+      expect(receiptOf(channel, 'ai-run-end')).toBe(JSON.stringify(['in-1', 'steer-1', 'steer-2']));
+    });
+
+    it('stamps a steer-only receipt when the run has no trigger attribution', async () => {
+      const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
+
+      const run = transport.openRun({ runId: 'run-1' });
+      await run.pipe(streamOf({ type: 'out' }));
+      channel.listener?.(steerMsg('run-1', 'steer-1'));
+      expect(run.hasInput()).toBe(true);
+      await run.pipe(streamOf({ type: 'out' }));
+      await run.end({ reason: 'complete' });
+
+      expect(receiptOf(channel, 'ai-run-end')).toBe(JSON.stringify(['steer-1']));
     });
   });
 

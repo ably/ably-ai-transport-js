@@ -21,6 +21,16 @@ export interface MockChannel {
   publishNames: () => string[];
   /** The listener `subscribe` registered, or `undefined` once unsubscribed. */
   listener?: (msg: Ably.InboundMessage) => void;
+  /** The channel's reported state. Starts ATTACHED. */
+  state: Ably.ChannelState;
+  /** Adds a state listener to {@link MockChannel.stateListeners}. */
+  on: ReturnType<typeof vi.fn>;
+  /** Removes a state listener (or all, when called bare). */
+  off: ReturnType<typeof vi.fn>;
+  /** The state listeners `on` registered, in registration order. */
+  stateListeners: Set<Ably.channelEventCallback>;
+  /** Deliver a channel state change to every registered state listener. */
+  emitStateChange: (stateChange: Ably.ChannelStateChange) => void;
 }
 
 /**
@@ -48,9 +58,22 @@ export const makePaginated = (pages: Ably.InboundMessage[][]): Ably.PaginatedRes
  * @returns The mock, cast to the channel interface the transports consume.
  */
 export const createMockChannel = (pages: Ably.InboundMessage[][] = []): MockChannel & Ably.RealtimeChannel => {
+  const stateListeners = new Set<Ably.channelEventCallback>();
   const mock: MockChannel = {
     publishCalls: [],
     publishNames: () => mock.publishCalls.map((m) => m.name ?? ''),
+    state: 'attached',
+    stateListeners,
+    on: vi.fn((listener: Ably.channelEventCallback): void => {
+      stateListeners.add(listener);
+    }),
+    off: vi.fn((listener?: Ably.channelEventCallback): void => {
+      if (listener) stateListeners.delete(listener);
+      else stateListeners.clear();
+    }),
+    emitStateChange: (stateChange: Ably.ChannelStateChange): void => {
+      for (const listener of stateListeners) listener(stateChange);
+    },
     // eslint-disable-next-line @typescript-eslint/require-await -- mock returns a resolved promise
     publish: vi.fn(async (msg: Ably.Message): Promise<Ably.PublishResult> => {
       mock.publishCalls.push(msg);
@@ -68,7 +91,7 @@ export const createMockChannel = (pages: Ably.InboundMessage[][] = []): MockChan
     // eslint-disable-next-line @typescript-eslint/require-await -- mock returns a resolved promise
     history: vi.fn(async (): Promise<Ably.PaginatedResult<Ably.InboundMessage>> => makePaginated(pages)),
   };
-  // CAST: tests only use publish/subscribe/unsubscribe/attach/history — other
-  // RealtimeChannel members are unused.
+  // CAST: tests only use publish/subscribe/unsubscribe/attach/history and the
+  // state surface (state/on/off) — other RealtimeChannel members are unused.
   return mock as unknown as MockChannel & Ably.RealtimeChannel;
 };

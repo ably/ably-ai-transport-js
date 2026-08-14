@@ -2,6 +2,19 @@
 
 This contains only the most important and/or user-facing changes; for a full changelog, see the commit history.
 
+## [0.8.0](https://github.com/ably/ably-ai-transport-js/tree/0.8.0) (2026-08-14)
+
+[Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.7.0...0.8.0)
+
+This release adds support for **Vercel AI SDK v7**: the `ai` peer range widens to `^6 || ^7`, and v6 keeps working. It also adds a **Temporal integration**, via a [Temporal plugin](https://docs.temporal.io/develop/plugins-guide), that allows you to easily publish and subscribe to a durable session, without hand-writing the run lifecycle: opening a run, suspending it for client input, ending it, and cleaning up when a turn fails. The release also includes a number of other improvements; see the full details below.
+
+### New Features
+
+- **Vercel AI SDK v7 support.** The `ai` peer dependency range widens to `^6 || ^7`. `ChatTransport`, the codec's public types, and the wire format are unchanged across the two majors, so v6 keeps working. [#298](https://github.com/ably/ably-ai-transport-js/pull/298)
+- **Temporal plugin.** `createAblyTransportPlugin()` from `@ably/ai-transport/temporal` is a [Temporal plugin](https://docs.temporal.io/develop/plugins-guide) that registers the run-framing activities (`openRun`, `endRun`, `suspendRun`, `cleanupRun`) on a worker. The new `@ably/ai-transport/temporal/workflow` entry point proxies them as `withRun(invocation, body)`. See the [guide](https://github.com/ably/ably-ai-transport-js/tree/main/src/temporal). [#297](https://github.com/ably/ably-ai-transport-js/pull/297)
+- **`withAgentSession(options, body)`** scaffolds one unit of durable work: it creates an agent session for an invocation, connects, runs `body`, and detaches on both success and failure - so a run the body leaves open stays adoptable by the next attempt. `@ably/ai-transport/vercel` exports a codec-pre-bound wrapper. [#297](https://github.com/ably/ably-ai-transport-js/pull/297)
+- **`pageUntilLocated(run, options)`** pages channel history backwards only until a freshly opened run's trigger event folds in, rather than draining the conversation, so opening a turn costs about one history page whatever the conversation's length. [#297](https://github.com/ably/ably-ai-transport-js/pull/297)
+
 ## [0.7.0](https://github.com/ably/ably-ai-transport-js/tree/0.7.0) (2026-07-31)
 
 [Full Changelog](https://github.com/ably/ably-ai-transport-js/compare/0.6.0...0.7.0)

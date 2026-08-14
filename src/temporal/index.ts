@@ -3,9 +3,10 @@
  *
  * Two things ship here, both worker-side:
  *
- *   - `createAblyTransportPlugin` — a Temporal worker plugin that registers the
- *     framing activities (`openRun`, `endRun`, `suspendRun`, `cleanupRun`), so a
- *     consumer never writes them. Pair it with the workflow-side shim at
+ *   - `createAblyTransportPlugin` — a Temporal worker plugin. It registers the
+ *     framing activities (`openRun`, `endRun`, `suspendRun`, `cleanupRun`) so a
+ *     consumer never writes them, and owns the worker's pool of Ably connections.
+ *     Pair it with the workflow-side shim at
  *     `@ably/ai-transport/temporal/workflow`.
  *   - `stepIdFor` — a deterministic step id that survives cross-process retries
  *     and doesn't collide across workflows.
@@ -17,7 +18,6 @@
  * Requires `@temporalio/activity` and `@temporalio/worker` as peer dependencies.
  */
 
-export type { FramingActivitiesOptions } from './activities.js';
 export type { AblyTransportPlugin, AblyTransportPluginOptions } from './plugin.js';
 export { createAblyTransportPlugin } from './plugin.js';
 export { stepIdFor } from './step-id.js';

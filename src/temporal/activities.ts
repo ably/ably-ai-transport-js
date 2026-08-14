@@ -6,25 +6,23 @@
  * application's. Each one carries no application types, which is what makes it
  * safe for the SDK to own.
  *
- * Every activity runs in a fresh process, so each builds its own Ably client and
- * session, does one thing, and tears both down. The client comes from a
- * caller-supplied factory: the SDK never reads the environment or constructs
- * clients. A client per activity is required, not merely tidy — a session takes
- * its channel from `client.channels.get(name)`, which caches per name, and
- * detaching a session detaches that channel, so two sessions sharing a client on
- * one channel would break each other.
+ * Each activity takes a connected session from the shared {@link SessionScope},
+ * does one thing, and hands the lease back. The scope spans the worker process
+ * and owns the connection pool, so nothing here builds or closes a client. What
+ * an activity may not assume is that it shares state with the activity before it:
+ * a retry can land on another worker, so identity travels in the activity's input
+ * and the run is re-adopted from the channel every time.
  */
 
 import { Context } from '@temporalio/activity';
 import * as Ably from 'ably';
 
-import type { Codec, CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
+import type { CodecOutputEvent } from '../core/codec/types.js';
 import { pageUntilLocated } from '../core/transport/page-until-located.js';
 import type { RunIdentity } from '../core/transport/types/agent.js';
-import { withAgentSession } from '../core/transport/with-agent-session.js';
 import { ErrorCode } from '../errors.js';
 import type { Logger } from '../logger.js';
-import { withHeartbeat } from './heartbeat.js';
+import type { SessionScope } from './session-scope.js';
 import type {
   CleanupRunInput,
   EndRunInput,
@@ -33,23 +31,16 @@ import type {
   SuspendRunInput,
 } from './workflow/activity-types.js';
 
-/** Configuration for {@link createFramingActivities}. */
-export interface FramingActivitiesOptions<
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-  TProjection,
-  TMessage,
-> {
-  /** The codec the sessions encode with. */
-  codec: Codec<TInput, TOutput, TProjection, TMessage>;
-  /**
-   * Builds the Ably client for one activity. Called once per activity
-   * invocation; the returned client is closed before the activity returns.
-   */
-  createClient: () => Ably.Realtime;
-  /** Logger propagated into every session. */
+/** What {@link createFramingActivities} needs from the plugin that builds it. */
+export interface FramingActivitiesDeps<TOutput extends CodecOutputEvent, TProjection, TMessage> {
+  /** The shared session scope, which owns the codec and the client pool. */
+  scope: SessionScope<TOutput, TProjection, TMessage>;
+  /** Logger for the paging progress hook. */
   logger?: Logger;
-  /** Report progress to Temporal while paging history. Defaults to false. */
+  /**
+   * Whether the scope heartbeats. `openRun` uses it to decide whether to report
+   * progress per history page as well as on the scope's timer.
+   */
   heartbeat?: boolean;
   /** Most history pages `openRun` fetches before giving up. */
   maxHistoryPages?: number;
@@ -58,55 +49,26 @@ export interface FramingActivitiesOptions<
 }
 
 /**
- * Build the framing activities, bound to a codec and a client factory.
+ * Build the framing activities against a session scope.
  *
  * A factory rather than module-level state, so a worker can host more than one
  * configuration and nothing is global.
- * @template TInput - The codec input event type.
  * @template TOutput - The codec output event type.
  * @template TProjection - The codec projection type.
  * @template TMessage - The codec message type.
- * @param options - Codec, client factory, and paging behaviour.
+ * @param options - The session scope and paging behaviour.
  * @returns The four activities, ready to register on a worker.
  */
-export const createFramingActivities = <
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-  TProjection,
-  TMessage,
->(
-  options: FramingActivitiesOptions<TInput, TOutput, TProjection, TMessage>,
+export const createFramingActivities = <TOutput extends CodecOutputEvent, TProjection, TMessage>(
+  options: FramingActivitiesDeps<TOutput, TProjection, TMessage>,
 ): FramingActivities => {
-  const { codec, createClient, logger } = options;
+  const { logger, scope } = options;
   const heartbeat = options.heartbeat ?? false;
-
-  /**
-   * Run `body` against a connected session on its own client, closing the
-   * client afterwards. `withAgentSession` owns the session half, including
-   * detaching rather than ending it.
-   * @template T - The body's return type.
-   * @param invocation - The invocation the session serves.
-   * @param body - The work to run against the session.
-   * @returns Whatever `body` returns.
-   */
-  const inSession = async <T>(
-    invocation: OpenRunInput['invocation'],
-    body: Parameters<typeof withAgentSession<TInput, TOutput, TProjection, TMessage, T>>[1],
-  ): Promise<T> => {
-    const client = createClient();
-    try {
-      return await withHeartbeat(heartbeat, async () =>
-        withAgentSession<TInput, TOutput, TProjection, TMessage, T>({ client, invocation, codec, logger }, body),
-      );
-    } finally {
-      client.close();
-    }
-  };
 
   return {
     openRun: async (input: OpenRunInput): Promise<RunIdentity> => {
       const cancelSignal = Context.current().cancellationSignal;
-      return inSession(input.invocation, async ({ session, invocation }) => {
+      return scope.inSession(input.invocation, async ({ session, invocation }) => {
         const run = session.createRun(
           invocation,
           {
@@ -149,7 +111,7 @@ export const createFramingActivities = <
 
     endRun: async (input: EndRunInput): Promise<void> => {
       const cancelSignal = Context.current().cancellationSignal;
-      await inSession(input.invocation, async ({ session, invocation }) => {
+      await scope.inSession(input.invocation, async ({ session, invocation }) => {
         const run = session.adoptRun(invocation, input.ids, { signal: cancelSignal });
         await run.load();
         if (input.reason === 'error') {
@@ -165,7 +127,7 @@ export const createFramingActivities = <
 
     suspendRun: async (input: SuspendRunInput): Promise<void> => {
       const cancelSignal = Context.current().cancellationSignal;
-      await inSession(input.invocation, async ({ session, invocation }) => {
+      await scope.inSession(input.invocation, async ({ session, invocation }) => {
         const run = session.adoptRun(invocation, input.ids, { signal: cancelSignal });
         await run.load();
         // Throws if a step is still open — suspending mid-step would strand the
@@ -177,7 +139,7 @@ export const createFramingActivities = <
     cleanupRun: async (input: CleanupRunInput): Promise<void> => {
       // No cancellation signal: this is the cleanup arm, so it must still run
       // while the workflow itself is being cancelled.
-      await inSession(input.invocation, async ({ session, invocation }) => {
+      await scope.inSession(input.invocation, async ({ session, invocation }) => {
         const run = session.adoptRun(invocation, input.ids);
 
         try {

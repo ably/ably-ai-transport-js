@@ -24,6 +24,8 @@ optional peer dependencies — required only if you import from `/temporal`.
 
 ## What the plugin gives you
 
+Two things: the framing activities, and the worker's pool of Ably connections.
+
 A durable agent has two halves. **Inference** is yours: the model, the system
 prompt, the tool registry, when to stop. **Framing** is the run lifecycle around
 it, and it is identical in every integration:
@@ -50,30 +52,50 @@ import { createUIMessageCodec } from '@ably/ai-transport/vercel';
 
 import * as activities from './activities.js'; // YOUR inference and tool activities
 
+const ablyTransport = createAblyTransportPlugin({
+  codec: createUIMessageCodec(),
+  createClient: () => new Ably.Realtime({ key: process.env.ABLY_API_KEY }),
+});
+
 const worker = await Worker.create({
   connection,
   taskQueue: 'my-agent',
   workflowsPath: require.resolve('./workflows'),
   activities,
-  plugins: [
-    createAblyTransportPlugin({
-      codec: createUIMessageCodec(),
-      createClient: () => new Ably.Realtime({ key: process.env.ABLY_API_KEY }),
-    }),
-  ],
+  plugins: [ablyTransport],
 });
 ```
 
 `createClient` is required: the SDK never reads your environment or builds Ably
-clients for you. It is called once per activity, and the client is closed before
-the activity returns. A client per activity is a correctness requirement, not
-tidiness — a session takes its channel from `client.channels.get(name)`, which
-caches per name, and detaching a session detaches that channel, so two sessions
-sharing a client on one channel would break each other.
+clients for you. It is called only when the plugin's connection pool has none
+idle, so it is not once per activity.
 
-Other options: `logger`, `heartbeat` (off by default; turn it on if conversations
-are long enough that paging history could look like a hang), `maxHistoryPages`
-and `historyPageSize`.
+Other options: `logger`, `heartbeat`, `maxIdle`, `maxHistoryPages` and
+`historyPageSize`.
+
+## Connection pooling
+
+The plugin holds a pool of Ably connections for the life of `worker.run()`, so an
+activity leases a live connection instead of paying a WebSocket handshake and an
+auth round trip. `maxIdle` sets how many connections stay open between activities,
+and defaults to 4. Set it to `0` to close every connection on release, which
+disables reuse.
+
+Concurrency is never capped: a burst larger than the pool opens fresh connections
+rather than queueing. During a burst the open count reaches peak concurrency;
+between bursts it settles at `maxIdle`.
+
+A lease is **exclusive and owns one channel name**, which is the safety argument.
+A session takes its channel from `client.channels.get(name)`, which caches per
+name, and detaching a session detaches that channel — so two concurrent sessions
+sharing a client on one channel would tear each other down. An exclusive lease
+makes that unreachable.
+
+A connection is only handed out again when ably-js dropped its channel
+synchronously and the connection is still connected. Both are checked when the
+lease comes back, and the connected check runs again when the next lease takes it,
+because a parked connection can drop while nobody holds it. Either check failing
+closes the connection, so the fallback costs one handshake.
 
 ## Workflow
 
@@ -158,16 +180,17 @@ nothing extra. This is what the `use-client-session-temporal` demo does.
 
 **From the workflow, via the handle.** `run.end({ reason })` and `run.suspend()`
 put the whole lifecycle in one place and show every terminal in the Temporal
-history. Each call is a fresh process, so it pays a new connection, adopt and
-`load()`. That is a bounded cost, not one that grows with response length: a
+history. Each call is a separate activity, so it pays a fresh adopt and `load()`
+(though not a fresh connection, since the pool supplies one). That is a bounded
+cost, not one that grows with response length: a
 streamed response is a single Ably message that grows by append, so paging back
 to the run's start stays a handful of messages per turn.
 
 ## Troubleshooting
 
 **"activity type not registered"** on the first turn means the workflow imported
-the shim but the worker never registered the plugin. Add
-`plugins: [createAblyTransportPlugin({ ... })]` to `Worker.create`.
+the shim but the worker never registered the plugin. Add `plugins: [ablyTransport]`
+to `Worker.create`.
 
 **Consuming the SDK through a local link?** The shim imports
 `@temporalio/workflow`, and Node resolves that from the link's real path, so

@@ -5,9 +5,9 @@
  *
  *   - `createAblyTransportPlugin` — a Temporal worker plugin. It registers the
  *     framing activities (`openRun`, `endRun`, `suspendRun`, `cleanupRun`) so a
- *     consumer never writes them, and owns the worker's pool of Ably connections.
- *     Pair it with the workflow-side shim at
- *     `@ably/ai-transport/temporal/workflow`.
+ *     consumer never writes them, owns the worker's pool of Ably connections, and
+ *     exposes `activity()` for wrapping the consumer's own activity bodies. Pair
+ *     it with the workflow-side shim at `@ably/ai-transport/temporal/workflow`.
  *   - `stepIdFor` — a deterministic step id that survives cross-process retries
  *     and doesn't collide across workflows.
  *
@@ -20,6 +20,7 @@
 
 export type { AblyTransportPlugin, AblyTransportPluginOptions } from './plugin.js';
 export { createAblyTransportPlugin } from './plugin.js';
+export type { RunActivityBody, RunActivityContext, RunActivityFraming, RunActivityInput } from './run-activity.js';
 export { stepIdFor } from './step-id.js';
 export type {
   CleanupRunInput,

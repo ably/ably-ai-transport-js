@@ -1,8 +1,8 @@
 /**
  * Plugin wiring tests. The activities themselves are covered by
- * `activities.test.ts`; what matters here is what the plugin does to a worker's
- * options, and that it owns the pooled Ably connections for exactly as long as
- * the worker runs.
+ * `activities.test.ts` and the scaffold by `run-activity.test.ts`; what matters
+ * here is what the plugin does to a worker's options, and that it owns the pooled
+ * Ably connections for exactly as long as the worker runs.
  */
 
 import '../helper/expectations.js';
@@ -102,6 +102,14 @@ describe('createAblyTransportPlugin', () => {
 
   it('does not implement configureReplayWorker, which runs no activities', () => {
     expect(Reflect.has(plugin(), 'configureReplayWorker')).toBe(false);
+  });
+
+  it('rejects options with no body, which the overloads make unreachable from TypeScript', () => {
+    const configured = plugin();
+    // CAST: reachable from JavaScript, and from a caller who has lost the types.
+    const untyped = configured.activity.bind(configured) as unknown as (options: unknown) => unknown;
+
+    expect(() => untyped({ history: 'full' })).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
   });
 });
 

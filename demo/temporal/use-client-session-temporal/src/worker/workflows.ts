@@ -33,13 +33,19 @@ import type * as activities from './activities.js';
 // forever. runToolStep gets more attempts because the demo's `getStockPrice`
 // throws on an odd price (~50% of attempts), so it may need several before it
 // rolls an even one.
+// `heartbeatTimeout` is what lets a cancel reach a running activity: Temporal
+// reports one only in the response to a heartbeat, and throttles those to 80% of
+// this value (to 30 seconds when it is absent). The SDK's scaffold does the
+// heartbeating; declaring the timeout is the caller's half.
 const { runInferenceStep } = proxyActivities<typeof activities>({
   startToCloseTimeout: '5 minutes',
+  heartbeatTimeout: '10 seconds',
   retry: { maximumAttempts: 3 },
 });
 
 const { runToolStep } = proxyActivities<typeof activities>({
   startToCloseTimeout: '5 minutes',
+  heartbeatTimeout: '10 seconds',
   retry: { maximumAttempts: 5 },
 });
 

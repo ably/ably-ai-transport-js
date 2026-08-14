@@ -8,7 +8,8 @@
  *
  * Each activity takes a connected session from the shared {@link SessionScope},
  * does one thing, and hands the lease back. The scope spans the worker process
- * and owns the connection pool, so nothing here builds or closes a client. What
+ * and owns the connection pool and the heartbeat pump, so nothing here builds or
+ * closes a client. What
  * an activity may not assume is that it shares state with the activity before it:
  * a retry can land on another worker, so identity travels in the activity's input
  * and the run is re-adopted from the channel every time.
@@ -37,11 +38,6 @@ export interface FramingActivitiesDeps<TOutput extends CodecOutputEvent, TProjec
   scope: SessionScope<TOutput, TProjection, TMessage>;
   /** Logger for the paging progress hook. */
   logger?: Logger;
-  /**
-   * Whether the scope heartbeats. `openRun` uses it to decide whether to report
-   * progress per history page as well as on the scope's timer.
-   */
-  heartbeat?: boolean;
   /** Most history pages `openRun` fetches before giving up. */
   maxHistoryPages?: number;
   /** CodecMessages revealed per history page. */
@@ -63,7 +59,6 @@ export const createFramingActivities = <TOutput extends CodecOutputEvent, TProje
   options: FramingActivitiesDeps<TOutput, TProjection, TMessage>,
 ): FramingActivities => {
   const { logger, scope } = options;
-  const heartbeat = options.heartbeat ?? false;
 
   return {
     openRun: async (input: OpenRunInput): Promise<RunIdentity> => {
@@ -91,11 +86,17 @@ export const createFramingActivities = <TOutput extends CodecOutputEvent, TProje
           inputEventId: invocation.inputEventId,
           ...(options.maxHistoryPages !== undefined && { maxPages: options.maxHistoryPages }),
           ...(options.historyPageSize !== undefined && { pageSize: options.historyPageSize }),
-          ...(heartbeat && {
-            onPage: () => {
+          // Report per page as well as on the scope's timer. Temporal coalesces
+          // reports inside a throttle interval, so the extra ones are close to
+          // free, and paging is the one part of this activity slow enough that a
+          // missed heartbeat could look like a hang.
+          onPage: () => {
+            try {
               Context.current().heartbeat();
-            },
-          }),
+            } catch {
+              /* best-effort — the scope's pump reports the failure */
+            }
+          },
           ...(logger && { logger }),
         });
 

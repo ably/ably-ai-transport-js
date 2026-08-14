@@ -70,8 +70,37 @@ const worker = await Worker.create({
 clients for you. It is called only when the plugin's connection pool has none
 idle, so it is not once per activity.
 
-Other options: `logger`, `heartbeat`, `maxIdle`, `maxHistoryPages` and
-`historyPageSize`.
+Other options: `logger`, `maxIdle`, `maxHistoryPages` and `historyPageSize`.
+
+## Heartbeating, and why cancellation depends on it
+
+Every activity the SDK runs heartbeats, and there is no way to turn it off.
+Temporal reports a cancellation request only in the response to a heartbeat, so an
+activity that does not heartbeat never learns it was cancelled, and the
+cancellation signal the SDK passes into its run can never fire. The framing
+activities also declare a `heartbeatTimeout`, which Temporal enforces from
+activity start, so a pump is required rather than optional.
+
+How quickly a cancel arrives is set by throttling, not by the pump's interval.
+Temporal throttles reports to 80% of the activity's `heartbeatTimeout`, and to 30
+seconds when there is no `heartbeatTimeout`. So **declare one in your
+`proxyActivities` options**:
+
+```ts
+const { runInferenceStep } = proxyActivities<typeof activities>({
+  startToCloseTimeout: '5 minutes',
+  heartbeatTimeout: '10 seconds', // cancel latency ~8s instead of 30s
+  retry: { maximumAttempts: 3 },
+});
+```
+
+It earns its place twice: it also gives Temporal a local timer, so a wedged
+activity fails in seconds rather than at `startToCloseTimeout`.
+
+Note that a cancel from the browser needs none of this. That arrives as
+`ai-cancel` on the channel and the session routes it to `run.abortSignal` without
+Temporal's involvement. What heartbeating fixes is cancelling or terminating the
+workflow from Temporal's side.
 
 ## Connection pooling
 
@@ -170,6 +199,9 @@ await withRun(
 `cleanupRun` defaults to one attempt with a 30-second timeout, so a hanging
 cleanup cannot hold up a terminate.
 
+Every framing activity also carries a 10-second `heartbeatTimeout` by default,
+which is what makes a cancel reach it.
+
 ## Where to publish a terminal
 
 Both styles are safe. They differ only in cost.
@@ -191,6 +223,9 @@ to the run's start stays a handful of messages per turn.
 **"activity type not registered"** on the first turn means the workflow imported
 the shim but the worker never registered the plugin. Add `plugins: [ablyTransport]`
 to `Worker.create`.
+
+**A workflow cancel does nothing.** The activity is not heartbeating. Check that
+its `proxyActivities` options declare a `heartbeatTimeout`.
 
 **Consuming the SDK through a local link?** The shim imports
 `@temporalio/workflow`, and Node resolves that from the link's real path, so

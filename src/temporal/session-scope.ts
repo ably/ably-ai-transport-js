@@ -3,9 +3,9 @@
  *
  * Every activity in a durable agent opens the same way: get a client, connect a
  * session for the invocation, do one thing, tear the session down. This binds
- * that shape to a codec, a client pool, a logger and the heartbeat setting once,
- * so every activity on a worker shares a single implementation and a single set
- * of connections.
+ * that shape to a codec, a client pool, a logger and the heartbeat pump once, so
+ * every activity on a worker shares a single implementation and a single set of
+ * connections.
  *
  * The session is detached rather than ended, which `withAgentSession` owns: a run
  * the body left open stays open on the wire, so a Temporal retry can adopt it and
@@ -36,8 +36,6 @@ export interface SessionScopeOptions<
   createClient: () => Ably.Realtime;
   /** Logger propagated into every session. */
   logger?: Logger;
-  /** Report progress to Temporal while an activity runs. Defaults to false. */
-  heartbeat?: boolean;
   /** Connected clients the pool keeps open between activities. Defaults to 4. */
   maxIdle?: number;
 }
@@ -72,14 +70,12 @@ class DefaultSessionScope<
   private readonly _codec: Codec<TInput, TOutput, TProjection, TMessage>;
   private readonly _logger: Logger | undefined;
   private readonly _scopeLogger: Logger | undefined;
-  private readonly _heartbeat: boolean;
   private readonly _pool: ClientPool;
 
   constructor(options: SessionScopeOptions<TInput, TOutput, TProjection, TMessage>) {
     this._codec = options.codec;
     this._logger = options.logger;
     this._scopeLogger = options.logger?.withContext({ component: 'SessionScope' });
-    this._heartbeat = options.heartbeat ?? false;
     this._pool = createClientPool({
       createClient: options.createClient,
       ...(options.maxIdle !== undefined && { maxIdle: options.maxIdle }),
@@ -96,16 +92,18 @@ class DefaultSessionScope<
     // client's shared channel object.
     const lease = this._pool.acquire(invocation.sessionName);
     try {
-      return await withHeartbeat(this._heartbeat, async () =>
-        withAgentSession<TInput, TOutput, TProjection, TMessage, T>(
-          {
-            client: lease.client,
-            invocation,
-            codec: this._codec,
-            ...(this._logger && { logger: this._logger }),
-          },
-          body,
-        ),
+      return await withHeartbeat(
+        async () =>
+          withAgentSession<TInput, TOutput, TProjection, TMessage, T>(
+            {
+              client: lease.client,
+              invocation,
+              codec: this._codec,
+              ...(this._logger && { logger: this._logger }),
+            },
+            body,
+          ),
+        this._scopeLogger,
       );
     } finally {
       lease.release();
@@ -124,7 +122,7 @@ class DefaultSessionScope<
  * @template TOutput - The codec output event type.
  * @template TProjection - The codec projection type.
  * @template TMessage - The codec message type.
- * @param options - Codec, client factory, heartbeat and pool behaviour.
+ * @param options - Codec, client factory and pool behaviour.
  * @returns The scope. Close it when the worker shuts down.
  */
 export const createSessionScope = <

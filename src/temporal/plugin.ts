@@ -37,8 +37,6 @@ export interface AblyTransportPluginOptions<
   createClient: () => Ably.Realtime;
   /** Logger propagated into every session. */
   logger?: Logger;
-  /** Report progress to Temporal while an activity runs. Defaults to false. */
-  heartbeat?: boolean;
   /**
    * How many connected Ably clients to keep open between activities. `0` closes
    * every client on release, which disables connection reuse. Defaults to 4.
@@ -87,13 +85,11 @@ class DefaultAblyTransportPlugin<
       codec: options.codec,
       createClient: options.createClient,
       ...(options.logger && { logger: options.logger }),
-      ...(options.heartbeat !== undefined && { heartbeat: options.heartbeat }),
       ...(options.maxIdle !== undefined && { maxIdle: options.maxIdle }),
     });
     this._activities = createFramingActivities<TOutput, TProjection, TMessage>({
       scope: this._scope,
       ...(options.logger && { logger: options.logger }),
-      ...(options.heartbeat !== undefined && { heartbeat: options.heartbeat }),
       ...(options.maxHistoryPages !== undefined && { maxHistoryPages: options.maxHistoryPages }),
       ...(options.historyPageSize !== undefined && { historyPageSize: options.historyPageSize }),
     });

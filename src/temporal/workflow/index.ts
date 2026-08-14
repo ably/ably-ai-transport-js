@@ -96,9 +96,18 @@ export interface RunHandle {
   cleanup(errorMessage?: string): Promise<void>;
 }
 
+/**
+ * `heartbeatTimeout` is what sets how quickly a cancellation reaches a running
+ * activity: Temporal throttles heartbeat reports to 80% of it, and to 30 seconds
+ * when it is absent. It also gives Temporal a local timer, so a wedged activity
+ * fails in seconds rather than at `startToCloseTimeout`.
+ */
+const HEARTBEAT_TIMEOUT = '10 seconds';
+
 /** Applied to the three activities the workflow drives deliberately. */
 const DEFAULT_ACTIVITY_OPTIONS: ActivityOptions = {
   startToCloseTimeout: '2 minutes',
+  heartbeatTimeout: HEARTBEAT_TIMEOUT,
   retry: { maximumAttempts: 3 },
 };
 
@@ -108,6 +117,7 @@ const DEFAULT_ACTIVITY_OPTIONS: ActivityOptions = {
  */
 const CLEANUP_ACTIVITY_OPTIONS: ActivityOptions = {
   startToCloseTimeout: '30 seconds',
+  heartbeatTimeout: HEARTBEAT_TIMEOUT,
   retry: { maximumAttempts: 1 },
 };
 

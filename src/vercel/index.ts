@@ -29,7 +29,7 @@ export type { ToolCallResolution } from './transport/fork-tool-result.js';
 export { createToolResultFork } from './transport/fork-tool-result.js';
 
 // Vercel-shaped helpers
-export type { VercelRunOutcome } from './run-end-reason.js';
-export { vercelRunOutcome } from './run-end-reason.js';
+export type { FinishableRun, FinishableStep, VercelRunOutcome } from './run-end-reason.js';
+export { finishRun, finishStep, vercelRunOutcome } from './run-end-reason.js';
 export type { PendingToolCall } from './tool-registry.js';
 export { approvedPendingToolCalls, pendingToolCalls, stripToolExecutes } from './tool-registry.js';

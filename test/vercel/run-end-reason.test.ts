@@ -1,9 +1,10 @@
 import * as Ably from 'ably';
 import type * as AI from 'ai';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 
+import type { RunEndParams, StepEndParams } from '../../src/core/transport/types.js';
 import { ErrorCode } from '../../src/errors.js';
-import { vercelRunOutcome } from '../../src/vercel/run-end-reason.js';
+import { finishRun, finishStep, vercelRunOutcome } from '../../src/vercel/run-end-reason.js';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -157,4 +158,85 @@ describe('vercelRunOutcome', () => {
       expect(unhandled).toEqual([]);
     });
   });
+});
+
+/**
+ * A run stub exposing only what {@link finishRun} drives.
+ * @returns The stub.
+ */
+const createRun = (): {
+  end: Mock<(params: RunEndParams) => Promise<void>>;
+  suspend: Mock<() => Promise<void>>;
+} => ({
+  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+  end: vi.fn<(params: RunEndParams) => Promise<void>>(() => Promise.resolve()),
+  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+  suspend: vi.fn<() => Promise<void>>(() => Promise.resolve()),
+});
+
+/**
+ * A step stub exposing only what {@link finishStep} drives.
+ * @returns The stub.
+ */
+const createStep = (): { end: Mock<(params?: StepEndParams) => Promise<void>> } => ({
+  // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
+  end: vi.fn<(params?: StepEndParams) => Promise<void>>(() => Promise.resolve()),
+});
+
+describe('finishRun', () => {
+  it('parks the run for a suspend outcome', async () => {
+    const run = createRun();
+
+    await finishRun(run, { reason: 'suspend' });
+
+    expect(run.suspend).toHaveBeenCalledTimes(1);
+    expect(run.end).not.toHaveBeenCalled();
+  });
+
+  it('carries the error through for an error outcome', async () => {
+    const run = createRun();
+    const error = new Ably.ErrorInfo('inference exploded', ErrorCode.StreamError, 500);
+
+    await finishRun(run, { reason: 'error', error });
+
+    expect(run.end).toHaveBeenCalledWith({ reason: 'error', error });
+    expect(run.suspend).not.toHaveBeenCalled();
+  });
+
+  it.each(['complete', 'cancelled'] as const)('ends the run for a %s outcome', async (reason) => {
+    const run = createRun();
+
+    await finishRun(run, { reason });
+
+    expect(run.end).toHaveBeenCalledWith({ reason });
+  });
+});
+
+describe('finishStep', () => {
+  it('fails the step for an error outcome', async () => {
+    const step = createStep();
+
+    await finishStep(step, { reason: 'error', error: new Ably.ErrorInfo('boom', ErrorCode.StreamError, 500) });
+
+    expect(step.end).toHaveBeenCalledWith({ reason: 'failed' });
+  });
+
+  it('cancels the step for a cancelled outcome', async () => {
+    const step = createStep();
+
+    await finishStep(step, { reason: 'cancelled' });
+
+    expect(step.end).toHaveBeenCalledWith({ reason: 'cancelled' });
+  });
+
+  it.each(['complete', 'suspend'] as const)(
+    'completes the step for a %s outcome, since the model asking for a tool is work done',
+    async (reason) => {
+      const step = createStep();
+
+      await finishStep(step, { reason });
+
+      expect(step.end).toHaveBeenCalledWith({ reason: 'complete' });
+    },
+  );
 });

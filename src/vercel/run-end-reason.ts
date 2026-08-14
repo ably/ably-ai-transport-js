@@ -1,7 +1,7 @@
 import * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import type { RunEndReason, StreamResult } from '../core/transport/types.js';
+import type { RunEndParams, RunEndReason, StepEndParams, StreamResult } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
 
 /**
@@ -131,6 +131,79 @@ export const vercelRunOutcome = async (
     if (_isAbortLikeError(error)) return { reason: 'cancelled' };
     return { reason: 'error', error: _toErrorInfo(error) };
   }
+};
+
+/**
+ * The part of a run {@link finishRun} drives. Structural, so it accepts an
+ * `AgentRun` of any codec parameterisation without naming its type arguments.
+ */
+export interface FinishableRun {
+  /**
+   * Publish the run's terminal.
+   * @param params - The terminal reason, and the error when it is `'error'`.
+   */
+  end(params: RunEndParams): Promise<void>;
+  /** Park the run awaiting client input. */
+  suspend(): Promise<void>;
+}
+
+/**
+ * The part of a step {@link finishStep} drives. Structural, for the same reason
+ * as {@link FinishableRun}.
+ */
+export interface FinishableStep {
+  /**
+   * Close the step.
+   * @param params - The terminal reason.
+   */
+  end(params?: StepEndParams): Promise<void>;
+}
+
+/**
+ * Route a run to its terminal from a {@link VercelRunOutcome}.
+ *
+ * `'suspend'` parks the run for the client to resolve. Every other reason ends
+ * it, carrying the error when there is one. Saves each agent writing the same
+ * switch at the end of every inference.
+ *
+ * A `'suspend'` outcome does not always mean the run should park. Vercel reports
+ * it for any tool call the SDK did not auto-execute, which covers a server tool
+ * the agent is about to run itself as well as a client tool only the browser can
+ * answer. Classify first, and call this only once parking is the decision.
+ * @param run - The open run.
+ * @param outcome - The outcome to route.
+ */
+export const finishRun = async (run: FinishableRun, outcome: VercelRunOutcome): Promise<void> => {
+  if (outcome.reason === 'suspend') {
+    await run.suspend();
+    return;
+  }
+  if (outcome.reason === 'error') {
+    await run.end({ reason: 'error', error: outcome.error });
+    return;
+  }
+  await run.end({ reason: outcome.reason });
+};
+
+/**
+ * Close a step with the reason a {@link VercelRunOutcome} implies.
+ *
+ * An `'error'` outcome fails the step and a `'cancelled'` one cancels it.
+ * Everything else, `'suspend'` included, completes it: the model asking for a
+ * tool is a step that did its job.
+ * @param step - The open step.
+ * @param outcome - The outcome the step's work produced.
+ */
+export const finishStep = async (step: FinishableStep, outcome: VercelRunOutcome): Promise<void> => {
+  if (outcome.reason === 'error') {
+    await step.end({ reason: 'failed' });
+    return;
+  }
+  if (outcome.reason === 'cancelled') {
+    await step.end({ reason: 'cancelled' });
+    return;
+  }
+  await step.end({ reason: 'complete' });
 };
 
 /**

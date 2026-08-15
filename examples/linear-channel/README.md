@@ -1,16 +1,16 @@
 # Linear channel (thin AIT POC)
 
-Branch: `poc/thin-dropin`  
-Parent: `feature/linear-channel-primitives`
+Branch: `poc/thin-codec`  
+Parent: `poc/thin-dropin`
 
-This is A and E0. Codec F is on `poc/thin-codec`.
+This is F on A and E0.
 
 No conversation tree. No `extras.ai`.
 
 ## 30-second demo
 
 ```bash
-pnpm exec vitest run examples/linear-channel/linear.test.ts examples/linear-channel/dropin.test.ts
+pnpm exec vitest run examples/linear-channel
 ```
 
 Optional farm:
@@ -29,6 +29,7 @@ ABLY_KEY=... ABLY_HOST=127.0.0.1 ABLY_PORT=8081 pnpm exec tsx examples/linear-ch
 | `linear.ts` `applyAppend` | C (client) | `complete` / `stopped` freeze the default body in the helper. |
 | `linear.ts` `latestByIdentity` | D (client only) | Retry identity ≠ REST `id`. Latest attempt only. Store isolation is realtime `poc/retry-identity`. |
 | `linear.ts` `cutSpan` | E0 | Overlapping spans. Cut uses delete + stopped. Not channel truncate. |
+| `codec.ts` | F | AG-UI / Vercel names → status + spans (+ stub identity). |
 
 ## What this does not prove
 

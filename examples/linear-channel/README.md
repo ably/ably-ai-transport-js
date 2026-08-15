@@ -1,32 +1,54 @@
-# Linear channel (no conversation tree)
+# Linear channel (thin AIT POC)
 
-This example is the AIT-side proof of the core primitives on `feature/channel-clone-truncate` in `ably/realtime`.
+Branch: `poc/thin-dropin`  
+Parent: `feature/linear-channel-primitives`
 
-The stream does not carry `parent`, `fork-of`, `msg-regenerate`, or `supersedes`.
+This is A and E0. Codec F is on `poc/thin-codec`.
+
+No conversation tree. No `extras.ai`.
+
+## 30-second demo
+
+```bash
+pnpm exec vitest run examples/linear-channel/linear.test.ts examples/linear-channel/dropin.test.ts
+```
+
+Optional farm:
+
+```bash
+ABLY_KEY=... ABLY_HOST=127.0.0.1 ABLY_PORT=8081 pnpm exec tsx examples/linear-channel/dropin-server.ts
+# POST { "text": "What is Rust?" } to /chat
+# Rejected POST ({ "accepted": false }) publishes nothing
+```
+
+## What this proves
+
+| File | POC | Proves |
+|---|---|---|
+| `dropin.ts` | A | Their POST. Accept then publish. Reject writes nothing. REST `id` dedups the user bubble. |
+| `linear.ts` `applyAppend` | C (client) | `complete` / `stopped` freeze the default body in the helper. |
+| `linear.ts` `latestByIdentity` | D (client only) | Retry identity ≠ REST `id`. Latest attempt only. Store isolation is realtime `poc/retry-identity`. |
+| `linear.ts` `cutSpan` | E0 | Overlapping spans. Cut uses delete + stopped. Not channel truncate. |
+
+## What this does not prove
+
+- Store freeze. See realtime `poc/streaming-status`.
+- Zombie append stays on an old version. See realtime `poc/retry-identity`.
+- A raw `ably-js` subscriber needs no fold.
+- Scale, multi-region, attach-warm identity map.
 
 ## Behaviours
 
 | Action | Call |
 |---|---|
-| Send | `publish` |
-| Regenerate | `publish` with the same `turn-id` |
-| 1 / N versions | Group `visible(history)` by `turn-id` |
-| Rewind to here | `POST /channels/{id}/truncate` `{ afterSerial }` |
-| Edit | cancel + truncate + publish |
-| Fork all | `POST /channels/{id}/clone` `{ destChannel }` |
-| Fork from here | `POST /channels/{id}/clone` `{ destChannel, untilSerial }` |
+| Send | Their `POST /chat`. Server `publish`. |
+| Stream | `append`. Close = `stream-status` complete/stopped. |
+| Regenerate | New `publish`, same span / `turn-id`. |
+| 1 / N | Group visible history by span. |
+| Rewind | `POST /channels/{id}/truncate` `{ afterSerial }` |
+| Stop / cancel | Request-plane stop. Cut span. Keep the partial bubble. |
+| Fork | `POST /channels/{id}/clone` `{ destChannel, untilSerial? }` |
 
-`untilSerial` is inclusive. Dest gets that serial and every earlier serial. Dest does not get later rows. There is no dest truncate.
+`untilSerial` is inclusive.
 
-## Files
-
-- `linear.ts` — the whole app-side API
-- `linear.test.ts` — unit tests for 1/N and visible history
-- `show.ts` — walkthrough; optional farm run
-
-```bash
-pnpm exec vitest run examples/linear-channel/linear.test.ts
-ABLY_KEY=... ABLY_HOST=127.0.0.1 ABLY_PORT=8081 pnpm exec tsx examples/linear-channel/show.ts
-```
-
-Keep runs, cancel, and codecs in the main SDK. Drop the tree headers and the branch walk.
+Stamps use `extras.headers` as a **shim** (`stream-status`, `retry-identity`, `spans`). Product shape is reserved fields.

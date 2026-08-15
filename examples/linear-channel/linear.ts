@@ -7,8 +7,15 @@
 import type * as Ably from 'ably';
 
 export const HEADER_TURN_ID = 'turn-id';
+/** Streaming status. POC shim on extras.headers. Not extras.ai. */
+export const HEADER_STREAM_STATUS = 'stream-status';
+/** Retry identity. Not REST message id (that stays idempotent). Store isolation is POC D. */
+export const HEADER_RETRY_IDENTITY = 'retry-identity';
+/** Overlapping group ids, comma-separated. No parent. */
+export const HEADER_SPANS = 'spans';
 
 export type LinearMessage = {
+	id?: string;
 	serial?: string | null;
 	data?: unknown;
 	action?: string;
@@ -49,4 +56,78 @@ export function alternatives(items: LinearMessage[], turnId: string): LinearMess
 export function lastWrite(items: LinearMessage[], turnId: string): LinearMessage | undefined {
 	const alts = alternatives(items, turnId);
 	return alts[alts.length - 1];
+}
+
+export function streamStatusOf(msg: LinearMessage): string | undefined {
+	return msg.extras?.headers?.[HEADER_STREAM_STATUS];
+}
+
+export function retryIdentityOf(msg: LinearMessage): string | undefined {
+	return msg.extras?.headers?.[HEADER_RETRY_IDENTITY];
+}
+
+export function spansOf(msg: LinearMessage): string[] {
+	const raw = msg.extras?.headers?.[HEADER_SPANS];
+	if (!raw) {
+		return [];
+	}
+	return raw.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+/** Latest body per retry-identity. Older attempts stay in the log. */
+export function latestByIdentity(items: LinearMessage[]): LinearMessage[] {
+	const last = new Map<string, number>();
+	visible(items).forEach((m, i) => {
+		const id = retryIdentityOf(m);
+		if (id) {
+			last.set(id, i);
+		}
+	});
+	return visible(items).filter((m, i) => {
+		const id = retryIdentityOf(m);
+		return !id || last.get(id) === i;
+	});
+}
+
+/** Apply an append. After complete/stopped, the default body does not grow. */
+export function applyAppend(base: LinearMessage, delta: string): LinearMessage {
+	const status = streamStatusOf(base);
+	if (status === 'complete' || status === 'stopped') {
+		return base;
+	}
+	return { ...base, data: String(base.data ?? '') + delta };
+}
+
+/** Drop messages in a span after `fromSerial` (inclusive cut keeps fromSerial). */
+export function cutSpan(items: LinearMessage[], spanId: string, fromSerial: string): LinearMessage[] {
+	let past = false;
+	return items.map((m) => {
+		if (m.serial === fromSerial) {
+			past = true;
+			const headers = { ...m.extras?.headers, [HEADER_STREAM_STATUS]: 'stopped' };
+			return { ...m, extras: { ...m.extras, headers } };
+		}
+		if (past && spansOf(m).includes(spanId)) {
+			return { ...m, action: 'message.delete' };
+		}
+		return m;
+	});
+}
+
+/**
+ * Drop-in request path: their POST. Only after accept do we publish.
+ * Unaccepted text never lands on the channel.
+ */
+export function acceptAndPublish(
+	accepted: boolean,
+	draft: { data: string; turnId: string },
+): LinearMessage | null {
+	if (!accepted) {
+		return null;
+	}
+	return {
+		data: draft.data,
+		action: 'message.create',
+		extras: { headers: { [HEADER_TURN_ID]: draft.turnId } },
+	};
 }

@@ -11,6 +11,9 @@ export const HEADER_TURN_ID = 'turn-id';
 export const HEADER_STREAM_STATUS = 'stream-status';
 /** Retry identity. Not REST message id (that stays idempotent). Store isolation is POC D. */
 export const HEADER_RETRY_IDENTITY = 'retry-identity';
+/** If this work id exists, create a new version. Same extras on every attempt. */
+export const HEADER_IF_EXISTS = 'if-exists';
+export const IF_EXISTS_NEW_VERSION = 'newVersion';
 /** Overlapping group ids, comma-separated. No parent. */
 export const HEADER_SPANS = 'spans';
 
@@ -129,5 +132,19 @@ export function acceptAndPublish(
 		data: draft.data,
 		action: 'message.create',
 		extras: { headers: { [HEADER_TURN_ID]: draft.turnId } },
+	};
+}
+
+/**
+ * Blind attempt. Same extras every time. Do not ask if a previous attempt worked.
+ * Missing work id → create. Exists → new version.
+ */
+export function ifExistsNewVersion(workId: string): { extras: { ifExists: string; identity: string; headers: Record<string, string> } } {
+	return {
+		extras: {
+			ifExists: IF_EXISTS_NEW_VERSION,
+			identity: workId,
+			headers: { [HEADER_IF_EXISTS]: IF_EXISTS_NEW_VERSION, [HEADER_RETRY_IDENTITY]: workId },
+		},
 	};
 }

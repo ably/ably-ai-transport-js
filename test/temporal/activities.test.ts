@@ -4,7 +4,11 @@
  * `withAgentSession` is mocked: it is covered by its own tests, and mocking it
  * leaves exactly what these activities own observable — which run entry point
  * they use, whether they load before publishing, what they publish, and that the
- * client they built is always closed.
+ * leased connection always goes back to the pool.
+ *
+ * The activities run against a real {@link createSessionScope} over a stub client,
+ * rather than a stub scope, so the lease discipline is exercised too. Handing the
+ * lease back shows up as `channels.release` for the invocation's channel.
  */
 
 import '../helper/expectations.js';
@@ -18,6 +22,8 @@ import type { RunIdentity } from '../../src/core/transport/types/agent.js';
 import { withAgentSession } from '../../src/core/transport/with-agent-session.js';
 import { ErrorCode } from '../../src/errors.js';
 import { createFramingActivities } from '../../src/temporal/activities.js';
+import { createSessionScope } from '../../src/temporal/session-scope.js';
+import { createPoolableMockClient, type PoolableMockClient } from '../helper/mock-client.js';
 
 vi.mock('../../src/core/transport/with-agent-session.js', () => ({
   withAgentSession: vi.fn(),
@@ -71,7 +77,7 @@ const codec = { adapterTag: 'test' } as unknown as TestCodec;
 
 let run: StubRun;
 let session: StubSession;
-let client: { close: ReturnType<typeof vi.fn> };
+let client: PoolableMockClient;
 let createClient: ReturnType<typeof vi.fn>;
 
 const createStubRun = (): StubRun => ({
@@ -90,12 +96,19 @@ const createStubRun = (): StubRun => ({
 });
 
 /**
- * Build the activities under test, wired to the stubs.
+ * Build the activities under test, wired to the stubs through a real session
+ * scope so the connection lease is exercised.
  * @returns The four framing activities.
  */
 const activities = (): ReturnType<typeof createFramingActivities> =>
-  // CAST: the client is only passed through to the mocked withAgentSession.
-  createFramingActivities({ codec, createClient: createClient as unknown as () => Ably.Realtime });
+  createFramingActivities({
+    scope: createSessionScope({
+      codec,
+      // CAST: the client only reaches the pool; the mocked withAgentSession
+      // never touches it.
+      createClient: createClient as unknown as () => Ably.Realtime,
+    }),
+  });
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -108,8 +121,8 @@ beforeEach(() => {
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
     end: vi.fn(() => Promise.resolve()),
   };
-  client = { close: vi.fn() };
-  createClient = vi.fn(() => client);
+  client = createPoolableMockClient();
+  createClient = vi.fn(() => client.client);
   // Invoke the body with the stub session, mirroring the real helper.
   vi.mocked(withAgentSession).mockImplementation(async (_options, body) =>
     // CAST: the stub implements only what the activities call.
@@ -143,19 +156,19 @@ describe('openRun', () => {
     expect(run.view.loadOlder).not.toHaveBeenCalled();
   });
 
-  it('closes the client it built', async () => {
+  it('leases one connection and hands it back', async () => {
     await activities().openRun({ invocation, invocationId: 'wf-1' });
 
     expect(createClient).toHaveBeenCalledTimes(1);
-    expect(client.close).toHaveBeenCalledTimes(1);
+    expect(client.releasedChannels).toEqual([invocation.sessionName]);
   });
 
-  it('closes the client when the run fails to start', async () => {
+  it('hands the connection back when the run fails to start', async () => {
     const failure = new Error('start failed');
     run.start.mockRejectedValue(failure);
 
     await expect(activities().openRun({ invocation, invocationId: 'wf-1' })).rejects.toBe(failure);
-    expect(client.close).toHaveBeenCalledTimes(1);
+    expect(client.releasedChannels).toEqual([invocation.sessionName]);
   });
 });
 
@@ -208,7 +221,7 @@ describe('cleanupRun', () => {
 
     expect(run.end).not.toHaveBeenCalled();
     expect(session.end).not.toHaveBeenCalled();
-    expect(client.close).toHaveBeenCalledTimes(1);
+    expect(client.releasedChannels).toEqual([invocation.sessionName]);
   });
 
   it('ends the run as error when it is still active', async () => {
@@ -232,7 +245,7 @@ describe('cleanupRun', () => {
     await expect(activities().cleanupRun({ ids, invocation })).rejects.toBe(failure);
 
     expect(session.end).toHaveBeenCalledTimes(1);
-    expect(client.close).toHaveBeenCalledTimes(1);
+    expect(client.releasedChannels).toEqual([invocation.sessionName]);
   });
 
   it('swallows a failing session end so the original error survives', async () => {

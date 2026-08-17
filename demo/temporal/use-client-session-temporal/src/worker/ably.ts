@@ -25,14 +25,18 @@ const ABLY_KEY = (): string => {
 const ABLY_ENDPOINT = (): string | undefined => process.env.ABLY_ENDPOINT;
 
 /**
- * Build one realtime client for one activity.
+ * Build one realtime client.
  *
  * The env is read at the point of use, never hoisted, so a runtime change is
- * picked up. A client per activity is required rather than merely tidy: a session
- * takes its channel from `client.channels.get(name)`, which caches per name, and
- * detaching a session detaches that channel — so two sessions sharing a client on
- * one channel would break each other.
- * @returns A fresh realtime client, for the caller to close.
+ * picked up.
+ *
+ * The SDK's plugin calls this only when its pool has no idle connection, so it is
+ * not once per activity. What the pool guarantees is one channel per lease: a
+ * session takes its channel from `client.channels.get(name)`, which caches per
+ * name, and detaching a session detaches that channel, so two concurrent sessions
+ * on one client and one channel would break each other. An exclusive lease makes
+ * that unreachable.
+ * @returns A fresh realtime client, for the pool to own.
  */
 export const makeAbly = (): Ably.Realtime =>
   new Ably.Realtime({

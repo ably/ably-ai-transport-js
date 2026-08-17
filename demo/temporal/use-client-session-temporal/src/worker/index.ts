@@ -7,6 +7,11 @@
  * `endRun`, `suspendRun`, `cleanupRun`) comes from the SDK's plugin, which is
  * why none of them appear in this repo's demo code.
  *
+ * The plugin is built in `ably-transport.ts` rather than here, because
+ * `activities.ts` needs it too and this module already imports that. It also owns
+ * the pool of Ably connections every activity leases from, for as long as
+ * `worker.run()` lasts.
+ *
  * Loads `.env.local` explicitly — tsx doesn't do it for you the way Next does.
  * Without this the activities have no ABLY_API_KEY and hang forever on connect.
  */
@@ -18,9 +23,7 @@ import { config as loadDotenv } from 'dotenv';
 loadDotenv({ path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.env.local') });
 
 import { NativeConnection, Worker } from '@temporalio/worker';
-import { createAblyTransportPlugin } from '@ably/ai-transport/temporal';
-import { createUIMessageCodec } from '@ably/ai-transport/vercel';
-import { logger, makeAbly } from './ably.js';
+import { ablyTransport } from './ably-transport.js';
 import { bundlerOptions } from './bundler.js';
 import * as activities from './activities.js';
 import { TASK_QUEUE } from './shared.js';
@@ -36,13 +39,7 @@ async function main(): Promise<void> {
     workflowsPath: require.resolve('./workflows'),
     bundlerOptions,
     activities,
-    plugins: [
-      createAblyTransportPlugin({
-        codec: createUIMessageCodec(),
-        createClient: makeAbly,
-        logger,
-      }),
-    ],
+    plugins: [ablyTransport],
   });
   console.log(`worker: listening on ${TASK_QUEUE}`);
   await worker.run();

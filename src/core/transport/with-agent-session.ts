@@ -23,8 +23,11 @@ import type { AgentSessionContext, WithAgentSessionOptions } from './types/agent
  * path that has given up — the body calls `session.end()` itself; the teardown
  * detach is then a no-op.
  *
- * The caller owns the Ably client, as everywhere else in this SDK: pass a
- * connected client in `options.client` and close it yourself once this resolves.
+ * The caller owns the Ably client's lifecycle, as everywhere else in this SDK:
+ * pass a client in `options.client`, and dispose of it yourself once this
+ * resolves. This never closes it. Closing is right for a client built for one
+ * unit of work; a caller that pools connections hands it back instead, which is
+ * what the Temporal plugin's session scope does.
  *
  * A failure to detach is swallowed and logged at debug. Detach publishes
  * nothing, so it cannot leave the wire inconsistent, and surfacing it would

@@ -9,83 +9,79 @@
  * the SDK's Temporal plugin, registered in `index.ts`. Those activities carry no
  * application logic, so there is nothing here to write.
  *
- * Each activity is fresh-process safe: it builds its own `Ably.Realtime`, gets a
- * session from `withAgentSession`, does its work, publishes its terminal
- * (`ai-run-end` / `ai-run-suspend`) inline in that same session, then closes the
- * client. Publishing the terminal here is free, because this activity already has
- * the run loaded; doing it from the workflow instead would pay a fresh adopt.
- *
- * `withAgentSession` owns the session lifecycle: connect, run the body, and
- * detach on both success and failure. Detaching rather than ending is what makes
- * a Temporal retry work — ending would mark the run terminal, and the retry would
- * have nothing to publish onto.
+ * `ablyTransport.activity(...)` wraps each body with the rest: it leases a
+ * connection from the worker's pool, connects a session, adopts the run the
+ * workflow is threading, loads it, and tears all of that down whether the body
+ * returns or throws. Two things it does are worth knowing. It adopts with the
+ * activity's cancellation signal and heartbeats while the body runs, and both are
+ * needed together — Temporal reports a cancellation only in the response to a
+ * heartbeat, so without the heartbeat a `temporal workflow cancel` would never
+ * reach the model. And it detaches rather than ends the session, which is what
+ * makes a Temporal retry work: ending would mark the run terminal and the retry
+ * would have nothing to publish onto.
  *
  * Boilerplate lives in the SDK across three subpaths:
  *
  *   - `@ably/ai-transport`          — step.send (method)
- *   - `@ably/ai-transport/vercel`   — withAgentSession, stripToolExecutes, pendingToolCalls
- *   - `@ably/ai-transport/temporal` — stepIdFor, the plugin
+ *   - `@ably/ai-transport/vercel`   — finishRun, finishStep, stripToolExecutes, pendingToolCalls
+ *   - `@ably/ai-transport/temporal` — the plugin and its activity scaffold
  *
- * Cancels arrive as `ai-cancel` on the channel; each activity's own
- * `AgentSession` routes them to `run.abortSignal` via the SDK's built-in
- * cancel routing, so no separate listener activity is needed.
+ * Cancels from the browser need none of the above. They arrive as `ai-cancel` on
+ * the channel, and the session routes them to `run.abortSignal` through the SDK's
+ * built-in cancel routing.
  */
 
-import { Context } from '@temporalio/activity';
 import Ably from 'ably';
 import { convertToModelMessages, stepCountIs, streamText, type UIMessage } from 'ai';
 
-import type { VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
+import type { VercelOutput, VercelProjection, VercelRunOutcome } from '@ably/ai-transport/vercel';
 import {
   approvedPendingToolCalls,
+  finishRun,
+  finishStep,
   pendingToolCalls,
   stripToolExecutes,
   vercelRunOutcome,
-  withAgentSession,
 } from '@ably/ai-transport/vercel';
-import { ErrorCode, type AgentRun, type InvocationData, type RunIdentity } from '@ably/ai-transport';
-import { stepIdFor } from '@ably/ai-transport/temporal';
+import { ErrorCode, type AgentRun, type RunStep } from '@ably/ai-transport';
+import type { RunActivityInput } from '@ably/ai-transport/temporal';
 
 import { createModel } from '../app/api/chat/model.js';
 import { SYSTEM_PROMPT } from '../app/api/chat/prompt.js';
 import { tools } from '../app/api/chat/tools.js';
-import { logger, makeAbly } from './ably.js';
+import { ablyTransport } from './ably-transport.js';
 import type { InferenceOutcome, ToolCallInfo } from './shared.js';
 
-// Concrete run type this file works with — every activity uses the Vercel codec.
+// The concrete run type the helpers below work with. The activity bodies get it
+// inferred from the codec, so only these standalone helpers name it.
 type VercelAgentRun = AgentRun<VercelOutput, VercelProjection, UIMessage>;
-type VercelRunStep = ReturnType<VercelAgentRun['createStep']>;
 
-async function _publishRunTerminal(run: VercelAgentRun, outcome: InferenceOutcome): Promise<void> {
-  switch (outcome.kind) {
-    case 'suspend':
-      await run.suspend();
-      return;
-    case 'server-tools':
-      // The only non-terminal outcome — nothing to publish; the workflow loops
-      // with a follow-up inference after its tool steps. (Client steering is
-      // handled inside the inference activity, never surfaced to the workflow.)
-      return;
-    case 'error':
-      // complete / cancelled / error all pass straight through to run.end. The
-      // outcome.kind values were named to align with `RunEndReason` so the caller
-      // doesn't have to translate.
-      await run.end({
-        reason: 'error',
-        error: new Ably.ErrorInfo(outcome.errorMessage, ErrorCode.StreamError, 500),
-      });
-      return;
-    default:
-      // publish the terminal reason (complete / cancelled)
-      await run.end({ reason: outcome.kind });
-  }
+/**
+ * One inference pass's result. Carries the SDK's own outcome type rather than
+ * this app's, so `finishRun` and `finishStep` can route it, plus the server tools
+ * to dispatch when a `suspend` turned out to be a server-tool request.
+ */
+interface PassResult {
+  vercel: VercelRunOutcome;
+  serverToolCalls?: ToolCallInfo[];
+}
+
+/**
+ * Flatten a pass into the outcome the WORKFLOW reads. The workflow sees this
+ * across Temporal's serialisation boundary, which is why the error becomes a
+ * plain message rather than an `Ably.ErrorInfo`.
+ */
+function _toInferenceOutcome(pass: PassResult): InferenceOutcome {
+  if (pass.serverToolCalls) return { kind: 'server-tools', serverToolCalls: pass.serverToolCalls };
+  if (pass.vercel.reason === 'error') return { kind: 'error', errorMessage: pass.vercel.error.message };
+  if (pass.vercel.reason === 'suspend') return { kind: 'suspend' };
+  return { kind: pass.vercel.reason };
 }
 
 // -----------------------------------------------------------------------------
 // runInferenceStep — ONE turn's inference, published as exactly one SDK step.
-// Drives every inference in the turn, first and follow-ups alike: it adopts the
-// run the SDK's openRun (or a prior step) left active, loads it, and runs the
-// model.
+// Drives every inference in the turn, first and follow-ups alike, against the run
+// the SDK's openRun (or a prior step) left active.
 // Client steering (a follow-up user-message folded into the active run while we
 // stream) loops another inference pass into the SAME step inside this activity,
 // rather than round-tripping through the workflow. One step per activity keeps
@@ -94,61 +90,39 @@ async function _publishRunTerminal(run: VercelAgentRun, outcome: InferenceOutcom
 // stripped so the AI SDK stops after the call and we drive the tool exec via
 // runToolStep.
 //
+// `history: 'full'` because the model needs the whole conversation. The scaffold
+// pages it before the body runs.
+//
 // Resume-visibility race: when the turn is a continuation, the SDK's openRun
-// published
-// `ai-run-resume` on its own session and detached. This fresh session's
+// published `ai-run-resume` on its own session and detached. This activity's
 // `run.load()` pages channel history to status-gate the run, and may read the
 // pre-resume `ai-run-suspend` before the `ai-run-resume` has propagated into
 // history — tripping load()'s suspended gate. That gate throws BEFORE the model
 // is called (no wasted inference, no partial output), and Temporal retries this
-// activity; by the retry the resume has folded and load() passes. Merging open
-// + first inference into one session used to sidestep this race entirely; the
-// split trades that for a cheap, self-healing retry so the two concerns stay
-// independently retryable.
+// activity; by the retry the resume has folded and load() passes.
 // -----------------------------------------------------------------------------
 
-interface StepInput {
-  ids: RunIdentity;
-  invocation: InvocationData;
-}
+export const runInferenceStep = ablyTransport.activity(
+  { history: 'full' },
+  async ({ run, step }): Promise<InferenceOutcome> => {
+    const pass = await _runInferenceStep(run, step);
 
-export async function runInferenceStep(input: StepInput): Promise<InferenceOutcome> {
-  const cancelSignal = Context.current().cancellationSignal;
-  const ably = makeAbly();
-  try {
-    // This body publishes the run's terminal itself when it reaches one; the
-    // session is only ever detached. Ending it would publish `ai-run-end` and
-    // mark the run terminal, which would break both the hand-off to the next
-    // activity and any Temporal retry of this one.
-    return await withAgentSession<InferenceOutcome>(
-      { client: ably, invocation: input.invocation, logger },
-      async ({ session, invocation }) => {
-        const run = session.adoptRun(invocation, input.ids, { signal: cancelSignal });
+    // Server tools are the only non-terminal outcome: the workflow runs them and
+    // calls back in, so the run stays open. Everything else gets its terminal
+    // published here, where the run is already loaded and it costs nothing.
+    if (!pass.serverToolCalls) await finishRun(run, pass.vercel);
 
-        await run.load();
+    const outcome = _toInferenceOutcome(pass);
+    console.log('[inference] outcome', { kind: outcome.kind });
+    return outcome;
+  },
+);
 
-        // Load history for the LLM conversation.
-        while (run.view.hasOlder()) await run.view.loadOlder();
-
-        const outcome = await _runInferenceStep(run, stepIdFor(input.ids.invocationId));
-
-        await _publishRunTerminal(run, outcome);
-
-        return outcome;
-      },
-    );
-  } finally {
-    ably.close();
-  }
-}
-
-// One inference turn for the activity, published as a single SDK step. Callers
-// ready the run handle (via createRun or adoptRun) and drain history first — the
-// passes read run.view.
+// One inference turn, published as a single SDK step.
 //
 // The pre-check dispatches a just-approved server tool before any model call.
-// Otherwise this opens ONE step and runs the triggering input's inference pass
-// into it, then loops another inference pass into the SAME step for each
+// Otherwise this runs the triggering input's inference pass into the step, then
+// loops another pass into the SAME step for each
 // steering message a client folded into the run while we streamed: after a
 // `complete` pass, `run.hasInput()` reports (and drains) the pending steering
 // message, and the next pass answers it. Each pass's `step.pipe` stamps the
@@ -157,56 +131,55 @@ export async function runInferenceStep(input: StepInput): Promise<InferenceOutco
 // Non-`complete` outcomes (server-tools / suspend / cancelled / error) end the
 // loop and route the run on their own.
 //
-// The stepId is the activity's canonical (deterministic) id, so a retry re-runs
-// the whole turn under the same id and supersedes its prior attempt's output.
-async function _runInferenceStep(run: VercelAgentRun, stepId: string): Promise<InferenceOutcome> {
+// The step comes from the scaffold, already started, under the activity's
+// deterministic id — so a retry re-runs the whole turn under the same id and
+// supersedes its prior attempt's output.
+async function _runInferenceStep(run: VercelAgentRun, step: RunStep<VercelOutput>): Promise<PassResult> {
   // Pre-check: if this invocation was triggered by a `tool-approval-response`
   // (approved=true), the last assistant's tool part is in
   // `approval-responded` state and the framework owes it an output.
-  // Dispatch it as a server-tools step now, before opening a step or calling
-  // the model — the LLM would otherwise see an open `tool_use` with no matching
-  // `tool_result` and reject. Only match `approval-responded` here (not
+  // Dispatch it as a server-tools step now, before calling the model — the LLM
+  // would otherwise see an open `tool_use` with no matching `tool_result` and
+  // reject. Only match `approval-responded` here (not
   // `input-available`) so this branch doesn't race with the post-`streamText`
   // classification below, which is where a fresh call the model just emitted is
   // handled.
+  //
+  // The step is already open, so this turn publishes an empty one. That is the
+  // honest record: this activity did no inference, and the tool that follows
+  // publishes under its own step.
   const approvedServerCalls = _filterServerToolCalls(approvedPendingToolCalls(run.messages));
   if (approvedServerCalls.length > 0) {
-    return { kind: 'server-tools', serverToolCalls: approvedServerCalls };
+    return { vercel: { reason: 'suspend' }, serverToolCalls: approvedServerCalls };
   }
-
-  const step = run.createStep({ stepId });
-  await step.start();
 
   // Run the triggering input's pass, then loop another pass into this same step
   // for each steering message that folded in while the previous pass streamed.
   // hasInput() gates every pass — including the first, so a run cancelled before
   // any inference skips the loop entirely — and only a `complete` pass can be
-  // steered; the others route the run on their own. `outcome` is unset until the
-  // first pass runs, so the guard reads it null-safely.
-  let outcome: InferenceOutcome | undefined;
-  while ((!outcome || outcome.kind === 'complete') && run.hasInput()) {
-    outcome = await _runInferencePass(run, step);
+  // steered; the others route the run on their own. `pass` is unset until the
+  // first one runs, so the guard reads it null-safely.
+  let pass: PassResult | undefined;
+  while ((!pass || pass.vercel.reason === 'complete') && run.hasInput()) {
+    pass = await _runInferencePass(run, step);
   }
 
   // If the run was already cancelled before the first pass, hasInput() was false
   // and no pass ran — treat that as a cancellation.
-  const finalOutcome: InferenceOutcome = outcome ?? { kind: 'cancelled' };
+  const finalPass: PassResult = pass ?? { vercel: { reason: 'cancelled' } };
 
-  // Close the step with the reason the final pass implies (a piped stream error
-  // already marks it failed; the empty-conversation guard has no pipe, so pass
-  // the reason explicitly).
-  await step.end({
-    reason: finalOutcome.kind === 'error' ? 'failed' : finalOutcome.kind === 'cancelled' ? 'cancelled' : 'complete',
-  });
+  // Close the step with the reason the final pass implies. A piped stream error
+  // already marks it failed; the empty-conversation guard has no pipe, so this is
+  // what supplies the reason there.
+  await finishStep(step, finalPass.vercel);
 
-  console.log('[inference] outcome', { stepId, kind: finalOutcome.kind });
-  return finalOutcome;
+  return finalPass;
 }
 
 // One inference pass into an already-open step: streamText + pipe, then classify
 // the outcome. Server tools have their `execute` stripped so the AI SDK stops
 // after the call and the workflow drives the tool via runToolStep.
-async function _runInferencePass(run: VercelAgentRun, step: VercelRunStep): Promise<InferenceOutcome> {
+async function _runInferencePass(run: VercelAgentRun, step: RunStep<VercelOutput>): Promise<PassResult> {
   const conversation = run.view.getMessages().map((m) => m.message);
   if (conversation.length === 0) {
     // Defensive: guards against a cross-activity tree hydration edge case where
@@ -214,7 +187,12 @@ async function _runInferencePass(run: VercelAgentRun, step: VercelRunStep): Prom
     // Treat this as a stop so the workflow ends the run cleanly instead of
     // dying inside streamText with 'messages must not be empty'.
     console.warn('[inference] conversation is empty — ending run to avoid crash');
-    return { kind: 'error', errorMessage: 'conversation drain returned no messages' };
+    return {
+      vercel: {
+        reason: 'error',
+        error: new Ably.ErrorInfo('conversation drain returned no messages', ErrorCode.StreamError, 500),
+      },
+    };
   }
 
   const result = streamText({
@@ -230,9 +208,7 @@ async function _runInferencePass(run: VercelAgentRun, step: VercelRunStep): Prom
 
   const pipeResult = await step.pipe(result.toUIMessageStream());
   const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
-  if (outcome.reason === 'error') return { kind: 'error', errorMessage: outcome.error.message };
-  if (outcome.reason === 'cancelled') return { kind: 'cancelled' };
-  if (outcome.reason === 'complete') return { kind: 'complete' };
+  if (outcome.reason !== 'suspend') return { vercel: outcome };
 
   // Suspend outcome — classify: fresh server-tool calls (have `execute` in
   // the registry) become server-tool activities; anything else (client
@@ -242,11 +218,9 @@ async function _runInferencePass(run: VercelAgentRun, step: VercelRunStep): Prom
   // NOT caught here — the follow-up workflow spawned by the
   // `tool-approval-response` handles it via the pre-check above.
   const serverToolCalls = _filterServerToolCalls(pendingToolCalls(run.messages));
-  if (serverToolCalls.length > 0) {
-    return { kind: 'server-tools', serverToolCalls };
-  }
+  if (serverToolCalls.length > 0) return { vercel: outcome, serverToolCalls };
 
-  return { kind: 'suspend' };
+  return { vercel: outcome };
 }
 
 // Narrow the SDK's `PendingToolCall[]` down to the ones whose `execute` lives
@@ -262,48 +236,28 @@ function _filterServerToolCalls(
 
 // -----------------------------------------------------------------------------
 // runToolStep — execute one server tool and publish its result as a single
-// tool-output-available chunk on its own SDK step. On failure it throws so
-// Temporal retries the activity under the same activityId (== stepId), which
-// supersedes the failed attempt's channel output.
+// tool-output-available chunk on its own SDK step. The scaffold opens that step
+// under the retry-stable id and closes it when this returns, so there is nothing
+// here but the tool call.
+//
+// On failure it throws, and the scaffold deliberately leaves the step open:
+// Temporal re-runs this activity under the same stepId, and the retry supersedes
+// the failed attempt's channel output. That only works because the session is
+// detached rather than ended — ending would publish `ai-run-end` and every retry
+// would fail with "run is terminal (read-only)". Workflow-level `cleanupRun`
+// marks the run 'error' once retries are truly exhausted.
 // -----------------------------------------------------------------------------
 
-export async function runToolStep(input: StepInput & { toolCall: ToolCallInfo }): Promise<void> {
-  const stepId = stepIdFor(input.ids.invocationId);
-  const cancelSignal = Context.current().cancellationSignal;
-  const ably = makeAbly();
+export const runToolStep = ablyTransport.activity(
+  async ({ step }, input: RunActivityInput & { toolCall: ToolCallInfo }): Promise<void> => {
+    const tool = (tools as Record<string, { execute?: (input: unknown) => Promise<unknown> }>)[input.toolCall.toolName];
+    if (!tool?.execute) throw new Error(`tool '${input.toolCall.toolName}' has no execute`);
+    const output = await tool.execute(input.toolCall.input);
 
-  try {
-    // `tool.execute()` throws are typically retryable: Temporal re-runs this
-    // activity under the same `stepId`, and the retry supersedes the failed
-    // attempt's output via the SDK's step-start-serial supersede semantics. That
-    // only works because the session is detached rather than ended — ending
-    // would publish `ai-run-end` and every retry would fail with "run is
-    // terminal (read-only)". Workflow-level `cleanupRun` marks the run 'error'
-    // once retries are truly exhausted.
-    await withAgentSession<void>(
-      { client: ably, invocation: input.invocation, logger },
-      async ({ session, invocation }) => {
-        const run = session.adoptRun(invocation, input.ids, { signal: cancelSignal });
-        await run.load();
-
-        const step = run.createStep({ stepId });
-        await step.start();
-
-        const tool = (tools as Record<string, { execute?: (input: unknown) => Promise<unknown> }>)[
-          input.toolCall.toolName
-        ];
-        if (!tool?.execute) throw new Error(`tool '${input.toolCall.toolName}' has no execute`);
-        const output = await tool.execute(input.toolCall.input);
-
-        await step.send({
-          type: 'tool-output-available',
-          toolCallId: input.toolCall.toolCallId,
-          output,
-        });
-        await step.end();
-      },
-    );
-  } finally {
-    ably.close();
-  }
-}
+    await step.send({
+      type: 'tool-output-available',
+      toolCallId: input.toolCall.toolCallId,
+      output,
+    });
+  },
+);

@@ -65,7 +65,7 @@ export interface ClientSessionHandle<
  * on access — the hook never throws during render.
  *
  * Pass `onError` to subscribe to post-construction session errors
- * (e.g. {@link ErrorCode.SessionSendFailed}, {@link ErrorCode.ChannelContinuityLost})
+ * (e.g. {@link ErrorCode.SessionSendFailed}, {@link ErrorCode.SessionContinuityNotGuaranteed})
  * without calling `session.on('error', …)` manually. The subscription is
  * created when the session resolves and removed on unmount.
  * @param props - Hook options.

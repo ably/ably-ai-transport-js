@@ -474,7 +474,7 @@ class DefaultClientSession<
     // Spec: AIT-CT20
     const state = this._channel.state;
     if (state !== 'attached' && state !== 'attaching') {
-      throw new Ably.ErrorInfo(`unable to send; channel is ${state}`, ErrorCode.ChannelNotReady, 400);
+      throw new Ably.ErrorInfo(`unable to send; channel is ${state}`, ErrorCode.SessionChannelNotReady, 400);
     }
 
     this._logger.trace('ClientSession._internalSend();');

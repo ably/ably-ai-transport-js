@@ -7,7 +7,7 @@
  *
  * Scenarios:
  * - POST failure → stream errors with SessionSendFailed → useChat status: error
- * - Channel detach mid-stream → stream errors with ChannelContinuityLost → useChat status: error
+ * - Channel detach mid-stream → stream errors with SessionContinuityNotGuaranteed → useChat status: error
  */
 
 // @vitest-environment jsdom

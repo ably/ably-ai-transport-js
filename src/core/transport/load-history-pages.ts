@@ -12,7 +12,7 @@
  *    no network) and `next()` (one Ably page per call, newest-first within
  *    the page).
  *  - Per-page failures are retried with bounded exponential backoff; on
- *    exhaustion throws `Ably.ErrorInfo` with code `HistoryFetchFailed`.
+ *    exhaustion throws `Ably.ErrorInfo` with code `SessionHistoryFetchFailed`.
  *  - `signal.aborted` is checked between pages; rejects with
  *    `Ably.ErrorInfo` (OperationCancelled) when aborted.
  *
@@ -87,7 +87,7 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
 
 /**
  * Invoke `fetchPage`, retrying on failure with exponential backoff. Throws
- * the last failure wrapped as `HistoryFetchFailed` once retries are
+ * the last failure wrapped as `SessionHistoryFetchFailed` once retries are
  * exhausted.
  * @param fetchPage - The page fetch to retry (initial `channel.history()` call or a `page.next()`).
  * @param maxRetries - Maximum number of attempts after the initial call.
@@ -129,7 +129,7 @@ const fetchPageWithRetry = async (
   }
   throw new Ably.ErrorInfo(
     `unable to fetch history page; ${errorMessage(lastError)}`,
-    ErrorCode.HistoryFetchFailed,
+    ErrorCode.SessionHistoryFetchFailed,
     500,
     errorCause(lastError),
   );
@@ -149,7 +149,7 @@ const fetchPageWithRetry = async (
  * @param channel - The Ably channel to read history from.
  * @param options - Pagination options.
  * @returns A cursor with `hasNext()` (cheap, cursor-only) and `next()` (fetches one page with retry).
- * @throws {Ably.ErrorInfo} `HistoryFetchFailed` on exhausted retry of the initial fetch, or `OperationCancelled` on signal abort.
+ * @throws {Ably.ErrorInfo} `SessionHistoryFetchFailed` on exhausted retry of the initial fetch, or `OperationCancelled` on signal abort.
  */
 export const loadHistoryPages = async (
   channel: Ably.RealtimeChannel,

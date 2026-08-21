@@ -100,14 +100,14 @@ export interface EncoderCore {
   /**
    * Close a streamed message with status:complete. Flushes all pending
    * appends for recovery before returning. Repeats persistent and payload headers.
-   * @throws {Ably.ErrorInfo} InvalidArgument if there is no active stream for `streamId`; SessionClosed if the encoder has been closed; EncoderRecoveryFailed if a failed append cannot be recovered during the flush.
+   * @throws {Ably.ErrorInfo} InvalidArgument if there is no active stream for `streamId`; SessionClosed if the encoder has been closed; StreamedMessageFinalizeFailed if a failed append cannot be recovered during the flush.
    */
   closeStream(streamId: string, payload: StreamPayload): Promise<void>;
 
   /**
    * Cancel all in-progress streams (status:cancelled) and flush all
    * pending appends for recovery before returning.
-   * @throws {Ably.ErrorInfo} SessionClosed if the core is closed; EncoderRecoveryFailed if a failed append cannot be recovered during the flush.
+   * @throws {Ably.ErrorInfo} SessionClosed if the core is closed; StreamedMessageFinalizeFailed if a failed append cannot be recovered during the flush.
    */
   cancelAllStreams(opts?: WriteOptions): Promise<void>;
 
@@ -370,7 +370,7 @@ class DefaultEncoderCore implements EncoderCore {
       this._logger?.error('DefaultEncoderCore._flushPending(); recovery failed', { failedStreams: ids });
       throw new Ably.ErrorInfo(
         `unable to flush pending appends; recovery failed for stream(s): ${ids}`,
-        ErrorCode.EncoderRecoveryFailed,
+        ErrorCode.StreamedMessageFinalizeFailed,
         500,
         errorCause(recoveryErrors[0]?.error),
       );

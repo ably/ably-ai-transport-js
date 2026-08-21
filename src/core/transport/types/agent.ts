@@ -191,7 +191,7 @@ export interface StreamResult {
    * `'error'`. This is the original error (e.g. from the LLM provider)
    * preserved so the caller can inspect provider-specific fields. The
    * run's `onError` callback also fires with a wrapped `Ably.ErrorInfo`
-   * (code `StreamError`) for standardized observability.
+   * (code `RunResponseStreamFailed`) for standardized observability.
    */
   error?: Error;
 }
@@ -291,7 +291,7 @@ export interface RunHooks<TOutput extends CodecOutputEvent> {
    * path. Fires in two scenarios:
    * - Stream failures in `pipe` — the underlying error is also returned on
    *   `StreamResult.error`, but this callback delivers it wrapped as an
-   *   `Ably.ErrorInfo` (code `StreamError`) for standardized observability.
+   *   `Ably.ErrorInfo` (code `RunResponseStreamFailed`) for standardized observability.
    * - A throw from the `onCancel` handler (code `RunCancelHandlerFailed`). The run
    *   is NOT cancelled: the SDK never reaches the abort.
    * - A throw from the `onSteer` handler (code `RunSteerHandlerFailed`). The run is
@@ -674,7 +674,7 @@ export interface AdoptedRun<TOutput extends CodecOutputEvent, TProjection, TMess
    * @throws {Ably.ErrorInfo} `InvalidArgument` when the run is suspended
    *   ("resume via `createRun().start()`") or terminal (read-only);
    *   `OperationCancelled` when the run was cancelled before or during `load()`;
-   *   `InputEventNotFound` when the run's `ai-run-start` is not observed within
+   *   `AdoptedRunStartNotObserved` when the run's `ai-run-start` is not observed within
    *   `timeoutMs` (a workflow-ordering error; retryable).
    */
   load(options?: { timeoutMs?: number }): Promise<void>;

@@ -506,7 +506,7 @@ export const createRunStepWriter = <
     if (result.error) {
       const errInfo = new Ably.ErrorInfo(
         `unable to pipe response for run ${runId}; ${result.error.message}`,
-        ErrorCode.StreamError,
+        ErrorCode.RunResponseStreamFailed,
         500,
         errorCause(result.error),
       );

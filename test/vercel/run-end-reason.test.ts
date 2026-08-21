@@ -36,7 +36,7 @@ describe('vercelRunOutcome', () => {
     );
     expect(result.reason).toBe('error');
     expect(result.error).toBeInstanceOf(Ably.ErrorInfo);
-    expect(result.error?.code).toBe(ErrorCode.StreamError);
+    expect(result.error?.code).toBe(ErrorCode.RunResponseStreamFailed);
     expect(result.error?.message).toContain('boom');
   });
 
@@ -95,7 +95,7 @@ describe('vercelRunOutcome', () => {
     const result = await vercelRunOutcome({ reason: 'complete' }, Promise.reject(new Error('no output')));
     expect(result.reason).toBe('error');
     expect(result.error).toBeInstanceOf(Ably.ErrorInfo);
-    expect(result.error?.code).toBe(ErrorCode.StreamError);
+    expect(result.error?.code).toBe(ErrorCode.RunResponseStreamFailed);
     expect(result.error?.message).toContain('no output');
   });
 

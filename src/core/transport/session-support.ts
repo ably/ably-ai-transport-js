@@ -53,7 +53,7 @@ export const noopUnsubscribe = (): void => {};
  * guard requires the channel to be ATTACHED/ATTACHING by the time `connect()`
  * resolves, so `attach()` (idempotent — a no-op when already attaching/attached)
  * makes that guarantee hold. On success logs at debug; on failure builds a
- * `SessionSubscriptionError`, logs at error, hands it to `onError`, and rejects
+ * `SessionSubscriptionFailed`, logs at error, hands it to `onError`, and rejects
  * with it.
  *
  * Retry-safe: `subscribe()` registers the listener synchronously, before the
@@ -68,7 +68,7 @@ export const noopUnsubscribe = (): void => {};
  * @param onError - Called with the subscription error before it is thrown
  *   (both sessions emit it on their session `on('error')`).
  * @returns A promise that resolves once subscribed and attached, or rejects with
- *   the `SessionSubscriptionError`.
+ *   the `SessionSubscriptionFailed`.
  */
 export const subscribeAndAttach = async (
   channel: Ably.RealtimeChannel,
@@ -92,7 +92,7 @@ export const subscribeAndAttach = async (
     // mislabelled as a subscribe failure.
     const errInfo = new Ably.ErrorInfo(
       `unable to subscribe and attach channel; ${errorMessage(error)}`,
-      ErrorCode.SessionSubscriptionError,
+      ErrorCode.SessionSubscriptionFailed,
       500,
       errorCause(error),
     );
@@ -106,7 +106,7 @@ export const subscribeAndAttach = async (
  * Wrap a failure thrown while processing an inbound channel message as a
  * `SessionMessageProcessingFailed`, preserving the original as `cause`. Single source
  * of truth for the message-processing error shape both sessions surface. Kept
- * distinct from the connect-time `SessionSubscriptionError`: the subscription
+ * distinct from the connect-time `SessionSubscriptionFailed`: the subscription
  * survives this, so the session stays usable and the fix is in the handler.
  * @param error - The thrown value.
  * @returns The wrapped error.
@@ -192,7 +192,7 @@ export class ConnectGuard {
       // retries, and keep the cause so requireConnected() can surface it.
       this._promise = undefined;
       this._lastError =
-        errorCause(error) ?? new Ably.ErrorInfo(errorMessage(error), ErrorCode.SessionSubscriptionError, 500);
+        errorCause(error) ?? new Ably.ErrorInfo(errorMessage(error), ErrorCode.SessionSubscriptionFailed, 500);
       throw error;
     }
   }
@@ -278,7 +278,7 @@ export const isContinuityLost = (stateChange: Ably.ChannelStateChange): boolean 
 };
 
 /**
- * Build the `ChannelContinuityLost` error for a continuity-breaking state
+ * Build the `SessionContinuityNotGuaranteed` error for a continuity-breaking state
  * change, attaching the state change's `reason` as `cause`.
  * @param stateChange - The continuity-breaking state change.
  * @param verb - The operation that can no longer proceed, for the
@@ -289,7 +289,7 @@ export const continuityLostError = (stateChange: Ably.ChannelStateChange, verb: 
   const { current } = stateChange;
   return new Ably.ErrorInfo(
     `unable to ${verb}; channel continuity lost (${current}${current === 'attached' ? ', resumed: false' : ''})`,
-    ErrorCode.ChannelContinuityLost,
+    ErrorCode.SessionContinuityNotGuaranteed,
     500,
     stateChange.reason,
   );

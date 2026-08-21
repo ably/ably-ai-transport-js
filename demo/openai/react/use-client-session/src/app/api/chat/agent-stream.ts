@@ -173,7 +173,11 @@ export async function runAgentLoop(req: AgentLoopRequest): Promise<AgentLoopOutc
   let terminalError: Ably.ErrorInfo | undefined;
   const fail = (result: StreamResult): void => {
     if (result.error) {
-      terminalError = new Ably.ErrorInfo(`unable to complete run; ${result.error.message}`, ErrorCode.StreamError, 500);
+      terminalError = new Ably.ErrorInfo(
+        `unable to complete run; ${result.error.message}`,
+        ErrorCode.RunResponseStreamFailed,
+        500,
+      );
     }
   };
 

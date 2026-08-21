@@ -222,7 +222,7 @@ export const useView = <TInput extends CodecInputEvent, TOutput extends CodecOut
         setLoadError(
           new Ably.ErrorInfo(
             `unable to load older messages; ${errorMessage(error)}`,
-            ErrorCode.HistoryFetchFailed,
+            ErrorCode.SessionHistoryFetchFailed,
             500,
           ),
         );

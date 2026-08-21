@@ -99,7 +99,7 @@ describe('loadHistoryPages', () => {
     expect(historyMock).toHaveBeenCalledWith({ limit: 10, untilAttach: true });
   });
 
-  it('retries the initial history call with backoff before rejecting `HistoryFetchFailed`', async () => {
+  it('retries the initial history call with backoff before rejecting `SessionHistoryFetchFailed`', async () => {
     const channel = {
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
       attach: vi.fn(() => Promise.resolve()),
@@ -195,7 +195,7 @@ describe('loadHistoryPages', () => {
     expect(nextCalls).toBe(2);
   });
 
-  it('rejects `HistoryFetchFailed` when a mid-walk page.next() exhausts retries', async () => {
+  it('rejects `SessionHistoryFetchFailed` when a mid-walk page.next() exhausts retries', async () => {
     const m1 = ablyMsg();
     const page1: MockPage = {
       items: [m1],
@@ -216,7 +216,7 @@ describe('loadHistoryPages', () => {
       retryBackoffMs: 1,
     });
     expect(await cursor.next()).toEqual([m1]);
-    await expect(cursor.next()).rejects.toBeErrorInfoWithCode(ErrorCode.HistoryFetchFailed);
+    await expect(cursor.next()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionHistoryFetchFailed);
   });
 
   it('hasNext() returns false once the signal aborts', async () => {
@@ -229,7 +229,7 @@ describe('loadHistoryPages', () => {
     expect(cursor.hasNext()).toBe(false);
   });
 
-  it('rejects `HistoryFetchFailed` after retries are exhausted', async () => {
+  it('rejects `SessionHistoryFetchFailed` after retries are exhausted', async () => {
     const channel = {
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
       attach: vi.fn(() => Promise.resolve()),
@@ -242,7 +242,7 @@ describe('loadHistoryPages', () => {
         maxRetries: 1,
         retryBackoffMs: 1,
       }),
-    ).rejects.toBeErrorInfoWithCode(ErrorCode.HistoryFetchFailed);
+    ).rejects.toBeErrorInfoWithCode(ErrorCode.SessionHistoryFetchFailed);
   });
 
   it('throws `OperationCancelled` when the signal aborts during retry backoff', async () => {

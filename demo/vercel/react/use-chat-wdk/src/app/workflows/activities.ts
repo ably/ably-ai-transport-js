@@ -218,7 +218,7 @@ export async function cleanupActivity(
     } catch {
       return;
     }
-    await run.end({ reason: 'error', error: new Ably.ErrorInfo(errorMessage, ErrorCode.StreamError, 500) });
+    await run.end({ reason: 'error', error: new Ably.ErrorInfo(errorMessage, ErrorCode.RunResponseStreamFailed, 500) });
   });
 }
 
@@ -300,7 +300,10 @@ async function publishTerminal(run: WdkAgentRun, outcome: InferenceOutcome): Pro
     case 'server-tools':
       return;
     case 'error':
-      await run.end({ reason: 'error', error: new Ably.ErrorInfo(outcome.errorMessage, ErrorCode.StreamError, 500) });
+      await run.end({
+        reason: 'error',
+        error: new Ably.ErrorInfo(outcome.errorMessage, ErrorCode.RunResponseStreamFailed, 500),
+      });
       return;
     default:
       await run.end({ reason: outcome.kind });

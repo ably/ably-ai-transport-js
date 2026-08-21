@@ -633,7 +633,7 @@ describe('ClientSession', () => {
         channelName: 'test-channel',
         codec: createMockCodec(),
       });
-      await expect(s.connect()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSubscriptionError);
+      await expect(s.connect()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSubscriptionFailed);
       await s.close();
     });
 
@@ -652,12 +652,12 @@ describe('ClientSession', () => {
       });
 
       // The initial attach fails, poisoning nothing.
-      await expect(s.connect()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSubscriptionError);
+      await expect(s.connect()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSubscriptionFailed);
 
       // A send while disconnected surfaces the real failure wrapped in guidance
       // to reconnect — not a permanently-cached rejection.
       await expect(s.view.send({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfo({
-        code: ErrorCode.SessionSubscriptionError,
+        code: ErrorCode.SessionSubscriptionFailed,
         message:
           'unable to send; connect() failed, call connect() again to retry; unable to subscribe and attach channel; attach timed out',
       });
@@ -959,7 +959,7 @@ describe('ClientSession', () => {
         });
         fix.channel.state = state;
         await expect(fix.session.view.send({ kind: 'user-message', text: 'hi' })).rejects.toBeErrorInfoWithCode(
-          ErrorCode.ChannelNotReady,
+          ErrorCode.SessionChannelNotReady,
         );
       });
     }
@@ -2575,7 +2575,7 @@ describe('ClientSession', () => {
           [HEADER_RUN_ID]: 'run-error',
           [HEADER_RUN_CLIENT_ID]: 'other',
           [HEADER_RUN_REASON]: 'error',
-          [HEADER_ERROR_CODE]: String(ErrorCode.SessionSubscriptionError),
+          [HEADER_ERROR_CODE]: String(ErrorCode.SessionSubscriptionFailed),
           [HEADER_ERROR_MESSAGE]: 'oops',
         }),
       );
@@ -2649,7 +2649,7 @@ describe('ClientSession', () => {
 
   describe('channel continuity', () => {
     it.each([['failed' as const], ['suspended' as const], ['detached' as const]])(
-      'emits ChannelContinuityLost when channel transitions to %s after the first attach',
+      'emits SessionContinuityNotGuaranteed when channel transitions to %s after the first attach',
       (state) => {
         // Mark initial attach observed
         simulateStateChange(fix.channel, {
@@ -2665,12 +2665,12 @@ describe('ClientSession', () => {
           previous: 'attached',
           resumed: false,
         });
-        expect(errors).toContainEqual(expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost }));
+        expect(errors).toContainEqual(expect.toBeErrorInfo({ code: ErrorCode.SessionContinuityNotGuaranteed }));
       },
     );
 
     it.each([['failed' as const], ['suspended' as const], ['detached' as const]])(
-      'does not emit ChannelContinuityLost on a pre-first-attach transition to %s',
+      'does not emit SessionContinuityNotGuaranteed on a pre-first-attach transition to %s',
       async (state) => {
         // Channel never attaches: there is no continuity to lose, so a
         // transition out of ATTACHING must not be reported as a discontinuity.
@@ -2713,11 +2713,11 @@ describe('ClientSession', () => {
 
       // A genuine post-attach discontinuity must now emit.
       simulateStateChange(ch, { current: 'failed', previous: 'attached', resumed: false });
-      expect(errors).toContainEqual(expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost }));
+      expect(errors).toContainEqual(expect.toBeErrorInfo({ code: ErrorCode.SessionContinuityNotGuaranteed }));
       await s.close();
     });
 
-    it('emits ChannelContinuityLost on re-attach with resumed: false', () => {
+    it('emits SessionContinuityNotGuaranteed on re-attach with resumed: false', () => {
       simulateStateChange(fix.channel, {
         current: 'attached',
         previous: 'attaching',
@@ -2731,7 +2731,7 @@ describe('ClientSession', () => {
         previous: 'attaching',
         resumed: false,
       });
-      expect(errors).toContainEqual(expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost }));
+      expect(errors).toContainEqual(expect.toBeErrorInfo({ code: ErrorCode.SessionContinuityNotGuaranteed }));
     });
 
     it('does not emit on the initial attach when channel started detached', async () => {

@@ -82,7 +82,7 @@ describe('pageUntilLocated', () => {
 
     await expect(
       pageUntilLocated(run, { inputEventId: 'evt-missing', maxPages: 4, triggerWaitMs: 1 }),
-    ).rejects.toBeErrorInfoWithCode(ErrorCode.InputEventNotFound);
+    ).rejects.toBeErrorInfoWithCode(ErrorCode.AdoptedRunStartNotObserved);
 
     expect(run.pagesLoaded).toBe(4);
   });
@@ -93,7 +93,7 @@ describe('pageUntilLocated', () => {
     await expect(
       pageUntilLocated(run, { inputEventId: 'evt-missing', maxPages: 1, triggerWaitMs: 1 }),
     ).rejects.toBeErrorInfo({
-      code: ErrorCode.InputEventNotFound,
+      code: ErrorCode.AdoptedRunStartNotObserved,
       statusCode: 504,
       message: 'unable to open run; trigger event evt-missing not located within 1 history pages',
     });

@@ -72,7 +72,7 @@ async function _publishRunTerminal(run: VercelAgentRun, outcome: InferenceOutcom
       // doesn't have to translate.
       await run.end({
         reason: 'error',
-        error: new Ably.ErrorInfo(outcome.errorMessage, ErrorCode.StreamError, 500),
+        error: new Ably.ErrorInfo(outcome.errorMessage, ErrorCode.RunResponseStreamFailed, 500),
       });
       return;
     default:

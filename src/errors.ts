@@ -37,10 +37,12 @@ export enum ErrorCode {
   // 104000 - 104999 are reserved for AI Transport SDK errors
 
   /**
-   * Encoder recovery failed during flush — one or more updateMessage calls
-   * could not recover a failed append pipeline.
+   * Completing or cancelling a streamed message failed — one of its appends was
+   * not published, and the follow-up `updateMessage` that would have repaired it
+   * by re-sending the accumulated content also failed. The partial is left on
+   * the channel. The first recovery failure is the `cause`.
    */
-  EncoderRecoveryFailed = 104000,
+  StreamedMessageFinalizeFailed = 104000,
 
   /**
    * The session could not subscribe to and attach its channel during
@@ -48,7 +50,7 @@ export enum ErrorCode {
    * retry helps depends on the `cause` (a transient disconnect clears, a
    * capability or auth rejection does not).
    */
-  SessionSubscriptionError = 104001,
+  SessionSubscriptionFailed = 104001,
 
   /**
    * The run's `onCancel` hook threw while the SDK was processing a cancel
@@ -84,13 +86,13 @@ export enum ErrorCode {
    * `resumed: false`. Active streams can no longer be guaranteed to receive
    * all events.
    */
-  ChannelContinuityLost = 104006,
+  SessionContinuityNotGuaranteed = 104006,
 
   /**
    * An operation was attempted but the channel is not in a usable state
    * (not ATTACHED or ATTACHING).
    */
-  ChannelNotReady = 104007,
+  SessionChannelNotReady = 104007,
 
   /**
    * An error occurred while piping a response stream to the channel — either
@@ -98,7 +100,7 @@ export enum ErrorCode {
    * network failure) or an underlying publish failed mid-stream. Also the
    * fallback code when a run-end reports an error without a code on the wire.
    */
-  StreamError = 104008,
+  RunResponseStreamFailed = 104008,
 
   /**
    * Processing an inbound channel message threw — the codec folding it into
@@ -116,7 +118,7 @@ export enum ErrorCode {
    * error where the open activity's run-start has not yet propagated. Any
    * history-fetch failure is preserved as `cause`.
    */
-  InputEventNotFound = 104010,
+  AdoptedRunStartNotObserved = 104010,
 
   /**
    * Channel history pagination failed after bounded retry — either the initial
@@ -125,7 +127,7 @@ export enum ErrorCode {
    * not already an `Ably.ErrorInfo`. The original failure is preserved as
    * `cause` where available.
    */
-  HistoryFetchFailed = 104011,
+  SessionHistoryFetchFailed = 104011,
 
   /**
    * The run's `onSteer` hook threw while the SDK was notifying it that a

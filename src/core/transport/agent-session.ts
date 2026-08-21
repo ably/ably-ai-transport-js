@@ -610,7 +610,7 @@ class DefaultAgentSession<
     // Abort every active run's controller FIRST so an in-flight `located`
     // watcher (and any `run.view.loadOlder()` paging) observes the abort before
     // the Tree changes underneath it and rejects (InvalidArgument from its
-    // signal check; the session-level on('error') carries ChannelContinuityLost).
+    // signal check; the session-level on('error') carries SessionContinuityNotGuaranteed).
     for (const reg of this._registeredRuns.values()) {
       reg.controller.abort();
     }
@@ -1564,7 +1564,7 @@ class DefaultAgentSession<
      * On resolution the run-start is confirmed and the trigger located. Otherwise:
      * the run's own signal aborting (cancel) rejects with `OperationCancelled`; the
      * timeout firing, or the channel exhausting without the run-start, rejects
-     * with `InputEventNotFound` (retryable — a workflow-ordering error: the
+     * with `AdoptedRunStartNotObserved` (retryable — a workflow-ordering error: the
      * run-start has not arrived yet), carrying any history-fetch failure as the
      * cause.
      * @param waitRunId - The run-id whose run-start to wait for.
@@ -1627,7 +1627,7 @@ class DefaultAgentSession<
       // retryable workflow-ordering error.
       throw new Ably.ErrorInfo(
         `unable to load run; run-start for run ${waitRunId} not observed within ${String(timeoutMs)}ms`,
-        ErrorCode.InputEventNotFound,
+        ErrorCode.AdoptedRunStartNotObserved,
         504,
         fetchError,
       );

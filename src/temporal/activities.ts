@@ -155,7 +155,7 @@ export const createFramingActivities = <
         if (input.reason === 'error') {
           await run.end({
             reason: 'error',
-            error: new Ably.ErrorInfo(input.errorMessage ?? 'run failed', ErrorCode.StreamError, 500),
+            error: new Ably.ErrorInfo(input.errorMessage ?? 'run failed', ErrorCode.RunResponseStreamFailed, 500),
           });
           return;
         }
@@ -192,7 +192,7 @@ export const createFramingActivities = <
 
           await run.end({
             reason: 'error',
-            error: new Ably.ErrorInfo(input.errorMessage ?? 'workflow failed', ErrorCode.StreamError, 500),
+            error: new Ably.ErrorInfo(input.errorMessage ?? 'workflow failed', ErrorCode.RunResponseStreamFailed, 500),
           });
         } catch (error) {
           // End rather than detach here: this is the terminal path, so ending

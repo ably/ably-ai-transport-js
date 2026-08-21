@@ -346,7 +346,7 @@ describe('useView', () => {
       expect(result.current.loading).toBe(false);
     });
 
-    it('wraps a non-ErrorInfo loadOlder rejection as HistoryFetchFailed', async () => {
+    it('wraps a non-ErrorInfo loadOlder rejection as SessionHistoryFetchFailed', async () => {
       const mock = createMockSession();
       (mock.view.loadOlder as ReturnType<typeof vi.fn>).mockReturnValue(Promise.reject(new Error('boom')));
 
@@ -357,7 +357,7 @@ describe('useView', () => {
       });
 
       expect(result.current.loadError).toBeErrorInfo({
-        code: ErrorCode.HistoryFetchFailed,
+        code: ErrorCode.SessionHistoryFetchFailed,
         statusCode: 500,
         message: 'unable to load older messages; boom',
       });

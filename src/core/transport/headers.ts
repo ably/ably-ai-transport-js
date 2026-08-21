@@ -200,7 +200,7 @@ export const isRunLifecycleName = (name: string | undefined): name is RunLifecyc
  * Reconstruct the terminal `Ably.ErrorInfo` for a run that ended in error, from
  * its run-end transport headers. Reads the `error-code` / `error-message`
  * headers the agent stamps (see {@link buildLifecycleHeaders}); falls back to
- * `StreamError` — the code the agent stamps for run failures — when a run
+ * `RunResponseStreamFailed` — the code the agent stamps for run failures — when a run
  * ended in error without detail. Single source
  * of truth for the header→ErrorInfo derivation, shared by the client session's
  * `on('error')` emit and the Tree's `RunInfo.error`.
@@ -210,7 +210,7 @@ export const isRunLifecycleName = (name: string | undefined): name is RunLifecyc
 export const buildRunEndError = (headers: Record<string, string>): Ably.ErrorInfo => {
   const codeRaw = headers[HEADER_ERROR_CODE];
   const parsedCode = codeRaw === undefined ? Number.NaN : Number(codeRaw);
-  const code = Number.isFinite(parsedCode) ? parsedCode : ErrorCode.StreamError;
+  const code = Number.isFinite(parsedCode) ? parsedCode : ErrorCode.RunResponseStreamFailed;
   const message = headers[HEADER_ERROR_MESSAGE] ?? 'agent reported an error';
   // 5-digit codes encode their HTTP status in the leading 3 digits; otherwise 500.
   const statusCode = code >= 10000 && code < 60000 ? Math.floor(code / 100) : 500;

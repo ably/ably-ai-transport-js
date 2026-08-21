@@ -51,7 +51,7 @@ export type VercelRunOutcome =
       reason: Extract<RunEndReason, 'error'>;
       /**
        * The terminal error: the underlying stream / `finishReason` failure
-       * wrapped as an `Ably.ErrorInfo` (code `StreamError`).
+       * wrapped as an `Ably.ErrorInfo` (code `RunResponseStreamFailed`).
        */
       error: Ably.ErrorInfo;
     };
@@ -74,7 +74,7 @@ export type VercelRunOutcome =
  * `Run.end(reason, error)`: a stream that threw (`pipeResult.error`) and a
  * `finishReason` that rejected with a non-abort error (e.g.
  * `NoOutputGeneratedError`, network blow-ups). The error is wrapped as an
- * `Ably.ErrorInfo` (code `StreamError`). A stream that already produced a
+ * `Ably.ErrorInfo` (code `RunResponseStreamFailed`). A stream that already produced a
  * codec-level error chunk is unaffected — stamping run-end is the
  * codec-agnostic baseline that any consumer can read.
  *
@@ -137,14 +137,14 @@ export const vercelRunOutcome = async (
  * Wrap a caught stream / `finishReason` failure as an `Ably.ErrorInfo` so it
  * can be passed to `Run.end(reason, error)`. An error that is already an
  * `Ably.ErrorInfo` is returned unchanged; anything else is wrapped with code
- * `StreamError`, mirroring how `Run.pipe` wraps stream errors for `onError`.
+ * `RunResponseStreamFailed`, mirroring how `Run.pipe` wraps stream errors for `onError`.
  * @param error - The caught error (or `undefined` when the stream reported none).
  * @returns The error as an `Ably.ErrorInfo`.
  */
 const _toErrorInfo = (error: unknown): Ably.ErrorInfo => {
   if (error instanceof Ably.ErrorInfo) return error;
   const message = error instanceof Error ? error.message : String(error);
-  return new Ably.ErrorInfo(`unable to complete run; ${message}`, ErrorCode.StreamError, 500);
+  return new Ably.ErrorInfo(`unable to complete run; ${message}`, ErrorCode.RunResponseStreamFailed, 500);
 };
 
 /**

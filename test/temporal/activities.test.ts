@@ -173,7 +173,7 @@ describe('endRun', () => {
 
     const params = run.end.mock.calls[0]?.[0];
     expect(params?.reason).toBe('error');
-    expect(params?.error).toBeErrorInfo({ code: ErrorCode.StreamError, message: 'inference exploded' });
+    expect(params?.error).toBeErrorInfo({ code: ErrorCode.RunResponseStreamFailed, message: 'inference exploded' });
   });
 
   it('adopts with the activity cancellation signal', async () => {
@@ -216,7 +216,7 @@ describe('cleanupRun', () => {
 
     const params = run.end.mock.calls[0]?.[0];
     expect(params?.reason).toBe('error');
-    expect(params?.error).toBeErrorInfo({ code: ErrorCode.StreamError, message: 'workflow died' });
+    expect(params?.error).toBeErrorInfo({ code: ErrorCode.RunResponseStreamFailed, message: 'workflow died' });
   });
 
   it('adopts without a cancellation signal so it survives a cancelling workflow', async () => {

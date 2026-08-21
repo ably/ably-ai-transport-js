@@ -43,7 +43,7 @@ const DEFAULT_HISTORY_PAGE_SIZE = 100;
 /**
  * Wrap an unknown history-fetch failure as `Ably.ErrorInfo`, preserving the
  * original code/statusCode when the failure already carried them and attaching
- * the original as `cause`. Falls back to `HistoryFetchFailed`.
+ * the original as `cause`. Falls back to `SessionHistoryFetchFailed`.
  * @param error - The thrown value.
  * @returns The wrapped error.
  */
@@ -51,7 +51,7 @@ const wrapHistoryError = (error: unknown): Ably.ErrorInfo => {
   const errInfo = errorCause(error);
   return new Ably.ErrorInfo(
     `unable to fold channel history; ${errorMessage(error)}`,
-    errInfo?.code ?? ErrorCode.HistoryFetchFailed,
+    errInfo?.code ?? ErrorCode.SessionHistoryFetchFailed,
     errInfo?.statusCode ?? 500,
     errInfo,
   );
@@ -74,7 +74,7 @@ export interface HistoryHydrator {
    * Single-flight: serialises behind any in-flight call so the shared cursor is
    * advanced by one caller at a time and resumes from where the previous caller
    * paused. A fetch failure (after the underlying per-page retries) rejects with
-   * `Ably.ErrorInfo` (`HistoryFetchFailed`, or the underlying code when the
+   * `Ably.ErrorInfo` (`SessionHistoryFetchFailed`, or the underlying code when the
    * failure carried one, with the original as `cause`).
    * @param shouldStop - Polled before each page; returning true pauses this walk.
    * @param signal - Optional abort signal, checked between pages. When it fires

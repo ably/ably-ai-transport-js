@@ -701,7 +701,7 @@ describe('AgentSession', () => {
         codec: createMockCodec(),
       });
       s.on('error', onError);
-      await expect(s.connect()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSubscriptionError);
+      await expect(s.connect()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSubscriptionFailed);
       expect(onError).toHaveBeenCalled();
       await s.detach();
     });
@@ -3397,7 +3397,7 @@ describe('AgentSession', () => {
       });
       const result = await run.pipe(stream);
       expect(result.reason).toBe('error');
-      expect(onError).toHaveBeenCalledWith(expect.toBeErrorInfo({ code: ErrorCode.StreamError }));
+      expect(onError).toHaveBeenCalledWith(expect.toBeErrorInfo({ code: ErrorCode.RunResponseStreamFailed }));
     });
 
     it('pipe() does not call onError when stream completes', async () => {
@@ -3822,7 +3822,7 @@ describe('AgentSession', () => {
 
   describe('channel continuity', () => {
     it.each([['failed' as const], ['suspended' as const], ['detached' as const]])(
-      'emits onError with ChannelContinuityLost when channel enters %s after the first attach',
+      'emits onError with SessionContinuityNotGuaranteed when channel enters %s after the first attach',
       async (state) => {
         const onError = vi.fn();
         const ch = createMockChannel();
@@ -3840,7 +3840,7 @@ describe('AgentSession', () => {
         } as Ably.ChannelStateChange);
 
         expect(onError).toHaveBeenCalledWith(
-          expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost, statusCode: 500 }),
+          expect.toBeErrorInfo({ code: ErrorCode.SessionContinuityNotGuaranteed, statusCode: 500 }),
         );
         await s.detach();
       },
@@ -3893,7 +3893,7 @@ describe('AgentSession', () => {
         previous: 'attached',
       } as Ably.ChannelStateChange);
       expect(onError).toHaveBeenCalledWith(
-        expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost, statusCode: 500 }),
+        expect.toBeErrorInfo({ code: ErrorCode.SessionContinuityNotGuaranteed, statusCode: 500 }),
       );
       await s.detach();
     });
@@ -3916,7 +3916,7 @@ describe('AgentSession', () => {
       });
 
       expect(onError).toHaveBeenCalledWith(
-        expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost, statusCode: 500 }),
+        expect.toBeErrorInfo({ code: ErrorCode.SessionContinuityNotGuaranteed, statusCode: 500 }),
       );
       await s.detach();
     });
@@ -4271,7 +4271,7 @@ describe('AgentSession input-event lookup', () => {
     simulateStateChange(ch, { current: 'suspended', previous: 'attached' } as Ably.ChannelStateChange);
 
     await expect(startPromise).rejects.toBeErrorInfoWithCode(ErrorCode.OperationCancelled);
-    expect(onError).toHaveBeenCalledWith(expect.toBeErrorInfo({ code: ErrorCode.ChannelContinuityLost }));
+    expect(onError).toHaveBeenCalledWith(expect.toBeErrorInfo({ code: ErrorCode.SessionContinuityNotGuaranteed }));
     await session.detach();
   });
 });
@@ -5228,7 +5228,7 @@ describe('adoptRun / load()', () => {
     await session.detach();
   });
 
-  it('times out when the run-start is never observed (retryable InputEventNotFound)', async () => {
+  it('times out when the run-start is never observed (retryable AdoptedRunStartNotObserved)', async () => {
     vi.useFakeTimers();
     const { session, ch } = adoptSession();
     await session.connect();
@@ -5237,7 +5237,7 @@ describe('adoptRun / load()', () => {
     const loadPromise = run.load({ timeoutMs: 1000 });
     // Attach the rejection expectation before advancing the timer so the
     // rejection is never momentarily unhandled.
-    const expectation = expect(loadPromise).rejects.toBeErrorInfoWithCode(ErrorCode.InputEventNotFound);
+    const expectation = expect(loadPromise).rejects.toBeErrorInfoWithCode(ErrorCode.AdoptedRunStartNotObserved);
     // Flush the empty history scan, then fire the visibility-wait timeout.
     await vi.advanceTimersByTimeAsync(1000);
     await expectation;
@@ -5255,7 +5255,7 @@ describe('adoptRun / load()', () => {
     // the timeout must surface the fetch error as the cause.
     ch.history.mockImplementation(
       // eslint-disable-next-line @typescript-eslint/no-misused-promises, @typescript-eslint/promise-function-async -- mock returns a rejected promise
-      () => Promise.reject(new Ably.ErrorInfo('history offline', ErrorCode.HistoryFetchFailed, 500)),
+      () => Promise.reject(new Ably.ErrorInfo('history offline', ErrorCode.SessionHistoryFetchFailed, 500)),
     );
     const session = createAgentSession<TestInput, TestOutput, TestProjection, TestMessage>({
       client: createMockClient(ch),
@@ -5267,8 +5267,8 @@ describe('adoptRun / load()', () => {
     const run = session.adoptRun(adoptTrigger(), identityFor('run-cause'));
     const loadPromise = run.load({ timeoutMs: 1000 });
     const expectation = expect(loadPromise).rejects.toBeErrorInfo({
-      code: ErrorCode.InputEventNotFound,
-      cause: { code: ErrorCode.HistoryFetchFailed },
+      code: ErrorCode.AdoptedRunStartNotObserved,
+      cause: { code: ErrorCode.SessionHistoryFetchFailed },
     });
     await vi.advanceTimersByTimeAsync(1000);
     await expectation;

@@ -25,7 +25,7 @@ const silentLogger = makeLogger({ logLevel: LogLevel.Silent });
 const noopListener = (): void => {};
 
 const subscribeError = (): Ably.ErrorInfo =>
-  new Ably.ErrorInfo('attach timed out', ErrorCode.SessionSubscriptionError, 500);
+  new Ably.ErrorInfo('attach timed out', ErrorCode.SessionSubscriptionFailed, 500);
 
 describe('ConnectGuard', () => {
   it('reports not attempted until connect() is called', () => {
@@ -68,7 +68,7 @@ describe('ConnectGuard', () => {
       .mockRejectedValueOnce(subscribeError())
       .mockReturnValueOnce(Promise.resolve());
 
-    await expect(guard.connect(attempt)).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSubscriptionError);
+    await expect(guard.connect(attempt)).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSubscriptionFailed);
     // Stays attempted after a failure, so close() still tears down the
     // subscription the failed attempt's subscribe() may have registered.
     expect(guard.attempted).toBe(true);
@@ -84,7 +84,7 @@ describe('ConnectGuard', () => {
     const cause = subscribeError();
     await expect(guard.connect(vi.fn<() => Promise<void>>().mockRejectedValue(cause))).rejects.toBe(cause);
     await expect(guard.requireConnected('send')).rejects.toBeErrorInfo({
-      code: ErrorCode.SessionSubscriptionError,
+      code: ErrorCode.SessionSubscriptionFailed,
       statusCode: 500,
       message: 'unable to send; connect() failed, call connect() again to retry; attach timed out',
       cause,
@@ -103,20 +103,20 @@ describe('ConnectGuard', () => {
 
     await expect(connectPromise).rejects.toBe(cause);
     await expect(guarded).rejects.toBeErrorInfo({
-      code: ErrorCode.SessionSubscriptionError,
+      code: ErrorCode.SessionSubscriptionFailed,
       statusCode: 500,
       message: 'unable to send; connect() failed, call connect() again to retry; attach timed out',
       cause,
     });
   });
 
-  it('wraps a non-ErrorInfo attempt failure as a SessionSubscriptionError', async () => {
+  it('wraps a non-ErrorInfo attempt failure as a SessionSubscriptionFailed', async () => {
     const guard = new ConnectGuard();
     await expect(guard.connect(vi.fn<() => Promise<void>>().mockRejectedValue(new Error('boom')))).rejects.toThrow(
       'boom',
     );
     await expect(guard.requireConnected('send')).rejects.toBeErrorInfo({
-      code: ErrorCode.SessionSubscriptionError,
+      code: ErrorCode.SessionSubscriptionFailed,
       statusCode: 500,
       message: 'unable to send; connect() failed, call connect() again to retry; boom',
     });
@@ -173,11 +173,11 @@ describe('isContinuityLost', () => {
 });
 
 describe('continuityLostError', () => {
-  it('builds a ChannelContinuityLost error with the given verb and the state reason as cause', () => {
+  it('builds a SessionContinuityNotGuaranteed error with the given verb and the state reason as cause', () => {
     const reason = new Ably.ErrorInfo('attach failed', 80002, 500);
     const err = continuityLostError(stateChange('suspended', true, reason), 'deliver events');
     expect(err).toBeErrorInfo({
-      code: ErrorCode.ChannelContinuityLost,
+      code: ErrorCode.SessionContinuityNotGuaranteed,
       statusCode: 500,
       message: 'unable to deliver events; channel continuity lost (suspended)',
     });
@@ -217,7 +217,7 @@ describe('subscribeAndAttach', () => {
 
     const rejection = subscribeAndAttach(channel, noopListener, silentLogger, 'DefaultAgentSession', onError);
     await expect(rejection).rejects.toBeErrorInfo({
-      code: ErrorCode.SessionSubscriptionError,
+      code: ErrorCode.SessionSubscriptionFailed,
       statusCode: 500,
       message: 'unable to subscribe and attach channel; attach refused',
       cause,
@@ -238,7 +238,7 @@ describe('subscribeAndAttach', () => {
 
     const rejection = subscribeAndAttach(channel, noopListener, silentLogger, 'DefaultClientSession', onError);
     await expect(rejection).rejects.toBeErrorInfo({
-      code: ErrorCode.SessionSubscriptionError,
+      code: ErrorCode.SessionSubscriptionFailed,
       statusCode: 500,
       message: 'unable to subscribe and attach channel; attach timed out',
       cause,

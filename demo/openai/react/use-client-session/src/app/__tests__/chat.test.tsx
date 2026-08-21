@@ -108,7 +108,7 @@ const erroredRun = (runId: string): RunInfo => ({
   ...runInfoBase,
   runId,
   status: 'error',
-  error: new Ably.ErrorInfo('agent reported an error', ErrorCode.SessionSubscriptionError, 500),
+  error: new Ably.ErrorInfo('agent reported an error', ErrorCode.SessionSubscriptionFailed, 500),
 });
 
 const assistantTurn = (text: string): OpenAIMessage => ({

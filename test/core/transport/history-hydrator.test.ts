@@ -220,7 +220,7 @@ describe('HistoryHydrator', () => {
       const second = hydrator.foldUntil(() => false);
 
       // The first walk fails; the second is unaffected and folds the recovered page.
-      await expect(first).rejects.toBeErrorInfoWithCode(ErrorCode.HistoryFetchFailed);
+      await expect(first).rejects.toBeErrorInfoWithCode(ErrorCode.SessionHistoryFetchFailed);
       await expect(second).resolves.toEqual({ exhausted: true });
       expect(applier.folded).toHaveLength(1);
       expect(loadHistoryPages).toHaveBeenCalledTimes(1); // one shared cursor
@@ -332,7 +332,7 @@ describe('HistoryHydrator', () => {
   });
 
   describe('fetch errors', () => {
-    it('wraps a page-fetch failure as HistoryFetchFailed', async () => {
+    it('wraps a page-fetch failure as SessionHistoryFetchFailed', async () => {
       const cursor: HistoryPagesCursor = {
         hasNext: () => true,
         // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock rejects
@@ -340,7 +340,7 @@ describe('HistoryHydrator', () => {
       };
       const { hydrator } = newHydrator(cursor, makeApplier());
 
-      await expect(hydrator.foldUntil(() => false)).rejects.toBeErrorInfoWithCode(ErrorCode.HistoryFetchFailed);
+      await expect(hydrator.foldUntil(() => false)).rejects.toBeErrorInfoWithCode(ErrorCode.SessionHistoryFetchFailed);
     });
   });
 });

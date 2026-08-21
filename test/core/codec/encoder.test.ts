@@ -444,7 +444,7 @@ describe('createEncoderCore', () => {
       core.appendStream('s1', 'data');
 
       await expect(core.closeStream('s1', streamPayload({ name: 'text' }))).rejects.toBeErrorInfoWithCode(
-        ErrorCode.EncoderRecoveryFailed,
+        ErrorCode.StreamedMessageFinalizeFailed,
       );
     });
 
@@ -497,7 +497,7 @@ describe('createEncoderCore', () => {
       await core.startStream('s1', streamPayload({ name: 'text' }));
       core.appendStream('s1', 'data');
 
-      await expect(core.close()).rejects.toBeErrorInfoWithCode(ErrorCode.EncoderRecoveryFailed);
+      await expect(core.close()).rejects.toBeErrorInfoWithCode(ErrorCode.StreamedMessageFinalizeFailed);
 
       // Encoder should still be closed — further writes throw SessionClosed
       await expect(core.publishDiscrete(payload())).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
@@ -513,7 +513,7 @@ describe('createEncoderCore', () => {
       core.appendStream('s1', 'data');
 
       await expect(core.close()).rejects.toBeErrorInfo({
-        code: ErrorCode.EncoderRecoveryFailed,
+        code: ErrorCode.StreamedMessageFinalizeFailed,
         cause: { code: ErrorCode.InsufficientCapability },
       });
     });

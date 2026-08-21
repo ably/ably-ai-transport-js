@@ -930,7 +930,7 @@ describe('AgentSession integration', () => {
     expect(text2?.text).toBe('Shared response');
   });
 
-  it('invokes onError with ChannelContinuityLost when the channel detaches', async () => {
+  it('invokes onError with SessionContinuityNotGuaranteed when the channel detaches', async () => {
     const channelName = uniqueChannelName('st-continuity');
     const serverClient = ablyRealtimeClient();
 
@@ -956,7 +956,7 @@ describe('AgentSession integration', () => {
       { timeout: 5_000 },
     );
 
-    expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.ChannelContinuityLost);
+    expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.SessionContinuityNotGuaranteed);
   });
 
   /**

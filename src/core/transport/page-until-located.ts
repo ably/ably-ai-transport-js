@@ -118,7 +118,7 @@ export const pageUntilLocated = async (run: LocatableRun, options: PageUntilLoca
   if (!state.located) {
     throw new Ably.ErrorInfo(
       `unable to open run; trigger event ${options.inputEventId} not located within ${String(pages)} history pages`,
-      ErrorCode.InputEventNotFound,
+      ErrorCode.AdoptedRunStartNotObserved,
       504,
     );
   }

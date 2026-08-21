@@ -239,7 +239,7 @@ describe('createRunOutputStream', () => {
     const mock = createMockSession();
     const { stream } = createRunOutputStream(mock.session, Promise.resolve('run-1'), 'u-1');
 
-    const reason = new Ably.ErrorInfo('channel continuity lost', ErrorCode.SessionSubscriptionError, 500);
+    const reason = new Ably.ErrorInfo('channel continuity lost', ErrorCode.SessionSubscriptionFailed, 500);
     mock.error(reason);
 
     await expect(drain(stream)).rejects.toBe(reason);
@@ -260,7 +260,7 @@ describe('createRunOutputStream', () => {
     const mock = createMockSession();
     const { stream, close } = createRunOutputStream(mock.session, Promise.resolve('run-1'), 'u-1');
 
-    const reason = new Ably.ErrorInfo('post failed', ErrorCode.SessionSubscriptionError, 500);
+    const reason = new Ably.ErrorInfo('post failed', ErrorCode.SessionSubscriptionFailed, 500);
     mock.error(reason);
     // Once errored, a subsequent close must not throw or override the error.
     close();
@@ -370,7 +370,7 @@ describe('createDeferredContinuationStream', () => {
     const mock = createMockSession({ runStatus: 'suspended' });
     const { stream } = createDeferredContinuationStream(mock.session, 'run-1');
 
-    const reason = new Ably.ErrorInfo('channel continuity lost', ErrorCode.SessionSubscriptionError, 500);
+    const reason = new Ably.ErrorInfo('channel continuity lost', ErrorCode.SessionSubscriptionFailed, 500);
     mock.error(reason);
 
     await expect(drain(stream)).rejects.toBe(reason);

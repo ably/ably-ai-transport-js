@@ -6,8 +6,8 @@ import { ThemeProvider } from '@ably-ai-demos/frontend';
 const geist = Geist({ subsets: ['latin'], variable: '--font-sans' });
 
 export const metadata: Metadata = {
-  title: 'Ably AI — ClientSession + Temporal Demo',
-  description: 'A durable, Temporal-driven agent over the Ably AI Transport ClientSession API',
+  title: 'Ably AI — Temporal Agent Demo',
+  description: 'A durable, Temporal-driven agent over the Ably AI Transport',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

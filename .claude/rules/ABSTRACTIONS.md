@@ -15,13 +15,13 @@ types and functions it re-exports are public API. New codecs add a new entry
 point — plus a `/react` one if they ship React hooks — rather than changing an
 existing one.
 
-| Entry point                       | Purpose                                                                                                       | Peer deps             |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------- | --------------------- |
-| `@ably/ai-transport`              | Core, codec-agnostic transports and codec interfaces (`createClientTransport`, `createAgentTransport`, `defineCodec`, `WireCodec`) | `ably`                |
+| Entry point                       | Purpose                                                                                                                                 | Peer deps             |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| `@ably/ai-transport`              | Core, codec-agnostic transports and codec interfaces (`createClientTransport`, `createAgentTransport`, `defineCodec`, `WireCodec`)      | `ably`                |
 | `@ably/ai-transport/react`        | Transport-shaped React surface for any codec (`ClientTransportProvider`, `useClientTransport`, `useTransportEvents`, `useAblyMessages`) | `ably`, `react`       |
-| `@ably/ai-transport/vercel`       | Vercel AI SDK codec, transport factories pre-bound to it, and the `useChat` adapter (`createChatTransport`)   | `ably`, `ai`          |
-| `@ably/ai-transport/vercel/react` | React provider and hook for the `useChat` adapter (`ChatTransportProvider`, `useChatTransport`)               | `ably`, `ai`, `react` |
-| `@ably/ai-transport/openai`       | OpenAI Responses codec (`ResponsesCodec`)                                                                     | `ably`, `openai`      |
+| `@ably/ai-transport/vercel`       | Vercel AI SDK codec, transport factories pre-bound to it, and the `useChat` adapter (`createChatTransport`)                             | `ably`, `ai`          |
+| `@ably/ai-transport/vercel/react` | React provider and hook for the `useChat` adapter (`ChatTransportProvider`, `useChatTransport`)                                         | `ably`, `ai`, `react` |
+| `@ably/ai-transport/openai`       | OpenAI Responses codec (`ResponsesCodec`)                                                                                               | `ably`, `openai`      |
 
 ## Two-layer architecture
 

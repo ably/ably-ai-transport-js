@@ -1,95 +1,59 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { useEffect, useState, type ReactNode } from 'react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import type * as AI from 'ai';
-import type { BranchHandle, ClientSession, RunInfo } from '@ably/ai-transport';
-import type { ChatTransport, VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
+import type { ChatTransport } from '@ably/ai-transport/vercel';
 
-// jsdom doesn't implement Element.prototype.scrollIntoView; MessageList's
+// jsdom doesn't implement Element.prototype.scrollIntoView; the message list's
 // auto-scroll effect calls it whenever the message list grows.
 Element.prototype.scrollIntoView = () => {};
 
 // ---------------------------------------------------------------------------
 // Mock surface
 //
-// The SDK's React entry point is mocked so the demo's React glue can be
-// exercised without bringing up an Ably client, the codec, or the session.
-// A breaking change to the SDK's public surface (renamed/removed export,
-// changed hook shape) is caught at module-load or render-time.
+// The SDK's React entry points are mocked so the demo's React glue can be
+// exercised without bringing up an Ably client or the transport. useChat runs
+// for real against the mocked ChatTransport, so the demo's wiring into it —
+// send, stream consumption, seeding — is what these tests cover. A breaking
+// change to the SDK's public surface (renamed/removed export, changed hook
+// shape) is caught at module-load or render-time.
 // ---------------------------------------------------------------------------
 
-interface MockViewState {
-  messages: AI.UIMessage[];
-  runs: Map<string, RunInfo>;
-}
-
-let setMockViewState: ((state: MockViewState) => void) | null = null;
-
 const mockSendMessages = vi.fn<ChatTransport['sendMessages']>();
+const mockSeed = vi.fn<ChatTransport['seed']>();
 
 const mockChatTransport: ChatTransport = {
   sendMessages: mockSendMessages,
+  // null is the AI SDK's "nothing to resume".
   reconnectToStream: async () => null,
-  close: async () => {},
+  seed: mockSeed,
+  close: () => {},
   streaming: false,
   onStreamingChange: () => () => {},
 };
 
-// CAST: minimal stub of ClientSession. Only methods reachable from the
-// happy-path render are populated.
-const mockSession = {
-  close: vi.fn(async () => {}),
-  on: vi.fn(() => () => {}),
-} as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
-
-const emptyBranchHandle = (): BranchHandle<AI.UIMessage> => ({
-  hasSiblings: false,
-  siblings: [],
-  index: 0,
-  selected: undefined,
-  select: () => {},
-});
-
 vi.mock('@ably/ai-transport/vercel/react', () => ({
-  ChatTransportProvider: ({ children }: { children: ReactNode }) => children,
   useChatTransport: () => ({
+    transport: undefined,
     chatTransport: mockChatTransport,
-    session: mockSession,
-    sessionError: undefined,
+    error: undefined,
   }),
-  useMessageSync: () => {},
-  useAblyMessages: () => [],
-  useView: () => {
-    const [state, setState] = useState<MockViewState>({ messages: [], runs: new Map() });
-    useEffect(() => {
-      setMockViewState = setState;
-      return () => {
-        setMockViewState = null;
-      };
-    }, []);
-    return {
-      // The view exposes codec-message-id pairs; the mock derives them from
-      // the domain id (here they coincide).
-      messages: state.messages.map((message) => ({ codecMessageId: message.id, message })),
-      hasOlder: false,
-      loading: false,
-      loadOlder: async () => {},
-      branchSelection: emptyBranchHandle,
-      runOf: () => undefined,
-      run: (runId: string) => state.runs.get(runId),
-    };
-  },
 }));
 
-// The header's AvatarStack enters presence and reads the member set via
-// ably-js's React presence hooks. Stub them so the Chat render needs no Ably
-// client; an empty member set renders no avatars, which the chat tests ignore.
+vi.mock('@ably/ai-transport/react', () => ({
+  useAblyMessages: () => [],
+}));
+
+// The header's AvatarStack enters presence via ably-js's React presence hooks,
+// and the checklist widget reads the channel via useChannel. Stub them so the
+// render needs no Ably client; a never-resolving object.get keeps the widget
+// hidden (no steps, no error), which these tests ignore.
 vi.mock('ably/react', () => ({
   usePresence: () => ({ updateStatus: async () => {}, connectionError: null, channelError: null }),
   usePresenceListener: () => ({ presenceData: [], connectionError: null, channelError: null }),
+  useChannel: () => ({ channel: { object: { get: () => new Promise(() => {}) } } }),
 }));
 
-// Chat must be imported AFTER vi.mock so it picks up the mocked module.
+// Chat must be imported AFTER vi.mock so it picks up the mocked modules.
 
 import { Chat } from '../chat';
 
@@ -97,18 +61,21 @@ import { Chat } from '../chat';
 // Helpers
 // ---------------------------------------------------------------------------
 
-const emptyChunkStream = (): ReadableStream<AI.UIMessageChunk> =>
+const chunkStreamOf = (chunks: AI.UIMessageChunk[]): ReadableStream<AI.UIMessageChunk> =>
   new ReadableStream<AI.UIMessageChunk>({
     start: (controller) => {
+      for (const chunk of chunks) controller.enqueue(chunk);
       controller.close();
     },
   });
 
-const assistantTextMessage = (text: string): AI.UIMessage => ({
-  id: 'msg-assistant-1',
-  role: 'assistant',
-  parts: [{ type: 'text', text, state: 'done' }],
-});
+const assistantTextChunks = (messageId: string, text: string): AI.UIMessageChunk[] => [
+  { type: 'start', messageId },
+  { type: 'text-start', id: 't1' },
+  { type: 'text-delta', id: 't1', delta: text },
+  { type: 'text-end', id: 't1' },
+  { type: 'finish' },
+];
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -117,10 +84,27 @@ const assistantTextMessage = (text: string): AI.UIMessage => ({
 describe('<Chat>', () => {
   beforeEach(() => {
     mockSendMessages.mockReset();
-    mockSendMessages.mockResolvedValue(emptyChunkStream());
+    mockSeed.mockReset();
+    mockSendMessages.mockResolvedValue(chunkStreamOf([]));
   });
 
-  it('mounts, sends the user input via chatTransport, and renders messages pushed through the view', async () => {
+  // vitest isn't configured with globals, so @testing-library/react's
+  // auto-cleanup hook isn't registered — unmount explicitly so a later test's
+  // queries don't match an earlier render.
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('seeds the adapter empty on mount (no hydration) so live indexing opens', async () => {
+    render(<Chat chatId="ai:test" />);
+    await waitFor(() => {
+      expect(mockSeed).toHaveBeenCalledWith([]);
+    });
+  });
+
+  it('sends the user input via the chat transport and renders the streamed reply', async () => {
+    mockSendMessages.mockResolvedValue(chunkStreamOf(assistantTextChunks('msg-assistant-1', 'Hi there')));
+
     render(<Chat chatId="ai:test" />);
 
     const input = screen.getByPlaceholderText('Type a message...');
@@ -139,11 +123,10 @@ describe('<Chat>', () => {
     );
     expect(sentText).toContain('hello');
 
-    expect(setMockViewState).not.toBeNull();
-    act(() => {
-      setMockViewState?.({ messages: [assistantTextMessage('Hi there')], runs: new Map() });
+    // useChat consumes the transport's chunk stream; the folded assistant
+    // reply renders in the transcript.
+    await waitFor(() => {
+      expect(screen.queryByText('Hi there')).not.toBeNull();
     });
-
-    expect(screen.queryByText('Hi there')).not.toBeNull();
   });
 });

@@ -16,12 +16,6 @@ import { useEffect, useState } from 'react';
 import type { RealtimeObject } from 'ably/liveobjects';
 import { checklistFrom, type ChecklistItemRow, type ChecklistRoot } from '../lib/checklist';
 
-/** The slice of a session this hook needs — a ClientSession satisfies it. */
-export interface ObjectSession {
-  /** The Ably LiveObjects entry point for the session's channel. */
-  object: RealtimeObject;
-}
-
 /** What {@link useChecklist} returns. */
 export interface ChecklistHandle {
   /** Latest validated steps, in checklist order. Empty until the root resolves. */
@@ -30,7 +24,13 @@ export interface ChecklistHandle {
   error: Error | undefined;
 }
 
-export function useChecklist(session: ObjectSession): ChecklistHandle {
+/**
+ * Read the checklist off a channel's LiveObjects entry point
+ * (`channel.object`), re-snapshotting on every object update.
+ * @param object - The channel's LiveObjects entry point.
+ * @returns The validated steps and any resolution error.
+ */
+export function useChecklist(object: RealtimeObject): ChecklistHandle {
   const [steps, setSteps] = useState<ChecklistItemRow[]>([]);
   const [error, setError] = useState<Error | undefined>(undefined);
 
@@ -39,7 +39,7 @@ export function useChecklist(session: ObjectSession): ChecklistHandle {
     let subscription: { unsubscribe: () => void } | undefined;
 
     const start = async () => {
-      const root = await session.object.get<ChecklistRoot>();
+      const root = await object.get<ChecklistRoot>();
       if (cancelled) return;
       setSteps(checklistFrom(root.compactJson()));
       subscription = root.subscribe(() => {
@@ -56,7 +56,7 @@ export function useChecklist(session: ObjectSession): ChecklistHandle {
       cancelled = true;
       subscription?.unsubscribe();
     };
-  }, [session]);
+  }, [object]);
 
   return { steps, error };
 }

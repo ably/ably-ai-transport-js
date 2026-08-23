@@ -1,47 +1,28 @@
 'use client';
 
-import {
-  Providers,
-  useAblyReady,
-  SessionHooks,
-  Chat,
-  generateChannelSlug,
-  generateClientName,
-} from '@ably-ai-demos/frontend';
-import { createUIMessageCodec } from '@ably/ai-transport/vercel';
+import { ChatTransportProvider } from '@ably/ai-transport/vercel/react';
+import { Providers, useAblyReady, generateChannelSlug, generateClientName } from '@ably-ai-demos/frontend';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
 
-import { TEMPORAL_SCENARIOS, TEMPORAL_INTRO_TITLE, TEMPORAL_INTRO_DESCRIPTION } from './demo-content';
-
-const { ClientSessionProvider } = SessionHooks;
+import { Chat } from './chat';
 
 const CHANNEL_NAMESPACE = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ai:';
-const uiMessageCodec = createUIMessageCodec();
 
-function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; clientId?: string; limit?: number }) {
+function ChatWhenReady({ channelName, clientId }: { channelName: string; clientId?: string }) {
   const ready = useAblyReady();
 
   if (!ready) {
-    return <div className="flex h-dvh items-center justify-center text-sm text-zinc-600">Connecting...</div>;
+    return <div className="flex h-dvh items-center justify-center text-sm text-muted-foreground">Connecting...</div>;
   }
 
   return (
-    <ClientSessionProvider
-      channelName={channelName}
-      codec={uiMessageCodec}
-    >
+    <ChatTransportProvider channelName={channelName}>
       <Chat
         chatId={channelName}
         clientId={clientId}
-        historyLimit={limit}
-        api="api/chat"
-        scenarios={TEMPORAL_SCENARIOS}
-        headerTitle={TEMPORAL_INTRO_TITLE}
-        introTitle={TEMPORAL_INTRO_TITLE}
-        introDescription={TEMPORAL_INTRO_DESCRIPTION}
       />
-    </ClientSessionProvider>
+    </ChatTransportProvider>
   );
 }
 
@@ -50,7 +31,6 @@ function ChatPage() {
   const searchParams = useSearchParams();
   const paramChannel = searchParams.get('channel');
   const paramClientId = searchParams.get('clientId') ?? undefined;
-  const limit = Number(searchParams.get('limit')) || undefined;
 
   const [channelName] = useState(() => paramChannel ?? `${CHANNEL_NAMESPACE}${generateChannelSlug()}`);
   const [clientId] = useState(() => paramClientId ?? generateClientName());
@@ -70,7 +50,6 @@ function ChatPage() {
       <ChatWhenReady
         channelName={channelName}
         clientId={clientId}
-        limit={limit}
       />
     </Providers>
   );

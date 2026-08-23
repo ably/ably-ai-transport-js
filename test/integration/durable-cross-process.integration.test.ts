@@ -58,11 +58,11 @@ import {
   HEADER_STEP_ID,
   HEADER_STEP_REASON,
 } from '../../src/constants.js';
-import { toCodecEvents } from '../../src/core/codec/codec-event.js';
 import { createAgentSession } from '../../src/core/transport/agent-session.js';
 import { createClientSession } from '../../src/core/transport/client-session.js';
 import { buildTransportHeaders } from '../../src/core/transport/headers.js';
 import { Invocation } from '../../src/core/transport/invocation.js';
+import { toCodecEvents } from '../../src/core/transport/session-codec.js';
 import type {
   AdoptedRun,
   AgentSession,
@@ -73,19 +73,21 @@ import type {
 } from '../../src/core/transport/types.js';
 import { withAgentSession } from '../../src/core/transport/with-agent-session.js';
 import { getCodecHeaders, getTransportHeaders } from '../../src/utils.js';
-import type { VercelInput, VercelOutput, VercelProjection } from '../../src/vercel/codec/index.js';
-import { createUIMessageCodec } from '../../src/vercel/codec/index.js';
+import type { VercelOutput } from '../../src/vercel/codec/index.js';
+import type { VercelProjection } from '../../src/vercel/codec/reducer.js';
+import { createUIMessageSessionCodec } from '../../src/vercel/codec/session-codec.js';
+import type { VercelSessionInput } from '../../src/vercel/codec/session-events.js';
 import { type VercelRunOutcome, vercelRunOutcome } from '../../src/vercel/run-end-reason.js';
 import { uniqueChannelName } from '../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../helper/realtime-client.js';
 
-const UIMessageCodec = createUIMessageCodec();
+const UIMessageCodec = createUIMessageSessionCodec();
 
 // ---------------------------------------------------------------------------
 // Shared types
 // ---------------------------------------------------------------------------
 
-type ClientSessionT = ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+type ClientSessionT = ClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>;
 type AgentSessionT = AgentSession<VercelOutput, VercelProjection, AI.UIMessage>;
 type AdoptedRunT = AdoptedRun<VercelOutput, VercelProjection, AI.UIMessage>;
 
@@ -241,7 +243,7 @@ const withSession = async <T>(
   const ownsClient = opts.client === undefined;
   const client = opts.client ?? ablyRealtimeClient();
   try {
-    return await withAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage, T>(
+    return await withAgentSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage, T>(
       { client, invocation, codec: UIMessageCodec },
       async ({ session }) => body(session),
     );
@@ -557,7 +559,7 @@ const observeWire = async (channelName: string): Promise<WireObserver> => {
  * @returns The connected client session (the caller closes it).
  */
 const hydrateFreshSession = async (channelName: string): Promise<ClientSessionT> => {
-  const session = createClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+  const session = createClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
     client: ablyRealtimeClient(),
     channelName,
     codec: UIMessageCodec,
@@ -1016,7 +1018,7 @@ describe('durable cross-process matrix', () => {
     // Step 1 (process B): set an EXPLICIT stepClientId (the seam a steer would
     // populate). The step driver does not expose stepClientId, so step 1 sets it
     // via a raw adopt + createStep in its own fresh-client session.
-    const sessionB = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    const sessionB = createAgentSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: ablyRealtimeClient(),
       channelName,
       codec: UIMessageCodec,

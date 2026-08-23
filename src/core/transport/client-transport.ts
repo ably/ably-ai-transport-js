@@ -39,7 +39,7 @@ import * as Ably from 'ably';
 import { ErrorCode } from '../../errors.js';
 import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
-import type { CodecInputEvent, CodecOutputEvent, Decoder, WireCodec } from '../codec/types.js';
+import type { Decoder, WireCodec } from '../codec/types.js';
 import { buildCancelMessage } from './cancel-envelope.js';
 import { ConnectGuard, continuityLostError, isContinuityLost, subscribeAndAttach } from './channel-support.js';
 import { buildTransportHeaders } from './headers.js';
@@ -71,7 +71,7 @@ const DEFAULT_HISTORY_PAGE_SIZE = 100;
  * @template TInput - The codec's input-event domain type.
  * @template TOutput - The codec's output-event domain type.
  */
-export interface ClientTransportOptions<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> {
+export interface ClientTransportOptions<TInput, TOutput> {
   /** The Ably channel to publish on and receive from. The transport subscribes its own listener on `connect()`; the channel itself stays caller-owned (never detached). */
   channel: Ably.RealtimeChannel;
   /** The wire tier of the codec: its encoder serializes inputs to the wire and its decoder classifies inbound messages. Any full `Codec` satisfies it. */
@@ -85,15 +85,14 @@ export interface ClientTransportOptions<TInput extends CodecInputEvent, TOutput 
 }
 
 /**
- * An input references an existing message (`regenerate`, or any non-user input
- * pinning its own `codecMessageId`) rather than introducing new local content,
- * so it gets no optimistic echo — the referenced content either does not
- * materialise on this side or already exists to be amended when the wire echoes.
- * @param input - The input to classify.
- * @returns True when the input is wire-only.
+ * An input published against an existing `codecMessageId` amends something
+ * that is already there, so it gets no optimistic echo; an input publishing
+ * without one introduces content, so it is echoed. The rule reads only the
+ * transport's own options — the input body is opaque to the transport.
+ * @param opts - The publish options for the input.
+ * @returns True when the input is wire-only (no optimistic echo).
  */
-const isWireOnlyInput = (input: CodecInputEvent): boolean =>
-  input.kind !== 'user-message' && (input.kind === 'regenerate' || input.codecMessageId !== undefined);
+const isWireOnlyInput = (opts: PublishInputOptions | undefined): boolean => opts?.codecMessageId !== undefined;
 
 /**
  * Merge user-provided headers into an outgoing Ably message's own
@@ -112,10 +111,7 @@ const stampUserHeaders = (msg: Ably.Message, userHeaders: Record<string, string>
 };
 
 /** Default {@link ClientTransport}. See the file header for the composition. */
-class DefaultClientTransport<
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-> implements ClientTransport<TInput, TOutput> {
+class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput, TOutput> {
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: WireCodec<TInput, TOutput>;
   private readonly _clientId: string | undefined;
@@ -258,16 +254,15 @@ class DefaultClientTransport<
     this._logger.trace('ClientTransport.publishInput();');
     await this._requireOpen('publishInput');
 
-    // codec-message-id precedence: explicit option, then an input that pins its
-    // own id (a tool resolution amending an assistant), then a fresh id.
-    const codecMessageId = opts?.codecMessageId ?? event.codecMessageId ?? crypto.randomUUID();
+    // codec-message-id: the explicit option (an input amending an existing
+    // message), or a fresh id. The options are the one source of addressing —
+    // the input body carries none.
+    const codecMessageId = opts?.codecMessageId ?? crypto.randomUUID();
     const eventId = crypto.randomUUID();
 
-    // Structure fields: the input's own `parent` overrides the option; a
-    // `regenerate` maps its `target` to the `msg-regenerate` header.
-    const parent = event.parent ?? opts?.parent;
+    const parent = opts?.parent;
     const forkOf = opts?.forkOf;
-    const regenerates = event.kind === 'regenerate' ? event.target : opts?.regenerates;
+    const regenerates = opts?.regenerates;
 
     const headers = buildTransportHeaders({
       role: 'user',
@@ -286,7 +281,7 @@ class DefaultClientTransport<
     // so the sender sees its own input without the round-trip. It carries the
     // same user headers the publish will stamp, so the echo and the wire echo
     // surface identical metadata.
-    if (!isWireOnlyInput(event)) {
+    if (!isWireOnlyInput(opts)) {
       this._receiver.emitEvent({
         kind: 'message',
         meta: wireMetaFromLocalEcho(headers, this._clientId, userHeaders ?? {}),
@@ -533,6 +528,6 @@ class DefaultClientTransport<
  * @param options - See {@link ClientTransportOptions}.
  * @returns The client transport.
  */
-export const createClientTransport = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent>(
+export const createClientTransport = <TInput, TOutput>(
   options: ClientTransportOptions<TInput, TOutput>,
 ): ClientTransport<TInput, TOutput> => new DefaultClientTransport(options);

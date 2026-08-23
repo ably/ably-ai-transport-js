@@ -35,18 +35,7 @@ import {
   HEADER_STEP_CLIENT_ID,
   HEADER_STEP_ID,
 } from '../../../src/constants.js';
-import type {
-  ChannelWriter,
-  Codec,
-  CodecEvent,
-  Decoder,
-  Encoder,
-  EncoderOptions,
-  ReducerMeta,
-  Regenerate,
-  UserMessage,
-  WriteOptions,
-} from '../../../src/core/codec/types.js';
+import type { ChannelWriter, Decoder, Encoder, EncoderOptions, WriteOptions } from '../../../src/core/codec/types.js';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
 import { createHistoryHydrator } from '../../../src/core/transport/history-hydrator.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
@@ -54,6 +43,13 @@ import { applyTransportEventToTree } from '../../../src/core/transport/materiali
 import { createReceiveTransport } from '../../../src/core/transport/receive-transport.js';
 import type { RunManager } from '../../../src/core/transport/run-manager.js';
 import * as runManagerModule from '../../../src/core/transport/run-manager.js';
+import type {
+  Codec,
+  CodecEvent,
+  ReducerMeta,
+  Regenerate,
+  UserMessage,
+} from '../../../src/core/transport/session-codec.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';
 import type { AgentSession, ClientRun, OpenableRun, RunIdentity } from '../../../src/core/transport/types.js';

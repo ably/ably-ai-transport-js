@@ -504,78 +504,72 @@ export const outputs = ({
 /**
  * The OpenAI codec's `ai-input` descriptor table.
  *
- * The user message is a `batch`: a user message is a single input message item
- * whose content parts (`input_text`, and when we've done AIT-1120 `input_image` / `input_file`) are
- * fanned out into one `ai-input` event per part, all sharing `kind:
- * user-message` and the message's codec-message-id, each carrying its `partType`
- * and the message's `role`. The transport groups the parts into one node by
- * their shared codec-message-id; the reducer then merges them within that node
- * (see the reducer's user-message merge). A message with no encodable part
- * still emits one empty text part so it round-trips.
+ * The message turn is a `batch`: a single message item whose content parts
+ * (`input_text`, and when we've done AIT-1120 `input_image` / `input_file`)
+ * are fanned out into one `ai-input` event per part, all sharing `kind:
+ * message` and the message's codec-message-id, each carrying its `partType`
+ * and the message's `role` — so a body large enough to need splitting still
+ * fits the wire. A consumer groups the parts by their shared
+ * codec-message-id. A message with no encodable part still emits one empty
+ * text part so it round-trips. The tool resolution carries OpenAI's own
+ * `function_call_output` item as its wire data; the approval decision is
+ * field-mapped; `regenerate` is a wire-only signal.
  * @param builder - The `{ event, batch }` builder curried on {@link OpenAIInput}.
  * @param builder.event - Declare a discrete input event.
  * @param builder.batch - Declare a multi-part (fan-out) input.
  * @returns The input descriptor table.
  */
 export const inputs = ({ event, batch }: InputBuilder<OpenAIInput>): readonly InputDescriptor<OpenAIInput>[] => [
-  // --- client-driven tool inputs: nested payload, codec-message-id-addressed --
-  // Each addresses the assistant codec-message holding the function_call (via
-  // the input's codecMessageId, stamped as the wire codec-message-id). call_id
-  // rides the headers; the reducer folds the result into a function_call_output
-  // item on that message and records status in its per-call_id tool-call state.
+  // --- tool resolution: OpenAI's own item as the body -------------------------
 
-  event('tool-result', {
-    fields: [fCallId],
+  // The whole item rides the wire data, so the decoded body is exactly what
+  // the next `/responses` call consumes. Malformed wire data throws at this
+  // trust boundary — the receive path drops the one message and surfaces an
+  // error.
+  event('item', {
     data: {
-      encode: (p) => ({ output: p.output }),
-      // CAST: the wire envelope carries the FunctionCallOutput output shape under `output` (trust boundary).
-      decode: (d) => ({
-        output: isRecord(d) ? (d.output as Responses.ResponseInputItem.FunctionCallOutput['output']) : '',
-      }),
+      encode: (item) => item,
+      decode: (d) => {
+        if (isRecord(d) && d.type === 'function_call_output' && typeof d.call_id === 'string') {
+          // CAST: wire trust boundary — the envelope fields are validated
+          // above; `output` is tool-defined and stays unconstrained.
+          return d;
+        }
+        throw new Ably.ErrorInfo(
+          'unable to decode input; item body is not a function_call_output item',
+          ErrorCode.InvalidArgument,
+          400,
+        );
+      },
     },
   }),
-  event('tool-result-error', {
-    fields: [fCallId],
-    data: {
-      encode: (p) => ({ message: p.message }),
-      decode: (d) => ({ message: isRecord(d) && typeof d.message === 'string' ? d.message : '' }),
-    },
-  }),
-  event('tool-approval-response', { fields: [fCallId, fApproved, fReason] }),
 
-  // Regenerate is a wire-only signal: it references an existing assistant
-  // message by id, carries no payload, and folds to nothing. The agent reads
-  // `target` / `parent` from the wire headers via the input-event lookup.
+  // --- approval decision: the codec-defined body -------------------------------
+
+  event('approval', { fields: [fCallId, fApproved, fReason] }),
+
+  // Regenerate is a wire-only signal: it carries no payload and folds to
+  // nothing. The `regenerates` / `parent` structure rides the transport
+  // headers built from the publish options.
   event('regenerate', { wireOnly: true }),
-  batch('user-message', {
+  batch('message', {
     explode: (input) => {
-      // Precondition: A user-message must have exactly one item, and this
+      // Precondition: a message turn must have exactly one item, and this
       // item must have type "message". Note that this does not limit the
       // kinds of content that a user is able to send; they can send multiple
       // content parts within this single item.
-      //
-      // If we wished to support multiple items per user-message (which I
-      // can't currently think of a reason we would want to) then we'd need
-      // to make the exploded parts carry information on the wire about
-      // which item index they belong to. However, then we'd end up in a
-      // situation in which the projection would have to accommodate holes
-      // in its `items` array whilst all of the items stream in; this is
-      // structurally a similar problem to that described in AIT-1160 (see
-      // the corresponding comment in the reducer's getMessages() for our
-      // OpenAI-specific workaround for the generic problem that issue
-      // describes).
-      const { items } = input.message;
+      const { items } = input.payload;
       const item = items.length === 1 ? items[0] : undefined;
       if (item?.type !== 'message') {
         throw new Ably.ErrorInfo(
-          `unable to publish; a user message must be exactly one message item, got ${String(items.length)} item(s)`,
+          `unable to publish; a message turn must be exactly one message item, got ${String(items.length)} item(s)`,
           ErrorCode.InvalidArgument,
           400,
         );
       }
       const parts: Responses.ResponseInputText[] = [];
       for (const part of item.content) {
-        // Precondition: All parts must have type input_text, which is the
+        // Precondition: all parts must have type input_text, which is the
         // only part type we currently support.
         // TODO(AIT-1120): add `input_image` and `input_file` parts for richer prompts.
         if (part.type !== 'input_text') {
@@ -593,7 +587,7 @@ export const inputs = ({ event, batch }: InputBuilder<OpenAIInput>): readonly In
     },
     partTypeOf: (part) => part.type,
     parts: (p) => [p('input_text', { data: { encode: (part) => part.text, decode: (d) => ({ text: asString(d) }) } })],
-    messageHeaders: (input) => ({ transportHeaders: { [HEADER_ROLE]: input.message.role } }),
+    messageHeaders: (input) => ({ transportHeaders: { [HEADER_ROLE]: input.payload.role } }),
     assemble: (part, { transportHeaders }) => {
       // Annotate the message so the items literal is contextually typed as
       // OpenAIItem (narrowing `type: 'message'`), independent of how the
@@ -603,7 +597,7 @@ export const inputs = ({ event, batch }: InputBuilder<OpenAIInput>): readonly In
         role: (transportHeaders[HEADER_ROLE] ?? 'user') as OpenAIMessage['role'],
         items: [{ type: 'message', role: 'user', content: [part] }],
       };
-      return { message };
+      return { payload: message };
     },
   }),
 ];

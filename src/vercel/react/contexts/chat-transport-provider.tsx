@@ -22,14 +22,17 @@ import type * as AI from 'ai';
 import { type PropsWithChildren, type ReactNode, useContext, useMemo } from 'react';
 
 import { type ClientSessionProviderProps, createSessionHooks } from '../../../react/index.js';
-import { createUIMessageCodec, type VercelInput, type VercelOutput, type VercelProjection } from '../../codec/index.js';
+import type { VercelOutput } from '../../codec/index.js';
+import type { VercelProjection } from '../../codec/reducer.js';
+import { createUIMessageSessionCodec } from '../../codec/session-codec.js';
+import type { VercelSessionInput } from '../../codec/session-events.js';
 import type { ChatTransportOptions } from '../../transport/index.js';
 import { createChatTransport } from '../../transport/index.js';
 import type { ChatTransportSlot } from './chat-transport-context.js';
 import { ChatTransportContext } from './chat-transport-context.js';
 
 export const { ClientSessionProvider, useAblyMessages, useClientSession, useCreateView, useTree, useView } =
-  createSessionHooks<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>();
+  createSessionHooks<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>();
 
 /**
  * The default Vercel codec this provider binds. The provider/context path is
@@ -37,10 +40,10 @@ export const { ClientSessionProvider, useAblyMessages, useClientSession, useCrea
  * `UIMessage` typing use the imperative path (`createClientSession<…>` +
  * `createChatTransport<…>` + `useMessageSync<…>`).
  */
-const defaultUIMessageCodec = createUIMessageCodec();
+const defaultUIMessageCodec = createUIMessageSessionCodec();
 
 type CoreClientSessionProviderProps = Omit<
-  ClientSessionProviderProps<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>,
+  ClientSessionProviderProps<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>,
   'codec'
 >;
 

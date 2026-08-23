@@ -22,7 +22,7 @@ import { HEADER_STEER_CODEC_MESSAGE_IDS, HEADER_STEP_START_SERIAL } from '../../
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { errorCause } from '../../utils.js';
-import type { CodecInputEvent, CodecOutputEvent, WireCodec } from '../codec/types.js';
+import type { WireCodec } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
 import { publishLifecycleEvent } from './lifecycle-publish.js';
 import { pipeStream } from './pipe-stream.js';
@@ -102,7 +102,7 @@ export interface StepWriterAnchors {
  * (`assertPublishable` / `getAnchors`) keep the run's open / resolve policy in
  * the run object while the writer owns the step + pipe mechanics.
  */
-export interface RunStepWriterContext<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> {
+export interface RunStepWriterContext<TInput, TOutput> {
   /** The run's id, read live (a continuation re-keys it as the run opens). */
   getRunId(): string;
   /** The run's invocation-id (stable), scoping the default `stepId` and stamped on every publish. */
@@ -167,7 +167,7 @@ export interface RunStepWriterContext<TInput extends CodecInputEvent, TOutput ex
 }
 
 /** The output-producing surface of an agent run: stream piping and explicit step handles. */
-export interface RunStepWriter<TOutput extends CodecOutputEvent> {
+export interface RunStepWriter<TOutput> {
   /** Pipe an output source to the channel as the run's output (stepless). See {@link AgentRun.pipe}. */
   pipe: (source: PipeSource<TOutput>) => Promise<StreamResult>;
   /** Create an explicit step handle that brackets its output with `ai-step-start` / `ai-step-end`. See {@link AgentRun.createStep}. */
@@ -184,7 +184,7 @@ export interface RunStepWriter<TOutput extends CodecOutputEvent> {
  * @param ctx - The run's dependencies (see {@link RunStepWriterContext}).
  * @returns The run's {@link RunStepWriter}.
  */
-export const createRunStepWriter = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent>(
+export const createRunStepWriter = <TInput, TOutput>(
   ctx: RunStepWriterContext<TInput, TOutput>,
 ): RunStepWriter<TOutput> => {
   const { codec, channel, runManager, signal, logger, invocationId } = ctx;

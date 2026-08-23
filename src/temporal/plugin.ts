@@ -10,7 +10,7 @@
 
 import type { WorkerOptions, WorkerPlugin } from '@temporalio/worker';
 
-import type { CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
+import type { CodecInputEvent, CodecOutputEvent } from '../core/transport/session-codec.js';
 import { createFramingActivities, type FramingActivitiesOptions } from './activities.js';
 import type { FramingActivities } from './workflow/activity-types.js';
 

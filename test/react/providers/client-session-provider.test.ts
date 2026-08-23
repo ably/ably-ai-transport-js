@@ -16,7 +16,7 @@ const flushMicrotasks = async (): Promise<void> => {
 };
 
 import { OBJECT_MODES, resolveChannelModes } from '../../../src/core/channel-options.js';
-import type { CodecInputEvent, CodecOutputEvent } from '../../../src/core/codec/types.js';
+import type { CodecInputEvent, CodecOutputEvent } from '../../../src/core/transport/session-codec.js';
 import type { ClientSession } from '../../../src/core/transport/types.js';
 import { ClientSessionProvider } from '../../../src/react/contexts/client-session-provider.js';
 import { useClientSession } from '../../../src/react/use-client-session.js';

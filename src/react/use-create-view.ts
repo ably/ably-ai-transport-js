@@ -15,7 +15,7 @@
 
 import { useEffect, useState } from 'react';
 
-import type { CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
+import type { CodecInputEvent, CodecOutputEvent } from '../core/transport/session-codec.js';
 import type { ClientView } from '../core/transport/types.js';
 import type { BaseSessionOption } from './internal/use-resolved-session.js';
 import { useResolvedSession } from './internal/use-resolved-session.js';

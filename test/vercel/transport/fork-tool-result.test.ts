@@ -10,9 +10,9 @@
 import type * as AI from 'ai';
 import { describe, expect, it } from 'vitest';
 
-import type { CodecMessage } from '../../../src/core/codec/types.js';
+import type { CodecMessage } from '../../../src/core/transport/session-codec.js';
 import { ErrorCode } from '../../../src/errors.js';
-import type { VercelInput } from '../../../src/vercel/codec/index.js';
+import type { VercelSessionInput } from '../../../src/vercel/codec/session-events.js';
 import { createToolResultFork } from '../../../src/vercel/transport/fork-tool-result.js';
 import { toBeErrorInfo } from '../../helper/expectations.js';
 
@@ -152,8 +152,8 @@ describe('createToolResultFork', () => {
     // distinct optimistic reply runs the agent then reconciles to distinct ids.
     expect(forkA.sendOptions.runId).toBeUndefined();
     expect(forkB.sendOptions.runId).toBeUndefined();
-    expect((forkA.input as Extract<VercelInput, { kind: 'tool-result' }>).codecMessageId).not.toBe(
-      (forkB.input as Extract<VercelInput, { kind: 'tool-result' }>).codecMessageId,
+    expect((forkA.input as Extract<VercelSessionInput, { kind: 'tool-result' }>).codecMessageId).not.toBe(
+      (forkB.input as Extract<VercelSessionInput, { kind: 'tool-result' }>).codecMessageId,
     );
   });
 

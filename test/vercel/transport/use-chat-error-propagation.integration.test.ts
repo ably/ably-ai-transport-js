@@ -19,19 +19,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
 import { createClientSession } from '../../../src/core/transport/client-session.js';
 import type { AgentSession, ClientSession } from '../../../src/core/transport/types.js';
-import {
-  createUIMessageCodec,
-  type VercelInput,
-  type VercelOutput,
-  type VercelProjection,
-} from '../../../src/vercel/codec/index.js';
+import { type VercelOutput } from '../../../src/vercel/codec/index.js';
+import { type VercelProjection } from '../../../src/vercel/codec/reducer.js';
+import { createUIMessageSessionCodec } from '../../../src/vercel/codec/session-codec.js';
+import { type VercelSessionInput } from '../../../src/vercel/codec/session-events.js';
 import type { ChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { createRunFromOpts } from '../../helper/run-from-opts.js';
 
-const UIMessageCodec = createUIMessageCodec();
+const UIMessageCodec = createUIMessageSessionCodec();
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -39,7 +37,7 @@ const UIMessageCodec = createUIMessageCodec();
 
 describe('useChat error propagation', () => {
   let agentSession: AgentSession<VercelOutput, VercelProjection, AI.UIMessage> | undefined;
-  let clientSession: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> | undefined;
+  let clientSession: ClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage> | undefined;
   let chatTransport: ChatTransport | undefined;
 
   afterEach(async () => {

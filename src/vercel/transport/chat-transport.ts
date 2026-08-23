@@ -36,19 +36,16 @@ import type * as AI from 'ai';
 // `AI.*` namespace per TYPES.md.
 import type { ChatTransport as SdkChatTransport } from 'ai';
 
-import type { CodecMessage, DefinedCodec } from '../../core/codec/index.js';
+import type { CodecMessage, DefinedCodec } from '../../core/transport/session-codec.js';
 import type { ClientRun, ClientSession, SendOptions } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import { LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
-import {
-  createUIMessageCodec,
-  type ForkSeed,
-  type VercelInput,
-  type VercelOutput,
-  type VercelProjection,
-} from '../codec/index.js';
+import type { VercelOutput } from '../codec/index.js';
+import type { VercelProjection } from '../codec/reducer.js';
+import { createUIMessageSessionCodec } from '../codec/session-codec.js';
+import type { ForkSeed, VercelSessionInput } from '../codec/session-events.js';
 import { isToolPart, type ToolPart } from '../tool-part.js';
 import { createDeferredContinuationStream, createRunOutputStream } from './run-output-stream.js';
 
@@ -258,7 +255,7 @@ const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'a
 
 /**
  * Walk the useChat message overlay against the session tree and synthesize
- * the {@link VercelInput}s needed to resolve every tool part the user acted on
+ * the {@link VercelSessionInput}s needed to resolve every tool part the user acted on
  * (executed a tool, approved, denied) but the tree's reduced state hasn't
  * reflected yet.
  *
@@ -309,7 +306,7 @@ const UNRESOLVED_TOOL_STATES = new Set(['input-streaming', 'input-available', 'a
  */
 const deriveContinuationInputs = <TMetadata, TDataParts extends AI.UIDataTypes, TTools extends AI.UITools>(
   codec: DefinedCodec<
-    VercelInput<TMetadata, TDataParts, TTools>,
+    VercelSessionInput<TMetadata, TDataParts, TTools>,
     VercelOutput<TMetadata, TDataParts>,
     VercelProjection<TMetadata, TDataParts, TTools>,
     AI.UIMessage<TMetadata, TDataParts, TTools>
@@ -317,7 +314,7 @@ const deriveContinuationInputs = <TMetadata, TDataParts extends AI.UIDataTypes, 
   codecMessages: CodecMessage<AI.UIMessage>[],
   messages: AI.UIMessage[],
   fork?: { seed: ForkSeed },
-): VercelInput<TMetadata, TDataParts, TTools>[] => {
+): VercelSessionInput<TMetadata, TDataParts, TTools>[] => {
   // In fork mode the result's target is the fresh codec-message-id of the seed
   // message carrying the tool call (the message the reducer reconstructs and
   // folds onto). Off the fork path the target is the tree assistant's own id.
@@ -325,7 +322,7 @@ const deriveContinuationInputs = <TMetadata, TDataParts extends AI.UIDataTypes, 
     fork?.seed.messages.find((m) => m.message.parts.some((p) => isToolPart(p) && p.toolCallId === toolCallId))
       ?.codecMessageId;
 
-  const inputs: VercelInput<TMetadata, TDataParts, TTools>[] = [];
+  const inputs: VercelSessionInput<TMetadata, TDataParts, TTools>[] = [];
   for (const overlay of messages) {
     if (overlay.role !== 'assistant') continue;
     // Match the overlay to its tree message by domain id (both sides
@@ -412,7 +409,7 @@ const deriveContinuationInputs = <TMetadata, TDataParts extends AI.UIDataTypes, 
  * @param input - A derived continuation input.
  * @returns True for `tool-result` / `tool-result-error`.
  */
-const isToolResultInput = (input: VercelInput): boolean =>
+const isToolResultInput = (input: VercelSessionInput): boolean =>
   input.kind === 'tool-result' || input.kind === 'tool-result-error';
 
 /**
@@ -465,7 +462,7 @@ export const createChatTransport = <
   TTools extends AI.UITools = AI.UITools,
 >(
   session: ClientSession<
-    VercelInput<TMetadata, TDataParts, TTools>,
+    VercelSessionInput<TMetadata, TDataParts, TTools>,
     VercelOutput<TMetadata, TDataParts>,
     VercelProjection<TMetadata, TDataParts, TTools>,
     AI.UIMessage<TMetadata, TDataParts, TTools>
@@ -475,7 +472,7 @@ export const createChatTransport = <
   // Codec instance typed to the consumer's UIMessage params, used to build the
   // well-known input factories (createUserMessage + the tool resolutions) so
   // the inputs published on this session carry the caller's message type.
-  const codec = createUIMessageCodec<TMetadata, TDataParts, TTools>();
+  const codec = createUIMessageSessionCodec<TMetadata, TDataParts, TTools>();
 
   // -- Invocation POST config (the transport owns waking the agent) ----------
   const api = chatOptions?.api ?? DEFAULT_VERCEL_API;
@@ -747,7 +744,7 @@ export const createChatTransport = <
     //   through U1 inclusive via the body.
     // - Fresh send / edit: publish the new user-message input(s) via
     //   `view.send`.
-    let run: ClientRun<VercelInput, AI.UIMessage<TMetadata, TDataParts, TTools>>;
+    let run: ClientRun<VercelSessionInput, AI.UIMessage<TMetadata, TDataParts, TTools>>;
     if (isContinuation) {
       // Non-empty here: the empty case returned the deferred-observe stream above.
       run = await session.view.send(continuationInputs, sendOpts);

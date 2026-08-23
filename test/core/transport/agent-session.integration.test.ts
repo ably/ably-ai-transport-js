@@ -40,20 +40,22 @@ import {
   HEADER_STEP_REASON,
   HEADER_STEP_START_SERIAL,
 } from '../../../src/constants.js';
-import { toCodecEvents } from '../../../src/core/codec/codec-event.js';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
 import { buildTransportHeaders } from '../../../src/core/transport/headers.js';
+import { toCodecEvents } from '../../../src/core/transport/session-codec.js';
 import type { AgentSession, ClientSession } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { getCodecHeaders, getTransportHeaders } from '../../../src/utils.js';
-import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
-import { createUIMessageCodec } from '../../../src/vercel/codec/index.js';
+import type { VercelOutput } from '../../../src/vercel/codec/index.js';
+import type { VercelProjection } from '../../../src/vercel/codec/reducer.js';
+import { createUIMessageSessionCodec } from '../../../src/vercel/codec/session-codec.js';
+import type { VercelSessionInput } from '../../../src/vercel/codec/session-events.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { createRunFromOpts } from '../../helper/run-from-opts.js';
 import { textResponseStream } from '../../integration/helpers.js';
 
-const UIMessageCodec = createUIMessageCodec();
+const UIMessageCodec = createUIMessageSessionCodec();
 
 // Merged view of the transport and codec header tiers. The two tiers carry
 // disjoint keys, so merging is unambiguous and lets assertions read either
@@ -78,7 +80,7 @@ type AgentSessionT = AgentSession<VercelOutput, VercelProjection, AI.UIMessage>;
  * @returns A function resolving on the named run's run-end.
  */
 const makeAwaitRunEnd =
-  (clientSession: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>) =>
+  (clientSession: ClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>) =>
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- the body IS a Promise executor; async would double-wrap it
   (runId: string): Promise<void> =>
     new Promise<void>((resolve, reject) => {
@@ -97,7 +99,7 @@ const makeAwaitRunEnd =
 
 interface FoldingCollector {
   allOutputs: VercelOutput[];
-  allInputs: VercelInput[];
+  allInputs: VercelSessionInput[];
   rawMessages: Ably.InboundMessage[];
   /** Fully folded projection across all messages observed so far. */
   projection: VercelProjection;
@@ -119,7 +121,7 @@ const collectUntil = (
 ): FoldingCollector => {
   const decoder = UIMessageCodec.createDecoder();
   let projection = UIMessageCodec.init();
-  const allInputs: VercelInput[] = [];
+  const allInputs: VercelSessionInput[] = [];
   const allOutputs: VercelOutput[] = [];
   const rawMessages: Ably.InboundMessage[] = [];
 
@@ -201,7 +203,7 @@ describe('AgentSession integration', () => {
     const subClient = ablyRealtimeClient();
     const subChannel = subClient.channels.get(channelName);
 
-    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    session = createAgentSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
@@ -261,7 +263,7 @@ describe('AgentSession integration', () => {
     const subClient = ablyRealtimeClient();
     const subChannel = subClient.channels.get(channelName);
 
-    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    session = createAgentSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
@@ -463,7 +465,7 @@ describe('AgentSession integration', () => {
     const subClient = ablyRealtimeClient();
     const subChannel = subClient.channels.get(channelName);
 
-    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    session = createAgentSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
@@ -516,7 +518,7 @@ describe('AgentSession integration', () => {
     const subClient = ablyRealtimeClient();
     const subChannel = subClient.channels.get(channelName);
 
-    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    session = createAgentSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
@@ -608,7 +610,7 @@ describe('AgentSession integration', () => {
     const subClient = ablyRealtimeClient();
     const subChannel = subClient.channels.get(channelName);
 
-    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    session = createAgentSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
@@ -685,7 +687,7 @@ describe('AgentSession integration', () => {
     const subClient = ablyRealtimeClient();
     const subChannel = subClient.channels.get(channelName);
 
-    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    session = createAgentSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
@@ -746,7 +748,7 @@ describe('AgentSession integration', () => {
     const subClient = ablyRealtimeClient();
     const subChannel = subClient.channels.get(channelName);
 
-    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    session = createAgentSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
@@ -798,7 +800,7 @@ describe('AgentSession integration', () => {
     const subClient = ablyRealtimeClient();
     const subChannel = subClient.channels.get(channelName);
 
-    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    session = createAgentSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
@@ -850,7 +852,7 @@ describe('AgentSession integration', () => {
     const subClient = ablyRealtimeClient();
     const subChannel = subClient.channels.get(channelName);
 
-    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    session = createAgentSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
@@ -902,7 +904,7 @@ describe('AgentSession integration', () => {
     const sub1Channel = sub1Client.channels.get(channelName);
     const sub2Channel = sub2Client.channels.get(channelName);
 
-    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    session = createAgentSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
@@ -936,7 +938,7 @@ describe('AgentSession integration', () => {
 
     const errors: Ably.ErrorInfo[] = [];
 
-    session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    session = createAgentSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: serverClient,
       channelName,
       codec: UIMessageCodec,
@@ -1054,7 +1056,7 @@ describe('AgentSession integration', () => {
     });
     await session.connect();
 
-    const clientSession = createClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    const clientSession = createClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
@@ -1161,7 +1163,7 @@ describe('AgentSession integration', () => {
     session = createAgentSession({ client: serverClient, channelName, codec: UIMessageCodec });
     await session.connect();
 
-    const clientSession = createClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    const clientSession = createClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
@@ -1236,14 +1238,14 @@ describe('AgentSession integration', () => {
     const freshAgentClient = ablyRealtimeClient();
 
     // The writer agent produces the seed conversation's assistant reply live.
-    const writerAgent = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    const writerAgent = createAgentSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: writerAgentClient,
       channelName,
       codec: UIMessageCodec,
     });
     await writerAgent.connect();
 
-    const clientSession = createClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    const clientSession = createClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: clientClient,
       channelName,
       codec: UIMessageCodec,
@@ -1281,7 +1283,7 @@ describe('AgentSession integration', () => {
 
       // --- Fresh agent: connects AFTER publication, so all three messages are
       // history-only. It reconstructs context the way the demos do. ---
-      session = createAgentSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+      session = createAgentSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
         client: freshAgentClient,
         channelName,
         codec: UIMessageCodec,
@@ -1335,7 +1337,7 @@ describe('AgentSession integration', () => {
     await session.connect();
     const agentSession = session;
 
-    const clientSession = createClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    const clientSession = createClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: clientClient,
       channelName,
       codec: UIMessageCodec,

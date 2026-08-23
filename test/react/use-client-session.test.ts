@@ -5,7 +5,7 @@ import * as Ably from 'ably';
 import { createElement, type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { CodecInputEvent, CodecOutputEvent } from '../../src/core/codec/types.js';
+import type { CodecInputEvent, CodecOutputEvent } from '../../src/core/transport/session-codec.js';
 import type { ClientSession } from '../../src/core/transport/types.js';
 import { ErrorCode } from '../../src/errors.js';
 import { ClientSessionContext } from '../../src/react/contexts/client-session-context.js';

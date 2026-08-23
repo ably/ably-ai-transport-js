@@ -7,7 +7,7 @@
 
 import type * as AI from 'ai';
 
-import type { CodecMessage } from '../../core/codec/index.js';
+import type { CodecMessage } from '../../core/transport/session-codec.js';
 import { isToolPart, type ToolPart } from '../tool-part.js';
 
 // ---------------------------------------------------------------------------

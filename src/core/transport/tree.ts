@@ -43,8 +43,8 @@ import {
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
-import { toCodecEvents } from '../codec/codec-event.js';
-import type { CodecEvent, CodecInputEvent, CodecOutputEvent, Reducer } from '../codec/types.js';
+import type { CodecEvent, CodecInputEvent, CodecOutputEvent, Reducer } from './session-codec.js';
+import { toCodecEvents } from './session-codec.js';
 import type {
   ConversationNode,
   InputNode,

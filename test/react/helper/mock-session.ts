@@ -4,8 +4,8 @@
 
 import { vi } from 'vitest';
 
-import type { CodecInputEvent, CodecOutputEvent } from '../../../src/core/codec/types.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
+import type { CodecInputEvent, CodecOutputEvent } from '../../../src/core/transport/session-codec.js';
 import type { BranchHandle, ClientRun, ClientSession, ClientView, Tree } from '../../../src/core/transport/types.js';
 
 type TreeEventType = 'update' | 'ably-message' | 'run' | 'output';

@@ -19,7 +19,9 @@ import { useContext } from 'react';
 import type { ClientSession } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 import { makeSkippedClientSession } from '../../react/internal/skipped-session.js';
-import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
+import type { VercelOutput } from '../codec/index.js';
+import type { VercelProjection } from '../codec/reducer.js';
+import type { VercelSessionInput } from '../codec/session-events.js';
 import type { ChatTransport } from '../transport/index.js';
 import { ChatTransportContext } from './contexts/chat-transport-context.js';
 
@@ -64,7 +66,7 @@ export interface ChatTransportHandle {
    * A throwing stub when `skip` is `true`, when no matching {@link ClientSessionProvider}
    * was found in the tree, or when session construction failed. Check `sessionError` before use.
    */
-  session: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+  session: ClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
   /**
    * The chat transport adapter for use with Vercel's `useChat` hook.
@@ -109,7 +111,7 @@ export const useChatTransport = ({ channelName, skip }: UseChatTransportOptions 
 
   if (skip) {
     return {
-      session: makeSkippedClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>(),
+      session: makeSkippedClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>(),
       chatTransport: SKIPPED_CHAT_TRANSPORT,
     };
   }
@@ -120,7 +122,7 @@ export const useChatTransport = ({ channelName, skip }: UseChatTransportOptions 
       return { session: slot.session, chatTransport: slot.chatTransport, sessionError: slot.sessionError };
     }
     return {
-      session: makeSkippedClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>(),
+      session: makeSkippedClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>(),
       chatTransport: SKIPPED_CHAT_TRANSPORT,
       sessionError: new Ably.ErrorInfo(
         `unable to use client session; no ClientSessionProvider found for channelName "${channelName}"`,
@@ -144,7 +146,7 @@ export const useChatTransport = ({ channelName, skip }: UseChatTransportOptions 
   }
 
   return {
-    session: makeSkippedClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>(),
+    session: makeSkippedClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>(),
     chatTransport: SKIPPED_CHAT_TRANSPORT,
     sessionError: new Ably.ErrorInfo(
       'unable to use session; no ClientSessionProvider found in the tree',

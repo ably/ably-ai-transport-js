@@ -23,9 +23,9 @@ import {
   HEADER_STREAM,
   HEADER_STREAM_ID,
 } from '../../../src/constants.js';
-import { createUIMessageCodec } from '../../../src/vercel/codec/index.js';
+import { createUIMessageSessionCodec } from '../../../src/vercel/codec/session-codec.js';
 
-const UIMessageCodec = createUIMessageCodec();
+const UIMessageCodec = createUIMessageSessionCodec();
 
 // The codec is now assembled by defineCodec; createDecoder is the generic
 // factory it produces (a plain closure, safe to destructure).
@@ -1270,7 +1270,9 @@ describe('Vercel decoder', () => {
       expect(input.payload.toolCallId).toBe('tc-1');
       expect(input.payload.approved).toBe(true);
       expect(input.payload.reason).toBe('ok');
-      expect(input.codecMessageId).toBe('continuation-codec-message-id');
+      // Addressing rides the wire header, not the decoded envelope: the Tree
+      // reads the codec-message-id from the fold meta.
+      expect(input.codecMessageId).toBeUndefined();
     });
 
     it('decodes ai-input tool-result wire into a ToolResult input', () => {
@@ -1295,7 +1297,7 @@ describe('Vercel decoder', () => {
       if (input?.kind !== 'tool-result') return;
       expect(input.payload.toolCallId).toBe('tc-1');
       expect(input.payload.output).toEqual({ latitude: 51.5, longitude: -0.1 });
-      expect(input.codecMessageId).toBe('continuation-codec-message-id');
+      expect(input.codecMessageId).toBeUndefined();
     });
 
     it('decodes ai-input tool-result-error wire into a ToolResultError input', () => {
@@ -1318,7 +1320,7 @@ describe('Vercel decoder', () => {
       if (input?.kind !== 'tool-result-error') return;
       expect(input.payload.toolCallId).toBe('tc-1');
       expect(input.payload.message).toBe('geolocation denied');
-      expect(input.codecMessageId).toBe('continuation-codec-message-id');
+      expect(input.codecMessageId).toBeUndefined();
     });
 
     it('rejects non-object tool-result wire data — output is undefined', () => {

@@ -34,7 +34,7 @@ import { LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import { resolveChannelModes } from '../channel-options.js';
-import type { Codec, CodecInputEvent, CodecOutputEvent, Encoder } from '../codec/types.js';
+import type { Encoder } from '../codec/types.js';
 import { createBaseRun } from './base-run.js';
 import { buildCancelMessage, type CancelTarget } from './cancel-envelope.js';
 import {
@@ -52,6 +52,7 @@ import { createHistoryHydrator, type HistoryHydrator } from './history-hydrator.
 import { Invocation } from './invocation.js';
 import { createMaterialisation } from './materialisation.js';
 import type { ReceiveTransport } from './receive-transport.js';
+import type { Codec, CodecInputEvent, CodecOutputEvent } from './session-codec.js';
 import { SteerCoordinator } from './steer-coordinator.js';
 import type { DefaultTree } from './tree.js';
 import type {

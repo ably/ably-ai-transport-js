@@ -36,7 +36,7 @@ import { EVENT_CANCEL, HEADER_EVENT_ID } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
-import type { CodecInputEvent, CodecOutputEvent, WireCodec } from '../codec/types.js';
+import type { WireCodec } from '../codec/types.js';
 import { readCancelTarget } from './cancel-envelope.js';
 import { ConnectGuard, subscribeAndAttach } from './channel-support.js';
 import { walkHistoryBatch } from './history-walk.js';
@@ -111,7 +111,7 @@ interface RegisteredRun {
  * @template TInput - The codec's input-event domain type.
  * @template TOutput - The codec's output-event domain type.
  */
-export interface AgentTransportOptions<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> {
+export interface AgentTransportOptions<TInput, TOutput> {
   /** The Ably channel to publish run/step lifecycle and output on, and to receive cancel and steering signals from. The transport subscribes its own listener on `connect()`; the channel itself stays caller-owned (never detached). */
   channel: Ably.RealtimeChannel;
   /** The wire tier of the codec: its encoder serializes output and its decoder classifies the live receive stream, {@link AgentTransport.locateInput}, and {@link AgentTransport.history}. Any full `Codec` satisfies it. */
@@ -135,7 +135,7 @@ export interface AgentTransportOptions<TInput extends CodecInputEvent, TOutput e
  * @param options - See {@link AgentTransportOptions}.
  * @returns The agent transport.
  */
-export const createAgentTransport = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent>(
+export const createAgentTransport = <TInput, TOutput>(
   options: AgentTransportOptions<TInput, TOutput>,
 ): AgentTransport<TInput, TOutput> => {
   const { channel, codec, clientId } = options;

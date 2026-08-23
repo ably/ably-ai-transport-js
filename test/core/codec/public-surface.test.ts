@@ -3,7 +3,6 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import type {
   AdoptedRun,
   BatchSpec,
-  CodecEvent,
   DataCodec,
   HeaderField,
   InputBuilder,
@@ -58,7 +57,6 @@ describe('public codec-authoring surface', () => {
     expectTypeOf<InputBuilder<Input>>().not.toBeNever();
     expectTypeOf<DataCodec<Output>>().not.toBeNever();
     expectTypeOf<LifecyclePolicy<Output>>().not.toBeNever();
-    expectTypeOf<CodecEvent<Input, Output>>().not.toBeNever();
   });
 
   // The step vocabulary is reachable on the public `Run.createStep` /

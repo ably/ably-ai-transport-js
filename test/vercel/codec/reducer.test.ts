@@ -2,7 +2,7 @@
  * Reducer unit tests.
  *
  * The Vercel reducer is a pure `(state, event, meta) -> state'` machine
- * folding the `VercelInput | VercelOutput` union. These tests validate
+ * folding the `VercelSessionInput | VercelOutput` union. These tests validate
  * purity, the no-dedup fold contract (the transport sequences and dedups),
  * and the input folds (user-message merging, tool-resolution transitions).
  */
@@ -10,27 +10,29 @@
 import type * as AI from 'ai';
 import { describe, expect, it } from 'vitest';
 
-import type { ReducerMeta } from '../../../src/core/codec/types.js';
-import type { ForkSeed, VercelInput, VercelOutput } from '../../../src/vercel/codec/events.js';
-import { createUIMessageCodec } from '../../../src/vercel/codec/index.js';
-import { fold as foldEvent, getMessages, init, type VercelProjection } from '../../../src/vercel/codec/reducer.js';
+import type { ReducerMeta } from '../../../src/core/transport/session-codec.js';
+import type { VercelOutput } from '../../../src/vercel/codec/events.js';
+import { fold as foldEvent, getMessages, init } from '../../../src/vercel/codec/reducer.js';
+import { type VercelProjection } from '../../../src/vercel/codec/reducer.js';
+import { createUIMessageSessionCodec } from '../../../src/vercel/codec/session-codec.js';
+import type { ForkSeed, VercelSessionInput } from '../../../src/vercel/codec/session-events.js';
 import { isToolPart, type ToolPart } from '../../../src/vercel/tool-part.js';
 
-const UIMessageCodec = createUIMessageCodec();
+const UIMessageCodec = createUIMessageSessionCodec();
 
 const meta = (serial: string, messageId?: string): ReducerMeta =>
   messageId === undefined ? { serial } : { serial, messageId };
 
 /**
  * Fold a bare fixture event, tagging it with its wire direction so the terse
- * call sites below need not spell out the `CodecEvent` wrapper. VercelInput
+ * call sites below need not spell out the `CodecEvent` wrapper. VercelSessionInput
  * variants carry `kind`; VercelOutput variants carry `type`.
  * @param state - The projection to fold into.
  * @param event - The bare input or output event.
  * @param m - The reducer metadata (serial, optional messageId).
  * @returns The updated projection.
  */
-const fold = (state: VercelProjection, event: VercelInput | VercelOutput, m: ReducerMeta): VercelProjection =>
+const fold = (state: VercelProjection, event: VercelSessionInput | VercelOutput, m: ReducerMeta): VercelProjection =>
   foldEvent(state, 'type' in event ? { direction: 'output', event } : { direction: 'input', event }, m);
 
 /**
@@ -205,7 +207,7 @@ describe('Vercel reducer', () => {
       // The domain id (`u-1`) differs from the wire codec-message-id (`cm-1`):
       // the entry is keyed on `cm-1` and `message.id` is preserved verbatim.
       const message: AI.UIMessage = { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'hello' }] };
-      const event: VercelInput = { kind: 'user-message', message };
+      const event: VercelSessionInput = { kind: 'user-message', message };
 
       state = fold(state, event, meta('s1', 'cm-1'));
 
@@ -262,7 +264,7 @@ describe('Vercel reducer', () => {
       // The continuation publish carries its own wire codec-message-id; the reducer
       // redirects the response onto the assistant by codecMessageId+toolCallId
       // and marks the continuation codec-message-id as consumed.
-      const approval: VercelInput = {
+      const approval: VercelSessionInput = {
         kind: 'tool-approval-response',
         codecMessageId: 'msg-1',
         payload: { toolCallId: 'tc-1', approved: true },
@@ -292,7 +294,7 @@ describe('Vercel reducer', () => {
         meta('s2', 'msg-1'),
       );
 
-      const denial: VercelInput = {
+      const denial: VercelSessionInput = {
         kind: 'tool-approval-response',
         codecMessageId: 'msg-1',
         payload: { toolCallId: 'tc-1', approved: false, reason: 'nope' },
@@ -308,7 +310,7 @@ describe('Vercel reducer', () => {
     it('buffers an orphan approval until the assistant arrives, then promotes it', () => {
       let state = init();
       // Approval arrives before any assistant exists for tc-1 → buffer.
-      const approval: VercelInput = {
+      const approval: VercelSessionInput = {
         kind: 'tool-approval-response',
         codecMessageId: 'msg-1',
         payload: { toolCallId: 'tc-1', approved: true },
@@ -353,7 +355,7 @@ describe('Vercel reducer', () => {
         meta('s2', 'msg-1'),
       );
 
-      const toolOutput: VercelInput = {
+      const toolOutput: VercelSessionInput = {
         kind: 'tool-result',
         codecMessageId: 'msg-1',
         payload: { toolCallId: 'tc-1', output: { latitude: 51.5, longitude: -0.1 } },
@@ -382,7 +384,7 @@ describe('Vercel reducer', () => {
         meta('s2', 'msg-1'),
       );
 
-      const errorInput: VercelInput = {
+      const errorInput: VercelSessionInput = {
         kind: 'tool-result-error',
         codecMessageId: 'msg-1',
         payload: { toolCallId: 'tc-1', message: 'permission denied' },
@@ -399,7 +401,7 @@ describe('Vercel reducer', () => {
 
     it('buffers an orphan tool-result until the assistant arrives, then promotes it', () => {
       let state = init();
-      const orphan: VercelInput = {
+      const orphan: VercelSessionInput = {
         kind: 'tool-result',
         codecMessageId: 'msg-1',
         payload: { toolCallId: 'tc-1', output: { v: 'x' } },
@@ -434,7 +436,7 @@ describe('Vercel reducer', () => {
   describe('tool-result forkSeed reconstruction', () => {
     it('reconstructs the tool-call assistant from the seed into an empty projection, then applies the result', () => {
       let state = init();
-      const toolResult: VercelInput = {
+      const toolResult: VercelSessionInput = {
         kind: 'tool-result',
         codecMessageId: 'fork-asst',
         payload: {
@@ -462,7 +464,7 @@ describe('Vercel reducer', () => {
 
     it('reconstructs the assistant from the seed and applies a tool-result-error as output-error', () => {
       let state = init();
-      const errorInput: VercelInput = {
+      const errorInput: VercelSessionInput = {
         kind: 'tool-result-error',
         codecMessageId: 'fork-asst',
         payload: {
@@ -489,7 +491,7 @@ describe('Vercel reducer', () => {
       // seeded it, or a refold re-runs the input). The seed is ignored: no
       // duplicate is created and the existing assistant keeps its identity.
       let state = seedToolCall('tc-1', 'asst-present');
-      const toolResult: VercelInput = {
+      const toolResult: VercelSessionInput = {
         kind: 'tool-result',
         codecMessageId: 'asst-present',
         payload: {
@@ -513,7 +515,7 @@ describe('Vercel reducer', () => {
       // Regression: with no seed and no existing owner, the result pends — the
       // reducer does not fabricate an assistant.
       let state = init();
-      const seedless: VercelInput = {
+      const seedless: VercelSessionInput = {
         kind: 'tool-result',
         codecMessageId: 'asst-1',
         payload: { toolCallId: 'tc-1', output: { city: 'Paris' } },
@@ -603,7 +605,7 @@ describe('Vercel reducer', () => {
           },
         ],
       };
-      const toolResult: VercelInput = {
+      const toolResult: VercelSessionInput = {
         kind: 'tool-result',
         codecMessageId: 'fork-current',
         payload: { toolCallId: 'tc-current', output: { city: 'Berlin' }, forkSeed: seed },

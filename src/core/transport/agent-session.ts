@@ -34,7 +34,6 @@ import { LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
 import { registerAgent } from '../agent.js';
 import { resolveChannelModes } from '../channel-options.js';
-import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
 import { createBaseRun } from './base-run.js';
 import { readCancelTarget } from './cancel-envelope.js';
 import {
@@ -59,6 +58,7 @@ import type { RunManager } from './run-manager.js';
 import { createRunManager } from './run-manager.js';
 import { RunSteerTracker } from './run-steer-tracker.js';
 import { createRunStepWriter, stepEndReasonFor } from './run-step-writer.js';
+import type { Codec, CodecInputEvent, CodecOutputEvent } from './session-codec.js';
 import type { DefaultTree } from './tree.js';
 import type {
   AdoptedRun,

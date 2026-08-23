@@ -24,7 +24,7 @@ import type { StreamSequenceState } from './types.js';
 
 /**
  * The reconstructed chunk's domain discriminator field — the codec model's own
- * `type` discriminator, per `CodecOutputEvent.type`. Distinct
+ * `type` discriminator, per the codec's output `type` discriminator. Distinct
  * from {@link KIND_HEADER}: this is the rebuilt object's property, never the
  * wire dispatch key.
  */

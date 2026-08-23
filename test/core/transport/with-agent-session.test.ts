@@ -13,10 +13,10 @@ import '../../helper/expectations.js';
 import type * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Codec } from '../../../src/core/codec/types.js';
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
 import type { InvocationData } from '../../../src/core/transport/invocation.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
+import type { Codec } from '../../../src/core/transport/session-codec.js';
 import type { AgentSession } from '../../../src/core/transport/types.js';
 import { withAgentSession } from '../../../src/core/transport/with-agent-session.js';
 import type { LogContext, Logger } from '../../../src/logger.js';

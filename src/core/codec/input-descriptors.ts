@@ -31,9 +31,9 @@ export type ResolveInput<U extends { kind: string }, K extends U['kind']> = Extr
 
 /**
  * The payload an input `event`'s `fields` / `data` operate on. Inputs nest their
- * domain data under `payload` (the `{ kind, codecMessageId, payload }` envelope of
- * the well-known input variants), so a single event's spec is authored against the
- * payload, and the driver wraps/unwraps the envelope. A member with no `payload`
+ * domain body under `payload` (the `{ kind, payload }` envelope), so a single
+ * event's spec is authored against the payload, and the driver wraps/unwraps
+ * the envelope. A member with no `payload`
  * (a `wireOnly` signal) resolves to `never` — such an event declares no `fields` /
  * `data`, so the payload type is never used.
  * @template C - The narrowed input member.

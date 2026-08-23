@@ -12,7 +12,7 @@ import type {
   ToolResultErrorPayloadOf,
   ToolResultPayloadOf,
   UserMessage,
-} from '../../../src/core/codec/types.js';
+} from '../../../src/core/transport/session-codec.js';
 
 // Surrogate domain message shape used to verify TMessage passes through the
 // generic well-known variants.
@@ -143,8 +143,10 @@ describe('Codec input event well-known shapes', () => {
       expectTypeOf<ToolResult<FakeResultPayload>>().toHaveProperty('kind').toEqualTypeOf<'tool-result'>();
     });
 
-    it('requires `codecMessageId` (string) and carries the domain `payload`', () => {
-      expectTypeOf<ToolResult<FakeResultPayload>>().toHaveProperty('codecMessageId').toEqualTypeOf<string>();
+    it('carries an optional `codecMessageId` and the domain `payload`', () => {
+      expectTypeOf<ToolResult<FakeResultPayload>>()
+        .toHaveProperty('codecMessageId')
+        .toEqualTypeOf<string | undefined>();
       expectTypeOf<ToolResult<FakeResultPayload>>().toHaveProperty('payload').toEqualTypeOf<FakeResultPayload>();
     });
 
@@ -189,8 +191,10 @@ describe('Codec input event well-known shapes', () => {
       expectTypeOf<ToolResultError<FakeErrorPayload>>().toHaveProperty('kind').toEqualTypeOf<'tool-result-error'>();
     });
 
-    it('requires `codecMessageId` (string) and carries the domain `payload`', () => {
-      expectTypeOf<ToolResultError<FakeErrorPayload>>().toHaveProperty('codecMessageId').toEqualTypeOf<string>();
+    it('carries an optional `codecMessageId` and the domain `payload`', () => {
+      expectTypeOf<ToolResultError<FakeErrorPayload>>()
+        .toHaveProperty('codecMessageId')
+        .toEqualTypeOf<string | undefined>();
       expectTypeOf<ToolResultError<FakeErrorPayload>>().toHaveProperty('payload').toEqualTypeOf<FakeErrorPayload>();
     });
 
@@ -233,10 +237,10 @@ describe('Codec input event well-known shapes', () => {
         .toEqualTypeOf<'tool-approval-response'>();
     });
 
-    it('requires `codecMessageId` (string) and carries the domain `payload`', () => {
+    it('carries an optional `codecMessageId` and the domain `payload`', () => {
       expectTypeOf<ToolApprovalResponse<FakeApprovalPayload>>()
         .toHaveProperty('codecMessageId')
-        .toEqualTypeOf<string>();
+        .toEqualTypeOf<string | undefined>();
       expectTypeOf<ToolApprovalResponse<FakeApprovalPayload>>()
         .toHaveProperty('payload')
         .toEqualTypeOf<FakeApprovalPayload>();

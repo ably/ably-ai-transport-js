@@ -1,14 +1,16 @@
 import type { Responses } from 'openai/resources/responses/responses';
 import { describe, expect, it } from 'vitest';
 
-import type { CodecEvent, ReducerMeta } from '../../../src/core/codec/index.js';
+import type { CodecEvent, ReducerMeta } from '../../../src/core/transport/session-codec.js';
+import type { OpenAIMessage, OpenAIOutput } from '../../../src/openai/codec/index.js';
+import { fold, getMessages, init } from '../../../src/openai/codec/reducer.js';
+import { type OpenAIProjection } from '../../../src/openai/codec/reducer.js';
 import type {
+  OpenAISessionInput,
   OpenAIToolApprovalResponsePayload,
   OpenAIToolResultErrorPayload,
   OpenAIToolResultPayload,
-} from '../../../src/openai/codec/events.js';
-import type { OpenAIInput, OpenAIMessage, OpenAIOutput } from '../../../src/openai/codec/index.js';
-import { fold, getMessages, init, type OpenAIProjection } from '../../../src/openai/codec/reducer.js';
+} from '../../../src/openai/codec/session-events.js';
 import {
   completed,
   computerCallOutputItem,
@@ -48,7 +50,7 @@ const foldOutputs = (events: OpenAIOutput[], messageId = 'run-1'): OpenAIProject
   let state = init();
   const meta: ReducerMeta = { serial: '', messageId };
   for (const event of events) {
-    const codecEvent: CodecEvent<OpenAIInput, OpenAIOutput> = { direction: 'output', event };
+    const codecEvent: CodecEvent<OpenAISessionInput, OpenAIOutput> = { direction: 'output', event };
     state = fold(state, codecEvent, meta);
   }
   return state;
@@ -60,7 +62,7 @@ const foldOutputs = (events: OpenAIOutput[], messageId = 'run-1'): OpenAIProject
 const foldOutputsById = (pairs: [OpenAIOutput, string][]): OpenAIProjection => {
   let state = init();
   for (const [event, messageId] of pairs) {
-    const codecEvent: CodecEvent<OpenAIInput, OpenAIOutput> = { direction: 'output', event };
+    const codecEvent: CodecEvent<OpenAISessionInput, OpenAIOutput> = { direction: 'output', event };
     state = fold(state, codecEvent, { serial: '', messageId });
   }
   return state;
@@ -647,7 +649,7 @@ describe('OpenAI reducer', () => {
 
   describe('user message', () => {
     it('folds a user-message input into a user message', () => {
-      const userInput: CodecEvent<OpenAIInput, OpenAIOutput> = {
+      const userInput: CodecEvent<OpenAISessionInput, OpenAIOutput> = {
         direction: 'input',
         event: { kind: 'user-message', message: userTurn('what is the weather?') },
       };

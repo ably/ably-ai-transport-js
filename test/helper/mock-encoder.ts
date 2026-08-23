@@ -3,7 +3,8 @@
 import type * as Ably from 'ably';
 import { vi } from 'vitest';
 
-import type { CodecInputEvent, CodecOutputEvent, Encoder, EncoderOptions } from '../../src/core/codec/types.js';
+import type { Encoder, EncoderOptions } from '../../src/core/codec/types.js';
+import type { CodecInputEvent, CodecOutputEvent } from '../../src/core/transport/session-codec.js';
 
 /**
  * Build an encoder whose `publishOutput` mirrors the encoder core: it builds

@@ -15,7 +15,7 @@
  * or older history; omit it only when no seam can match (no seed supplied).
  */
 
-import type { CodecMessage } from '../../src/core/codec/types.js';
+import type { CodecMessage } from '../../src/core/transport/session-codec.js';
 
 /**
  * Build a `loadUntil` implementation over a mock view's own read accessors.

@@ -12,14 +12,6 @@
 
 import type { Responses } from 'openai/resources/responses/responses';
 
-import type {
-  Regenerate,
-  ToolApprovalResponse,
-  ToolResult,
-  ToolResultError,
-  UserMessage,
-} from '../../core/codec/index.js';
-
 /**
  * A server-executed tool's result, published by the agent after it runs the
  * tool. This is the one output event the codec adds beyond OpenAI's own stream:
@@ -61,48 +53,6 @@ export interface ToolApprovalRequestEvent {
   name: string;
   /** The tool's arguments as JSON text, mirroring the `function_call`'s `arguments`. */
   arguments: string;
-}
-
-/**
- * Domain payload for a client-published {@link ToolResult}. Folds into a
- * `function_call_output` input item, which is already a `ResponseInputItem`, so
- * the result round-trips to `/responses` unchanged. Uses OpenAI snake_case
- * `call_id` to match the Responses item it becomes.
- */
-export interface OpenAIToolResultPayload {
-  /** The `call_id` of the `function_call` this result answers. */
-  call_id: string;
-  /** The tool's output — text or a content list, exactly the `function_call_output.output` shape. */
-  output: Responses.ResponseInputItem.FunctionCallOutput['output'];
-}
-
-/**
- * Domain payload for a client-published {@link ToolResultError}. OpenAI's
- * `function_call_output` has no error field, so the failure message folds into
- * the item's `output`; the reducer records `failed` in the per-`call_id`
- * tool-call state so clients can render it as failed. Uses snake_case `call_id`.
- */
-export interface OpenAIToolResultErrorPayload {
-  /** The `call_id` of the `function_call` that failed. */
-  call_id: string;
-  /** Human-readable description of the failure, folded into the `function_call_output.output`. */
-  message: string;
-}
-
-/**
- * Domain payload for a client-published {@link ToolApprovalResponse}, the answer
- * to a {@link ToolApprovalRequestEvent}. A denial folds a rejection
- * `function_call_output` so the `/responses` round-trip has no dangling
- * `function_call`; both decisions are recorded in the per-`call_id` tool-call
- * state. Uses snake_case `call_id`.
- */
-export interface OpenAIToolApprovalResponsePayload {
-  /** The `call_id` of the gated `function_call`. */
-  call_id: string;
-  /** Whether the user approved the tool execution. */
-  approved: boolean;
-  /** Optional human-readable reason, typically supplied on denial. */
-  reason?: string;
 }
 
 /**
@@ -373,19 +323,81 @@ export interface OpenAIMessage {
   toolCallStates?: Record<string, OpenAIToolCallState>;
 }
 
+// ---------------------------------------------------------------------------
+// Input bodies
+// ---------------------------------------------------------------------------
+
 /**
- * `TInput` — what the client publishes on the `ai-input` wire: the well-known
- * user-message variant, the {@link Regenerate} signal (a wire-only reference to
- * the assistant message being regenerated, which carries no projection state),
- * and the three client-driven tool variants, parameterized by the OpenAI domain
- * payloads. A {@link ToolResult} / {@link ToolResultError} carries a client-run
- * tool's output or failure; a {@link ToolApprovalResponse} answers a codec
- * {@link ToolApprovalRequestEvent}. Including these variants flips the matching
- * `create*` factories on at the type level (see the codec's `factories` selector).
+ * The approval decision for a tool the agent gated behind a
+ * {@link ToolApprovalRequestEvent}. The Responses API has no item for a
+ * client-side approval decision, so the codec defines the body; a denial is
+ * typically followed by a `function_call_output` recording it, so the
+ * `/responses` round-trip has no dangling `function_call`. Uses OpenAI
+ * snake_case `call_id` to match the items it concerns.
  */
-export type OpenAIInput =
-  | UserMessage<OpenAIMessage>
-  | Regenerate
-  | ToolResult<OpenAIToolResultPayload>
-  | ToolResultError<OpenAIToolResultErrorPayload>
-  | ToolApprovalResponse<OpenAIToolApprovalResponsePayload>;
+export interface OpenAIApprovalDecision {
+  /** The `call_id` of the gated `function_call`. */
+  call_id: string;
+  /** Whether the user approved the tool execution. */
+  approved: boolean;
+  /** Optional human-readable reason, typically supplied on denial. */
+  reason?: string;
+}
+
+/**
+ * A new conversation turn: the body is an {@link OpenAIMessage} — the same
+ * role + items shape the codec renders, so what a client publishes is already
+ * valid `/responses` input.
+ */
+export interface OpenAIMessageInput {
+  /** Discriminator. */
+  kind: 'message';
+  /** The turn's message: a role plus its `ResponseInputItem` list. */
+  payload: OpenAIMessage;
+}
+
+/**
+ * A regeneration signal. Carries no body: the `regenerates` and `parent`
+ * structure ride the transport's publish options, and `WireMeta` reports them
+ * on the way back.
+ */
+export interface OpenAIRegenerateInput {
+  /** Discriminator. */
+  kind: 'regenerate';
+}
+
+/**
+ * A tool resolution: the body is OpenAI's own `function_call_output` input
+ * item, published against the assistant message holding the `function_call`
+ * (addressed by the publish options' `codecMessageId`). A failure or a denial
+ * is the same item with the failure or denial recorded in its `output` — the
+ * item is what the next `/responses` call consumes either way.
+ */
+export interface OpenAIItemInput {
+  /** Discriminator. */
+  kind: 'item';
+  /** The `function_call_output` item, in OpenAI's own item vocabulary. */
+  payload: Responses.ResponseInputItem.FunctionCallOutput;
+}
+
+/**
+ * A tool-approval decision, published against the assistant message whose
+ * tool call it gates (addressed by the publish options' `codecMessageId`).
+ * See {@link OpenAIApprovalDecision} for why this body is codec-defined.
+ */
+export interface OpenAIApprovalInput {
+  /** Discriminator. */
+  kind: 'approval';
+  /** The approval decision. */
+  payload: OpenAIApprovalDecision;
+}
+
+/**
+ * `TInput` — every body a client publishes on the `ai-input` wire. Each body
+ * is OpenAI's own vocabulary where one exists (a message's items for a turn, a
+ * `function_call_output` for a tool resolution), so the provider's own
+ * accumulator-and-items machinery consumes it; the approval decision is the
+ * one codec-defined body. Addressing rides the transport's publish options
+ * and `WireMeta`, never the body.
+ */
+export type OpenAIInput = OpenAIMessageInput | OpenAIRegenerateInput | OpenAIItemInput | OpenAIApprovalInput;

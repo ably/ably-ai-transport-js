@@ -13,8 +13,12 @@
 import type * as AI from 'ai';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import type { CodecMessage, DefinedCodec } from '../../src/core/codec/index.js';
+import type { WireCodec } from '../../src/core/codec/types.js';
+import type { CodecMessage, DefinedCodec } from '../../src/core/transport/session-codec.js';
 import type { ClientSession } from '../../src/core/transport/types.js';
+import { type VercelProjection } from '../../src/vercel/codec/reducer.js';
+import { createUIMessageSessionCodec } from '../../src/vercel/codec/session-codec.js';
+import type { VercelSessionInput } from '../../src/vercel/codec/session-events.js';
 import {
   type ChatTransport,
   createChatTransport,
@@ -23,7 +27,6 @@ import {
   type SendMessagesRequestContext,
   type VercelInput,
   type VercelOutput,
-  type VercelProjection,
 } from '../../src/vercel/index.js';
 import type { UseMessagesWithSeedOptions, UseMessageSyncOptions } from '../../src/vercel/react/index.js';
 
@@ -38,15 +41,24 @@ type MyTools = AI.UITools & { getWeather: { input: { city: string }; output: { t
 type MyMessage = AI.UIMessage<MyMetadata, MyDataParts, MyTools>;
 
 type MySession = ClientSession<
-  VercelInput<MyMetadata, MyDataParts, MyTools>,
+  VercelSessionInput<MyMetadata, MyDataParts, MyTools>,
   VercelOutput<MyMetadata, MyDataParts>,
   VercelProjection<MyMetadata, MyDataParts, MyTools>,
   MyMessage
 >;
 
 describe('Vercel UIMessage generic threading', () => {
-  it('createUIMessageCodec threads the message type into getMessages and createUserMessage', () => {
+  it('createUIMessageCodec threads the message type into the input union', () => {
     const codec = createUIMessageCodec<MyMetadata, MyDataParts, MyTools>();
+
+    // The codec's encoder accepts the consumer's typed message input.
+    type Input = Parameters<ReturnType<typeof codec.createEncoder>['publishInput']>[0];
+    expectTypeOf<Extract<Input, { kind: 'message' }>['payload']>().toEqualTypeOf<MyMessage>();
+    expect(codec.createDecoder()).toBeDefined();
+  });
+
+  it('createUIMessageSessionCodec threads the message type into getMessages and createUserMessage', () => {
+    const codec = createUIMessageSessionCodec<MyMetadata, MyDataParts, MyTools>();
 
     // getMessages surfaces the consumer's typed message (metadata + data + tools).
     expectTypeOf<ReturnType<typeof codec.getMessages>>().toEqualTypeOf<CodecMessage<MyMessage>[]>();
@@ -91,11 +103,12 @@ describe('Vercel UIMessage generic threading', () => {
       .toEqualTypeOf<MyMessage[]>();
   });
 
-  it('createUIMessageCodec with no type arguments falls back to the SDK defaults', () => {
-    // Passing no type parameters preserves today's inference — the codec
-    // resolves to the all-defaults instantiation (bare VercelInput/Output/Projection).
-    expectTypeOf(createUIMessageCodec()).toEqualTypeOf<
-      DefinedCodec<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>
+  it('the codec factories with no type arguments fall back to the SDK defaults', () => {
+    // Passing no type parameters preserves today's inference — each codec
+    // resolves to the all-defaults instantiation (bare VercelInput/Output).
+    expectTypeOf(createUIMessageCodec()).toEqualTypeOf<WireCodec<VercelInput, VercelOutput>>();
+    expectTypeOf(createUIMessageSessionCodec()).toEqualTypeOf<
+      DefinedCodec<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>
     >();
   });
 });

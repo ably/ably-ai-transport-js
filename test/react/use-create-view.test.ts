@@ -4,7 +4,7 @@ import { act, renderHook } from '@testing-library/react';
 import { createElement, type ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 
-import type { CodecInputEvent, CodecOutputEvent } from '../../src/core/codec/types.js';
+import type { CodecInputEvent, CodecOutputEvent } from '../../src/core/transport/session-codec.js';
 import type { ClientSession } from '../../src/core/transport/types.js';
 import { ClientSessionContext } from '../../src/react/contexts/client-session-context.js';
 import { useCreateView } from '../../src/react/use-create-view.js';

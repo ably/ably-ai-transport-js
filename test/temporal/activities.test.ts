@@ -12,8 +12,8 @@ import '../helper/expectations.js';
 import type * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Codec } from '../../src/core/codec/types.js';
 import type { InvocationData } from '../../src/core/transport/invocation.js';
+import type { Codec } from '../../src/core/transport/session-codec.js';
 import type { RunIdentity } from '../../src/core/transport/types/transport.js';
 import { withAgentSession } from '../../src/core/transport/with-agent-session.js';
 import { ErrorCode } from '../../src/errors.js';

@@ -24,11 +24,12 @@ import { describe, expect, it } from 'vitest';
 import { HEADER_CODEC_MESSAGE_ID, HEADER_ROLE, HEADER_RUN_ID, HEADER_STREAM } from '../../../src/constants.js';
 import { createTree } from '../../../src/core/transport/tree.js';
 import { LogLevel, makeLogger } from '../../../src/logger.js';
-import type { VercelInput, VercelOutput } from '../../../src/vercel/codec/events.js';
-import { createUIMessageCodec } from '../../../src/vercel/codec/index.js';
+import type { VercelOutput } from '../../../src/vercel/codec/events.js';
 import type { VercelProjection } from '../../../src/vercel/codec/reducer.js';
+import { createUIMessageSessionCodec } from '../../../src/vercel/codec/session-codec.js';
+import type { VercelSessionInput } from '../../../src/vercel/codec/session-events.js';
 
-const UIMessageCodec = createUIMessageCodec();
+const UIMessageCodec = createUIMessageSessionCodec();
 
 const silentLogger = makeLogger({ logLevel: LogLevel.Silent });
 
@@ -37,7 +38,7 @@ const ASSISTANT = 'a1';
 
 // Apply one agent-output wire (a run message) to the Tree.
 const applyOutput = (
-  tree: ReturnType<typeof createTree<VercelInput, VercelOutput, VercelProjection>>,
+  tree: ReturnType<typeof createTree<VercelSessionInput, VercelOutput, VercelProjection>>,
   outputs: VercelOutput[],
   serial: string,
   version: string,
@@ -52,8 +53,8 @@ const applyOutput = (
 // run's assistant). Routed to the run node by run-id; the tool resolution
 // finds its assistant by the codec-message-id in the event payload.
 const applyInput = (
-  tree: ReturnType<typeof createTree<VercelInput, VercelOutput, VercelProjection>>,
-  inputs: VercelInput[],
+  tree: ReturnType<typeof createTree<VercelSessionInput, VercelOutput, VercelProjection>>,
+  inputs: VercelSessionInput[],
   serial: string,
   version: string,
 ): void => {
@@ -66,8 +67,8 @@ const USER = 'u1';
 // Apply one run-less user-input wire (an input node keyed by codec-message-id).
 // Serial-less is an optimistic seed; a serial promotes it.
 const applyUserInput = (
-  tree: ReturnType<typeof createTree<VercelInput, VercelOutput, VercelProjection>>,
-  inputs: VercelInput[],
+  tree: ReturnType<typeof createTree<VercelSessionInput, VercelOutput, VercelProjection>>,
+  inputs: VercelSessionInput[],
   serial?: string,
   version?: string,
 ): void => {
@@ -77,7 +78,7 @@ const applyUserInput = (
 
 // The reconstructed user message on the input node, if any.
 const userMessage = (
-  tree: ReturnType<typeof createTree<VercelInput, VercelOutput, VercelProjection>>,
+  tree: ReturnType<typeof createTree<VercelSessionInput, VercelOutput, VercelProjection>>,
 ): AI.UIMessage | undefined => {
   const node = tree.getNodeByCodecMessageId(USER);
   return node ? UIMessageCodec.getMessages(node.projection)[0]?.message : undefined;
@@ -85,7 +86,7 @@ const userMessage = (
 
 // The dynamic-tool part for `toolCallId` on the run's assistant, if any.
 const toolPart = (
-  tree: ReturnType<typeof createTree<VercelInput, VercelOutput, VercelProjection>>,
+  tree: ReturnType<typeof createTree<VercelSessionInput, VercelOutput, VercelProjection>>,
   toolCallId: string,
 ): AI.DynamicToolUIPart | undefined => {
   const run = tree.getRunNode(RUN_ID);
@@ -113,7 +114,7 @@ const toolOutput = (v: string): VercelOutput => ({
 
 describe('Vercel codec over the Tree', () => {
   it('resolves competing tool outputs by serial — the highest-serial write wins regardless of arrival order', () => {
-    const tree = createTree<VercelInput, VercelOutput, VercelProjection>(UIMessageCodec, silentLogger);
+    const tree = createTree<VercelSessionInput, VercelOutput, VercelProjection>(UIMessageCodec, silentLogger);
 
     // Seed the tool call (input-available) over two wires.
     applyOutput(tree, [toolInputStart], 's1', 's1');
@@ -136,13 +137,13 @@ describe('Vercel codec over the Tree', () => {
     // tool-output-available (output) compete for the same tool part. The
     // client result is published causally later, so it carries the higher
     // serial and must win.
-    const tree = createTree<VercelInput, VercelOutput, VercelProjection>(UIMessageCodec, silentLogger);
+    const tree = createTree<VercelSessionInput, VercelOutput, VercelProjection>(UIMessageCodec, silentLogger);
 
     applyOutput(tree, [toolInputStart], 's1', 's1');
     applyOutput(tree, [toolInputAvailable], 's2', 's2');
 
     // The client result folds first onto the tail.
-    const clientResult: VercelInput = {
+    const clientResult: VercelSessionInput = {
       kind: 'tool-result',
       codecMessageId: ASSISTANT,
       payload: { toolCallId: 'tc-1', output: { v: 'client' } },
@@ -158,7 +159,7 @@ describe('Vercel codec over the Tree', () => {
   });
 
   it('drops a whole-wire replay so the projection is not duplicated', () => {
-    const tree = createTree<VercelInput, VercelOutput, VercelProjection>(UIMessageCodec, silentLogger);
+    const tree = createTree<VercelSessionInput, VercelOutput, VercelProjection>(UIMessageCodec, silentLogger);
 
     const textWire: VercelOutput[] = [
       { type: 'text-start', id: 't-1' },
@@ -184,7 +185,7 @@ describe('Vercel codec over the Tree', () => {
     // batch encoder gives every part a distinct serial). The first echo wire
     // promotes the node and refolds from the log alone, discarding the seed;
     // later parts merge incrementally — no duplication, no reducer-side seed logic.
-    const tree = createTree<VercelInput, VercelOutput, VercelProjection>(UIMessageCodec, silentLogger);
+    const tree = createTree<VercelSessionInput, VercelOutput, VercelProjection>(UIMessageCodec, silentLogger);
 
     const seeded: AI.UIMessage = {
       id: 'u-1',
@@ -197,11 +198,11 @@ describe('Vercel codec over the Tree', () => {
     applyUserInput(tree, [{ kind: 'user-message', message: seeded }]);
     expect(userMessage(tree)?.parts).toHaveLength(2); // seed visible pre-echo
 
-    const echoText: VercelInput = {
+    const echoText: VercelSessionInput = {
       kind: 'user-message',
       message: { id: 'u-1', role: 'user', parts: [{ type: 'text', text: 'hello' }] },
     };
-    const echoFile: VercelInput = {
+    const echoFile: VercelSessionInput = {
       kind: 'user-message',
       message: { id: 'u-1', role: 'user', parts: [{ type: 'file', mediaType: 'image/png', url: 'https://x/y.png' }] },
     };

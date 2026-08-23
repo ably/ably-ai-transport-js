@@ -1,5 +1,5 @@
 /**
- * OpenAI ResponsesCodec integration test.
+ * OpenAI ResponsesSessionCodec integration test.
  *
  * Validates the encode -> publish -> subscribe -> decode -> fold roundtrip over a
  * real Ably channel (sandbox by default) for the streamed groups — assistant
@@ -12,9 +12,10 @@
 import type { Responses } from 'openai/resources/responses/responses';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { toCodecEvents } from '../../../src/core/codec/codec-event.js';
-import { ResponsesCodec } from '../../../src/openai/codec/index.js';
-import { init, type OpenAIProjection } from '../../../src/openai/codec/reducer.js';
+import { toCodecEvents } from '../../../src/core/transport/session-codec.js';
+import { init } from '../../../src/openai/codec/reducer.js';
+import { type OpenAIProjection } from '../../../src/openai/codec/reducer.js';
+import { ResponsesSessionCodec } from '../../../src/openai/codec/session-codec.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import {
@@ -41,7 +42,7 @@ import {
   userTurn,
 } from './fixtures.js';
 
-describe('OpenAI ResponsesCodec integration', () => {
+describe('OpenAI ResponsesSessionCodec integration', () => {
   afterEach(() => {
     closeAllClients();
   });
@@ -51,7 +52,7 @@ describe('OpenAI ResponsesCodec integration', () => {
     const pubChannel = ablyRealtimeClient().channels.get(channelName);
     const subChannel = ablyRealtimeClient().channels.get(channelName);
 
-    const decoder = ResponsesCodec.createDecoder();
+    const decoder = ResponsesSessionCodec.createDecoder();
     let projection: OpenAIProjection = init();
 
     const messageId = 'msg-1';
@@ -64,13 +65,16 @@ describe('OpenAI ResponsesCodec integration', () => {
 
     await subChannel.subscribe((msg) => {
       const decoded = decoder.decode(msg);
-      for (const event of toCodecEvents(decoded)) projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+      for (const event of toCodecEvents(decoded))
+        projection = ResponsesSessionCodec.fold(projection, event, metaOf(msg));
       // Terminal events are off the wire (run outcome is out-of-band), so the
       // last content event stands in as the done-signal: here the text stream end.
       if (decoded.outputs.some((e) => e.type === 'response.output_text.done')) resolveDone();
     });
 
-    const encoder = ResponsesCodec.createEncoder(pubChannel, { onAblyMessage: stampHeaders('run-1', messageId) });
+    const encoder = ResponsesSessionCodec.createEncoder(pubChannel, {
+      onAblyMessage: stampHeaders('run-1', messageId),
+    });
 
     await encoder.publishOutput(itemAdded(messageItem(itemId)));
     await encoder.publishOutput(contentPartAdded(itemId));
@@ -84,7 +88,7 @@ describe('OpenAI ResponsesCodec integration', () => {
 
     await done;
 
-    const messages = ResponsesCodec.getMessages(projection);
+    const messages = ResponsesSessionCodec.getMessages(projection);
     expect(messages).toHaveLength(1);
     expect(messages[0]?.message.role).toBe('assistant');
     const message = messages[0]?.message.items.find((i): i is Responses.ResponseOutputMessage => i.type === 'message');
@@ -97,7 +101,7 @@ describe('OpenAI ResponsesCodec integration', () => {
     const pubChannel = ablyRealtimeClient().channels.get(channelName);
     const subChannel = ablyRealtimeClient().channels.get(channelName);
 
-    const decoder = ResponsesCodec.createDecoder();
+    const decoder = ResponsesSessionCodec.createDecoder();
     let projection: OpenAIProjection = init();
 
     let resolveDone: () => void;
@@ -107,13 +111,14 @@ describe('OpenAI ResponsesCodec integration', () => {
 
     await subChannel.subscribe((msg) => {
       const decoded = decoder.decode(msg);
-      for (const event of toCodecEvents(decoded)) projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+      for (const event of toCodecEvents(decoded))
+        projection = ResponsesSessionCodec.fold(projection, event, metaOf(msg));
       // Terminal events are off the wire; the call's result is the last content.
       if (decoded.outputs.some((e) => e.type === 'function_call_output')) resolveDone();
     });
 
     const call = functionCallItem('fc-1', 'call-1', 'getWeather', '{"location":"London"}', 'completed');
-    const encoder = ResponsesCodec.createEncoder(pubChannel, { onAblyMessage: stampHeaders('run-1', 'msg-1') });
+    const encoder = ResponsesSessionCodec.createEncoder(pubChannel, { onAblyMessage: stampHeaders('run-1', 'msg-1') });
     await encoder.publishOutput(itemAdded(call));
     await encoder.publishOutput(itemDone(call));
     await encoder.publishOutput(functionCallOutputEvent('call-1', '{"temperature":12}'));
@@ -122,7 +127,7 @@ describe('OpenAI ResponsesCodec integration', () => {
 
     await done;
 
-    const items = ResponsesCodec.getMessages(projection)[0]?.message.items ?? [];
+    const items = ResponsesSessionCodec.getMessages(projection)[0]?.message.items ?? [];
     expect(items.map((i) => i.type)).toEqual(['function_call', 'function_call_output']);
     const output = items.find(
       (i): i is Responses.ResponseInputItem.FunctionCallOutput => i.type === 'function_call_output',
@@ -136,7 +141,7 @@ describe('OpenAI ResponsesCodec integration', () => {
     const pubChannel = ablyRealtimeClient().channels.get(channelName);
     const subChannel = ablyRealtimeClient().channels.get(channelName);
 
-    const decoder = ResponsesCodec.createDecoder();
+    const decoder = ResponsesSessionCodec.createDecoder();
     let projection: OpenAIProjection = init();
 
     let resolveDone: () => void;
@@ -146,13 +151,14 @@ describe('OpenAI ResponsesCodec integration', () => {
 
     await subChannel.subscribe((msg) => {
       const decoded = decoder.decode(msg);
-      for (const event of toCodecEvents(decoded)) projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+      for (const event of toCodecEvents(decoded))
+        projection = ResponsesSessionCodec.fold(projection, event, metaOf(msg));
       // Terminal events are off the wire; wait for the item's discrete output_item.done.
       if (decoded.outputs.some((e) => e.type === 'response.output_item.done')) resolveDone();
     });
 
     const itemId = 'rs-1';
-    const encoder = ResponsesCodec.createEncoder(pubChannel, { onAblyMessage: stampHeaders('run-1', 'msg-1') });
+    const encoder = ResponsesSessionCodec.createEncoder(pubChannel, { onAblyMessage: stampHeaders('run-1', 'msg-1') });
     await encoder.publishOutput(itemAdded(reasoningItem(itemId)));
     await encoder.publishOutput(reasoningSummaryPartAdded(itemId, 0));
     void encoder.publishOutput(reasoningSummaryTextDelta(itemId, 'Think', 0));
@@ -164,7 +170,7 @@ describe('OpenAI ResponsesCodec integration', () => {
 
     await done;
 
-    const item = ResponsesCodec.getMessages(projection)[0]?.message.items.find(
+    const item = ResponsesSessionCodec.getMessages(projection)[0]?.message.items.find(
       (i): i is Responses.ResponseReasoningItem => i.type === 'reasoning',
     );
     expect(item?.summary).toEqual([{ type: 'summary_text', text: 'Thinking…' }]);
@@ -175,7 +181,7 @@ describe('OpenAI ResponsesCodec integration', () => {
     const pubChannel = ablyRealtimeClient().channels.get(channelName);
     const subChannel = ablyRealtimeClient().channels.get(channelName);
 
-    const decoder = ResponsesCodec.createDecoder();
+    const decoder = ResponsesSessionCodec.createDecoder();
     let projection: OpenAIProjection = init();
 
     let resolveDone: () => void;
@@ -185,13 +191,14 @@ describe('OpenAI ResponsesCodec integration', () => {
 
     await subChannel.subscribe((msg) => {
       const decoded = decoder.decode(msg);
-      for (const event of toCodecEvents(decoded)) projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+      for (const event of toCodecEvents(decoded))
+        projection = ResponsesSessionCodec.fold(projection, event, metaOf(msg));
       // Terminal events are off the wire; the wire-form output_item.done carries the blob.
       if (decoded.outputs.some((e) => e.type === 'response.output_item.done')) resolveDone();
     });
 
     const itemId = 'rs-enc-1';
-    const encoder = ResponsesCodec.createEncoder(pubChannel, { onAblyMessage: stampHeaders('run-1', 'msg-1') });
+    const encoder = ResponsesSessionCodec.createEncoder(pubChannel, { onAblyMessage: stampHeaders('run-1', 'msg-1') });
     // Seed the opening bracket WITHOUT the blob; the wire-form `output_item.done` must carry it,
     // and it must survive the real Ably encode → publish → subscribe → decode.
     await encoder.publishOutput(itemAdded(reasoningItem(itemId)));
@@ -201,7 +208,7 @@ describe('OpenAI ResponsesCodec integration', () => {
 
     await done;
 
-    const item = ResponsesCodec.getMessages(projection)[0]?.message.items.find(
+    const item = ResponsesSessionCodec.getMessages(projection)[0]?.message.items.find(
       (i): i is Responses.ResponseReasoningItem => i.type === 'reasoning',
     );
     expect(item?.encrypted_content).toBe('ENCRYPTED-BLOB');
@@ -212,7 +219,7 @@ describe('OpenAI ResponsesCodec integration', () => {
     const pubChannel = ablyRealtimeClient().channels.get(channelName);
     const subChannel = ablyRealtimeClient().channels.get(channelName);
 
-    const decoder = ResponsesCodec.createDecoder();
+    const decoder = ResponsesSessionCodec.createDecoder();
     let projection: OpenAIProjection = init();
 
     let resolveDone: () => void;
@@ -222,14 +229,15 @@ describe('OpenAI ResponsesCodec integration', () => {
 
     await subChannel.subscribe((msg) => {
       const decoded = decoder.decode(msg);
-      for (const event of toCodecEvents(decoded)) projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+      for (const event of toCodecEvents(decoded))
+        projection = ResponsesSessionCodec.fold(projection, event, metaOf(msg));
       // Terminal events are off the wire; the refusal (content[1]) is published
       // last, so its stream end stands in as the done-signal.
       if (decoded.outputs.some((e) => e.type === 'response.refusal.done')) resolveDone();
     });
 
     const itemId = 'msg-1';
-    const encoder = ResponsesCodec.createEncoder(pubChannel, { onAblyMessage: stampHeaders('run-1', 'msg-1') });
+    const encoder = ResponsesSessionCodec.createEncoder(pubChannel, { onAblyMessage: stampHeaders('run-1', 'msg-1') });
     await encoder.publishOutput(itemAdded(messageItem(itemId)));
     // Two content parts opened from the same content_part.added start type.
     await encoder.publishOutput(contentPartAdded(itemId, 0));
@@ -243,7 +251,7 @@ describe('OpenAI ResponsesCodec integration', () => {
 
     await done;
 
-    const message = ResponsesCodec.getMessages(projection)[0]?.message.items.find(
+    const message = ResponsesSessionCodec.getMessages(projection)[0]?.message.items.find(
       (i): i is Responses.ResponseOutputMessage => i.type === 'message',
     );
     expect(message?.content).toEqual([
@@ -257,7 +265,7 @@ describe('OpenAI ResponsesCodec integration', () => {
     const pubChannel = ablyRealtimeClient().channels.get(channelName);
     const subChannel = ablyRealtimeClient().channels.get(channelName);
 
-    const decoder = ResponsesCodec.createDecoder();
+    const decoder = ResponsesSessionCodec.createDecoder();
     let projection: OpenAIProjection = init();
 
     let resolveDone: () => void;
@@ -267,12 +275,13 @@ describe('OpenAI ResponsesCodec integration', () => {
 
     await subChannel.subscribe((msg) => {
       const decoded = decoder.decode(msg);
-      for (const event of toCodecEvents(decoded)) projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+      for (const event of toCodecEvents(decoded))
+        projection = ResponsesSessionCodec.fold(projection, event, metaOf(msg));
       // Terminal events are off the wire; the run ends with the item's output_item.done.
       if (decoded.outputs.some((e) => e.type === 'response.output_item.done')) resolveDone();
     });
 
-    const encoder = ResponsesCodec.createEncoder(pubChannel, { onAblyMessage: stampHeaders('run-1', 'msg-1') });
+    const encoder = ResponsesSessionCodec.createEncoder(pubChannel, { onAblyMessage: stampHeaders('run-1', 'msg-1') });
     // output_item.added opens the stream, the arg deltas/done fill it, and
     // output_item.done carries the complete item.
     for (const event of functionCallArgsRun('fc-1', 'call-1', 'getWeather', '{"location":"London"}')) {
@@ -283,7 +292,7 @@ describe('OpenAI ResponsesCodec integration', () => {
 
     await done;
 
-    const item = ResponsesCodec.getMessages(projection)[0]?.message.items.find(
+    const item = ResponsesSessionCodec.getMessages(projection)[0]?.message.items.find(
       (i): i is Responses.ResponseFunctionToolCall => i.type === 'function_call',
     );
     expect(item?.arguments).toBe('{"location":"London"}');
@@ -295,7 +304,7 @@ describe('OpenAI ResponsesCodec integration', () => {
     const pubChannel = ablyRealtimeClient().channels.get(channelName);
     const subChannel = ablyRealtimeClient().channels.get(channelName);
 
-    const decoder = ResponsesCodec.createDecoder();
+    const decoder = ResponsesSessionCodec.createDecoder();
     let projection: OpenAIProjection = init();
 
     let resolveDone: () => void;
@@ -307,7 +316,8 @@ describe('OpenAI ResponsesCodec integration', () => {
     let textDoneCount = 0;
     await subChannel.subscribe((msg) => {
       const decoded = decoder.decode(msg);
-      for (const event of toCodecEvents(decoded)) projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+      for (const event of toCodecEvents(decoded))
+        projection = ResponsesSessionCodec.fold(projection, event, metaOf(msg));
       if (decoded.outputs.some((e) => e.type === 'response.output_text.done')) {
         textDoneCount += 1;
         if (textDoneCount === 2) resolveDone();
@@ -317,14 +327,14 @@ describe('OpenAI ResponsesCodec integration', () => {
     // Each encoder stamps its own codec-message-id, mirroring the transport
     // minting one per pipe/send. The reducer routes each stream to its own
     // message, so getMessages returns two.
-    const first = ResponsesCodec.createEncoder(pubChannel, { onAblyMessage: stampHeaders('run-1', 'msg-1') });
+    const first = ResponsesSessionCodec.createEncoder(pubChannel, { onAblyMessage: stampHeaders('run-1', 'msg-1') });
     await first.publishOutput(itemAdded(messageItem('item-1')));
     await first.publishOutput(contentPartAdded('item-1'));
     void first.publishOutput(textDelta('item-1', 'first'));
     await first.publishOutput(textDone('item-1', 'first'));
     await first.close();
 
-    const second = ResponsesCodec.createEncoder(pubChannel, { onAblyMessage: stampHeaders('run-1', 'msg-2') });
+    const second = ResponsesSessionCodec.createEncoder(pubChannel, { onAblyMessage: stampHeaders('run-1', 'msg-2') });
     await second.publishOutput(itemAdded(messageItem('item-2')));
     await second.publishOutput(contentPartAdded('item-2'));
     void second.publishOutput(textDelta('item-2', 'second'));
@@ -334,7 +344,7 @@ describe('OpenAI ResponsesCodec integration', () => {
 
     await done;
 
-    const messages = ResponsesCodec.getMessages(projection);
+    const messages = ResponsesSessionCodec.getMessages(projection);
     expect(messages).toHaveLength(2);
     expect(messages[0]?.codecMessageId).toBe('msg-1');
     expect(messages[1]?.codecMessageId).toBe('msg-2');
@@ -352,7 +362,7 @@ describe('OpenAI ResponsesCodec integration', () => {
     const pubChannel = ablyRealtimeClient().channels.get(channelName);
     const subChannel = ablyRealtimeClient().channels.get(channelName);
 
-    const decoder = ResponsesCodec.createDecoder();
+    const decoder = ResponsesSessionCodec.createDecoder();
     let projection: OpenAIProjection = init();
 
     let resolveDone: () => void;
@@ -362,17 +372,18 @@ describe('OpenAI ResponsesCodec integration', () => {
 
     await subChannel.subscribe((msg) => {
       const decoded = decoder.decode(msg);
-      for (const event of toCodecEvents(decoded)) projection = ResponsesCodec.fold(projection, event, metaOf(msg));
+      for (const event of toCodecEvents(decoded))
+        projection = ResponsesSessionCodec.fold(projection, event, metaOf(msg));
       if (decoded.inputs.length > 0) resolveDone();
     });
 
-    const encoder = ResponsesCodec.createEncoder(pubChannel, { onAblyMessage: stampHeaders('run-1', 'u-1') });
-    await encoder.publishInput(ResponsesCodec.createUserMessage(userTurn('what is the weather in London?')));
+    const encoder = ResponsesSessionCodec.createEncoder(pubChannel, { onAblyMessage: stampHeaders('run-1', 'u-1') });
+    await encoder.publishInput(ResponsesSessionCodec.createUserMessage(userTurn('what is the weather in London?')));
     await encoder.close();
 
     await done;
 
-    const messages = ResponsesCodec.getMessages(projection);
+    const messages = ResponsesSessionCodec.getMessages(projection);
     expect(messages).toHaveLength(1);
     expect(messages[0]?.message.role).toBe('user');
     expect(firstInputText(messages[0]?.message)).toBe('what is the weather in London?');

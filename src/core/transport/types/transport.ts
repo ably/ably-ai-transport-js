@@ -11,7 +11,6 @@
 
 import type * as Ably from 'ably';
 
-import type { CodecInputEvent, CodecOutputEvent } from '../../codec/types.js';
 import type { CancelRequest, RunEndReason, StepEndReason } from './shared.js';
 import type { SteerResult } from './steer.js';
 import type { RunLifecycleEvent, StepLifecycleEvent } from './tree.js';
@@ -125,7 +124,7 @@ export interface WireMeta {
  * @template TInput - The codec's input-event domain type.
  * @template TOutput - The codec's output-event domain type.
  */
-export type TransportEvent<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> =
+export type TransportEvent<TInput, TOutput> =
   | {
       /** Discriminator for a codec-decoded message event. */
       kind: 'message';
@@ -162,7 +161,7 @@ export type TransportEvent<TInput extends CodecInputEvent, TOutput extends Codec
  * @template TInput - The codec's input-event domain type.
  * @template TOutput - The codec's output-event domain type.
  */
-export interface TransportReceiver<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> {
+export interface TransportReceiver<TInput, TOutput> {
   /**
    * Subscribe to classified transport events. Fires once per inbound wire
    * message that produces an event, before the matching `ably-message`.
@@ -252,7 +251,7 @@ export interface TransportHistoryOptions {
  * @template TInput - The codec's input-event domain type.
  * @template TOutput - The codec's output-event domain type.
  */
-export interface TransportHistoryResult<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> {
+export interface TransportHistoryResult<TInput, TOutput> {
   /**
    * The classified events in this batch, in chronological (oldest-first)
    * order. Each batch is older than the one the previous call returned, so a
@@ -286,10 +285,7 @@ export interface TransportHistoryResult<TInput extends CodecInputEvent, TOutput 
  * @template TOutput - The codec's output-event domain type carried on
  *   received events.
  */
-export interface ClientTransport<
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-> extends TransportReceiver<TInput, TOutput> {
+export interface ClientTransport<TInput, TOutput> extends TransportReceiver<TInput, TOutput> {
   /**
    * Subscribe the transport's listener to the channel and attach it, starting
    * live event delivery. Single-flight and idempotent: concurrent and repeat
@@ -387,7 +383,7 @@ export interface ClientTransport<
  * upstream teardown.
  * @template TOutput - The codec output type carried by the source.
  */
-export type PipeSource<TOutput extends CodecOutputEvent> = ReadableStream<TOutput> | AsyncIterable<TOutput>;
+export type PipeSource<TOutput> = ReadableStream<TOutput> | AsyncIterable<TOutput>;
 
 /** Options for {@link AgentRunTransport.createStep}. */
 export interface StepOptions {
@@ -546,7 +542,7 @@ export interface OpenRunOptions {
  * stream) and the run continues.
  * @template TOutput - The codec's output-event domain type.
  */
-export interface OpenRunHooks<TOutput extends CodecOutputEvent> {
+export interface OpenRunHooks<TOutput> {
   /**
    * An external AbortSignal (typically the HTTP request's `req.signal`) that,
    * when fired, cancels this run. This allows platform-level cancellation —
@@ -618,7 +614,7 @@ export interface OpenRunHooks<TOutput extends CodecOutputEvent> {
 }
 
 /** The located input that woke an invocation, returned by {@link AgentTransport.locateInput}. */
-export interface LocatedInput<TInput extends CodecInputEvent> {
+export interface LocatedInput<TInput> {
   /** The triggering input's transport-tier metadata. */
   meta: WireMeta;
   /** The decoded input events the triggering wire message carried, in wire order. */
@@ -636,10 +632,7 @@ export interface LocatedInput<TInput extends CodecInputEvent> {
  * @template TInput - The codec's input-event domain type, located by {@link locateInput}.
  * @template TOutput - The codec's output-event domain type, published by the run/step handles.
  */
-export interface AgentTransport<
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-> extends TransportReceiver<TInput, TOutput> {
+export interface AgentTransport<TInput, TOutput> extends TransportReceiver<TInput, TOutput> {
   /**
    * Subscribe the transport's listener to the channel and attach it, starting
    * live event delivery and cancel routing. Single-flight and idempotent:
@@ -712,7 +705,7 @@ export interface AgentTransport<
  * step) and drives the run's lifecycle.
  * @template TOutput - The codec's output-event domain type carried by the run's streams.
  */
-export interface AgentRunTransport<TOutput extends CodecOutputEvent> {
+export interface AgentRunTransport<TOutput> {
   /** This run's id — minted at `openRun`, or the reused continuation id. */
   readonly runId: string;
   /**
@@ -786,7 +779,7 @@ export interface AgentRunTransport<TOutput extends CodecOutputEvent> {
  * so a retry supersedes the prior attempt's output.
  * @template TOutput - The codec's output-event domain type carried by the step's streams.
  */
-export interface RunStepTransport<TOutput extends CodecOutputEvent> {
+export interface RunStepTransport<TOutput> {
   /** This step's id — stable across retry attempts of the same step. */
   readonly stepId: string;
   /**

@@ -1,7 +1,7 @@
 /**
  * OpenAI Responses reducer.
  *
- * Pure `(init, fold, getMessages)` over the `OpenAIInput | OpenAIOutput` union.
+ * Pure `(init, fold, getMessages)` over the `OpenAISessionInput | OpenAIOutput` union.
  * Folds the agent's Responses event stream — and the client's user-message —
  * into a per-node projection of {@link OpenAIMessage}s. A single run can produce
  * several messages: the reducer keys them by codec-message-id, find-or-create
@@ -100,18 +100,15 @@ import type {
   ToolApprovalResponse,
   ToolResult,
   ToolResultError,
-} from '../../core/codec/index.js';
+} from '../../core/transport/session-codec.js';
+import type { OpenAIItem, OpenAIMessage, OpenAIOutput, OpenAIToolCallState } from './events.js';
+import { isModelledOutputItem } from './events.js';
 import type {
-  OpenAIInput,
-  OpenAIItem,
-  OpenAIMessage,
-  OpenAIOutput,
+  OpenAISessionInput,
   OpenAIToolApprovalResponsePayload,
-  OpenAIToolCallState,
   OpenAIToolResultErrorPayload,
   OpenAIToolResultPayload,
-} from './events.js';
-import { isModelledOutputItem } from './events.js';
+} from './session-events.js';
 
 /**
  * A projected message plus the reducer's own per-message item index. Embedded
@@ -649,7 +646,7 @@ const foldToolApprovalResponse = (
  */
 export const fold = (
   state: OpenAIProjection,
-  event: CodecEvent<OpenAIInput, OpenAIOutput>,
+  event: CodecEvent<OpenAISessionInput, OpenAIOutput>,
   meta: ReducerMeta,
 ): OpenAIProjection => {
   if (event.direction === 'output') {

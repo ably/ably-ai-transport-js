@@ -2,8 +2,8 @@
  * Transport header builder.
  *
  * Single source of truth for which transport headers every transport
- * message carries. Used by the agent session (pipe) and by
- * the client session (optimistic message stamping).
+ * message carries. Used by the agent's output path (pipe) and by
+ * the client's optimistic message stamping.
  */
 
 import * as Ably from 'ably';
@@ -49,16 +49,17 @@ import type { RunEndReason, RunLifecycleEvent, StepEndReason, StepLifecycleEvent
  * @param opts.codecMessageId - Message identity — the wire `codec-message-id` for this message.
  * @param opts.runClientId - ClientId of the run initiator.
  * @param opts.parent - Preceding message's codec-message-id (for branching).
- * @param opts.forkOf - Forked user-prompt's codec-message-id (for edits — creates a Run-level fork sibling).
+ * @param opts.forkOf - Forked user-prompt's codec-message-id (for edits — creates a run-level fork sibling).
  * @param opts.regenerates - Assistant codec-message-id this run regenerates. Stamps
  *   `msg-regenerate`. Distinct from `forkOf`: regenerate is a
- *   continuation of the prior run (no Run-level fork), with the message
- *   replacement resolved at projection extraction time.
+ *   continuation of the prior run (no run-level fork), with the message
+ *   replacement resolved when a consumer materialises messages.
  * @param opts.supersedes - Run-id this client tool-result fork supersedes (the
- *   suspended run it resolves). Stamps `supersedes` so the tree hides that
- *   now-dead run from branch selection — a single response renders linearly
- *   while concurrent forks still branch. Unlike `forkOf`, the superseded
- *   sibling is not kept navigable.
+ *   suspended run it resolves). Stamps `supersedes` so a consumer
+ *   reconstructing conversation structure hides that dead run from branch
+ *   selection — a single response renders linearly while concurrent forks
+ *   still branch. Unlike `forkOf`, the superseded sibling is not kept
+ *   navigable.
  * @param opts.invocationId - Agent-minted invocation id. Stamped by the agent on every event it publishes for the invocation (run lifecycle + outputs) so the client can observe it; not set by the client on the input.
  * @param opts.inputClientId - ClientId of the input event (the `ai-input`) that
  *   drove the current invocation. The agent reads it from the publisher's
@@ -233,9 +234,9 @@ export const isRunLifecycleName = (name: string | undefined): name is RunLifecyc
  * its run-end transport headers. Reads the `error-code` / `error-message`
  * headers the agent stamps (see {@link buildLifecycleHeaders}); falls back to
  * `RunResponseStreamFailed` — the code the agent stamps for run failures — when a run
- * ended in error without detail. Single source
- * of truth for the header→ErrorInfo derivation, shared by the client session's
- * `on('error')` emit and the Tree's `RunInfo.error`.
+ * ended in error without detail. Single source of truth for the
+ * header→ErrorInfo derivation, so every consumer of an errored run-end
+ * reconstructs the same error.
  * @param headers - Transport headers from the inbound run-end message.
  * @returns The reconstructed terminal error.
  */
@@ -254,15 +255,15 @@ export const buildRunEndError = (headers: Record<string, string>): Ably.ErrorInf
  *
  * Single source of truth for turning the wire run-lifecycle message `name`,
  * transport headers, and channel serial into the structured lifecycle event
- * the Tree consumes. Used by the client decode loop (live) and the View's
- * history replay so both build the event identically.
+ * receive-stream consumers get. Used by the live decode loop and history
+ * replay so both build the event identically.
  * @param name - The inbound Ably message `name`.
  * @param headers - Transport headers from the inbound Ably message.
  * @param serial - Ably channel serial of the message, or `undefined` for an
  *   optimistic local event. Stamped onto the returned event.
  * @param timestamp - Ably server timestamp (epoch ms) of the message, or
  *   `undefined` for an optimistic local event. Stamped onto the returned
- *   event; drives the Tree's event-log retention clock.
+ *   event.
  * @returns The lifecycle event, or `undefined` when `name` is not a
  *   run-lifecycle event name or the message carries no `run-id`.
  */
@@ -283,9 +284,9 @@ export const parseRunLifecycle = (
     const forkOf = headers[HEADER_FORK_OF];
     const regenerates = headers[HEADER_MSG_REGENERATE];
     // The triggering input's codec-message-id, already stamped on the wire by
-    // `buildLifecycleHeaders`. Carried onto the 'start' event so the Tree can
-    // reconcile a client-owned optimistic fork run (keyed by this same
-    // codec-message-id) onto the agent-minted run-id.
+    // `buildLifecycleHeaders`. Carried onto the 'start' event so a consumer
+    // can correlate the run back to its triggering input — the client
+    // transport resolves its `publishInput` runId watches from it.
     const inputCodecMessageId = headers[HEADER_INPUT_CODEC_MESSAGE_ID];
     return {
       type: 'start',
@@ -392,7 +393,7 @@ type StepLifecycleName = typeof EVENT_STEP_START | typeof EVENT_STEP_END;
 /**
  * Whether an Ably message `name` is one of the step-lifecycle event names
  * (step-start / step-end). Single source of truth for the classification the
- * shared decode-and-apply engine uses to route step lifecycle wires away from
+ * decode loops use to route step lifecycle wires away from
  * the codec decoder, mirroring {@link isRunLifecycleName}. Narrows `name` so
  * callers can pass it straight to {@link parseStepLifecycle}.
  * @param name - The inbound Ably message `name`, or undefined.
@@ -405,9 +406,9 @@ export const isStepLifecycleName = (name: string | undefined): name is StepLifec
  * Parse an inbound step-lifecycle Ably message into a {@link StepLifecycleEvent}.
  *
  * Mirrors {@link parseRunLifecycle} for the step layer: turns the wire message
- * `name`, transport headers, and channel serial into the structured event the
- * Tree consumes. Used by the shared decode-and-apply engine for both the live
- * loop and history replay so they build the event identically.
+ * `name`, transport headers, and channel serial into the structured event
+ * receive-stream consumers get. Used by both the live decode loop and history
+ * replay so they build the event identically.
  * @param name - The inbound Ably message `name`.
  * @param headers - Transport headers from the inbound Ably message.
  * @param serial - Ably channel serial of the message, or `undefined` for an

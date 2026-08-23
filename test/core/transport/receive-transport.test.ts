@@ -22,7 +22,6 @@ import {
 } from '../../../src/constants.js';
 import type { Decoder } from '../../../src/core/codec/types.js';
 import { classifyWireMessage, createReceiveTransport } from '../../../src/core/transport/receive-transport.js';
-import type { CodecInputEvent } from '../../../src/core/transport/session-codec.js';
 import type { TransportEvent } from '../../../src/core/transport/types/transport.js';
 import { silentLogger } from '../../helper/logger.js';
 import { foreignWire, inboundMessage } from '../../helper/wire-messages.js';
@@ -31,7 +30,7 @@ import { foreignWire, inboundMessage } from '../../helper/wire-messages.js';
 // Test types + mocks
 // ---------------------------------------------------------------------------
 
-interface TestInput extends CodecInputEvent {
+interface TestInput {
   kind: 'in';
 }
 interface TestOutput {

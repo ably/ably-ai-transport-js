@@ -1,6 +1,6 @@
 /**
  * The self-contained client transport: publish, receive, and history over one
- * channel and codec, without the Tree, View, or React layers.
+ * channel and codec.
  *
  * {@link createClientTransport} owns its whole receive path: it mints a codec
  * decoder, wraps it in a receive transport, and — once {@link

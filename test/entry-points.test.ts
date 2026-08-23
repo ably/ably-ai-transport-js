@@ -1,32 +1,32 @@
 /**
- * Guards which codec tier each public entry point publishes.
+ * Guards the codec each public entry point publishes.
  *
- * Every entry point ships two codecs per provider: a wire codec that encodes
- * and decodes, and a session codec that adds the reducer, the `getMessages`
- * projection read, and the well-known input factories. The sessions require the
- * session tier. A consumer handed the wrong one fails at whichever call site
- * first reaches for a missing method, so the mistake surfaces far from its
- * cause — the codec suites cannot catch it because they import the internal
- * modules directly and never exercise the entry points.
+ * Every entry point ships one codec per provider: a wire codec that encodes and
+ * decodes, and nothing more. A consumer handed a codec missing `createEncoder`
+ * or `createDecoder` fails at whichever call site first reaches for it, so the
+ * mistake surfaces far from its cause — the codec suites cannot catch it
+ * because they import the internal modules directly and never exercise the
+ * entry points.
+ *
+ * The negative half pins the wire-only property: the codec owns the wire
+ * format and folds no conversation state, so a reducer or projection surface
+ * appearing on it is a layering regression, not a feature.
  *
  * The type-level half matters as much as the runtime half: a caller has to be
- * able to *name* `VercelProjection` / `OpenAIProjection` and the session input
- * unions to use `createSessionHooks` or to annotate a session. Each test below
- * spells those types on a local, so dropping the type export breaks the build
- * here rather than in a consumer's.
+ * able to *name* the input and output unions to annotate their own state. Each
+ * test below spells those types on a local, so dropping the type export breaks
+ * the build here rather than in a consumer's.
  */
 
-import type * as AI from 'ai';
 import { describe, expect, it } from 'vitest';
 
-import type { CodecMessage } from '../src/index.js';
-import type { OpenAIMessage, OpenAIProjection, OpenAISessionInput } from '../src/openai/index.js';
-import { ResponsesCodec, ResponsesSessionCodec } from '../src/openai/index.js';
-import type { VercelProjection, VercelSessionInput } from '../src/vercel/index.js';
-import { createUIMessageCodec, createUIMessageSessionCodec } from '../src/vercel/index.js';
+import type { OpenAIInput, OpenAIOutput } from '../src/openai/index.js';
+import { ResponsesCodec } from '../src/openai/index.js';
+import type { VercelInput, VercelOutput } from '../src/vercel/index.js';
+import { createUIMessageCodec } from '../src/vercel/index.js';
 
-/** The surface the sessions and the Tree call, and a wire codec does not carry. */
-const SESSION_SURFACE = [
+/** State-folding surface a wire codec must not carry. */
+const REDUCER_SURFACE = [
   'init',
   'fold',
   'getMessages',
@@ -38,64 +38,39 @@ const SESSION_SURFACE = [
 ];
 
 describe('@ably/ai-transport/vercel', () => {
-  it('publishes a session codec carrying the reducer and the input factories', () => {
-    const codec = createUIMessageSessionCodec();
-
-    for (const method of SESSION_SURFACE) {
-      expect(codec, `session codec is missing ${method}`).toHaveProperty(method, expect.any(Function));
-    }
-  });
-
-  it('publishes a wire codec that encodes and decodes and carries none of the session surface', () => {
+  it('publishes a wire codec that encodes and decodes and folds no state', () => {
     const codec = createUIMessageCodec();
 
     expect(codec).toHaveProperty('createEncoder', expect.any(Function));
     expect(codec).toHaveProperty('createDecoder', expect.any(Function));
-    for (const method of SESSION_SURFACE) {
+    for (const method of REDUCER_SURFACE) {
       expect(codec, `wire codec unexpectedly carries ${method}`).not.toHaveProperty(method);
     }
   });
 
-  it('publishes the types a caller needs to name a session', () => {
-    const codec = createUIMessageSessionCodec();
+  it('publishes the types a caller needs to name the codec events', () => {
+    const inputs: VercelInput[] = [];
+    const outputs: VercelOutput[] = [];
 
-    const projection: VercelProjection = codec.init();
-    const input: VercelSessionInput = codec.createUserMessage({
-      id: 'm1',
-      role: 'user',
-      parts: [{ type: 'text', text: 'hi' }],
-    });
-    const messages: CodecMessage<AI.UIMessage>[] = codec.getMessages(projection);
-
-    expect(input.kind).toBe('user-message');
-    expect(messages).toEqual([]);
+    expect(inputs).toEqual([]);
+    expect(outputs).toEqual([]);
   });
 });
 
 describe('@ably/ai-transport/openai', () => {
-  it('publishes a session codec carrying the reducer and the input factories', () => {
-    for (const method of SESSION_SURFACE) {
-      expect(ResponsesSessionCodec, `session codec is missing ${method}`).toHaveProperty(method, expect.any(Function));
-    }
-  });
-
-  it('publishes a wire codec that encodes and decodes and carries none of the session surface', () => {
+  it('publishes a wire codec that encodes and decodes and folds no state', () => {
     expect(ResponsesCodec).toHaveProperty('createEncoder', expect.any(Function));
     expect(ResponsesCodec).toHaveProperty('createDecoder', expect.any(Function));
-    for (const method of SESSION_SURFACE) {
+    for (const method of REDUCER_SURFACE) {
       expect(ResponsesCodec, `wire codec unexpectedly carries ${method}`).not.toHaveProperty(method);
     }
   });
 
-  it('publishes the types a caller needs to name a session', () => {
-    const projection: OpenAIProjection = ResponsesSessionCodec.init();
-    const input: OpenAISessionInput = ResponsesSessionCodec.createUserMessage({
-      role: 'user',
-      items: [],
-    });
-    const messages: CodecMessage<OpenAIMessage>[] = ResponsesSessionCodec.getMessages(projection);
+  it('publishes the types a caller needs to name the codec events', () => {
+    const inputs: OpenAIInput[] = [];
+    const outputs: OpenAIOutput[] = [];
 
-    expect(input.kind).toBe('user-message');
-    expect(messages).toEqual([]);
+    expect(inputs).toEqual([]);
+    expect(outputs).toEqual([]);
   });
 });

@@ -1,4 +1,4 @@
-/** Types shared across the client, agent, tree, and view layers. */
+/** Types shared across the client and agent transport surfaces. */
 
 import type * as Ably from 'ably';
 
@@ -6,7 +6,7 @@ import type * as Ably from 'ably';
  * Why a run ended.
  *
  * A run-end is terminal — a run that merely pauses awaiting input publishes
- * `ai-run-suspend` instead (see {@link AgentRun.suspend}).
+ * `ai-run-suspend` instead (see `AgentRunTransport.suspend`).
  *
  * - `complete` — the run finished naturally.
  * - `cancelled` — the run was cancelled by a client.
@@ -15,18 +15,17 @@ import type * as Ably from 'ably';
 export type RunEndReason = 'complete' | 'cancelled' | 'error';
 
 /**
- * The lifecycle status of a run, as observed off the conversation Tree.
+ * The lifecycle status of a run, derivable from its observed lifecycle
+ * events.
  *
  * - `active` — the run is in flight (streaming), or not yet observed on the
  *   channel (a freshly-created run whose run-start has not folded in).
  * - `suspended` — the run is paused awaiting input (it published
  *   `ai-run-suspend`); a later continuation re-activates it.
  * - `complete` / `cancelled` / `error` — terminal {@link RunEndReason}s; an
- *   `error` run additionally carries terminal error detail (`Run.error`).
+ *   `error` run-end additionally carries terminal error detail.
  *
- * This is the single source of truth for the run status value set: the Tree's
- * per-run `RunNodeState.status` is defined in terms of it, and it is exposed
- * unchanged on the shared {@link BaseRun.status} accessor.
+ * This is the single source of truth for the run status value set.
  */
 export type RunStatus = 'active' | 'suspended' | 'complete' | 'cancelled' | 'error';
 
@@ -46,7 +45,7 @@ export type RunStatus = 'active' | 'suspended' | 'complete' | 'cancelled' | 'err
  * attempt's output non-canonical without any terminal event.
  *
  * - `complete` — the step attempt finished its work.
- * - `failed` — the step attempt failed (the closure threw, or its piped
+ * - `failed` — the step attempt failed (a publish threw, or its piped
  *   stream errored). A retry under the same `step-id` may follow.
  * - `cancelled` — the run was cancelled while this step was open. Distinct
  *   from `complete` (the step did not finish its output) and from `failed`

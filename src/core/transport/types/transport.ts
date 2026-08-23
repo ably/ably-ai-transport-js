@@ -2,18 +2,16 @@
  * Transport-layer types: the send-side client/agent surfaces and the
  * receive-side event stream.
  *
- * These are the public boundary that lets a developer adopt the transport on
- * its own — publish and subscribe to codec events with run/step bracketing —
- * and fold those events into their own application state, without taking the
- * Tree, View, or React layers. The Tree becomes one subscriber over the same
- * event stream rather than a hardcoded target.
+ * These are the transport's public boundary: publish and subscribe to codec
+ * events with run/step bracketing, and fold those events into the
+ * application's own state.
  */
 
 import type * as Ably from 'ably';
 
+import type { RunLifecycleEvent, StepLifecycleEvent } from './lifecycle.js';
 import type { CancelRequest, RunEndReason, StepEndReason } from './shared.js';
 import type { SteerResult } from './steer.js';
-import type { RunLifecycleEvent, StepLifecycleEvent } from './tree.js';
 
 // ---------------------------------------------------------------------------
 // Receive side
@@ -26,23 +24,23 @@ import type { RunLifecycleEvent, StepLifecycleEvent } from './tree.js';
  * The transport reads these fields off the `extras.ai.transport` header tier
  * (and the message's own Ably fields) but never interprets the structure
  * fields (`parent` / `forkOf` / `regenerates` / `inputCodecMessageId`) — those
- * are carried verbatim for a consumer (such as the Tree) that reconstructs
- * branching. Every typed field is optional: a given wire message populates only
+ * are carried verbatim for a consumer reconstructing conversation structure;
+ * the application interprets them. Every typed field is optional: a given wire
+ * message populates only
  * the fields its message name and headers carry.
  *
  * The typed fields are a convenience projection of the two raw header buckets.
  * {@link transport} and {@link codec} carry the complete `extras.ai.transport`
  * and `extras.ai.codec` tiers verbatim, so a consumer rebuilding conversation
  * state has full fidelity and no consumer needs privileged access to the raw
- * wire — the Tree drives its `applyMessage` off {@link transport} exactly as a
- * third-party subscriber could.
+ * wire.
  */
 export interface WireMeta {
   /**
    * The complete `extras.ai.transport` header tier, verbatim. The transport
-   * writes and reads run/step/structure headers here; the Tree folds a message
-   * by reading this bucket. Empty object when the wire carried no transport
-   * tier.
+   * writes and reads run/step/structure headers here; a consumer folds a
+   * message by reading this bucket. Empty object when the wire carried no
+   * transport tier.
    */
   transport: Record<string, string>;
   /**
@@ -78,21 +76,21 @@ export interface WireMeta {
   messageName: string | undefined;
   /**
    * The append version serial (`version.serial`) — the per-delivery identity
-   * an appending stream advances. A consumer rebuilding the Tree's whole-wire
-   * replay dedup keys its `decodedThrough` high-water-mark on this; a
+   * an appending stream advances. A consumer deduping whole-wire replays keys
+   * its high-water-mark on this; a
    * transport-only consumer can ignore it. `undefined` for an optimistic local
    * echo.
    */
   versionSerial: string | undefined;
   /** The append version timestamp (`version.timestamp`, epoch ms), or `undefined` for an optimistic local echo. */
   versionTimestamp: number | undefined;
-  /** Structure header `parent` — the codec-message-id of the preceding message in this branch. Carried verbatim; only the Tree interprets it. */
+  /** Structure header `parent` — the codec-message-id of the preceding message in this branch. Carried verbatim; the application interprets it. */
   parent: string | undefined;
-  /** Structure header `fork-of` — the codec-message-id this message replaces. Carried verbatim; only the Tree interprets it. */
+  /** Structure header `fork-of` — the codec-message-id this message replaces. Carried verbatim; the application interprets it. */
   forkOf: string | undefined;
-  /** Structure header `msg-regenerate` — the codec-message-id this run regenerates. Carried verbatim; only the Tree interprets it. */
+  /** Structure header `msg-regenerate` — the codec-message-id this run regenerates. Carried verbatim; the application interprets it. */
   regenerates: string | undefined;
-  /** Structure header `input-codec-message-id` — the codec-message-id of the input that triggered this run. Carried verbatim; only the Tree interprets it. */
+  /** Structure header `input-codec-message-id` — the codec-message-id of the input that triggered this run. Carried verbatim; the application interprets it. */
   inputCodecMessageId: string | undefined;
   /**
    * The parsed `input-codec-message-ids` bracket receipt — on an
@@ -153,7 +151,7 @@ export type TransportEvent<TInput, TOutput> =
  * subscribes to. Each inbound wire message produces at most one typed
  * {@link TransportEvent} (emitted before the raw `ably-message`), so a consumer
  * can rebuild conversation state itself — keyed by codec-message-id, grouped by
- * run, deduped by step — without the Tree.
+ * run, deduped by step.
  *
  * Delivery is synchronous and in registration order: each event reaches every
  * subscriber before the next event is processed, and a throwing subscriber is
@@ -200,11 +198,11 @@ export interface TransportReceiver<TInput, TOutput> {
 export interface PublishInputOptions {
   /** The codec-message-id to publish under. Defaults to a fresh id when omitted. */
   codecMessageId?: string;
-  /** Structure: the codec-message-id of the preceding message in this branch. Omit for linear chat. Carried verbatim; only the Tree interprets it. */
+  /** Structure: the codec-message-id of the preceding message in this branch. Omit for linear chat. Carried verbatim; the application interprets it. */
   parent?: string;
-  /** Structure: the codec-message-id this input replaces (an edit fork). Omit for linear chat. Carried verbatim; only the Tree interprets it. */
+  /** Structure: the codec-message-id this input replaces (an edit fork). Omit for linear chat. Carried verbatim; the application interprets it. */
   forkOf?: string;
-  /** Structure: the codec-message-id this input regenerates. Omit for linear chat. Carried verbatim; only the Tree interprets it. */
+  /** Structure: the codec-message-id this input regenerates. Omit for linear chat. Carried verbatim; the application interprets it. */
   regenerates?: string;
   /** Reuse a known run-id (a continuation of an existing run). Omit for a fresh send; the agent mints the run-id at run-start. */
   runId?: string;
@@ -285,7 +283,7 @@ export interface TransportHistoryResult<TInput, TOutput> {
 
 /**
  * The client transport: a self-contained publish + receive surface over one
- * channel and codec, without the Tree, View, or React layers. The factory
+ * channel and codec. The factory
  * owns the channel subscription and the receive stream; {@link connect}
  * starts delivery, {@link subscribe} observes classified events, and
  * {@link history} pages older events on demand.
@@ -675,8 +673,7 @@ export interface LocatedInput<TInput> {
  * cancel signals route onto the matching run handle, and a steering message
  * under an open run's run-id both surfaces as an ordinary event on the
  * receive stream (for the agent to fold itself) and flips the run handle's
- * {@link AgentRunTransport.hasInput}. Exposes no Tree-read accessors
- * (`view`, `messages`, `status`).
+ * {@link AgentRunTransport.hasInput}.
  * @template TInput - The codec's input-event domain type, located by {@link locateInput}.
  * @template TOutput - The codec's output-event domain type, published by the run/step handles.
  */
@@ -747,8 +744,8 @@ export interface AgentTransport<TInput, TOutput> extends TransportReceiver<TInpu
   adoptRun(runId: string, opts?: AdoptRunOptions, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput>;
   /**
    * Scan channel history for the input event whose `event-id` header matches
-   * `eventId`, returning its {@link WireMeta} and decoded inputs — so a
-   * transport-only agent can resume durably without the Tree. Runs on a
+   * `eventId`, returning its {@link WireMeta} and decoded inputs — so an
+   * agent can resume durably from channel history. Runs on a
    * throwaway decoder so it never perturbs the live receive stream's dedup
    * state. Resolves `undefined` when no matching input is found in history —
    * including when `opts.limit` bounded the scan before the whole channel was

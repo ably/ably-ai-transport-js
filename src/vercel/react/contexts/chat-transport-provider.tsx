@@ -1,16 +1,16 @@
 /**
- * ChatTransportProvider: creates a ChatTransport from a ClientSession and makes it
+ * ChatTransportProvider: creates a SessionChatTransport from a ClientSession and makes it
  * available to descendants via ChatTransportContext.
  *
  * Wraps children with ClientSessionProvider (using the default Vercel codec). The
  * surrounding `<AblyProvider>` supplies the Realtime client; the session
  * resolves the channel from `channelName` itself. An inner component reads
- * the ClientSession via useClientSession() and creates the ChatTransport
+ * the ClientSession via useClientSession() and creates the SessionChatTransport
  * via useMemo, keyed on the session and transport options.
  *
- * The ChatTransport is NOT closed on unmount — the underlying ClientSession
+ * The SessionChatTransport is NOT closed on unmount — the underlying ClientSession
  * lifecycle is managed by the wrapping ClientSessionProvider. Auto-closing would break
- * React Strict Mode, and ChatTransport.close() delegates to ClientSession.close()
+ * React Strict Mode, and SessionChatTransport.close() delegates to ClientSession.close()
  * which ClientSessionProvider already calls.
  *
  * Multiple ChatTransportProviders can be nested using distinct channelNames.
@@ -26,8 +26,8 @@ import type { VercelOutput } from '../../codec/index.js';
 import type { VercelProjection } from '../../codec/reducer.js';
 import { createUIMessageSessionCodec } from '../../codec/session-codec.js';
 import type { VercelSessionInput } from '../../codec/session-events.js';
-import type { ChatTransportOptions } from '../../transport/index.js';
-import { createChatTransport } from '../../transport/index.js';
+import type { SessionChatTransportOptions } from '../../transport/session-chat-transport.js';
+import { createSessionChatTransport } from '../../transport/session-chat-transport.js';
 import type { ChatTransportSlot } from './chat-transport-context.js';
 import { ChatTransportContext } from './chat-transport-context.js';
 
@@ -38,7 +38,7 @@ export const { ClientSessionProvider, useAblyMessages, useClientSession, useCrea
  * The default Vercel codec this provider binds. The provider/context path is
  * instantiated at module scope, so it is SDK-default-typed; for per-instance
  * `UIMessage` typing use the imperative path (`createClientSession<…>` +
- * `createChatTransport<…>` + `useMessageSync<…>`).
+ * `createSessionChatTransport<…>` + `useMessageSync<…>`).
  */
 const defaultUIMessageCodec = createUIMessageSessionCodec();
 
@@ -64,10 +64,10 @@ export interface ChatTransportProviderProps extends CoreClientSessionProviderPro
   /**
    * Optional transport options for customizing chat request construction (e.g. the `prepareSendMessagesRequest` hook).
    * Must be stable across renders — wrap in `useMemo` or define outside the component.
-   * A new object reference triggers ChatTransport recreation.
+   * A new object reference triggers SessionChatTransport recreation.
    * If this object also sets `api`/`credentials`/`fetch`, the dedicated top-level props of the same name take precedence.
    */
-  chatOptions?: ChatTransportOptions;
+  chatOptions?: SessionChatTransportOptions;
 }
 
 const ChatTransportProviderInner = ({
@@ -76,13 +76,13 @@ const ChatTransportProviderInner = ({
   children,
 }: {
   channelName: string;
-  chatTransportOptions: ChatTransportOptions;
+  chatTransportOptions: SessionChatTransportOptions;
   children: ReactNode;
 }) => {
   const { session, sessionError } = useClientSession();
   const { providers: parentProviders } = useContext(ChatTransportContext);
   const chatTransport = useMemo(
-    () => createChatTransport(session, chatTransportOptions),
+    () => createSessionChatTransport(session, chatTransportOptions),
     [session, chatTransportOptions],
   );
   const contextValue = useMemo(() => {
@@ -97,11 +97,11 @@ const ChatTransportProviderInner = ({
 };
 
 /**
- * Provide a {@link ChatTransport} and its underlying {@link ClientSession} to descendant components.
+ * Provide a {@link SessionChatTransport} and its underlying {@link ClientSession} to descendant components.
  *
  * Wraps children with `ClientSessionProvider` using `channelName` (the Realtime
  * client is read from the surrounding `<AblyProvider>`), creates a
- * {@link ClientSession} with the default Vercel codec, wraps it in a {@link ChatTransport},
+ * {@link ClientSession} with the default Vercel codec, wraps it in a {@link SessionChatTransport},
  * and registers the full slot in `ChatTransportContext` under `channelName`. Descendants call
  * {@link useChatTransport} with the same `channelName` to access both.
  *
@@ -120,7 +120,7 @@ const ChatTransportProviderInner = ({
  * @param props.api - Endpoint the chat transport POSTs the invocation to. Default `/api/chat`.
  * @param props.credentials - Fetch credentials mode for the invocation POST.
  * @param props.fetch - Custom fetch implementation for the invocation POST.
- * @param props.chatOptions - Optional hooks for customizing chat request construction. Must be stable (memoized) — a new reference recreates the ChatTransport.
+ * @param props.chatOptions - Optional hooks for customizing chat request construction. Must be stable (memoized) — a new reference recreates the SessionChatTransport.
  * @param props.children - Descendant components that consume the chat transport via hooks.
  * @returns A React element wrapping children with ClientSessionContext and ChatTransportContext.
  */
@@ -132,10 +132,10 @@ export const ChatTransportProvider = ({
   children,
   ...sessionProps
 }: ChatTransportProviderProps & PropsWithChildren): ReactNode => {
-  // Fold the transport-owned POST options into a single ChatTransportOptions.
-  // Memoized so the ChatTransport isn't recreated each render — createChatTransport
+  // Fold the transport-owned POST options into a single SessionChatTransportOptions.
+  // Memoized so the SessionChatTransport isn't recreated each render — createSessionChatTransport
   // is keyed on this object's identity.
-  const chatTransportOptions = useMemo<ChatTransportOptions>(
+  const chatTransportOptions = useMemo<SessionChatTransportOptions>(
     () => ({
       ...chatOptions,
       ...(api !== undefined && { api }),

@@ -3,7 +3,7 @@
  * session propagate all the way through to useChat's status and onError.
  *
  * These tests exercise the full chain:
- *   ClientSession (real Ably channel) → ChatTransport adapter → useChat
+ *   ClientSession (real Ably channel) → SessionChatTransport adapter → useChat
  *
  * Scenarios:
  * - POST failure → stream errors with SessionSendFailed → useChat status: error
@@ -23,8 +23,8 @@ import { type VercelOutput } from '../../../src/vercel/codec/index.js';
 import { type VercelProjection } from '../../../src/vercel/codec/reducer.js';
 import { createUIMessageSessionCodec } from '../../../src/vercel/codec/session-codec.js';
 import { type VercelSessionInput } from '../../../src/vercel/codec/session-events.js';
-import type { ChatTransport } from '../../../src/vercel/transport/chat-transport.js';
-import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
+import type { SessionChatTransport } from '../../../src/vercel/transport/session-chat-transport.js';
+import { createSessionChatTransport } from '../../../src/vercel/transport/session-chat-transport.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { createRunFromOpts } from '../../helper/run-from-opts.js';
@@ -38,7 +38,7 @@ const UIMessageCodec = createUIMessageSessionCodec();
 describe('useChat error propagation', () => {
   let agentSession: AgentSession<VercelOutput, VercelProjection, AI.UIMessage> | undefined;
   let clientSession: ClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage> | undefined;
-  let chatTransport: ChatTransport | undefined;
+  let chatTransport: SessionChatTransport | undefined;
 
   afterEach(async () => {
     await clientSession?.close();
@@ -62,7 +62,7 @@ describe('useChat error propagation', () => {
 
     // The transport owns the agent-invocation POST — point it at a dead
     // endpoint so the POST fails and the useChat-facing stream errors.
-    chatTransport = createChatTransport(clientSession, { api: 'http://localhost:1/nonexistent' });
+    chatTransport = createSessionChatTransport(clientSession, { api: 'http://localhost:1/nonexistent' });
 
     const onError = vi.fn();
 
@@ -129,7 +129,7 @@ describe('useChat error propagation', () => {
 
     // The transport POSTs the invocation; capture it to read the runId, and
     // succeed (status 200) so the run proceeds and we can detach mid-stream.
-    chatTransport = createChatTransport(clientSession, { api: '/api/chat', fetch: capturingFetch });
+    chatTransport = createSessionChatTransport(clientSession, { api: '/api/chat', fetch: capturingFetch });
 
     const onError = vi.fn();
 
@@ -181,7 +181,7 @@ describe('useChat error propagation', () => {
     // Fire-and-forget — the stream stays open indefinitely
     void serverRun.pipe(openStream);
 
-    // Poll the session tree for streamed events. ChatTransport returns an
+    // Poll the session tree for streamed events. SessionChatTransport returns an
     // empty stream to useChat (useMessageSync handles message state separately),
     // so result.current.messages won't reflect streamed data. Polling at 50ms
     // (waitFor's default interval) is fine for an integration test.

@@ -167,7 +167,7 @@ export const useMessageSync = <
 
   const [gated, setGated] = useState(false);
 
-  // Subscribe to the ChatTransport's streaming state. Reset on transport
+  // Subscribe to the SessionChatTransport's streaming state. Reset on transport
   // change so a stale `true` doesn't permanently suppress syncs.
   useEffect(() => {
     if (!resolvedChatTransport) {

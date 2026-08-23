@@ -67,7 +67,7 @@ export interface ToolApprovalRequestEvent {
 export interface OpenAIToolCallState {
   /** The gated call's approval status, set once the agent requests approval and updated by the client's response. */
   approval?: 'pending' | 'approved' | 'denied';
-  /** The client-side execution result status, set once a `tool-result` or `tool-result-error` folds. */
+  /** The client-side execution result status. A consumer's fold records here whether a client-executed call succeeded, since a `function_call_output` item cannot carry a failure status. */
   result?: 'ok' | 'failed';
   /** The tool name, carried on the approval request so a client can render the prompt without the streamed `function_call`. */
   name?: string;

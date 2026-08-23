@@ -184,5 +184,10 @@ wire up the internal classes. Consumers never call `new Default*` directly.
 8. **Explicit exports** — only what an `index.ts` re-exports is public API.
 9. **Self-contained features** — each manages its own subscriptions, state, and
    cleanup.
-10. **Single shared channel** — one Ably channel per transport, shared by all
-    features.
+10. **Single shared channel, caller-owned** — one Ably channel per transport,
+    shared by all features. The caller resolves and owns the channel; the
+    transport subscribes its own listener and never detaches it.
+11. **No message assembly in the SDK** — no reducer, no fold driver, no
+    projection type. The application demultiplexes a batch's `message` events
+    by their codec-message-id and folds each bucket with the provider's own
+    machinery.

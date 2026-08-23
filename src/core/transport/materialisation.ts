@@ -17,9 +17,50 @@
 import type { Logger } from '../../logger.js';
 import { LogLevel, makeLogger } from '../../logger.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
-import { applyTransportEventToTree, createReceiveTransport, type ReceiveTransport } from './receive-transport.js';
-import { wrapMessageProcessingError } from './session-support.js';
-import { createTree, type DefaultTree } from './tree.js';
+import { wrapMessageProcessingError } from './channel-support.js';
+import { createReceiveTransport, type ReceiveTransport } from './receive-transport.js';
+import { createTree, type DefaultTree, type TreeInternal } from './tree.js';
+import type { TransportEvent } from './types/transport.js';
+
+/**
+ * Fold one classified {@link TransportEvent} into a Tree by calling its existing
+ * apply methods. A `message` event drives `applyMessage` off the raw transport
+ * header bucket carried on the event's `meta.transport`, so the Tree consumes
+ * the public event exactly as a third-party subscriber would, with no
+ * privileged access to the wire.
+ * @param tree - The tree to apply the event to.
+ * @param event - The classified transport event.
+ */
+export const applyTransportEventToTree = <
+  TInput extends CodecInputEvent,
+  TOutput extends CodecOutputEvent,
+  TProjection,
+>(
+  tree: TreeInternal<TInput, TOutput, TProjection>,
+  event: TransportEvent<TInput, TOutput>,
+): void => {
+  switch (event.kind) {
+    case 'message': {
+      const { meta } = event;
+      tree.applyMessage(
+        { inputs: event.inputs, outputs: event.outputs },
+        meta.transport,
+        meta.serial,
+        meta.timestamp,
+        meta.versionSerial,
+      );
+      break;
+    }
+    case 'run-lifecycle': {
+      tree.applyRunLifecycle(event.event);
+      break;
+    }
+    case 'step-lifecycle': {
+      tree.applyStepLifecycle(event.event);
+      break;
+    }
+  }
+};
 
 /**
  * A Tree paired with the {@link ReceiveTransport} that folds wire messages into

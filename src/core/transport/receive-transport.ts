@@ -5,16 +5,13 @@
  * {@link classifyWireMessage} is the one place that turns a raw inbound Ably
  * message into a typed {@link TransportEvent} — run-lifecycle, step-lifecycle,
  * or a codec-decoded message — reusing the header parsers and the codec
- * decoder. Both the Tree feed ({@link applyTransportEventToTree}) and the public
- * {@link TransportReceiver} are built on it, so they cannot drift on how a wire
- * message is classified.
+ * decoder. The public {@link TransportReceiver} is built on it, so every
+ * consumer sees one classification of the wire.
  *
  * {@link createReceiveTransport} wraps the classifier in an event emitter a
  * developer subscribes to directly: it emits the typed `event` before the raw
  * `ably-message`, and turns a decode failure into an `error` that drops the one
- * message rather than tearing down the stream. {@link applyTransportEventToTree}
- * folds a classified event into a Tree, so a consumer that keeps the Tree drives
- * it off the same public event a third party would.
+ * message rather than tearing down the stream.
  */
 
 import type * as Ably from 'ably';
@@ -23,9 +20,8 @@ import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
 import type { CodecInputEvent, CodecOutputEvent, Decoder } from '../codec/types.js';
+import { wrapMessageProcessingError } from './channel-support.js';
 import { isRunLifecycleName, isStepLifecycleName, parseRunLifecycle, parseStepLifecycle } from './headers.js';
-import { wrapMessageProcessingError } from './session-support.js';
-import type { TreeInternal } from './tree.js';
 import type { TransportEvent, TransportReceiver } from './types/transport.js';
 import { wireMetaFromMessage } from './wire-meta.js';
 
@@ -73,46 +69,6 @@ export const classifyWireMessage = <TInput extends CodecInputEvent, TOutput exte
   // run-id is as absent as a missing header.
   if (inputs.length === 0 && outputs.length === 0 && !meta.runId) return undefined;
   return { kind: 'message', meta, inputs, outputs };
-};
-
-/**
- * Fold one classified {@link TransportEvent} into a Tree by calling its existing
- * apply methods. A `message` event drives `applyMessage` off the raw transport
- * header bucket carried on the event's `meta.transport`, so the Tree consumes
- * the public event exactly as a third-party subscriber would, with no
- * privileged access to the wire.
- * @param tree - The tree to apply the event to.
- * @param event - The classified transport event.
- */
-export const applyTransportEventToTree = <
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-  TProjection,
->(
-  tree: TreeInternal<TInput, TOutput, TProjection>,
-  event: TransportEvent<TInput, TOutput>,
-): void => {
-  switch (event.kind) {
-    case 'message': {
-      const { meta } = event;
-      tree.applyMessage(
-        { inputs: event.inputs, outputs: event.outputs },
-        meta.transport,
-        meta.serial,
-        meta.timestamp,
-        meta.versionSerial,
-      );
-      break;
-    }
-    case 'run-lifecycle': {
-      tree.applyRunLifecycle(event.event);
-      break;
-    }
-    case 'step-lifecycle': {
-      tree.applyStepLifecycle(event.event);
-      break;
-    }
-  }
 };
 
 /**

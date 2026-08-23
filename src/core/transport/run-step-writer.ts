@@ -28,9 +28,9 @@ import { publishLifecycleEvent } from './lifecycle-publish.js';
 import { pipeStream } from './pipe-stream.js';
 import type { RunManager, StepClientScopes } from './run-manager.js';
 import type {
+  OpenRunHooks,
   PipeSource,
   RunEndReason,
-  RunHooks,
   RunStep,
   StepEndParams,
   StepEndReason,
@@ -132,7 +132,7 @@ export interface RunStepWriterContext<TInput extends CodecInputEvent, TOutput ex
    */
   getPriorStepClientId(runId: string): string | undefined;
   /** The run's callbacks — `onAblyMessage` (per published message), `onCancelled` (final write on cancel), `onError`. */
-  hooks: RunHooks<TOutput>;
+  hooks: OpenRunHooks<TOutput>;
   /** The run's composite abort signal (internal controller composed with any external signal). */
   signal: AbortSignal;
   /** The run's logger, if any. */

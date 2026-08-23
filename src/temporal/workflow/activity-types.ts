@@ -11,8 +11,8 @@
  */
 
 import type { InvocationData } from '../../core/transport/invocation.js';
-import type { RunIdentity } from '../../core/transport/types/agent.js';
 import type { RunEndReason } from '../../core/transport/types/shared.js';
+import type { RunIdentity } from '../../core/transport/types/transport.js';
 
 /** Input to the `openRun` activity. */
 export interface OpenRunInput {

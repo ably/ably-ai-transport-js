@@ -37,11 +37,6 @@ import { resolveChannelModes } from '../channel-options.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent, Encoder } from '../codec/types.js';
 import { createBaseRun } from './base-run.js';
 import { buildCancelMessage, type CancelTarget } from './cancel-envelope.js';
-import { buildRunEndError, buildTransportHeaders } from './headers.js';
-import { createHistoryHydrator, type HistoryHydrator } from './history-hydrator.js';
-import { Invocation } from './invocation.js';
-import { createMaterialisation } from './materialisation.js';
-import type { ReceiveTransport } from './receive-transport.js';
 import {
   bestEffortDetach,
   ConnectGuard,
@@ -51,7 +46,12 @@ import {
   noopUnsubscribe,
   SessionState,
   subscribeAndAttach,
-} from './session-support.js';
+} from './channel-support.js';
+import { buildRunEndError, buildTransportHeaders } from './headers.js';
+import { createHistoryHydrator, type HistoryHydrator } from './history-hydrator.js';
+import { Invocation } from './invocation.js';
+import { createMaterialisation } from './materialisation.js';
+import type { ReceiveTransport } from './receive-transport.js';
 import { SteerCoordinator } from './steer-coordinator.js';
 import type { DefaultTree } from './tree.js';
 import type {

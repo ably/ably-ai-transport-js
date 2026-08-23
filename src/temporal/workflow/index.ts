@@ -24,8 +24,8 @@
 import { type ActivityOptions, CancellationScope, proxyActivities, workflowInfo } from '@temporalio/workflow';
 
 import type { InvocationData } from '../../core/transport/invocation.js';
-import type { RunIdentity } from '../../core/transport/types/agent.js';
 import type { RunEndReason } from '../../core/transport/types/shared.js';
+import type { RunIdentity } from '../../core/transport/types/transport.js';
 import type { FramingActivities } from './activity-types.js';
 
 /**

@@ -15,9 +15,9 @@ import * as Ably from 'ably';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import type { CodecInputEvent, CodecOutputEvent, Decoder } from '../codec/types.js';
+import { wrapMessageProcessingError } from './channel-support.js';
 import type { HistoryPagesCursor } from './load-history-pages.js';
 import { classifyWireMessage } from './receive-transport.js';
-import { wrapMessageProcessingError } from './session-support.js';
 import type { TransportEvent, TransportHistoryOptions, TransportHistoryResult } from './types/transport.js';
 
 /**

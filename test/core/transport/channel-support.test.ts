@@ -9,7 +9,7 @@ import {
   isContinuityLost,
   subscribeAndAttach,
   wrapMessageProcessingError,
-} from '../../../src/core/transport/session-support.js';
+} from '../../../src/core/transport/channel-support.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { type LogHandler, LogLevel, makeLogger } from '../../../src/logger.js';
 

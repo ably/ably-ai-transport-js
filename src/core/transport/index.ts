@@ -27,7 +27,6 @@ export type {
   PublishInputResult,
   RunEndParams,
   RunEndReason,
-  RunHooks,
   RunIdentity,
   RunInfo,
   RunLifecycleEvent,

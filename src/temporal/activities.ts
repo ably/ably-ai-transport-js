@@ -20,7 +20,7 @@ import * as Ably from 'ably';
 
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
 import { pageUntilLocated } from '../core/transport/page-until-located.js';
-import type { RunIdentity } from '../core/transport/types/agent.js';
+import type { RunIdentity } from '../core/transport/types/transport.js';
 import { withAgentSession } from '../core/transport/with-agent-session.js';
 import { ErrorCode } from '../errors.js';
 import type { Logger } from '../logger.js';

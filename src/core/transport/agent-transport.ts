@@ -38,6 +38,7 @@ import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
 import type { CodecInputEvent, CodecOutputEvent, WireCodec } from '../codec/types.js';
 import { readCancelTarget } from './cancel-envelope.js';
+import { ConnectGuard, subscribeAndAttach } from './channel-support.js';
 import { walkHistoryBatch } from './history-walk.js';
 import { evictOldestIfFull } from './internal/bounded-map.js';
 import { type HistoryPagesCursor, loadHistoryPages } from './load-history-pages.js';
@@ -45,7 +46,6 @@ import { createReceiveTransport } from './receive-transport.js';
 import { createRunManager } from './run-manager.js';
 import { RunSteerTracker } from './run-steer-tracker.js';
 import { createRunStepWriter, stepEndReasonFor } from './run-step-writer.js';
-import { ConnectGuard, subscribeAndAttach } from './session-support.js';
 import type {
   AgentRunTransport,
   AgentTransport,
@@ -94,6 +94,8 @@ interface RegisteredRun {
   controller: AbortController;
   /** The run's cancel authorization hook, from {@link OpenRunHooks.onCancel}. */
   onCancel?: (request: CancelRequest) => Promise<boolean>;
+  /** The run's error hook, from {@link OpenRunHooks.onError}; a cancel-hook failure delivers here instead of the transport's `error` stream. */
+  onError?: (error: Ably.ErrorInfo) => void;
   /** The triggering input's codec-message-id, from {@link OpenRunOptions.inputCodecMessageId}. */
   inputCodecMessageId?: string;
   /**
@@ -215,7 +217,19 @@ export const createAgentTransport = <TInput extends CodecInputEvent, TOutput ext
         errorCause(error),
       );
       logger.error('AgentTransport.cancelRegistration(); onCancel threw', { runId });
-      receiver.emitError(errInfo);
+      // Route to the run's onError when it supplied one, otherwise the
+      // transport's error stream — one delivery path, never both. A throwing
+      // onError is caught and logged so a bad handler cannot kill cancel
+      // routing.
+      if (reg.onError) {
+        try {
+          reg.onError(errInfo);
+        } catch {
+          logger.error('AgentTransport.cancelRegistration(); onError callback threw', { runId });
+        }
+      } else {
+        receiver.emitError(errInfo);
+      }
     }
   };
 
@@ -495,6 +509,7 @@ export const createAgentTransport = <TInput extends CodecInputEvent, TOutput ext
       runId,
       controller,
       onCancel: hooks?.onCancel,
+      onError: hooks?.onError,
       inputCodecMessageId,
       onSteerMessage: (codecMessageId) => {
         if (trackSteer(codecMessageId)) notifySteer();
@@ -600,9 +615,9 @@ export const createAgentTransport = <TInput extends CodecInputEvent, TOutput ext
       getPriorStepClientId: () => {
         /* no Tree, no prior step client */
       },
-      // The caller's per-run hooks; `onError` is never present (`OpenRunHooks`
-      // excludes it — a pipe's stream error surfaces on its `StreamResult.error`
-      // return instead).
+      // The caller's per-run hooks, `onError` included: the writer fires it
+      // with a wrapped pipe stream failure alongside the `StreamResult.error`
+      // return.
       hooks: hooks ?? {},
       signal,
       markOutputProduced: () => {

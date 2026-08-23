@@ -37,6 +37,16 @@ import { resolveChannelModes } from '../channel-options.js';
 import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
 import { createBaseRun } from './base-run.js';
 import { readCancelTarget } from './cancel-envelope.js';
+import {
+  bestEffortDetach,
+  ConnectGuard,
+  continuityLostError,
+  handleWireMessage,
+  isContinuityLost,
+  noopUnsubscribe,
+  SessionState,
+  subscribeAndAttach,
+} from './channel-support.js';
 import { createHistoryHydrator, type HistoryHydrator } from './history-hydrator.js';
 import { locateInputEvent } from './input-event-locator.js';
 import { evictOldestIfFull } from './internal/bounded-map.js';
@@ -49,16 +59,6 @@ import type { RunManager } from './run-manager.js';
 import { createRunManager } from './run-manager.js';
 import { RunSteerTracker } from './run-steer-tracker.js';
 import { createRunStepWriter, stepEndReasonFor } from './run-step-writer.js';
-import {
-  bestEffortDetach,
-  ConnectGuard,
-  continuityLostError,
-  handleWireMessage,
-  isContinuityLost,
-  noopUnsubscribe,
-  SessionState,
-  subscribeAndAttach,
-} from './session-support.js';
 import type { DefaultTree } from './tree.js';
 import type {
   AdoptedRun,
@@ -67,9 +67,9 @@ import type {
   AgentSessionOptions,
   CancelRequest,
   OpenableRun,
+  OpenRunHooks,
   OutputEvent,
   RunEndParams,
-  RunHooks,
   RunIdentity,
   RunStatus,
   Tree,
@@ -370,7 +370,7 @@ class DefaultAgentSession<
   createRun(
     invocation: Invocation,
     identity?: Partial<RunIdentity>,
-    hooks?: RunHooks<TOutput>,
+    hooks?: OpenRunHooks<TOutput>,
   ): OpenableRun<TOutput, TProjection, TMessage> {
     this._logger?.trace('DefaultAgentSession.createRun();', { inputEventId: invocation.inputEventId });
     validateIdentity('create run', identity);
@@ -380,7 +380,7 @@ class DefaultAgentSession<
   adoptRun(
     invocation: Invocation,
     identity: RunIdentity,
-    hooks?: RunHooks<TOutput>,
+    hooks?: OpenRunHooks<TOutput>,
   ): AdoptedRun<TOutput, TProjection, TMessage> {
     this._logger?.trace('DefaultAgentSession.adoptRun();', {
       runId: identity.runId,
@@ -733,19 +733,19 @@ class DefaultAgentSession<
   private _createRun(
     invocation: Invocation,
     identity: Partial<RunIdentity>,
-    hooks: RunHooks<TOutput>,
+    hooks: OpenRunHooks<TOutput>,
     strategy: { open: 'create' },
   ): OpenableRun<TOutput, TProjection, TMessage>;
   private _createRun(
     invocation: Invocation,
     identity: RunIdentity,
-    hooks: RunHooks<TOutput>,
+    hooks: OpenRunHooks<TOutput>,
     strategy: { open: 'adopt' },
   ): AdoptedRun<TOutput, TProjection, TMessage>;
   private _createRun(
     invocation: Invocation,
     identity: Partial<RunIdentity>,
-    hooks: RunHooks<TOutput>,
+    hooks: OpenRunHooks<TOutput>,
     strategy: OpenStrategy,
   ): OpenableRun<TOutput, TProjection, TMessage> | AdoptedRun<TOutput, TProjection, TMessage> {
     // Identity. Each supplied field stands, each absent one is generated. For a

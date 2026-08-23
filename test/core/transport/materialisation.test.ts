@@ -13,12 +13,22 @@
 import type * as Ably from 'ably';
 import { describe, expect, it, vi } from 'vitest';
 
+import {
+  EVENT_RUN_START,
+  EVENT_STEP_END,
+  HEADER_RUN_ID,
+  HEADER_STEP_ID,
+  HEADER_STEP_START_SERIAL,
+} from '../../../src/constants.js';
 import type { Codec, CodecInputEvent, Decoder } from '../../../src/core/codec/types.js';
-import { createMaterialisation } from '../../../src/core/transport/materialisation.js';
+import { applyTransportEventToTree, createMaterialisation } from '../../../src/core/transport/materialisation.js';
+import { classifyWireMessage } from '../../../src/core/transport/receive-transport.js';
+import type { TreeInternal } from '../../../src/core/transport/tree.js';
+import type { TransportEvent } from '../../../src/core/transport/types/transport.js';
 import { wireMetaFromLocalEcho } from '../../../src/core/transport/wire-meta.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { silentLogger } from '../../helper/logger.js';
-import { foreignWire, outputMsg } from '../../helper/wire-messages.js';
+import { foreignWire, inboundMessage, outputMsg } from '../../helper/wire-messages.js';
 
 // ---------------------------------------------------------------------------
 // Minimal codec stub: identity-ish reducer + a decoder that yields one output.
@@ -167,5 +177,110 @@ describe('createMaterialisation', () => {
       receiver.deliverAblyMessage(wire);
       expect(raw).toHaveLength(1);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyTransportEventToTree
+// ---------------------------------------------------------------------------
+
+interface MockTree {
+  applyRunLifecycle: ReturnType<typeof vi.fn>;
+  applyStepLifecycle: ReturnType<typeof vi.fn>;
+  applyMessage: ReturnType<typeof vi.fn>;
+}
+
+const makeTree = (): MockTree => ({
+  applyRunLifecycle: vi.fn(),
+  applyStepLifecycle: vi.fn(),
+  applyMessage: vi.fn(),
+});
+
+const asTree = (t: MockTree): TreeInternal<TestInput, TestOutput, TestProjection> =>
+  // CAST: a minimal stub exposing only the methods the apply helper calls.
+  t as unknown as TreeInternal<TestInput, TestOutput, TestProjection>;
+
+// Narrow a classified event to non-undefined without a `!` assertion.
+const classified = (
+  event: TransportEvent<TestInput, TestOutput> | undefined,
+): TransportEvent<TestInput, TestOutput> => {
+  if (!event) throw new Error('expected a classified event, got undefined');
+  return event;
+};
+
+// Wire builder pinning this section's defaults: name 'msg', serial 's1',
+// timestamp 1000, `headers` -> the transport bucket.
+const msg = (opts: {
+  name?: string;
+  headers?: Record<string, string>;
+  serial?: string;
+  timestamp?: number;
+  version?: string;
+}): Ably.InboundMessage =>
+  inboundMessage({
+    name: opts.name ?? 'msg',
+    transport: opts.headers ?? {},
+    serial: opts.serial ?? 's1',
+    timestamp: opts.timestamp ?? 1000,
+    versionSerial: opts.version,
+  });
+
+const makeEventDecoder = (inputs: TestInput[], outputs: TestOutput[]): Decoder<TestInput, TestOutput> => ({
+  decode: vi.fn(() => ({ inputs: [...inputs], outputs: [...outputs] })),
+});
+
+// ---------------------------------------------------------------------------
+// applyTransportEventToTree
+// ---------------------------------------------------------------------------
+
+describe('applyTransportEventToTree', () => {
+  it('drives applyMessage off the raw transport bucket, serial, timestamp, and version', () => {
+    const tree = makeTree();
+    const event = classifyWireMessage(
+      makeEventDecoder([], [{ type: 'out' }]),
+      msg({ headers: { [HEADER_RUN_ID]: 'R1' }, serial: 's2', timestamp: 1234, version: 's2@3' }),
+    );
+    expect(event?.kind).toBe('message');
+    applyTransportEventToTree(asTree(tree), classified(event));
+
+    expect(tree.applyMessage).toHaveBeenCalledWith(
+      { inputs: [], outputs: [{ type: 'out' }] },
+      expect.objectContaining({ [HEADER_RUN_ID]: 'R1' }),
+      's2',
+      1234,
+      's2@3',
+    );
+  });
+
+  it('drives applyRunLifecycle for a run-lifecycle event', () => {
+    const tree = makeTree();
+    const event = classifyWireMessage(
+      makeEventDecoder([], []),
+      msg({ name: EVENT_RUN_START, headers: { [HEADER_RUN_ID]: 'R1' } }),
+    );
+    applyTransportEventToTree(asTree(tree), classified(event));
+
+    expect(tree.applyRunLifecycle).toHaveBeenCalledWith(expect.objectContaining({ type: 'start', runId: 'R1' }));
+    expect(tree.applyMessage).not.toHaveBeenCalled();
+    expect(tree.applyStepLifecycle).not.toHaveBeenCalled();
+  });
+
+  it('drives applyStepLifecycle for a step-lifecycle event', () => {
+    const tree = makeTree();
+    const event = classifyWireMessage(
+      makeEventDecoder([], []),
+      msg({
+        name: EVENT_STEP_END,
+        headers: { [HEADER_RUN_ID]: 'R1', [HEADER_STEP_ID]: 'S', [HEADER_STEP_START_SERIAL]: 's0' },
+        serial: 's1',
+      }),
+    );
+    applyTransportEventToTree(asTree(tree), classified(event));
+
+    expect(tree.applyStepLifecycle).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'step-end', runId: 'R1', stepId: 'S' }),
+    );
+    expect(tree.applyMessage).not.toHaveBeenCalled();
+    expect(tree.applyRunLifecycle).not.toHaveBeenCalled();
   });
 });

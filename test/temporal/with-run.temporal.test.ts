@@ -19,7 +19,7 @@ import { Worker } from '@temporalio/worker';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { InvocationData } from '../../src/core/transport/invocation.js';
-import type { RunIdentity } from '../../src/core/transport/types/agent.js';
+import type { RunIdentity } from '../../src/core/transport/types/transport.js';
 import type { FramingActivities } from '../../src/temporal/workflow/activity-types.js';
 import type { FixtureInput } from './workflows/fixtures.js';
 

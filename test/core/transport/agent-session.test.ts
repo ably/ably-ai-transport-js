@@ -50,7 +50,8 @@ import type {
 import { createAgentSession } from '../../../src/core/transport/agent-session.js';
 import { createHistoryHydrator } from '../../../src/core/transport/history-hydrator.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
-import { applyTransportEventToTree, createReceiveTransport } from '../../../src/core/transport/receive-transport.js';
+import { applyTransportEventToTree } from '../../../src/core/transport/materialisation.js';
+import { createReceiveTransport } from '../../../src/core/transport/receive-transport.js';
 import type { RunManager } from '../../../src/core/transport/run-manager.js';
 import * as runManagerModule from '../../../src/core/transport/run-manager.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';

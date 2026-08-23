@@ -357,6 +357,75 @@ describe('createAgentTransport', () => {
       expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.RunCancelHandlerFailed);
     });
 
+    it("routes a throwing onCancel to the run's onError instead of the error stream", async () => {
+      const { transport, channel, errors } = await setup();
+      const runErrors: Ably.ErrorInfo[] = [];
+
+      const run = transport.openRun(
+        { runId: 'run-1' },
+        {
+          // eslint-disable-next-line @typescript-eslint/require-await -- mock hook
+          onCancel: async () => {
+            throw new Error('hook blew up');
+          },
+          onError: (error) => runErrors.push(error),
+        },
+      );
+      channel.listener?.(cancelMsg({ [HEADER_RUN_ID]: 'run-1' }));
+      await flushMicrotasks();
+
+      expect(run.abortSignal.aborted).toBe(false);
+      expect(runErrors).toHaveLength(1);
+      expect(runErrors[0]).toBeErrorInfoWithCode(ErrorCode.RunCancelHandlerFailed);
+      expect(errors).toHaveLength(0);
+    });
+
+    it('isolates a throwing onError so cancel routing survives', async () => {
+      const { transport, channel, errors } = await setup();
+
+      const run = transport.openRun(
+        { runId: 'run-1' },
+        {
+          // eslint-disable-next-line @typescript-eslint/require-await -- mock hook
+          onCancel: async () => {
+            throw new Error('hook blew up');
+          },
+          onError: () => {
+            throw new Error('onError blew up');
+          },
+        },
+      );
+      channel.listener?.(cancelMsg({ [HEADER_RUN_ID]: 'run-1' }));
+      await flushMicrotasks();
+
+      // Nothing double-delivers to the error stream, and a later cancel for
+      // another run still routes.
+      expect(errors).toHaveLength(0);
+      const other = transport.openRun({ runId: 'run-2' });
+      channel.listener?.(cancelMsg({ [HEADER_RUN_ID]: 'run-2' }));
+      await flushMicrotasks();
+      expect(other.abortSignal.aborted).toBe(true);
+      expect(run.abortSignal.aborted).toBe(false);
+    });
+
+    it("fires the run's onError with a wrapped StreamError when a pipe source fails", async () => {
+      const { transport } = await setup();
+      const runErrors: Ably.ErrorInfo[] = [];
+
+      const run = transport.openRun({ runId: 'run-1' }, { onError: (error) => runErrors.push(error) });
+      const failing = (async function* (): AsyncGenerator<TestOutput> {
+        await flushMicrotasks();
+        yield { type: 'out', text: 'a' };
+        throw new Error('provider stream failed');
+      })();
+      const result = await run.pipe(failing);
+
+      expect(result.reason).toBe('error');
+      expect(result.error?.message).toBe('provider stream failed');
+      expect(runErrors).toHaveLength(1);
+      expect(runErrors[0]).toBeErrorInfoWithCode(ErrorCode.RunResponseStreamFailed);
+    });
+
     it('drops a malformed cancel naming no target', async () => {
       const { transport, channel, errors } = await setup();
 

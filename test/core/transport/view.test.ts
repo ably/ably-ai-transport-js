@@ -28,7 +28,8 @@ import { Invocation } from '../../../src/core/transport/invocation.js';
 import { createLeafBranchSource, LeafBranchSource } from '../../../src/core/transport/leaf-branch-source.js';
 // Vitest hoists vi.mock above imports, so this static import gets the mock.
 import { type HistoryPagesCursor, loadHistoryPages } from '../../../src/core/transport/load-history-pages.js';
-import { applyTransportEventToTree, createReceiveTransport } from '../../../src/core/transport/receive-transport.js';
+import { applyTransportEventToTree } from '../../../src/core/transport/materialisation.js';
+import { createReceiveTransport } from '../../../src/core/transport/receive-transport.js';
 import type { SteerOrdering } from '../../../src/core/transport/steer-ordering.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';

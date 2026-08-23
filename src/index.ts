@@ -32,7 +32,6 @@ export type {
   ReceiveTransport,
   RunEndParams,
   RunEndReason,
-  RunHooks,
   RunIdentity,
   RunInfo,
   RunLifecycleEvent,

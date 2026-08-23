@@ -3,41 +3,50 @@
  *
  * Each exported `"use step"` function is one activity — a separate WDK process
  * (a fresh invocation). The uniform envelope every activity runs inside (fresh
- * Ably client + AIT `AgentSession`, teardown, demo telemetry) lives in
- * {@link withActivity}; the bodies below are just the AIT SDK calls that make
- * the durable turn work.
+ * Ably client + standalone AIT `AgentTransport`, teardown, demo telemetry)
+ * lives in {@link withActivity}; the bodies below are the AIT transport calls
+ * that make the durable turn work.
  *
  * The composition is a **driver-owned agent loop** (see `ait-turn.ts`): the
  * workflow owns each model call and each server-tool execution as its own
- * retryable activity, rather than letting the AI SDK's internal multi-step loop
- * run tools inline. So the model call strips server `execute`s
- * ({@link stripToolExecutes}), each inference classifies what the model emitted
- * ({@link pendingToolCalls} / {@link approvedPendingToolCalls}), and the
- * workflow dispatches one {@link toolActivity} per server call before looping a
- * follow-up {@link inferenceActivity}.
+ * retryable activity, rather than letting the AI SDK's internal multi-step
+ * loop run tools inline. So the model call strips server `execute`s
+ * ({@link stripToolExecutes}), each inference classifies what the model
+ * emitted ({@link pendingToolCalls} / {@link approvedPendingToolCalls}), and
+ * the workflow dispatches one {@link toolActivity} per server call before
+ * looping a follow-up {@link inferenceActivity}.
  *
- * Each interaction with the session channel is its own activity: {@link openActivity}
- * opens the run (one `ai-run-start` / `ai-run-resume`), then every model call — the
- * first and each follow-up alike — is an {@link inferenceActivity} that adopts the
- * open run, so an inference retry never re-opens (re-publishes the opening of) it.
+ * Each interaction with the channel is its own activity:
+ *
+ * - {@link openActivity} locates the trigger and publishes the run's opening
+ *   event (`ai-run-start`, or `ai-run-resume` when the trigger names a run).
+ * - {@link inferenceActivity} re-enters the run with `adoptRun`, folds
+ *   channel history into model context, streams one model call through an AIT
+ *   step, and classifies the outcome — publishing no lifecycle itself.
+ * - {@link toolActivity} re-enters the same way and publishes one server-tool
+ *   result under its own AIT step.
+ * - {@link terminalActivity} re-enters the same way and publishes the run's
+ *   `ai-run-suspend` / `ai-run-end`; {@link cleanupActivity} is its
+ *   best-effort failure arm.
  *
  * Two rules keep the cross-process lifecycle sound:
  *
- * - **Terminals publish inline.** The activity that produces an outcome
- *   publishes `ai-run-suspend` / `ai-run-end` in its own session before it
- *   returns, so no separately-queued lifecycle activity can race the client's
- *   continuation. (`server-tools` is the only non-terminal outcome — the run is
- *   left active for the next activity to adopt.)
- * - **Retries observe before they redo.** By the time WDK re-runs an activity a
- *   continuation may already have moved the run on, so a retry checks the run's
- *   state on the wire and only redoes genuinely unfinished work — never
- *   clobbering a result that already landed.
+ * - **Gate before publishing.** Every re-entering activity folds the run's
+ *   lifecycle from channel history first and publishes only while the run is
+ *   still this workflow's to drive — a run that ended, suspended, or was
+ *   resumed by another invocation (a client continuation) is left alone, so a
+ *   slow retry never clobbers work that already moved on.
+ * - **Retries supersede.** An activity keys its AIT step on the WDK step id
+ *   (stable across retries) and pins the run and response-message identity, so
+ *   a fresh-process retry re-enters the SAME run and its output supersedes the
+ *   dead attempt's — no parallel run, no duplicate reply.
  */
 
 import * as Ably from 'ably';
-import { convertToModelMessages, stepCountIs, streamText } from 'ai';
+import { convertToModelMessages, stepCountIs, streamText, toUIMessageStream } from 'ai';
+import type { UIMessageChunk } from 'ai';
 import { RetryableError } from 'workflow';
-import { ErrorCode, type InvocationData, type RunIdentity } from '@ably/ai-transport';
+import { ErrorCode, type RunLifecycleEvent } from '@ably/ai-transport';
 import {
   approvedPendingToolCalls,
   pendingToolCalls,
@@ -49,9 +58,26 @@ import {
 import { createModel } from '../api/chat/model';
 import { tools } from '../api/chat/tools';
 import type { FaultMode } from '../lib/fault';
-import { withActivity, type WdkAgentRun, type WdkAgentSession } from './activity-runtime';
+import { foldChunkList, foldMessages, type WdkTransportEvent } from '../lib/fold-messages';
+import { withActivity } from './activity-runtime';
+import type { AitTurnInput } from './ait-turn';
+import { collectHistory, latestRunLifecycle, type WdkAgentTransport } from './history';
 
 const SYSTEM_PROMPT = 'You are a helpful assistant running inside a durable Vercel Workflow. Keep replies concise.';
+
+/** How long the open activity waits for its opening event to echo back before failing for a WDK retry. */
+const OPEN_ECHO_TIMEOUT_MS = 15_000;
+
+/**
+ * The run identity the open activity establishes and every later activity
+ * re-enters by. Plain data, so the workflow threads it across processes.
+ */
+export interface RunRefs {
+  /** The AIT run id — pinned to the workflow run id for a fresh turn, or the trigger's run id for a continuation. */
+  runId: string;
+  /** The invocation id the open activity publishes the opening event under (`inv:<workflowRunId>`). */
+  invocationId: string;
+}
 
 /** One server tool call the inference surfaced for the workflow to dispatch. */
 export interface ToolCallInfo {
@@ -64,160 +90,296 @@ export interface ToolCallInfo {
 }
 
 /**
- * The outcome an inference returns for the workflow to route on. Terminal kinds
- * (`complete` / `suspend` / `cancelled` / `error`) have already been published
- * on the wire before the activity returned; `server-tools` is the only
- * non-terminal kind — the workflow dispatches its calls, then loops.
+ * The outcome an inference returns for the workflow to route on. No outcome
+ * has been published to the channel yet — `server-tools` loops into tool
+ * activities, `settled` means another invocation already owns or finished the
+ * run (nothing left for this workflow to publish), and everything else is
+ * handed to {@link terminalActivity} to publish.
  */
 export type InferenceOutcome =
   | { kind: 'complete' }
   | { kind: 'suspend' }
   | { kind: 'cancelled' }
   | { kind: 'error'; errorMessage: string }
-  | { kind: 'server-tools'; serverToolCalls: ToolCallInfo[] };
+  | { kind: 'server-tools'; serverToolCalls: ToolCallInfo[] }
+  | { kind: 'settled' };
 
 // ---------------------------------------------------------------------------
 // The activities
 // ---------------------------------------------------------------------------
 
 /**
- * OPEN: create the run, publish its opening event — `ai-run-start`, or
- * `ai-run-resume` when the trigger already carries a run id (one activity serves
- * both) — and return the run identity. Nothing more: the first inference is its
- * own {@link inferenceActivity}, so an inference failure retries the inference
- * alone (never re-opening the run), and the ids reach the workflow before any
- * inference runs, so a later inference failure past its retries still has ids to
- * hand {@link cleanupActivity} instead of orphaning the run active.
+ * OPEN: locate the triggering input in channel history, open the run, and
+ * publish its opening event — `ai-run-start` for a fresh turn, `ai-run-resume`
+ * when the trigger carries a run id (a tool-result or approval continuation).
+ * Nothing more: the first inference is its own {@link inferenceActivity}, so
+ * an inference failure retries the inference alone (never re-publishing the
+ * open), and the refs reach the workflow before any inference runs, so a later
+ * failure past its retries still has refs to hand {@link cleanupActivity}.
  *
- * Retry-safe: the runId is pinned to the (replay-stable) workflow run id, so a
- * WDK retry re-enters the SAME run and its duplicate `ai-run-start` folds
- * idempotently onto the existing node (first startSerial wins) — it never opens
- * a parallel run.
- * @param invocationData - The invocation pointer the client POSTed.
+ * Retry-safe: the runId is pinned to the (replay-stable) workflow run id, and
+ * the opening event is decided by the trigger's own run-id header. A WDK retry
+ * re-enters the SAME run, so its duplicate opening event is a re-entry of one
+ * run, never a parallel one.
+ * @param input - The turn input the chat route started the workflow with.
  * @param workflowRunId - The WDK workflow run id (stable across replays).
  */
-export async function openActivity(invocationData: InvocationData, workflowRunId: string): Promise<RunIdentity> {
+export async function openActivity(input: AitTurnInput, workflowRunId: string): Promise<RunRefs> {
   'use step';
-  return withActivity(invocationData, workflowRunId, 'open', async ({ session, invocation, reportAitRun }) => {
-    // Both ids are pinned to the replay-stable workflow run id, so a retry of this
-    // activity re-enters the same run under the same invocation.
-    const run = session.createRun(invocation, {
+  return withActivity(input.channelName, workflowRunId, 'open', async ({ transport, reportAitRun }) => {
+    // The trigger was published before this fresh process attached, so it sits
+    // in channel history. A retry that cannot find it throws before publishing
+    // and leaves no orphaned run.
+    const located = await transport.locateInput(input.eventId);
+    if (!located) {
+      throw new RetryableError(`input event ${input.eventId} not found in channel history`, { retryAfter: '1s' });
+    }
+
+    // The located input drives the open: its run-id header names the run a
+    // continuation re-enters, and a fresh turn opens under the pinned run id
+    // — the workflow run id, the same derivation the chat route used for its
+    // {runId} response.
+    const invocationId = `inv:${workflowRunId}`;
+    const run = transport.openRun({
+      input: located,
       runId: `run:${workflowRunId}`,
-      invocationId: `inv:${workflowRunId}`,
+      invocationId,
     });
-
-    // Cold start: the trigger was published before this fresh process attached,
-    // so drain history to fold it in; `start()` then reads its headers to open
-    // (fresh) or resume (continuation) the run.
-    while (run.view.hasOlder()) await run.view.loadOlder();
-    await run.start();
-
     reportAitRun(run.runId);
-    return { runId: run.runId, invocationId: run.invocationId };
+
+    // Await the opening event's own channel echo before returning, so the
+    // hand-off to the next activity happens strictly after the open is on the
+    // wire (openRun publishes without awaiting; only output verbs await it).
+    // Subscribing after openRun is safe: no await separates them, so the echo
+    // cannot be delivered in between.
+    await awaitRunOpen(transport, run.runId);
+
+    return { runId: run.runId, invocationId };
   });
 }
 
 /**
- * INFERENCE: adopt the open run and run one model call, publishing its terminal
- * inline. Drives every inference — the first (right after {@link openActivity})
- * and each follow-up, which the workflow schedules after server-tool activities
- * so the model sees their published outputs.
+ * INFERENCE: re-enter the open run (`adoptRun`) and run one model call
+ * as one AIT step, classifying the result into an {@link InferenceOutcome}.
+ * Publishes output only — the run lifecycle belongs to
+ * {@link terminalActivity}. Drives every inference: the first (right after
+ * {@link openActivity}) and each follow-up the workflow schedules after
+ * server-tool activities, so the model sees their published outputs.
  *
- * `load()` status-gates the run and throws BEFORE the model call if it reads a
- * stale `suspended` (a continuation's `ai-run-resume` not yet folded); the throw
- * costs no inference, and a WDK retry — a fresh process that attaches once the
- * resume has folded — passes. On a retry {@link observeTakenOver} bails if a
- * continuation has since taken the run over, so a slow retry never re-runs the
- * model and clobbers the continuation's result.
- * @param invocationData - The invocation pointer (carries the channel name).
- * @param ids - The run identity from {@link openActivity}.
+ * The history fold is both gate and context. The gate: a run that ended,
+ * suspended, or was resumed by another invocation is no longer this workflow's
+ * to drive — return the observed outcome (or `settled`) and publish nothing,
+ * so a slow retry never re-runs the model over a continuation that already
+ * moved on. The recovery reads: an approval that just landed dispatches the
+ * approved calls directly, and a dead attempt's already-streamed tool calls
+ * are routed instead of re-inferred.
+ * @param input - The turn input (carries the channel name).
+ * @param refs - The run refs from {@link openActivity}.
  * @param workflowRunId - The WDK workflow run id.
  * @param fault - Optional fault to inject (the workflow passes it only to the first inference).
  */
 export async function inferenceActivity(
-  invocationData: InvocationData,
-  ids: RunIdentity,
+  input: AitTurnInput,
+  refs: RunRefs,
   workflowRunId: string,
   fault?: FaultMode,
 ): Promise<InferenceOutcome> {
   'use step';
   return withActivity(
-    invocationData,
+    input.channelName,
     workflowRunId,
     'inference',
-    async ({ session, invocation, stepId, attempt, reportAitRun }) => {
-      reportAitRun(ids.runId);
-      const run = session.adoptRun(invocation, ids);
-      await run.load({ timeoutMs: 15_000 });
-      while (run.view.hasOlder()) await run.view.loadOlder();
+    async ({ transport, stepId, attempt, reportAitRun }) => {
+      reportAitRun(refs.runId);
+      const events = await collectHistory(transport);
 
-      // On a retry, a continuation may already have taken the run over — return
-      // what's on the wire and publish nothing (see observeTakenOver).
-      const takenOver = attempt > 1 ? observeTakenOver(run, session, ids.runId, ids.invocationId) : undefined;
-      if (takenOver) return takenOver;
+      const gate = gateRun(events, refs);
+      if (gate) return gate;
 
-      const outcome = await runInference(run, { stepId, attempt, fault });
-      await publishTerminal(run, outcome);
-      return outcome;
+      const run = transport.adoptRun(refs.runId);
+
+      // Recovery reads over the full fold (the dead attempt's output included —
+      // its streamed tool calls may already be answered on the wire).
+      const messages = await foldMessages(events);
+
+      // A tool-approval-response just landed: the approved call's output is
+      // owed, but feeding the approval pair back through the model is
+      // unreliable on real providers. Dispatch the approved call directly.
+      const approved = filterServerToolCalls(approvedPendingToolCalls(messages));
+      if (approved.length > 0) return { kind: 'server-tools', serverToolCalls: approved };
+
+      // A prior (dead) attempt of this activity already streamed tool calls,
+      // which the client may have answered by now. Route those instead of
+      // re-running the model, so recovery completes the bookkeeping without
+      // redoing finished work.
+      const unresolved = pendingToolCalls(messages);
+      if (unresolved.length > 0) {
+        const server = filterServerToolCalls(unresolved);
+        return server.length > 0 ? { kind: 'server-tools', serverToolCalls: server } : { kind: 'suspend' };
+      }
+
+      // Demo fault: throw before anything is published, so the dead attempt
+      // leaves nothing on the wire and the WDK retry (attempt 2) streams the
+      // reply once. (A retry after a mid-stream crash is also safe — the step
+      // is keyed on the stable WDK step id and the response-message id is
+      // pinned below, so a retry's output supersedes the dead attempt's in the
+      // durable record.)
+      injectFault(fault, attempt);
+
+      // Model context excludes this activity's own step: the attempt about to
+      // stream supersedes that step's prior output on the wire, so the prompt
+      // must not carry it either (a trailing assistant message reads as a
+      // prefill and real providers reject it).
+      const conversation = await foldMessages(events, { excludeStepId: stepId });
+      if (conversation.length === 0) {
+        // Never hand streamText an empty prompt ("messages must not be empty").
+        return { kind: 'error', errorMessage: 'history fold returned no messages' };
+      }
+
+      const result = streamText({
+        model: createModel(),
+        system: SYSTEM_PROMPT,
+        messages: await convertToModelMessages(conversation),
+        // The workflow drives multi-step, so strip server `execute`s: the model
+        // emits its tool calls and stops rather than running them inline.
+        tools: stripToolExecutes(tools),
+        stopWhen: stepCountIs(1),
+        abortSignal: run.abortSignal,
+      });
+
+      // The AIT step is keyed on the WDK step id, so a retry supersedes the
+      // dead attempt's output. The response-message id is pinned to the same
+      // key, so a client folding the wire replaces the dead attempt's message
+      // instead of appending a duplicate.
+      const step = run.createStep({ stepId });
+      const uiStream = toUIMessageStream({
+        stream: result.fullStream,
+        generateMessageId: () => `msg:${stepId}`,
+      });
+      // Tee the chunk stream: one branch publishes, the other is this
+      // process's own copy for classifying the streamed tool calls (no wait
+      // on the wire echo).
+      const [wireBranch, localBranch] = uiStream.tee();
+      const collected = collectChunks(localBranch);
+      const pipeResult = await step.pipe(wireBranch);
+      const streamedChunks = await collected;
+
+      const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
+      await step.end(outcome.reason === 'error' ? { reason: 'failed' } : {});
+
+      if (outcome.reason === 'error') return { kind: 'error', errorMessage: outcome.error.message };
+      if (outcome.reason === 'cancelled') return { kind: 'cancelled' };
+      if (outcome.reason === 'complete') return { kind: 'complete' };
+
+      // The model stopped on tool calls: server calls (execute in the
+      // registry) become tool activities; anything else (client tools,
+      // approval-gated tools) suspends the run for the client to resolve.
+      const streamedMessage = await foldChunkList(streamedChunks);
+      const server = filterServerToolCalls(pendingToolCalls(streamedMessage ? [streamedMessage] : []));
+      return server.length > 0 ? { kind: 'server-tools', serverToolCalls: server } : { kind: 'suspend' };
     },
   );
 }
 
 /**
  * TOOL: execute ONE server tool and publish its result as a single
- * `tool-output-available` message under its own AIT step. A throw retries under
- * the same stepId, so the retry's output supersedes the failed attempt's.
- * @param invocationData - The invocation pointer (carries the channel name).
- * @param ids - The run identity from {@link openActivity}.
+ * `tool-output-available` message under its own AIT step. A throw retries
+ * under the same stepId, so the retry's output supersedes the failed
+ * attempt's. Gated like every re-entering activity: a run that already moved
+ * on gets nothing published.
+ * @param input - The turn input (carries the channel name).
+ * @param refs - The run refs from {@link openActivity}.
  * @param workflowRunId - The WDK workflow run id.
  * @param toolCall - The server tool call to execute.
  */
 export async function toolActivity(
-  invocationData: InvocationData,
-  ids: RunIdentity,
+  input: AitTurnInput,
+  refs: RunRefs,
   workflowRunId: string,
   toolCall: ToolCallInfo,
 ): Promise<void> {
   'use step';
-  await withActivity(invocationData, workflowRunId, 'tool', async ({ session, invocation, stepId, reportAitRun }) => {
-    reportAitRun(ids.runId);
-    const run = session.adoptRun(invocation, ids);
-    await run.load({ timeoutMs: 15_000 });
+  await withActivity(input.channelName, workflowRunId, 'tool', async ({ transport, stepId, reportAitRun }) => {
+    reportAitRun(refs.runId);
+    const events = await collectHistory(transport);
+    if (gateRun(events, refs)) return;
 
+    const run = transport.adoptRun(refs.runId);
     const step = run.createStep({ stepId });
-    await step.start();
     const output = await executeServerTool(toolCall);
     await step.send({ type: 'tool-output-available', toolCallId: toolCall.toolCallId, output });
-    await step.end();
+    await step.end({});
+  });
+}
+
+/**
+ * TERMINAL: publish the run lifecycle event the inference outcome implies —
+ * `ai-run-suspend` for a pending client tool or approval, `ai-run-end`
+ * otherwise. Its own activity so a process that dies between producing the
+ * outcome and publishing it is retried here alone, and the gate keeps the
+ * retry honest: a run that already suspended, ended, or was resumed by a
+ * client continuation gets nothing published.
+ * @param input - The turn input (carries the channel name).
+ * @param refs - The run refs from {@link openActivity}.
+ * @param workflowRunId - The WDK workflow run id.
+ * @param outcome - The inference outcome to publish (never `server-tools` or `settled`).
+ */
+export async function terminalActivity(
+  input: AitTurnInput,
+  refs: RunRefs,
+  workflowRunId: string,
+  outcome: Exclude<InferenceOutcome, { kind: 'server-tools' } | { kind: 'settled' }>,
+): Promise<void> {
+  'use step';
+  await withActivity(input.channelName, workflowRunId, 'terminal', async ({ transport, reportAitRun }) => {
+    reportAitRun(refs.runId);
+    const events = await collectHistory(transport);
+    if (gateRun(events, refs)) return;
+
+    const run = transport.adoptRun(refs.runId);
+    switch (outcome.kind) {
+      case 'suspend':
+        await run.suspend();
+        return;
+      case 'error':
+        await run.end({
+          reason: 'error',
+          error: new Ably.ErrorInfo(outcome.errorMessage, ErrorCode.RunResponseStreamFailed, 500),
+        });
+        return;
+      default:
+        await run.end({ reason: outcome.kind });
+    }
   });
 }
 
 /**
  * CLEANUP: the workflow-level failure terminal, scheduled from the workflow's
  * catch once an activity has failed past its retry policy. Publishes
- * `ai-run-end{error}` so observers' streams close instead of hanging; a
- * `load()` rejection means the run is already suspended or terminal — nothing
- * to clean up. Best-effort: one attempt, no retries.
- * @param invocationData - The invocation pointer (carries the channel name).
- * @param ids - The run identity from {@link openActivity}.
+ * `ai-run-end{error}` so observers' streams close instead of hanging. The
+ * gate makes it safe: a run that already suspended, ended, or moved to a
+ * continuation needs nothing. Best-effort: one attempt, no retries.
+ * @param input - The turn input (carries the channel name).
+ * @param refs - The run refs from {@link openActivity}.
  * @param workflowRunId - The WDK workflow run id.
  * @param errorMessage - The failure to stamp on the run terminal.
  */
 export async function cleanupActivity(
-  invocationData: InvocationData,
-  ids: RunIdentity,
+  input: AitTurnInput,
+  refs: RunRefs,
   workflowRunId: string,
   errorMessage: string,
 ): Promise<void> {
   'use step';
-  await withActivity(invocationData, workflowRunId, 'cleanup', async ({ session, invocation, reportAitRun }) => {
-    reportAitRun(ids.runId);
-    const run = session.adoptRun(invocation, ids);
-    try {
-      await run.load({ timeoutMs: 15_000 });
-    } catch {
-      return;
-    }
+  await withActivity(input.channelName, workflowRunId, 'cleanup', async ({ transport, reportAitRun }) => {
+    reportAitRun(refs.runId);
+    const events = await collectHistory(transport);
+    const latest = latestRunLifecycle(events, refs.runId);
+    // A run whose opening event is not visible has nothing this best-effort
+    // arm can safely end; an already-settled or taken-over run needs nothing.
+    if (!latest || isSettledOrTakenOver(latest, refs)) return;
+
+    const run = transport.adoptRun(refs.runId);
     await run.end({ reason: 'error', error: new Ably.ErrorInfo(errorMessage, ErrorCode.RunResponseStreamFailed, 500) });
   });
 }
@@ -226,88 +388,42 @@ export async function cleanupActivity(
 cleanupActivity.maxRetries = 0;
 
 // ---------------------------------------------------------------------------
-// The shared inference core
+// Shared gate + helpers
 // ---------------------------------------------------------------------------
 
 /**
- * One model call, published as one AIT step, classified into an
- * {@link InferenceOutcome}. Callers ready the run (create + start, or adopt +
- * load) and drain history first.
+ * Whether the run's latest lifecycle event says it is no longer this
+ * workflow's to drive: it suspended or ended, or a different invocation (a
+ * client continuation's workflow) re-entered it.
  */
-async function runInference(
-  run: WdkAgentRun,
-  opts: { stepId: string; attempt: number; fault?: FaultMode },
-): Promise<InferenceOutcome> {
-  // A `tool-approval-response` just landed: the approved call's output is owed,
-  // but feeding the approval pair back through the model is unreliable on real
-  // providers. Dispatch the approved call directly instead of re-asking.
-  const approved = filterServerToolCalls(approvedPendingToolCalls(run.messages));
-  if (approved.length > 0) return { kind: 'server-tools', serverToolCalls: approved };
-
-  // A prior (dead) attempt of this activity already streamed tool calls, which
-  // the client may have answered by now. Route those instead of re-running the
-  // model, so recovery completes the bookkeeping without redoing finished work.
-  const unresolved = pendingToolCalls(run.messages);
-  if (unresolved.length > 0) {
-    const server = filterServerToolCalls(unresolved);
-    return server.length > 0 ? { kind: 'server-tools', serverToolCalls: server } : { kind: 'suspend' };
-  }
-
-  const step = run.createStep({ stepId: opts.stepId });
-  await step.start();
-
-  const conversation = run.view.getMessages().map((entry) => entry.message);
-  if (conversation.length === 0) {
-    // Never hand streamText an empty prompt ("messages must not be empty").
-    await step.end({ reason: 'failed' });
-    return { kind: 'error', errorMessage: 'conversation drain returned no messages' };
-  }
-
-  const result = streamText({
-    model: createModel(),
-    system: SYSTEM_PROMPT,
-    messages: await convertToModelMessages(conversation),
-    // The workflow drives multi-step, so strip server `execute`s: the model
-    // emits its tool calls and stops rather than running them inline.
-    tools: stripToolExecutes(tools),
-    stopWhen: stepCountIs(1),
-    abortSignal: run.abortSignal,
-  });
-  const pipeResult = await step.pipe(result.toUIMessageStream());
-
-  injectFault(opts.fault, opts.attempt);
-
-  const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
-  await step.end(outcome.reason === 'error' ? { reason: 'failed' } : undefined);
-
-  if (outcome.reason === 'error') return { kind: 'error', errorMessage: outcome.error.message };
-  if (outcome.reason === 'cancelled') return { kind: 'cancelled' };
-  if (outcome.reason === 'complete') return { kind: 'complete' };
-
-  // The model stopped on tool calls: server calls (execute in the registry)
-  // become tool activities; anything else (client tools, approval-gated tools)
-  // suspends the run for the client to resolve.
-  const server = filterServerToolCalls(pendingToolCalls(run.messages));
-  return server.length > 0 ? { kind: 'server-tools', serverToolCalls: server } : { kind: 'suspend' };
+function isSettledOrTakenOver(latest: RunLifecycleEvent, refs: RunRefs): boolean {
+  if (latest.type === 'end' || latest.type === 'suspend') return true;
+  return latest.type === 'resume' && latest.invocationId !== refs.invocationId;
 }
 
-/** Publish the run lifecycle event an outcome implies (`server-tools` publishes nothing). */
-async function publishTerminal(run: WdkAgentRun, outcome: InferenceOutcome): Promise<void> {
-  switch (outcome.kind) {
-    case 'suspend':
-      await run.suspend();
-      return;
-    case 'server-tools':
-      return;
-    case 'error':
-      await run.end({
-        reason: 'error',
-        error: new Ably.ErrorInfo(outcome.errorMessage, ErrorCode.RunResponseStreamFailed, 500),
-      });
-      return;
-    default:
-      await run.end({ reason: outcome.kind });
+/**
+ * The re-entry gate every activity folds before publishing. Returns the
+ * outcome to short-circuit with when the run is not (or no longer) this
+ * workflow's to drive, or undefined to proceed.
+ * @param events - Collected history events, oldest first.
+ * @param refs - The run refs from {@link openActivity}.
+ */
+function gateRun(events: WdkTransportEvent[], refs: RunRefs): InferenceOutcome | undefined {
+  const latest = latestRunLifecycle(events, refs.runId);
+  if (!latest) {
+    // The opening event is not visible from this attach point yet — a
+    // propagation artefact; throw so WDK retries this activity.
+    throw new RetryableError(`run ${refs.runId} opening event not found in channel history`, { retryAfter: '1s' });
   }
+  if (latest.type === 'end') {
+    // Someone already ended the run: report what the wire says and publish
+    // nothing further.
+    if (latest.reason === 'error') return { kind: 'error', errorMessage: latest.error.message };
+    if (latest.reason === 'cancelled') return { kind: 'cancelled' };
+    return { kind: 'complete' };
+  }
+  if (isSettledOrTakenOver(latest, refs)) return { kind: 'settled' };
+  return undefined;
 }
 
 /** Narrow pending tool calls to the server-executed ones the workflow dispatches as tool activities. */
@@ -326,36 +442,51 @@ function executeServerTool(toolCall: ToolCallInfo): Promise<unknown> {
   return tool.execute(toolCall.input);
 }
 
-/**
- * Idempotent-retry guard for an inference retry. By the time WDK re-runs an
- * inference, a continuation may already have resumed or finished the run — a
- * streamed tool call is answered the moment its parts arrive, well within the
- * retry backoff. Re-inferring would race that continuation and clobber its
- * result, so observe first and only proceed if the run is still ours to drive.
- * @returns the observed outcome to short-circuit with, or undefined to proceed.
- */
-function observeTakenOver(
-  run: WdkAgentRun,
-  session: WdkAgentSession,
-  runId: string,
-  invocationId: string,
-): InferenceOutcome | undefined {
-  const observed = run.view.run(runId);
-  if (!observed) return undefined;
-  const lastResume = session.tree.getRunNode(runId)?.lastResumeInvocationId;
-  const resumedByOther = lastResume !== undefined && lastResume !== invocationId;
-  if (observed.status === 'active' && !resumedByOther) return undefined;
-  if (observed.status === 'error') return { kind: 'error', errorMessage: observed.error.message };
-  if (observed.status === 'complete' || observed.status === 'cancelled') return { kind: observed.status };
-  return { kind: 'suspend' };
+/** Drain a chunk stream into an array (the local branch of the inference tee). */
+async function collectChunks(stream: ReadableStream<UIMessageChunk>): Promise<UIMessageChunk[]> {
+  const chunks: UIMessageChunk[] = [];
+  const reader = stream.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return chunks;
+    chunks.push(value);
+  }
 }
 
 /**
- * Demo control: on an activity's FIRST attempt, throw so WDK retries it and the
- * retry supersedes the dead attempt's output — the durable-retry story on
- * demand. `fail-once` throws a WDK {@link RetryableError} (a graceful, expected
- * transient failure, with a backoff); `crash` throws a plain Error (an
- * unhandled bug / worker crash, retried on WDK's default schedule).
+ * Resolve once the run's opening event (`ai-run-start` / `ai-run-resume`)
+ * echoes back on the receive stream — the confirmation that the open reached
+ * the wire, so the open activity can report success and hand off. Fails after
+ * {@link OPEN_ECHO_TIMEOUT_MS} so a lost publish surfaces as a WDK retry.
+ * @param transport - The connected transport to observe (subscribe happens before openRun).
+ * @param runId - The run whose opening echo to await.
+ */
+function awaitRunOpen(transport: WdkAgentTransport, runId: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let unsubscribe: () => void = () => {};
+    const timer = setTimeout(() => {
+      unsubscribe();
+      reject(new Error(`run ${runId} opening event did not echo within ${String(OPEN_ECHO_TIMEOUT_MS)}ms`));
+    }, OPEN_ECHO_TIMEOUT_MS);
+    unsubscribe = transport.subscribe((event) => {
+      if (event.kind !== 'run-lifecycle' || event.event.runId !== runId) return;
+      if (event.event.type === 'start' || event.event.type === 'resume') {
+        clearTimeout(timer);
+        unsubscribe();
+        resolve();
+      }
+    });
+  });
+}
+
+/**
+ * Demo control: on an activity's FIRST attempt, throw so WDK retries it as a
+ * fresh process — the durable-retry story on demand. The retry re-enters the
+ * SAME run (pinned run id) and the SAME step (stable WDK step id), so the
+ * reply lands once. `fail-once` throws a WDK {@link RetryableError} (a
+ * graceful, expected transient failure, with a backoff); `crash` throws a
+ * plain Error (an unhandled bug / worker crash, retried on WDK's default
+ * schedule).
  */
 function injectFault(fault: FaultMode | undefined, attempt: number): void {
   if (attempt !== 1) return;

@@ -16,6 +16,7 @@ const KIND_LABEL: Record<ActivityEvent['kind'], string> = {
   open: 'open',
   inference: 'inference',
   tool: 'tool',
+  terminal: 'terminal',
   cleanup: 'cleanup',
 };
 

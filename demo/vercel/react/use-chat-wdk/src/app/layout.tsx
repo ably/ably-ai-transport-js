@@ -7,7 +7,7 @@ const geist = Geist({ subsets: ['latin'], variable: '--font-sans' });
 
 export const metadata: Metadata = {
   title: 'Ably AI Transport — Durable WDK Demo',
-  description: 'AIT durable sessions running on Vercel Workflows',
+  description: 'AIT durable agents running on Vercel Workflows',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

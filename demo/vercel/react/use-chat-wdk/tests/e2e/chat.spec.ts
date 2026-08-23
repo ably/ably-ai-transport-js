@@ -16,31 +16,31 @@ function freshChannelUrl(title: string): string {
 }
 
 test.describe('use-chat-wdk — durable text chat', () => {
-  test('streams a reply produced by a Vercel Workflow, with run/step badges', async ({ page }) => {
+  test('streams a reply produced by a Vercel Workflow', async ({ page }) => {
     await page.goto(freshChannelUrl('wdk-text'));
 
     // Send via a predefined prompt chip (tag + prompt): it fills the composer,
-    // then Send publishes the input to Ably and starts the workflow, whose open
-    // activity publishes the reply back over the channel.
+    // then Send publishes the input to Ably and starts the workflow, whose
+    // activities open the run, stream the reply, and end it — all back over
+    // the channel.
     await page.getByRole('button', { name: /Durable text/ }).click();
     await page.getByRole('button', { name: 'Send' }).click();
 
     // The assistant reply lands in an assistant bubble; the user echo quotes the
     // prompt too, so scope to the assistant side via its role.
     const assistant = page
-      .locator('[data-role="assistant"]')
+      .locator('[data-testid="message"][data-role="assistant"]')
       .filter({ hasText: 'Hello from a durable Vercel Workflow!' });
     await expect(assistant).toBeVisible({ timeout: 60_000 });
 
-    // The durable-story badges rendered on the reply (run id from RunInfo).
-    await expect(assistant.getByText('run', { exact: true })).toBeVisible();
-
-    // The WDK processes panel visualized the turn: a plain text turn is one
-    // open activity (run open + inference + terminal published inline),
+    // The WDK processes panel visualized the turn: a plain text turn is an
+    // open activity, an inference activity, and a terminal activity,
     // correlated under one workflow.
     const wdkPanel = page.locator('aside').filter({ hasText: 'WDK processes' });
     await expect(wdkPanel).toBeVisible();
     await expect(wdkPanel.getByText('open', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(wdkPanel.getByText('inference', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(wdkPanel.getByText('terminal', { exact: true })).toBeVisible({ timeout: 30_000 });
 
     // The run settled cleanly: the composer shows Send again, not Stop.
     await expect(page.getByRole('button', { name: 'Send' })).toBeVisible();
@@ -49,24 +49,23 @@ test.describe('use-chat-wdk — durable text chat', () => {
   test('a fail-once fault is retried by WDK and reconciled by AIT (no duplicate)', async ({ page }) => {
     await page.goto(freshChannelUrl('wdk-fault'));
 
-    // Arm the fault so the first activity throws on its first attempt, then send.
+    // Arm the fault so the inference activity throws on its first attempt, then send.
     await page.getByRole('button', { name: 'Fail once' }).click();
     await page.getByPlaceholder('Type a message...').fill('Say "Hello from a durable Vercel Workflow!"');
     await page.getByRole('button', { name: 'Send' }).click();
 
     // First wait until the retry has LANDED: the WDK processes panel renders a
-    // second physical attempt of the canonical step once WDK has retried it.
-    // Asserting this before the count avoids a vacuous pass where attempt 1's
-    // lone bubble already satisfies count === 1 before the supersede has happened.
+    // second physical attempt of the inference step once WDK has retried it.
     const wdkPanel = page.locator('aside').filter({ hasText: 'WDK processes' });
     await expect(wdkPanel.getByText('attempt 2', { exact: true })).toBeVisible({ timeout: 90_000 });
 
-    // NOW the count proves the durable no-duplicate guarantee: exactly ONE
-    // assistant reply means attempt 2 SUPERSEDED attempt 1 rather than appending
-    // beside it.
+    // The reply lands, exactly once: the retry re-entered the SAME run (pinned
+    // run id) and the SAME step (stable step id) instead of opening a parallel
+    // run beside the dead attempt.
     const assistant = page
-      .locator('[data-role="assistant"]')
+      .locator('[data-testid="message"][data-role="assistant"]')
       .filter({ hasText: 'Hello from a durable Vercel Workflow!' });
+    await expect(assistant).toBeVisible({ timeout: 60_000 });
     await expect(assistant).toHaveCount(1);
 
     // Settled cleanly back to the Send state.
@@ -86,10 +85,12 @@ test.describe('use-chat-wdk — durable text chat', () => {
     await page.getByRole('button', { name: 'Send' }).click();
 
     // The turn settles on the weather reply: the fault is one-shot (the
-    // geolocation continuation runs unfaulted), and the retry recovers
-    // observationally — the dead attempt's tool call was already answered, so
-    // the retry hands off to the continuation instead of re-running the model.
-    await expect(page.locator('[data-role="assistant"]').filter({ hasText: '72°F at your location' })).toBeVisible({
+    // geolocation continuation runs unfaulted), and the retry gates on the
+    // run's wire state before publishing, so it drives the turn on without
+    // clobbering anything the client already did.
+    await expect(
+      page.locator('[data-testid="message"][data-role="assistant"]').filter({ hasText: '72°F at your location' }),
+    ).toBeVisible({
       timeout: 90_000,
     });
 
@@ -98,7 +99,9 @@ test.describe('use-chat-wdk — durable text chat', () => {
     const wdkPanel = page.locator('aside').filter({ hasText: 'WDK processes' });
     await expect(wdkPanel.getByText('died', { exact: true })).toBeVisible({ timeout: 30_000 });
     await expect(wdkPanel.getByText('attempt 2', { exact: true })).toBeVisible();
-    await expect(page.locator('[data-role="assistant"]').getByText('error', { exact: true })).toHaveCount(0);
+    await expect(
+      page.locator('[data-testid="message"][data-role="assistant"]').getByText('error', { exact: true }),
+    ).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Send' })).toBeVisible();
   });
 
@@ -113,7 +116,9 @@ test.describe('use-chat-wdk — durable text chat', () => {
     // summarises it. The tool activity appears in the WDK processes panel.
     const wdkPanel = page.locator('aside').filter({ hasText: 'WDK processes' });
     await expect(wdkPanel.getByText('tool', { exact: true })).toBeVisible({ timeout: 60_000 });
-    await expect(page.locator('[data-role="assistant"]').filter({ hasText: '72°F in Tokyo' })).toBeVisible({
+    await expect(
+      page.locator('[data-testid="message"][data-role="assistant"]').filter({ hasText: '72°F in Tokyo' }),
+    ).toBeVisible({
       timeout: 60_000,
     });
     await expect(page.getByRole('button', { name: 'Send' })).toBeVisible();
@@ -125,8 +130,8 @@ test.describe('use-chat-wdk — durable text chat', () => {
     await page.getByPlaceholder('Type a message...').fill("What's the weather forecast for Tokyo?");
     await page.getByRole('button', { name: 'Send' }).click();
 
-    // The tool needs approval, so the run suspends (its terminal publishes
-    // ai-run-suspend inline) and the approval card appears.
+    // The tool needs approval, so the run suspends (the terminal activity
+    // publishes ai-run-suspend) and the approval card appears.
     const approve = page.getByRole('button', { name: 'Approve' });
     await expect(approve).toBeVisible({ timeout: 60_000 });
     await approve.click();
@@ -134,7 +139,9 @@ test.describe('use-chat-wdk — durable text chat', () => {
     // Approving publishes a tool-approval-response; the client's continuation
     // starts a fresh workflow that resumes the run (ai-run-resume), and the
     // forecast arrives over Ably.
-    await expect(page.locator('[data-role="assistant"]').filter({ hasText: '5-day forecast for Tokyo' })).toBeVisible({
+    await expect(
+      page.locator('[data-testid="message"][data-role="assistant"]').filter({ hasText: '5-day forecast for Tokyo' }),
+    ).toBeVisible({
       timeout: 60_000,
     });
     await expect(page.getByRole('button', { name: 'Send' })).toBeVisible();
@@ -152,7 +159,9 @@ test.describe('use-chat-wdk — durable text chat', () => {
     // navigator.geolocation, sends the result, a fresh workflow resumes the run,
     // and the weather sentence (which the mock returns once the location is
     // known) arrives over Ably.
-    await expect(page.locator('[data-role="assistant"]').filter({ hasText: '72°F at your location' })).toBeVisible({
+    await expect(
+      page.locator('[data-testid="message"][data-role="assistant"]').filter({ hasText: '72°F at your location' }),
+    ).toBeVisible({
       timeout: 60_000,
     });
     await expect(page.getByRole('button', { name: 'Send' })).toBeVisible();
@@ -168,13 +177,15 @@ test.describe('use-chat-wdk — durable text chat', () => {
 
     // Wait until the story is genuinely streaming (its opening text is on the
     // assistant side) so the cancel lands on an in-flight step, not during setup.
-    await expect(page.locator('[data-role="assistant"]').filter({ hasText: 'Once upon a time' })).toBeVisible({
+    await expect(
+      page.locator('[data-testid="message"][data-role="assistant"]').filter({ hasText: 'Once upon a time' }),
+    ).toBeVisible({
       timeout: 60_000,
     });
 
-    // Stop publishes ai-cancel; the in-flight step's abort signal fires, the step
-    // returns cancelled, and the workflow ends the run — the composer returns to
-    // Send.
+    // Stop publishes ai-cancel; the in-flight inference's run abort signal
+    // fires, the pipe returns cancelled, and the terminal activity ends the
+    // run — the composer returns to Send.
     await page.getByRole('button', { name: 'Stop' }).click();
     await expect(page.getByRole('button', { name: 'Send' })).toBeVisible({ timeout: 60_000 });
   });

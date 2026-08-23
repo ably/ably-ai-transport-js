@@ -243,6 +243,12 @@ export interface TransportHistoryOptions {
    * call continues from where this one stopped.
    */
   signal?: AbortSignal;
+  /**
+   * Called after each page fetch completes, before the next fetch begins. A
+   * durable consumer uses it as a heartbeat while a long scan pages the
+   * channel; it observes progress only, and its return value is ignored.
+   */
+  onPage?: () => void;
 }
 
 /**
@@ -511,7 +517,27 @@ export type RunEndParams =
 
 /** Options for {@link AgentTransport.openRun}. */
 export interface OpenRunOptions {
-  /** Reuse a fixed run-id. Omit to mint a fresh one (the normal path); a continuation supplies the run it re-enters. */
+  /**
+   * The located input that woke this invocation (the result of
+   * {@link AgentTransport.locateInput}). Supplying it lets the input's own
+   * wire metadata drive the open, so the caller never decides start-vs-resume:
+   *
+   * - The input's `meta.runId` (the run-id header a client stamps on a
+   *   continuation) selects the opening event — present means the open
+   *   re-enters that run with `ai-run-resume`; absent means a fresh
+   *   `ai-run-start` (under {@link runId} when pinned, else a minted id).
+   * - `meta.codecMessageId` defaults {@link inputCodecMessageId}, and — on a
+   *   fresh open only — `meta.parent` / `meta.forkOf` / `meta.regenerates`
+   *   default the structure options. An explicitly supplied option wins over
+   *   the input's value.
+   */
+  input?: LocatedInput<unknown>;
+  /**
+   * Reuse a fixed run-id. Without an {@link input}, supplying it marks the
+   * open as a continuation of that run. With an input, it is the fresh-run
+   * pin only — a durable agent supplies a stable id so a fresh-process retry
+   * re-enters the same run — and a continuation's id comes from the input.
+   */
   runId?: string;
   /** Reuse a fixed invocation-id. Omit to mint a fresh one (one per HTTP request). */
   invocationId?: string;
@@ -653,28 +679,54 @@ export interface AgentTransport<TInput, TOutput> extends TransportReceiver<TInpu
    */
   subscribe(handler: (event: TransportEvent<TInput, TOutput>) => void): () => void;
   /**
-   * Open a run and return a handle to publish its output and lifecycle. A fresh
-   * open publishes `ai-run-start`; a continuation (an `opts.runId` naming an
-   * existing run) publishes `ai-run-resume`. The run is registered for cancel
+   * Open a run and return a handle to publish its output and lifecycle. The
+   * normal agent path passes the located input
+   * (`openRun({ input: located })`): the input's run-id header decides the
+   * opening event — a continuation re-enters that run with `ai-run-resume`, a
+   * fresh send opens with `ai-run-start` — and the input's metadata defaults
+   * the anchor and structure options (see {@link OpenRunOptions.input}).
+   * Without a located input, a supplied `opts.runId` marks a continuation and
+   * a fresh open publishes `ai-run-start`. The run is registered for cancel
    * routing until it ends; a cancel already buffered for
    * `opts.inputCodecMessageId` is honoured immediately. Requires
    * {@link connect}.
-   * @param opts - Optional run identity and structure; see {@link OpenRunOptions}.
+   * @param opts - Optional located input, run identity and structure; see {@link OpenRunOptions}.
    * @param hooks - Optional per-run callbacks and external AbortSignal; see
    *   {@link OpenRunHooks}.
    * @returns A handle to drive the run's output and lifecycle.
    */
   openRun(opts?: OpenRunOptions, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput>;
   /**
+   * Adopt an already-open run without publishing anything. The handle
+   * registers for cancel and steer routing exactly as {@link openRun} does,
+   * and nothing reaches the channel until the caller publishes output or a
+   * terminal — the caller publishes only what it means to publish. This is
+   * how a durable activity re-enters a run it must gate or clean up: it
+   * decides from channel history whether there is anything left to do (the
+   * transport holds no run state, so that gate is the caller's), then acts.
+   * Requires {@link connect}.
+   * @param runId - The id of the run to adopt. Must be non-empty.
+   * @param hooks - Optional per-run callbacks and external AbortSignal; see
+   *   {@link OpenRunHooks}.
+   * @returns A handle to drive the adopted run's output and lifecycle.
+   */
+  adoptRun(runId: string, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput>;
+  /**
    * Scan channel history for the input event whose `event-id` header matches
    * `eventId`, returning its {@link WireMeta} and decoded inputs — so a
    * transport-only agent can resume durably without the Tree. Runs on a
    * throwaway decoder so it never perturbs the live receive stream's dedup
-   * state. Resolves `undefined` when no matching input is found in history.
+   * state. Resolves `undefined` when no matching input is found in history —
+   * including when `opts.limit` bounded the scan before the whole channel was
+   * walked, so a bounded caller decides what a miss means for its own retry
+   * semantics.
    * @param eventId - The `event-id` to match (the invocation's `inputEventId`).
+   * @param opts - Optional scan bounds; see {@link TransportHistoryOptions}.
+   *   `limit` caps the wire messages scanned (page granular), `signal` aborts
+   *   between pages, and `onPage` fires after each page fetch.
    * @returns The located input, or `undefined` when not found.
    */
-  locateInput(eventId: string): Promise<LocatedInput<TInput> | undefined>;
+  locateInput(eventId: string, opts?: TransportHistoryOptions): Promise<LocatedInput<TInput> | undefined>;
   /**
    * Page the channel's history backwards from the attach point and return the
    * classified events as a batch — never emitted to `subscribe` handlers — so

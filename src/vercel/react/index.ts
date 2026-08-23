@@ -1,5 +1,5 @@
 // Vercel-specific React entry point: providers, hooks, and their types
-export type { ChatTransport } from '../transport/chat-transport.js';
+export type { SessionChatTransport } from '../transport/session-chat-transport.js';
 export type { ChatTransportProviderProps } from './contexts/chat-transport-provider.js';
 export {
   ChatTransportProvider,

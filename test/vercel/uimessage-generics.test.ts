@@ -19,16 +19,14 @@ import type { ClientSession } from '../../src/core/transport/types.js';
 import { type VercelProjection } from '../../src/vercel/codec/reducer.js';
 import { createUIMessageSessionCodec } from '../../src/vercel/codec/session-codec.js';
 import type { VercelSessionInput } from '../../src/vercel/codec/session-events.js';
-import {
-  type ChatTransport,
-  createChatTransport,
-  createClientSession,
-  createUIMessageCodec,
-  type SendMessagesRequestContext,
-  type VercelInput,
-  type VercelOutput,
-} from '../../src/vercel/index.js';
+import { createUIMessageCodec, type VercelInput, type VercelOutput } from '../../src/vercel/index.js';
 import type { UseMessagesWithSeedOptions, UseMessageSyncOptions } from '../../src/vercel/react/index.js';
+import {
+  createSessionChatTransport,
+  type SessionChatTransport,
+  type SessionSendMessagesRequestContext,
+} from '../../src/vercel/transport/session-chat-transport.js';
+import { createClientSession } from '../../src/vercel/transport/session-factories.js';
 
 interface MyMetadata {
   userId: string;
@@ -82,12 +80,12 @@ describe('Vercel UIMessage generic threading', () => {
     expectTypeOf<Messages[number]['message']['metadata']>().not.toBeUnknown();
   });
 
-  it('createChatTransport and its request context preserve the message type', () => {
-    expectTypeOf(createChatTransport<MyMetadata, MyDataParts, MyTools>).returns.toEqualTypeOf<
-      ChatTransport<MyMetadata, MyDataParts, MyTools>
+  it('createSessionChatTransport and its request context preserve the message type', () => {
+    expectTypeOf(createSessionChatTransport<MyMetadata, MyDataParts, MyTools>).returns.toEqualTypeOf<
+      SessionChatTransport<MyMetadata, MyDataParts, MyTools>
     >();
     // The prepare-request context carries the typed history/messages.
-    expectTypeOf<SendMessagesRequestContext<MyMetadata, MyDataParts, MyTools>['messages']>().toEqualTypeOf<
+    expectTypeOf<SessionSendMessagesRequestContext<MyMetadata, MyDataParts, MyTools>['messages']>().toEqualTypeOf<
       MyMessage[]
     >();
   });

@@ -13,7 +13,7 @@ import type { VercelSessionInput } from '../../../src/vercel/codec/session-event
 import type { ChatTransportSlot } from '../../../src/vercel/react/contexts/chat-transport-context.js';
 import { ChatTransportContext } from '../../../src/vercel/react/contexts/chat-transport-context.js';
 import { useMessageSync } from '../../../src/vercel/react/use-message-sync.js';
-import type { ChatTransport } from '../../../src/vercel/transport/chat-transport.js';
+import type { SessionChatTransport } from '../../../src/vercel/transport/session-chat-transport.js';
 import { makeFakeLoadUntil } from '../../helper/fake-load-until.js';
 
 type Handler = () => void;
@@ -33,8 +33,8 @@ const makeNode = (m: AI.UIMessage) => ({
   serial: undefined,
 });
 
-// A mock ChatTransport whose streaming gate can be toggled via `setStreaming`.
-const makeMockChatTransport = (): { chatTransport: ChatTransport; setStreaming: (value: boolean) => void } => {
+// A mock SessionChatTransport whose streaming gate can be toggled via `setStreaming`.
+const makeMockChatTransport = (): { chatTransport: SessionChatTransport; setStreaming: (value: boolean) => void } => {
   const streamingCallbacks = new Set<(s: boolean) => void>();
   let streaming = false;
 
@@ -46,7 +46,7 @@ const makeMockChatTransport = (): { chatTransport: ChatTransport; setStreaming: 
   const chatTransport = {
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
     sendMessages: vi.fn(() => Promise.resolve(new ReadableStream())),
-    // eslint-disable-next-line @typescript-eslint/promise-function-async, unicorn/no-null -- mock; null required by ChatTransport contract
+    // eslint-disable-next-line @typescript-eslint/promise-function-async, unicorn/no-null -- mock; null required by SessionChatTransport contract
     reconnectToStream: vi.fn(() => Promise.resolve(null)),
     close: vi.fn(),
     get streaming() {
@@ -58,7 +58,7 @@ const makeMockChatTransport = (): { chatTransport: ChatTransport; setStreaming: 
         streamingCallbacks.delete(cb);
       };
     },
-  } as unknown as ChatTransport;
+  } as unknown as SessionChatTransport;
 
   return { chatTransport, setStreaming };
 };
@@ -132,7 +132,7 @@ const createMockSlot = (): MockSlot => {
     loadUntil: makeFakeLoadUntil({ getMessages: viewGetMessages, hasOlder: viewHasOlder, loadOlder: viewLoadOlder }),
   } as unknown as ClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>['view'];
 
-  // --- ChatTransport ---
+  // --- SessionChatTransport ---
   const { chatTransport, setStreaming } = makeMockChatTransport();
 
   const slot: ChatTransportSlot = { session: makeMockSession(view), chatTransport };

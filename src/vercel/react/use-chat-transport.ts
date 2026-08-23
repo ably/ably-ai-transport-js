@@ -1,5 +1,5 @@
 /**
- * useChatTransport: reads a ChatTransport and its underlying ClientSession from
+ * useChatTransport: reads a SessionChatTransport and its underlying ClientSession from
  * the nearest ChatTransportProvider.
  *
  * The chat transport is created by ChatTransportProvider, which wraps the subtree
@@ -22,10 +22,10 @@ import { makeSkippedClientSession } from '../../react/internal/skipped-session.j
 import type { VercelOutput } from '../codec/index.js';
 import type { VercelProjection } from '../codec/reducer.js';
 import type { VercelSessionInput } from '../codec/session-events.js';
-import type { ChatTransport } from '../transport/index.js';
+import type { SessionChatTransport } from '../transport/session-chat-transport.js';
 import { ChatTransportContext } from './contexts/chat-transport-context.js';
 
-const SKIPPED_CHAT_TRANSPORT: ChatTransport = {
+const SKIPPED_CHAT_TRANSPORT: SessionChatTransport = {
   sendMessages: (): never => {
     throw new Ably.ErrorInfo('unable to send messages; hook is skipped', ErrorCode.InvalidArgument, 400);
   },
@@ -57,7 +57,7 @@ export interface UseChatTransportOptions {
 
 /**
  * The value returned by {@link useChatTransport}.
- * Provides both the underlying {@link ClientSession} and the {@link ChatTransport}
+ * Provides both the underlying {@link ClientSession} and the {@link SessionChatTransport}
  * adapter for Vercel's useChat hook.
  */
 export interface ChatTransportHandle {
@@ -77,7 +77,7 @@ export interface ChatTransportHandle {
    * transport and `sessionError` is set instead. Check `chatTransportError` and
    * `sessionError` before use.
    */
-  chatTransport: ChatTransport;
+  chatTransport: SessionChatTransport;
 
   /**
    * Set when no matching {@link ClientSessionProvider} was found, when session
@@ -95,7 +95,7 @@ export interface ChatTransportHandle {
 }
 
 /**
- * Access a {@link ChatTransport} and {@link ClientSession} from the nearest {@link ChatTransportProvider}.
+ * Access a {@link SessionChatTransport} and {@link ClientSession} from the nearest {@link ChatTransportProvider}.
  *
  * When `channelName` is omitted, the innermost `ChatTransportProvider` in the tree is used.
  * When `skip` is `true`, returns stubs whose every property and method throws

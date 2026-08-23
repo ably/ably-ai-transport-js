@@ -14,15 +14,15 @@ import type { VercelSessionInput } from '../../../src/vercel/codec/session-event
 import type { ChatTransportSlot } from '../../../src/vercel/react/contexts/chat-transport-context.js';
 import { ChatTransportContext } from '../../../src/vercel/react/contexts/chat-transport-context.js';
 import { useChatTransport } from '../../../src/vercel/react/use-chat-transport.js';
-import type { ChatTransport } from '../../../src/vercel/transport/chat-transport.js';
+import type { SessionChatTransport } from '../../../src/vercel/transport/session-chat-transport.js';
 
 // eslint-disable-next-line @typescript-eslint/no-empty-function -- no-op stub
 const noop = (): void => {};
 
-const createFakeChatTransport = (): ChatTransport => ({
+const createFakeChatTransport = (): SessionChatTransport => ({
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
   sendMessages: () => Promise.resolve(new ReadableStream()),
-  // eslint-disable-next-line @typescript-eslint/promise-function-async, unicorn/no-null -- mock; null required by ChatTransport contract
+  // eslint-disable-next-line @typescript-eslint/promise-function-async, unicorn/no-null -- mock; null required by SessionChatTransport contract
   reconnectToStream: () => Promise.resolve(null),
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
   close: () => Promise.resolve(),

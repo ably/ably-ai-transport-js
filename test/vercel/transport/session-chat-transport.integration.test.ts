@@ -12,7 +12,7 @@
  * layer that decides how a client tool-result continuation is dispatched — so
  * the test exercises the actual client continuation path (not a hand-built
  * wire). The suspended trunk is set up with a real agent run; the two tabs then
- * resolve the tool concurrently via `createChatTransport(...).sendMessages`.
+ * resolve the tool concurrently via `createSessionChatTransport(...).sendMessages`.
  *
  * The segregation is observed on a third (observer) session's conversation
  * tree: the reply-run branches parented at the prompt (`getSiblingNodes`) must
@@ -38,7 +38,7 @@ import type { VercelProjection } from '../../../src/vercel/codec/reducer.js';
 import { createUIMessageSessionCodec } from '../../../src/vercel/codec/session-codec.js';
 import type { VercelSessionInput } from '../../../src/vercel/codec/session-events.js';
 import { isToolPart } from '../../../src/vercel/tool-part.js';
-import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
+import { createSessionChatTransport } from '../../../src/vercel/transport/session-chat-transport.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { createRunFromOpts } from '../../helper/run-from-opts.js';
@@ -260,8 +260,8 @@ describe('concurrent client tool results for one suspended tool call', () => {
       // --- Both tabs resolve the SAME tool call CONCURRENTLY via the real chat
       // transport. Each derives its continuation from its own tree in the same
       // tick, before either result echoes back, so neither defers. ---
-      const chatA = createChatTransport(tabA, { fetch: noopFetch });
-      const chatB = createChatTransport(tabB, { fetch: noopFetch });
+      const chatA = createSessionChatTransport(tabA, { fetch: noopFetch });
+      const chatB = createSessionChatTransport(tabB, { fetch: noopFetch });
 
       const dispatches = [
         chatA.sendMessages({
@@ -418,8 +418,8 @@ describe('concurrent client tool results for one suspended tool call', () => {
       // --- Both tabs resolve the SAME tool call concurrently; each continuation
       // forks into its own reply run. ---
       const bothFolded = awaitInputFolds(observer, 2);
-      const chatA = createChatTransport(tabA, { fetch: capturingFetch });
-      const chatB = createChatTransport(tabB, { fetch: capturingFetch });
+      const chatA = createSessionChatTransport(tabA, { fetch: capturingFetch });
+      const chatB = createSessionChatTransport(tabB, { fetch: capturingFetch });
       await Promise.all([
         chatA.sendMessages({
           trigger: 'submit-message',
@@ -706,7 +706,7 @@ describe('sequential client tool results across forked reply runs', () => {
       return Promise.resolve(new Response(undefined, { status: 200 }));
     };
 
-    const chat = createChatTransport(tab, { fetch: capturingFetch });
+    const chat = createSessionChatTransport(tab, { fetch: capturingFetch });
 
     try {
       // --- Trunk: the tab prompts; the agent streams the FIRST client tool call

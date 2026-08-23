@@ -1,7 +1,7 @@
 import type * as Ably from 'ably';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createAgentSession, createClientSession } from '../../../src/vercel/transport/index.js';
+import { createAgentSession, createClientSession } from '../../../src/vercel/transport/session-factories.js';
 import { createMockClient } from '../../helper/mock-client.js';
 import { createRunFromOpts } from '../../helper/run-from-opts.js';
 

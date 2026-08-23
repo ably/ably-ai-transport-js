@@ -135,13 +135,12 @@ describe('chatWorkflow', () => {
     expect(calls).toContain('cleanupRun');
   });
 
-  // Regression: if `runToolStep`'s catch calls `session.end()` on a
-  // retryable throw, it publishes `ai-run-end` and the retry fails with
-  // "run is terminal (read-only)". The activity must instead detach and
-  // let the workflow's retry policy carry through — this test simulates
-  // the intentional-flake pattern (`getStockPrice`: throw on an odd price,
-  // succeed once it rolls even) and asserts the workflow completes through a
-  // runToolStep retry.
+  // Regression: if `runToolStep` publishes `ai-run-end` on a retryable throw,
+  // the retry finds the run terminal and cannot publish. The activity must
+  // instead close its transport without a terminal and let the workflow's
+  // retry policy carry through — this test simulates the intentional-flake
+  // pattern (`getStockPrice`: throw on an odd price, succeed once it rolls
+  // even) and asserts the workflow completes through a runToolStep retry.
   it('workflow completes when runToolStep fails once and succeeds on retry', async () => {
     const { activities, calls } = makeWorker([
       { kind: 'server-tools', serverToolCalls: [{ toolCallId: 'c1', toolName: 'x', input: {} }] },

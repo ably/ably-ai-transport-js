@@ -11,10 +11,11 @@
  * What is left here is this app's own algorithm: run an inference, and while it
  * comes back asking for server tools, run those tools and infer again.
  *
- * Activities publish their own terminals. The inference activity already holds a
- * loaded run, so publishing `ai-run-end` / `ai-run-suspend` there costs nothing;
- * doing it from here via `run.end()` would pay a fresh adopt and load. The
- * handle exposes `end()` and `suspend()` for orchestrations that prefer it.
+ * Activities publish their own terminals. The inference activity already holds
+ * an open transport on the run's channel, so publishing `ai-run-end` /
+ * `ai-run-suspend` there costs nothing; doing it from here via `run.end()`
+ * would pay a fresh activity with its own connect. The handle exposes `end()`
+ * and `suspend()` for orchestrations that prefer it.
  *
  * Cancels need no signal or listener activity. When the client publishes
  * `ai-cancel` on the channel, whichever activity is attached picks it up through
@@ -50,9 +51,10 @@ export async function chatWorkflow(input: ChatWorkflowInput): Promise<void> {
   // literal: that attempt is non-cancellable, gets one shot with a short timeout,
   // and no-ops when the run is already terminal or parked suspended.
   //
-  // It does NOT adopt the run for the activities below. A session cannot cross an
-  // activity boundary, so each activity re-adopts and re-loads from `run.ids` —
-  // which is why ids are what gets threaded through the loop, not a session.
+  // The handle carries plain data only. A live transport cannot cross an
+  // activity boundary, so each activity re-enters the run from `run.ids` with
+  // its own transport — which is why ids are what gets threaded through the
+  // loop, not a connection.
   await withRun(
     input.invocation,
     {

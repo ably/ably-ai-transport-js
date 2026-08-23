@@ -1,13 +1,14 @@
 /**
- * Chat API route — receives messages from the client session's HTTP POST and
- * starts a Temporal workflow to drive the agent side. The workflow ID equals
- * the invocation ID.
+ * Chat API route — receives the invocation pointer the useChat chat-transport
+ * POSTs (`{channelName, eventId, runId?}`) and starts a Temporal workflow to
+ * drive the agent side. The workflow ID equals the invocation ID.
  *
- * The SDK plugin's `openRun` activity, which the workflow schedules first,
- * activates the run on the Ably channel
- * (`ai-run-start` for a fresh run, `ai-run-resume` for a continuation); the
- * client resolves `run.started` from that channel event, not from this
- * response, so the route returns as soon as the workflow is started.
+ * The response carries the run's id, which the chat transport uses to filter
+ * its chunk stream. The route derives it without awaiting the workflow: the
+ * SDK plugin's `openRun` activity pins a fresh run's id to the invocation id
+ * this route passes, and a continuation re-enters the run the trigger's own
+ * headers name — so a fresh send answers with the invocation id and a
+ * continuation echoes the `runId` the client already holds.
  */
 
 import { Client, Connection } from '@temporalio/client';
@@ -15,8 +16,20 @@ import type { InvocationData } from '@ably/ai-transport';
 import type { ChatWorkflowInput } from '../../../worker/shared';
 import { TASK_QUEUE } from '../../../worker/shared';
 
-interface ChatResponse {
-  invocationId: string;
+/** The invocation pointer the chat transport POSTs. */
+interface ChatRequestBody {
+  /** The Ably channel the conversation lives on. */
+  channelName: string;
+  /** The `event-id` of the triggering input event on the channel. */
+  eventId: string;
+  /** The run to continue; absent for a fresh send. */
+  runId?: string;
+}
+
+/** The response body the chat transport expects. */
+interface ChatResponseBody {
+  /** The id of the run this invocation opens (fresh) or resumes (continuation). */
+  runId: string;
 }
 
 // Cache the Temporal client + connection across requests: creating a Connection
@@ -36,7 +49,9 @@ async function temporalClient(): Promise<Client> {
 }
 
 export async function POST(req: Request): Promise<Response> {
-  const invocation = (await req.json()) as InvocationData;
+  // CAST: trust boundary — the body is this app's own chat transport's JSON.
+  const request = (await req.json()) as ChatRequestBody;
+  const invocation: InvocationData = { sessionName: request.channelName, inputEventId: request.eventId };
   const invocationId = crypto.randomUUID();
 
   const client = await temporalClient();
@@ -48,6 +63,8 @@ export async function POST(req: Request): Promise<Response> {
     args,
   });
 
-  const body: ChatResponse = { invocationId };
+  // Fresh send: the plugin pins the run id to the invocation id passed above.
+  // Continuation: the trigger's own run id wins, and the client sent it here.
+  const body: ChatResponseBody = { runId: request.runId ?? invocationId };
   return Response.json(body);
 }

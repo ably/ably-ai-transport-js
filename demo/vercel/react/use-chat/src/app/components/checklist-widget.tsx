@@ -2,17 +2,19 @@
 
 /**
  * A compact widget pinned at the bottom of the conversation, rendering the
- * agent's shared task checklist (LiveObjects state on the session channel).
- * The agent writes through the updateChecklist tool; this widget only
- * observes, re-rendering whenever the object changes.
+ * agent's shared task checklist (LiveObjects state on the conversation's
+ * channel). The agent writes through the updateChecklist tool; this widget
+ * only observes, re-rendering whenever the object changes.
  *
- * It hydrates from object sync on channel attach, so on a reload the current
- * progress reappears before any conversation history has loaded — the thing
- * this demo is here to show. Nothing renders until the agent starts a
- * checklist.
+ * It reads the channel via ably-js's `useChannel` — the ChatTransportProvider
+ * nests a matching `ChannelProvider` — and hydrates from object sync on
+ * channel attach, so on a reload the current progress reappears immediately —
+ * the thing this demo is here to show. Nothing renders until the agent starts
+ * a checklist.
  */
 
-import { useChecklist, type ObjectSession } from '../hooks/use-checklist';
+import { useChannel } from 'ably/react';
+import { useChecklist } from '../hooks/use-checklist';
 import type { ChecklistItemRow } from '../lib/checklist';
 
 function StatusIcon({ status }: { status: ChecklistItemRow['status'] }) {
@@ -77,8 +79,9 @@ function ProgressBar({ steps }: { steps: ChecklistItemRow[] }) {
   );
 }
 
-export function ChecklistWidget({ session }: { session: ObjectSession }) {
-  const { steps, error } = useChecklist(session);
+export function ChecklistWidget() {
+  const { channel } = useChannel();
+  const { steps, error } = useChecklist(channel.object);
   const done = steps.filter((step) => step.status === 'done').length;
 
   // Only present once the agent has a checklist (or hit an error loading it),

@@ -11,7 +11,7 @@ import { Suspense, useEffect, useState } from 'react';
 
 const CHANNEL_NAMESPACE = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ai:';
 
-function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; clientId?: string; limit?: number }) {
+function ChatWhenReady({ channelName, clientId }: { channelName: string; clientId?: string }) {
   const ready = useAblyReady();
 
   if (!ready) {
@@ -26,7 +26,6 @@ function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; 
       <Chat
         chatId={channelName}
         clientId={clientId}
-        historyLimit={limit}
       />
     </ChatTransportProvider>
   );
@@ -37,7 +36,6 @@ function ChatPage() {
   const searchParams = useSearchParams();
   const paramChannel = searchParams.get('channel');
   const paramClientId = searchParams.get('clientId') ?? undefined;
-  const limit = Number(searchParams.get('limit')) || undefined;
 
   const [channelName] = useState(() => paramChannel ?? `${CHANNEL_NAMESPACE}${generateChannelSlug()}`);
   const [clientId] = useState(() => paramClientId ?? generateClientName());
@@ -60,7 +58,6 @@ function ChatPage() {
       <ChatWhenReady
         channelName={channelName}
         clientId={clientId}
-        limit={limit}
       />
     </Providers>
   );

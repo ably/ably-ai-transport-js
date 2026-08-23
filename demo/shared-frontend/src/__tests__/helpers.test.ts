@@ -1,7 +1,4 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import type { ClientRun } from '@ably/ai-transport';
-import type { VercelInput } from '@ably/ai-transport/vercel';
-import type { UIMessage } from 'ai';
 
 import { userMessage, wakeAgent } from '../index';
 
@@ -30,25 +27,27 @@ describe('wakeAgent', () => {
     vi.unstubAllGlobals();
   });
 
-  it('POSTs the run invocation JSON to the endpoint and returns the minted ids', async () => {
-    const fetchMock = vi.fn<typeof fetch>(() =>
-      Promise.resolve(Response.json({ runId: 'run-1', invocationId: 'inv-1' })),
-    );
+  it('POSTs the invocation pointer as JSON and returns the run-id', async () => {
+    const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(Response.json({ runId: 'run-1' })));
     vi.stubGlobal('fetch', fetchMock);
 
-    // CAST: wakeAgent reads only `run.toInvocation().toJSON()`; build the minimal
-    // ClientRun surface it touches and assert the type.
-    const run = {
-      toInvocation: () => ({ toJSON: () => ({ inputEventId: 'ev-1', sessionName: 'demo' }) }),
-    } as unknown as ClientRun<VercelInput, UIMessage>;
-
-    const result = await wakeAgent('/api/chat', run);
+    const result = await wakeAgent('/api/chat', { channelName: 'ai:demo', eventId: 'ev-1' });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('/api/chat');
     expect(init?.method).toBe('POST');
-    expect(JSON.parse(String(init?.body))).toEqual({ inputEventId: 'ev-1', sessionName: 'demo' });
-    expect(result).toEqual({ runId: 'run-1', invocationId: 'inv-1' });
+    expect(JSON.parse(String(init?.body))).toEqual({ channelName: 'ai:demo', eventId: 'ev-1' });
+    expect(result).toEqual({ runId: 'run-1' });
+  });
+
+  it('includes runId in the body when continuing an existing run', async () => {
+    const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(Response.json({ runId: 'run-2' })));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await wakeAgent('/api/chat', { channelName: 'ai:demo', eventId: 'ev-2', runId: 'run-2' });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(String(init?.body))).toEqual({ channelName: 'ai:demo', eventId: 'ev-2', runId: 'run-2' });
   });
 });

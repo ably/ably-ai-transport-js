@@ -25,7 +25,7 @@ const DEFAULT_LINKS: readonly HeaderLink[] = [
 ];
 
 interface ChatShellProps {
-  /** Header heading — each demo names itself (e.g. "Ably AI — ClientSession"). */
+  /** Header heading — each demo names itself (e.g. "Ably AI — useChat"). */
   title: string;
   /** Header links. Defaults to the SDK repo + Ably docs. */
   links?: readonly HeaderLink[];

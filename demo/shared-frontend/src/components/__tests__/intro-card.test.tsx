@@ -5,7 +5,7 @@ import { IntroCard, COMMON_SCENARIOS } from '../intro-card';
 import type { Scenario } from '../../lib/progress-steps';
 
 // IntroCard renders the numbered walkthrough of a demo's scenarios under a
-// heading and blurb, with sensible ClientSession defaults.
+// heading and blurb, with sensible defaults.
 
 afterEach(cleanup);
 
@@ -30,10 +30,10 @@ describe('<IntroCard>', () => {
     expect(screen.getByText('open the Debug pane')).toBeTruthy();
   });
 
-  it('falls back to the ClientSession title and blurb with no props', () => {
+  it('falls back to the generic title and blurb with no props', () => {
     render(<IntroCard />);
-    expect(screen.getByText('ClientSession over Ably')).toBeTruthy();
-    expect(screen.getByText(/wired directly to the Ably AI Transport ClientSession API/)).toBeTruthy();
+    expect(screen.getByText('AI chat over Ably')).toBeTruthy();
+    expect(screen.getByText(/wired to the Ably AI Transport/)).toBeTruthy();
   });
 
   it('renders the shared baseline scenarios by default', () => {

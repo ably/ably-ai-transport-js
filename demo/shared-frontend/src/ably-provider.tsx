@@ -13,9 +13,9 @@ export function useAblyReady() {
 
 /**
  * Set up the Ably client + provider that the shared UI needs. Codec-agnostic:
- * a demo pairs this with its own codec-typed session hooks. `liveObjects` opts
- * the client into the LiveObjects plugin — required by any demo that uses
- * `session.object(...)` (the checklist demo does; the Temporal demo doesn't).
+ * a demo pairs this with its own transport provider. `liveObjects` opts the
+ * client into the LiveObjects plugin — required by any demo that uses channel
+ * objects (the checklist demo does; the Temporal demo doesn't).
  */
 export function Providers({
   clientId,
@@ -45,9 +45,9 @@ export function Providers({
           callback(message, null);
         }
       },
-      // LiveObjects is an ably-js plugin — enable it only for demos that call
-      // `session.object(...)`. Loading it unconditionally has no functional
-      // cost but pulls extra bytes into the browser bundle.
+      // LiveObjects is an ably-js plugin — enable it only for demos that use
+      // channel objects. Loading it unconditionally has no functional cost
+      // but pulls extra bytes into the browser bundle.
       ...(liveObjects ? { plugins: { LiveObjects } } : {}),
       ...(endpoint ? { endpoint } : {}),
     });

@@ -202,12 +202,10 @@ jobs:
       matrix:
         demo:
           - demo/vercel/react/use-chat
-          - demo/vercel/react/use-client-session
           - demo/vercel/react/use-chat-db
-          - demo/vercel/react/use-client-session-db
           - demo/vercel/react/use-chat-wdk
-          - demo/temporal/use-client-session-temporal
-          - demo/openai/react/use-client-session
+          - demo/temporal/temporal-agent
+          - demo/openai/react/responses-transport
     name: demo ${{ matrix.demo }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -254,16 +252,12 @@ jobs:
         include:
           - demo: demo/vercel/react/use-chat
             name: use-chat
-          - demo: demo/vercel/react/use-client-session
-            name: use-client-session
           - demo: demo/vercel/react/use-chat-db
             name: use-chat-db
-          - demo: demo/vercel/react/use-client-session-db
-            name: use-client-session-db
           - demo: demo/vercel/react/use-chat-wdk
             name: use-chat-wdk
-          - demo: demo/openai/react/use-client-session
-            name: openai-use-client-session
+          - demo: demo/openai/react/responses-transport
+            name: responses-transport
     name: demo-e2e ${{ matrix.name }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

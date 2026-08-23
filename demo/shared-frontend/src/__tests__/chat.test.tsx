@@ -1,108 +1,10 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, cleanup, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { useEffect, useState, type ReactNode } from 'react';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { cleanup, render, screen, fireEvent, within } from '@testing-library/react';
 import type * as AI from 'ai';
-import { Invocation } from '@ably/ai-transport';
-import type { BranchHandle, ClientRun, ClientSession, RunInfo, SendOptions } from '@ably/ai-transport';
-import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
 
 // jsdom doesn't implement Element.prototype.scrollIntoView; shim it so a test
 // render never throws if a component reaches for it.
 Element.prototype.scrollIntoView = () => {};
-
-// ---------------------------------------------------------------------------
-// Mock surface
-//
-// `../providers` is mocked so the demo's React glue can be exercised without
-// bringing up an Ably client, the codec, or the session. A breaking change to
-// the SDK's session-hooks surface is caught at module-load or render-time.
-// ---------------------------------------------------------------------------
-
-let setMockViewMessages: ((messages: AI.UIMessage[]) => void) | null = null;
-
-// Lets a test stub the View's runOf so the demo derives a Run status (and thus
-// the Stop / Send button state) for the rendered messages. Default: no Run.
-let mockRunOf: (codecMessageId: string) => RunInfo | undefined = () => undefined;
-
-const mockSend = vi.fn(
-  (_input: VercelInput | VercelInput[], _opts?: SendOptions): Promise<ClientRun<VercelInput, AI.UIMessage>> =>
-    Promise.resolve({
-      // The triggering input's codec-message-id — the synchronous routing
-      // handle the client owns the moment it publishes.
-      inputCodecMessageId: 'input-1',
-      // The agent mints the run-id now, so `runId` is empty until `started`
-      // resolves (once `ai-run-start` is observed). A fresh send omits run-id
-      // from the invocation pointer, leaving the agent to mint it.
-      runId: '',
-      status: 'active',
-      error: undefined,
-      messages: [],
-      started: Promise.resolve(),
-      inputEventId: 'ev-1',
-      cancel: async () => {},
-      steer: () => ({
-        published: Promise.resolve({ serial: undefined }),
-        outcome: Promise.resolve({ consumed: false }),
-      }),
-      toInvocation: () => Invocation.fromJSON({ inputEventId: 'ev-1', sessionName: 'demo' }),
-    }),
-);
-
-const mockSession = {
-  tree: { on: vi.fn(() => () => {}) },
-  cancel: vi.fn(async () => {}),
-  close: vi.fn(async () => {}),
-  on: vi.fn(() => () => {}),
-} as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
-
-const emptyBranchHandle = (): BranchHandle<AI.UIMessage> => ({
-  hasSiblings: false,
-  siblings: [],
-  index: 0,
-  selected: undefined,
-  select: () => {},
-});
-
-vi.mock('../providers', () => ({
-  SessionHooks: {
-    ClientSessionProvider: ({ children }: { children: ReactNode }) => children,
-    useClientSession: () => ({ session: mockSession, sessionError: undefined }),
-    useAblyMessages: () => [],
-    // Chat reads the tree's getRunNode to seed a client-tool fork; with no
-    // suspended client tool in these fixtures the real useClientTools skips the
-    // getRunNode lookup (it guards a missing node), so a stub suffices.
-    useTree: () => ({ getRunNode: () => undefined }),
-    useView: () => {
-      const [messages, setMessages] = useState<AI.UIMessage[]>([]);
-      useEffect(() => {
-        setMockViewMessages = setMessages;
-        return () => {
-          setMockViewMessages = null;
-        };
-      }, []);
-      return {
-        // The demo renders and correlates off the codec-message-id pairs; the
-        // mock derives them from the domain id (here they coincide).
-        messages: messages.map((message) => ({ codecMessageId: message.id, message })),
-        hasOlder: false,
-        loading: false,
-        loadOlder: async () => {},
-        branchSelection: emptyBranchHandle,
-        runOf: (codecMessageId: string) => mockRunOf(codecMessageId),
-        run: () => undefined,
-        send: mockSend,
-        regenerate: vi.fn(),
-        edit: vi.fn(),
-        on: () => () => {},
-      };
-    },
-  },
-}));
-
-vi.mock('../ably-provider', () => ({
-  Providers: ({ children }: { children: ReactNode }) => children,
-  useAblyReady: () => true,
-}));
 
 // The header's AvatarStack enters presence and reads the member set via
 // ably-js's React presence hooks. Stub them so the Chat render needs no Ably
@@ -119,147 +21,158 @@ import { Chat } from '../index';
 // Helpers
 // ---------------------------------------------------------------------------
 
-const assistantText = (text: string): AI.UIMessage => ({
-  id: 'msg-assistant-1',
+const userText = (id: string, text: string): AI.UIMessage => ({
+  id,
+  role: 'user',
+  parts: [{ type: 'text', text }],
+});
+
+const assistantText = (id: string, text: string): AI.UIMessage => ({
+  id,
   role: 'assistant',
   parts: [{ type: 'text', text, state: 'done' }],
 });
+
+type ChatOverrides = Partial<Parameters<typeof Chat>[0]>;
+
+// Chat is presentational: render it with inert defaults and let each test
+// override the props it exercises.
+function renderChat(over: ChatOverrides = {}) {
+  return render(
+    <Chat
+      chatId="ai:test"
+      messages={[]}
+      isRunning={false}
+      onSend={() => {}}
+      ablyMessages={[]}
+      callbackLog={[]}
+      clientToolLog={[]}
+      onClearLogs={() => {}}
+      {...over}
+    />,
+  );
+}
+
+// Scope button queries to the input bar's <form> so descriptive copy and
+// suggestion chips elsewhere on the page (which also mention "Stop" and
+// "Send") can't satisfy the role query.
+function inputBar() {
+  const input = screen.getByPlaceholderText(/Type a message/);
+  const form = input.closest('form');
+  if (!form) throw new Error('input is not nested in a <form>');
+  return { input, form, scope: within(form) };
+}
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 describe('<Chat>', () => {
-  beforeEach(() => {
-    mockSend.mockClear();
-    mockRunOf = () => undefined;
-    vi.mocked(mockSession.cancel).mockClear();
-    // The demo wakes the agent by POSTing the invocation after each send.
-    // Stub fetch so that POST succeeds rather than hitting the network; the
-    // agent route returns the minted invocation-id, which wakeAgent reads.
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(() => Promise.resolve(Response.json({ invocationId: 'inv-1' }))),
-    );
-  });
-
   afterEach(() => {
     // vitest isn't configured with globals, so @testing-library/react's
     // auto-cleanup hook isn't registered — unmount explicitly so each test
     // starts from an empty DOM (otherwise a second render duplicates the
     // input bar and role queries find multiple matches).
     cleanup();
-    vi.unstubAllGlobals();
   });
 
-  it('mounts, sends the user input via view.send, and renders messages pushed through the view', async () => {
-    render(
-      <Chat
-        chatId="ai:test"
-        api="api/chat"
-      />,
-    );
+  it('renders the messages it is given and fires onSend with the composed text', () => {
+    const onSend = vi.fn();
+    renderChat({ messages: [assistantText('a1', 'Hi there')], onSend });
 
-    const input = screen.getByPlaceholderText(/Type a message/);
-    const form = input.closest('form');
-    if (!form) throw new Error('input is not nested in a <form>');
+    expect(screen.queryByText('Hi there')).not.toBeNull();
 
+    const { input, form } = inputBar();
     fireEvent.change(input, { target: { value: 'hello' } });
     fireEvent.submit(form);
 
-    await waitFor(() => {
-      expect(mockSend).toHaveBeenCalledTimes(1);
-    });
-    const sent = mockSend.mock.calls[0][0];
-    const sentInputs = Array.isArray(sent) ? sent : [sent];
-    const sentText = sentInputs.flatMap((i) =>
-      i.kind === 'user-message'
-        ? i.message.parts.filter((p): p is AI.TextUIPart => p.type === 'text').map((p) => p.text)
-        : [],
-    );
-    expect(sentText).toContain('hello');
-
-    expect(setMockViewMessages).not.toBeNull();
-    act(() => {
-      setMockViewMessages?.([assistantText('Hi there')]);
-    });
-
-    expect(screen.queryByText('Hi there')).not.toBeNull();
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(onSend).toHaveBeenCalledWith('hello');
   });
 
-  it('shows Send (not Stop) when the latest run is suspended awaiting approval', async () => {
-    // A run paused in the approval-requested state has no live stream to abort
-    // (the serverless agent terminated on suspend), so there is nothing for
-    // Stop to act on: the input bar shows Send and the user proceeds via the
-    // approval card. This mirrors the useChat demo, where Stop shows only while
-    // the request is in flight (status 'submitted' | 'streaming'). Showing Stop
-    // here was the bug - pressing it published a dead ai-cancel that no agent
-    // acted on, leaving the run suspended on a refresh.
-    mockRunOf = () => ({
-      runId: 'run-suspended-1',
-      clientId: 'user-a',
-      status: 'suspended',
-      invocationId: 'inv-1',
-      steps: [],
-    });
+  it('shows Send (not Stop) while no run is in flight', () => {
+    renderChat({ messages: [assistantText('a1', 'done reply')] });
 
-    render(
-      <Chat
-        chatId="ai:test"
-        api="api/chat"
-      />,
-    );
-
-    act(() => {
-      setMockViewMessages?.([assistantText('Calling getWeatherForecast...')]);
-    });
-
-    // Scope the button assertions to the input bar's <form> so descriptive
-    // copy / suggestion chips elsewhere on the page (which also mention "Stop"
-    // and "Send") can't satisfy the role query.
-    const inputForm = screen.getByPlaceholderText(/Type a message/).closest('form');
-    if (!inputForm) throw new Error('input is not nested in a <form>');
-    const inputBar = within(inputForm);
-
-    // Suspended run -> Send is offered, Stop is not.
-    expect(await inputBar.findByRole('button', { name: /Send/i })).not.toBeNull();
-    expect(inputBar.queryByRole('button', { name: /Stop/i })).toBeNull();
+    const { scope } = inputBar();
+    expect(scope.getByRole('button', { name: /Send/i })).not.toBeNull();
+    expect(scope.queryByRole('button', { name: /Stop/i })).toBeNull();
   });
 
-  it('shows Stop while the latest run is actively streaming, and Stop publishes a cancel for it', async () => {
-    // An 'active' run is genuinely in flight, so Stop is offered; pressing it
-    // publishes session.cancel for that run (a live agent then aborts and ends
-    // the run, flipping it terminal and reverting Stop to Send).
-    mockRunOf = () => ({
-      runId: 'run-active-1',
-      clientId: 'user-a',
-      status: 'active',
-      invocationId: 'inv-1',
-      steps: [],
-    });
+  it('shows Stop while running, and Stop fires onStop', () => {
+    const onStop = vi.fn();
+    renderChat({ messages: [assistantText('a1', 'streaming a reply...')], isRunning: true, onStop });
 
-    render(
-      <Chat
-        chatId="ai:test"
-        api="api/chat"
-      />,
-    );
-
-    act(() => {
-      setMockViewMessages?.([assistantText('streaming a reply...')]);
-    });
-
-    const inputForm = screen.getByPlaceholderText(/Type a message/).closest('form');
-    if (!inputForm) throw new Error('input is not nested in a <form>');
-    const inputBar = within(inputForm);
-
-    // Active run -> Stop is offered, Send is not.
-    const stop = await inputBar.findByRole('button', { name: /Stop/i });
-    expect(inputBar.queryByRole('button', { name: /Send/i })).toBeNull();
+    const { scope } = inputBar();
+    const stop = scope.getByRole('button', { name: /Stop/i });
+    expect(scope.queryByRole('button', { name: /Send/i })).toBeNull();
 
     fireEvent.click(stop);
-    await waitFor(() => {
-      expect(mockSession.cancel).toHaveBeenCalledWith('run-active-1');
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks the last assistant message as streaming while running', () => {
+    renderChat({
+      messages: [userText('u1', 'question'), assistantText('a1', 'partial reply')],
+      isRunning: true,
     });
+
+    const rows = screen.getAllByTestId('message');
+    expect(rows[rows.length - 1].getAttribute('data-state')).toBe('streaming');
+  });
+
+  it('fires the approval callbacks with the pending tool part', () => {
+    const onToolApprove = vi.fn();
+    const onToolDeny = vi.fn();
+    // CAST: `ToolUIPart` is a discriminated union keyed on `state`; build the
+    // approval-requested fixture the tool card reads (its `approval.id`
+    // completes that arm) and assert the union type.
+    const toolPart = {
+      type: 'tool-getWeatherForecast',
+      toolCallId: 'tc1',
+      state: 'approval-requested',
+      input: { location: 'London' },
+      approval: { id: 'ap1' },
+    } as AI.ToolUIPart;
+    const approvalMsg: AI.UIMessage = { id: 'a1', role: 'assistant', parts: [toolPart] };
+
+    renderChat({ messages: [approvalMsg], onToolApprove, onToolDeny });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    expect(onToolApprove).toHaveBeenCalledWith(toolPart);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Deny' }));
+    expect(onToolDeny).toHaveBeenCalledWith(toolPart);
+  });
+
+  it('routes /steer input to onSteer when provided', () => {
+    const onSend = vi.fn();
+    const onSteer = vi.fn();
+    renderChat({ onSend, onSteer });
+
+    const { input, form } = inputBar();
+    fireEvent.change(input, { target: { value: '/steer talk like a pirate' } });
+    fireEvent.submit(form);
+
+    expect(onSteer).toHaveBeenCalledWith('talk like a pirate');
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('passes /steer input through onSend when onSteer is not wired', () => {
+    const onSend = vi.fn();
+    renderChat({ onSend });
+
+    const { input, form } = inputBar();
+    fireEvent.change(input, { target: { value: '/steer talk like a pirate' } });
+    fireEvent.submit(form);
+
+    expect(onSend).toHaveBeenCalledWith('/steer talk like a pirate');
+  });
+
+  it('threads hasOlder/onLoadOlder to the transcript', () => {
+    const onLoadOlder = vi.fn();
+    renderChat({ messages: [userText('u1', 'hi')], hasOlder: true, onLoadOlder });
+
+    fireEvent.click(screen.getByTestId('load-older'));
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
   });
 });

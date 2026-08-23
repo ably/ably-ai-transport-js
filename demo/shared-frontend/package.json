@@ -9,7 +9,6 @@
   ],
   "exports": {
     ".": "./src/index.ts",
-    "./providers": "./src/providers.tsx",
     "./styles/theme.css": "./src/styles/theme.css",
     "./styles/base.css": "./src/styles/base.css",
     "./ably-provider": "./src/ably-provider.tsx",

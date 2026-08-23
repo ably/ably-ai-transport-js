@@ -4,7 +4,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ClientSession } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
-import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
+import type { VercelOutput } from '../../../src/vercel/codec/index.js';
+import type { VercelProjection } from '../../../src/vercel/codec/reducer.js';
+import type { VercelSessionInput } from '../../../src/vercel/codec/session-events.js';
 import {
   createDeferredContinuationStream,
   createRunOutputStream,
@@ -16,7 +18,7 @@ import { drain, flushMicrotasks } from '../../helper/streams.js';
 // Test helpers
 // ---------------------------------------------------------------------------
 
-type VercelSession = ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+type VercelSession = ClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
 /**
  * Minimal synchronous event registry mirroring the Tree/session

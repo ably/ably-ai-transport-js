@@ -33,8 +33,10 @@ import type {
   OutputEvent,
   RunNode,
 } from '../../../src/core/transport/types.js';
-import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
-import { createUIMessageCodec } from '../../../src/vercel/codec/index.js';
+import type { VercelOutput } from '../../../src/vercel/codec/index.js';
+import type { VercelProjection } from '../../../src/vercel/codec/reducer.js';
+import { createUIMessageSessionCodec } from '../../../src/vercel/codec/session-codec.js';
+import type { VercelSessionInput } from '../../../src/vercel/codec/session-events.js';
 import { isToolPart } from '../../../src/vercel/tool-part.js';
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
@@ -42,9 +44,9 @@ import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-clien
 import { createRunFromOpts } from '../../helper/run-from-opts.js';
 import { textResponseStream } from '../../integration/helpers.js';
 
-const UIMessageCodec = createUIMessageCodec();
+const UIMessageCodec = createUIMessageSessionCodec();
 
-type ClientSessionT = ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+type ClientSessionT = ClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>;
 type AgentSessionT = AgentSession<VercelOutput, VercelProjection, AI.UIMessage>;
 
 const TOOL_CALL_ID = 'tc-loc';
@@ -209,17 +211,17 @@ describe('concurrent client tool results for one suspended tool call', () => {
     await agent.connect();
     const agentSession = agent;
 
-    const tabA = createClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    const tabA = createClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: tabAClient,
       channelName,
       codec: UIMessageCodec,
     });
-    const tabB = createClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    const tabB = createClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: tabBClient,
       channelName,
       codec: UIMessageCodec,
     });
-    const observer = createClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    const observer = createClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: observerClient,
       channelName,
       codec: UIMessageCodec,
@@ -323,17 +325,17 @@ describe('concurrent client tool results for one suspended tool call', () => {
     await agent.connect();
     const agentSession = agent;
 
-    const tabA = createClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    const tabA = createClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: tabAClient,
       channelName,
       codec: UIMessageCodec,
     });
-    const tabB = createClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    const tabB = createClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: tabBClient,
       channelName,
       codec: UIMessageCodec,
     });
-    const observer = createClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    const observer = createClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: observerClient,
       channelName,
       codec: UIMessageCodec,
@@ -611,7 +613,7 @@ describe('sequential client tool results across forked reply runs', () => {
     await agent.connect();
     const agentSession = agent;
 
-    const tab = createClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>({
+    const tab = createClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>({
       client: tabClient,
       channelName,
       codec: UIMessageCodec,

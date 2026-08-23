@@ -12,7 +12,7 @@
 import * as Ably from 'ably';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import type { CodecInputEvent, CodecMessage, CodecOutputEvent } from '../core/codec/types.js';
+import type { CodecInputEvent, CodecMessage, CodecOutputEvent } from '../core/transport/session-codec.js';
 import type { BranchHandle, ClientRun, ClientView, RunInfo, SendOptions } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
 import { errorMessage } from '../utils.js';

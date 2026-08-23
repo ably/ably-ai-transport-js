@@ -16,9 +16,9 @@
 
 import type { Logger } from '../../logger.js';
 import { LogLevel, makeLogger } from '../../logger.js';
-import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
 import { wrapMessageProcessingError } from './channel-support.js';
 import { createReceiveTransport, type ReceiveTransport } from './receive-transport.js';
+import type { Codec, CodecInputEvent, CodecOutputEvent } from './session-codec.js';
 import { createTree, type DefaultTree, type TreeInternal } from './tree.js';
 import type { TransportEvent } from './types/transport.js';
 

@@ -1,11 +1,13 @@
 import type * as AI from 'ai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { CodecMessage } from '../../../src/core/codec/types.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
+import type { CodecMessage } from '../../../src/core/transport/session-codec.js';
 import type { ClientSession, ClientView, SendOptions, Tree } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
-import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
+import type { VercelOutput } from '../../../src/vercel/codec/index.js';
+import type { VercelProjection } from '../../../src/vercel/codec/reducer.js';
+import type { VercelSessionInput } from '../../../src/vercel/codec/session-events.js';
 import type { ChatTransportOptions } from '../../../src/vercel/transport/chat-transport.js';
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 import { toBeErrorInfo } from '../../helper/expectations.js';
@@ -121,14 +123,14 @@ interface MockRun {
 }
 
 interface MockSession {
-  session: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+  session: ClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>;
   send: ReturnType<typeof vi.fn>;
   regenerate: ReturnType<typeof vi.fn>;
   cancel: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
   mockRun: MockRun;
   tree: Tree<VercelOutput, VercelProjection>;
-  view: ClientView<VercelInput, AI.UIMessage>;
+  view: ClientView<VercelSessionInput, AI.UIMessage>;
 }
 
 const createMockSession = (): MockSession => {
@@ -206,7 +208,7 @@ const createMockSession = (): MockSession => {
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
     on: vi.fn(() => () => {}),
     close: vi.fn(),
-  } as unknown as ClientView<VercelInput, AI.UIMessage>;
+  } as unknown as ClientView<VercelSessionInput, AI.UIMessage>;
 
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock returns Promise.resolve directly
   const cancel = vi.fn(() => Promise.resolve());
@@ -220,7 +222,7 @@ const createMockSession = (): MockSession => {
     cancel,
     close,
     on: vi.fn(sessionEmitter.on),
-  } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+  } as unknown as ClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
   return { session, send, regenerate, cancel, close, mockRun, tree, view };
 };
@@ -241,7 +243,7 @@ const sendContinuation = async (mock: ReturnType<typeof createMockSession>, over
 
 // The send options a tab's continuation dispatched with.
 const sendOptsOf = (mock: ReturnType<typeof createMockSession>): SendOptions | undefined => {
-  const call = mock.send.mock.calls[0] as [VercelInput[], SendOptions] | undefined;
+  const call = mock.send.mock.calls[0] as [VercelSessionInput[], SendOptions] | undefined;
   return call?.[1];
 };
 
@@ -249,18 +251,18 @@ const sendOptsOf = (mock: ReturnType<typeof createMockSession>): SendOptions | u
 // tool-result's target codec-message-id (the client-owned optimistic reply-run
 // key the agent reconciles to its minted run-id), since the fork is run-less.
 const forkTargetOf = (mock: ReturnType<typeof createMockSession>): string | undefined => {
-  const call = mock.send.mock.calls[0] as [VercelInput[], SendOptions] | undefined;
+  const call = mock.send.mock.calls[0] as [VercelSessionInput[], SendOptions] | undefined;
   const toolResult = call?.[0].find(
-    (input): input is Extract<VercelInput, { kind: 'tool-result' }> => input.kind === 'tool-result',
+    (input): input is Extract<VercelSessionInput, { kind: 'tool-result' }> => input.kind === 'tool-result',
   );
   return toolResult?.codecMessageId;
 };
 
 // The tool-result output a tab's continuation carried.
 const resultOutputOf = (mock: ReturnType<typeof createMockSession>): unknown => {
-  const call = mock.send.mock.calls[0] as [VercelInput[], SendOptions] | undefined;
+  const call = mock.send.mock.calls[0] as [VercelSessionInput[], SendOptions] | undefined;
   const toolResult = call?.[0].find(
-    (input): input is Extract<VercelInput, { kind: 'tool-result' }> => input.kind === 'tool-result',
+    (input): input is Extract<VercelSessionInput, { kind: 'tool-result' }> => input.kind === 'tool-result',
   );
   return toolResult?.payload.output;
 };
@@ -327,7 +329,7 @@ describe('createChatTransport', () => {
       await streamPromise;
 
       expect(send).toHaveBeenCalledOnce();
-      const [events] = send.mock.calls[0] as [VercelInput[], SendOptions];
+      const [events] = send.mock.calls[0] as [VercelSessionInput[], SendOptions];
       expect(events).toEqual([{ kind: 'user-message', message: m3 }]);
 
       // The transport POSTs the run's invocation pointer to wake the agent.
@@ -556,7 +558,7 @@ describe('createChatTransport', () => {
       mockRun.close();
       await streamPromise;
 
-      const [events, opts] = send.mock.calls[0] as [VercelInput[], SendOptions];
+      const [events, opts] = send.mock.calls[0] as [VercelSessionInput[], SendOptions];
       expect(events).toEqual([{ kind: 'user-message', message: edited }]);
       // The forkOf metadata is carried in sendOpts; the agent reads history
       // from the channel, so the POST never carries it.
@@ -1085,7 +1087,7 @@ describe('createChatTransport', () => {
       mockRun.close();
       await streamPromise;
 
-      const [events, opts] = send.mock.calls[0] as [VercelInput[], SendOptions];
+      const [events, opts] = send.mock.calls[0] as [VercelSessionInput[], SendOptions];
       expect(events).toEqual([{ kind: 'user-message', message: user2 }]);
       expect(opts.forkOf).toBe('a1');
       expect(opts.parent).toBe('u1');
@@ -1182,7 +1184,7 @@ describe('createChatTransport', () => {
       mockRun.close();
       await streamPromise;
 
-      const [events, opts] = send.mock.calls[0] as [VercelInput[], SendOptions];
+      const [events, opts] = send.mock.calls[0] as [VercelSessionInput[], SendOptions];
       expect(events).toEqual([{ kind: 'user-message', message: user2 }]);
       expect(opts.forkOf).toBeUndefined();
       expect(opts.parent).toBeUndefined();
@@ -1320,7 +1322,7 @@ describe('createChatTransport', () => {
       mockRun.close();
       await streamPromise;
 
-      const [input, opts] = send.mock.calls[0] as [VercelInput[], SendOptions];
+      const [input, opts] = send.mock.calls[0] as [VercelSessionInput[], SendOptions];
 
       // A client tool result forks: the resolution opens its OWN reply run so
       // concurrent answers segregate. It addresses a FRESH codec-message-id (not
@@ -1424,7 +1426,7 @@ describe('createChatTransport', () => {
       // resolved via runOf keyed on 'codec-a1' → getRunNode('run-suspended') —
       // never the domain id 'a1'. The fork is run-less (the agent mints the
       // run-id) and addresses a fresh assistant codec-message-id.
-      const [input, opts] = send.mock.calls[0] as [VercelInput[], SendOptions];
+      const [input, opts] = send.mock.calls[0] as [VercelSessionInput[], SendOptions];
       expect(opts.parent).toBe('codec-u1');
       expect(opts.runId).toBeUndefined();
       expect(opts.role).toBe('assistant');
@@ -1488,7 +1490,7 @@ describe('createChatTransport', () => {
         mockRun.close();
         await streamPromise;
 
-        const [input] = send.mock.calls[0] as [VercelInput[]];
+        const [input] = send.mock.calls[0] as [VercelSessionInput[]];
         expect(input).toHaveLength(1);
         expect(input[0]).toMatchObject({
           kind: 'tool-approval-response',
@@ -1587,9 +1589,9 @@ describe('createChatTransport', () => {
       mockRun.close();
       await streamPromise;
 
-      const [input, opts] = send.mock.calls[0] as [VercelInput[], SendOptions];
+      const [input, opts] = send.mock.calls[0] as [VercelSessionInput[], SendOptions];
       const toolResult = input.find(
-        (i): i is Extract<VercelInput, { kind: 'tool-result' }> => i.kind === 'tool-result',
+        (i): i is Extract<VercelSessionInput, { kind: 'tool-result' }> => i.kind === 'tool-result',
       );
       const seed = toolResult?.payload.forkSeed;
       // The fork seeds the FULL run — context is NOT lost across sequential calls.

@@ -16,10 +16,11 @@ import type { Responses } from 'openai/resources/responses/responses';
 import { describe, expect, it } from 'vitest';
 
 import { HEADER_STREAM } from '../../../src/constants.js';
-import { toCodecEvents } from '../../../src/core/codec/codec-event.js';
+import { toCodecEvents } from '../../../src/core/transport/session-codec.js';
 import type { OpenAIOutput } from '../../../src/openai/codec/index.js';
-import { ResponsesCodec } from '../../../src/openai/codec/index.js';
-import { init, type OpenAIProjection } from '../../../src/openai/codec/reducer.js';
+import { init } from '../../../src/openai/codec/reducer.js';
+import { type OpenAIProjection } from '../../../src/openai/codec/reducer.js';
+import { ResponsesSessionCodec } from '../../../src/openai/codec/session-codec.js';
 import { getTransportHeaders } from '../../../src/utils.js';
 import {
   completed,
@@ -48,7 +49,7 @@ const transportOf = (m: Ably.InboundMessage): Record<string, string> => getTrans
 // Encode a run through the offline bridge and return the inbound wire messages.
 const encodeInbound = async (events: OpenAIOutput[], runId = 'run-1'): Promise<Ably.InboundMessage[]> => {
   const { writer, inbound } = createBridge();
-  const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', runId) });
+  const encoder = ResponsesSessionCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', runId) });
   // Feed events as-is, as an agent's run.pipe does; the codec's descriptor
   // table drops the framing events at encode.
   for (const event of events) await encoder.publishOutput(event);
@@ -78,11 +79,11 @@ const midStreamJoin = (msgs: Ably.InboundMessage[]): Ably.InboundMessage => {
 
 // Decode messages through a fresh decoder and fold them into a projection.
 const foldMessages = (msgs: Ably.InboundMessage[]): OpenAIProjection => {
-  const decoder = ResponsesCodec.createDecoder();
+  const decoder = ResponsesSessionCodec.createDecoder();
   let projection = init();
   for (const msg of msgs) {
     for (const event of toCodecEvents(decoder.decode(msg))) {
-      projection = ResponsesCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
+      projection = ResponsesSessionCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
     }
   }
   return projection;
@@ -90,14 +91,14 @@ const foldMessages = (msgs: Ably.InboundMessage[]): OpenAIProjection => {
 
 // The sole turn's output items from a folded projection.
 const itemsOf = (projection: OpenAIProjection): Responses.ResponseOutputItem[] => {
-  const turn = ResponsesCodec.getMessages(projection)[0]?.message;
+  const turn = ResponsesSessionCodec.getMessages(projection)[0]?.message;
   // CAST: an assistant turn's items are output items in these output-only tests.
   return (turn?.items ?? []) as Responses.ResponseOutputItem[];
 };
 
 // The decoded outputs a joiner sees from a single first-contact update.
 const decodeJoin = (update: Ably.InboundMessage): OpenAIOutput[] =>
-  ResponsesCodec.createDecoder().decode(update).outputs;
+  ResponsesSessionCodec.createDecoder().decode(update).outputs;
 
 describe('OpenAI decoderSynthesiseLifecycle (mid-stream join)', () => {
   it('synthesises the message opening bracket so joined output_text folds', async () => {
@@ -199,7 +200,7 @@ describe('OpenAI decoderSynthesiseLifecycle (mid-stream join)', () => {
     // The joiner sees both in-flight streams as first-contact updates.
     const streamCreates = msgs.filter((m) => m.action === 'message.create' && transportOf(m)[HEADER_STREAM] === 'true');
     expect(streamCreates).toHaveLength(2);
-    const decoder = ResponsesCodec.createDecoder();
+    const decoder = ResponsesSessionCodec.createDecoder();
     let projection = init();
     let openingBracketAdds = 0;
     for (const create of streamCreates) {
@@ -207,7 +208,7 @@ describe('OpenAI decoderSynthesiseLifecycle (mid-stream join)', () => {
       const decoded = decoder.decode(update);
       openingBracketAdds += decoded.outputs.filter((e) => e.type === 'response.output_item.added').length;
       for (const event of toCodecEvents(decoded)) {
-        projection = ResponsesCodec.fold(projection, event, { serial: update.serial ?? '', messageId: 'run-1' });
+        projection = ResponsesSessionCodec.fold(projection, event, { serial: update.serial ?? '', messageId: 'run-1' });
       }
     }
 

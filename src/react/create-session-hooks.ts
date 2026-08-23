@@ -22,7 +22,7 @@
 import type * as Ably from 'ably';
 import type { ComponentType } from 'react';
 
-import type { CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
+import type { CodecInputEvent, CodecOutputEvent } from '../core/transport/session-codec.js';
 import type { ClientSession, ClientView } from '../core/transport/types.js';
 import type { ClientSessionProviderProps } from './contexts/client-session-provider.js';
 import { ClientSessionProvider as _ClientSessionProvider } from './contexts/client-session-provider.js';

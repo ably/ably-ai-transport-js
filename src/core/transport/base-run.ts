@@ -16,7 +16,7 @@
 
 import type * as Ably from 'ably';
 
-import type { Codec, CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
+import type { Codec, CodecInputEvent, CodecOutputEvent } from './session-codec.js';
 import type { BaseRun } from './types/run.js';
 import type { RunStatus } from './types/shared.js';
 import type { Tree } from './types/tree.js';

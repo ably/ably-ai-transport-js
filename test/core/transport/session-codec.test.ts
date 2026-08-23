@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import type {
+  CodecMessage,
   Regenerate,
   ToolApprovalResponse,
   ToolResult,
   ToolResultError,
   UserMessage,
-} from '../../../src/core/codec/types.js';
-import { wellKnownInputs } from '../../../src/core/codec/well-known-inputs.js';
+} from '../../../src/core/transport/session-codec.js';
+import { defineSessionCodec, wellKnownInputs } from '../../../src/core/transport/session-codec.js';
 
 // A representative codec input union with simple domain payloads. The helper is
 // codec-agnostic, so the test stands in its own minimal domain.
@@ -86,5 +87,77 @@ describe('wellKnownInputs', () => {
     expect(result.payload.toolCallId).toBe('t');
     expect(error.payload.message).toBe('e');
     expect(approval.payload.approved).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// defineSessionCodec — reducer and factory wiring
+// ---------------------------------------------------------------------------
+
+interface WiringOutput {
+  type: 'quirky';
+}
+interface WiringInput {
+  kind: 'noop';
+  codecMessageId: string;
+  payload: Record<string, never>;
+}
+interface WiringProjection {
+  folded: (WiringInput | WiringOutput)[];
+}
+
+const wiringCodec = defineSessionCodec<WiringInput, WiringOutput>()({
+  reducer: {
+    init: (): WiringProjection => ({ folded: [] }),
+    fold: (state, event): WiringProjection => {
+      state.folded.push(event.event);
+      return state;
+    },
+    getMessages: (projection): CodecMessage<WiringInput | WiringOutput>[] =>
+      projection.folded.map((message, i) => ({ codecMessageId: `cm-${String(i)}`, message })),
+  },
+  output: ({ event }) => [event('quirky')],
+  input: ({ event }) => [event('noop')],
+  factories: (base) => ({
+    createUserMessage: base.createUserMessage,
+    createRegenerate: base.createRegenerate,
+  }),
+});
+
+describe('defineSessionCodec — reducer wiring', () => {
+  it('threads init / fold / getMessages from the supplied reducer parts', () => {
+    let state = wiringCodec.init();
+    expect(wiringCodec.getMessages(state)).toEqual([]);
+
+    const output: WiringOutput = { type: 'quirky' };
+    const input: WiringInput = { kind: 'noop', codecMessageId: 'cm-x', payload: {} };
+    state = wiringCodec.fold(state, { direction: 'output', event: output }, { serial: 's1', messageId: 'm1' });
+    state = wiringCodec.fold(state, { direction: 'input', event: input }, { serial: 's2', messageId: 'm2' });
+
+    expect(wiringCodec.getMessages(state)).toEqual([
+      { codecMessageId: 'cm-0', message: output },
+      { codecMessageId: 'cm-1', message: input },
+    ]);
+  });
+
+  it('assembles a working wire tier alongside the reducer', () => {
+    expect(wiringCodec.createDecoder()).toBeDefined();
+  });
+});
+
+describe('defineSessionCodec — factory spread', () => {
+  it('exposes the mandatory factories the builder returned', () => {
+    expect(typeof wiringCodec.createUserMessage).toBe('function');
+    expect(wiringCodec.createRegenerate('assistant-1', 'user-1')).toEqual({
+      kind: 'regenerate',
+      target: 'assistant-1',
+      parent: 'user-1',
+    });
+  });
+
+  it('does not spread the tool factories the builder omitted', () => {
+    expect(wiringCodec.createToolResult).toBeUndefined();
+    expect(wiringCodec.createToolResultError).toBeUndefined();
+    expect(wiringCodec.createToolApprovalResponse).toBeUndefined();
   });
 });

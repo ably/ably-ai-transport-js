@@ -38,7 +38,7 @@
  * tail message on the branch.
  */
 
-import type { CodecMessage } from '../codec/types.js';
+import type { CodecMessage } from './session-codec.js';
 import type { ConversationNode, RunNode } from './types.js';
 
 /**

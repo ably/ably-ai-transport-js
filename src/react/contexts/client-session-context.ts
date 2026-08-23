@@ -1,7 +1,7 @@
 import type * as Ably from 'ably';
 import { createContext } from 'react';
 
-import type { CodecInputEvent, CodecOutputEvent } from '../../core/codec/types.js';
+import type { CodecInputEvent, CodecOutputEvent } from '../../core/transport/session-codec.js';
 import type { ClientSession } from '../../core/transport/types.js';
 
 /**

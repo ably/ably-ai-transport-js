@@ -1,14 +1,13 @@
 // Vercel AI SDK codec
-//
-// `ForkSeed` is intentionally NOT re-exported here: it is an internal fork
-// reconstruction detail (see `createToolResultFork`), not part of the public
-// surface. The approval-response payload is likewise kept internal.
 export type {
+  VercelApprovalDecision,
+  VercelApprovalInput,
+  VercelChunkInput,
   VercelInput,
+  VercelMessageInput,
   VercelOutput,
-  VercelProjection,
-  VercelToolResultErrorPayload,
-  VercelToolResultPayload,
+  VercelRegenerateInput,
+  VercelToolOutputChunk,
 } from './codec/index.js';
 export { createUIMessageCodec } from './codec/index.js';
 

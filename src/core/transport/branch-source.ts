@@ -24,8 +24,8 @@
  */
 
 import type { Logger } from '../../logger.js';
-import type { Codec, CodecInputEvent, CodecMessage, CodecOutputEvent } from '../codec/types.js';
 import { collectMessages } from './conversation-projection.js';
+import type { Codec, CodecInputEvent, CodecMessage, CodecOutputEvent } from './session-codec.js';
 import { nodeKey, type TreeInternal } from './tree.js';
 import type { BranchHandle, ClientRun, ConversationNode, RunNode, SendOptions } from './types.js';
 

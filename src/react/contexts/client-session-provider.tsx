@@ -36,8 +36,8 @@ import { type PropsWithChildren, type ReactNode, useContext, useEffect, useMemo,
 
 import { channelAgent } from '../../core/agent.js';
 import { resolveChannelModes } from '../../core/channel-options.js';
-import type { CodecInputEvent, CodecOutputEvent } from '../../core/codec/types.js';
 import { createClientSession } from '../../core/transport/client-session.js';
+import type { CodecInputEvent, CodecOutputEvent } from '../../core/transport/session-codec.js';
 import type { ClientSession, ClientSessionOptions } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 import type { ClientSessionSlot } from './client-session-context.js';

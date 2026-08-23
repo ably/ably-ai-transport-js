@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import type { CodecMessage } from '../../../src/core/codec/types.js';
 import {
   collectMessages,
   messageTailSplitIndex,
   type NonHeadRegenerateResolver,
 } from '../../../src/core/transport/conversation-projection.js';
+import type { CodecMessage } from '../../../src/core/transport/session-codec.js';
 import type { ConversationNode, RunNode } from '../../../src/core/transport/types.js';
 
 // ---------------------------------------------------------------------------

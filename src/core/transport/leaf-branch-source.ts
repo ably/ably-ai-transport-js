@@ -27,8 +27,8 @@
  * served) is always kept — see {@link LeafBranchSource.visibleNodes}.
  */
 
-import type { Codec, CodecInputEvent, CodecMessage, CodecOutputEvent } from '../codec/types.js';
 import type { BranchSource } from './branch-source.js';
+import type { Codec, CodecInputEvent, CodecMessage, CodecOutputEvent } from './session-codec.js';
 import { nodeKey, type TreeInternal } from './tree.js';
 import type { ConversationNode, RunNode, Tree } from './types.js';
 

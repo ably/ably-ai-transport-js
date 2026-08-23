@@ -24,7 +24,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import type { CodecMessage } from '../core/codec/types.js';
+import type { CodecMessage } from '../core/transport/session-codec.js';
 import type { View } from '../core/transport/types.js';
 
 /**

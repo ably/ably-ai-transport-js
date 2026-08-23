@@ -10,14 +10,13 @@
 
 import type * as AI from 'ai';
 
-import type { ReducerMeta, ToolApprovalResponse, ToolResult, ToolResultError } from '../../core/codec/index.js';
-import { isToolPart, type ToolPart } from '../tool-part.js';
 import type {
-  ForkSeed,
-  VercelToolApprovalResponsePayload,
-  VercelToolResultErrorPayload,
-  VercelToolResultPayload,
-} from './events.js';
+  ReducerMeta,
+  ToolApprovalResponse,
+  ToolResult,
+  ToolResultError,
+} from '../../core/transport/session-codec.js';
+import { isToolPart, type ToolPart } from '../tool-part.js';
 import {
   ensureTrackers,
   getToolPart,
@@ -25,6 +24,12 @@ import {
   type PendingToolResolution,
   type VercelProjection,
 } from './reducer-state.js';
+import type {
+  ForkSeed,
+  VercelToolApprovalResponsePayload,
+  VercelToolResultErrorPayload,
+  VercelToolResultPayload,
+} from './session-events.js';
 import { toolIdentity, transitionToolPart } from './tool-transitions.js';
 
 /**
@@ -75,33 +80,44 @@ export const foldUserMessage = (
  * `codecMessageId` pointing at the assistant whose tool part holds the
  * matching `toolCallId`. If the assistant and its matching tool part are
  * both present, fold directly; otherwise pend until that tool part arrives.
+ * The target assistant's codec-message-id is the event's own field when
+ * present (a locally constructed input), else the fold meta's wire
+ * `codec-message-id` header (a wire-decoded input).
  * @param state - Projection to fold into.
- * @param event - The tool-result input (codecMessageId + domain payload).
+ * @param event - The tool-result input (domain payload).
+ * @param meta - The fold meta carrying the wire codec-message-id.
  * @returns The same projection reference.
  */
 export const foldClientToolResult = (
   state: VercelProjection,
   event: ToolResult<VercelToolResultPayload>,
+  meta: ReducerMeta,
 ): VercelProjection => {
   const { toolCallId, output, forkSeed } = event.payload;
-  seedForkIfAbsent(state, event.codecMessageId, forkSeed);
-  return resolveOrPend(state, event.codecMessageId, toolCallId, { kind: 'tool-result', output });
+  const target = event.codecMessageId ?? meta.messageId;
+  if (target === undefined) return state;
+  seedForkIfAbsent(state, target, forkSeed);
+  return resolveOrPend(state, target, toolCallId, { kind: 'tool-result', output });
 };
 
 /**
  * Fold a client-published `ToolResultError`. Mirrors
  * {@link foldClientToolResult} but with the error transition.
  * @param state - Projection to fold into.
- * @param event - The tool-result-error input (codecMessageId + domain payload).
+ * @param event - The tool-result-error input (domain payload).
+ * @param meta - The fold meta carrying the wire codec-message-id.
  * @returns The same projection reference.
  */
 export const foldClientToolResultError = (
   state: VercelProjection,
   event: ToolResultError<VercelToolResultErrorPayload>,
+  meta: ReducerMeta,
 ): VercelProjection => {
   const { toolCallId, message, forkSeed } = event.payload;
-  seedForkIfAbsent(state, event.codecMessageId, forkSeed);
-  return resolveOrPend(state, event.codecMessageId, toolCallId, { kind: 'tool-result-error', message });
+  const target = event.codecMessageId ?? meta.messageId;
+  if (target === undefined) return state;
+  seedForkIfAbsent(state, target, forkSeed);
+  return resolveOrPend(state, target, toolCallId, { kind: 'tool-result-error', message });
 };
 
 /**
@@ -111,14 +127,18 @@ export const foldClientToolResultError = (
  * denial → `output-denied` via {@link transitionToolPart}.
  * @param state - Projection to fold into.
  * @param event - The approval-response input.
+ * @param meta - The fold meta carrying the wire codec-message-id.
  * @returns The same projection reference.
  */
 export const foldToolApprovalResponse = (
   state: VercelProjection,
   event: ToolApprovalResponse<VercelToolApprovalResponsePayload>,
+  meta: ReducerMeta,
 ): VercelProjection => {
   const { toolCallId, approved, reason } = event.payload;
-  return resolveOrPend(state, event.codecMessageId, toolCallId, {
+  const target = event.codecMessageId ?? meta.messageId;
+  if (target === undefined) return state;
+  return resolveOrPend(state, target, toolCallId, {
     kind: 'tool-approval-response',
     approved,
     ...(reason === undefined ? {} : { reason }),

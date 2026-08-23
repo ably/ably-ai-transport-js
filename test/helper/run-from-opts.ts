@@ -7,7 +7,8 @@
 
 import type * as Ably from 'ably';
 
-import type { AgentSession, CancelRequest, CodecOutputEvent, OpenableRun } from '../../src/index.js';
+import type { CodecOutputEvent } from '../../src/core/transport/session-codec.js';
+import type { AgentSession, CancelRequest, OpenableRun } from '../../src/index.js';
 import { Invocation } from '../../src/index.js';
 
 interface RunOpts<TOutput extends CodecOutputEvent> {

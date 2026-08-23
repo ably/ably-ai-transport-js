@@ -37,13 +37,13 @@ import {
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
-import type { CodecInputEvent, WriteOptions } from '../codec/types.js';
+import type { WriteOptions } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
 import type { RunEndReason } from './types/shared.js';
 import type { SteerOutcome, SteerResult } from './types/steer.js';
 
 /** Constructor options for {@link SteerCoordinator}. */
-export interface SteerCoordinatorOptions<TInput extends CodecInputEvent> {
+export interface SteerCoordinatorOptions<TInput> {
   /**
    * Publish a steer input on the channel. Wraps the session-level
    * `Encoder<TInput, _>.publishInput` so the coordinator does not need
@@ -99,7 +99,7 @@ interface PendingSteerEcho {
  * module doc for the state it holds and how a session wires it in.
  * @template TInput - The codec's input event type.
  */
-export class SteerCoordinator<TInput extends CodecInputEvent> {
+export class SteerCoordinator<TInput> {
   private readonly _publish: (input: TInput, opts: WriteOptions) => Promise<void>;
   private readonly _clientId: () => string | undefined;
   private readonly _isSessionClosed: () => boolean;

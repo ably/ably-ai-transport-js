@@ -18,8 +18,8 @@
 import { Context } from '@temporalio/activity';
 import * as Ably from 'ably';
 
-import type { Codec, CodecInputEvent, CodecOutputEvent } from '../core/codec/types.js';
 import { pageUntilLocated } from '../core/transport/page-until-located.js';
+import type { Codec, CodecInputEvent, CodecOutputEvent } from '../core/transport/session-codec.js';
 import type { RunIdentity } from '../core/transport/types/transport.js';
 import { withAgentSession } from '../core/transport/with-agent-session.js';
 import { ErrorCode } from '../errors.js';

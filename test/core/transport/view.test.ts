@@ -15,14 +15,7 @@ import {
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
 } from '../../../src/constants.js';
-import type {
-  Codec,
-  CodecEvent,
-  CodecInputEvent,
-  CodecMessage,
-  Decoder,
-  ReducerMeta,
-} from '../../../src/core/codec/types.js';
+import type { Decoder } from '../../../src/core/codec/types.js';
 import { createHistoryHydrator, type HistoryHydrator } from '../../../src/core/transport/history-hydrator.js';
 import { Invocation } from '../../../src/core/transport/invocation.js';
 import { createLeafBranchSource, LeafBranchSource } from '../../../src/core/transport/leaf-branch-source.js';
@@ -30,6 +23,13 @@ import { createLeafBranchSource, LeafBranchSource } from '../../../src/core/tran
 import { type HistoryPagesCursor, loadHistoryPages } from '../../../src/core/transport/load-history-pages.js';
 import { applyTransportEventToTree } from '../../../src/core/transport/materialisation.js';
 import { createReceiveTransport } from '../../../src/core/transport/receive-transport.js';
+import type {
+  Codec,
+  CodecEvent,
+  CodecInputEvent,
+  CodecMessage,
+  ReducerMeta,
+} from '../../../src/core/transport/session-codec.js';
 import type { SteerOrdering } from '../../../src/core/transport/steer-ordering.js';
 import type { DefaultTree } from '../../../src/core/transport/tree.js';
 import { createTree } from '../../../src/core/transport/tree.js';

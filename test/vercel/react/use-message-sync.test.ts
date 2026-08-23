@@ -5,9 +5,11 @@ import type * as AI from 'ai';
 import { createElement, type ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { CodecMessage } from '../../../src/core/codec/types.js';
+import type { CodecMessage } from '../../../src/core/transport/session-codec.js';
 import type { ClientSession } from '../../../src/core/transport/types.js';
-import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
+import type { VercelOutput } from '../../../src/vercel/codec/index.js';
+import type { VercelProjection } from '../../../src/vercel/codec/reducer.js';
+import type { VercelSessionInput } from '../../../src/vercel/codec/session-events.js';
 import type { ChatTransportSlot } from '../../../src/vercel/react/contexts/chat-transport-context.js';
 import { ChatTransportContext } from '../../../src/vercel/react/contexts/chat-transport-context.js';
 import { useMessageSync } from '../../../src/vercel/react/use-message-sync.js';
@@ -83,8 +85,8 @@ const makeViewSubscription = (): { viewOn: ReturnType<typeof vi.fn>; emitView: (
 
 // A mock ClientSession wrapping the given view — only the subset useMessageSync uses.
 const makeMockSession = (
-  view: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>['view'],
-): ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage> =>
+  view: ClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>['view'],
+): ClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage> =>
   ({
     view,
     // eslint-disable-next-line @typescript-eslint/no-empty-function, unicorn/consistent-function-scoping -- mock returns noop unsubscribe
@@ -96,7 +98,7 @@ const makeMockSession = (
     cancel: vi.fn(),
     close: vi.fn(),
     // CAST: mock object satisfies the subset of ClientSession methods used by useMessageSync
-  }) as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+  }) as unknown as ClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
 interface MockSlot {
   slot: ChatTransportSlot;
@@ -128,7 +130,7 @@ const createMockSlot = (): MockSlot => {
     hasOlder: viewHasOlder,
     loadOlder: viewLoadOlder,
     loadUntil: makeFakeLoadUntil({ getMessages: viewGetMessages, hasOlder: viewHasOlder, loadOlder: viewLoadOlder }),
-  } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>['view'];
+  } as unknown as ClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>['view'];
 
   // --- ChatTransport ---
   const { chatTransport, setStreaming } = makeMockChatTransport();
@@ -199,7 +201,7 @@ const createPagingSlot = ({ visible, older }: { visible: AI.UIMessage[]; older: 
     hasOlder,
     loadOlder,
     loadUntil: makeFakeLoadUntil({ getMessages, hasOlder, loadOlder, hideOldest }),
-  } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>['view'];
+  } as unknown as ClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>['view'];
 
   const appendLive = (...msgs: AI.UIMessage[]): void => {
     revealed.push(...msgs);

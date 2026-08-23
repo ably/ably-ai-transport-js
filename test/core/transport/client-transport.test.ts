@@ -390,7 +390,7 @@ describe('createClientTransport', () => {
       expect(echo.meta.clientId).toBe(clientId);
     });
 
-    it('honours an explicit codecMessageId and structure headers', async () => {
+    it('honours an explicit codecMessageId and structure headers, with no echo for the amend', async () => {
       const { transport, events, encoderCalls } = await setup();
 
       await transport.publishInput(
@@ -398,28 +398,27 @@ describe('createClientTransport', () => {
         { codecMessageId: 'cmid-1', parent: 'parent-1' },
       );
 
-      expect(events[0]?.kind).toBe('message');
+      // An input naming an existing codecMessageId amends it, so no echo.
+      expect(events).toHaveLength(0);
       const headers = encoderCalls[0]?.options?.extras?.headers ?? {};
       expect(headers[HEADER_CODEC_MESSAGE_ID]).toBe('cmid-1');
       expect(headers[HEADER_PARENT]).toBe('parent-1');
     });
 
-    it('maps a regenerate target to msg-regenerate and emits no echo', async () => {
-      const { transport, events, encoderCalls } = await setup();
+    it('maps the regenerates option to msg-regenerate', async () => {
+      const { transport, encoderCalls } = await setup();
 
-      await transport.publishInput({ kind: 'regenerate', target: 'assistant-1', parent: 'user-1' });
+      await transport.publishInput({ kind: 'regenerate' }, { regenerates: 'assistant-1', parent: 'user-1' });
 
-      // Wire-only input: no optimistic local content.
-      expect(events).toHaveLength(0);
       const headers = encoderCalls[0]?.options?.extras?.headers ?? {};
       expect(headers[HEADER_MSG_REGENERATE]).toBe('assistant-1');
       expect(headers[HEADER_PARENT]).toBe('user-1');
     });
 
-    it('emits no echo for a non-user input that pins its own codecMessageId', async () => {
+    it('emits no echo for an input published against an existing codecMessageId', async () => {
       const { transport, events } = await setup();
 
-      await transport.publishInput({ kind: 'tool-result', codecMessageId: 'assistant-1' });
+      await transport.publishInput({ kind: 'tool-result' }, { codecMessageId: 'assistant-1' });
 
       expect(events).toHaveLength(0);
     });

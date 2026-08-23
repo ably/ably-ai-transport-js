@@ -16,18 +16,16 @@ import type * as AI from 'ai';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { EVENT_AI_INPUT, EVENT_AI_OUTPUT, HEADER_CODEC_MESSAGE_ID, HEADER_RUN_ID } from '../../../src/constants.js';
-import { toCodecEvents } from '../../../src/core/codec/codec-event.js';
+import { toCodecEvents } from '../../../src/core/transport/session-codec.js';
 import { getCodecHeaders, getTransportHeaders } from '../../../src/utils.js';
-import {
-  createUIMessageCodec,
-  type VercelInput,
-  type VercelOutput,
-  type VercelProjection,
-} from '../../../src/vercel/codec/index.js';
+import type { VercelOutput } from '../../../src/vercel/codec/index.js';
+import { type VercelProjection } from '../../../src/vercel/codec/reducer.js';
+import { createUIMessageSessionCodec } from '../../../src/vercel/codec/session-codec.js';
+import type { VercelSessionInput } from '../../../src/vercel/codec/session-events.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 
-const UIMessageCodec = createUIMessageCodec();
+const UIMessageCodec = createUIMessageSessionCodec();
 
 /**
  * Create an onAblyMessage hook that stamps run and message ID headers
@@ -70,7 +68,7 @@ const metaOf = (msg: Ably.InboundMessage): { serial: string; messageId?: string 
  */
 const foldDecoded = (
   state: VercelProjection,
-  decoded: { inputs: VercelInput[]; outputs: VercelOutput[] },
+  decoded: { inputs: VercelSessionInput[]; outputs: VercelOutput[] },
   msg: Ably.InboundMessage,
 ): VercelProjection => {
   const meta = metaOf(msg);

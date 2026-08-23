@@ -7,7 +7,7 @@
  */
 
 import type { Logger } from '../../logger.js';
-import type { CodecInputEvent, CodecOutputEvent, Encoder } from '../codec/types.js';
+import type { Encoder } from '../codec/types.js';
 import type { PipeSource, StreamResult } from './types.js';
 
 /** One pull from a normalized source: an output, or the terminal marker. */
@@ -33,7 +33,7 @@ interface OutputPuller<T> {
  * @param source - The stream or async-iterable to consume.
  * @returns A pull-reader that yields outputs and tears the source down on release.
  */
-const toPuller = <T extends CodecOutputEvent>(source: PipeSource<T>): OutputPuller<T> => {
+const toPuller = <T>(source: PipeSource<T>): OutputPuller<T> => {
   if ('getReader' in source) {
     const reader = source.getReader();
     return {
@@ -98,7 +98,7 @@ const abortSignalToPromise = (signal: AbortSignal | undefined): { promise: Promi
  * @param beforeFirstWrite - Optional hook awaited exactly once, immediately before the FIRST output event is handed to the encoder. Never fires for a stream that completes empty, errors, or is cancelled before producing any event. Note the event that triggers the hook may itself publish nothing (a codec `drop` type), so the resource the hook opens (e.g. `run.pipe`'s implicit step) can bracket zero wire writes.
  * @returns A {@link StreamResult}: `reason` is why the pipe ended, and `error` holds the caught error when `reason` is `'error'`.
  */
-export const pipeStream = async <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent>(
+export const pipeStream = async <TInput, TOutput>(
   source: PipeSource<TOutput>,
   encoder: Encoder<TInput, TOutput>,
   signal: AbortSignal | undefined,

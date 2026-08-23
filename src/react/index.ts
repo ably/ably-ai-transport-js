@@ -1,5 +1,5 @@
 export { OBJECT_MODES } from '../core/channel-options.js';
-export type { CodecMessage } from '../core/codec/types.js';
+export type { CodecMessage } from '../core/transport/session-codec.js';
 export type {
   BaseRun,
   BranchHandle,

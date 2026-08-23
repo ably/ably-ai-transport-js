@@ -29,7 +29,10 @@ import type {
   WithAgentSessionOptions,
 } from '../../core/transport/types.js';
 import { withAgentSession as withCoreAgentSession } from '../../core/transport/with-agent-session.js';
-import { createUIMessageCodec, type VercelInput, type VercelOutput, type VercelProjection } from '../codec/index.js';
+import type { VercelOutput } from '../codec/index.js';
+import type { VercelProjection } from '../codec/reducer.js';
+import { createUIMessageSessionCodec } from '../codec/session-codec.js';
+import type { VercelSessionInput } from '../codec/session-events.js';
 
 /**
  * Core client session options with Vercel AI SDK types pre-applied.
@@ -38,7 +41,7 @@ import { createUIMessageCodec, type VercelInput, type VercelOutput, type VercelP
  * @template TTools - Tool set typing tool parts.
  */
 type CoreClientOpts<TMetadata, TDataParts extends AI.UIDataTypes, TTools extends AI.UITools> = ClientSessionOptions<
-  VercelInput<TMetadata, TDataParts, TTools>,
+  VercelSessionInput<TMetadata, TDataParts, TTools>,
   VercelOutput<TMetadata, TDataParts>,
   VercelProjection<TMetadata, TDataParts, TTools>,
   AI.UIMessage<TMetadata, TDataParts, TTools>
@@ -68,7 +71,7 @@ export type VercelAgentSessionOptions<
   TTools extends AI.UITools = AI.UITools,
 > = Omit<
   AgentSessionOptions<
-    VercelInput<TMetadata, TDataParts, TTools>,
+    VercelSessionInput<TMetadata, TDataParts, TTools>,
     VercelOutput<TMetadata, TDataParts>,
     VercelProjection<TMetadata, TDataParts, TTools>,
     AI.UIMessage<TMetadata, TDataParts, TTools>
@@ -80,7 +83,7 @@ export type VercelAgentSessionOptions<
  * Create a client-side session pre-configured with the Vercel AI SDK codec.
  *
  * Equivalent to calling the core `createClientSession` with the codec from
- * `createUIMessageCodec()`. The core session is a pure Ably-channel transport —
+ * `createUIMessageSessionCodec()`. The core session is a pure Ably-channel transport —
  * it never sends HTTP. To wake a serverless agent over HTTP, POST
  * `run.toInvocation().toJSON()` yourself, or use `createChatTransport` (which
  * does it for useChat parity).
@@ -100,17 +103,17 @@ export const createClientSession = <
 >(
   options: VercelClientSessionOptions<TMetadata, TDataParts, TTools>,
 ): ClientSession<
-  VercelInput<TMetadata, TDataParts, TTools>,
+  VercelSessionInput<TMetadata, TDataParts, TTools>,
   VercelOutput<TMetadata, TDataParts>,
   VercelProjection<TMetadata, TDataParts, TTools>,
   AI.UIMessage<TMetadata, TDataParts, TTools>
-> => createCoreClientSession({ ...options, codec: createUIMessageCodec<TMetadata, TDataParts, TTools>() });
+> => createCoreClientSession({ ...options, codec: createUIMessageSessionCodec<TMetadata, TDataParts, TTools>() });
 
 /**
  * Create an agent (server-side) session pre-configured with the Vercel AI SDK codec.
  *
  * Equivalent to calling the core `createAgentSession` with the codec from
- * `createUIMessageCodec()`.
+ * `createUIMessageSessionCodec()`.
  * @template TMetadata - Per-message metadata type (defaults to the SDK default).
  * @template TDataParts - Custom data-part types (defaults to the SDK default).
  * @template TTools - Tool set typing tool parts (defaults to the SDK default).
@@ -127,7 +130,7 @@ export const createAgentSession = <
   VercelOutput<TMetadata, TDataParts>,
   VercelProjection<TMetadata, TDataParts, TTools>,
   AI.UIMessage<TMetadata, TDataParts, TTools>
-> => createCoreAgentSession({ ...options, codec: createUIMessageCodec<TMetadata, TDataParts, TTools>() });
+> => createCoreAgentSession({ ...options, codec: createUIMessageSessionCodec<TMetadata, TDataParts, TTools>() });
 
 /**
  * Options for {@link withAgentSession} with the Vercel AI SDK codec pre-bound.
@@ -141,7 +144,7 @@ export type VercelWithAgentSessionOptions<
   TTools extends AI.UITools = AI.UITools,
 > = Omit<
   WithAgentSessionOptions<
-    VercelInput<TMetadata, TDataParts, TTools>,
+    VercelSessionInput<TMetadata, TDataParts, TTools>,
     VercelOutput<TMetadata, TDataParts>,
     VercelProjection<TMetadata, TDataParts, TTools>,
     AI.UIMessage<TMetadata, TDataParts, TTools>
@@ -170,7 +173,7 @@ export type VercelAgentSessionContext<
  * SDK codec, then detach.
  *
  * Equivalent to calling the core `withAgentSession` with the codec from
- * `createUIMessageCodec()`. See the core function for the teardown contract.
+ * `createUIMessageSessionCodec()`. See the core function for the teardown contract.
  * @template TMetadata - Per-message metadata type (defaults to the SDK default).
  * @template TDataParts - Custom data-part types (defaults to the SDK default).
  * @template TTools - Tool set typing tool parts (defaults to the SDK default).
@@ -188,4 +191,4 @@ export const withAgentSession = async <
   options: VercelWithAgentSessionOptions<TMetadata, TDataParts, TTools>,
   body: (context: VercelAgentSessionContext<TMetadata, TDataParts, TTools>) => Promise<T>,
 ): Promise<T> =>
-  withCoreAgentSession({ ...options, codec: createUIMessageCodec<TMetadata, TDataParts, TTools>() }, body);
+  withCoreAgentSession({ ...options, codec: createUIMessageSessionCodec<TMetadata, TDataParts, TTools>() }, body);

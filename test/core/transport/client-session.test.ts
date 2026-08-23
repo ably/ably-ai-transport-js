@@ -32,18 +32,9 @@ import {
   HEADER_RUN_REASON,
   HEADER_STEER_CODEC_MESSAGE_IDS,
 } from '../../../src/constants.js';
-import type {
-  ChannelWriter,
-  Codec,
-  CodecEvent,
-  CodecInputEvent,
-  Decoder,
-  Encoder,
-  EncoderOptions,
-  ReducerMeta,
-  WriteOptions,
-} from '../../../src/core/codec/types.js';
+import type { ChannelWriter, Decoder, Encoder, EncoderOptions, WriteOptions } from '../../../src/core/codec/types.js';
 import { createClientSession } from '../../../src/core/transport/client-session.js';
+import type { Codec, CodecEvent, CodecInputEvent, ReducerMeta } from '../../../src/core/transport/session-codec.js';
 import type { ClientSession, RunLifecycleEvent } from '../../../src/core/transport/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { createMockClient } from '../../helper/mock-client.js';

@@ -1,10 +1,8 @@
-import type { ClientRun } from '@ably/ai-transport';
-import type { VercelSessionInput } from '@ably/ai-transport/vercel';
 import type { UIMessage } from 'ai';
 
 /**
- * Construct a user UIMessage from a text string. Callers wrap it for the
- * wire at the call site, e.g. `view.send(createUIMessageSessionCodec().createUserMessage(userMessage(text)))`.
+ * Construct a user UIMessage from a text string, ready to publish as a
+ * `{ kind: 'message' }` input or hand to useChat's `sendMessage`.
  */
 export function userMessage(text: string): UIMessage {
   return {
@@ -14,34 +12,44 @@ export function userMessage(text: string): UIMessage {
   };
 }
 
-/** Shape of the agent endpoint's JSON response. */
-interface WakeAgentResult {
-  /** The agent-minted run-id for this request (the agent mints it for a fresh run). */
+/**
+ * The invocation pointer the chat route expects: which channel to read, the
+ * input event that triggered the invocation, and the run to continue (absent
+ * for a fresh run — the agent mints the run-id).
+ */
+export interface WakeAgentBody {
+  /** The Ably channel the conversation lives on. */
+  channelName: string;
+  /** The `event-id` of the triggering input event on the channel. */
+  eventId: string;
+  /** The run to continue; omit for a fresh run. */
+  runId?: string;
+}
+
+/** Shape of the chat route's JSON response. */
+export interface WakeAgentResult {
+  /** The run-id for this invocation (agent-minted for a fresh run). */
   runId: string;
-  /** The agent-minted invocation-id for this request. */
-  invocationId: string;
 }
 
 /**
- * Wake the agent for a run by POSTing its invocation pointer to the agent
- * endpoint. The core ClientSession is a pure Ably transport — it never sends
- * HTTP — so the application owns this step. The agent rebuilds the pointer
- * with `Invocation.fromJSON`, reads the conversation from the channel, mints
- * the run-id (for a fresh run) and the invocation-id, and returns them on the
- * HTTP response. The same ids also arrive on the channel as `ai-run-start`,
- * which is how the client resolves `run.started` (populating `run.runId`)
- * without reading this response.
- * @param api - The agent endpoint URL.
- * @param run - The run returned by `view.send` / `regenerate` / `edit`.
- * @returns The agent-minted run-id and invocation-id read back from the response.
+ * Wake the agent by POSTing an invocation pointer to the chat route. The
+ * client transport is a pure Ably transport — it never sends HTTP — so the
+ * application owns this step. The agent reads the conversation from the
+ * channel, waits for the pointed-at input event, and returns the run-id on
+ * the HTTP response. The same run-id also arrives on the channel as
+ * `ai-run-start`.
+ * @param api - The chat route URL.
+ * @param body - The invocation pointer to POST.
+ * @returns The run-id read back from the response.
  * @throws If the endpoint responds with a non-JSON body (e.g. an error page).
  */
-export async function wakeAgent(api: string, run: ClientRun<VercelSessionInput, UIMessage>): Promise<WakeAgentResult> {
+export async function wakeAgent(api: string, body: WakeAgentBody): Promise<WakeAgentResult> {
   const response = await fetch(api, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(run.toInvocation().toJSON()),
+    body: JSON.stringify(body),
   });
-  // CAST: trust boundary — the agent route returns this shape.
+  // CAST: trust boundary — the chat route returns this shape.
   return (await response.json()) as WakeAgentResult;
 }

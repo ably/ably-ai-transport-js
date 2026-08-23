@@ -19,7 +19,7 @@ loadDotenv({ path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 
 import { NativeConnection, Worker } from '@temporalio/worker';
 import { createAblyTransportPlugin } from '@ably/ai-transport/temporal';
-import { createUIMessageSessionCodec } from '@ably/ai-transport/vercel';
+import { createUIMessageCodec } from '@ably/ai-transport/vercel';
 import { logger, makeAbly } from './ably.js';
 import { bundlerOptions } from './bundler.js';
 import * as activities from './activities.js';
@@ -38,7 +38,7 @@ async function main(): Promise<void> {
     activities,
     plugins: [
       createAblyTransportPlugin({
-        codec: createUIMessageSessionCodec(),
+        codec: createUIMessageCodec(),
         createClient: makeAbly,
         logger,
       }),

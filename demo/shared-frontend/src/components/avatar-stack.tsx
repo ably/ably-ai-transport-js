@@ -6,21 +6,21 @@ import { Avatar, AvatarFallback } from './ui/avatar';
 import { clientColor } from '../lib/client-color';
 
 interface AvatarStackProps {
-  /** The session channel whose presence set is shown. */
+  /** The conversation channel whose presence set is shown. */
   channelName: string;
   /** This client's own clientId, so its avatar can be marked "(you)". */
   selfClientId?: string;
 }
 
 /**
- * Avatar stack of the clients currently present on the session channel.
+ * Avatar stack of the clients currently present on the conversation channel.
  *
  * Each present client is one circle showing the first two letters of its
  * clientId, coloured from the same palette as the per-message attribution so a
  * client reads as the same colour everywhere. Entering presence on mount and
  * reading the live member set both call ably-js's React presence hooks
  * directly — they resolve the channel from the `<ChannelProvider>` the SDK's
- * session provider wraps the subtree in.
+ * transport provider wraps the subtree in.
  */
 export function AvatarStack({ channelName, selfClientId }: AvatarStackProps) {
   // Enter presence when the page opens; the clientId travels in the Ably token.

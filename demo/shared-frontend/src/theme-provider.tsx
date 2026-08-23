@@ -10,8 +10,8 @@ import { ThemeProvider as NextThemesProvider } from 'next-themes';
  * first paint) and give `<html>` `suppressHydrationWarning`. `system` follows
  * the OS preference and is the default.
  *
- * Codec-agnostic, so a demo on any codec can mount it without pulling in the
- * Vercel-typed session hooks.
+ * Codec-agnostic, so a demo on any codec can mount it without pulling in any
+ * Vercel-typed hooks.
  */
 export function ThemeProvider({ children }: { children: ReactNode }) {
   return (

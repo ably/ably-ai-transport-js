@@ -1,8 +1,7 @@
 'use client';
 
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import type { UIMessage } from 'ai';
-import type { CodecMessage } from '@ably/ai-transport';
 import type * as Ably from 'ably';
 import { ChevronLeftIcon } from 'lucide-react';
 import { Badge } from './ui/badge';
@@ -13,11 +12,11 @@ import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 /**
  * One SDK callback observed since page load, rendered in the Lifecycle tab.
  *
- * `type` spans both consumer families this shared pane serves: the ClientSession
- * run-lifecycle callbacks (`runStart`/`runSuspend`/`runResume`/`runEnd`/`error`)
+ * `type` spans both event families this shared pane serves: the transport's
+ * run-lifecycle events (`runStart`/`runSuspend`/`runResume`/`runEnd`/`error`)
  * and the Vercel `useChat` callbacks (`onToolCall`/`onFinish`/`onData`/`onError`).
- * A container feeds only its own family's literals; the pane colours each and
- * falls back to a neutral colour for any it does not recognise.
+ * A demo feeds only the literals it observes; the pane colours each and falls
+ * back to a neutral colour for any it does not recognise.
  */
 export interface CallbackLogEntry {
   /** When the callback fired (ms since epoch). */
@@ -54,7 +53,7 @@ interface ClientToolLogEntryBase {
 
 /**
  * One client-side tool execution observed on THIS client since page load.
- * Recorded locally by `useClientTools` at the moment the tool runs here, so it
+ * Recorded locally by `runClientTool` at the moment the tool runs here, so it
  * attributes execution to this running instance — which the replicated
  * conversation state can't, since that looks identical in every participant.
  *
@@ -81,11 +80,11 @@ export type ClientToolLogEntry =
 
 /** Props for {@link DebugPane}. */
 interface DebugPaneProps {
-  /** Visible messages paired with codec-message-ids; the pane renders the raw `message` halves as JSON. */
-  messages: CodecMessage<UIMessage>[];
+  /** The conversation's messages; the pane renders them as JSON in the UIMessages tab. */
+  messages: UIMessage[];
   /** Raw inbound Ably messages, oldest first; rendered with their `extras.ai` header tiers. */
   ablyMessages: Ably.InboundMessage[];
-  /** Current session or chat status string, shown in the UIMessages tab. */
+  /** Current chat status string, shown in the UIMessages tab. */
   status: string;
   /** SDK callbacks observed since page load, oldest first. */
   callbackLog: CallbackLogEntry[];
@@ -121,16 +120,16 @@ function extractTiers(msg: Ably.InboundMessage): Record<(typeof AI_TIERS)[number
   return { transport: ai?.transport ?? {}, codec: ai?.codec ?? {} };
 }
 
-// Colours for each callback type across both consumer families; an unrecognised
+// Colours for each callback type across both event families; an unrecognised
 // type falls back to a neutral colour at the call site.
 const callbackTypeColors: Record<string, string> = {
-  // ClientSession run-lifecycle callbacks.
+  // Transport run-lifecycle events.
   runStart: 'text-blue-400',
   runSuspend: 'text-amber-400',
   runResume: 'text-cyan-400',
   runEnd: 'text-emerald-400',
   error: 'text-red-400',
-  // Mid-run client steering (ClientSession).
+  // Mid-run client steering.
   steerPublished: 'text-purple-400',
   steerOutcome: 'text-fuchsia-400',
   steerRejected: 'text-red-300',
@@ -141,10 +140,10 @@ const callbackTypeColors: Record<string, string> = {
   onError: 'text-red-400',
 };
 
-// Colours for each status string across both consumer families; an unrecognised
+// Colours for each status string across both event families; an unrecognised
 // status falls back to the default badge colour.
 const statusColors: Record<string, string> = {
-  // ClientSession session status.
+  // Run-derived status (running while a run is streaming).
   idle: 'text-muted-foreground',
   running: 'text-emerald-400',
   // Vercel useChat status.
@@ -406,8 +405,6 @@ export function DebugPane({
     localStorage.setItem(storageKey, String(isOpen));
   }, [isOpen, storageKey]);
 
-  // Project away the codec-message-id pairing — the pane renders raw messages.
-  const uiMessages = useMemo(() => messages.map((m) => m.message), [messages]);
   const [tab, setTab] = useState<Tab>('ably');
 
   if (!isOpen) {
@@ -472,7 +469,7 @@ export function DebugPane({
         className="flex min-h-0 flex-1 flex-col"
       >
         <UIMessagesTab
-          messages={uiMessages}
+          messages={messages}
           status={status}
         />
       </TabsContent>

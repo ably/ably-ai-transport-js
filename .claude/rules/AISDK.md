@@ -8,14 +8,14 @@ behave correctly on either major.
 
 **Never name a chunk or part type that exists in only one major.** Naming a v7
 variant in a `switch` is a compile error on v6 (`TS2678`), and the reverse holds
-for anything v7 drops. Narrow structurally instead — see `isDataChunk` in
-`src/vercel/codec/fold-data.ts`, which tests the `data-` prefix rather than
-enumerating everything that is _not_ a data part.
+for anything v7 drops. Narrow structurally instead — see `VercelToolOutputChunk`
+in `src/vercel/codec/events.ts`, which selects the tool-output chunks by their
+`tool-output-` prefix rather than naming each variant.
 
 The trade-off is deliberate: a prefix test cannot give exhaustiveness checking,
-so a chunk type added by a future major is silently dropped rather than failing
-the build. `test/vercel/codec/reducer.test.ts` pins the set this codec knowingly
-does not project, so a new variant surfaces in review instead of going unnoticed.
+so a chunk type added by a future major is silently included (or, in a
+prefix-gated read, silently skipped) rather than failing the build. Pin the
+knowingly-unhandled set in a test where the gap would otherwise go unnoticed.
 
 **Do not assert the AI SDK's internal accounting.** Callback call-counts, log
 output and similar implementation details move between AI SDK releases —
@@ -35,8 +35,8 @@ and will break on an upgrade that changed nothing here.
 - `streamText()` has no `maxSteps` — multi-step tool use is automatic.
 - Do not discriminate an input event from an output chunk by the presence of
   `kind`. Codec inputs carry `kind`, but so does v7's `custom` output chunk. The
-  wire separates them by message name (`ai-input` / `ai-output`) and the reducer
-  by the `direction` field on `CodecEvent`; use those.
+  wire separates them by message name (`ai-input` / `ai-output`), and the
+  decoder returns them as separate `inputs` / `outputs` halves; use those.
 - Getting a `AI.UIMessageChunk` stream from `streamText()` differs by major: v6
   offers `result.toUIMessageStream()`, which v7 deprecates in favour of the
   standalone `toUIMessageStream({ stream })`. Demos pin a single major and may

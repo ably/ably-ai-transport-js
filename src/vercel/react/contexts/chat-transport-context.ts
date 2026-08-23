@@ -3,7 +3,9 @@ import type * as AI from 'ai';
 import { createContext } from 'react';
 
 import type { ClientSession } from '../../../core/transport/types.js';
-import type { VercelInput, VercelOutput, VercelProjection } from '../../codec/index.js';
+import type { VercelOutput } from '../../codec/index.js';
+import type { VercelProjection } from '../../codec/reducer.js';
+import type { VercelSessionInput } from '../../codec/session-events.js';
 import type { ChatTransport } from '../../transport/chat-transport.js';
 
 /**
@@ -12,7 +14,7 @@ import type { ChatTransport } from '../../transport/chat-transport.js';
  */
 export interface ChatTransportSlot {
   /** The underlying client session used to create the chat transport. */
-  readonly session: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+  readonly session: ClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>;
   /** Construction error from the underlying {@link ClientSession}, or `undefined` on success. */
   readonly sessionError?: Ably.ErrorInfo | undefined;
   /** The chat transport adapter for use with Vercel's useChat hook. */

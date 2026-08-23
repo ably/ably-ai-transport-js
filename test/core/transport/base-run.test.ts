@@ -11,8 +11,8 @@
 import * as Ably from 'ably';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { Codec, Regenerate, UserMessage } from '../../../src/core/codec/types.js';
 import { createBaseRun } from '../../../src/core/transport/base-run.js';
+import type { Codec, Regenerate, UserMessage } from '../../../src/core/transport/session-codec.js';
 import type { ConversationNode, InputNode, RunNode, RunNodeState, Tree } from '../../../src/core/transport/types.js';
 
 // ---------------------------------------------------------------------------

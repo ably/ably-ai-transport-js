@@ -5,10 +5,13 @@
  * unconstrained. Shared by the output and input descriptor tables.
  */
 
+import * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import type { CodecMessage } from '../../core/codec/index.js';
-import type { ForkSeed } from './events.js';
+import type { CodecMessage } from '../../core/transport/session-codec.js';
+import { ErrorCode } from '../../errors.js';
+import type { VercelToolOutputChunk } from './events.js';
+import type { ForkSeed } from './session-events.js';
 
 /** Wire format for the agent-side `tool-input-error` chunk data payload. */
 export interface ToolInputErrorWireData {
@@ -56,6 +59,35 @@ const isRecordWithOptionalString = (data: unknown, key: string): boolean =>
  * @returns The string payload, or `''` when the data is not a string.
  */
 export const asString = (data: unknown): string => (typeof data === 'string' ? data : '');
+
+/**
+ * Validate wire `data` as a tool-output chunk body (the `chunk` input's whole
+ * payload rides the data envelope verbatim). The typed envelope fields are
+ * checked — a `tool-output-*` `type` and a string `toolCallId` — while the
+ * tool-defined `output` / error detail stays unconstrained. Malformed data
+ * throws: the receive path drops the one message and surfaces the error,
+ * rather than handing a consumer a body the provider's reducer would choke on.
+ * @param data - The inbound wire data.
+ * @returns The validated chunk body.
+ * @throws {Ably.ErrorInfo} InvalidArgument when the data is not a tool-output chunk.
+ */
+export const readToolOutputChunkWireData = (data: unknown): VercelToolOutputChunk => {
+  if (
+    isRecord(data) &&
+    typeof data.type === 'string' &&
+    data.type.startsWith('tool-output-') &&
+    typeof data.toolCallId === 'string'
+  ) {
+    // CAST: wire trust boundary — the envelope fields are validated above; the
+    // chunk's remaining fields are the provider's own and stay unconstrained.
+    return data as unknown as VercelToolOutputChunk;
+  }
+  throw new Ably.ErrorInfo(
+    'unable to decode input; chunk body is not a tool-output chunk',
+    ErrorCode.InvalidArgument,
+    400,
+  );
+};
 
 export const isToolInputErrorWireData = (data: unknown): data is ToolInputErrorWireData =>
   isRecordWithOptionalString(data, 'errorText');

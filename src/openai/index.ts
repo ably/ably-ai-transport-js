@@ -1,14 +1,15 @@
 // OpenAI Responses codec
 export type {
+  OpenAIApprovalDecision,
+  OpenAIApprovalInput,
   OpenAIInput,
   OpenAIItem,
+  OpenAIItemInput,
   OpenAIMessage,
+  OpenAIMessageInput,
   OpenAIOutput,
-  OpenAIProjection,
-  OpenAIToolApprovalResponsePayload,
+  OpenAIRegenerateInput,
   OpenAIToolCallState,
-  OpenAIToolResultErrorPayload,
-  OpenAIToolResultPayload,
   ToolApprovalRequestEvent,
 } from './codec/index.js';
 export { ResponsesCodec } from './codec/index.js';

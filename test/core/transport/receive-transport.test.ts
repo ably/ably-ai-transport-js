@@ -20,8 +20,9 @@ import {
   HEADER_RUN_ID,
   HEADER_STEP_ID,
 } from '../../../src/constants.js';
-import type { CodecInputEvent, Decoder } from '../../../src/core/codec/types.js';
+import type { Decoder } from '../../../src/core/codec/types.js';
 import { classifyWireMessage, createReceiveTransport } from '../../../src/core/transport/receive-transport.js';
+import type { CodecInputEvent } from '../../../src/core/transport/session-codec.js';
 import type { TransportEvent } from '../../../src/core/transport/types/transport.js';
 import { silentLogger } from '../../helper/logger.js';
 import { foreignWire, inboundMessage } from '../../helper/wire-messages.js';

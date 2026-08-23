@@ -4,7 +4,7 @@ import { renderHook } from '@testing-library/react';
 import { createElement, type ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { CodecInputEvent, CodecOutputEvent } from '../../src/core/codec/types.js';
+import type { CodecInputEvent, CodecOutputEvent } from '../../src/core/transport/session-codec.js';
 import type { ClientSession } from '../../src/core/transport/types.js';
 import { createSessionHooks } from '../../src/react/create-session-hooks.js';
 import { createMockSession } from './helper/mock-session.js';

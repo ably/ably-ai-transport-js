@@ -5,8 +5,8 @@ import type * as Ably from 'ably';
 import type * as AblyObjects from 'ably/liveobjects';
 
 import type { Logger } from '../../../logger.js';
-import type { Codec, CodecInputEvent, CodecOutputEvent } from '../../codec/types.js';
 import type { Invocation } from '../invocation.js';
+import type { Codec, CodecInputEvent, CodecOutputEvent } from '../session-codec.js';
 import type { BaseRun } from './run.js';
 import type { SteerResult } from './steer.js';
 import type { Tree } from './tree.js';

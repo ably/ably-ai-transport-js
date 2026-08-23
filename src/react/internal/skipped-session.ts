@@ -9,7 +9,7 @@
 import * as Ably from 'ably';
 import type * as AblyObjects from 'ably/liveobjects';
 
-import type { CodecInputEvent, CodecOutputEvent } from '../../core/codec/types.js';
+import type { CodecInputEvent, CodecOutputEvent } from '../../core/transport/session-codec.js';
 import type { ClientSession, ClientView, Tree } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
 

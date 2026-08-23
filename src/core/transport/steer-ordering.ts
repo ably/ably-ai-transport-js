@@ -16,7 +16,7 @@
  * places it correctly.
  */
 
-import type { CodecMessage } from '../codec/types.js';
+import type { CodecMessage } from './session-codec.js';
 
 /**
  * Resolves, per run, whether a message is a steer no output has responded to

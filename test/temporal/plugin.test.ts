@@ -8,7 +8,7 @@ import type { WorkerOptions } from '@temporalio/worker';
 import type * as Ably from 'ably';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { Codec } from '../../src/core/codec/types.js';
+import type { Codec } from '../../src/core/transport/session-codec.js';
 import { createAblyTransportPlugin } from '../../src/temporal/plugin.js';
 
 interface TestMessage {

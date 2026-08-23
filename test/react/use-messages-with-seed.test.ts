@@ -3,7 +3,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { CodecMessage } from '../../src/core/codec/types.js';
+import type { CodecMessage } from '../../src/core/transport/session-codec.js';
 import type { View } from '../../src/core/transport/types.js';
 import { useMessagesWithSeed } from '../../src/react/use-messages-with-seed.js';
 import { makeFakeLoadUntil } from '../helper/fake-load-until.js';

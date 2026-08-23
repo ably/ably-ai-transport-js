@@ -14,7 +14,7 @@ import * as Ably from 'ably';
 
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
-import type { CodecInputEvent, CodecOutputEvent, Decoder } from '../codec/types.js';
+import type { Decoder } from '../codec/types.js';
 import { wrapMessageProcessingError } from './channel-support.js';
 import type { HistoryPagesCursor } from './load-history-pages.js';
 import { classifyWireMessage } from './receive-transport.js';
@@ -26,7 +26,7 @@ import type { TransportEvent, TransportHistoryOptions, TransportHistoryResult } 
  * @template TInput - The codec's input-event domain type.
  * @template TOutput - The codec's output-event domain type.
  */
-export interface WalkHistoryBatchContext<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> {
+export interface WalkHistoryBatchContext<TInput, TOutput> {
   /** The backward page cursor to advance. The caller keeps it across calls so each batch resumes where the last stopped. */
   cursor: HistoryPagesCursor;
   /** The decoder to classify wires on. Advancing it here mutates its per-stream state, so the caller decides which decoder the walk shares. */
@@ -53,7 +53,7 @@ export interface WalkHistoryBatchContext<TInput extends CodecInputEvent, TOutput
  * @param opts - The caller's batch bounds.
  * @returns The batch of classified events and the exhaustion flag.
  */
-export const walkHistoryBatch = async <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent>(
+export const walkHistoryBatch = async <TInput, TOutput>(
   ctx: WalkHistoryBatchContext<TInput, TOutput>,
   opts: TransportHistoryOptions | undefined,
 ): Promise<TransportHistoryResult<TInput, TOutput>> => {

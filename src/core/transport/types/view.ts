@@ -2,7 +2,7 @@
 
 import type * as Ably from 'ably';
 
-import type { CodecInputEvent, CodecMessage } from '../../codec/types.js';
+import type { CodecInputEvent, CodecMessage } from '../session-codec.js';
 import type { ClientRun, SendOptions } from './client.js';
 import type { RunEndReason } from './shared.js';
 import type { RunLifecycleEvent, StepInfo } from './tree.js';

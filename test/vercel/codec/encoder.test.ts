@@ -13,9 +13,10 @@ import {
   HEADER_STREAM_ID,
 } from '../../../src/constants.js';
 import type { ChannelWriter } from '../../../src/core/codec/types.js';
-import { createUIMessageCodec, type ForkSeed } from '../../../src/vercel/codec/index.js';
+import { createUIMessageSessionCodec } from '../../../src/vercel/codec/session-codec.js';
+import { type ForkSeed } from '../../../src/vercel/codec/session-events.js';
 
-const UIMessageCodec = createUIMessageCodec();
+const UIMessageCodec = createUIMessageSessionCodec();
 
 // The codec is now assembled by defineCodec; createEncoder is the generic
 // factory it produces (a plain closure, safe to destructure).

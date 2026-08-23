@@ -20,9 +20,10 @@ import {
   HEADER_STEP_ID,
   HEADER_STEP_START_SERIAL,
 } from '../../../src/constants.js';
-import type { Codec, CodecInputEvent, Decoder } from '../../../src/core/codec/types.js';
+import type { Decoder } from '../../../src/core/codec/types.js';
 import { applyTransportEventToTree, createMaterialisation } from '../../../src/core/transport/materialisation.js';
 import { classifyWireMessage } from '../../../src/core/transport/receive-transport.js';
+import type { Codec, CodecInputEvent } from '../../../src/core/transport/session-codec.js';
 import type { TreeInternal } from '../../../src/core/transport/tree.js';
 import type { TransportEvent } from '../../../src/core/transport/types/transport.js';
 import { wireMetaFromLocalEcho } from '../../../src/core/transport/wire-meta.js';

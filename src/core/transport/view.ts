@@ -31,11 +31,11 @@ import { ErrorCode } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
-import type { Codec, CodecInputEvent, CodecMessage, CodecOutputEvent } from '../codec/types.js';
 import { type BranchSource, NavigableBranchSource } from './branch-source.js';
 import { messageTailSplitIndex } from './conversation-projection.js';
 import type { HistoryHydrator } from './history-hydrator.js';
 import type { LeafBranchSource } from './leaf-branch-source.js';
+import type { Codec, CodecInputEvent, CodecMessage, CodecOutputEvent } from './session-codec.js';
 import { deferUnrespondedSteers, type SteerOrdering } from './steer-ordering.js';
 import { nodeKey, type TreeInternal } from './tree.js';
 import type {

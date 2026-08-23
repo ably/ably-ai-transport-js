@@ -15,7 +15,13 @@ import {
   HEADER_STREAM,
   HEADER_SUPERSEDES,
 } from '../../../src/constants.js';
-import type { Codec, CodecEvent, CodecInputEvent, Regenerate, UserMessage } from '../../../src/core/codec/types.js';
+import type {
+  Codec,
+  CodecEvent,
+  CodecInputEvent,
+  Regenerate,
+  UserMessage,
+} from '../../../src/core/transport/session-codec.js';
 import type { TreeInternal } from '../../../src/core/transport/tree.js';
 import { createTree, REORDER_WINDOW_MS } from '../../../src/core/transport/tree.js';
 import type {

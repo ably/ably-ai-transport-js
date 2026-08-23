@@ -6,9 +6,9 @@
  * discipline lives in one place.
  */
 
-import type { CodecInputEvent, CodecOutputEvent } from '../codec/types.js';
 import { createAgentSession } from './agent-session.js';
 import { Invocation } from './invocation.js';
+import type { CodecInputEvent, CodecOutputEvent } from './session-codec.js';
 import type { AgentSessionContext, WithAgentSessionOptions } from './types/agent.js';
 
 /**

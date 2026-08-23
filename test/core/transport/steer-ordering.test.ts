@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { CodecMessage } from '../../../src/core/codec/types.js';
+import type { CodecMessage } from '../../../src/core/transport/session-codec.js';
 import { deferUnrespondedSteers } from '../../../src/core/transport/steer-ordering.js';
 
 const msg = (codecMessageId: string): CodecMessage<string> => ({ codecMessageId, message: codecMessageId });

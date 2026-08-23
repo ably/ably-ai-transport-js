@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import { createUIMessageCodec } from '../../../src/vercel/codec/index.js';
+import { createUIMessageSessionCodec } from '../../../src/vercel/codec/session-codec.js';
 
-const UIMessageCodec = createUIMessageCodec();
+const WireUIMessageCodec = createUIMessageCodec();
+const UIMessageCodec = createUIMessageSessionCodec();
 
 describe('createUIMessageCodec', () => {
   it('carries adapterTag: "vercel" for Ably-Agent header registration', () => {
-    // CAST: adapterTag is internal (not on the public Codec interface); verify the runtime value directly.
-    expect((UIMessageCodec as unknown as { adapterTag: string }).adapterTag).toBe('vercel-ai-sdk-ui-message');
+    expect(WireUIMessageCodec.adapterTag).toBe('vercel-ai-sdk-ui-message');
+    expect(UIMessageCodec.adapterTag).toBe('vercel-ai-sdk-ui-message');
   });
 
   describe('createUserMessage', () => {

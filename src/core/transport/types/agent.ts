@@ -5,8 +5,8 @@ import type * as Ably from 'ably';
 import type * as AblyObjects from 'ably/liveobjects';
 
 import type { Logger } from '../../../logger.js';
-import type { Codec, CodecInputEvent, CodecOutputEvent } from '../../codec/types.js';
 import type { Invocation, InvocationData } from '../invocation.js';
+import type { Codec, CodecInputEvent, CodecOutputEvent } from '../session-codec.js';
 import type { BaseRun } from './run.js';
 import type {
   OpenRunHooks,
@@ -138,7 +138,7 @@ export interface AgentSessionContext<TOutput extends CodecOutputEvent, TProjecti
  * prior attempt's output cleanly rather than appending to the conversation.
  * @template TOutput - The codec output type carried by the step's stream.
  */
-export interface RunStep<TOutput extends CodecOutputEvent> {
+export interface RunStep<TOutput> {
   /** This step's id — stable across retry attempts of the same step. */
   readonly stepId: string;
   /**

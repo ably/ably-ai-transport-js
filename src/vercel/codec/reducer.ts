@@ -1,7 +1,7 @@
 /**
  * Vercel AI SDK reducer.
  *
- * Pure `(init, fold)` over the `VercelInput | VercelOutput` union. Folds
+ * Pure `(init, fold)` over the `VercelSessionInput | VercelOutput` union. Folds
  * input variants (user-message, tool-result, tool-result-error,
  * tool-approval-response) and `UIMessageChunk` outputs into a
  * VercelProjection holding `UIMessage[]` plus internal stream-tracker
@@ -33,8 +33,8 @@
 
 import type * as AI from 'ai';
 
-import type { CodecEvent, CodecMessage, ReducerMeta } from '../../core/codec/index.js';
-import type { VercelInput, VercelOutput } from './events.js';
+import type { CodecEvent, CodecMessage, ReducerMeta } from '../../core/transport/session-codec.js';
+import type { VercelOutput } from './events.js';
 import { foldContentPart } from './fold-content.js';
 import { foldDataPart, isDataChunk } from './fold-data.js';
 import {
@@ -49,6 +49,7 @@ import { foldTextOrReasoning } from './fold-text.js';
 import { foldToolInput } from './fold-tool-input.js';
 import { foldToolOutput } from './fold-tool-output.js';
 import type { VercelProjection } from './reducer-state.js';
+import type { VercelSessionInput } from './session-events.js';
 
 // ---------------------------------------------------------------------------
 // fold
@@ -70,7 +71,7 @@ import type { VercelProjection } from './reducer-state.js';
  */
 export const fold = (
   state: VercelProjection,
-  event: CodecEvent<VercelInput, VercelOutput>,
+  event: CodecEvent<VercelSessionInput, VercelOutput>,
   meta: ReducerMeta,
 ): VercelProjection => {
   if (event.direction === 'input') {
@@ -87,15 +88,15 @@ export const fold = (
         break;
       }
       case 'tool-result': {
-        foldClientToolResult(state, input);
+        foldClientToolResult(state, input, meta);
         break;
       }
       case 'tool-result-error': {
-        foldClientToolResultError(state, input);
+        foldClientToolResultError(state, input, meta);
         break;
       }
       case 'tool-approval-response': {
-        foldToolApprovalResponse(state, input);
+        foldToolApprovalResponse(state, input, meta);
         break;
       }
     }

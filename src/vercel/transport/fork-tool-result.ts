@@ -25,7 +25,7 @@
  * user input node. Publish them together:
  *
  * ```ts
- * const codec = createUIMessageCodec();
+ * const codec = createUIMessageSessionCodec();
  * const run = view.runOf(codecMessageId);
  * const node = getRunNode(run.runId);
  * const { input, sendOptions } = createToolResultFork({
@@ -42,18 +42,18 @@
 import * as Ably from 'ably';
 import type * as AI from 'ai';
 
-import type { CodecMessage } from '../../core/codec/index.js';
+import type { CodecMessage } from '../../core/transport/session-codec.js';
 import type { SendOptions } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
-import type { ForkSeed, VercelInput } from '../codec/index.js';
-import { createUIMessageCodec } from '../codec/index.js';
+import { createUIMessageSessionCodec } from '../codec/session-codec.js';
+import type { ForkSeed, VercelSessionInput } from '../codec/session-events.js';
 import { isToolPart } from '../tool-part.js';
 
 // The well-known input factories (`createToolResult` / `createToolResultError`)
 // are exposed on a codec instance. This helper is a pure function with no codec
 // in scope, so assemble one at module load (the codec is stateless — the same
 // idiom the React provider uses for its default codec).
-const codec = createUIMessageCodec();
+const codec = createUIMessageSessionCodec();
 
 /**
  * The resolution a client produced for a suspended tool call — either a
@@ -94,7 +94,7 @@ export const createToolResultFork = (params: {
   toolCallId: string;
   result: ToolCallResolution;
   supersedesRunId: string;
-}): { input: VercelInput; sendOptions: SendOptions } => {
+}): { input: VercelSessionInput; sendOptions: SendOptions } => {
   const { runMessages, parentCodecMessageId, toolCallId, result, supersedesRunId } = params;
 
   // Mint a fresh codec-message-id per run message, preserving each message. The
@@ -119,7 +119,7 @@ export const createToolResultFork = (params: {
   }
   const target = targetEntry.codecMessageId;
 
-  const input: VercelInput =
+  const input: VercelSessionInput =
     'errorMessage' in result
       ? codec.createToolResultError(target, { toolCallId, message: result.errorMessage, forkSeed: seed })
       : codec.createToolResult(target, { toolCallId, output: result.output, forkSeed: seed });

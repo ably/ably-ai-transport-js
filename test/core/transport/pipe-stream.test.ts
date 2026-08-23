@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { CodecInputEvent, Encoder, WriteOptions } from '../../../src/core/codec/types.js';
+import type { Encoder, WriteOptions } from '../../../src/core/codec/types.js';
 import { pipeStream } from '../../../src/core/transport/pipe-stream.js';
+import type { CodecInputEvent } from '../../../src/core/transport/session-codec.js';
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -27,10 +27,12 @@ import type * as AI from 'ai';
 
 import type { ClientSession } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
-import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
+import type { VercelOutput } from '../codec/index.js';
+import type { VercelProjection } from '../codec/reducer.js';
+import type { VercelSessionInput } from '../codec/session-events.js';
 
 type VercelSession<TMetadata, TDataParts extends AI.UIDataTypes, TTools extends AI.UITools> = ClientSession<
-  VercelInput<TMetadata, TDataParts, TTools>,
+  VercelSessionInput<TMetadata, TDataParts, TTools>,
   VercelOutput<TMetadata, TDataParts>,
   VercelProjection<TMetadata, TDataParts, TTools>,
   AI.UIMessage<TMetadata, TDataParts, TTools>

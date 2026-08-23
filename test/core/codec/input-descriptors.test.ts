@@ -147,7 +147,7 @@ describe('input descriptor drivers', () => {
 
   // -- payload-nested event ------------------------------------------------
 
-  it('round-trips a payload-nested event and rebuilds the envelope + codecMessageId', async () => {
+  it('round-trips a payload-nested event and rebuilds the envelope', async () => {
     const core = createMockCore();
     await encoder.encode(
       { kind: 'tool-result-like', codecMessageId: 'cm-1', payload: { toolCallId: 't1', output: { ok: true } } },
@@ -167,12 +167,12 @@ describe('input descriptor drivers', () => {
       codecHeaders: codecHeadersOf(payload),
       transportHeaders: { [HEADER_CODEC_MESSAGE_ID]: 'cm-1' },
     });
-    expect(decoded).toEqual([
-      { kind: 'tool-result-like', codecMessageId: 'cm-1', payload: { toolCallId: 't1', output: { ok: true } } },
-    ]);
+    // Addressing never rides the decoded envelope — the transport surfaces
+    // the codec-message-id on WireMeta instead.
+    expect(decoded).toEqual([{ kind: 'tool-result-like', payload: { toolCallId: 't1', output: { ok: true } } }]);
   });
 
-  it('reconstructs an empty codecMessageId when the transport header is absent', async () => {
+  it('decodes without stamping any addressing on the envelope', async () => {
     const core = createMockCore();
     await encoder.encode(
       { kind: 'tool-result-like', codecMessageId: '', payload: { toolCallId: 't2', output: 1 } },
@@ -186,9 +186,7 @@ describe('input descriptor drivers', () => {
       codecHeaders: codecHeadersOf(payload),
       transportHeaders: {},
     });
-    expect(decoded).toEqual([
-      { kind: 'tool-result-like', codecMessageId: '', payload: { toolCallId: 't2', output: 1 } },
-    ]);
+    expect(decoded).toEqual([{ kind: 'tool-result-like', payload: { toolCallId: 't2', output: 1 } }]);
   });
 
   // -- wire-only -----------------------------------------------------------

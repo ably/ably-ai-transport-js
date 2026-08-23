@@ -19,7 +19,7 @@ import type * as Ably from 'ably';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { getTransportHeaders } from '../../utils.js';
-import type { CodecInputEvent, CodecOutputEvent, Decoder } from '../codec/types.js';
+import type { Decoder } from '../codec/types.js';
 import { wrapMessageProcessingError } from './channel-support.js';
 import { isRunLifecycleName, isStepLifecycleName, parseRunLifecycle, parseStepLifecycle } from './headers.js';
 import type { TransportEvent, TransportReceiver } from './types/transport.js';
@@ -41,7 +41,7 @@ import { wireMetaFromMessage } from './wire-meta.js';
  * @param rawMsg - The inbound Ably wire message.
  * @returns The classified event, or `undefined` for a filtered / unparseable message.
  */
-export const classifyWireMessage = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent>(
+export const classifyWireMessage = <TInput, TOutput>(
   decoder: Decoder<TInput, TOutput>,
   rawMsg: Ably.InboundMessage,
 ): TransportEvent<TInput, TOutput> | undefined => {
@@ -80,7 +80,7 @@ export const classifyWireMessage = <TInput extends CodecInputEvent, TOutput exte
  * @template TInput - The codec's input-event domain type.
  * @template TOutput - The codec's output-event domain type.
  */
-export type DeliverEventResult<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> =
+export type DeliverEventResult<TInput, TOutput> =
   | {
       /** The message classified; its `event` was emitted to subscribers. */
       outcome: 'classified';
@@ -103,10 +103,7 @@ export type DeliverEventResult<TInput extends CodecInputEvent, TOutput extends C
  * @template TInput - The codec's input-event domain type.
  * @template TOutput - The codec's output-event domain type.
  */
-export interface ReceiveTransport<
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-> extends TransportReceiver<TInput, TOutput> {
+export interface ReceiveTransport<TInput, TOutput> extends TransportReceiver<TInput, TOutput> {
   /**
    * Classify one inbound wire message and emit its typed `event`. A decode
    * failure emits `error`, drops the message, and reports `failed` so the
@@ -141,7 +138,7 @@ export interface ReceiveTransport<
 }
 
 /** Event map for the receiver's typed emitter. */
-interface ReceiveEventsMap<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> {
+interface ReceiveEventsMap<TInput, TOutput> {
   /** A classified transport event. */
   event: TransportEvent<TInput, TOutput>;
   /** A raw inbound Ably message. */
@@ -151,10 +148,7 @@ interface ReceiveEventsMap<TInput extends CodecInputEvent, TOutput extends Codec
 }
 
 /** Default {@link ReceiveTransport} backed by the typed {@link EventEmitter}. */
-class DefaultReceiveTransport<
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-> implements ReceiveTransport<TInput, TOutput> {
+class DefaultReceiveTransport<TInput, TOutput> implements ReceiveTransport<TInput, TOutput> {
   private readonly _decoder: Decoder<TInput, TOutput>;
   private readonly _emitter: EventEmitter<ReceiveEventsMap<TInput, TOutput>>;
   private readonly _logger: Logger;
@@ -214,7 +208,7 @@ class DefaultReceiveTransport<
  * @param logger - Logger for diagnostics.
  * @returns The receive transport.
  */
-export const createReceiveTransport = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent>(
+export const createReceiveTransport = <TInput, TOutput>(
   decoder: Decoder<TInput, TOutput>,
   logger: Logger,
 ): ReceiveTransport<TInput, TOutput> => new DefaultReceiveTransport(decoder, logger);

@@ -18,7 +18,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Invocation } from '../../../src/core/transport/invocation.js';
 import type { ClientSession, RunStatus, Tree } from '../../../src/core/transport/types.js';
-import type { VercelInput, VercelOutput, VercelProjection } from '../../../src/vercel/codec/index.js';
+import type { VercelOutput } from '../../../src/vercel/codec/index.js';
+import type { VercelProjection } from '../../../src/vercel/codec/reducer.js';
+import type { VercelSessionInput } from '../../../src/vercel/codec/session-events.js';
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 
 // ---------------------------------------------------------------------------
@@ -196,7 +198,7 @@ const createMockSession = () => {
     getMessages: vi.fn(() => []),
     getAblyMessages: vi.fn(() => []),
     history: vi.fn(),
-  } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+  } as unknown as ClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
   return { session, send, mockRun };
 };
@@ -234,7 +236,7 @@ const createMultiRunMockSession = () => {
     getMessages: vi.fn(() => []),
     getAblyMessages: vi.fn(() => []),
     history: vi.fn(),
-  } as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+  } as unknown as ClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
   return { session, send, runA, runB };
 };

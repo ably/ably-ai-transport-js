@@ -2,25 +2,23 @@
  * The per-activity runtime envelope.
  *
  * Every durable activity in `activities.ts` runs as a SEPARATE WDK process with
- * no shared memory, so each one has to build its own Ably client, get a
- * connected AIT `AgentSession`, do its work, and tear the session down.
- * {@link withActivity} is that envelope: the SDK's `withAgentSession` owns the
- * session half, and this wrapper adds the client lifecycle and the demo's
- * telemetry. Hoisting it here keeps the activity bodies a clean read of the AIT
- * SDK calls that matter (createRun / adoptRun / createStep / pipe / send /
- * suspend / end).
+ * no shared memory, so each one builds its own Ably client, connects a
+ * standalone AIT `AgentTransport` on the conversation's channel, does one unit
+ * of work, and tears both down. Closing the transport publishes NO terminal —
+ * that is the durable hand-off discipline: a run an activity leaves open stays
+ * open on the wire for the next activity (or a WDK retry) to re-enter via
+ * `openRun`.
  *
  * The envelope ALSO reports each activity's lifecycle to the demo's "WDK
  * processes" panel over a sidecar Ably channel. That telemetry is DEMO
- * INSTRUMENTATION only — a production integration would keep the session build
- * + teardown and drop the `emit` / `reportAitRun` lines. It lives here, out of
- * the activity bodies, for exactly that reason.
+ * INSTRUMENTATION only — a production integration would keep the transport
+ * build + teardown and drop the `emit` / `reportAitRun` lines. It lives here,
+ * out of the activity bodies, for exactly that reason.
  */
 
 import * as Ably from 'ably';
 import { getStepMetadata } from 'workflow';
-import type { Invocation, InvocationData } from '@ably/ai-transport';
-import { type VercelAgentSessionContext, withAgentSession } from '@ably/ai-transport/vercel';
+import { createAgentTransport } from '@ably/ai-transport/vercel';
 
 import {
   type ActivityEvent,
@@ -29,19 +27,12 @@ import {
   wdkActivityChannel,
   WDK_ACTIVITY_EVENT,
 } from '../lib/wdk-activity';
-
-/** A connected AIT agent session, codec-specialised to this demo's Vercel setup. */
-export type WdkAgentSession = VercelAgentSessionContext['session'];
-
-/** A run handle from either entry point — `createRun` (open) or `adoptRun` (later activities). */
-export type WdkAgentRun = ReturnType<WdkAgentSession['adoptRun']> | ReturnType<WdkAgentSession['createRun']>;
+import type { WdkAgentTransport } from './history';
 
 /** What {@link withActivity} hands the activity body to work with. */
 export interface ActivityContext {
-  /** This process's connected agent session — torn down (detached) after the body returns or throws. */
-  session: WdkAgentSession;
-  /** The invocation the client POSTed: the channel name and the triggering input's event id. */
-  invocation: Invocation;
+  /** This process's connected agent transport — closed (no terminal published) after the body returns or throws. */
+  transport: WdkAgentTransport;
   /** The WDK step id — stable across retries; key the AIT step on it so a retry supersedes the dead attempt. */
   stepId: string;
   /** The 1-based WDK attempt number; bumps when WDK re-runs this activity after a throw. */
@@ -58,26 +49,21 @@ function makeClient(): Ably.Realtime {
 }
 
 /**
- * Run one activity's AIT work inside a fresh, connected agent session.
+ * Run one activity's AIT work against a fresh, connected agent transport.
  *
- * The session lifecycle is the SDK's `withAgentSession`: it connects, runs the
- * body, and DETACHES on both success and failure, never ending. Detach leaves
- * any open run OPEN on the wire, which is the durable hand-off seam on success
- * (the next activity adopts it) and what lets a WDK retry adopt + emit a
- * superseding attempt on a throw. Ending would publish `ai-run-end` and mark the
- * run terminal, breaking both.
+ * `connect()` happens after the trigger already exists on the channel (the
+ * client publishes before it POSTs, and the workflow starts after that), so
+ * the transport's attach point bounds `locateInput` and `history` to a window
+ * that contains everything the activity needs.
  *
- * This envelope adds the client lifecycle (the SDK never closes an injected
- * client) and the demo's telemetry.
- *
- * @param invocationData - The invocation pointer the client POSTed (from workflow input).
+ * @param channelName - The conversation's Ably channel.
  * @param workflowRunId - The WDK workflow run id, for the demo panel's grouping.
  * @param kind - Which activity this is, for the demo panel's label.
  * @param body - The activity's actual AIT work.
  * @returns Whatever `body` returns.
  */
 export async function withActivity<T>(
-  invocationData: InvocationData,
+  channelName: string,
   workflowRunId: string,
   kind: ActivityKind,
   body: (ctx: ActivityContext) => Promise<T>,
@@ -90,7 +76,7 @@ export async function withActivity<T>(
   const emit = async (phase: ActivityPhase): Promise<void> => {
     try {
       const event: ActivityEvent = { kind, phase, workflowRunId, wdkStepId: stepId, attempt, aitRunId, ts: Date.now() };
-      await client.channels.get(wdkActivityChannel(invocationData.sessionName)).publish(WDK_ACTIVITY_EVENT, event);
+      await client.channels.get(wdkActivityChannel(channelName)).publish(WDK_ACTIVITY_EVENT, event);
     } catch {
       // Best-effort telemetry: never fail an activity because its sidecar
       // publish didn't land. A throw in `body` deliberately emits nothing — the
@@ -99,12 +85,16 @@ export async function withActivity<T>(
   };
 
   try {
-    return await withAgentSession<T>({ client, invocation: invocationData }, async ({ session, invocation }) => {
+    const transport = createAgentTransport({ channel: client.channels.get(channelName), clientId: 'wdk-agent' });
+    await transport.connect();
+    try {
       await emit('running');
-      const result = await body({ session, invocation, stepId, attempt, reportAitRun: (id) => (aitRunId = id) });
+      const result = await body({ transport, stepId, attempt, reportAitRun: (id) => (aitRunId = id) });
       await emit('done');
       return result;
-    });
+    } finally {
+      transport.close();
+    }
   } finally {
     client.close();
   }

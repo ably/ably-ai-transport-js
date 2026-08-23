@@ -1,72 +1,42 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type * as AI from 'ai';
-import { useEffect, useState, type ReactNode, type RefObject } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import type { ReactNode } from 'react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { ChatTransport, VercelOutput, VercelProjection, VercelSessionInput } from '@ably/ai-transport/vercel';
-import type { BranchHandle, ClientSession } from '@ably/ai-transport';
+import type { ChatTransport } from '@ably/ai-transport/vercel';
 
 import { Chat } from '../chat';
-import type { FaultMode } from '../lib/fault';
+import { FAULT_COOKIE } from '../lib/fault';
 
-// jsdom doesn't implement scrollIntoView; MessageList's auto-scroll calls it.
+// jsdom doesn't implement scrollIntoView; the transcript's auto-scroll calls it.
 Element.prototype.scrollIntoView = () => {};
 
-// The SDK's React entry + ably-js's React hooks are mocked so the demo's glue
-// renders without an Ably client, codec, or session. Stubs live in vi.hoisted so
-// the (hoisted) vi.mock factories can reference them and `Chat` can import at the
+// The SDK's React entries + ably-js's React hooks are mocked so the demo's glue
+// renders without an Ably client or transport. Stubs live in vi.hoisted so the
+// (hoisted) vi.mock factories can reference them and `Chat` can import at the
 // top. A breaking change to the SDK's public hook surface is caught at render.
-const { mockSendMessages, mockChatTransport, mockSession } = vi.hoisted(() => {
+const { mockSendMessages, mockSeed, mockChatTransport } = vi.hoisted(() => {
   const send = vi.fn<ChatTransport['sendMessages']>();
+  const seed = vi.fn<ChatTransport['seed']>();
   const chatTransport: ChatTransport = {
     sendMessages: send,
+    // null is the AI SDK's "nothing to resume".
     reconnectToStream: async () => null,
-    close: async () => {},
+    seed,
+    close: () => {},
     streaming: false,
     onStreamingChange: () => () => {},
   };
-  // CAST: minimal ClientSession stub — only the members the happy-path render reaches.
-  const session = { close: async () => {}, on: () => () => {} } as unknown as ClientSession<
-    VercelSessionInput,
-    VercelOutput,
-    VercelProjection,
-    AI.UIMessage
-  >;
-  return { mockSendMessages: send, mockChatTransport: chatTransport, mockSession: session };
-});
-
-let setMockMessages: ((messages: AI.UIMessage[]) => void) | null = null;
-
-const emptyBranchHandle = (): BranchHandle<AI.UIMessage> => ({
-  hasSiblings: false,
-  siblings: [],
-  index: 0,
-  selected: undefined,
-  select: () => {},
+  return { mockSendMessages: send, mockSeed: seed, mockChatTransport: chatTransport };
 });
 
 vi.mock('@ably/ai-transport/vercel/react', () => ({
   ChatTransportProvider: ({ children }: { children: ReactNode }) => children,
-  useChatTransport: () => ({ chatTransport: mockChatTransport, session: mockSession, sessionError: undefined }),
-  useMessageSync: () => {},
+  useChatTransport: () => ({ chatTransport: mockChatTransport, transport: undefined, error: undefined }),
+}));
+
+vi.mock('@ably/ai-transport/react', () => ({
   useAblyMessages: () => [],
-  useView: () => {
-    const [messages, setMessages] = useState<AI.UIMessage[]>([]);
-    useEffect(() => {
-      setMockMessages = setMessages;
-      return () => {
-        setMockMessages = null;
-      };
-    }, []);
-    return {
-      messages: messages.map((message) => ({ codecMessageId: message.id, message })),
-      hasOlder: false,
-      loading: false,
-      loadOlder: async () => {},
-      branchSelection: emptyBranchHandle,
-      runOf: () => undefined,
-    };
-  },
 }));
 
 vi.mock('ably/react', () => ({
@@ -79,19 +49,30 @@ vi.mock('ably/react', () => ({
 const emptyChunkStream = (): ReadableStream<AI.UIMessageChunk> =>
   new ReadableStream<AI.UIMessageChunk>({ start: (controller) => controller.close() });
 
-const faultRef: RefObject<FaultMode | undefined> = { current: undefined };
-
 describe('<Chat>', () => {
-  it('mounts, sends the input via chatTransport, and renders view messages', async () => {
+  beforeEach(() => {
     mockSendMessages.mockReset();
+    mockSeed.mockClear();
+    // Reset the fault cookie between tests (jsdom keeps document.cookie).
+    document.cookie = `${FAULT_COOKIE}=; path=/; max-age=0`;
+    // The WDK panel polls /api/wdk/runs; keep it inert.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, json: async () => ({ runs: [] }) })),
+    );
+    return () => {
+      vi.unstubAllGlobals();
+    };
+  });
+
+  it('seeds the adapter empty on mount and sends the input via the chat transport', async () => {
     mockSendMessages.mockResolvedValue(emptyChunkStream());
 
-    render(
-      <Chat
-        chatId="ai:test"
-        faultRef={faultRef}
-      />,
-    );
+    render(<Chat chatId="ai:test" />);
+
+    // No hydration in this demo: the adapter is seeded with an empty batch so
+    // its live indexing starts.
+    expect(mockSeed).toHaveBeenCalledWith([]);
 
     const input = screen.getByPlaceholderText('Type a message...');
     const form = input.closest('form');
@@ -104,24 +85,17 @@ describe('<Chat>', () => {
       expect(mockSendMessages).toHaveBeenCalledTimes(1);
     });
 
-    expect(setMockMessages).not.toBeNull();
-    act(() => {
-      setMockMessages?.([{ id: 'm1', role: 'assistant', parts: [{ type: 'text', text: 'Hi there', state: 'done' }] }]);
-    });
-
-    expect(screen.queryByText('Hi there')).not.toBeNull();
+    // useChat appends the user message optimistically; the shared Chat renders it.
+    expect(screen.queryByText('hello')).not.toBeNull();
   });
 
-  it('arms a fault into the shared ref when a fault control is clicked', () => {
-    faultRef.current = undefined;
-    render(
-      <Chat
-        chatId="ai:test"
-        faultRef={faultRef}
-      />,
-    );
+  it('arms a fault onto the one-shot cookie when a fault control is clicked', () => {
+    render(<Chat chatId="ai:test" />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Fail once' }));
-    expect(faultRef.current).toBe('fail-once');
+    expect(document.cookie).toContain(`${FAULT_COOKIE}=fail-once`);
+
+    fireEvent.click(screen.getByRole('button', { name: 'No fault' }));
+    expect(document.cookie).not.toContain(`${FAULT_COOKIE}=fail-once`);
   });
 });

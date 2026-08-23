@@ -26,12 +26,13 @@ const OPTIONS: FaultOption[] = [
 ];
 
 /**
- * Arms a fault for the next turn's first activity. The armed mode rides the send
- * POST (via the transport's prepareSendMessagesRequest) into the workflow, which
- * makes the activity throw on its first attempt so WDK retries it — the retry
- * supersedes the dead attempt (AIT reconciles) with no duplicate output. Both
- * modes throw; they differ in how a real durable system would treat the throw
- * (a signalled retryable failure vs. an unhandled crash).
+ * Arms a fault for the next turn's first inference activity. The armed mode
+ * rides a one-shot cookie that the chat route consumes into the workflow
+ * input, which makes the activity throw on its first attempt so WDK retries
+ * it — the retry is a fresh process that re-enters the same AIT run and step,
+ * so the reply lands once with no duplicate. Both modes throw; they differ in
+ * how a real durable system would treat the throw (a signalled retryable
+ * failure vs. an unhandled crash).
  */
 export function FaultControls({
   fault,

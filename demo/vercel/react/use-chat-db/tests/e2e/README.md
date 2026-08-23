@@ -1,13 +1,15 @@
 # End-to-end tests
 
-Playwright tests that drive the database-hydration demo in a browser and assert
-the user-visible behaviour over a real Ably channel: the agent persists each
-completed run's messages (the whole run) to the store, and on reload the client seeds
-`useChat` from the store and `useMessageSync` reconciles it with the live
-channel at the seam, showing the conversation exactly once. The suite covers a
-plain text turn, a client-executed tool that suspends and resumes the run
-(getLocation), and an approval-gated tool (getWeatherForecast) whose tool-call
-message stays shown as approved after hydration.
+Playwright tests that drive the persistence demo in a browser and assert the
+user-visible behaviour over a real Ably channel: `useChat` runs over the SDK's
+chat transport, the client persists each completed turn to the store from
+`onFinish`, and on reload hydration seeds `useChat` from the store plus the
+channel-history gap, showing the conversation exactly once. The suite covers a
+plain text turn, reload hydration, a client-executed tool that suspends and
+resumes the run (getLocation), an approval-gated tool (getWeatherForecast)
+whose tool-call message stays shown as approved after hydration, and an
+approval continuation issued after a reload — where the suspended run lives
+only in the history gap.
 
 The suite needs no secrets:
 
@@ -17,7 +19,8 @@ The suite needs no secrets:
   `mutableMessages` and persistence enabled.
 - **LLM**: a deterministic mock model replaces the provider. Only token
   generation is mocked; `streamText`, tool execution, suspend/continuation,
-  `toUIMessageStream`, the Ably publish, and the store write all run normally.
+  the UI-message stream, the Ably publish, and the store write all run
+  normally.
 
 ## Running
 
@@ -31,12 +34,12 @@ pnpm run test:e2e:live                     # real Ably + LLM keys from .env.loca
 the sandbox app and sets, for the Playwright run and the Next.js dev server it
 spawns:
 
-| Variable                    | Value             | Used by                          |
-| --------------------------- | ----------------- | -------------------------------- |
-| `ABLY_API_KEY`              | sandbox key       | agent client, JWT auth route     |
-| `ABLY_ENDPOINT`             | `nonprod:sandbox` | agent client (`route.ts`)        |
-| `NEXT_PUBLIC_ABLY_ENDPOINT` | `nonprod:sandbox` | browser client (`providers.tsx`) |
-| `MOCK_LLM`                  | `1`               | `createModel()` (`model.ts`)     |
+| Variable                    | Value             | Used by                      |
+| --------------------------- | ----------------- | ---------------------------- |
+| `ABLY_API_KEY`              | sandbox key       | agent client, JWT auth route |
+| `ABLY_ENDPOINT`             | `nonprod:sandbox` | agent client (`route.ts`)    |
+| `NEXT_PUBLIC_ABLY_ENDPOINT` | `nonprod:sandbox` | browser client (`providers`) |
+| `MOCK_LLM`                  | `1`               | `createModel()` (`model.ts`) |
 
 Unset (normal `pnpm dev`), the demo uses production Ably and a real LLM provider.
 

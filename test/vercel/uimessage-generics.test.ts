@@ -20,12 +20,7 @@ import { type VercelProjection } from '../../src/vercel/codec/reducer.js';
 import { createUIMessageSessionCodec } from '../../src/vercel/codec/session-codec.js';
 import type { VercelSessionInput } from '../../src/vercel/codec/session-events.js';
 import { createUIMessageCodec, type VercelInput, type VercelOutput } from '../../src/vercel/index.js';
-import type { UseMessagesWithSeedOptions, UseMessageSyncOptions } from '../../src/vercel/react/index.js';
-import {
-  createSessionChatTransport,
-  type SessionChatTransport,
-  type SessionSendMessagesRequestContext,
-} from '../../src/vercel/transport/session-chat-transport.js';
+import { type ChatTransport, createChatTransport } from '../../src/vercel/transport/chat-transport.js';
 import { createClientSession } from '../../src/vercel/transport/session-factories.js';
 
 interface MyMetadata {
@@ -80,25 +75,14 @@ describe('Vercel UIMessage generic threading', () => {
     expectTypeOf<Messages[number]['message']['metadata']>().not.toBeUnknown();
   });
 
-  it('createSessionChatTransport and its request context preserve the message type', () => {
-    expectTypeOf(createSessionChatTransport<MyMetadata, MyDataParts, MyTools>).returns.toEqualTypeOf<
-      SessionChatTransport<MyMetadata, MyDataParts, MyTools>
+  it('createChatTransport preserves the message type', () => {
+    expectTypeOf(createChatTransport<MyMetadata, MyDataParts, MyTools>).returns.toEqualTypeOf<
+      ChatTransport<MyMetadata, MyDataParts, MyTools>
     >();
-    // The prepare-request context carries the typed history/messages.
-    expectTypeOf<SessionSendMessagesRequestContext<MyMetadata, MyDataParts, MyTools>['messages']>().toEqualTypeOf<
-      MyMessage[]
-    >();
-  });
-
-  it('the react imperative hooks preserve the message type', () => {
-    expectTypeOf<UseMessageSyncOptions<MyMetadata, MyDataParts, MyTools>['messages']>().toEqualTypeOf<
-      MyMessage[] | undefined
-    >();
-    expectTypeOf<UseMessagesWithSeedOptions<MyMetadata, MyDataParts, MyTools>['seed']>().toEqualTypeOf<MyMessage[]>();
-    // The setMessages updater receives and returns the typed overlay.
-    expectTypeOf<Parameters<UseMessageSyncOptions<MyMetadata, MyDataParts, MyTools>['setMessages']>[0]>()
-      .parameter(0)
-      .toEqualTypeOf<MyMessage[]>();
+    // sendMessages accepts the typed message list.
+    expectTypeOf<
+      Parameters<ChatTransport<MyMetadata, MyDataParts, MyTools>['sendMessages']>[0]['messages']
+    >().toEqualTypeOf<MyMessage[]>();
   });
 
   it('the codec factories with no type arguments fall back to the SDK defaults', () => {

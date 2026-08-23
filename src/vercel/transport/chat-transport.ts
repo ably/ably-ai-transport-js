@@ -36,10 +36,12 @@
 // Named import for the one SDK type used in an `extends` heritage clause: the
 // `import-x/namespace` rule can't verify a namespaced generic there. Everywhere
 // else the `AI.*` namespace is used.
+import type * as Ably from 'ably';
 import type * as AI from 'ai';
 import type { ChatTransport as SdkChatTransport } from 'ai';
 
 import type { ClientTransport, TransportEvent } from '../../core/transport/types.js';
+import { ErrorCode, errorInfoIs } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import { LogLevel, makeLogger } from '../../logger.js';
 import type { VercelInput, VercelOutput } from '../codec/events.js';
@@ -176,6 +178,9 @@ class DefaultChatTransport<
   private readonly _collectors = new Set<(event: AdapterEvent<TMetadata, TDataParts, TTools>) => void>();
   /** Live events held back until {@link seed} indexes the older history first; `undefined` once seeded. */
   private _preSeedEvents: AdapterEvent<TMetadata, TDataParts, TTools>[] | undefined = [];
+  /** Per-open-stream failure hooks: channel continuity loss errors every open stream. */
+  private readonly _streamFailers = new Set<(error: Ably.ErrorInfo) => void>();
+  private readonly _unsubscribeError: () => void;
   private readonly _emitter = new EventEmitter<StreamingEvents>(makeLogger({ logLevel: LogLevel.Silent }));
   private _openStreams = 0;
   private _closed = false;
@@ -190,6 +195,14 @@ class DefaultChatTransport<
       if (this._preSeedEvents === undefined) this._indexEvent(event);
       else this._preSeedEvents.push(event);
       for (const collector of this._collectors) collector(event);
+    });
+    // Channel continuity loss means the stream can silently miss its run's
+    // terminal, so error every open stream rather than leaving useChat stuck
+    // on `streaming`. Other transport errors (a single decode failure, a
+    // cancel-publish failure) drop one message and are not stream-fatal.
+    this._unsubscribeError = this._transport.on('error', (error) => {
+      if (!errorInfoIs(error, ErrorCode.SessionContinuityNotGuaranteed)) return;
+      for (const fail of this._streamFailers) fail(error);
     });
   }
 
@@ -214,7 +227,9 @@ class DefaultChatTransport<
   close(): void {
     this._closed = true;
     this._unsubscribe();
+    this._unsubscribeError();
     this._collectors.clear();
+    this._streamFailers.clear();
     if (this._openStreams > 0) {
       this._openStreams = 0;
       this._emitter.emit('streaming', false);
@@ -626,6 +641,7 @@ class DefaultChatTransport<
       if (closed) return;
       closed = true;
       this._collectors.delete(handleEvent);
+      this._streamFailers.delete(failStream);
       this._openStreams--;
       if (this._openStreams === 0) this._emitter.emit('streaming', false);
     };
@@ -652,6 +668,13 @@ class DefaultChatTransport<
       deliver(event, runId);
     };
     this._collectors.add(handleEvent);
+
+    const failStream = (error: Ably.ErrorInfo): void => {
+      if (closed) return;
+      finish();
+      controller?.error(error);
+    };
+    this._streamFailers.add(failStream);
 
     abortSignal?.addEventListener('abort', () => {
       // Fire-and-forget: the cancel publish's failure is unrecoverable here,

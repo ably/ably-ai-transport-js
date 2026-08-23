@@ -516,8 +516,9 @@ describe('createClientTransport', () => {
       fixture.channel.emitStateChange({ current: 'attached', previous: 'attached', resumed: false });
 
       await expect(sent.runId).rejects.toMatchObject({ code: ErrorCode.SessionContinuityNotGuaranteed });
-      // The drain is watch-scoped: the transport surfaces no error event.
-      expect(fixture.errors).toHaveLength(0);
+      // The loss also surfaces once on the error stream.
+      expect(fixture.errors).toHaveLength(1);
+      expect(fixture.errors[0]).toBeErrorInfoWithCode(ErrorCode.SessionContinuityNotGuaranteed);
     });
   });
 
@@ -632,7 +633,7 @@ describe('createClientTransport', () => {
       expect(fixture.encoderCalls).toHaveLength(0);
     });
 
-    it('drains in-flight steers on continuity loss without emitting a transport error', async () => {
+    it('drains in-flight steers on continuity loss and surfaces the loss on the error stream', async () => {
       const fixture = await setup();
       const { result, steerId } = await startSteer(fixture);
       fixture.channel.listener?.(steerEcho(steerId, 'run-1', 's-echo'));
@@ -645,8 +646,10 @@ describe('createClientTransport', () => {
       await expect(result.outcome).rejects.toMatchObject({ code: ErrorCode.SessionContinuityNotGuaranteed });
       await expect(unechoed.published).resolves.toEqual({ serial: undefined });
       await expect(unechoed.outcome).rejects.toMatchObject({ code: ErrorCode.SessionContinuityNotGuaranteed });
-      // The drain is steer-scoped: the transport surfaces no error event.
-      expect(fixture.errors).toHaveLength(0);
+      // The loss itself surfaces once on the error stream, so a consumer that
+      // was not awaiting a drained promise still learns delivery may have gaps.
+      expect(fixture.errors).toHaveLength(1);
+      expect(fixture.errors[0]).toBeErrorInfoWithCode(ErrorCode.SessionContinuityNotGuaranteed);
     });
 
     it('ignores channel state changes before the first attach', async () => {

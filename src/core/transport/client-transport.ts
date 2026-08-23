@@ -427,6 +427,11 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     });
     this._steer.drainContinuityLost(continuityLostError(stateChange, 'await steer outcome'));
     this._drainRunIdWatches(continuityLostError(stateChange, 'await run start'));
+    // Surface the loss on the error stream too: a consumer folding events (or
+    // holding a run's chunk stream open) can silently miss messages after the
+    // loss, so it needs the signal — the drained promises above only reach
+    // callers that were awaiting them.
+    this._receiver.emitError(continuityLostError(stateChange, 'deliver events'));
   }
 
   /**

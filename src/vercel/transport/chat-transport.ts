@@ -122,6 +122,10 @@ export interface ChatTransport<
    * after the (strictly older) seed events, keeping the indices chronological.
    * Seeding is what stops a reloaded page from re-publishing a resolution an
    * earlier session already published.
+   *
+   * Live indexing WAITS for this call, so an application that does no
+   * hydration must still call `seed([])` once on mount — without it, the
+   * adapter never learns the wire identities its continuations address.
    * @param events - The hydrated history events, oldest-first.
    */
   seed(events: TransportEvent<VercelInput<TMetadata, TDataParts, TTools>, VercelOutput<TMetadata, TDataParts>>[]): void;

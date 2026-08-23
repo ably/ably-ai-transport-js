@@ -43,13 +43,14 @@ import {
 } from '../../../src/constants.js';
 import type { ChannelWriter, Decoder, Encoder, EncoderOptions, WireCodec } from '../../../src/core/codec/types.js';
 import { createAgentTransport } from '../../../src/core/transport/agent-transport.js';
-import type { CancelRequest, TransportEvent } from '../../../src/core/transport/types.js';
+import type { CancelRequest, LocatedInput, TransportEvent } from '../../../src/core/transport/types.js';
+import { wireMetaFromMessage } from '../../../src/core/transport/wire-meta.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { getTransportHeaders } from '../../../src/utils.js';
 import { createMockChannel, type MockChannel } from '../../helper/mock-channel.js';
 import { createMockEncoder } from '../../helper/mock-encoder.js';
 import { flushMicrotasks, pausedStream, streamOf } from '../../helper/streams.js';
-import { boomMsg, outputMsg } from '../../helper/wire-messages.js';
+import { boomMsg, inboundMessage, outputMsg } from '../../helper/wire-messages.js';
 
 interface TestInput {
   kind: string;
@@ -97,6 +98,17 @@ const wireMsg = (headers: Record<string, string>): Ably.InboundMessage =>
     version: { serial: 'hist-serial', timestamp: 0 },
     extras: { ai: { transport: headers } },
   }) as unknown as Ably.InboundMessage;
+
+/**
+ * Build a {@link LocatedInput} whose meta carries the given transport headers —
+ * the located-input fixture the openRun tests hand to the transport.
+ * @param transport - The transport-tier headers on the input's wire message.
+ * @returns The located input.
+ */
+const locatedInput = (transport: Record<string, string>): LocatedInput<unknown> => ({
+  meta: wireMetaFromMessage(inboundMessage({ name: 'ai-input', transport, serial: 'trigger-serial' })),
+  inputs: [],
+});
 
 /**
  * Build an inbound `ai-cancel` envelope carrying the given transport headers.
@@ -835,6 +847,87 @@ describe('createAgentTransport', () => {
       if (!start) throw new Error('expected ai-run-start');
       expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_PARENT]).toBe('parent-cmid');
     });
+
+    it('a located input carrying a run-id header resumes that run', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({ input: locatedInput({ [HEADER_RUN_ID]: 'run-continued' }) });
+      await run.end({ reason: 'complete' });
+
+      expect(run.runId).toBe('run-continued');
+      expect(channel.publishNames()).toContain('ai-run-resume');
+      expect(channel.publishNames()).not.toContain('ai-run-start');
+    });
+
+    it('a located input without a run-id header opens a fresh run under the pinned runId', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({ input: locatedInput({}), runId: 'run-durable' });
+      await run.end({ reason: 'complete' });
+
+      expect(run.runId).toBe('run-durable');
+      expect(channel.publishNames()).toContain('ai-run-start');
+      expect(channel.publishNames()).not.toContain('ai-run-resume');
+    });
+
+    it("a located input's run-id wins over the pinned runId", async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({
+        input: locatedInput({ [HEADER_RUN_ID]: 'run-continued' }),
+        runId: 'run-durable',
+      });
+      await run.end({ reason: 'complete' });
+
+      expect(run.runId).toBe('run-continued');
+      expect(channel.publishNames()).toContain('ai-run-resume');
+    });
+  });
+
+  describe('adoptRun', () => {
+    it('attaches without publishing any lifecycle event', async () => {
+      const { transport, channel } = await setup();
+
+      transport.adoptRun('run-adopted');
+      await flushMicrotasks();
+
+      expect(channel.publishNames()).not.toContain('ai-run-start');
+      expect(channel.publishNames()).not.toContain('ai-run-resume');
+    });
+
+    it('registers the run for cancel routing', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.adoptRun('run-adopted');
+      await flushMicrotasks();
+      channel.listener?.(cancelMsg({ [HEADER_RUN_ID]: 'run-adopted' }));
+      await flushMicrotasks();
+
+      expect(run.abortSignal.aborted).toBe(true);
+    });
+
+    it('publishes a terminal when the caller ends the run', async () => {
+      const { transport, channel } = await setup({ clientId: 'agent-a' });
+
+      const run = transport.adoptRun('run-adopted');
+      await run.end({ reason: 'error' });
+
+      // Only the terminal reaches the channel — no opening event precedes it.
+      expect(channel.publishNames()).toEqual(['ai-run-end']);
+      const end = channel.publishCalls.find((m) => m.name === 'ai-run-end');
+      if (!end) throw new Error('expected ai-run-end');
+      // The registered owner entry stamps the real run-client-id.
+      expect(getTransportHeaders(end as Ably.InboundMessage)['run-client-id']).toBe('agent-a');
+    });
+
+    it('throws on an empty runId', async () => {
+      const { transport } = await setup();
+
+      expect(() => transport.adoptRun('')).toThrowErrorInfo({
+        code: ErrorCode.InvalidArgument,
+        message: 'unable to adopt run; runId must be non-empty',
+      });
+    });
   });
 
   describe('output', () => {
@@ -1025,9 +1118,72 @@ describe('createAgentTransport', () => {
 
       expect(located).toBeUndefined();
     });
+
+    it('fires onPage after each page fetch during the scan', async () => {
+      const { transport } = await setup({
+        decoded: [{ kind: 'user-message' }],
+        historyPages: [[wireMsg({ [HEADER_EVENT_ID]: 'evt-0' })], [wireMsg({ [HEADER_EVENT_ID]: 'evt-1' })]],
+      });
+      let pages = 0;
+
+      await transport.locateInput('evt-1', {
+        onPage: () => {
+          pages++;
+        },
+      });
+
+      expect(pages).toBe(2);
+    });
+
+    it('stops scanning at the limit and resolves undefined', async () => {
+      const { transport } = await setup({
+        decoded: [{ kind: 'user-message' }],
+        historyPages: [[wireMsg({ [HEADER_EVENT_ID]: 'evt-0' })], [wireMsg({ [HEADER_EVENT_ID]: 'evt-1' })]],
+      });
+      let pages = 0;
+
+      const located = await transport.locateInput('evt-1', {
+        limit: 1,
+        onPage: () => {
+          pages++;
+        },
+      });
+
+      // The first page's one message meets the limit, so the matching second
+      // page is never fetched — a bounded miss, not proof of absence.
+      expect(located).toBeUndefined();
+      expect(pages).toBe(1);
+    });
+
+    it('rejects with OperationCancelled when the signal aborts', async () => {
+      const { transport } = await setup({
+        decoded: [{ kind: 'user-message' }],
+        historyPages: [[wireMsg({ [HEADER_EVENT_ID]: 'evt-0' })]],
+      });
+
+      await expect(transport.locateInput('evt-0', { signal: AbortSignal.abort() })).rejects.toBeErrorInfoWithCode(
+        ErrorCode.OperationCancelled,
+      );
+    });
   });
 
   describe('history', () => {
+    it('fires onPage after each page fetch', async () => {
+      const { transport } = await setup({
+        historyPages: [[outputMsg('s2', 'two')], [outputMsg('s1', 'one')]],
+      });
+      let pages = 0;
+
+      const result = await transport.history({
+        onPage: () => {
+          pages++;
+        },
+      });
+
+      expect(result.exhausted).toBe(true);
+      expect(pages).toBe(2);
+    });
+
     it('returns classified events without emitting to the subscribe stream', async () => {
       const { transport, events } = await setup({
         historyPages: [[outputMsg('s2', 'two'), outputMsg('s1', 'one')]],

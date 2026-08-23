@@ -66,6 +66,7 @@ export const walkHistoryBatch = async <TInput, TOutput>(
       throw new Ably.ErrorInfo('unable to load history; signal aborted', ErrorCode.OperationCancelled, 400);
     }
     const chunk = await cursor.next();
+    opts?.onPage?.();
     // `next()` returning undefined means the cursor is permanently spent —
     // genuine exhaustion.
     if (!chunk) break;

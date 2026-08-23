@@ -87,6 +87,28 @@ const PRE_OPEN_STEER_LIMIT = 200;
  * suspended run stays registered — a cancel addressed to it should still fire
  * its abort signal, since a later invocation may be about to continue it.
  */
+/**
+ * The resolved parameters `createRun` builds a run handle from. The public
+ * verbs (`openRun`, `adoptRun`) own all identity, input and structure
+ * resolution and hand the result here verbatim.
+ */
+interface CreateRunParams {
+  /** The run's resolved id. */
+  runId: string;
+  /** The invocation's resolved id. */
+  invocationId: string;
+  /** The opening action: publish `ai-run-start`, publish `ai-run-resume`, or adopt without publishing. */
+  open: 'start' | 'resume' | 'adopt';
+  /** The triggering input's codec-message-id, when known. */
+  inputCodecMessageId?: string;
+  /** Structural parent codec-message-id (fresh open only). */
+  parent?: string;
+  /** Forked codec-message-id for an edit (fresh open only). */
+  forkOf?: string;
+  /** Regenerated codec-message-id (fresh open only). */
+  regenerates?: string;
+}
+
 interface RegisteredRun {
   /** The run's id. */
   runId: string;
@@ -416,27 +438,76 @@ export const createAgentTransport = <TInput, TOutput>(
   // Run surface
   // ---------------------------------------------------------------------------
 
-  const openRun = (opts?: OpenRunOptions, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput> => {
-    if (closed) throw closedError('openRun');
-    // A run opened without connect() could silently miss the cancel and
-    // steering signals addressed to it, so require the receive path first.
-    // Synchronous check: openRun returns the handle without awaiting, and the
-    // open publish below still awaits the connect completing.
+  /**
+   * The shared open-verb guards: a closed transport throws, and a run opened
+   * without connect() could silently miss the cancel and steering signals
+   * addressed to it, so the receive path is required first. Synchronous — the
+   * open verbs return the handle without awaiting, and the open publish still
+   * awaits the connect completing.
+   * @param verb - The public method name, for the error message.
+   */
+  const assertCanOpen = (verb: 'openRun' | 'adoptRun'): void => {
+    if (closed) throw closedError(verb);
     if (!connectGuard.attempted) {
       throw new Ably.ErrorInfo(
-        'unable to open run; connect() must be called before openRun()',
+        `unable to open run; connect() must be called before ${verb}()`,
         ErrorCode.InvalidArgument,
         400,
       );
     }
+  };
 
-    const runId = opts?.runId ?? crypto.randomUUID();
+  const openRun = (opts?: OpenRunOptions, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput> => {
+    assertCanOpen('openRun');
+    const inputMeta = opts?.input?.meta;
+    // The opening event: with a located input, its run-id header decides — a
+    // continuation re-enters the run the client stamped, a fresh send starts
+    // one. Without one, a supplied runId is the continuation signal.
+    const continuation = opts?.input === undefined ? opts?.runId !== undefined : inputMeta?.runId !== undefined;
+    // Run-id precedence: the input's continuation id, else the caller's pin
+    // (a durable agent's stable fresh-run id), else minted.
+    const runId = inputMeta?.runId ?? opts?.runId ?? crypto.randomUUID();
     const invocationId = opts?.invocationId ?? crypto.randomUUID();
-    // An `opts.runId` names an existing run this invocation re-enters, so the
-    // open publishes `ai-run-resume` rather than `ai-run-start`.
-    const continuation = opts?.runId !== undefined;
-    const inputCodecMessageId = opts?.inputCodecMessageId;
     logger.trace('AgentTransport.openRun();', { runId, invocationId, continuation });
+    return createRun(
+      {
+        runId,
+        invocationId,
+        open: continuation ? 'resume' : 'start',
+        inputCodecMessageId: opts?.inputCodecMessageId ?? inputMeta?.codecMessageId,
+        // Structure defaults from the located input apply to a fresh open
+        // only: a resume never re-stamps structure, and the input's own
+        // anchors must not leak into a resumed run's output fallbacks.
+        parent: opts?.parent ?? (continuation ? undefined : inputMeta?.parent),
+        forkOf: opts?.forkOf ?? (continuation ? undefined : inputMeta?.forkOf),
+        regenerates: opts?.regenerates ?? (continuation ? undefined : inputMeta?.regenerates),
+      },
+      hooks,
+    );
+  };
+
+  const adoptRun = (runId: string, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput> => {
+    assertCanOpen('adoptRun');
+    if (runId === '') {
+      throw new Ably.ErrorInfo('unable to adopt run; runId must be non-empty', ErrorCode.InvalidArgument, 400);
+    }
+    const invocationId = crypto.randomUUID();
+    logger.trace('AgentTransport.adoptRun();', { runId, invocationId });
+    return createRun({ runId, invocationId, open: 'adopt' }, hooks);
+  };
+
+  /**
+   * Build a run handle from resolved parameters: register it for cancel and
+   * steer routing, fire the opening publish (`'start'` / `'resume'`) or seed
+   * the run-manager owner entry without publishing (`'adopt'`), and wire the
+   * step writer. All identity and structure resolution belongs to the public
+   * verbs; this function consumes the resolved values verbatim.
+   * @param params - The resolved run identity, open mode, anchor and structure.
+   * @param hooks - The caller's per-run callbacks and external AbortSignal.
+   * @returns The run's write handle.
+   */
+  const createRun = (params: CreateRunParams, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput> => {
+    const { runId, invocationId, inputCodecMessageId } = params;
 
     // The run's cancel controller: an accepted cancel aborts it, ending
     // in-flight pipes `'cancelled'` and firing the handle's `abortSignal`.
@@ -575,12 +646,20 @@ export const createAgentTransport = <TInput, TOutput>(
     // `ai-output`.
     const openPromise = (async (): Promise<void> => {
       await connectGuard.requireConnected('openRun');
+      if (params.open === 'adopt') {
+        // Attach-without-publishing: seed the run manager's owner entry so
+        // output and terminals stamp the real run-client-id and close() aborts
+        // the controller, but put nothing on the wire — the caller publishes
+        // only what it means to publish.
+        runManager.registerRun(runId, clientId, controller);
+        return;
+      }
       await runManager.startRun(runId, clientId, controller, {
-        parent: opts?.parent,
-        forkOf: opts?.forkOf,
-        regenerates: opts?.regenerates,
+        parent: params.parent,
+        forkOf: params.forkOf,
+        regenerates: params.regenerates,
         invocationId,
-        continuation,
+        continuation: params.open === 'resume',
       });
     })();
     // Swallow a rejection here so an opened-but-never-piped run cannot surface
@@ -649,9 +728,9 @@ export const createAgentTransport = <TInput, TOutput>(
       // triggering-input resolution (a durable agent reads it via locateInput and
       // threads it through openRun / per-pipe options itself).
       getAnchors: () => ({
-        parentFallback: opts?.parent,
-        forkOf: opts?.forkOf,
-        regenerates: opts?.regenerates,
+        parentFallback: params.parent,
+        forkOf: params.forkOf,
+        regenerates: params.regenerates,
         inputClientId: undefined,
         inputCodecMessageId,
       }),
@@ -831,16 +910,25 @@ export const createAgentTransport = <TInput, TOutput>(
     return mine;
   };
 
-  const locateInput = async (eventId: string): Promise<LocatedInput<TInput> | undefined> => {
+  const locateInput = async (
+    eventId: string,
+    opts?: TransportHistoryOptions,
+  ): Promise<LocatedInput<TInput> | undefined> => {
     logger.trace('AgentTransport.locateInput();', { eventId });
     await requireOpen('locateInput');
     // A throwaway decoder so the history scan never perturbs the live receive
     // stream's dedup state, keeping the 1:1 decoder-per-stream invariant.
     const scanDecoder = codec.createDecoder();
     const cursor = await loadHistoryPages(channel, { pageLimit: historyPageSize, logger });
-    while (cursor.hasNext()) {
+    let scanned = 0;
+    while (cursor.hasNext() && (opts?.limit === undefined || scanned < opts.limit)) {
+      if (opts?.signal?.aborted) {
+        throw new Ably.ErrorInfo('unable to locate input; signal aborted', ErrorCode.OperationCancelled, 400);
+      }
       const page = await cursor.next();
+      opts?.onPage?.();
       if (!page) break;
+      scanned += page.length;
       for (const msg of page) {
         if (getTransportHeaders(msg)[HEADER_EVENT_ID] === eventId) {
           const { inputs } = scanDecoder.decode(msg);
@@ -853,5 +941,5 @@ export const createAgentTransport = <TInput, TOutput>(
     return undefined;
   };
 
-  return { connect, subscribe, on, openRun, locateInput, history, close };
+  return { connect, subscribe, on, openRun, adoptRun, locateInput, history, close };
 };

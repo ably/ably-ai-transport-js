@@ -15,6 +15,12 @@ export enum ErrorCode {
   InvalidArgument = 40003,
 
   /**
+   * The requested resource does not exist (Ably 40400) — e.g. the input event
+   * an invocation was woken for is not present in the scanned channel history.
+   */
+  NotFound = 40400,
+
+  /**
    * The operation was cancelled (Ably 40033) — the run was cancelled, the
    * caller's abort signal fired, or the session began closing while the
    * operation was in flight.

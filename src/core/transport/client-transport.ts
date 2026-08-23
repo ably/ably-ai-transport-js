@@ -41,11 +41,11 @@ import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
 import type { CodecInputEvent, CodecOutputEvent, Decoder, WireCodec } from '../codec/types.js';
 import { buildCancelMessage } from './cancel-envelope.js';
+import { ConnectGuard, continuityLostError, isContinuityLost, subscribeAndAttach } from './channel-support.js';
 import { buildTransportHeaders } from './headers.js';
 import { walkHistoryBatch } from './history-walk.js';
 import { type HistoryPagesCursor, loadHistoryPages } from './load-history-pages.js';
 import { createReceiveTransport, type ReceiveTransport } from './receive-transport.js';
-import { ConnectGuard, continuityLostError, isContinuityLost, subscribeAndAttach } from './session-support.js';
 import { SteerCoordinator } from './steer-coordinator.js';
 import type { SteerResult } from './types/steer.js';
 import type {

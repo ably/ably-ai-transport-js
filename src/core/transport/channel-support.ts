@@ -1,14 +1,15 @@
 /**
- * Shared lifecycle plumbing for the client and agent sessions.
+ * Shared channel lifecycle plumbing.
  *
- * Both `DefaultClientSession` and `DefaultAgentSession` gate their writes on
- * `connect()` having run, detach their channel best-effort on close, and react
- * to channel continuity loss with the same detection rule and error shape.
- * These helpers own that common machinery so the two sessions cannot drift on
- * the connection guard, the detach-swallow behaviour, or — most importantly —
- * the continuity-loss predicate, which encodes channel protocol semantics
- * (Spec AIT-CT19 / AIT-ST12). Each session keeps its own divergent reaction to
- * continuity loss (the client emits; the agent aborts runs and swaps its Tree).
+ * Every surface built over one Ably channel — the client and agent transports,
+ * and the sessions layered above them — gates its writes on `connect()` having
+ * run, tears down best-effort on close, and reacts to channel continuity loss
+ * with the same detection rule and error shape. These helpers own that common
+ * machinery so consumers cannot drift on the connection guard, the
+ * detach-swallow behaviour, or — most importantly — the continuity-loss
+ * predicate, which encodes channel protocol semantics (Spec AIT-CT19 /
+ * AIT-ST12). Each consumer keeps its own divergent reaction to continuity
+ * loss.
  */
 
 import * as Ably from 'ably';

@@ -12,7 +12,7 @@
 import type * as Ably from 'ably';
 
 import type { CodecInputEvent, CodecOutputEvent } from '../../codec/types.js';
-import type { PipeSource, RunEndParams, RunHooks, StepEndParams, StepOptions, StreamResult } from './agent.js';
+import type { CancelRequest, RunEndReason, StepEndReason } from './shared.js';
 import type { SteerResult } from './steer.js';
 import type { RunLifecycleEvent, StepLifecycleEvent } from './tree.js';
 
@@ -373,6 +373,143 @@ export interface ClientTransport<
 }
 
 // ---------------------------------------------------------------------------
+// Send side: run write surface
+// ---------------------------------------------------------------------------
+
+/**
+ * An output source accepted by {@link AgentRunTransport.pipe} and
+ * {@link RunStepTransport.pipe}: a `ReadableStream` or any `AsyncIterable` of
+ * codec outputs. A provider SDK stream that is async-iterable (the OpenAI
+ * Responses stream, for one) pipes in directly, with no hand-written
+ * `ReadableStream` wrapper. The transport pulls the source one output at a
+ * time and closes it when the pipe ends, is cancelled, or errors: it releases
+ * a stream reader's lock, or calls an iterator's `return()` for best-effort
+ * upstream teardown.
+ * @template TOutput - The codec output type carried by the source.
+ */
+export type PipeSource<TOutput extends CodecOutputEvent> = ReadableStream<TOutput> | AsyncIterable<TOutput>;
+
+/** Options for {@link AgentRunTransport.createStep}. */
+export interface StepOptions {
+  /**
+   * A stable identifier for this step, used to coalesce retries: a fresh
+   * attempt under an existing `stepId` supersedes the prior attempt's output
+   * (latest channel serial wins) instead of appending it to the conversation.
+   *
+   * Omit it for the common case. The SDK then assigns an id scoped to the
+   * current invocation, so steps from different invocations of the same run
+   * (e.g. the original turn and a suspend/resume continuation) never collide;
+   * and a no-`stepId` call made after this invocation's previous step ended
+   * `failed` reuses that step's id, so an in-process `try`/`catch` retry
+   * coalesces with no ceremony.
+   *
+   * Pass an explicit id when the SAME logical step re-attempts in a SEPARATE
+   * process — a durable-execution retry — since that fresh process has no
+   * in-memory step history to reuse. Use the framework's own stable step
+   * identity: a Vercel Workflow DevKit `getStepMetadata().stepId` (stable
+   * across retries) or a Temporal activity id, and supply a matching stable
+   * {@link RunIdentity.runId} so the retry re-attempts the same run. **Omit it
+   * on a cross-process retry and the SDK mints a fresh id, so the retry's
+   * output is appended beside the failed attempt's instead of superseding it —
+   * a silent double-output.**
+   */
+  stepId?: string;
+
+  /**
+   * The clientId to attribute this step to — the participant whose
+   * most-recently-incorporated input shapes it (the innermost of the three
+   * concentric client-identity scopes; stamped as `step-client-id`).
+   *
+   * Omit it for the common case. The SDK then resolves the step's client by
+   * inheriting the prior step's value (sticky), or, for the run's first step,
+   * defaulting to the triggering input's publisher (`input-client-id`). Supply
+   * an explicit value when a steer incorporates a fresh input mid-run so the
+   * step attributes to that input's publisher rather than inheriting the prior
+   * step's client — the seam a steering signal populates. A run with no steering
+   * never sets it and the sticky default suffices.
+   */
+  stepClientId?: string;
+}
+
+/** Parameters for {@link RunStepTransport.end}. */
+export interface StepEndParams {
+  /**
+   * The terminal reason. Omit to derive it from the step's piped output —
+   * `failed` if any {@link RunStepTransport.pipe} errored, else `complete` — so
+   * the common "compute an outcome, then end" flow needs no `try`/`catch`.
+   * Pass an explicit reason to override.
+   */
+  reason?: StepEndReason;
+}
+
+/** The result of streaming a response through the encoder. */
+export interface StreamResult {
+  /** Why the stream ended. */
+  reason: RunEndReason;
+  /**
+   * The error that caused the stream to fail, present when `reason` is
+   * `'error'`. This is the original error (e.g. from the LLM provider)
+   * preserved so the caller can inspect provider-specific fields. The
+   * run's {@link OpenRunHooks.onError} callback also fires with a wrapped
+   * `Ably.ErrorInfo` (code `RunResponseStreamFailed`) for standardized observability.
+   */
+  error?: Error;
+}
+
+/**
+ * A run's identity — which run this is, and which invocation of it is
+ * publishing.
+ *
+ * Both fields are plain data, so an orchestration that opens a run in one
+ * process can thread its identity to another that re-enters it (an
+ * `openRun` naming the same `runId`); the run handle itself does not cross
+ * processes. Neither field accepts the empty string; omit a field to have it
+ * minted.
+ */
+export interface RunIdentity {
+  /**
+   * The run's id — the conversation turn's identity, and the durable key a
+   * continuing process re-enters the run by ({@link OpenRunOptions.runId}).
+   *
+   * Supply a stable value under durable execution so a fresh-process retry
+   * re-enters the run instead of minting a new UUID and opening a parallel
+   * one. This is independent of {@link StepOptions.stepId}: a run id is the
+   * turn's identity, a step id is one re-attemptable unit within the turn.
+   * Both want a stable source on retry, but they are distinct ids — do not
+   * treat the framework's step id as a run id across turns.
+   */
+  runId: string;
+
+  /**
+   * The id of the invocation publishing for the run — one per HTTP request on
+   * the normal path, or one per activity of a durable turn, stamped on every
+   * event that process publishes for the run. Independent of the run's owner
+   * identity: a continuing activity stamps its own id, not the opener's.
+   */
+  invocationId: string;
+}
+
+/**
+ * How a run terminates, passed to {@link AgentRunTransport.end}. Discriminated
+ * on `reason`: an `'error'` end may carry a terminal `error`; any other reason
+ * carries none.
+ */
+export type RunEndParams =
+  | {
+      /** Why the run ended — any terminal reason other than `'error'`. */
+      reason: Exclude<RunEndReason, 'error'>;
+    }
+  | {
+      /** The run ended in error. */
+      reason: 'error';
+      /**
+       * Optional terminal error to surface to clients. Omit to end in error
+       * without detail.
+       */
+      error?: Ably.ErrorInfo;
+    };
+
+// ---------------------------------------------------------------------------
 // Send side: agent
 // ---------------------------------------------------------------------------
 
@@ -401,23 +538,84 @@ export interface OpenRunOptions {
 }
 
 /**
- * The per-run hooks {@link AgentTransport.openRun} accepts — the subset of the
- * session's {@link RunHooks} that applies on the standalone surface. Only
- * `onError` is excluded: a pipe failure returns on {@link StreamResult.error}
- * and a cancel-hook failure surfaces on the transport's `error` stream.
+ * Per-run callbacks and abort signal accepted by {@link AgentTransport.openRun}
+ * — how a run behaves.
  *
- * On this surface a throwing `onCancel` or `onSteer` rejects nothing: the
- * error is emitted on the transport's `error` stream and the run continues.
- * `onSteer` is a hint — it fires once per steering message tracked for this
- * run, letting the agent race the arrival against an in-flight model call;
- * authoritative visibility of pending steering is via
- * {@link AgentRunTransport.hasInput}.
+ * A throwing `onCancel` or `onSteer` rejects nothing: the error is delivered
+ * per {@link OpenRunHooks.onError}'s routing (or the transport's `error`
+ * stream) and the run continues.
  * @template TOutput - The codec's output-event domain type.
  */
-export type OpenRunHooks<TOutput extends CodecOutputEvent> = Pick<
-  RunHooks<TOutput>,
-  'signal' | 'onAblyMessage' | 'onCancelled' | 'onCancel' | 'onSteer'
->;
+export interface OpenRunHooks<TOutput extends CodecOutputEvent> {
+  /**
+   * An external AbortSignal (typically the HTTP request's `req.signal`) that,
+   * when fired, cancels this run. This allows platform-level cancellation —
+   * request cancellation, serverless function timeout — to stop LLM generation
+   * and stream piping gracefully.
+   */
+  signal?: AbortSignal;
+
+  /**
+   * Called before each Ably message the run's encoder publishes, after the SDK
+   * stamps its own transport headers. Mutate the message in place to add custom
+   * headers under extras.ai. Run and step lifecycle messages publish straight to
+   * the channel, so they do not pass through this hook.
+   */
+  onAblyMessage?: (message: Ably.Message) => void;
+
+  /**
+   * Called when the run's stream is cancelled (by client cancel or server).
+   * Receives a write function to publish final outputs before the cancellation finalises.
+   */
+  onCancelled?: (write: (output: TOutput) => Promise<void>) => void | Promise<void>;
+
+  /**
+   * Called when a cancel message arrives matching this run.
+   * Return true to allow cancellation (fires `abortSignal`, stream cancels).
+   * Return false to reject (cancel ignored, stream continues).
+   * If not provided, all cancels are accepted.
+   */
+  onCancel?: (request: CancelRequest) => Promise<boolean>;
+
+  /**
+   * Called with non-fatal run-scoped errors that have no other delivery
+   * path. Fires in two scenarios:
+   * - Stream failures in `pipe` — the underlying error is also returned on
+   *   {@link StreamResult.error}, but this callback delivers it wrapped as an
+   *   `Ably.ErrorInfo` (code `RunResponseStreamFailed`) for standardized observability.
+   * - A throw from the `onCancel` handler (code `RunCancelHandlerFailed`). The run
+   *   is NOT cancelled: the SDK never reaches the abort.
+   * - A throw from the `onSteer` handler (code `RunSteerHandlerFailed`). The run is
+   *   unaffected — the steering message has already folded in, so only the
+   *   notification failed.
+   *
+   * Publish failures in the opening publish and `end` are not delivered here —
+   * those reject their returned promise with an `Ably.ErrorInfo`, and the
+   * caller should handle it at the await site. Run errors never render the
+   * transport unusable, but the run may be in an inconsistent state; the
+   * caller should typically `end` it with reason `'error'`.
+   *
+   * A failure in the `onCancel` or `onSteer` handler with no `onError` set
+   * falls back to the transport's `error` stream so it is never silently
+   * dropped — one delivery path or the other, never both. A `pipe` stream
+   * failure with no `onError` is always still available on
+   * {@link StreamResult.error}.
+   */
+  onError?: (error: Ably.ErrorInfo) => void;
+
+  /**
+   * Called when a steering message is tracked for this run — a client
+   * published a user-input event tagged with this run's `run-id` while the
+   * run was active. Fires once per inbound steering message (per-message,
+   * not coalesced).
+   *
+   * The handler is a hint: it lets the agent race the steering arrival
+   * against an in-flight model call to decide whether to cancel and
+   * restart. The SDK never interrupts a model call itself. Authoritative
+   * visibility of pending steering is via {@link AgentRunTransport.hasInput}.
+   */
+  onSteer?: () => void;
+}
 
 /** The located input that woke an invocation, returned by {@link AgentTransport.locateInput}. */
 export interface LocatedInput<TInput extends CodecInputEvent> {

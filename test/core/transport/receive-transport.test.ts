@@ -1,13 +1,12 @@
 /**
  * Receive-transport unit tests.
  *
- * The receive side has three pieces. `classifyWireMessage` turns one raw wire
+ * The receive side has two pieces. `classifyWireMessage` turns one raw wire
  * message into a typed TransportEvent (run-lifecycle, step-lifecycle, or a
- * codec-decoded message) or filters it. `applyTransportEventToTree` folds a
- * classified event into a Tree by calling its existing apply methods.
- * `createReceiveTransport` wraps the classifier in the public event emitter a
- * developer subscribes to, emitting `event` then `ably-message`, and turning a
- * decode failure into an `error` that drops the one message.
+ * codec-decoded message) or filters it. `createReceiveTransport` wraps the
+ * classifier in the public event emitter a developer subscribes to, emitting
+ * `event` then `ably-message`, and turning a decode failure into an `error`
+ * that drops the one message.
  */
 
 import * as Ably from 'ably';
@@ -20,15 +19,9 @@ import {
   EVENT_STEP_START,
   HEADER_RUN_ID,
   HEADER_STEP_ID,
-  HEADER_STEP_START_SERIAL,
 } from '../../../src/constants.js';
 import type { CodecInputEvent, Decoder } from '../../../src/core/codec/types.js';
-import {
-  applyTransportEventToTree,
-  classifyWireMessage,
-  createReceiveTransport,
-} from '../../../src/core/transport/receive-transport.js';
-import type { TreeInternal } from '../../../src/core/transport/tree.js';
+import { classifyWireMessage, createReceiveTransport } from '../../../src/core/transport/receive-transport.js';
 import type { TransportEvent } from '../../../src/core/transport/types/transport.js';
 import { silentLogger } from '../../helper/logger.js';
 import { foreignWire, inboundMessage } from '../../helper/wire-messages.js';
@@ -43,26 +36,6 @@ interface TestInput extends CodecInputEvent {
 interface TestOutput {
   type: 'out';
 }
-interface TestProjection {
-  x: number;
-}
-
-interface MockTree {
-  applyRunLifecycle: ReturnType<typeof vi.fn>;
-  applyStepLifecycle: ReturnType<typeof vi.fn>;
-  applyMessage: ReturnType<typeof vi.fn>;
-}
-
-const makeTree = (): MockTree => ({
-  applyRunLifecycle: vi.fn(),
-  applyStepLifecycle: vi.fn(),
-  applyMessage: vi.fn(),
-});
-
-const asTree = (t: MockTree): TreeInternal<TestInput, TestOutput, TestProjection> =>
-  // CAST: a minimal stub exposing only the methods the apply helper calls.
-  t as unknown as TreeInternal<TestInput, TestOutput, TestProjection>;
-
 const makeDecoder = (inputs: TestInput[], outputs: TestOutput[]): Decoder<TestInput, TestOutput> => ({
   decode: vi.fn(() => ({ inputs: [...inputs], outputs: [...outputs] })),
 });
@@ -72,14 +45,6 @@ const throwingDecoder = (err: unknown): Decoder<TestInput, TestOutput> => ({
     throw err;
   }),
 });
-
-// Narrow a classified event to non-undefined without a `!` assertion.
-const classified = (
-  event: TransportEvent<TestInput, TestOutput> | undefined,
-): TransportEvent<TestInput, TestOutput> => {
-  if (!event) throw new Error('expected a classified event, got undefined');
-  return event;
-};
 
 // Thin wrapper over the shared builder pinning this file's defaults: name
 // 'msg', serial 's1', timestamp 1000, `headers` → the transport bucket.
@@ -176,62 +141,6 @@ describe('classifyWireMessage', () => {
   it('propagates a decoder throw to the caller', () => {
     const boom = new Error('bad payload');
     expect(() => classifyWireMessage(throwingDecoder(boom), msg({ headers: {} }))).toThrow(boom);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// applyTransportEventToTree
-// ---------------------------------------------------------------------------
-
-describe('applyTransportEventToTree', () => {
-  it('drives applyMessage off the raw transport bucket, serial, timestamp, and version', () => {
-    const tree = makeTree();
-    const event = classifyWireMessage(
-      makeDecoder([], [{ type: 'out' }]),
-      msg({ headers: { [HEADER_RUN_ID]: 'R1' }, serial: 's2', timestamp: 1234, version: 's2@3' }),
-    );
-    expect(event?.kind).toBe('message');
-    applyTransportEventToTree(asTree(tree), classified(event));
-
-    expect(tree.applyMessage).toHaveBeenCalledWith(
-      { inputs: [], outputs: [{ type: 'out' }] },
-      expect.objectContaining({ [HEADER_RUN_ID]: 'R1' }),
-      's2',
-      1234,
-      's2@3',
-    );
-  });
-
-  it('drives applyRunLifecycle for a run-lifecycle event', () => {
-    const tree = makeTree();
-    const event = classifyWireMessage(
-      makeDecoder([], []),
-      msg({ name: EVENT_RUN_START, headers: { [HEADER_RUN_ID]: 'R1' } }),
-    );
-    applyTransportEventToTree(asTree(tree), classified(event));
-
-    expect(tree.applyRunLifecycle).toHaveBeenCalledWith(expect.objectContaining({ type: 'start', runId: 'R1' }));
-    expect(tree.applyMessage).not.toHaveBeenCalled();
-    expect(tree.applyStepLifecycle).not.toHaveBeenCalled();
-  });
-
-  it('drives applyStepLifecycle for a step-lifecycle event', () => {
-    const tree = makeTree();
-    const event = classifyWireMessage(
-      makeDecoder([], []),
-      msg({
-        name: EVENT_STEP_END,
-        headers: { [HEADER_RUN_ID]: 'R1', [HEADER_STEP_ID]: 'S', [HEADER_STEP_START_SERIAL]: 's0' },
-        serial: 's1',
-      }),
-    );
-    applyTransportEventToTree(asTree(tree), classified(event));
-
-    expect(tree.applyStepLifecycle).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'step-end', runId: 'R1', stepId: 'S' }),
-    );
-    expect(tree.applyMessage).not.toHaveBeenCalled();
-    expect(tree.applyRunLifecycle).not.toHaveBeenCalled();
   });
 });
 

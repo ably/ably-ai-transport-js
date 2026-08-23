@@ -1,12 +1,17 @@
 /**
- * Chat API route — receives an invocation from the client session's HTTP POST,
- * runs the OpenAI Responses model, and streams the reply back over Ably.
+ * Chat API route — woken by the client's HTTP POST, runs the OpenAI Responses
+ * model, and streams the reply back over Ably.
  *
- * Uses the generic, codec-agnostic transport (`createAgentSession` from
- * `@ably/ai-transport`) parameterized by the OpenAI `ResponsesSessionCodec`; there is
- * no OpenAI-specific transport layer. Continuation handling lives in the SDK:
- * draining `run.view` yields the LLM-ready conversation as `OpenAIMessage[]`,
- * which `toResponsesInput` flattens into the `/responses` `input` array.
+ * Uses the generic, codec-agnostic agent transport (`createAgentTransport`
+ * from `@ably/ai-transport`) parameterized by the OpenAI `ResponsesCodec`;
+ * there is no OpenAI-specific transport layer. The wake body carries the
+ * channel name and the triggering input's `eventId` (matched on the channel
+ * via `locateInput`); a continuation input carries the run-id header of the
+ * run it resumes, so the trigger alone decides whether the open is a fresh
+ * `ai-run-start` or an `ai-run-resume`. The conversation for the model is the transport's own
+ * history, paged to exhaustion and folded through the same fold helper the
+ * frontend renders with (`createThreadFold`), then flattened into the
+ * `/responses` `input` array by `toResponsesInput`.
  *
  * Tools run inside the agentic loop (`runAgentLoop`). A server-executed tool
  * does not suspend the run — the loop runs it, publishes its
@@ -20,24 +25,35 @@
  * run as-is: the codec's descriptor table curates the wire, dropping the framing
  * events no consumer reads and throwing on any genuinely unexpected event.
  *
- * Run outcome: `runAgentLoop` returns an {@link AgentLoopOutcome}. Its `suspend`
- * arm maps onto `run.suspend()`; every other arm is a `RunEndParams` (the error
+ * Run outcome: `runAgentLoop` returns an {@link AgentLoopOutcome}. A cancel
+ * (client cancel or request abort) ends the run `cancelled`; the `suspend` arm
+ * maps onto `run.suspend()`; every other arm is a `RunEndParams` (the error
  * arm already carrying the wrapped `Ably.ErrorInfo`), forwarded to `run.end()`
  * directly.
  */
 
 import { after } from 'next/server';
 import Ably from 'ably';
-import { createAgentSession } from '@ably/ai-transport';
-import type { InvocationData } from '@ably/ai-transport';
-import { Invocation } from '@ably/ai-transport';
-import { ResponsesSessionCodec, toResponsesInput } from '@ably/ai-transport/openai';
+import { channelAgent, createAgentTransport } from '@ably/ai-transport';
+import { ResponsesCodec, toResponsesInput } from '@ably/ai-transport/openai';
 
+import { createThreadFold } from '../../lib/fold-thread';
 import { runAgentLoop } from './agent-stream';
 
+/** The wake body the demo's client POSTs (see `wakeAgent` in `src/app/helpers.ts`). */
+interface ChatRequestBody {
+  /** The Ably channel the conversation lives on. */
+  channelName: string;
+  /** The triggering input's `event-id`, matched on the channel via `locateInput`. */
+  eventId: string;
+}
+
 export async function POST(req: Request) {
-  const data = (await req.json()) as InvocationData;
-  const invocation = Invocation.fromJSON(data);
+  // CAST: trust boundary — the demo's own client POSTs this shape.
+  const body = (await req.json()) as ChatRequestBody;
+  if (typeof body.channelName !== 'string' || typeof body.eventId !== 'string') {
+    return Response.json({ error: 'channelName and eventId are required' }, { status: 400 });
+  }
 
   const apiKey = process.env.ABLY_API_KEY;
   if (!apiKey) {
@@ -55,32 +71,54 @@ export async function POST(req: Request) {
     ...(process.env.ABLY_ENDPOINT ? { endpoint: process.env.ABLY_ENDPOINT } : {}),
   });
 
-  const session = createAgentSession({
-    client: ably,
-    channelName: invocation.sessionName,
-    codec: ResponsesSessionCodec,
-  });
-  await session.connect();
-  // No identity is pinned: this run is not retried, so a generated run-id and
-  // invocation-id are correct.
-  const run = session.createRun(invocation, {}, { signal: req.signal });
+  const channel = ably.channels.get(body.channelName, { params: { agent: channelAgent(ResponsesCodec) } });
+  const transport = createAgentTransport({ channel, codec: ResponsesCodec });
+  await transport.connect();
 
-  // Drain run.view — the one history driver — for the full multi-turn
-  // conversation to feed the model, then start. toResponsesInput flattens it
-  // into the /responses input array.
-  while (run.view.hasOlder()) await run.view.loadOlder();
-  await run.start();
-  const priorMessages = run.view.getMessages().map((m) => m.message);
+  const located = await transport.locateInput(body.eventId);
+  if (!located) {
+    transport.close();
+    ably.close();
+    return Response.json({ error: `no input event found for eventId ${body.eventId}` }, { status: 400 });
+  }
+
+  // The conversation for the model: the channel's history paged to exhaustion,
+  // folded through the SAME fold helper the frontend renders with, then
+  // flattened into the /responses input array. The triggering input is already
+  // on the channel (the client publishes before it POSTs), so the fold covers
+  // it too.
+  const fold = createThreadFold();
+  const events: Parameters<typeof fold.apply>[0][] = [];
+  let exhausted = false;
+  while (!exhausted) {
+    const batch = await transport.history();
+    // The fold consumes events in chronological order, and each batch is older
+    // than the previous one — so collect by prepending, then fold once whole.
+    events.unshift(...batch.events);
+    exhausted = batch.exhausted;
+  }
+  for (const event of events) fold.apply(event);
+  const priorMessages = fold.messages();
   const input = toResponsesInput(priorMessages);
+
+  // The located input drives the open: a continuation input carries the
+  // run-id header of the run it resumes, and a fresh send carries none — the
+  // transport re-enters or starts accordingly and anchors the run to the
+  // trigger so cancels route.
+  const run = transport.openRun({ input: located }, { signal: req.signal });
 
   after(async () => {
     try {
       // The agentic loop (model turn → run tools → continue) publishes each unit
       // of work under its own pipe, so a run produces several messages. It emits
-      // both the model's events and the codec's function_call_output events, and
-      // returns the aggregate outcome. Run termination stays out-of-band.
+      // both the model's events and the codec's function_call_output /
+      // tool-approval-request events, and returns the aggregate outcome.
       const outcome = await runAgentLoop({ run, input, priorMessages });
-      if (outcome.reason === 'suspend') {
+      if (run.abortSignal.aborted) {
+        // A client cancel (or request abort) stopped the stream; the agent owns
+        // publishing the terminal.
+        await run.end({ reason: 'cancelled' });
+      } else if (outcome.reason === 'suspend') {
         // A client-executed or approval-gated tool paused the run. Suspend it
         // (publishing the suspend signal); the client resolves the tool and
         // sends a continuation that resumes this run under the same runId.
@@ -93,13 +131,13 @@ export async function POST(req: Request) {
       // log it for local-demo visibility.
       console.error('[openai-demo] agent run failed', error);
     } finally {
-      await session.end();
+      transport.close();
       ably.close();
     }
   });
 
-  // Return the agent-minted ids on the HTTP response. The same ids also arrive
-  // on the channel as `ai-run-start`, which is how the client resolves
-  // `run.started` without reading this response.
-  return Response.json({ runId: run.runId, invocationId: run.invocationId });
+  // Return the run-id on the HTTP response. The same id also arrives on the
+  // channel as `ai-run-start` / `ai-run-resume`, which is how the client's
+  // fold tracks the run without reading this response.
+  return Response.json({ runId: run.runId });
 }

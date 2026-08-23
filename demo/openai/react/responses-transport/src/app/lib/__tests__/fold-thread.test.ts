@@ -1,0 +1,468 @@
+/**
+ * Tests for the thread fold — the demo's obligations over the SDK's decoded
+ * event stream: seeding OpenAI's accumulator without `response.created`,
+ * output-index bookkeeping, collapsing the decoder's synthesised duplicate
+ * openers, merging reduced `output_item.done` items, and the tool/input apply
+ * steps. Fixtures mirror the exact shapes the codec's decoder hands out
+ * (see `src/openai/codec/descriptors.ts` in the SDK): rebuilt deltas carry
+ * `item_id`/`content_index` but no `output_index`, discrete item envelopes
+ * carry no `output_index`, and nothing carries `sequence_number`.
+ */
+
+import { describe, expect, it } from 'vitest';
+import * as Ably from 'ably';
+import type { TransportEvent, WireMeta } from '@ably/ai-transport';
+import type { OpenAIInput, OpenAIMessage, OpenAIOutput } from '@ably/ai-transport/openai';
+import type { Responses } from 'openai/resources/responses/responses';
+
+import { createThreadFold } from '../fold-thread';
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+type Event = TransportEvent<OpenAIInput, OpenAIOutput>;
+
+const makeMeta = (overrides: Partial<WireMeta>): WireMeta => ({
+  transport: {},
+  codec: {},
+  headers: {},
+  serial: 's-1',
+  codecMessageId: undefined,
+  runId: undefined,
+  stepId: undefined,
+  stepStartSerial: undefined,
+  timestamp: 1,
+  role: undefined,
+  clientId: undefined,
+  messageName: undefined,
+  versionSerial: undefined,
+  versionTimestamp: undefined,
+  parent: undefined,
+  forkOf: undefined,
+  regenerates: undefined,
+  inputCodecMessageId: undefined,
+  inputCodecMessageIds: undefined,
+  steerCodecMessageIds: undefined,
+  ...overrides,
+});
+
+const outputEvent = (codecMessageId: string, outputs: OpenAIOutput[], meta: Partial<WireMeta> = {}): Event => ({
+  kind: 'message',
+  meta: makeMeta({ codecMessageId, role: 'assistant', runId: 'r1', ...meta }),
+  inputs: [],
+  outputs,
+});
+
+const inputEvent = (codecMessageId: string, inputs: OpenAIInput[], meta: Partial<WireMeta> = {}): Event => ({
+  kind: 'message',
+  meta: makeMeta({ codecMessageId, role: 'user', ...meta }),
+  inputs,
+  outputs: [],
+});
+
+// Decoded-output builders. Each mirrors the shape the SDK decoder actually
+// emits for that event; the CASTs cover the fields the SDK's output type keeps
+// for genuine agent-published passthrough (sequence_number, delta logprobs)
+// that the decoder's rebuilt events do not carry at runtime.
+
+const messageItem = (id: string): Responses.ResponseOutputMessage => ({
+  id,
+  type: 'message',
+  role: 'assistant',
+  status: 'in_progress',
+  content: [],
+});
+
+const reasoningItem = (id: string): Responses.ResponseReasoningItem => ({ id, type: 'reasoning', summary: [] });
+
+const fnCallItem = (id: string, callId: string, name: string, args: string): Responses.ResponseFunctionToolCall => ({
+  id,
+  type: 'function_call',
+  call_id: callId,
+  name,
+  arguments: args,
+  status: 'in_progress',
+});
+
+// The discrete item envelope and the decode-lifecycle synthesis both decode to
+// { type, item, output_index? } with no sequence_number.
+const itemAdded = (item: Responses.ResponseOutputItem, outputIndex = 0): OpenAIOutput =>
+  // CAST: mirrors the decoded event, which carries no sequence_number.
+  ({ type: 'response.output_item.added', item, output_index: outputIndex }) as OpenAIOutput;
+
+// The reduced wire-form done item: status plus residue only, no content echo.
+const itemDone = (
+  item: { type: 'message' | 'reasoning' | 'function_call'; id: string } & Record<string, unknown>,
+): OpenAIOutput =>
+  // CAST: mirrors the decoded event: a reduced WireDoneItem, no output_index.
+  ({ type: 'response.output_item.done', item }) as unknown as OpenAIOutput;
+
+const partAdded = (itemId: string, outputIndex: number, contentIndex: number): OpenAIOutput =>
+  // CAST: mirrors the decoded stream start (all declared fields, no sequence_number).
+  ({
+    type: 'response.content_part.added',
+    item_id: itemId,
+    output_index: outputIndex,
+    content_index: contentIndex,
+    part: { type: 'output_text', text: '', annotations: [] },
+  }) as unknown as OpenAIOutput;
+
+const textDelta = (itemId: string, contentIndex: number, delta: string): OpenAIOutput =>
+  // CAST: mirrors the decoded delta rebuild — item_id + content_index + delta,
+  // no output_index, no sequence_number, no logprobs.
+  ({ type: 'response.output_text.delta', item_id: itemId, content_index: contentIndex, delta }) as OpenAIOutput;
+
+const textDone = (itemId: string, outputIndex: number, contentIndex: number, text: string): OpenAIOutput =>
+  // CAST: mirrors the decoded end rebuild — no sequence_number, no logprobs.
+  ({
+    type: 'response.output_text.done',
+    item_id: itemId,
+    output_index: outputIndex,
+    content_index: contentIndex,
+    text,
+  }) as OpenAIOutput;
+
+const summaryPartAdded = (itemId: string, outputIndex: number, summaryIndex: number): OpenAIOutput =>
+  // CAST: mirrors the decoded reasoning-summary stream start.
+  ({
+    type: 'response.reasoning_summary_part.added',
+    item_id: itemId,
+    output_index: outputIndex,
+    summary_index: summaryIndex,
+    part: { type: 'summary_text', text: '' },
+  }) as OpenAIOutput;
+
+const summaryDelta = (itemId: string, summaryIndex: number, delta: string): OpenAIOutput =>
+  // CAST: mirrors the decoded delta rebuild — item_id + summary_index + delta.
+  ({
+    type: 'response.reasoning_summary_text.delta',
+    item_id: itemId,
+    summary_index: summaryIndex,
+    delta,
+  }) as OpenAIOutput;
+
+const argsDelta = (itemId: string, outputIndex: number, delta: string): OpenAIOutput =>
+  // CAST: mirrors the decoded fn-args delta — item_id from the item envelope header.
+  ({
+    type: 'response.function_call_arguments.delta',
+    item_id: itemId,
+    output_index: outputIndex,
+    delta,
+  }) as OpenAIOutput;
+
+const argsDone = (itemId: string, outputIndex: number, args: string, name: string): OpenAIOutput =>
+  // CAST: mirrors the decoded fn-args end rebuild.
+  ({
+    type: 'response.function_call_arguments.done',
+    item_id: itemId,
+    output_index: outputIndex,
+    arguments: args,
+    name,
+  }) as OpenAIOutput;
+
+const userTurnInput = (text: string): OpenAIInput => ({
+  kind: 'message',
+  payload: { role: 'user', items: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }] },
+});
+
+const runStart = (runId: string, inputCodecMessageId?: string): Event => ({
+  kind: 'run-lifecycle',
+  event: {
+    type: 'start',
+    runId,
+    clientId: 'agent',
+    invocationId: 'inv-1',
+    serial: 's-run',
+    ...(inputCodecMessageId !== undefined && { inputCodecMessageId }),
+  },
+});
+
+const runLifecycle = (type: 'suspend' | 'resume', runId: string): Event => ({
+  kind: 'run-lifecycle',
+  event: { type, runId, clientId: 'agent', invocationId: 'inv-1', serial: 's-run' },
+});
+
+const runEnd = (runId: string, reason: 'complete' | 'cancelled'): Event => ({
+  kind: 'run-lifecycle',
+  event: { type: 'end', runId, clientId: 'agent', invocationId: 'inv-1', serial: 's-run', reason },
+});
+
+/**
+ * The decoded wire sequence for one streamed assistant text message, one
+ * TransportEvent per wire message, as the SDK hands it out: the discrete
+ * `output_item.added`, then the stream start (with the decode-lifecycle's
+ * unconditionally synthesised opening bracket prepended), the deltas, the
+ * rebuilt close, and the reduced `output_item.done`.
+ */
+const streamedText = (codecMessageId: string, itemId: string, pieces: string[]): Event[] => [
+  outputEvent(codecMessageId, [itemAdded(messageItem(itemId))]),
+  outputEvent(codecMessageId, [itemAdded(messageItem(itemId)), partAdded(itemId, 0, 0)]),
+  ...pieces.map((piece) => outputEvent(codecMessageId, [textDelta(itemId, 0, piece)])),
+  outputEvent(codecMessageId, [textDone(itemId, 0, 0, pieces.join(''))]),
+  outputEvent(codecMessageId, [itemDone({ type: 'message', id: itemId, status: 'completed' })]),
+];
+
+const foldAll = (events: Event[]) => {
+  const fold = createThreadFold();
+  for (const event of events) fold.apply(event);
+  return fold;
+};
+
+const messageText = (message: OpenAIMessage): string =>
+  message.items
+    .map((item) =>
+      item.type === 'message' && Array.isArray(item.content)
+        ? item.content.map((part) => ('text' in part ? part.text : '')).join('')
+        : '',
+    )
+    .join('');
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe('createThreadFold', () => {
+  it('folds a full streamed text message through the accumulator without response.created', () => {
+    const fold = foldAll(streamedText('m1', 'i1', ['Hello, ', 'world']));
+    const messages = fold.messages();
+    expect(messages).toHaveLength(1);
+    const message = messages[0];
+    expect(message.codecMessageId).toBe('m1');
+    expect(message.role).toBe('assistant');
+    expect(message.runId).toBe('r1');
+    expect(message.items).toHaveLength(1);
+    const item = message.items[0];
+    expect(item.type).toBe('message');
+    expect(messageText(message)).toBe('Hello, world');
+    // The reduced done finalised the accumulated item rather than replacing it.
+    expect(item.type === 'message' ? item.status : undefined).toBe('completed');
+  });
+
+  it('collapses the synthesised duplicate output_item.added by item id', () => {
+    // streamedText already carries the duplicate (the stream start's
+    // synthesised bracket); assert it produced ONE item, not two.
+    const fold = foldAll(streamedText('m1', 'i1', ['hi']));
+    expect(fold.messages()[0].items).toHaveLength(1);
+  });
+
+  it('merges a reduced output_item.done (status + logprobs residue) instead of replacing the item', () => {
+    const logprobs = [{ token: 'hi', logprob: -0.1, top_logprobs: [], bytes: [] }];
+    const events = [
+      outputEvent('m1', [itemAdded(messageItem('i1')), partAdded('i1', 0, 0)]),
+      outputEvent('m1', [textDelta('i1', 0, 'hi')]),
+      outputEvent('m1', [textDone('i1', 0, 0, 'hi')]),
+      outputEvent('m1', [
+        itemDone({ type: 'message', id: 'i1', status: 'completed', content: [{ type: 'output_text', logprobs }] }),
+      ]),
+    ];
+    const message = foldAll(events).messages()[0];
+    const item = message.items[0];
+    if (item.type !== 'message' || item.content[0]?.type !== 'output_text') throw new Error('expected a text message');
+    // Replaying the reduced done verbatim would erase the streamed text.
+    expect(item.content[0].text).toBe('hi');
+    expect(item.status).toBe('completed');
+    expect(item.content[0].logprobs).toEqual(logprobs);
+  });
+
+  it('merges a reasoning done item, keeping the streamed summary and folding encrypted_content', () => {
+    const events = [
+      outputEvent('m1', [itemAdded(reasoningItem('rs1')), summaryPartAdded('rs1', 0, 0)]),
+      outputEvent('m1', [summaryDelta('rs1', 0, 'thinking...')]),
+      outputEvent('m1', [itemDone({ type: 'reasoning', id: 'rs1', encrypted_content: 'blob' })]),
+    ];
+    const item = foldAll(events).messages()[0].items[0];
+    if (item.type !== 'reasoning') throw new Error('expected a reasoning item');
+    expect(item.summary[0]?.text).toBe('thinking...');
+    expect(item.encrypted_content).toBe('blob');
+  });
+
+  it('folds a function-call arguments stream and its reduced done', () => {
+    const events = [
+      outputEvent('m1', [itemAdded(fnCallItem('fc1', 'call-1', 'getWeather', ''))]),
+      outputEvent('m1', [argsDelta('fc1', 0, '{"location":')]),
+      outputEvent('m1', [argsDelta('fc1', 0, '"Tokyo"}')]),
+      outputEvent('m1', [argsDone('fc1', 0, '{"location":"Tokyo"}', 'getWeather')]),
+      outputEvent('m1', [itemDone({ type: 'function_call', id: 'fc1', status: 'completed' })]),
+    ];
+    const item = foldAll(events).messages()[0].items[0];
+    if (item.type !== 'function_call') throw new Error('expected a function_call item');
+    expect(item.arguments).toBe('{"location":"Tokyo"}');
+    expect(item.status).toBe('completed');
+  });
+
+  it('mid-run reload: partial history plus the live continuation fold to ONE message', () => {
+    const itemId = 'i1';
+    // History, decoded from the channel: the real opener and the first deltas.
+    const history = [
+      outputEvent('m1', [itemAdded(messageItem(itemId))]),
+      outputEvent('m1', [itemAdded(messageItem(itemId)), partAdded(itemId, 0, 0)]),
+      outputEvent('m1', [textDelta(itemId, 0, 'Once upon ')]),
+    ];
+    // Live, joined mid-stream: the decoder synthesises the opening bracket and
+    // rebuilds the part opener before the remaining deltas.
+    const live = [
+      outputEvent('m1', [itemAdded(messageItem(itemId)), partAdded(itemId, 0, 0), textDelta(itemId, 0, 'a time, ')]),
+      outputEvent('m1', [textDelta(itemId, 0, 'the end.')]),
+      outputEvent('m1', [textDone(itemId, 0, 0, 'Once upon a time, the end.')]),
+      outputEvent('m1', [itemDone({ type: 'message', id: itemId, status: 'completed' })]),
+    ];
+    const fold = foldAll([...history, ...live]);
+    const messages = fold.messages();
+    expect(messages).toHaveLength(1);
+    expect(messages[0].items).toHaveLength(1);
+    expect(messageText(messages[0])).toBe('Once upon a time, the end.');
+  });
+
+  it('multi-batch history folds identically to a single batch', () => {
+    const events = [
+      inputEvent('m0', [userTurnInput('hi')]),
+      runStart('r1', 'm0'),
+      ...streamedText('m1', 'i1', ['Hello, ', 'world']),
+      runEnd('r1', 'complete'),
+    ];
+    // history() returns each next OLDER slice; the consumer prepends. Split at
+    // an arbitrary boundary and reassemble the way the hooks do.
+    const newerBatch = events.slice(4);
+    const olderBatch = events.slice(0, 4);
+    const reassembled = [...olderBatch, ...newerBatch];
+    expect(foldAll(reassembled).messages()).toEqual(foldAll(events).messages());
+  });
+
+  it('reconciles the optimistic echo with the wire echo by codec-message-id, deduping identical parts', () => {
+    const events = [
+      // Optimistic local echo: the whole turn, no serial.
+      inputEvent('m0', [userTurnInput('hi')], { serial: undefined, clientId: 'client-a' }),
+      // Wire echo: the same turn reassembled from its one part event.
+      inputEvent('m0', [userTurnInput('hi')], { serial: 's-2', clientId: 'client-a' }),
+    ];
+    const messages = foldAll(events).messages();
+    expect(messages).toHaveLength(1);
+    const item = messages[0].items[0];
+    if (item?.type !== 'message') throw new Error('expected a message item');
+    expect(item.content).toHaveLength(1);
+    expect(messages[0].clientId).toBe('client-a');
+  });
+
+  it('appends distinct parts of the same message across wire echoes', () => {
+    const events = [inputEvent('m0', [userTurnInput('part one. ')]), inputEvent('m0', [userTurnInput('part two.')])];
+    const item = foldAll(events).messages()[0].items[0];
+    if (item?.type !== 'message') throw new Error('expected a message item');
+    expect(item.content).toHaveLength(2);
+  });
+
+  it('folds a tool-approval-request into pending state and an approval input into a decision', () => {
+    const request: OpenAIOutput = {
+      type: 'tool-approval-request',
+      call_id: 'call-1',
+      name: 'getWeatherForecast',
+      arguments: '{"location":"Paris"}',
+    };
+    const events = [
+      outputEvent('m1', [itemAdded(fnCallItem('fc1', 'call-1', 'getWeatherForecast', '{}'))]),
+      outputEvent('m1', [request]),
+    ];
+    const pending = foldAll(events).messages()[0];
+    expect(pending.toolCallStates?.['call-1']).toEqual({
+      approval: 'pending',
+      name: 'getWeatherForecast',
+      arguments: '{"location":"Paris"}',
+    });
+
+    const denied = foldAll([
+      ...events,
+      inputEvent('m1', [{ kind: 'approval', payload: { call_id: 'call-1', approved: false, reason: 'User denied' } }]),
+    ]).messages()[0];
+    expect(denied.toolCallStates?.['call-1']?.approval).toBe('denied');
+    expect(denied.toolCallStates?.['call-1']?.reason).toBe('User denied');
+  });
+
+  it('appends function_call_output events and item inputs, deduping by call_id', () => {
+    const fco: Responses.ResponseInputItem.FunctionCallOutput = {
+      type: 'function_call_output',
+      call_id: 'call-1',
+      output: '{"temperature":20}',
+    };
+    const events = [
+      outputEvent('m1', [itemAdded(fnCallItem('fc1', 'call-1', 'getWeather', '{}'))]),
+      // The agent's own output event, then a redundant client item input for
+      // the same call: one output must survive.
+      outputEvent('m2', [{ type: 'function_call_output', item: fco }]),
+      inputEvent('m2', [{ kind: 'item', payload: fco }]),
+    ];
+    const messages = foldAll(events).messages();
+    expect(messages).toHaveLength(2);
+    expect(messages[1].items).toEqual([fco]);
+  });
+
+  it('orders a client tool result after the message it amends', () => {
+    const fco: Responses.ResponseInputItem.FunctionCallOutput = {
+      type: 'function_call_output',
+      call_id: 'call-1',
+      output: '{"latitude":51.5}',
+    };
+    const events = [
+      outputEvent('m1', [itemAdded(fnCallItem('fc1', 'call-1', 'getLocation', '{}'))]),
+      outputEvent('m1', [itemDone({ type: 'function_call', id: 'fc1', status: 'completed' })]),
+      // The client's resolution amends the assistant message by codec-message-id.
+      inputEvent('m1', [{ kind: 'item', payload: fco }]),
+    ];
+    const items = foldAll(events).messages()[0].items;
+    expect(items.map((item) => item.type)).toEqual(['function_call', 'function_call_output']);
+  });
+
+  it('tracks run lifecycle: start/resume are running, suspend and end are not', () => {
+    const fold = createThreadFold();
+    expect(fold.isRunning()).toBe(false);
+
+    fold.apply(runStart('r1', 'm0'));
+    expect(fold.isRunning()).toBe(true);
+    expect(fold.activeRunId()).toBe('r1');
+    expect(fold.runs().get('r1')).toEqual({ status: 'active', inputCodecMessageId: 'm0' });
+
+    fold.apply(runLifecycle('suspend', 'r1'));
+    expect(fold.isRunning()).toBe(false);
+    expect(fold.runs().get('r1')?.status).toBe('suspended');
+
+    fold.apply(runLifecycle('resume', 'r1'));
+    expect(fold.isRunning()).toBe(true);
+
+    fold.apply(runEnd('r1', 'complete'));
+    expect(fold.isRunning()).toBe(false);
+    expect(fold.runs().get('r1')?.status).toBe('complete');
+    // The trigger stamp survives the lifecycle transitions.
+    expect(fold.runs().get('r1')?.inputCodecMessageId).toBe('m0');
+  });
+
+  it('records the terminal error message on an errored run-end', () => {
+    const fold = createThreadFold();
+    fold.apply(runStart('r1'));
+    fold.apply({
+      kind: 'run-lifecycle',
+      event: {
+        type: 'end',
+        runId: 'r1',
+        clientId: 'agent',
+        invocationId: 'inv-1',
+        serial: 's-run',
+        reason: 'error',
+        error: new Ably.ErrorInfo('model exploded', 104008, 500),
+      },
+    });
+    expect(fold.runs().get('r1')).toEqual({ status: 'error', errorMessage: 'model exploded' });
+  });
+
+  it('throws (rather than silently dropping content) on a stream event whose item was never opened', () => {
+    const fold = createThreadFold();
+    expect(() => {
+      fold.apply(outputEvent('m1', [textDelta('never-opened', 0, 'lost')]));
+    }).toThrow(/no accumulated item for item_id never-opened/);
+  });
+
+  it('ignores foreign carriers: no codec-message-id, or no decoded events', () => {
+    const fold = createThreadFold();
+    fold.apply({ kind: 'message', meta: makeMeta({}), inputs: [], outputs: [] });
+    fold.apply({ kind: 'message', meta: makeMeta({ codecMessageId: 'm9', runId: 'r9' }), inputs: [], outputs: [] });
+    expect(fold.messages()).toEqual([]);
+  });
+});

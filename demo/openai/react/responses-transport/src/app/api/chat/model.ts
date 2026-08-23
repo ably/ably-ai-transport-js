@@ -19,12 +19,13 @@
  *   in-band as the reasoning item's `encrypted_content` across turns (which
  *   the codec preserves).
  * - `LOGPROBS` sets `include: ['message.output_text.logprobs']` and
- *   `top_logprobs`, so each output-text token carries its log probabilities. The
- *   codec folds these onto the projected assistant turn's output_text part(s) —
- *   carried on the finalised `response.output_item.done` item (per-part), so
- *   they appear on the item-done message in the debug pane's Ably tab and on the
- *   turn in the Messages tab. Only the reasoning-free models support logprobs, so
- *   pair it with a non-reasoning `OPENAI_MODEL` (e.g. `gpt-4.1`).
+ *   `top_logprobs`, so each output-text token carries its log probabilities.
+ *   They travel on the finalised `response.output_item.done` item (per-part),
+ *   and the demo's fold merges them onto the assistant turn's output_text
+ *   part(s) — so they appear on the item-done message in the debug pane's Ably
+ *   tab and on the turn in the Messages tab. Only the reasoning-free models
+ *   support logprobs, so pair it with a non-reasoning `OPENAI_MODEL` (e.g.
+ *   `gpt-4.1`).
  */
 
 import OpenAI from 'openai';

@@ -20,8 +20,8 @@
  * (its summary) first — ahead of a text reply, or ahead of the getWeather call
  * when the prompt is also about weather — which is the case that exercises the
  * loop feeding reasoning items back alongside the call. Response-lifecycle
- * events (`response.created` / `response.completed`) are omitted: the reducer
- * ignores them and the stream's terminal is the item-done.
+ * events (`response.created` / `response.completed`) are omitted: the codec
+ * drops them from the wire and the stream's terminal is the item-done.
  *
  * Wired in by `createResponseStream()` (model.ts) behind `MOCK_LLM`.
  */

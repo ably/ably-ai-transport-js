@@ -1,11 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, cleanup, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef } from 'react';
 import * as Ably from 'ably';
-import { ErrorCode, Invocation } from '@ably/ai-transport';
-import type { BranchHandle, ClientRun, RunInfo, SendOptions } from '@ably/ai-transport';
-import type { OpenAIMessage, OpenAISessionInput } from '@ably/ai-transport/openai';
-import { turnText, userTurn } from '../helpers';
+import type { PublishInputResult, TransportEvent, WireMeta } from '@ably/ai-transport';
+import type { OpenAIInput, OpenAIOutput } from '@ably/ai-transport/openai';
+import type { Responses } from 'openai/resources/responses/responses';
 import { Chat } from '../components/chat';
 
 // jsdom doesn't implement Element.prototype.scrollIntoView; MessageList's
@@ -15,77 +14,55 @@ Element.prototype.scrollIntoView = () => {};
 // ---------------------------------------------------------------------------
 // Mock surface
 //
-// `../providers` is mocked so the demo's React glue can be exercised without
-// bringing up an Ably client, the codec, or the session. A breaking change to
-// the SDK's session-hooks surface is caught at module-load or render-time.
+// `@ably/ai-transport/react` is mocked so the demo's React glue — including
+// the real fold in useResponsesThread — can be exercised without bringing up
+// an Ably client. Tests drive the UI by emitting decoded transport events
+// through the captured useTransportEvents handlers, exactly what the real
+// hook would deliver.
 //
 // Shared mutable state lives in vi.hoisted so it is initialised before the
 // hoisted vi.mock factory runs, which lets every import stay at the top.
 // ---------------------------------------------------------------------------
 
-const mockState = vi.hoisted(() => ({
-  // The mock view's React setState, captured on mount so tests can push turns.
-  setMessages: null as null | ((messages: OpenAIMessage[]) => void),
-  // Test-overridable: lets a test stub the Run owning the rendered messages so
-  // the demo derives a status (and thus the Stop / Send button state).
-  runOf: (() => undefined) as (codecMessageId: string) => RunInfo | undefined,
-  cancel: vi.fn(async () => {}),
-  send: vi.fn<
-    (
-      input: OpenAISessionInput | OpenAISessionInput[],
-      opts?: SendOptions,
-    ) => Promise<ClientRun<OpenAISessionInput, OpenAIMessage>>
-  >(),
-}));
+type Event = TransportEvent<OpenAIInput, OpenAIOutput>;
 
-vi.mock('../providers', () => ({
-  SessionHooks: {
-    ClientSessionProvider: ({ children }: { children: ReactNode }) => children,
-    useClientSession: () => ({
-      session: {
-        tree: { on: () => () => {} },
-        cancel: mockState.cancel,
-        close: async () => {},
-        on: () => () => {},
-      },
-      sessionError: undefined,
-    }),
-    useAblyMessages: () => [],
-    useView: () => {
-      const [messages, setMessages] = useState<OpenAIMessage[]>([]);
-      useEffect(() => {
-        mockState.setMessages = setMessages;
-        return () => {
-          mockState.setMessages = null;
-        };
-      }, []);
-      const emptyBranch = (): BranchHandle<OpenAIMessage> => ({
-        hasSiblings: false,
-        siblings: [],
-        index: 0,
-        selected: undefined,
-        select: () => {},
-      });
-      return {
-        // The demo renders and correlates off the codec-message-id pairs.
-        messages: messages.map((message, i) => ({ codecMessageId: `cm-${i}`, message })),
-        hasOlder: false,
-        loading: false,
-        loadOlder: async () => {},
-        branchSelection: emptyBranch,
-        runOf: (codecMessageId: string) => mockState.runOf(codecMessageId),
-        run: () => undefined,
-        send: mockState.send,
-        regenerate: vi.fn(),
-        edit: vi.fn(),
-      };
+const mockState = vi.hoisted(() => {
+  const state = {
+    handlers: new Set<(event: unknown) => void>(),
+    publishInput: vi.fn<(...args: unknown[]) => unknown>(),
+    cancel: vi.fn<(runId: string) => Promise<void>>(async () => {}),
+    historyBatches: [] as { events: unknown[]; exhausted: boolean }[],
+    // A single stable transport object: the real provider memoises it, and the
+    // thread hook keys its hydration effect on its identity.
+    transport: {
+      connect: async () => {},
+      history: async () => state.historyBatches.shift() ?? { events: [], exhausted: true },
+      publishInput: (...args: unknown[]) => state.publishInput(...args) as unknown,
+      cancel: (runId: string) => state.cancel(runId) as unknown,
+      subscribe: () => () => {},
+      on: () => () => {},
+      close: () => {},
     },
-  },
-}));
+  };
+  return state;
+});
 
-vi.mock('@ably-ai-demos/frontend/ably-provider', () => ({
-  Providers: ({ children }: { children: ReactNode }) => children,
-  useAblyReady: () => true,
+vi.mock('@ably/ai-transport/react', () => ({
+  useClientTransport: () => ({ transport: mockState.transport, error: undefined }),
+  useTransportEvents: (handler: (event: unknown) => void) => {
+    const handlerRef = useRef(handler);
+    handlerRef.current = handler;
+    useEffect(() => {
+      const stable = (event: unknown) => {
+        handlerRef.current(event);
+      };
+      mockState.handlers.add(stable);
+      return () => {
+        mockState.handlers.delete(stable);
+      };
+    }, []);
+  },
+  useAblyMessages: () => [],
 }));
 
 // The header's AvatarStack enters presence and reads the member set via
@@ -97,49 +74,120 @@ vi.mock('ably/react', () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Fixtures — decoded transport events, in the shapes the SDK's decoder emits.
 // ---------------------------------------------------------------------------
 
-// Fields common to every RunInfo stub; each test names only what it asserts on.
-const runInfoBase = { clientId: 'user-a', invocationId: 'inv-1', steps: [] };
-
-// A run that ended in error, as the View reports it for both the run's own
-// output messages and (via input→reply-run resolution) the triggering user
-// message. The error's values mirror the transport's generic run-end fallback
-// (`buildRunEndError`) for a run that errored without stamped detail.
-const erroredRun = (runId: string): RunInfo => ({
-  ...runInfoBase,
-  runId,
-  status: 'error',
-  error: new Ably.ErrorInfo('agent reported an error', ErrorCode.SessionSubscriptionFailed, 500),
+const makeMeta = (overrides: Partial<WireMeta>): WireMeta => ({
+  transport: {},
+  codec: {},
+  headers: {},
+  serial: 's-1',
+  codecMessageId: undefined,
+  runId: undefined,
+  stepId: undefined,
+  stepStartSerial: undefined,
+  timestamp: 1,
+  role: undefined,
+  clientId: undefined,
+  messageName: undefined,
+  versionSerial: undefined,
+  versionTimestamp: undefined,
+  parent: undefined,
+  forkOf: undefined,
+  regenerates: undefined,
+  inputCodecMessageId: undefined,
+  inputCodecMessageIds: undefined,
+  steerCodecMessageIds: undefined,
+  ...overrides,
 });
 
-const assistantTurn = (text: string): OpenAIMessage => ({
-  role: 'assistant',
-  items: [
+const userMessageEvent = (codecMessageId: string, text: string): Event => ({
+  kind: 'message',
+  meta: makeMeta({ codecMessageId, role: 'user', clientId: 'user-a' }),
+  inputs: [
     {
-      id: 'msg_1',
-      type: 'message',
-      role: 'assistant',
-      status: 'completed',
-      content: [{ type: 'output_text', text, annotations: [] }],
+      kind: 'message',
+      payload: { role: 'user', items: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }] },
     },
+  ],
+  outputs: [],
+});
+
+const messageItem = (id: string, text: string): Responses.ResponseOutputMessage => ({
+  id,
+  type: 'message',
+  role: 'assistant',
+  status: 'completed',
+  content: [{ type: 'output_text', text, annotations: [] }],
+});
+
+const assistantTurnEvent = (codecMessageId: string, runId: string, text: string): Event => ({
+  kind: 'message',
+  meta: makeMeta({ codecMessageId, role: 'assistant', runId }),
+  inputs: [],
+  // CAST: mirrors the decoded item envelope, which carries no sequence_number.
+  outputs: [
+    {
+      type: 'response.output_item.added',
+      item: messageItem(`i-${codecMessageId}`, text),
+      output_index: 0,
+    } as OpenAIOutput,
   ],
 });
 
-const clientRunStub = (): ClientRun<OpenAISessionInput, OpenAIMessage> => ({
-  inputCodecMessageId: 'input-1',
-  // The agent mints the run-id, so `runId` is empty until `started` resolves.
-  runId: '',
-  status: 'active',
-  error: undefined,
-  messages: [],
-  started: Promise.resolve(),
-  inputEventId: 'ev-1',
-  cancel: async () => {},
-  steer: () => ({ published: Promise.resolve({ serial: undefined }), outcome: Promise.resolve({ consumed: false }) }),
-  toInvocation: () => Invocation.fromJSON({ inputEventId: 'ev-1', sessionName: 'demo' }),
+const runStart = (runId: string, inputCodecMessageId?: string): Event => ({
+  kind: 'run-lifecycle',
+  event: {
+    type: 'start',
+    runId,
+    clientId: 'agent',
+    invocationId: 'inv-1',
+    serial: 's-run',
+    ...(inputCodecMessageId !== undefined && { inputCodecMessageId }),
+  },
 });
+
+const runSuspend = (runId: string): Event => ({
+  kind: 'run-lifecycle',
+  event: { type: 'suspend', runId, clientId: 'agent', invocationId: 'inv-1', serial: 's-run' },
+});
+
+const runEndError = (runId: string, message: string): Event => ({
+  kind: 'run-lifecycle',
+  event: {
+    type: 'end',
+    runId,
+    clientId: 'agent',
+    invocationId: 'inv-1',
+    serial: 's-run',
+    reason: 'error',
+    error: new Ably.ErrorInfo(message, 104008, 500),
+  },
+});
+
+const emit = (...events: Event[]) => {
+  act(() => {
+    for (const event of events) {
+      for (const handler of [...mockState.handlers]) handler(event);
+    }
+  });
+};
+
+const renderChat = async () => {
+  const view = render(
+    <Chat
+      chatId="ai:test"
+      clientId="user-a"
+      api="api/chat"
+    />,
+  );
+  // Wait for hydration (connect + history paging) to finish so emitted events
+  // apply directly instead of sitting in the buffer.
+  await waitFor(() => {
+    expect(screen.queryByText('Loading history…')).toBeNull();
+  });
+  return view;
+};
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -147,16 +195,23 @@ const clientRunStub = (): ClientRun<OpenAISessionInput, OpenAIMessage> => ({
 
 describe('<Chat>', () => {
   beforeEach(() => {
-    mockState.send.mockReset();
-    mockState.send.mockImplementation(() => Promise.resolve(clientRunStub()));
-    mockState.runOf = () => undefined;
+    mockState.handlers.clear();
+    mockState.historyBatches = [];
+    mockState.publishInput.mockReset();
+    mockState.publishInput.mockImplementation(
+      async (): Promise<PublishInputResult> => ({
+        codecMessageId: 'cm-user-1',
+        eventId: 'ev-1',
+        runId: Promise.resolve('run-1'),
+      }),
+    );
     mockState.cancel.mockClear();
-    // The demo wakes the agent by POSTing the invocation after each send. Stub
-    // fetch so the POST succeeds rather than hitting the network; the agent
-    // route returns the minted ids, which wakeAgent reads.
+    // The demo wakes the agent by POSTing the wake pointer after each publish.
+    // Stub fetch so the POST succeeds rather than hitting the network; the
+    // agent route returns the run-id, which wakeAgent reads.
     vi.stubGlobal(
       'fetch',
-      vi.fn(() => Promise.resolve(Response.json({ runId: 'run-1', invocationId: 'inv-1' }))),
+      vi.fn(() => Promise.resolve(Response.json({ runId: 'run-1' }))),
     );
   });
 
@@ -168,13 +223,8 @@ describe('<Chat>', () => {
     vi.unstubAllGlobals();
   });
 
-  it('mounts, sends the user input via view.send, and renders turns pushed through the view', async () => {
-    render(
-      <Chat
-        chatId="ai:test"
-        api="api/chat"
-      />,
-    );
+  it('publishes the user input, wakes the agent with its eventId, and renders emitted turns', async () => {
+    await renderChat();
 
     const input = screen.getByPlaceholderText('Type a message...');
     const form = input.closest('form');
@@ -184,34 +234,46 @@ describe('<Chat>', () => {
     fireEvent.submit(form);
 
     await waitFor(() => {
-      expect(mockState.send).toHaveBeenCalledTimes(1);
+      expect(mockState.publishInput).toHaveBeenCalledTimes(1);
     });
-    const sent = mockState.send.mock.calls[0][0];
-    const sentInputs = Array.isArray(sent) ? sent : [sent];
-    const sentText = sentInputs.map((i) => (i.kind === 'user-message' ? turnText(i.message) : '')).filter(Boolean);
-    expect(sentText).toContain('hello');
-
-    expect(mockState.setMessages).not.toBeNull();
-    act(() => {
-      mockState.setMessages?.([assistantTurn('Hi there')]);
+    expect(mockState.publishInput).toHaveBeenCalledWith({
+      kind: 'message',
+      payload: {
+        role: 'user',
+        items: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
+      },
     });
 
+    // The wake POST carries the channel and the published input's eventId.
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+    const fetchMock = vi.mocked(fetch);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('api/chat');
+    expect(JSON.parse(String(init?.body))).toEqual({ channelName: 'ai:test', eventId: 'ev-1' });
+
+    emit(assistantTurnEvent('cm-a1', 'run-1', 'Hi there'));
     expect(screen.queryByText('Hi there')).not.toBeNull();
   });
 
+  it('hydrates the thread from history batches before live events', async () => {
+    mockState.historyBatches = [
+      // First call returns the most recent slice; the next call the older one.
+      {
+        events: [runStart('run-1', 'cm-u1'), assistantTurnEvent('cm-a1', 'run-1', 'restored reply')],
+        exhausted: false,
+      },
+      { events: [userMessageEvent('cm-u1', 'restored prompt')], exhausted: true },
+    ];
+    await renderChat();
+    expect(screen.queryByText('restored prompt')).not.toBeNull();
+    expect(screen.queryByText('restored reply')).not.toBeNull();
+  });
+
   it('shows Send (not Stop) when the latest run is suspended', async () => {
-    mockState.runOf = () => ({ ...runInfoBase, runId: 'run-suspended-1', status: 'suspended' });
-
-    render(
-      <Chat
-        chatId="ai:test"
-        api="api/chat"
-      />,
-    );
-
-    act(() => {
-      mockState.setMessages?.([assistantTurn('paused...')]);
-    });
+    await renderChat();
+    emit(runStart('run-s1'), assistantTurnEvent('cm-a1', 'run-s1', 'paused...'), runSuspend('run-s1'));
 
     const inputForm = screen.getByPlaceholderText('Type a message...').closest('form');
     if (!inputForm) throw new Error('input is not nested in a <form>');
@@ -221,21 +283,15 @@ describe('<Chat>', () => {
     expect(inputBar.queryByRole('button', { name: /Stop/i })).toBeNull();
   });
 
-  it('renders the run error under the user message when the run failed before producing output', () => {
-    mockState.runOf = () => erroredRun('run-err-1');
-
-    render(
-      <Chat
-        chatId="ai:test"
-        api="api/chat"
-      />,
-    );
-
+  it('renders the run error under the user message when the run failed before producing output', async () => {
+    await renderChat();
     // A pre-output failure: the run errored with no assistant turn, so the
     // only visible message is the user's own. Its bubble carries the error.
-    act(() => {
-      mockState.setMessages?.([userTurn('hello')]);
-    });
+    emit(
+      userMessageEvent('cm-u1', 'hello'),
+      runStart('run-err-1', 'cm-u1'),
+      runEndError('run-err-1', 'agent reported an error'),
+    );
 
     const errors = screen.getAllByText('agent reported an error');
     expect(errors).toHaveLength(1);
@@ -243,21 +299,14 @@ describe('<Chat>', () => {
     expect(errors[0].closest('[data-align="end"]')).not.toBeNull();
   });
 
-  it('renders a mid-output run error on the assistant bubble only, not the triggering user message', () => {
-    // Both messages resolve to the same errored run: the user message via
-    // input→reply-run resolution, the assistant message as the run's output.
-    mockState.runOf = () => erroredRun('run-err-2');
-
-    render(
-      <Chat
-        chatId="ai:test"
-        api="api/chat"
-      />,
+  it('renders a mid-output run error on the assistant bubble only, not the triggering user message', async () => {
+    await renderChat();
+    emit(
+      userMessageEvent('cm-u1', 'hello'),
+      runStart('run-err-2', 'cm-u1'),
+      assistantTurnEvent('cm-a1', 'run-err-2', 'partial reply'),
+      runEndError('run-err-2', 'agent reported an error'),
     );
-
-    act(() => {
-      mockState.setMessages?.([userTurn('hello'), assistantTurn('partial reply')]);
-    });
 
     const errors = screen.getAllByText('agent reported an error');
     expect(errors).toHaveLength(1);
@@ -265,44 +314,9 @@ describe('<Chat>', () => {
     expect(errors[0].closest('[data-align="start"]')).not.toBeNull();
   });
 
-  it("renders a pre-output run error on the user message even when another run's assistant output is visible", () => {
-    // Two runs: the assistant message belongs to an earlier, successful run;
-    // the newest user message's reply run errored before producing output.
-    // Pins that error placement is keyed on the errored run's own output, not
-    // on whether any assistant message happens to be visible.
-    mockState.runOf = (codecMessageId) =>
-      codecMessageId === 'cm-2' ? erroredRun('run-err-3') : { ...runInfoBase, runId: 'run-ok-1', status: 'complete' };
-
-    render(
-      <Chat
-        chatId="ai:test"
-        api="api/chat"
-      />,
-    );
-
-    act(() => {
-      mockState.setMessages?.([userTurn('first'), assistantTurn('earlier reply'), userTurn('second')]);
-    });
-
-    const errors = screen.getAllByText('agent reported an error');
-    expect(errors).toHaveLength(1);
-    // Rendered on the user's (end-aligned) side of the conversation.
-    expect(errors[0].closest('[data-align="end"]')).not.toBeNull();
-  });
-
   it('shows Stop while the latest run is actively streaming, and Stop publishes a cancel for it', async () => {
-    mockState.runOf = () => ({ ...runInfoBase, runId: 'run-active-1', status: 'active' });
-
-    render(
-      <Chat
-        chatId="ai:test"
-        api="api/chat"
-      />,
-    );
-
-    act(() => {
-      mockState.setMessages?.([assistantTurn('streaming a reply...')]);
-    });
+    await renderChat();
+    emit(runStart('run-active-1'), assistantTurnEvent('cm-a1', 'run-active-1', 'streaming a reply...'));
 
     const inputForm = screen.getByPlaceholderText('Type a message...').closest('form');
     if (!inputForm) throw new Error('input is not nested in a <form>');

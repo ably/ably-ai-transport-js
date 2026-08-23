@@ -3,11 +3,11 @@ import type { Scenario } from '@ably-ai-demos/frontend/lib/progress-steps';
 export const INTRO_TITLE = 'OpenAI Responses over Ably';
 
 export const INTRO_DESCRIPTION =
-  'A chat wired directly to the Ably AI Transport ClientSession API, with the OpenAI Responses codec. The session ' +
-  'subscribes to a single Ably channel and exposes a branching conversation tree, a paginated view, and write ' +
-  "operations (send, regenerate, edit, cancel). Sessions stay in sync across a user's devices and across multiple " +
-  'participants, with a bidirectional channel between user and agent for cancellation and steering. Each item below ' +
-  'exercises a specific feature - try them in order to see what it does.';
+  'A chat wired directly to the Ably AI Transport client transport, with the OpenAI Responses codec. The transport ' +
+  'publishes inputs and decodes events off a single Ably channel; the app folds those events into a linear thread ' +
+  "using OpenAI's own stream accumulator. The thread stays in sync across a user's devices and across multiple " +
+  'participants, with a bidirectional channel between user and agent for cancellation. Each item below exercises a ' +
+  'specific feature - try them in order to see what it does.';
 
 /**
  * This demo's scenarios, feeding both the intro-card walkthrough and the
@@ -66,20 +66,6 @@ export const DEMO_SCENARIOS: readonly Scenario[] = [
     blurb: 'Both tabs share the same Ably channel. Messages, streams, and run state stay in sync.',
   },
   {
-    id: 'edit',
-    tag: 'Branching',
-    title: 'Edit (branch)',
-    gesture: 'hover a user message, click edit',
-    blurb: 'Re-sends as a forked branch rooted at the edited message. Use the arrows to switch between branches.',
-  },
-  {
-    id: 'regenerate',
-    tag: 'Branching',
-    title: 'Regenerate (branch)',
-    gesture: 'hover an assistant reply, click regenerate',
-    blurb: 'Forks a new branch from that point. Previous branch is kept — the tree remembers both.',
-  },
-  {
     id: 'cancel',
     tag: 'Cancel mid-stream',
     title: 'Cancel mid-stream',
@@ -91,7 +77,7 @@ export const DEMO_SCENARIOS: readonly Scenario[] = [
     title: 'History on refresh',
     action: <>Reload the page — the conversation rebuilds from the channel.</>,
     blurb:
-      'Nothing is held in app state: the session replays channel history and reconstructs the full conversation tree.',
+      'Nothing is held in app state: the client pages channel history and refolds the thread — even mid-stream, where hydrated history and the live continuation fold to one message.',
   },
   {
     tag: 'Observability',
@@ -101,6 +87,6 @@ export const DEMO_SCENARIOS: readonly Scenario[] = [
         Open the <span className="font-medium text-foreground">Debug pane</span> on the right.
       </>
     ),
-    blurb: 'Three tabs: raw Ably messages on the wire, resolved conversation turns, and transport lifecycle events.',
+    blurb: 'Three tabs: raw Ably messages on the wire, the folded conversation thread, and run lifecycle events.',
   },
 ];

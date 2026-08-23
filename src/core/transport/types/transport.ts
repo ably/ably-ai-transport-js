@@ -183,7 +183,7 @@ export interface TransportReceiver<TInput, TOutput> {
    * decode failures, and (on the client transport) channel continuity loss —
    * each an `Ably.ErrorInfo` with a distinguishing `code`. A single decode
    * failure drops that one message and emits the error rather than tearing
-   * down the stream; a `ChannelContinuityLost` error means live delivery may
+   * down the stream; a `SessionContinuityNotGuaranteed` error means live delivery may
    * silently have gaps until the consumer re-hydrates.
    * @param event - The literal `'error'`.
    * @param handler - Called with each error.

@@ -10,17 +10,11 @@
 
 import type { WorkerOptions, WorkerPlugin } from '@temporalio/worker';
 
-import type { CodecInputEvent, CodecOutputEvent } from '../core/transport/session-codec.js';
 import { createFramingActivities, type FramingActivitiesOptions } from './activities.js';
 import type { FramingActivities } from './workflow/activity-types.js';
 
 /** Options for {@link createAblyTransportPlugin}. */
-export type AblyTransportPluginOptions<
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-  TProjection,
-  TMessage,
-> = FramingActivitiesOptions<TInput, TOutput, TProjection, TMessage>;
+export type AblyTransportPluginOptions<TInput, TOutput> = FramingActivitiesOptions<TInput, TOutput>;
 
 /**
  * A Temporal worker plugin that registers Ably AI Transport's framing
@@ -58,18 +52,11 @@ class DefaultAblyTransportPlugin implements AblyTransportPlugin {
  *
  * Pass the result in `Worker.create({ plugins: [...] })`. The consumer's own
  * activities still go in `activities` as usual; the plugin adds to them.
- * @template TInput - The codec input event type.
- * @template TOutput - The codec output event type.
- * @template TProjection - The codec projection type.
- * @template TMessage - The codec message type.
+ * @template TInput - The codec's input-event domain type.
+ * @template TOutput - The codec's output-event domain type.
  * @param options - Codec, client factory, and paging behaviour.
  * @returns The plugin to register on a worker.
  */
-export const createAblyTransportPlugin = <
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-  TProjection,
-  TMessage,
->(
-  options: AblyTransportPluginOptions<TInput, TOutput, TProjection, TMessage>,
+export const createAblyTransportPlugin = <TInput, TOutput>(
+  options: AblyTransportPluginOptions<TInput, TOutput>,
 ): AblyTransportPlugin => new DefaultAblyTransportPlugin({ activities: createFramingActivities(options) });

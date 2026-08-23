@@ -6,22 +6,21 @@
  * application's. Each one carries no application types, which is what makes it
  * safe for the SDK to own.
  *
- * Every activity runs in a fresh process, so each builds its own Ably client and
- * session, does one thing, and tears both down. The client comes from a
- * caller-supplied factory: the SDK never reads the environment or constructs
- * clients. A client per activity is required, not merely tidy — a session takes
- * its channel from `client.channels.get(name)`, which caches per name, and
- * detaching a session detaches that channel, so two sessions sharing a client on
- * one channel would break each other.
+ * Every activity runs in a fresh process, so each builds its own Ably client
+ * and agent transport, does one thing, and tears both down. The client comes
+ * from a caller-supplied factory: the SDK never reads the environment or
+ * constructs clients. The channel is caller-owned by the transport contract,
+ * so closing the transport publishes no terminal — a run an activity leaves
+ * open stays open on the wire for a later activity to re-enter.
  */
 
 import { Context } from '@temporalio/activity';
 import * as Ably from 'ably';
 
-import { pageUntilLocated } from '../core/transport/page-until-located.js';
-import type { Codec, CodecInputEvent, CodecOutputEvent } from '../core/transport/session-codec.js';
-import type { RunIdentity } from '../core/transport/types/transport.js';
-import { withAgentSession } from '../core/transport/with-agent-session.js';
+import type { WireCodec } from '../core/codec/types.js';
+import { createAgentTransport } from '../core/transport/agent-transport.js';
+import { Invocation } from '../core/transport/invocation.js';
+import type { AgentTransport, RunIdentity } from '../core/transport/types.js';
 import { ErrorCode } from '../errors.js';
 import type { Logger } from '../logger.js';
 import { withHeartbeat } from './heartbeat.js';
@@ -34,124 +33,205 @@ import type {
 } from './workflow/activity-types.js';
 
 /** Configuration for {@link createFramingActivities}. */
-export interface FramingActivitiesOptions<
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-  TProjection,
-  TMessage,
-> {
-  /** The codec the sessions encode with. */
-  codec: Codec<TInput, TOutput, TProjection, TMessage>;
+export interface FramingActivitiesOptions<TInput, TOutput> {
+  /** The codec the transports encode with. */
+  codec: WireCodec<TInput, TOutput>;
   /**
    * Builds the Ably client for one activity. Called once per activity
    * invocation; the returned client is closed before the activity returns.
    */
   createClient: () => Ably.Realtime;
-  /** Logger propagated into every session. */
+  /** Logger propagated into every transport. */
   logger?: Logger;
   /** Report progress to Temporal while paging history. Defaults to false. */
   heartbeat?: boolean;
-  /** Most history pages `openRun` fetches before giving up. */
+  /** Most history pages a scan fetches before giving up. Omit to page to channel exhaustion. */
   maxHistoryPages?: number;
-  /** CodecMessages revealed per history page. */
+  /** Wire-message limit per history page. */
   historyPageSize?: number;
 }
+
+/** The latest lifecycle state of a run, folded from channel history. */
+type RunState = 'start' | 'suspend' | 'resume' | 'end';
 
 /**
  * Build the framing activities, bound to a codec and a client factory.
  *
  * A factory rather than module-level state, so a worker can host more than one
  * configuration and nothing is global.
- * @template TInput - The codec input event type.
- * @template TOutput - The codec output event type.
- * @template TProjection - The codec projection type.
- * @template TMessage - The codec message type.
+ * @template TInput - The codec's input-event domain type.
+ * @template TOutput - The codec's output-event domain type.
  * @param options - Codec, client factory, and paging behaviour.
  * @returns The four activities, ready to register on a worker.
  */
-export const createFramingActivities = <
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-  TProjection,
-  TMessage,
->(
-  options: FramingActivitiesOptions<TInput, TOutput, TProjection, TMessage>,
+export const createFramingActivities = <TInput, TOutput>(
+  options: FramingActivitiesOptions<TInput, TOutput>,
 ): FramingActivities => {
   const { codec, createClient, logger } = options;
   const heartbeat = options.heartbeat ?? false;
 
+  /** Per-page heartbeat for the history scans, when enabled. */
+  const onPage = heartbeat
+    ? (): void => {
+        Context.current().heartbeat();
+      }
+    : undefined;
+
   /**
-   * Run `body` against a connected session on its own client, closing the
-   * client afterwards. `withAgentSession` owns the session half, including
-   * detaching rather than ending it.
+   * Run `body` against a connected agent transport on its own client, closing
+   * the transport and the client afterwards. Closing publishes no terminal —
+   * "do not publish a terminal" is the whole hand-off discipline a durable
+   * activity needs.
    * @template T - The body's return type.
-   * @param invocation - The invocation the session serves.
-   * @param body - The work to run against the session.
+   * @param invocationData - The invocation whose `sessionName` is the channel.
+   * @param body - The work to run against the transport.
    * @returns Whatever `body` returns.
    */
-  const inSession = async <T>(
-    invocation: OpenRunInput['invocation'],
-    body: Parameters<typeof withAgentSession<TInput, TOutput, TProjection, TMessage, T>>[1],
+  const inTransport = async <T>(
+    invocationData: OpenRunInput['invocation'],
+    body: (ctx: { transport: AgentTransport<TInput, TOutput>; invocation: Invocation }) => Promise<T>,
   ): Promise<T> => {
+    const invocation = Invocation.fromJSON(invocationData);
     const client = createClient();
     try {
-      return await withHeartbeat(heartbeat, async () =>
-        withAgentSession<TInput, TOutput, TProjection, TMessage, T>({ client, invocation, codec, logger }, body),
-      );
+      return await withHeartbeat(heartbeat, async () => {
+        const channel = client.channels.get(invocation.sessionName);
+        const transport = createAgentTransport<TInput, TOutput>({
+          channel,
+          codec,
+          ...(logger && { logger }),
+          ...(options.historyPageSize !== undefined && { historyPageSize: options.historyPageSize }),
+        });
+        await transport.connect();
+        try {
+          return await body({ transport, invocation });
+        } finally {
+          transport.close();
+        }
+      });
     } finally {
       client.close();
     }
   };
 
+  /**
+   * Fold the run's latest lifecycle state from channel history, paging
+   * backwards until the run is seen, the channel is exhausted, or the page
+   * bound is hit. `undefined` means the run was not found in the pages read —
+   * a paging artefact, not a fact about the run; each activity decides what
+   * that means for its own retry semantics.
+   * @param transport - The connected transport whose history to page.
+   * @param runId - The run to classify.
+   * @returns The run's latest lifecycle state, or `undefined` when not found.
+   */
+  const latestRunState = async (
+    transport: AgentTransport<TInput, TOutput>,
+    runId: string,
+  ): Promise<RunState | undefined> => {
+    for (let page = 0; options.maxHistoryPages === undefined || page < options.maxHistoryPages; page++) {
+      const batch = await transport.history({ ...(onPage && { onPage }) });
+      // Each batch is older than the last, and chronological within — so the
+      // first batch mentioning the run holds its latest state at that batch's
+      // newest matching event.
+      for (let i = batch.events.length - 1; i >= 0; i--) {
+        const event = batch.events[i];
+        if (event?.kind === 'run-lifecycle' && event.event.runId === runId) {
+          return event.event.type;
+        }
+      }
+      if (batch.exhausted) return undefined;
+    }
+    return undefined;
+  };
+
+  /**
+   * Resolve once the run's opening event (`ai-run-start` / `ai-run-resume`)
+   * echoes back on the receive stream — the confirmation that the open reached
+   * the wire, so the activity can report success and hand off. Rejects when
+   * the activity is cancelled first.
+   * @param transport - The connected transport to observe.
+   * @param runId - The run whose opening echo to await.
+   * @param signal - The activity's cancellation signal.
+   * @returns Resolves on the opening echo.
+   */
+  const awaitRunOpen = async (
+    transport: AgentTransport<TInput, TOutput>,
+    runId: string,
+    signal: AbortSignal,
+  ): Promise<void> =>
+    new Promise((resolve, reject) => {
+      const unsubscribe = transport.subscribe((event) => {
+        if (event.kind !== 'run-lifecycle' || event.event.runId !== runId) return;
+        if (event.event.type === 'start' || event.event.type === 'resume') {
+          unsubscribe();
+          resolve();
+        }
+      });
+      signal.addEventListener('abort', () => {
+        unsubscribe();
+        reject(new Ably.ErrorInfo('unable to open run; activity cancelled', ErrorCode.OperationCancelled, 400));
+      });
+    });
+
   return {
     openRun: async (input: OpenRunInput): Promise<RunIdentity> => {
       const cancelSignal = Context.current().cancellationSignal;
-      return inSession(input.invocation, async ({ session, invocation }) => {
-        const run = session.createRun(
-          invocation,
+      return inTransport(input.invocation, async ({ transport, invocation }) => {
+        // The trigger was published before this process attached, so it sits
+        // in channel history. Locate it and no more: this activity runs no
+        // inference, so it never needs the rest of the conversation. A retry
+        // that cannot find it throws before publishing and leaves no orphaned
+        // run.
+        const located = await transport.locateInput(invocation.inputEventId, {
+          signal: cancelSignal,
+          ...(onPage && { onPage }),
+          ...(options.maxHistoryPages !== undefined &&
+            options.historyPageSize !== undefined && {
+              limit: options.maxHistoryPages * options.historyPageSize,
+            }),
+        });
+        if (!located) {
+          throw new Ably.ErrorInfo(
+            `unable to open run; input event ${invocation.inputEventId} not found in channel history`,
+            ErrorCode.NotFound,
+            404,
+          );
+        }
+
+        // The located input drives the open: its run-id header names the run
+        // a continuation re-enters (publishing `ai-run-resume`); without one,
+        // a fresh turn opens under the pinned `runId` — the invocation id,
+        // which a durable framework holds constant across retries, so a
+        // fresh-process retry re-enters the SAME run instead of minting a new
+        // id and opening a parallel one.
+        const run = transport.openRun(
           {
-            invocationId: input.invocationId,
-            // Pin the run id to the invocation id, which a durable framework
-            // holds constant across retries. A fresh-process retry then
-            // re-enters the SAME run rather than minting a new id and opening a
-            // parallel one; the retry's `ai-run-start` folds idempotently onto
-            // the existing node. A continuation ignores this — its run id comes
-            // from the trigger's wire headers — so it only pins a fresh run.
+            input: located,
             runId: input.invocationId,
+            invocationId: input.invocationId,
           },
           { signal: cancelSignal },
         );
+        // Await the opening event's own channel echo before returning, so the
+        // hand-off happens strictly after the open is on the wire. Subscribing
+        // after openRun is safe: no await separates them, so the echo cannot
+        // be delivered in between.
+        await awaitRunOpen(transport, run.runId, cancelSignal);
 
-        // The trigger was published before this process attached, so it sits in
-        // channel history. Page until it surfaces and no further: this activity
-        // runs no inference, so it never needs the rest of the conversation.
-        await pageUntilLocated(run, {
-          inputEventId: invocation.inputEventId,
-          ...(options.maxHistoryPages !== undefined && { maxPages: options.maxHistoryPages }),
-          ...(options.historyPageSize !== undefined && { pageSize: options.historyPageSize }),
-          ...(heartbeat && {
-            onPage: () => {
-              Context.current().heartbeat();
-            },
-          }),
-          ...(logger && { logger }),
-        });
-
-        // Publishes `ai-run-start` for a fresh run, `ai-run-resume` for a
-        // continuation, told apart by the trigger's run-id header. Blocks until
-        // the trigger is located, so a retry that cannot find it throws before
-        // publishing and leaves no orphaned run.
-        await run.start();
-
-        return { runId: run.runId, invocationId: run.invocationId };
+        return { runId: run.runId, invocationId: input.invocationId };
       });
     },
 
     endRun: async (input: EndRunInput): Promise<void> => {
       const cancelSignal = Context.current().cancellationSignal;
-      await inSession(input.invocation, async ({ session, invocation }) => {
-        const run = session.adoptRun(invocation, input.ids, { signal: cancelSignal });
-        await run.load();
+      await inTransport(input.invocation, async ({ transport }) => {
+        const state = await gateOpenRun(transport, input.ids.runId, latestRunState);
+        if (state !== 'ok') return rejectGate(state, input.ids.runId);
+        const run = transport.adoptRun(
+          input.ids.runId,
+          { invocationId: input.ids.invocationId },
+          { signal: cancelSignal },
+        );
         if (input.reason === 'error') {
           await run.end({
             reason: 'error',
@@ -165,11 +245,14 @@ export const createFramingActivities = <
 
     suspendRun: async (input: SuspendRunInput): Promise<void> => {
       const cancelSignal = Context.current().cancellationSignal;
-      await inSession(input.invocation, async ({ session, invocation }) => {
-        const run = session.adoptRun(invocation, input.ids, { signal: cancelSignal });
-        await run.load();
-        // Throws if a step is still open — suspending mid-step would strand the
-        // step bracket, so closing it is the caller's job.
+      await inTransport(input.invocation, async ({ transport }) => {
+        const state = await gateOpenRun(transport, input.ids.runId, latestRunState);
+        if (state !== 'ok') return rejectGate(state, input.ids.runId);
+        const run = transport.adoptRun(
+          input.ids.runId,
+          { invocationId: input.ids.invocationId },
+          { signal: cancelSignal },
+        );
         await run.suspend();
       });
     },
@@ -177,35 +260,67 @@ export const createFramingActivities = <
     cleanupRun: async (input: CleanupRunInput): Promise<void> => {
       // No cancellation signal: this is the cleanup arm, so it must still run
       // while the workflow itself is being cancelled.
-      await inSession(input.invocation, async ({ session, invocation }) => {
-        const run = session.adoptRun(invocation, input.ids);
-
-        try {
-          try {
-            // load() status-gates: it rejects a run that is already suspended
-            // (a client will resume it) or terminal (already ended). Either way
-            // there is nothing to clean up.
-            await run.load();
-          } catch {
-            return;
-          }
-
-          await run.end({
-            reason: 'error',
-            error: new Ably.ErrorInfo(input.errorMessage ?? 'workflow failed', ErrorCode.RunResponseStreamFailed, 500),
-          });
-        } catch (error) {
-          // End rather than detach here: this is the terminal path, so ending
-          // any run still open is the intent, and session.end() cascades to do
-          // it. The scaffold's detach afterwards is a no-op on an ended session.
-          try {
-            await session.end();
-          } catch {
-            /* best-effort — the channel may already be gone */
-          }
-          throw error;
-        }
+      await inTransport(input.invocation, async ({ transport }) => {
+        const state = await gateOpenRun(transport, input.ids.runId, latestRunState);
+        // A suspended run is a client's to resume; an ended run needs nothing;
+        // a run not found in the pages read has nothing this best-effort arm
+        // can safely do. Only a still-open run is ended.
+        if (state !== 'ok') return;
+        const run = transport.adoptRun(input.ids.runId, { invocationId: input.ids.invocationId });
+        await run.end({
+          reason: 'error',
+          error: new Ably.ErrorInfo(input.errorMessage ?? 'workflow failed', ErrorCode.RunResponseStreamFailed, 500),
+        });
       });
     },
   };
+};
+
+/** The gate's verdict: `ok` to proceed, or why not. */
+type GateResult = 'ok' | 'suspended' | 'ended' | 'not-found';
+
+/**
+ * Classify whether the run is still open — the shared gate the terminal
+ * activities run before adopting the run via `adoptRun`.
+ * @template TInput - The codec's input-event domain type.
+ * @template TOutput - The codec's output-event domain type.
+ * @param transport - The connected transport whose history to page.
+ * @param runId - The run to gate on.
+ * @param latestRunState - The history fold to classify with.
+ * @returns The gate's verdict.
+ */
+const gateOpenRun = async <TInput, TOutput>(
+  transport: AgentTransport<TInput, TOutput>,
+  runId: string,
+  latestRunState: (transport: AgentTransport<TInput, TOutput>, runId: string) => Promise<RunState | undefined>,
+): Promise<GateResult> => {
+  const state = await latestRunState(transport, runId);
+  if (state === undefined) return 'not-found';
+  if (state === 'suspend') return 'suspended';
+  if (state === 'end') return 'ended';
+  return 'ok';
+};
+
+/**
+ * Throw the gate's failure as the error the old adopt path raised, so the
+ * workflow-side retry semantics are unchanged: a suspended or ended run is a
+ * non-retryable misuse, a run not found in the pages read is retryable.
+ * @param state - The gate's non-`ok` verdict.
+ * @param runId - The gated run, for the message.
+ */
+const rejectGate = (state: Exclude<GateResult, 'ok'>, runId: string): never => {
+  if (state === 'not-found') {
+    throw new Ably.ErrorInfo(
+      `unable to adopt run ${runId}; its opening event was not found in channel history`,
+      ErrorCode.NotFound,
+      404,
+    );
+  }
+  throw new Ably.ErrorInfo(
+    state === 'suspended'
+      ? `unable to adopt run ${runId}; the run is suspended — resume it via a fresh openRun`
+      : `unable to adopt run ${runId}; the run has already ended`,
+    ErrorCode.InvalidArgument,
+    400,
+  );
 };

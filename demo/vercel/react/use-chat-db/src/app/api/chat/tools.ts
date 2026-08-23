@@ -2,8 +2,9 @@
  * Tool definitions for the chat demo.
  *
  * - getWeather: server-executed, returns mock weather data
- * - getLocation: client-executed, no execute function — the client
- *   runs browser geolocation and sends the result back via view.update()
+ * - getLocation: client-executed, no execute function — the client runs
+ *   browser geolocation and publishes the result as a tool-output chunk
+ *   continuation (useChat's addToolOutput through the chat transport)
  * - getWeatherForecast: server-executed but gated on user approval.
  *   `needsApproval` is a function that returns `false` once the matching
  *   `toolCallId` has an `approval-responded` part in the message stream
@@ -74,7 +75,7 @@ export const tools: Record<string, Tool> = {
       highAccuracy: z.boolean().describe('Whether to request high-accuracy GPS positioning'),
     }),
     // No execute — client-side tool. The client runs navigator.geolocation
-    // and sends the result via view.update().
+    // and sends the result back through the chat transport's continuation.
     outputSchema: locationOutput,
   },
 

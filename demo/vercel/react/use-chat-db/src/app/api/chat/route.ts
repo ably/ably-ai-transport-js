@@ -1,42 +1,60 @@
 /**
- * Chat API route — receives the invocation pointer from the client's HTTP POST,
- * streams the AI response back over Ably, and persists each completed run.
+ * Chat API route — the agent side, built on the standalone
+ * `createAgentTransport`.
  *
- * This is the database-hydration demo: the agent is the sole writer. It
- * hydrates the model context the same way the client does — seeding the prior
- * conversation from the store and reconciling only the live tail from the
- * channel (the seam walk), rather than replaying the whole channel.
+ * The client's HTTP POST names the channel and the `event-id` of the input
+ * that woke this invocation (plus the run-id when it resumes a suspended
+ * run). The route:
  *
- * It supports the same tool patterns as the sibling `use-chat` demo:
- * - Server-executed tools (getWeather): streamText runs them inline.
- * - Client-executed tools (getLocation): the run SUSPENDS after the tool call;
- *   the client executes the tool and sends a continuation under the same runId,
- *   which resumes the run. `run.messages` spans the whole suspend/resume run, so
- *   a single persist at completion captures the input, the tool call, and the
- *   final answer with no loss.
- * - Approval-gated tools (getWeatherForecast): the run SUSPENDS at
- *   `approval-requested`; the user approves, a continuation resumes the run, and
- *   the tool-call message stays mutable (shown as approved) after hydration.
+ * 1. Locates the triggering input in channel history (`locateInput`).
+ * 2. Assembles the model context by folding the whole channel history —
+ *    bounded at the attach point, which is after the trigger was published
+ *    since the agent connects per-POST — through the same fold helper the
+ *    client hydrates with (`lib/fold-messages.ts`).
+ * 3. Opens the run (a fresh open publishes `ai-run-start`; a continuation
+ *    named by the POST's run-id publishes `ai-run-resume`), responds with the
+ *    run-id immediately, and pipes the `streamText` output to the channel in
+ *    `after()`. Every start chunk names a `messageId`, so the client, the
+ *    store, and the fold agree on each assistant message's domain id.
+ * 4. Suspends or ends the run from the `vercelRunOutcome` of the pipe.
  *
- * A suspended run is never persisted — only the terminal (complete) run is
- * appended to the in-memory store (keyed by the channel name), so a later client
- * (or the next run) can seed from it and reconcile with the live channel.
+ * Tool patterns: server-executed tools (getWeather) run inline; a
+ * client-executed tool (getLocation, no `execute`) or an approval-gated tool
+ * (getWeatherForecast, `needsApproval`) leaves the finish reason at
+ * `tool-calls`, so the run SUSPENDS and the client resumes it with a
+ * continuation POST under the same run-id. On the continuation, the folded
+ * history carries the tool output (a `{ kind: 'chunk' }` input) or the
+ * approval decision (the `{ kind: 'approval' }` body, flipped onto the tool
+ * part by the fold), so `streamText` executes the approved tool and answers.
+ *
+ * Persistence is client-owned in this demo: the sender POSTs each completed
+ * turn to `/api/messages` from useChat's `onFinish`.
  */
 
 import { after } from 'next/server';
-import { streamText, convertToModelMessages, stepCountIs } from 'ai';
+import { convertToModelMessages, stepCountIs, streamText, toUIMessageStream } from 'ai';
 import Ably from 'ably';
-import { createAgentSession, vercelRunOutcome } from '@ably/ai-transport/vercel';
-import type { InvocationData } from '@ably/ai-transport';
-import { Invocation } from '@ably/ai-transport';
+import { channelAgent } from '@ably/ai-transport';
+import { createAgentTransport, vercelRunOutcome } from '@ably/ai-transport/vercel';
 import { createModel } from './model';
 import { tools } from './tools';
-import { appendMessages, loadMessages } from '../../lib/message-store';
+import { type ChatTransportEvent, foldMessages } from '../../lib/fold-messages';
+
+/** The invocation pointer the SDK's chat transport POSTs. */
+interface ChatRequestBody {
+  /** The conversation's channel name. */
+  channelName: string;
+  /** The `event-id` of the published input that woke this invocation. */
+  eventId: string;
+}
 
 export async function POST(req: Request) {
-  // CAST: trust boundary — the POST body is the client's serialized InvocationData.
-  const data = (await req.json()) as InvocationData;
-  const invocation = Invocation.fromJSON(data);
+  // CAST: trust boundary — the POST body is the chat transport's invocation pointer.
+  const body = (await req.json()) as ChatRequestBody;
+  const { channelName, eventId } = body;
+  if (typeof channelName !== 'string' || typeof eventId !== 'string') {
+    return Response.json({ error: 'channelName and eventId are required' }, { status: 400 });
+  }
 
   const apiKey = process.env.ABLY_API_KEY;
   if (!apiKey) {
@@ -51,33 +69,34 @@ export async function POST(req: Request) {
     ...(process.env.ABLY_ENDPOINT ? { endpoint: process.env.ABLY_ENDPOINT } : {}),
   });
 
-  const session = createAgentSession({ client: ably, channelName: invocation.sessionName });
-  await session.connect();
-  // No identity is pinned: this run is not retried, so a generated run-id and
-  // invocation-id are correct.
-  const run = session.createRun(invocation, {}, { signal: req.signal });
+  const channel = ably.channels.get(channelName, { params: { agent: channelAgent() } });
+  const transport = createAgentTransport({ channel });
+  await transport.connect();
 
-  // Hydrate the model context the way the client does (see useMessageSync, which
-  // this demo's client uses to seed useChat): seed the prior conversation from
-  // the store and reconcile only the live tail from the channel, rather than
-  // replaying the whole channel. The store holds every completed run, so the
-  // newest stored message is the seam.
-  //
-  // loadUntil pages run.view back to the seam and returns only the messages newer
-  // than it — the not-yet-stored tail (here, this invocation's new input). It
-  // drives the paging itself, which also folds in this invocation's triggering
-  // input — published before this per-request agent attached, so it lives in
-  // channel history, not the live (post-attach) window. run.start() then proceeds
-  // once that input has been located. With no stored history (no seam) the
-  // predicate never matches, so loadUntil hydrates the whole channel.
-  //
-  // The database read (this demo's in-memory message-store stands in for it).
-  const seed = loadMessages(invocation.sessionName);
-  const seamId = seed.at(-1)?.id;
-  const tail = await run.view.loadUntil((m) => m.message.id === seamId);
-  await run.start();
+  const located = await transport.locateInput(eventId);
+  if (!located) {
+    transport.close();
+    ably.close();
+    return Response.json({ error: `input ${eventId} not found in channel history` }, { status: 404 });
+  }
 
-  const conversation = [...seed, ...tail.map((m) => m.message)];
+  // Model context: fold the whole channel history. Everything the model needs
+  // is on the channel — prior turns, the triggering input, and (on a
+  // continuation) the suspended run so far with its tool resolution or
+  // approval decision.
+  const events: ChatTransportEvent[] = [];
+  for (;;) {
+    const batch = await transport.history();
+    events.unshift(...batch.events);
+    if (batch.exhausted) break;
+  }
+  const conversation = (await foldMessages(events)).map((entry) => entry.message);
+
+  // The located input drives the open: a continuation input carries the
+  // run-id header of the run it resumes, and a fresh send carries none —
+  // the transport re-enters or starts accordingly, anchors the run to the
+  // trigger so cancels route, and threads its structure headers.
+  const run = transport.openRun({ input: located }, { signal: req.signal });
 
   const result = streamText({
     model: createModel(),
@@ -89,31 +108,26 @@ export async function POST(req: Request) {
   });
 
   after(async () => {
-    const pipeResult = await run.pipe(result.toUIMessageStream());
-    const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
-    if (outcome.reason === 'suspend') {
-      // A client-executed or approval-gated tool suspends the run; the client
-      // resumes it with a continuation under the same runId. A suspended run is
-      // never persisted — only the terminal (complete) run is.
-      await run.suspend();
-    } else {
-      // End the run first, then persist. run.end publishes the completion
-      // signal, so it shouldn't wait on (or fail with) the database write. The
-      // run's content is already on the channel (from run.pipe above), and both
-      // a reloading client and the agent's next run reconcile the stored seed
-      // with the live channel — so a run the store hasn't caught up on yet is
-      // still read from the channel, never dropped. Keyed by domain id, so
-      // idempotent; only completed runs are stored (cancelled/errored partials
-      // stay on the channel via run-end).
-      const runMessages = run.messages;
-      await run.end(outcome);
-      // The database write: persist the completed run's messages (the in-memory
-      // message-store stands in for a durable store).
-      if (outcome.reason === 'complete') await appendMessages(invocation.sessionName, runMessages);
+    try {
+      // `generateMessageId` puts a domain id on the stream's `start` chunk, so
+      // the id useChat renders, the id the client persists, and the id the
+      // hydration fold reconstructs are all the same.
+      const pipeResult = await run.pipe(
+        toUIMessageStream({ stream: result.fullStream, generateMessageId: () => crypto.randomUUID() }),
+      );
+      const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
+      if (outcome.reason === 'suspend') {
+        // A client-executed or approval-gated tool suspends the run; the
+        // client resumes it with a continuation POST under the same run-id.
+        await run.suspend();
+      } else {
+        await run.end(outcome);
+      }
+    } finally {
+      transport.close();
+      ably.close();
     }
-    await session.end();
-    ably.close();
   });
 
-  return Response.json({ runId: run.runId, invocationId: run.invocationId });
+  return Response.json({ runId: run.runId });
 }

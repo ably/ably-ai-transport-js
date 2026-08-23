@@ -1,16 +1,21 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 
 // ---------------------------------------------------------------------------
-// Database hydration — DB seed ⧺ live channel reconciliation (useMessageSync)
+// Database persistence over the SDK's chat transport
 // ---------------------------------------------------------------------------
 //
-// The agent persists each completed run's whole turn to the in-memory store,
-// and the demo seeds `useChat({ messages })` from it on load. `useMessageSync`
-// then walks the live channel back to the seam (the newest seed message) and
-// composes seed ⧺ live with no duplicate. These tests prove the reconciliation
-// over real Ably history across a page reload, including runs that suspend and
-// resume for a client-executed tool or an approval — where `run.messages` spans
-// the whole run so a single persist at completion is lossless.
+// The demo drives the UI exclusively through `useChat` over the SDK's
+// ChatTransport: sends publish to the channel and the run's output chunks
+// stream back off the subscription, while the agent route on
+// `createAgentTransport` streams each run. The client persists each completed
+// turn to the in-memory store from useChat's `onFinish`. Hydration happens
+// before the chat mounts: the REST seed plus the channel-history gap back to
+// the newest stored message seed `useChat({ messages })` in one shot, and the
+// same gap events seed the adapter's wire indices. These tests prove the
+// send/stream loop, the two-part hydration across a page reload, and the
+// suspend/resume continuations for a client-executed tool and an approval —
+// including a continuation issued after a reload, where the suspended run
+// lives only in the history gap.
 
 function seededChannelUrl(testTitle: string): string {
   const slug = testTitle
@@ -59,54 +64,57 @@ async function awaitStreamingQuiesce(page: Page): Promise<void> {
   }
 }
 
-test.describe('use-chat database hydration - DB seed reconciliation', () => {
-  test('reload convergence: a persisted turn reconciles with the live channel without duplication', async ({
+test.describe('use-chat-db - useChat persistence over the chat transport', () => {
+  test('send/stream: a user message streams the assistant reply through the chat transport', async ({
     page,
   }, testInfo) => {
     const url = seededChannelUrl(testInfo.title);
     await page.goto(url);
 
-    // First turn on a fresh channel — the store is empty, so this is the plain
-    // live path. The mock LLM replies with the quoted word, and the agent
-    // persists the completed turn.
+    // The transport publishes the user message, POSTs the invocation pointer,
+    // and the agent's streamed reply arrives back over the channel.
     await send(page, 'Say "ZULU"');
     await expect(assistantWith(page, 'ZULU')).toHaveCount(1, { timeout: 60_000 });
     await expect(messages(page)).toHaveCount(2);
+  });
 
-    // Let the streamed turn settle so channel history is durably persisted and
-    // the agent's store write has landed before the reload reconstructs.
-    await page.waitForTimeout(3000);
-
-    // Reload: useChat re-seeds from the store (/api/messages) and useMessageSync
-    // walks the live channel back to the seam and composes seed ⧺ live.
+  test('reload hydration: the REST seed plus the history gap reconstruct the conversation once', async ({
+    page,
+  }, testInfo) => {
+    const url = seededChannelUrl(testInfo.title);
     await page.goto(url);
 
-    // The conversation comes back — the persisted prefix plus the live tail —
-    // with the seam (the assistant reply) shown exactly once. Allow time for
-    // channel history to hydrate so a duplicate would have surfaced.
+    await send(page, 'Say "ZULU"');
+    await expect(assistantWith(page, 'ZULU')).toHaveCount(1, { timeout: 60_000 });
+
+    // Let the streamed turn settle so channel history is durably persisted and
+    // the client's store write has landed before the reload reconstructs.
+    await page.waitForTimeout(3000);
+
+    // Reload: hydration fetches the store seed over REST, pages the channel
+    // gap back to the newest stored message, and seeds useChat with the merge.
+    await page.goto(url);
     await expect(messages(page)).toHaveCount(2, { timeout: 60_000 });
     await page.waitForTimeout(3000);
     await expect(messages(page)).toHaveCount(2);
     await expect(userWith(page, 'ZULU')).toHaveCount(1);
     await expect(assistantWith(page, 'ZULU')).toHaveCount(1);
 
-    // A new turn after the reload appends correctly, and the reconciled seam
-    // stays single (no duplicate crept in from the seed/live overlap).
+    // A new turn after the reload appends correctly — the transport keeps
+    // driving useChat with no duplicate from the seed/gap overlap.
     await send(page, 'Say "YANKEE"');
     await expect(assistantWith(page, 'YANKEE')).toHaveCount(1, { timeout: 60_000 });
     await expect(messages(page)).toHaveCount(4);
     await expect(assistantWith(page, 'ZULU')).toHaveCount(1);
   });
 
-  test('client-tool suspend/resume: a run that suspends for getLocation persists whole and reloads without duplication', async ({
+  test('client-tool suspend/resume: getLocation suspends the run and the continuation streams the answer', async ({
     browser,
   }, testInfo) => {
     // "what's the weather like?" makes the agent call getLocation (a
-    // client-executed tool). The run SUSPENDS after the tool call; the browser
-    // resolves geolocation and the client resumes the run under the same runId.
-    // Because run.messages spans the whole suspend/resume run, the single
-    // persist at completion captures the question, the tool call, and the final
-    // answer — so a reload reconstructs the turn once, with no duplication.
+    // client-executed tool). The run SUSPENDS; the browser resolves
+    // geolocation, useChat auto-submits, and the transport publishes the tool
+    // result under the suspended run's id and POSTs the continuation.
     const context = await browser.newContext({
       permissions: ['geolocation'],
       geolocation: { latitude: 51.5074, longitude: -0.1278 },
@@ -124,8 +132,6 @@ test.describe('use-chat database hydration - DB seed reconciliation', () => {
       await expect(locationCard).toBeVisible({ timeout: 60_000 });
       await awaitStreamingQuiesce(page);
 
-      // The completed turn: the user question, the assistant tool-call bubble,
-      // and the assistant answer. Snapshot the count so the reload can match it.
       await expect(userWith(page, "what's the weather like?")).toHaveCount(1);
       const countBeforeReload = await messages(page).count();
       expect(countBeforeReload).toBeGreaterThanOrEqual(2);
@@ -133,10 +139,8 @@ test.describe('use-chat database hydration - DB seed reconciliation', () => {
       // Let the store write and channel history settle before reloading.
       await page.waitForTimeout(3000);
 
-      // Reload: the persisted whole run seeds useChat and reconciles with the
-      // live channel at the seam. The reconstructed conversation shows the
-      // original question, the tool call, and the final answer with no
-      // duplication.
+      // Reload: the completed turn was persisted whole, so the seed + gap
+      // merge reconstructs it once — question, tool call, and answer.
       await page.goto(url);
       await expect(userWith(page, "what's the weather like?")).toHaveCount(1, { timeout: 60_000 });
       await expect(page.locator('text=/Location:\\s*51\\./').first()).toBeVisible({ timeout: 60_000 });
@@ -148,25 +152,17 @@ test.describe('use-chat database hydration - DB seed reconciliation', () => {
     }
   });
 
-  test('approval-gated tool: an approved forecast run reloads with the tool-call message still shown as approved', async ({
-    page,
-  }, testInfo) => {
-    // "what's the weather forecast for London?" makes the agent call
-    // getWeatherForecast, gated on approval. The run SUSPENDS at
-    // approval-requested; approving resumes it under the same runId, the tool
-    // executes, and the whole run persists at completion. After a reload the
-    // approved tool-call message stays mutable — it shows the forecast result,
-    // not a fresh Approve/Deny prompt.
+  test('approval continuation: approving the forecast tool resumes the suspended run', async ({ page }, testInfo) => {
     const url = seededChannelUrl(testInfo.title);
     await page.goto(url);
 
+    // The run suspends at approval-requested; approving publishes the
+    // approval-decision body under the run's id and POSTs the continuation.
     await send(page, "what's the weather forecast for London?");
-
     const approveButton = page.getByRole('button', { name: /Approve/i }).first();
     await expect(approveButton).toBeVisible({ timeout: 60_000 });
     await approveButton.click();
 
-    // After approval the forecast card renders and the run completes.
     await expect(page.locator('text=/5-day forecast/i').first()).toBeVisible({ timeout: 60_000 });
     await awaitStreamingQuiesce(page);
     await expect(userWith(page, 'forecast for London')).toHaveCount(1);
@@ -174,14 +170,42 @@ test.describe('use-chat database hydration - DB seed reconciliation', () => {
 
     await page.waitForTimeout(3000);
 
-    // Reload: the completed run seeds from the store and reconciles with the
-    // channel. The tool-call message is shown as approved (the forecast card),
-    // and no Approve/Deny prompt reappears.
+    // Reload: the completed turn seeds from the store; the tool-call message
+    // is shown as approved (the forecast card), with no fresh Approve prompt.
     await page.goto(url);
     await expect(userWith(page, 'forecast for London')).toHaveCount(1, { timeout: 60_000 });
     await expect(page.locator('text=/5-day forecast/i').first()).toBeVisible({ timeout: 60_000 });
     await page.waitForTimeout(3000);
     await expect(page.getByRole('button', { name: /Approve/i })).toHaveCount(0);
     await expect(messages(page)).toHaveCount(countBeforeReload);
+  });
+
+  test('continuation across a reload: a run suspended at approval resumes after the page reloads', async ({
+    page,
+  }, testInfo) => {
+    const url = seededChannelUrl(testInfo.title);
+    await page.goto(url);
+
+    // Suspend the run at approval-requested, then reload before answering. A
+    // suspended run is never persisted, so on reload it lives only in the
+    // channel-history gap — hydration folds it and seeds the transport's wire
+    // indices with the suspended run's id.
+    await send(page, "what's the weather forecast for London?");
+    await expect(page.getByRole('button', { name: /Approve/i }).first()).toBeVisible({ timeout: 60_000 });
+    await page.waitForTimeout(3000);
+
+    await page.goto(url);
+
+    // The approval prompt is reconstructed from the gap; approving publishes
+    // the decision under the suspended run's id (recovered from the gap seed)
+    // and the continuation streams the forecast.
+    const approveButton = page.getByRole('button', { name: /Approve/i }).first();
+    await expect(approveButton).toBeVisible({ timeout: 60_000 });
+    await approveButton.click();
+
+    await expect(page.locator('text=/5-day forecast/i').first()).toBeVisible({ timeout: 60_000 });
+    await awaitStreamingQuiesce(page);
+    await expect(userWith(page, 'forecast for London')).toHaveCount(1);
+    await expect(page.getByRole('button', { name: /Approve/i })).toHaveCount(0);
   });
 });

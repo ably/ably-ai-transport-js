@@ -8,13 +8,10 @@ import type { WorkerOptions } from '@temporalio/worker';
 import type * as Ably from 'ably';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { Codec } from '../../src/core/transport/session-codec.js';
+import type { WireCodec } from '../../src/core/codec/types.js';
 import { createAblyTransportPlugin } from '../../src/temporal/plugin.js';
 
-interface TestMessage {
-  id: string;
-}
-type TestCodec = Codec<{ kind: 'input' }, { type: 'output' }, { messages: TestMessage[] }, TestMessage>;
+type TestCodec = WireCodec<{ kind: 'input' }, { type: 'output' }>;
 
 // CAST: the plugin never reads the codec; it hands it to the activity closures.
 const codec = { adapterTag: 'test' } as unknown as TestCodec;

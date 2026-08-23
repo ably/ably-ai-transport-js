@@ -53,7 +53,7 @@ export interface Extras {
 export interface WriteOptions {
   /** Override the default extras for this write. */
   extras?: Extras;
-  /** Message identity for projection routing. Stamped as `codec-message-id`. */
+  /** Message identity for consumer-side routing. Stamped as `codec-message-id`. */
   messageId?: string;
 }
 
@@ -218,8 +218,10 @@ export interface DecodedMessage<TInput, TOutput> {
  * Stateful decoder for a single channel subscription. Maintains internal
  * stream-tracker state across messages so that mid-stream join (history
  * compaction, partial-history page boundary, rewind miss) synthesizes any
- * missing start events before deltas reach the SDK — the reducer always
- * sees a clean `(start, delta*, end)` sequence.
+ * missing start events before deltas leave the decoder — a consumer's fold
+ * (the provider's own strict reducer included) always sees a clean
+ * `(start, delta*, end)` sequence. That repair is a contract, not a
+ * convenience: the provider reducers throw on a delta with no opener.
  *
  * Trackers are version-guarded: a delivery whose `Message.version.serial`
  * is at or below the version already incorporated decodes to nothing. One

@@ -2,16 +2,14 @@ import * as Ably from 'ably';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-  bestEffortDetach,
   ConnectGuard,
   continuityLostError,
-  handleWireMessage,
   isContinuityLost,
   subscribeAndAttach,
   wrapMessageProcessingError,
 } from '../../../src/core/transport/channel-support.js';
 import { ErrorCode } from '../../../src/errors.js';
-import { type LogHandler, LogLevel, makeLogger } from '../../../src/logger.js';
+import { LogLevel, makeLogger } from '../../../src/logger.js';
 
 const stateChange = (
   current: Ably.ChannelState,
@@ -120,37 +118,6 @@ describe('ConnectGuard', () => {
       statusCode: 500,
       message: 'unable to send; connect() failed, call connect() again to retry; boom',
     });
-  });
-});
-
-describe('bestEffortDetach', () => {
-  it('does not detach when connect() was not attempted', async () => {
-    const detach = vi.fn();
-    const channel = { detach } as unknown as Ably.RealtimeChannel;
-    await bestEffortDetach(channel, false, undefined, 'ClientSession');
-    expect(detach).not.toHaveBeenCalled();
-  });
-
-  it('detaches when connect() was attempted', async () => {
-    const detach = vi.fn();
-    const channel = { detach } as unknown as Ably.RealtimeChannel;
-    await bestEffortDetach(channel, true, undefined, 'ClientSession');
-    expect(detach).toHaveBeenCalledOnce();
-  });
-
-  it('swallows a detach failure and logs it at debug', async () => {
-    const detach = vi.fn<() => Promise<void>>().mockRejectedValue(new Error('already failed'));
-    const channel = { detach } as unknown as Ably.RealtimeChannel;
-    const logged: { message: string; level: LogLevel }[] = [];
-    const logHandler: LogHandler = (message: string, level: LogLevel) => {
-      logged.push({ message, level });
-    };
-    const logger = makeLogger({ logLevel: LogLevel.Debug, logHandler });
-
-    await expect(bestEffortDetach(channel, true, logger, 'DefaultAgentSession')).resolves.toBeUndefined();
-    expect(logged.some((l) => l.level === LogLevel.Debug && l.message.includes('DefaultAgentSession.close();'))).toBe(
-      true,
-    );
   });
 });
 
@@ -273,29 +240,6 @@ describe('wrapMessageProcessingError', () => {
       statusCode: 500,
       message: 'unable to process channel message; boom',
       cause,
-    });
-  });
-});
-
-describe('handleWireMessage', () => {
-  it('runs the body and does not call onError when it succeeds', () => {
-    const onError = vi.fn();
-    const body = vi.fn();
-    handleWireMessage(body, onError);
-    expect(body).toHaveBeenCalledOnce();
-    expect(onError).not.toHaveBeenCalled();
-  });
-
-  it('routes a body throw through onError as a wrapped processing error', () => {
-    const onError = vi.fn();
-    handleWireMessage(() => {
-      throw new Error('bad message');
-    }, onError);
-    expect(onError).toHaveBeenCalledOnce();
-    expect(onError.mock.calls[0]?.[0]).toBeErrorInfo({
-      code: ErrorCode.SessionMessageProcessingFailed,
-      statusCode: 500,
-      message: 'unable to process channel message; bad message',
     });
   });
 });

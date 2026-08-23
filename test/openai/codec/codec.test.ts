@@ -1,32 +1,22 @@
 /**
- * OpenAI codec offline roundtrip: encode -> wire -> decode -> fold.
+ * OpenAI codec offline roundtrip: encode -> wire -> decode.
  *
  * Unit tier (mocks only). The {@link createBridge} mock `ChannelWriter` records
  * the encoder's publish/append operations and replays the `InboundMessage`
- * sequence a subscriber would see, fed back through the real decoder + reducer.
- * This exercises the encode and decode paths together without a network; the
- * real-Ably proof lives in `codec.integration.test.ts`.
+ * sequence a subscriber would see, fed back through the real decoder. The
+ * assertions cover the wire contract from both sides: the raw wire messages
+ * the encoder publishes (headers, stream ids, data envelopes) and the decoded
+ * event sequences a subscriber reconstructs.
  */
 
 import type * as Ably from 'ably';
 import type { Responses } from 'openai/resources/responses/responses';
 import { describe, expect, it } from 'vitest';
 
-import {
-  EVENT_AI_INPUT,
-  HEADER_CODEC_MESSAGE_ID,
-  HEADER_ROLE,
-  HEADER_STATUS,
-  HEADER_STREAM,
-  HEADER_STREAM_ID,
-} from '../../../src/constants.js';
-import { toCodecEvents } from '../../../src/core/transport/session-codec.js';
+import { EVENT_AI_INPUT, HEADER_ROLE, HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../../src/constants.js';
 import { ErrorCode } from '../../../src/errors.js';
-import type { OpenAIOutput } from '../../../src/openai/codec/index.js';
-import { init } from '../../../src/openai/codec/reducer.js';
-import { type OpenAIProjection } from '../../../src/openai/codec/reducer.js';
-import { ResponsesSessionCodec } from '../../../src/openai/codec/session-codec.js';
-import { toResponsesInput } from '../../../src/openai/to-responses-input.js';
+import type { OpenAIInput, OpenAIMessage, OpenAIOutput } from '../../../src/openai/codec/index.js';
+import { ResponsesCodec } from '../../../src/openai/codec/index.js';
 import { getCodecHeaders, getTransportHeaders } from '../../../src/utils.js';
 import {
   completed,
@@ -35,6 +25,7 @@ import {
   contentPartDone,
   createBridge,
   created,
+  eventsOfType,
   failed,
   firstInputText,
   functionCallArgsRun,
@@ -45,7 +36,6 @@ import {
   itemAdded,
   itemDone,
   messageItem,
-  metaOf,
   queued,
   reasoningItem,
   reasoningSummaryPartDone,
@@ -78,50 +68,47 @@ const wireData = (inbound: Ably.InboundMessage[], kind: string): unknown =>
 // read out of its `{ item }` data envelope (see the envelope note in
 // descriptors.ts; the framing itself is asserted separately below). Asserting on
 // it proves the encoder itself reduced the item to its wire form, independently
-// of the decoder: the decoder just reads the same `item` field back, and a
-// decoded-and-folded assertion can't distinguish the wire form from the full
-// item (both fold to the same projection), so only the raw payload is the
-// decode-independent check.
+// of the decoder — which just reads the same `item` field back.
 const wireDoneItem = (inbound: Ably.InboundMessage[]): unknown => {
   const data = wireData(inbound, 'response.output_item.done');
   return isRecord(data) ? data.item : undefined;
 };
 
 // Encode events through the bridge and return the decoded inbound + outputs.
-// Events are fed to the encoder as-is — exactly what an agent's run.pipe does —
+// Events are fed to the encoder as-is — exactly what an agent's pipe does —
 // and the codec's descriptor table curates the wire (its drop entries encode
 // the framing events to nothing).
 const roundtrip = async (
   events: OpenAIOutput[],
 ): Promise<{ inbound: Ably.InboundMessage[]; outputs: OpenAIOutput[] }> => {
   const { writer, inbound } = createBridge();
-  const encoder = ResponsesSessionCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+  const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
   for (const event of events) await encoder.publishOutput(event);
   await encoder.close();
   const messages = inbound();
-  const decoder = ResponsesSessionCodec.createDecoder();
+  const decoder = ResponsesCodec.createDecoder();
   const outputs = messages.flatMap((msg) => decoder.decode(msg).outputs);
   return { inbound: messages, outputs };
 };
 
-// Decode + fold a whole inbound sequence into one projection, routing each
-// message to its codec-message-id via metaOf (the client-session read path).
-const foldAll = (messages: Ably.InboundMessage[]): OpenAIProjection => {
-  const decoder = ResponsesSessionCodec.createDecoder();
-  let projection: OpenAIProjection = init();
-  for (const msg of messages) {
-    for (const event of toCodecEvents(decoder.decode(msg))) {
-      projection = ResponsesSessionCodec.fold(projection, event, metaOf(msg));
-    }
-  }
-  return projection;
+// Decode a whole inbound sequence's output events through a fresh decoder.
+const decodeOutputs = (messages: Ably.InboundMessage[]): OpenAIOutput[] => {
+  const decoder = ResponsesCodec.createDecoder();
+  return messages.flatMap((msg) => decoder.decode(msg).outputs);
 };
 
-// The first projected message's function_call_output items.
-const outputsOf = (projection: OpenAIProjection): Responses.ResponseInputItem.FunctionCallOutput[] =>
-  (ResponsesSessionCodec.getMessages(projection)[0]?.message.items ?? []).filter(
-    (i): i is Responses.ResponseInputItem.FunctionCallOutput => i.type === 'function_call_output',
-  );
+// Decode a whole inbound sequence's input events through a fresh decoder.
+const decodeInputs = (messages: Ably.InboundMessage[]): OpenAIInput[] => {
+  const decoder = ResponsesCodec.createDecoder();
+  return messages.flatMap((msg) => decoder.decode(msg).inputs);
+};
+
+// The first decoded message-turn payload of a wire sequence, or undefined
+// when no message input decodes.
+const decodedMessagePayload = (messages: Ably.InboundMessage[]): OpenAIMessage | undefined => {
+  const first = decodeInputs(messages)[0];
+  return first?.kind === 'message' ? first.payload : undefined;
+};
 
 describe('OpenAI codec roundtrip (offline)', () => {
   it('streams text as a streamed message with string appends', async () => {
@@ -145,46 +132,45 @@ describe('OpenAI codec roundtrip (offline)', () => {
     expect(discrete.every((m) => transportOf(m)[HEADER_STATUS] === undefined)).toBe(true);
   });
 
-  it('decodes + folds the wire back into the assistant text turn', async () => {
-    const { inbound } = await roundtrip(textRun('msg_1', 'Hello, world!'));
-    const decoder = ResponsesSessionCodec.createDecoder();
-    let projection: OpenAIProjection = init();
-    for (const msg of inbound) {
-      for (const event of toCodecEvents(decoder.decode(msg))) {
-        projection = ResponsesSessionCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
-      }
-    }
-    const turn = ResponsesSessionCodec.getMessages(projection)[0]?.message;
-    expect(turn?.role).toBe('assistant');
-    const message = turn?.items.find((i): i is Responses.ResponseOutputMessage => i.type === 'message');
-    const part = message?.content.find((p) => p.type === 'output_text');
-    expect(part?.type === 'output_text' ? part.text : '').toBe('Hello, world!');
+  it('decodes the wire back into the assistant text event sequence', async () => {
+    const { outputs } = await roundtrip(textRun('msg_1', 'Hello, world!'));
+    const types = outputs.map((e) => e.type);
+
+    // The item envelope leads, then the content-part opener, then the streamed
+    // text, then the closes — the (start, delta*, end) bracket a consumer folds.
+    expect(types).toContain('response.content_part.added');
+    expect(types).toContain('response.output_item.done');
+    expect(types.indexOf('response.output_item.added')).toBeLessThan(types.indexOf('response.content_part.added'));
+    expect(types.indexOf('response.content_part.added')).toBeLessThan(types.indexOf('response.output_text.delta'));
+    expect(types.indexOf('response.output_text.delta')).toBeLessThan(types.indexOf('response.output_text.done'));
+    expect(types.indexOf('response.output_text.done')).toBeLessThan(types.indexOf('response.output_item.done'));
+
+    const added = eventsOfType(outputs, 'response.output_item.added')[0];
+    expect(added?.item).toMatchObject({ type: 'message', id: 'msg_1' });
+
+    // The deltas carry the full text, and the reconstructed done accumulates it.
+    const deltas = eventsOfType(outputs, 'response.output_text.delta');
+    expect(deltas.map((d) => d.delta).join('')).toBe('Hello, world!');
+    const done = eventsOfType(outputs, 'response.output_text.done')[0];
+    expect(done).toMatchObject({ item_id: 'msg_1', content_index: 0, text: 'Hello, world!' });
   });
 
-  it('streams a reasoning summary under a composite stream id and folds it back', async () => {
-    const { inbound } = await roundtrip(reasoningSummaryRun('rs_1', 'Thinking…'));
+  it('streams a reasoning summary under a composite stream id and decodes the accumulated text', async () => {
+    const { inbound, outputs } = await roundtrip(reasoningSummaryRun('rs_1', 'Thinking…'));
 
     // Composite, summary-namespaced stream id (item_id + summary dimension +
     // summary_index) so it can't clash with a reasoning_text content slot.
     const streamCreate = inbound.find((m) => m.action === 'message.create' && transportOf(m)[HEADER_STREAM] === 'true');
     expect(streamCreate && transportOf(streamCreate)[HEADER_STREAM_ID]).toBe('rs_1:summary:0');
 
-    // Decode + fold: the summary text lands in the reasoning item's summary[0].
-    const decoder = ResponsesSessionCodec.createDecoder();
-    let projection: OpenAIProjection = init();
-    for (const msg of inbound) {
-      for (const event of toCodecEvents(decoder.decode(msg))) {
-        projection = ResponsesSessionCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
-      }
-    }
-    const item = ResponsesSessionCodec.getMessages(projection)[0]?.message.items.find(
-      (i): i is Responses.ResponseReasoningItem => i.type === 'reasoning',
-    );
-    expect(item?.summary).toEqual([{ type: 'summary_text', text: 'Thinking…' }]);
+    // The reconstructed done carries the accumulated summary text, addressed to
+    // its item and summary slot via the re-stamped headers.
+    const done = eventsOfType(outputs, 'response.reasoning_summary_text.done')[0];
+    expect(done).toMatchObject({ item_id: 'rs_1', summary_index: 0, text: 'Thinking…' });
   });
 
   it('routes output_text and refusal on the shared content_part.added start, keyed by content_index', async () => {
-    const { inbound } = await roundtrip([
+    const { inbound, outputs } = await roundtrip([
       created(),
       itemAdded(messageItem('msg_1')),
       contentPartAdded('msg_1', 0), // opens output_text at content[0]
@@ -202,32 +188,25 @@ describe('OpenAI codec roundtrip (offline)', () => {
       .map((m) => transportOf(m)[HEADER_STREAM_ID]);
     expect(streamIds).toEqual(['msg_1:0', 'msg_1:1']);
 
-    const decoder = ResponsesSessionCodec.createDecoder();
-    let projection: OpenAIProjection = init();
-    for (const msg of inbound) {
-      for (const event of toCodecEvents(decoder.decode(msg))) {
-        projection = ResponsesSessionCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
-      }
-    }
-    const message = ResponsesSessionCodec.getMessages(projection)[0]?.message.items.find(
-      (i): i is Responses.ResponseOutputMessage => i.type === 'message',
-    );
-    expect(message?.content).toEqual([
-      { type: 'output_text', text: 'hello', annotations: [] },
-      { type: 'refusal', refusal: 'no' },
-    ]);
+    // Each stream decodes its own opener and reconstructs its own done, each
+    // addressed to its content slot.
+    const starts = eventsOfType(outputs, 'response.content_part.added');
+    expect(starts.map((s) => s.part.type)).toEqual(['output_text', 'refusal']);
+    const doneText = eventsOfType(outputs, 'response.output_text.done')[0];
+    expect(doneText).toMatchObject({ item_id: 'msg_1', content_index: 0, text: 'hello' });
+    const doneRefusal = eventsOfType(outputs, 'response.refusal.done')[0];
+    expect(doneRefusal).toMatchObject({ item_id: 'msg_1', content_index: 1, refusal: 'no' });
   });
 
-  it("folds output_item.done's message logprobs into the projected output_text part", async () => {
+  it("round-trips output_item.done's message logprobs on the decoded wire-form item", async () => {
     // The rich, finalised-part logprobs shape (with `bytes`) — the shape
     // `ResponseOutputText.logprobs` wants — carried on output_item.done's item,
-    // where it survives the reduction to wire form with its real SDK type (so the
-    // fold is cast-free). See toWireItem / the reducer's output_item.done handler.
+    // the one place the wire carries logprobs (see toWireItem in descriptors.ts).
     const logprobs: Responses.ResponseOutputText['logprobs'] = [
       { token: 'Hi', logprob: -0.1, bytes: [72, 105], top_logprobs: [] },
     ];
     const finalPart: Responses.ResponseOutputText = { type: 'output_text', text: 'Hi', annotations: [], logprobs };
-    const { inbound } = await roundtrip([
+    const { outputs } = await roundtrip([
       itemAdded(messageItem('msg_1')),
       contentPartAdded('msg_1'),
       textDelta('msg_1', 'Hi'),
@@ -236,62 +215,20 @@ describe('OpenAI codec roundtrip (offline)', () => {
       completed(),
     ]);
 
-    const decoder = ResponsesSessionCodec.createDecoder();
-    let projection: OpenAIProjection = init();
-    for (const msg of inbound) {
-      for (const event of toCodecEvents(decoder.decode(msg))) {
-        projection = ResponsesSessionCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
-      }
-    }
-    const message = ResponsesSessionCodec.getMessages(projection)[0]?.message.items.find(
-      (i): i is Responses.ResponseOutputMessage => i.type === 'message',
-    );
-    const part = message?.content.find((p) => p.type === 'output_text');
-    expect(part?.type === 'output_text' ? part.logprobs : undefined).toEqual(logprobs);
-  });
-
-  it('folds logprobs onto the right content slot in a multi-part (refusal + output_text) message', async () => {
-    // The wire form carries the message's parts index-aligned, so a logprobs-bearing
-    // output_text at content[1] must fold onto content[1] — not shift onto the
-    // refusal at content[0], which stays logprobs-free.
-    const logprobs: Responses.ResponseOutputText['logprobs'] = [
-      { token: 'Hi', logprob: -0.1, bytes: [72, 105], top_logprobs: [] },
-    ];
-    const finalMessage = messageItem('msg_1', [
-      { type: 'refusal', refusal: 'no' },
-      { type: 'output_text', text: 'Hi', annotations: [], logprobs },
-    ]);
-    const { inbound } = await roundtrip([
-      itemAdded(messageItem('msg_1')),
-      refusalPartAdded('msg_1', 0),
-      refusalDelta('msg_1', 'no', 0),
-      refusalDone('msg_1', 'no', 0),
-      contentPartAdded('msg_1', 1),
-      textDelta('msg_1', 'Hi', 1),
-      textDone('msg_1', 'Hi', 1),
-      itemDone(finalMessage),
-      completed(),
-    ]);
-
-    const decoder = ResponsesSessionCodec.createDecoder();
-    let projection: OpenAIProjection = init();
-    for (const msg of inbound) {
-      for (const event of toCodecEvents(decoder.decode(msg))) {
-        projection = ResponsesSessionCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
-      }
-    }
-    const message = ResponsesSessionCodec.getMessages(projection)[0]?.message.items.find(
-      (i): i is Responses.ResponseOutputMessage => i.type === 'message',
-    );
-    expect(message?.content[0]).toEqual({ type: 'refusal', refusal: 'no' });
-    const textPart = message?.content[1];
-    expect(textPart?.type === 'output_text' ? textPart.logprobs : undefined).toEqual(logprobs);
+    // The decoded done item carries the logprobs residue index-aligned with the
+    // message content; the streamed text itself is not re-echoed.
+    const done = eventsOfType(outputs, 'response.output_item.done')[0];
+    expect(done?.item).toEqual({
+      type: 'message',
+      id: 'msg_1',
+      status: 'in_progress',
+      content: [{ type: 'output_text', logprobs }],
+    });
   });
 
   it('decodes output_item.done for a message as a lean item (no content) when logprobs were not requested', async () => {
     // Wire economy: a reply without logprobs reduces output_item.done to
-    // { id, type, status } — no `content` array — so the projected output_text
-    // part carries no logprobs.
+    // { id, type, status } — no `content` array — on the decoded event.
     const doneItem = messageItem('msg_1', [{ type: 'output_text', text: 'Hi', annotations: [] }]);
 
     // Precondition: the item carries the content the wire strips, so the lean-item
@@ -306,14 +243,12 @@ describe('OpenAI codec roundtrip (offline)', () => {
       itemDone(doneItem),
       completed(),
     ]);
-    const done = outputs.find(
-      (o): o is Extract<OpenAIOutput, { type: 'response.output_item.done' }> => o.type === 'response.output_item.done',
-    );
+    const done = eventsOfType(outputs, 'response.output_item.done')[0];
     expect(done?.item).toEqual({ type: 'message', id: 'msg_1', status: 'in_progress' });
   });
 
-  it('streams function-call arguments under the item id and folds them back', async () => {
-    const { inbound } = await roundtrip([
+  it('streams function-call arguments under the item id and decodes the accumulated arguments', async () => {
+    const { inbound, outputs } = await roundtrip([
       created(),
       ...functionCallArgsRun('fc_1', 'call_1', 'getWeather', '{"location":"London"}'),
       completed(),
@@ -323,21 +258,18 @@ describe('OpenAI codec roundtrip (offline)', () => {
     const streamCreate = inbound.find((m) => m.action === 'message.create' && transportOf(m)[HEADER_STREAM] === 'true');
     expect(streamCreate && transportOf(streamCreate)[HEADER_STREAM_ID]).toBe('fc_1');
 
-    const decoder = ResponsesSessionCodec.createDecoder();
-    let projection: OpenAIProjection = init();
-    for (const msg of inbound) {
-      for (const event of toCodecEvents(decoder.decode(msg))) {
-        projection = ResponsesSessionCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
-      }
-    }
-    const item = ResponsesSessionCodec.getMessages(projection)[0]?.message.items.find(
-      (i): i is Responses.ResponseFunctionToolCall => i.type === 'function_call',
-    );
-    expect(item?.arguments).toBe('{"location":"London"}');
-    // The envelope (call_id / name) survived via the item carried on the stream
-    // start (fItem), not the wire-form output_item.done.
-    expect(item?.call_id).toBe('call_1');
-    expect(item?.name).toBe('getWeather');
+    // The stream start reconstructs the output_item.added carrying the item
+    // envelope, so call_id / name survive on the item carried by the start
+    // header (fItem), not the wire-form output_item.done.
+    const added = eventsOfType(outputs, 'response.output_item.added');
+    expect(added).toHaveLength(1);
+    expect(added[0]?.item).toMatchObject({ type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'getWeather' });
+
+    // The deltas carry the full arguments, and the reconstructed done accumulates them.
+    const deltas = eventsOfType(outputs, 'response.function_call_arguments.delta');
+    expect(deltas.map((d) => d.delta).join('')).toBe('{"location":"London"}');
+    const done = eventsOfType(outputs, 'response.function_call_arguments.done')[0];
+    expect(done).toMatchObject({ item_id: 'fc_1', name: 'getWeather', arguments: '{"location":"London"}' });
   });
 
   it('declines to stream a non-function-call output_item.added (discrete envelope)', async () => {
@@ -352,8 +284,8 @@ describe('OpenAI codec roundtrip (offline)', () => {
     expect(discreteKinds).toContain('response.output_item.added');
   });
 
-  it('streams reasoning text on a reasoning item under a composite id and folds it', async () => {
-    const { inbound } = await roundtrip([
+  it('streams reasoning text on a reasoning item under a composite id and decodes the accumulated text', async () => {
+    const { inbound, outputs } = await roundtrip([
       created(),
       itemAdded(reasoningItem('rs_1')),
       reasoningTextPartAdded('rs_1', 0),
@@ -366,50 +298,29 @@ describe('OpenAI codec roundtrip (offline)', () => {
     const streamCreate = inbound.find((m) => m.action === 'message.create' && transportOf(m)[HEADER_STREAM] === 'true');
     expect(streamCreate && transportOf(streamCreate)[HEADER_STREAM_ID]).toBe('rs_1:0');
 
-    const decoder = ResponsesSessionCodec.createDecoder();
-    let projection: OpenAIProjection = init();
-    for (const msg of inbound) {
-      for (const event of toCodecEvents(decoder.decode(msg))) {
-        projection = ResponsesSessionCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
-      }
-    }
-    const item = ResponsesSessionCodec.getMessages(projection)[0]?.message.items.find(
-      (i): i is Responses.ResponseReasoningItem => i.type === 'reasoning',
-    );
-    expect(item?.content).toEqual([{ type: 'reasoning_text', text: 'because' }]);
+    const done = eventsOfType(outputs, 'response.reasoning_text.done')[0];
+    expect(done).toMatchObject({ item_id: 'rs_1', content_index: 0, text: 'because' });
   });
 
   it('preserves a reasoning item encrypted_content across the wire (store:false round-trip)', async () => {
     // encrypted_content is done-only and never streamed; seed the opening bracket via
-    // `added` WITHOUT it so this proves the wire-form output_item.done carries it, and
-    // that it survives the flatten back into the /responses input array.
-    const { inbound } = await roundtrip([
+    // `added` WITHOUT it so this proves the wire-form output_item.done carries it.
+    const { outputs } = await roundtrip([
       created(),
       itemAdded(reasoningItem('rs_1')),
       itemDone(reasoningItem('rs_1', [], 'ENCRYPTED-BLOB')),
       completed(),
     ]);
 
-    const decoder = ResponsesSessionCodec.createDecoder();
-    let projection: OpenAIProjection = init();
-    for (const msg of inbound) {
-      for (const event of toCodecEvents(decoder.decode(msg))) {
-        projection = ResponsesSessionCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
-      }
-    }
-    const messages = ResponsesSessionCodec.getMessages(projection).map((m) => m.message);
-    const reasoning = messages[0]?.items.find((i): i is Responses.ResponseReasoningItem => i.type === 'reasoning');
-    expect(reasoning?.encrypted_content).toBe('ENCRYPTED-BLOB');
-
-    const inputReasoning = toResponsesInput(messages).find(
-      (i): i is Responses.ResponseReasoningItem => i.type === 'reasoning',
-    );
-    expect(inputReasoning?.encrypted_content).toBe('ENCRYPTED-BLOB');
+    const done = eventsOfType(outputs, 'response.output_item.done')[0];
+    const item = done?.item;
+    expect(item?.type).toBe('reasoning');
+    expect(item?.type === 'reasoning' ? item.encrypted_content : undefined).toBe('ENCRYPTED-BLOB');
   });
 
   it('rejects a function-call output_item.added that carries no item id', async () => {
     const { writer } = createBridge();
-    const encoder = ResponsesSessionCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
     // The item id is the stream's slot key; a streamed function_call without one
     // is malformed wire data and is rejected at the encode boundary.
     await expect(
@@ -468,7 +379,7 @@ describe('OpenAI codec roundtrip (offline)', () => {
 
   it('throws on an unmodelled output event (safety net)', async () => {
     const { writer } = createBridge();
-    const encoder = ResponsesSessionCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
     // A hosted-tool event (web search) the codec doesn't model: it must surface
     // loudly rather than being dropped, since it signals an opt-in feature we
     // don't support yet.
@@ -498,7 +409,7 @@ describe('OpenAI codec roundtrip (offline)', () => {
 
   it('throws on an unmodelled output item type at encode (added and done)', async () => {
     const { writer } = createBridge();
-    const encoder = ResponsesSessionCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
     // A computer_call_output is a ResponseOutputItem member the codec does not
     // model (and not a valid ResponseInputItem). The item envelope is carried on
     // output_item.added / .done, whose encode asserts the item is modelled, so an
@@ -514,7 +425,7 @@ describe('OpenAI codec roundtrip (offline)', () => {
 
   it('drops the framing events silently at encode (no publish, no throw)', async () => {
     const { writer, inbound } = createBridge();
-    const encoder = ResponsesSessionCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
     // The codec's drop entries: each encodes to nothing, unlike an undescribed
     // event (which throws — see the safety-net test above).
     await encoder.publishOutput(created());
@@ -533,7 +444,7 @@ describe('OpenAI codec roundtrip (offline)', () => {
 
   it('roundtrips a server-side function call and its output through the wire', async () => {
     const call = functionCallItem('fc_1', 'call_1', 'getWeather', '{"location":"London"}', 'completed');
-    const { inbound } = await roundtrip([
+    const { outputs } = await roundtrip([
       created(),
       itemAdded(call),
       itemDone(call),
@@ -541,55 +452,46 @@ describe('OpenAI codec roundtrip (offline)', () => {
       completed(),
     ]);
 
-    const decoder = ResponsesSessionCodec.createDecoder();
-    let projection: OpenAIProjection = init();
-    for (const msg of inbound) {
-      for (const event of toCodecEvents(decoder.decode(msg))) {
-        projection = ResponsesSessionCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
-      }
-    }
-    const items = ResponsesSessionCodec.getMessages(projection)[0]?.message.items ?? [];
-    expect(items.map((i) => i.type)).toEqual(['function_call', 'function_call_output']);
-    const callItem = items.find((i): i is Responses.ResponseFunctionToolCall => i.type === 'function_call');
-    expect(callItem?.name).toBe('getWeather');
-    expect(callItem?.arguments).toBe('{"location":"London"}');
-    const output = items.find(
-      (i): i is Responses.ResponseInputItem.FunctionCallOutput => i.type === 'function_call_output',
-    );
-    expect(output?.call_id).toBe('call_1');
-    expect(output?.output).toBe('{"temperature":12}');
+    // The call arrives as the stream start's item envelope; its result as the
+    // codec's own function_call_output event, paired by call_id.
+    const added = eventsOfType(outputs, 'response.output_item.added')[0];
+    expect(added?.item).toMatchObject({
+      type: 'function_call',
+      call_id: 'call_1',
+      name: 'getWeather',
+      arguments: '{"location":"London"}',
+    });
+    const output = eventsOfType(outputs, 'function_call_output')[0];
+    expect(output?.item).toEqual({ type: 'function_call_output', call_id: 'call_1', output: '{"temperature":12}' });
+    // The discrete done reduces to the finalised status.
+    const done = eventsOfType(outputs, 'response.output_item.done')[0];
+    expect(done?.item).toEqual({ type: 'function_call', id: 'fc_1', status: 'completed' });
+
+    const types = outputs.map((e) => e.type);
+    expect(types.indexOf('response.output_item.added')).toBeLessThan(types.indexOf('function_call_output'));
   });
 
   it('roundtrips a user message on the ai-input wire', async () => {
     const { writer, inbound } = createBridge();
-    const encoder = ResponsesSessionCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'u1') });
-    await encoder.publishInput(ResponsesSessionCodec.createUserMessage(userTurn('Hi there')));
+    const encoder = ResponsesCodec.createEncoder(writer);
+    await encoder.publishInput({ kind: 'message', payload: userTurn('Hi there') });
     await encoder.close();
 
     const messages = inbound();
     const input = messages.find((m) => m.name === EVENT_AI_INPUT);
     expect(input).toBeDefined();
-    expect(input && getCodecHeaders(input).kind).toBe('user-message');
+    expect(input && getCodecHeaders(input).kind).toBe('message');
     expect(input && getCodecHeaders(input).partType).toBe('input_text');
     expect(input && getTransportHeaders(input)[HEADER_ROLE]).toBe('user');
     expect(input?.data).toBe('Hi there');
 
-    const decoder = ResponsesSessionCodec.createDecoder();
-    let projection: OpenAIProjection = init();
-    for (const msg of messages) {
-      for (const event of toCodecEvents(decoder.decode(msg))) {
-        projection = ResponsesSessionCodec.fold(projection, event, metaOf(msg));
-      }
-    }
-    const turn = ResponsesSessionCodec.getMessages(projection)[0]?.message;
-    expect(turn?.role).toBe('user');
-    expect(firstInputText(turn)).toBe('Hi there');
+    expect(decodeInputs(messages)).toEqual([{ kind: 'message', payload: userTurn('Hi there') }]);
   });
 
-  it('publishes a regenerate signal as a wire-only input that folds to nothing', async () => {
+  it('publishes a regenerate signal as a wire-only input that decodes to no events', async () => {
     const { writer, inbound } = createBridge();
-    const encoder = ResponsesSessionCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'u1') });
-    await encoder.publishInput(ResponsesSessionCodec.createRegenerate('asst-1', 'user-1'));
+    const encoder = ResponsesCodec.createEncoder(writer);
+    await encoder.publishInput({ kind: 'regenerate' });
     await encoder.close();
 
     const messages = inbound();
@@ -597,32 +499,19 @@ describe('OpenAI codec roundtrip (offline)', () => {
     expect(input).toBeDefined();
     expect(input && getCodecHeaders(input).kind).toBe('regenerate');
 
-    // Wire-only: the decoder emits no input events, so the reducer never folds
-    // it and the projection stays empty (the signal carries no message state).
-    const decoder = ResponsesSessionCodec.createDecoder();
-    let projection: OpenAIProjection = init();
-    let inputCount = 0;
-    for (const msg of messages) {
-      const decoded = decoder.decode(msg);
-      inputCount += decoded.inputs.length;
-      for (const event of toCodecEvents(decoded)) {
-        projection = ResponsesSessionCodec.fold(projection, event, metaOf(msg));
-      }
-    }
-    expect(inputCount).toBe(0);
-    expect(ResponsesSessionCodec.getMessages(projection)).toHaveLength(0);
+    // Wire-only: the signal carries no message state, so the decoder emits no
+    // input events for it — the agent reads its targeting off the wire headers.
+    expect(decodeInputs(messages)).toEqual([]);
   });
 
   it('round-trips an empty prompt as a single empty text part', async () => {
     const { writer, inbound } = createBridge();
-    const encoder = ResponsesSessionCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'u1') });
+    const encoder = ResponsesCodec.createEncoder(writer);
     // A turn whose message has no content parts exercises explode's ≥1-part guarantee.
-    await encoder.publishInput(
-      ResponsesSessionCodec.createUserMessage({
-        role: 'user',
-        items: [{ type: 'message', role: 'user', content: [] }],
-      }),
-    );
+    await encoder.publishInput({
+      kind: 'message',
+      payload: { role: 'user', items: [{ type: 'message', role: 'user', content: [] }] },
+    });
     await encoder.close();
 
     const messages = inbound();
@@ -630,118 +519,90 @@ describe('OpenAI codec roundtrip (offline)', () => {
     expect(input && getCodecHeaders(input).partType).toBe('input_text');
     expect(input?.data).toBe('');
 
-    const decoder = ResponsesSessionCodec.createDecoder();
-    let projection: OpenAIProjection = init();
-    for (const msg of messages) {
-      for (const event of toCodecEvents(decoder.decode(msg))) {
-        projection = ResponsesSessionCodec.fold(projection, event, metaOf(msg));
-      }
-    }
-    expect(firstInputText(ResponsesSessionCodec.getMessages(projection)[0]?.message)).toBe('');
+    expect(firstInputText(decodedMessagePayload(messages))).toBe('');
   });
 
   it('rejects a user turn with more than one message item', async () => {
     const { writer } = createBridge();
-    const encoder = ResponsesSessionCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'u1') });
+    const encoder = ResponsesCodec.createEncoder(writer);
     // The fan-out carries no item boundary, so more than one message item
     // can't be represented on the wire — reject rather than silently
     // collapsing them into one.
     await expect(
-      encoder.publishInput(
-        ResponsesSessionCodec.createUserMessage({
+      encoder.publishInput({
+        kind: 'message',
+        payload: {
           role: 'user',
           items: [
             { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'one' }] },
             { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'two' }] },
           ],
-        }),
-      ),
+        },
+      }),
     ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
   });
 
   it('rejects a user turn whose sole item is not a message', async () => {
     const { writer } = createBridge();
-    const encoder = ResponsesSessionCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'u1') });
+    const encoder = ResponsesCodec.createEncoder(writer);
     // Only a message item is a valid user turn; any other item type is a
     // genuine caller bug on the encode side and is rejected rather than skipped.
     await expect(
-      encoder.publishInput(
-        ResponsesSessionCodec.createUserMessage({
-          role: 'user',
-          items: [functionCallItem('fc_1', 'call_1', 'getWeather')],
-        }),
-      ),
+      encoder.publishInput({
+        kind: 'message',
+        payload: { role: 'user', items: [functionCallItem('fc_1', 'call_1', 'getWeather')] },
+      }),
     ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
   });
 
   it('rejects a content part type that we currently do not handle', async () => {
     const { writer } = createBridge();
-    const encoder = ResponsesSessionCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'u1') });
+    const encoder = ResponsesCodec.createEncoder(writer);
     // input_text is the only content part type this version of the codec
     // handles; any other part type is a genuine caller bug on the encode
     // side (e.g. an input_image sent before AIT-1120 lands) and is rejected
     // rather than silently dropped.
     await expect(
-      encoder.publishInput(
-        ResponsesSessionCodec.createUserMessage({
+      encoder.publishInput({
+        kind: 'message',
+        payload: {
           role: 'user',
-          items: [
-            {
-              type: 'message',
-              role: 'user',
-              content: [{ type: 'input_image', detail: 'auto' }],
-            },
-          ],
-        }),
-      ),
+          items: [{ type: 'message', role: 'user', content: [{ type: 'input_image', detail: 'auto' }] }],
+        },
+      }),
     ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
   });
 
   it('round-trips the turn role rather than defaulting it', async () => {
     const { writer, inbound } = createBridge();
-    const encoder = ResponsesSessionCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'u1') });
+    const encoder = ResponsesCodec.createEncoder(writer);
     // A non-'user' role would be masked by the 'user' fallback if the header
     // were mis-keyed, so round-tripping it proves the role is actually read.
-    await encoder.publishInput(
-      ResponsesSessionCodec.createUserMessage({
+    await encoder.publishInput({
+      kind: 'message',
+      payload: {
         role: 'assistant',
         items: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] }],
-      }),
-    );
+      },
+    });
     await encoder.close();
 
-    const decoder = ResponsesSessionCodec.createDecoder();
-    let projection: OpenAIProjection = init();
-    for (const msg of inbound()) {
-      for (const event of toCodecEvents(decoder.decode(msg))) {
-        projection = ResponsesSessionCodec.fold(projection, event, metaOf(msg));
-      }
-    }
-    expect(ResponsesSessionCodec.getMessages(projection)[0]?.message.role).toBe('assistant');
+    expect(decodedMessagePayload(inbound())?.role).toBe('assistant');
   });
 
   it('defaults the role to user when the role header is absent', () => {
-    const decoder = ResponsesSessionCodec.createDecoder();
     // CAST: a minimal inbound ai-input part with no role transport header, to
-    // exercise assemble's `?? 'user'` fallback. Still carries a
-    // codec-message-id — the reducer needs one to have anywhere to fold this
-    // message into; that isn't what this test is exercising.
+    // exercise assemble's `?? 'user'` fallback.
     const msg = {
       action: 'message.create',
       serial: 's1',
       version: { serial: 's1' },
       name: EVENT_AI_INPUT,
       data: 'hi',
-      extras: {
-        ai: { transport: { [HEADER_CODEC_MESSAGE_ID]: 'u1' }, codec: { kind: 'user-message', partType: 'input_text' } },
-      },
+      extras: { ai: { transport: {}, codec: { kind: 'message', partType: 'input_text' } } },
     } as unknown as Ably.InboundMessage;
 
-    let projection: OpenAIProjection = init();
-    for (const event of toCodecEvents(decoder.decode(msg))) {
-      projection = ResponsesSessionCodec.fold(projection, event, metaOf(msg));
-    }
-    expect(ResponsesSessionCodec.getMessages(projection)[0]?.message.role).toBe('user');
+    expect(decodedMessagePayload([msg])?.role).toBe('user');
   });
 });
 
@@ -766,10 +627,10 @@ const foreignMessage = (serial: string, overrides: Partial<Ably.InboundMessage> 
 
 // An application may publish its own messages on a channel it shares with a
 // session. They carry neither the SDK's wire names nor its `extras.ai`
-// envelope; interleaving them through the decode + fold path must leave the
-// projection byte-for-byte identical to the clean sequence.
+// envelope; interleaving them through the decode path must leave the decoded
+// event sequence identical to the clean sequence.
 describe('OpenAI codec foreign messages (offline)', () => {
-  it('folds an assistant turn identically with foreign messages interleaved', async () => {
+  it('decodes an assistant run identically with foreign messages interleaved', async () => {
     const { inbound } = await roundtrip(textRun('msg_1', 'Hello, world!'));
 
     // One foreign wire between every SDK wire, including an append the decoder
@@ -780,27 +641,27 @@ describe('OpenAI codec foreign messages (offline)', () => {
       msg,
     ]);
 
-    expect(ResponsesSessionCodec.getMessages(foldAll(polluted))).toEqual(
-      ResponsesSessionCodec.getMessages(foldAll(inbound)),
-    );
+    const clean = decodeOutputs(inbound);
+    expect(clean.length).toBeGreaterThan(0);
+    expect(decodeOutputs(polluted)).toEqual(clean);
   });
 
   it('decodes a foreign message to no events', () => {
-    const decoder = ResponsesSessionCodec.createDecoder();
+    const decoder = ResponsesCodec.createDecoder();
 
     expect(decoder.decode(foreignMessage('foreign-1'))).toEqual({ inputs: [], outputs: [] });
   });
 });
 
-// The client-driven tool descriptors carry no Responses stream event of their
-// own — the reducer folds cover the projection maths (see reducer.test.ts);
+// The client-driven tool events carry no Responses stream event of their own;
 // these prove the wire framing round-trips: the codec headers each descriptor
 // declares (call_id / name / approved / reason) and its data envelope survive
-// encode → wire → decode → fold, landing the same projection state.
+// encode → wire → decode. The plain `item` and approved-decision round-trips
+// live in inputs.test.ts.
 describe('OpenAI codec client-driven tool wire roundtrip (offline)', () => {
-  it('roundtrips a tool-approval-request: call_id/name on headers, arguments in data, folding to a pending gate', async () => {
+  it('roundtrips a tool-approval-request: call_id/name on headers, arguments in data', async () => {
     const { writer, inbound } = createBridge();
-    const encoder = ResponsesSessionCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
     await encoder.publishOutput(toolApprovalRequestEvent('call_1', 'getWeatherForecast', '{"location":"Paris"}'));
     await encoder.close();
 
@@ -811,85 +672,22 @@ describe('OpenAI codec client-driven tool wire roundtrip (offline)', () => {
     expect(wire && getCodecHeaders(wire).name).toBe('getWeatherForecast');
     expect(wire?.data).toBe('{"location":"Paris"}');
 
-    const states = ResponsesSessionCodec.getMessages(foldAll(messages))[0]?.message.toolCallStates;
-    expect(states?.call_1).toEqual({
-      approval: 'pending',
-      name: 'getWeatherForecast',
-      arguments: '{"location":"Paris"}',
-    });
-  });
-
-  it('roundtrips a tool-result: call_id on headers, output in data, folding to a function_call_output (result ok)', async () => {
-    const { writer, inbound } = createBridge();
-    const encoder = ResponsesSessionCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
-    await encoder.publishInput(
-      ResponsesSessionCodec.createToolResult('run-1', { call_id: 'call_1', output: '{"latitude":51.5}' }),
-    );
-    await encoder.close();
-
-    const messages = inbound();
-    const wire = messages.find((m) => m.name === EVENT_AI_INPUT);
-    expect(wire && getCodecHeaders(wire).kind).toBe('tool-result');
-    expect(wire && getCodecHeaders(wire).call_id).toBe('call_1');
-
-    const projection = foldAll(messages);
-    expect(outputsOf(projection)).toEqual([
-      { type: 'function_call_output', call_id: 'call_1', output: '{"latitude":51.5}' },
-    ]);
-    expect(ResponsesSessionCodec.getMessages(projection)[0]?.message.toolCallStates?.call_1).toEqual({ result: 'ok' });
-  });
-
-  it('roundtrips a tool-result-error: the failure message rides the data, folding to a function_call_output (result failed)', async () => {
-    const { writer, inbound } = createBridge();
-    const encoder = ResponsesSessionCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
-    await encoder.publishInput(
-      ResponsesSessionCodec.createToolResultError('run-1', { call_id: 'call_1', message: 'geolocation denied' }),
-    );
-    await encoder.close();
-
-    const messages = inbound();
-    const wire = messages.find((m) => m.name === EVENT_AI_INPUT);
-    expect(wire && getCodecHeaders(wire).kind).toBe('tool-result-error');
-    expect(wire && getCodecHeaders(wire).call_id).toBe('call_1');
-
-    const projection = foldAll(messages);
-    expect(outputsOf(projection)).toEqual([
-      { type: 'function_call_output', call_id: 'call_1', output: 'geolocation denied' },
-    ]);
-    expect(ResponsesSessionCodec.getMessages(projection)[0]?.message.toolCallStates?.call_1).toEqual({
-      result: 'failed',
-    });
-  });
-
-  it('roundtrips an approval decision through request → approved response: no output, gate flips to approved', async () => {
-    const { writer, inbound } = createBridge();
-    const encoder = ResponsesSessionCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
-    await encoder.publishOutput(toolApprovalRequestEvent('call_1', 'getWeatherForecast', '{}'));
-    await encoder.publishInput(
-      ResponsesSessionCodec.createToolApprovalResponse('run-1', { call_id: 'call_1', approved: true }),
-    );
-    await encoder.close();
-
-    const messages = inbound();
-    const wire = messages.find((m) => m.name === EVENT_AI_INPUT);
-    expect(wire && getCodecHeaders(wire).kind).toBe('tool-approval-response');
-    expect(wire && getCodecHeaders(wire).approved).toBe('true');
-
-    const projection = foldAll(messages);
-    // Approval alone adds no output — the server runs the tool on resume.
-    expect(outputsOf(projection)).toHaveLength(0);
-    expect(ResponsesSessionCodec.getMessages(projection)[0]?.message.toolCallStates?.call_1?.approval).toBe('approved');
-  });
-
-  it('roundtrips a denied approval response: the reason rides the header and becomes the rejection output', async () => {
-    const { writer, inbound } = createBridge();
-    const encoder = ResponsesSessionCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
-    await encoder.publishInput(
-      ResponsesSessionCodec.createToolApprovalResponse('run-1', {
+    expect(decodeOutputs(messages)).toEqual([
+      {
+        type: 'tool-approval-request',
         call_id: 'call_1',
-        approved: false,
-        reason: 'User denied',
-      }),
+        name: 'getWeatherForecast',
+        arguments: '{"location":"Paris"}',
+      },
+    ]);
+  });
+
+  it('roundtrips a denied approval decision: approved and reason ride the headers', async () => {
+    const { writer, inbound } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer);
+    await encoder.publishInput(
+      { kind: 'approval', payload: { call_id: 'call_1', approved: false, reason: 'User denied' } },
+      { messageId: 'run-1' },
     );
     await encoder.close();
 
@@ -898,16 +696,13 @@ describe('OpenAI codec client-driven tool wire roundtrip (offline)', () => {
     expect(wire && getCodecHeaders(wire).approved).toBe('false');
     expect(wire && getCodecHeaders(wire).reason).toBe('User denied');
 
-    const projection = foldAll(messages);
-    expect(outputsOf(projection)).toEqual([{ type: 'function_call_output', call_id: 'call_1', output: 'User denied' }]);
-    expect(ResponsesSessionCodec.getMessages(projection)[0]?.message.toolCallStates?.call_1).toEqual({
-      approval: 'denied',
-      reason: 'User denied',
-    });
+    expect(decodeInputs(messages)).toEqual([
+      { kind: 'approval', payload: { call_id: 'call_1', approved: false, reason: 'User denied' } },
+    ]);
   });
 });
 
-// The roundtrip/fold tests above prove the decoder + reducer behave correctly
+// The roundtrip tests above prove the decoder reconstructs events correctly
 // when the excluded fields are absent. These prove the other half: the codec
 // actually removes them, so the redundant data never reaches what a subscriber
 // decodes. Most cases feed a FULL output item to output_item.done and assert the
@@ -982,8 +777,8 @@ describe('OpenAI codec wire reduction', () => {
     expect(item.content[0]).toMatchObject({ text: 'Hi', annotations: [] });
 
     const { inbound } = await roundtrip([itemDone(item)]);
-    // text / role / annotations are rebuilt by the reducer from the streams, so
-    // none are carried on the wire. An empty logprobs array is not logprobs either (the
+    // The streamed deltas already carry the text / role / annotations, so none
+    // are re-sent here. An empty logprobs array is not logprobs either (the
     // length>0 guard in toWireContent), so there is no `content` at all —
     // the lean case a plain output_text with no logprobs field also yields (see
     // the decoded-shape assertion of that path in the roundtrip block above).
@@ -1042,7 +837,8 @@ describe('OpenAI codec wire reduction', () => {
     const { inbound } = await roundtrip([itemDone(reasoning)]);
     // encrypted_content is the sole output_item.done-only datum that must survive
     // (the zero-data-retention (ZDR) cross-turn carrier of chain-of-thought); the
-    // summary is streamed, so it is rebuilt from its stream and dropped here.
+    // summary is streamed, so it reaches the client on its own stream and is
+    // dropped here.
     expect(wireDoneItem(inbound)).toEqual({
       type: 'reasoning',
       id: 'rs_1',

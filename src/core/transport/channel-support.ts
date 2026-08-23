@@ -1,15 +1,12 @@
 /**
  * Shared channel lifecycle plumbing.
  *
- * Every surface built over one Ably channel — the client and agent transports,
- * and the sessions layered above them — gates its writes on `connect()` having
- * run, tears down best-effort on close, and reacts to channel continuity loss
- * with the same detection rule and error shape. These helpers own that common
- * machinery so consumers cannot drift on the connection guard, the
- * detach-swallow behaviour, or — most importantly — the continuity-loss
- * predicate, which encodes channel protocol semantics (Spec AIT-CT19 /
- * AIT-ST12). Each consumer keeps its own divergent reaction to continuity
- * loss.
+ * Both transports gate their writes on `connect()` having run and react to
+ * channel continuity loss with the same detection rule and error shape. These
+ * helpers own that common machinery so the two transports cannot drift on the
+ * connection guard or — most importantly — the continuity-loss predicate,
+ * which encodes channel protocol semantics (Spec AIT-CT19 / AIT-ST12). Each
+ * transport keeps its own divergent reaction to continuity loss.
  */
 
 import * as Ably from 'ably';
@@ -19,30 +16,8 @@ import type { Logger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
 
 /**
- * Lifecycle state shared by both sessions: a session is `READY` from
- * construction until `close()` flips it to `CLOSED`. There is no separate
- * "connected" state — connection is tracked by the presence of a connect
- * promise, not this enum.
- */
-export enum SessionState {
-  /** The session is open; writes and message processing proceed. */
-  READY = 'ready',
-  /** `close()` has run; further operations are rejected or ignored. */
-  CLOSED = 'closed',
-}
-
-/**
- * The unsubscribe function both sessions' `on('error', …)` return when the
- * session is already CLOSED — a no-op, since no further events will fire so
- * the handler is never registered. Shared so the two sessions don't each
- * carry their own copy.
- */
-// eslint-disable-next-line @typescript-eslint/no-empty-function -- intentional no-op
-export const noopUnsubscribe = (): void => {};
-
-/**
- * Subscribe a session's listener to its channel and attach the channel. Both
- * sessions cache the returned promise as their connect guard, so this is the
+ * Subscribe a transport's listener to its channel and attach the channel. Both
+ * transports cache the returned promise as their connect guard, so this is the
  * single place the subscribe-and-attach step — and its failure shape — is
  * defined.
  *
@@ -50,7 +25,7 @@ export const noopUnsubscribe = (): void => {};
  * the implicit attach-on-subscribe (RTL7g — subscribe before attach), but its
  * promise does not reliably resolve only once the channel reaches ATTACHED
  * (e.g. when the implicit attach is interrupted by a rapid mount/unmount/remount
- * cycle, it can resolve with the channel still INITIALIZED). The session's write
+ * cycle, it can resolve with the channel still INITIALIZED). The transport's write
  * guard requires the channel to be ATTACHED/ATTACHING by the time `connect()`
  * resolves, so `attach()` (idempotent — a no-op when already attaching/attached)
  * makes that guarantee hold. On success logs at debug; on failure builds a
@@ -62,12 +37,12 @@ export const noopUnsubscribe = (): void => {};
  * registered. This unsubscribes the listener first (a no-op on the first
  * attempt) so a `connect()` retry after a failure registers it exactly once
  * rather than accumulating duplicate deliveries.
- * @param channel - The session's channel.
+ * @param channel - The transport's channel.
  * @param listener - The message listener to subscribe (also the unsubscribe handle on close).
  * @param logger - Logger for the success/failure lines, or `undefined`.
  * @param component - The owning class name, used as the log message prefix.
  * @param onError - Called with the subscription error before it is thrown
- *   (both sessions emit it on their session `on('error')`).
+ *   (both transports emit it on their `error` stream).
  * @returns A promise that resolves once subscribed and attached, or rejects with
  *   the `SessionSubscriptionFailed`.
  */
@@ -105,10 +80,11 @@ export const subscribeAndAttach = async (
 
 /**
  * Wrap a failure thrown while processing an inbound channel message as a
- * `SessionMessageProcessingFailed`, preserving the original as `cause`. Single source
- * of truth for the message-processing error shape both sessions surface. Kept
- * distinct from the connect-time `SessionSubscriptionFailed`: the subscription
- * survives this, so the session stays usable and the fix is in the handler.
+ * `SessionMessageProcessingFailed`, preserving the original as `cause`. Single
+ * source of truth for the message-processing error shape both transports
+ * surface. Kept distinct from the connect-time `SessionSubscriptionFailed`:
+ * the subscription survives this, so the transport stays usable and the fix
+ * is in the handler.
  * @param error - The thrown value.
  * @returns The wrapped error.
  */
@@ -121,25 +97,8 @@ export const wrapMessageProcessingError = (error: unknown): Ably.ErrorInfo =>
   );
 
 /**
- * Run a session's per-message processing inside the shared error bracket: a
- * throw is wrapped via {@link wrapMessageProcessingError} and handed to
- * `onError` so one bad message can't kill the subscription. Both sessions route
- * their channel-message handler through this so the bracket and the surfaced
- * error are identical.
- * @param process - The message-processing body (fold, dispatch, side-effects).
- * @param onError - Called with the wrapped error when `process` throws.
- */
-export const handleWireMessage = (process: () => void, onError: (error: Ably.ErrorInfo) => void): void => {
-  try {
-    process();
-  } catch (error) {
-    onError(wrapMessageProcessingError(error));
-  }
-};
-
-/**
- * Single-flight connection guard shared by both sessions. Owns the connect
- * promise and the last connect failure so the client and agent sessions cannot
+ * Single-flight connection guard shared by both transports. Owns the connect
+ * promise and the last connect failure so the client and agent transports cannot
  * drift on the retry-after-failure semantics or the write-guard error shapes.
  *
  * A successful or in-flight connect is cached and returned to every caller, so
@@ -234,32 +193,6 @@ export class ConnectGuard {
     );
   }
 }
-
-/**
- * Detach the session's channel on close, best-effort. `connect()` subscribes
- * (which implicitly attaches), so a detach is only attempted when `connect()`
- * ran — including a failed attempt, whose `subscribe()` may have registered the
- * listener before the attach that followed it failed. A detach failure (e.g. the
- * channel is already FAILED) must not throw out of `close()`, so it is swallowed
- * and logged at debug.
- * @param channel - The session's channel.
- * @param attempted - Whether `connect()` ran; detach is skipped when `false`.
- * @param logger - Logger for the swallowed-failure debug line, or `undefined`.
- * @param component - The owning class name, used as the log message prefix.
- */
-export const bestEffortDetach = async (
-  channel: Ably.RealtimeChannel,
-  attempted: boolean,
-  logger: Logger | undefined,
-  component: string,
-): Promise<void> => {
-  if (!attempted) return;
-  try {
-    await channel.detach();
-  } catch (error) {
-    logger?.debug(`${component}.close(); channel detach failed`, { error });
-  }
-};
 
 /**
  * Whether a channel state change breaks message continuity:

@@ -2,7 +2,7 @@
  * The agent transport: open runs, publish output, and observe the channel —
  * cancel signals route onto the matching run handle's `abortSignal`.
  *
- * {@link createAgentTransport} composes the existing agent write path — the
+ * {@link createAgentTransport} composes the agent write path — the
  * run-manager lifecycle publisher and the {@link createRunStepWriter} step/pipe
  * machinery — with its own receive path: it mints a codec decoder, wraps it in
  * a receive transport, and — once {@link AgentTransport.connect} subscribes and
@@ -24,10 +24,11 @@
  * batch of classified events, so the agent can assemble prior conversation
  * context for an inference call.
  *
- * It holds no Tree, so the sticky `step-client-id` inheritance relies solely on
- * the writer's in-process cursor (`getPriorStepClientId` returns `undefined`),
- * and the optimistic step-lifecycle seed a run's output verbs produce is
- * emitted on the transport's own receive stream.
+ * The transport holds no conversation state, so the sticky `step-client-id`
+ * inheritance relies solely on the writer's in-process cursor
+ * (`getPriorStepClientId` returns `undefined`), and the optimistic
+ * step-lifecycle seed a run's output verbs produce is emitted on the
+ * transport's own receive stream.
  */
 
 import * as Ably from 'ably';
@@ -147,10 +148,10 @@ export interface AgentTransportOptions<TInput, TOutput> {
 }
 
 /**
- * Create a standalone {@link AgentTransport} over a channel and codec. Reuses
- * the run-manager lifecycle publisher and the run-step-writer output path with
- * no Tree, so a developer can drive agent runs without adopting the Tree, View,
- * or session layers. Construction is synchronous and passive;
+ * Create a standalone {@link AgentTransport} over a channel and codec.
+ * Composes the run-manager lifecycle publisher and the run-step-writer output
+ * path, so a developer can drive agent runs while folding the channel's
+ * events into their own state. Construction is synchronous and passive;
  * {@link AgentTransport.connect} subscribes the transport's listener and
  * attaches the channel, after which live events flow, cancels route onto run
  * handles, and the run/history surface opens.
@@ -659,6 +660,10 @@ export const createAgentTransport = <TInput, TOutput>(
         forkOf: params.forkOf,
         regenerates: params.regenerates,
         invocationId,
+        // Anchor the opening event to its trigger, so a client that published
+        // the input resolves the run-id from the run-start's
+        // input-codec-message-id header (PublishInputResult.runId).
+        inputCodecMessageId,
         continuation: params.open === 'resume',
       });
     })();
@@ -689,10 +694,11 @@ export const createAgentTransport = <TInput, TOutput>(
       emitStepLifecycle: (event) => {
         receiver.emitEvent({ kind: 'step-lifecycle', event });
       },
-      // No Tree to re-derive a run's prior step client from: sticky inheritance
-      // rests entirely on the writer's in-process `lastStepClientId` cursor.
+      // The transport keeps no durable state to re-derive a run's prior step
+      // client from: sticky inheritance rests entirely on the writer's
+      // in-process `lastStepClientId` cursor.
       getPriorStepClientId: () => {
-        /* no Tree, no prior step client */
+        /* no durable state, no prior step client */
       },
       // The caller's per-run hooks, `onError` included: the writer fires it
       // with a wrapped pipe stream failure alongside the `StreamResult.error`
@@ -737,7 +743,7 @@ export const createAgentTransport = <TInput, TOutput>(
     });
 
     /**
-     * Wrap the writer's {@link RunStep} as a {@link RunStepTransport}: the
+     * Wrap the writer's `WriterStep` as a {@link RunStepTransport}: the
      * transport surface has no `start()`, so the step is started lazily on its
      * first `pipe` / `send`, avoiding an empty `ai-step-start` / `ai-step-end`
      * bracket for a step that publishes nothing.

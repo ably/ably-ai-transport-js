@@ -39,10 +39,10 @@ export const resolvedCallIds = (messages: OpenAIMessage[]): Set<string> => {
  * An approved call counts as answered even though its output has not folded yet —
  * the agent runs it server-side on resume (see {@link approvedUnexecutedCalls})
  * before the next model turn, so its output exists by the time the model sees the
- * conversation. A denial also counts, because the reducer resolves it with a
- * rejection `function_call_output`, which the resolved check already covers. A
- * call still `pending` a decision, and a client-executed call whose result has
- * not arrived, are both unanswered.
+ * conversation. A denial also counts, because a denial is answered on the wire by
+ * a `function_call_output` item recording the rejection, which the resolved check
+ * already covers. A call still `pending` a decision, and a client-executed call
+ * whose result has not arrived, are both unanswered.
  *
  * A caller resuming a run reads this to decide whether the run is ready to
  * continue at all. Every open `function_call` must carry a matching output in the

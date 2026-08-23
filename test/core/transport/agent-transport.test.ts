@@ -848,6 +848,44 @@ describe('createAgentTransport', () => {
       expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_PARENT]).toBe('parent-cmid');
     });
 
+    it('anchors the opening event to its trigger with input-codec-message-id', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({ inputCodecMessageId: 'cm-trigger' });
+      await run.end({ reason: 'complete' });
+
+      const start = channel.publishCalls.find((m) => m.name === 'ai-run-start');
+      if (!start) throw new Error('expected ai-run-start');
+      expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('cm-trigger');
+    });
+
+    it("a located input's codec-message-id defaults the input anchor", async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({
+        input: locatedInput({ [HEADER_CODEC_MESSAGE_ID]: 'cm-from-trigger' }),
+      });
+      await run.end({ reason: 'complete' });
+
+      const start = channel.publishCalls.find((m) => m.name === 'ai-run-start');
+      if (!start) throw new Error('expected ai-run-start');
+      expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('cm-from-trigger');
+    });
+
+    it('an explicit inputCodecMessageId wins over the located input', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({
+        input: locatedInput({ [HEADER_CODEC_MESSAGE_ID]: 'cm-from-trigger' }),
+        inputCodecMessageId: 'cm-explicit',
+      });
+      await run.end({ reason: 'complete' });
+
+      const start = channel.publishCalls.find((m) => m.name === 'ai-run-start');
+      if (!start) throw new Error('expected ai-run-start');
+      expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('cm-explicit');
+    });
+
     it('a located input carrying a run-id header resumes that run', async () => {
       const { transport, channel } = await setup();
 

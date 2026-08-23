@@ -2,7 +2,7 @@
  * Shared constants used by both codec and transport layers.
  *
  * Header constants define the transport wire header names. Message and event
- * name constants define the session lifecycle signals on the channel.
+ * name constants define the run and step lifecycle signals on the channel.
  *
  * These live at the top level (not in codec/ or transport/) because both
  * layers need them — the codec core reads/writes stream and status headers,
@@ -43,7 +43,7 @@ export const HEADER_INVOCATION_ID = 'invocation-id';
  * codec-message-id, and so amend events that target an existing message can
  * carry their own per-send identity. The invocation body lists every
  * inputEventId the agent must observe on the channel before starting LLM
- * work — see `Run.start()`'s input-event lookup.
+ * work — `AgentTransport.locateInput` matches on this header.
  */
 export const HEADER_EVENT_ID = 'event-id';
 
@@ -84,10 +84,11 @@ export const HEADER_FORK_OF = 'fork-of';
  *
  * Stamped on the regenerate wire (and echoed on `run-start`) when the
  * client requested a regeneration. A regenerate run parents at the SAME input
- * node as the reply it regenerates, so it joins that input's reply runs as a
- * same-parent sibling (no fork-of). The View consults this header to resolve
- * the message-level sibling group and to drop the regenerated message from
- * earlier Runs in the visible chain (Spec: AIT-CT13d).
+ * as the reply it regenerates, so it joins that input's reply runs as a
+ * same-parent sibling (no fork-of). The transport carries the header verbatim;
+ * a consumer reconstructing conversation structure uses it to resolve the
+ * message-level sibling group and to drop the regenerated message from the
+ * earlier reply (Spec: AIT-CT13d).
  */
 export const HEADER_MSG_REGENERATE = 'msg-regenerate';
 
@@ -98,10 +99,11 @@ export const HEADER_MSG_REGENERATE = 'msg-regenerate';
  * A client tool-result forks its own reply run (a same-parent sibling of the
  * suspended run). The suspended run is then dead: nothing will ever resume it
  * (its answer went to the fork). The client stamps this header with that run's
- * id so the Tree can mark it superseded and EXCLUDE it from branch selection —
- * so a single client's single response renders as ONE linear reply (the dead
- * trunk hidden), while genuinely concurrent forks from multiple clients still
- * surface as sibling branches. Distinct from `fork-of` / `msg-regenerate`,
+ * id so a consumer reconstructing conversation structure can mark it
+ * superseded and EXCLUDE it from branch selection — so a single client's
+ * single response renders as ONE linear reply (the dead trunk hidden), while
+ * genuinely concurrent forks from multiple clients still surface as sibling
+ * branches. Distinct from `fork-of` / `msg-regenerate`,
  * which create a NAVIGABLE sibling (both kept visible); `supersedes` HIDES the
  * superseded run. Value is a run-id, not a codec-message-id.
  */
@@ -141,7 +143,8 @@ export const HEADER_STEP_ID = 'step-id';
  * re-streamed step (a fresh start under the same `step-id`) always supersedes
  * the prior attempt's output cleanly.
  *
- * Distinct from `RunNode.startSerial`, which orders sibling reply runs.
+ * Distinct from the run's own `ai-run-start` serial, which orders sibling
+ * reply runs.
  */
 export const HEADER_STEP_START_SERIAL = 'step-start-serial';
 
@@ -184,8 +187,8 @@ export const HEADER_INPUT_CODEC_MESSAGE_ID = 'input-codec-message-id';
  * the set is empty. Each steer appears on exactly one attempt's outputs — the
  * first attempt opened after `hasInput()` observed the steer.
  *
- * Used by clients to resolve `ClientRun.steer(...)` outcomes by membership:
- * accumulate the union across the run's observed responses, then on
+ * Used by clients to resolve `ClientTransport.steer(...)` outcomes by
+ * membership: accumulate the union across the run's observed responses, then on
  * `ai-run-suspend` / `ai-run-end` check whether the steer's own
  * codec-message-id is in the union. Order-insensitive — it does not rely on
  * channel-serial monotonicity, which is not guaranteed for cross-publisher

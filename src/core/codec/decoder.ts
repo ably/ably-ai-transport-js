@@ -321,7 +321,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
     if (!tracker) {
       // An append is the one action whose `name` the platform does not echo, so
       // a foreign append — an application streaming its own message on a
-      // channel it shares with a session — is identified by the absence of the
+      // channel it shares with a transport — is identified by the absence of the
       // SDK's `extras.ai` envelope. It decodes to nothing, and says so at
       // debug: it is expected traffic, not the out-of-contract case below.
       if (!hasAiEnvelope(message)) {

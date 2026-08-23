@@ -6,27 +6,27 @@
  * delivers the in-flight streamed message as a single full-contents
  * `message.update` (first contact), so these tests encode a run through the
  * offline bridge, then re-deliver its streamed message as such an update to a
- * fresh decoder — the joiner's view — and assert the opening bracket is
- * reconstructed so the streamed content still folds. The present-at-start /
- * full-replay path is checked not to double the opening bracket.
+ * fresh decoder — the joiner's view — and assert the decoded event sequence
+ * leads with the synthesised `output_item.added` opening bracket (correct item
+ * type, id recovered from the codec headers) ahead of the group's own start and
+ * the accumulated deltas. Synthesis is stateless and unconditional, so a full
+ * replay re-introduces the item id alongside the genuine opening bracket; a
+ * consumer folding the events collapses the pair by item id.
  */
 
 import type * as Ably from 'ably';
-import type { Responses } from 'openai/resources/responses/responses';
 import { describe, expect, it } from 'vitest';
 
 import { HEADER_STREAM } from '../../../src/constants.js';
-import { toCodecEvents } from '../../../src/core/transport/session-codec.js';
 import type { OpenAIOutput } from '../../../src/openai/codec/index.js';
-import { init } from '../../../src/openai/codec/reducer.js';
-import { type OpenAIProjection } from '../../../src/openai/codec/reducer.js';
-import { ResponsesSessionCodec } from '../../../src/openai/codec/session-codec.js';
+import { ResponsesCodec } from '../../../src/openai/codec/index.js';
 import { getTransportHeaders } from '../../../src/utils.js';
 import {
   completed,
   contentPartAdded,
   createBridge,
   created,
+  eventsOfType,
   functionCallArgsRun,
   itemAdded,
   messageItem,
@@ -49,8 +49,8 @@ const transportOf = (m: Ably.InboundMessage): Record<string, string> => getTrans
 // Encode a run through the offline bridge and return the inbound wire messages.
 const encodeInbound = async (events: OpenAIOutput[], runId = 'run-1'): Promise<Ably.InboundMessage[]> => {
   const { writer, inbound } = createBridge();
-  const encoder = ResponsesSessionCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', runId) });
-  // Feed events as-is, as an agent's run.pipe does; the codec's descriptor
+  const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', runId) });
+  // Feed events as-is, as an agent's pipe does; the codec's descriptor
   // table drops the framing events at encode.
   for (const event of events) await encoder.publishOutput(event);
   await encoder.close();
@@ -77,66 +77,56 @@ const midStreamJoin = (msgs: Ably.InboundMessage[]): Ably.InboundMessage => {
   return asFirstContactUpdate(create, msgs);
 };
 
-// Decode messages through a fresh decoder and fold them into a projection.
-const foldMessages = (msgs: Ably.InboundMessage[]): OpenAIProjection => {
-  const decoder = ResponsesSessionCodec.createDecoder();
-  let projection = init();
-  for (const msg of msgs) {
-    for (const event of toCodecEvents(decoder.decode(msg))) {
-      projection = ResponsesSessionCodec.fold(projection, event, { serial: msg.serial ?? '', messageId: 'run-1' });
-    }
-  }
-  return projection;
-};
-
-// The sole turn's output items from a folded projection.
-const itemsOf = (projection: OpenAIProjection): Responses.ResponseOutputItem[] => {
-  const turn = ResponsesSessionCodec.getMessages(projection)[0]?.message;
-  // CAST: an assistant turn's items are output items in these output-only tests.
-  return (turn?.items ?? []) as Responses.ResponseOutputItem[];
-};
-
 // The decoded outputs a joiner sees from a single first-contact update.
 const decodeJoin = (update: Ably.InboundMessage): OpenAIOutput[] =>
-  ResponsesSessionCodec.createDecoder().decode(update).outputs;
+  ResponsesCodec.createDecoder().decode(update).outputs;
+
+// Decode a whole inbound sequence's outputs through a fresh decoder.
+const decodeAll = (msgs: Ably.InboundMessage[]): OpenAIOutput[] => {
+  const decoder = ResponsesCodec.createDecoder();
+  return msgs.flatMap((msg) => decoder.decode(msg).outputs);
+};
 
 describe('OpenAI decoderSynthesiseLifecycle (mid-stream join)', () => {
-  it('synthesises the message opening bracket so joined output_text folds', async () => {
+  it('synthesises the message opening bracket ahead of joined output_text', async () => {
     const update = midStreamJoin(await encodeInbound(textRun('msg_1', 'Hello, world!')));
 
-    // The reconstructed opening bracket leads the join, before the group's own start.
     const outputs = decodeJoin(update);
-    const added = outputs.find((e) => e.type === 'response.output_item.added');
-    expect(added?.type === 'response.output_item.added' ? added.item.type : '').toBe('message');
-    expect(added?.type === 'response.output_item.added' ? added.item.id : '').toBe('msg_1');
-    expect(outputs.map((e) => e.type)).toContain('response.content_part.added');
+    const types = outputs.map((e) => e.type);
 
-    // With the opening bracket present, the streamed text folds into it.
-    const message = itemsOf(foldMessages([update])).find(
-      (i): i is Responses.ResponseOutputMessage => i.type === 'message',
-    );
-    expect(message?.content.find((p) => p.type === 'output_text')).toEqual({
-      type: 'output_text',
-      text: 'Hello, world!',
-      annotations: [],
-    });
+    // The synthesised opening bracket leads the join — item type and id
+    // recovered from the re-stamped codec headers — before the group's own
+    // start, which precedes the accumulated text.
+    const added = eventsOfType(outputs, 'response.output_item.added')[0];
+    expect(added?.item).toMatchObject({ type: 'message', id: 'msg_1' });
+    const partAdded = eventsOfType(outputs, 'response.content_part.added')[0];
+    expect(partAdded).toMatchObject({ item_id: 'msg_1', content_index: 0 });
+    expect(types.indexOf('response.output_item.added')).toBeLessThan(types.indexOf('response.content_part.added'));
+    expect(types.indexOf('response.content_part.added')).toBeLessThan(types.indexOf('response.output_text.delta'));
+
+    // The joiner receives the text accumulated so far.
+    const deltas = eventsOfType(outputs, 'response.output_text.delta');
+    expect(deltas.map((d) => d.delta).join('')).toBe('Hello, world!');
   });
 
-  it('synthesises a reasoning opening bracket so a joined reasoning summary folds', async () => {
+  it('synthesises a reasoning opening bracket ahead of a joined reasoning summary', async () => {
     const update = midStreamJoin(
       await encodeInbound([created(), ...reasoningSummaryRun('rs_1', 'Thinking…'), completed()]),
     );
 
-    const added = decodeJoin(update).find((e) => e.type === 'response.output_item.added');
-    expect(added?.type === 'response.output_item.added' ? added.item.type : '').toBe('reasoning');
+    const outputs = decodeJoin(update);
+    const added = eventsOfType(outputs, 'response.output_item.added')[0];
+    expect(added?.item).toMatchObject({ type: 'reasoning', id: 'rs_1' });
 
-    const item = itemsOf(foldMessages([update])).find(
-      (i): i is Responses.ResponseReasoningItem => i.type === 'reasoning',
+    const types = outputs.map((e) => e.type);
+    expect(types.indexOf('response.output_item.added')).toBeLessThan(
+      types.indexOf('response.reasoning_summary_part.added'),
     );
-    expect(item?.summary).toEqual([{ type: 'summary_text', text: 'Thinking…' }]);
+    const deltas = eventsOfType(outputs, 'response.reasoning_summary_text.delta');
+    expect(deltas.map((d) => d.delta).join('')).toBe('Thinking…');
   });
 
-  it('synthesises a reasoning opening bracket so joined reasoning text folds', async () => {
+  it('synthesises a reasoning opening bracket ahead of joined reasoning text', async () => {
     const update = midStreamJoin(
       await encodeInbound([
         created(),
@@ -149,13 +139,14 @@ describe('OpenAI decoderSynthesiseLifecycle (mid-stream join)', () => {
       ]),
     );
 
-    const added = decodeJoin(update).find((e) => e.type === 'response.output_item.added');
-    expect(added?.type === 'response.output_item.added' ? added.item.type : '').toBe('reasoning');
+    const outputs = decodeJoin(update);
+    const added = eventsOfType(outputs, 'response.output_item.added')[0];
+    expect(added?.item).toMatchObject({ type: 'reasoning', id: 'rs_1' });
 
-    const item = itemsOf(foldMessages([update])).find(
-      (i): i is Responses.ResponseReasoningItem => i.type === 'reasoning',
-    );
-    expect(item?.content).toEqual([{ type: 'reasoning_text', text: 'because' }]);
+    const types = outputs.map((e) => e.type);
+    expect(types.indexOf('response.output_item.added')).toBeLessThan(types.indexOf('response.content_part.added'));
+    const deltas = eventsOfType(outputs, 'response.reasoning_text.delta');
+    expect(deltas.map((d) => d.delta).join('')).toBe('because');
   });
 
   it('needs no synthetic opening bracket for a joined function-call stream (its start is the item)', async () => {
@@ -169,22 +160,21 @@ describe('OpenAI decoderSynthesiseLifecycle (mid-stream join)', () => {
 
     // The function-call group's start reconstructs the item itself, so the
     // join carries exactly one output_item.added (not a spurious extra).
-    const added = decodeJoin(update).filter((e) => e.type === 'response.output_item.added');
+    const outputs = decodeJoin(update);
+    const added = eventsOfType(outputs, 'response.output_item.added');
     expect(added).toHaveLength(1);
-    expect(added[0]?.type === 'response.output_item.added' ? added[0].item.type : '').toBe('function_call');
+    expect(added[0]?.item).toMatchObject({ type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'getWeather' });
 
-    const item = itemsOf(foldMessages([update])).find(
-      (i): i is Responses.ResponseFunctionToolCall => i.type === 'function_call',
-    );
-    expect(item?.arguments).toBe('{"location":"London"}');
-    expect(item?.name).toBe('getWeather');
+    // The arguments accumulated so far arrive on the group's own delta.
+    const deltas = eventsOfType(outputs, 'response.function_call_arguments.delta');
+    expect(deltas.map((d) => d.delta).join('')).toBe('{"location":"London"}');
   });
 
-  it('folds sibling streams that share an item on join into one message', async () => {
+  it('synthesises one opening bracket per joined sibling stream, sharing the item id', async () => {
     // One message with output_text at content[0] and a refusal at content[1] —
-    // two streams, one opening bracket. Each stream's join synthesises its own
-    // opening-bracket add (the policy holds no state), so two adds reach the
-    // reducer; its find-or-create by item id collapses them to the single message.
+    // two streams, one item. Each stream's join synthesises its own
+    // opening-bracket add (the policy holds no state), so both adds reach the
+    // consumer carrying the same item id, ready to collapse by id.
     const msgs = await encodeInbound([
       created(),
       itemAdded(messageItem('msg_1')),
@@ -200,38 +190,35 @@ describe('OpenAI decoderSynthesiseLifecycle (mid-stream join)', () => {
     // The joiner sees both in-flight streams as first-contact updates.
     const streamCreates = msgs.filter((m) => m.action === 'message.create' && transportOf(m)[HEADER_STREAM] === 'true');
     expect(streamCreates).toHaveLength(2);
-    const decoder = ResponsesSessionCodec.createDecoder();
-    let projection = init();
-    let openingBracketAdds = 0;
-    for (const create of streamCreates) {
-      const update = asFirstContactUpdate(create, msgs);
-      const decoded = decoder.decode(update);
-      openingBracketAdds += decoded.outputs.filter((e) => e.type === 'response.output_item.added').length;
-      for (const event of toCodecEvents(decoded)) {
-        projection = ResponsesSessionCodec.fold(projection, event, { serial: update.serial ?? '', messageId: 'run-1' });
-      }
-    }
+    const decoder = ResponsesCodec.createDecoder();
+    const outputs = streamCreates.flatMap((create) => decoder.decode(asFirstContactUpdate(create, msgs)).outputs);
 
-    // Each sibling stream synthesises an opening-bracket add; the reducer dedups them.
-    expect(openingBracketAdds).toBe(2);
-    const messages = itemsOf(projection).filter((i) => i.type === 'message');
-    expect(messages).toHaveLength(1);
-    expect(messages[0]?.type === 'message' ? messages[0].content : []).toEqual([
-      { type: 'output_text', text: 'hi', annotations: [] },
-      { type: 'refusal', refusal: 'no' },
+    const adds = eventsOfType(outputs, 'response.output_item.added');
+    expect(adds).toHaveLength(2);
+    expect(adds.map((a) => a.item.id)).toEqual(['msg_1', 'msg_1']);
+    expect(adds.every((a) => a.item.type === 'message')).toBe(true);
+
+    // Each stream's accumulated delta is addressed to its own content slot.
+    expect(eventsOfType(outputs, 'response.output_text.delta')).toEqual([
+      expect.objectContaining({ item_id: 'msg_1', content_index: 0, delta: 'hi' }),
+    ]);
+    expect(eventsOfType(outputs, 'response.refusal.delta')).toEqual([
+      expect.objectContaining({ item_id: 'msg_1', content_index: 1, delta: 'no' }),
     ]);
   });
 
-  it('does not double the opening bracket for a client present at the genuine start', async () => {
-    // A full replay decodes the real output_item.added and, on the stream start,
-    // a synthetic one for the same id. The reducer's find-or-create collapses
-    // the pair: exactly one message item survives.
-    const messages = itemsOf(foldMessages(await encodeInbound(textRun('msg_1', 'Hello, world!')))).filter(
-      (i) => i.type === 'message',
-    );
-    expect(messages).toHaveLength(1);
-    expect(messages[0]?.type === 'message' ? messages[0].content : []).toEqual([
-      { type: 'output_text', text: 'Hello, world!', annotations: [] },
-    ]);
+  it('re-introduces the same item id on a full replay (synthesis is unconditional)', async () => {
+    // A full replay decodes the real output_item.added and, on the stream
+    // start, a synthesised one for the same id — the policy holds no state, so
+    // it cannot tell a join from a replay. Both adds carry the same item id,
+    // which is what lets a consumer collapse them into one item.
+    const outputs = decodeAll(await encodeInbound(textRun('msg_1', 'Hello, world!')));
+
+    const adds = eventsOfType(outputs, 'response.output_item.added');
+    expect(adds).toHaveLength(2);
+    expect(adds.every((a) => a.item.type === 'message' && a.item.id === 'msg_1')).toBe(true);
+
+    // The streamed text still decodes once, closed by the accumulated done.
+    expect(eventsOfType(outputs, 'response.output_text.done')[0]?.text).toBe('Hello, world!');
   });
 });

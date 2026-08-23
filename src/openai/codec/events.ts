@@ -1,13 +1,14 @@
 /**
  * Type bindings for the OpenAI Responses codec.
  *
- * Binds the four `Codec` generic parameters to OpenAI's Responses types. The
- * codec passes the raw Responses event stream through as `TOutput` and renders
- * a message as a list of OpenAI items (`TMessage`), which are simultaneously
- * the canonical renderable form and valid model input.
+ * Binds the `WireCodec` generic parameters to OpenAI's Responses types. The
+ * codec passes the raw Responses event stream through as `TOutput`, and
+ * {@link OpenAIMessage} — a role plus a list of OpenAI items — is both the
+ * turn body a client publishes and the shape a consumer's fold renders:
+ * simultaneously the canonical renderable form and valid model input.
  *
  * Hosted tools and additional modalities are added by extending the descriptor
- * table and reducer, not by changing these bindings.
+ * table, not by changing these bindings.
  */
 
 import type { Responses } from 'openai/resources/responses/responses';
@@ -18,7 +19,7 @@ import type { Responses } from 'openai/resources/responses/responses';
  * a `/responses` stream never carries the function-call *output* — OpenAI
  * surfaces tool output only as model *input* on the next turn — so the codec
  * gives it its own output event. The agent emits it between `/responses` calls
- * in its agentic loop; the reducer folds it into the {@link OpenAIMessage}
+ * in its agentic loop; a consumer folds it into the {@link OpenAIMessage}
  * named by its codec-message-id. Because each `pipe`/`send` mints a fresh id,
  * an output published on its own `send` lands in its own message, separate from
  * the one holding the `function_call`; a renderer pairs them by `call_id`.
@@ -39,7 +40,7 @@ export interface FunctionCallOutputEvent {
  * SDK's `RunToolApprovalItem`. That item exposes `name` / `arguments` getters
  * over the raw `function_call`, so this event carries the same fields — a
  * client can render the approval prompt from the request alone, without having
- * received the streamed `function_call`. The reducer folds it into the
+ * received the streamed `function_call`. A consumer folds it into the
  * per-`call_id` tool-call state of the message its codec-message-id names,
  * marking the call `pending`. The client answers with a
  * {@link ToolApprovalResponse}.
@@ -116,35 +117,35 @@ type WithoutSequenceNumber<T> = T extends { type: ReconstructedEventType } ? Omi
 type PickPresent<T, K extends string> = T extends unknown ? Pick<T, Extract<keyof T, K>> : never;
 
 /**
- * A completed message's content part reduced to the one datum the reducer can't
- * rebuild from the streamed text: an output_text part's `logprobs`. Derived per
- * variant via {@link PickPresent}, so an output_text part keeps `logprobs` at
+ * A completed message's content part reduced to the one datum a consumer's fold
+ * can't rebuild from the streamed text: an output_text part's `logprobs`. Derived
+ * per variant via {@link PickPresent}, so an output_text part keeps `logprobs` at
  * its exact SDK type ({@link Responses.ResponseOutputText}'s — the rich shape,
  * with `bytes`) and a refusal part reduces to just its `type`. Carried
- * index-aligned with the message's `content` so the reducer folds each part
- * into its slot.
+ * index-aligned with the message's `content` so a consumer folds each part
+ * into its slot by index.
  */
 export type WireDoneContentPart = PickPresent<Responses.ResponseOutputMessage['content'][number], 'type' | 'logprobs'>;
 
 /**
  * The wire-form shape of a completed output item. A real `response.output_item.done`
- * re-echoes the whole item, but the item's content is already folded from the
- * streams — so the codec transmits only what the reducer finalises: the terminal
- * `status`; a message's per-part `logprobs` (the sole content datum NOT carried
- * by the streamed deltas — see {@link WireDoneContentPart}, present only when
- * logprobs were requested); and a reasoning item's `encrypted_content` (its sole
- * cross-turn carrier of chain-of-thought under `store: false` / ZDR, so it must
- * survive the reduction).
+ * re-echoes the whole item, but the streamed deltas already carried the item's
+ * content — so the codec transmits only what finalises the item in a consumer's
+ * fold: the terminal `status`; a message's per-part `logprobs` (the sole content
+ * datum NOT carried by the streamed deltas — see {@link WireDoneContentPart},
+ * present only when logprobs were requested); and a reasoning item's
+ * `encrypted_content` (its sole cross-turn carrier of chain-of-thought under
+ * `store: false` / ZDR, so it must survive the reduction).
  *
  * Each variant `Pick`s from the real SDK type, so field types and optionality
  * track the SDK exactly (e.g. `message`/`reasoning`'s `id` is required,
  * `function_call`'s isn't; only `reasoning` has `encrypted_content`).
- * Discriminated per item type, so the reducer's `done.type === 'message'`
+ * Discriminated per item type, so a consumer's `done.type === 'message'` check
  * narrows `done.content` into scope precisely — and because `logprobs` keeps its
- * rich `ResponseOutputText` type, folding it into the projection slot is a plain
- * assignment with no cast. The `descriptors.ts` `output_item.done` descriptor
- * documents in full why logprobs are sourced from the finalised item (and the
- * OpenAI accumulator that choice mirrors).
+ * rich `ResponseOutputText` type, folding it into the message's content slot is a
+ * plain assignment with no cast. The `descriptors.ts` `output_item.done`
+ * descriptor documents in full why logprobs are sourced from the finalised item
+ * (and the OpenAI accumulator that choice mirrors).
  */
 export type WireDoneItem =
   | (Pick<Responses.ResponseOutputMessage, 'id' | 'type' | 'status'> & {
@@ -191,7 +192,7 @@ type WithWireDoneItem<T> = T extends { type: 'response.output_item.done' } ? Omi
  * Distributes over the union, omitting `logprobs` from the reconstructed
  * `response.output_text.done`. The codec sources an output_text part's logprobs
  * from the finalised item (see {@link WireDoneItem}), never this streamed close,
- * so the reconstruction genuinely has none and the reducer never reads them
+ * so the reconstruction genuinely has none and a consumer never reads them
  * here. Stripping the field keeps the `end.decode` reconstruction honest — it
  * reflects what the codec actually carries — rather than fabricating an empty
  * `[]` just to satisfy the SDK's required-field type.
@@ -218,7 +219,7 @@ type WireResponseEvent = WithoutTextDoneLogprobs<
  * the codec models them, mirroring how the Vercel codec binds
  * `AI.UIMessageChunk`), plus the codec's own {@link FunctionCallOutputEvent} for
  * server-executed tool results. The agent pipes its stream as-is: the codec's
- * descriptor table curates the wire, transmitting the events the projection
+ * descriptor table curates the wire, transmitting the events a consumer's fold
  * needs, dropping the redundant framing events, and throwing at the encoder on
  * anything undescribed (see the descriptor table's inventory).
  * {@link AssertRealEventIsOpenAIOutput} checks the real-event-assignable claim
@@ -258,9 +259,8 @@ type AssertRealEventIsOpenAIOutput = Assert<Responses.ResponseStreamEvent extend
  * item types.
  *
  * The encoder rejects any output item outside this set (see the output
- * descriptor table's `assertModelledOutputItem`) and the reducer skips any it
- * does not recognise, so an undescribed item type fails loudly at the agent
- * rather than corrupting a turn.
+ * descriptor table's `assertModelledOutputItem`), so an undescribed item type
+ * fails loudly at the agent — before publish — rather than corrupting a turn.
  */
 export type ModelledOutputItem =
   | Responses.ResponseOutputMessage
@@ -289,12 +289,13 @@ export type OpenAIItem =
   | Responses.ResponseInputItem.Message;
 
 /**
- * `TMessage` — one message's worth of OpenAI items, tagged with the message's
- * role. A single run can produce several of these, one per distinct
- * codec-message-id the agent publishes (each `pipe`/`send` mints one), the same
- * way the Vercel codec lets a run produce several `AI.UIMessage`s; a prompt
- * produces one user message. System/developer instructions are server-side
- * configuration and never appear here.
+ * One message's worth of OpenAI items, tagged with the message's role — the
+ * shape a consumer's fold renders and a turn body carries. A single run can
+ * produce several of these, one per distinct codec-message-id the agent
+ * publishes (each `pipe`/`send` mints one), the same way a run over the Vercel
+ * codec produces several `AI.UIMessage`s; a prompt produces one user message.
+ * System/developer instructions are server-side configuration and never appear
+ * here.
  *
  * `items` is a list because an **assistant** message can hold several output
  * items (an output message plus one or more function calls). A **user** message
@@ -305,7 +306,7 @@ export type OpenAIItem =
  * the parts, not the items.
  *
  * The list does not encode that user/assistant asymmetry in the type — a
- * possible future tightening is a role-discriminated `TMessage`.
+ * possible future tightening is a role-discriminated message type.
  */
 export interface OpenAIMessage {
   /** Whether this message is the user's prompt or the assistant's reply. */

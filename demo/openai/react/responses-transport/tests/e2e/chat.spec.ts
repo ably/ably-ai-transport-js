@@ -26,20 +26,13 @@ function channelUrl(channel: string, clientId?: string): string {
   return `/?${params.toString().replaceAll('%3A', ':')}`;
 }
 
-// `MessageBubble` always renders a `.max-w-[75%]` wrapper containing the bubble
-// body and (when not streaming) an action bar with role-specific buttons.
-function allBubbles(page: Page): Locator {
-  return page.locator('div.max-w-\\[75\\%\\]');
-}
-
-// Edit button is rendered only on user bubbles; Regenerate only on assistant
-// bubbles. Both are hidden during streaming. Identifying bubbles by the buttons
-// they expose is robust to badge / structure changes.
+// MessageBubble renders its root with data-testid="message-bubble" and the
+// message's role on data-role, so bubbles are identified by role directly.
 function userBubbles(page: Page): Locator {
-  return allBubbles(page).filter({ has: page.locator('button[title="Edit message"]') });
+  return page.locator('[data-testid="message-bubble"][data-role="user"]');
 }
 function assistantBubbles(page: Page): Locator {
-  return allBubbles(page).filter({ has: page.locator('button[title="Regenerate response"]') });
+  return page.locator('[data-testid="message-bubble"][data-role="assistant"]');
 }
 
 async function waitForAssistantSettled(page: Page, timeoutMs = 60_000): Promise<void> {
@@ -70,12 +63,6 @@ async function sendPrompt(page: Page, text: string): Promise<void> {
   await waitForAssistantSettled(page);
 }
 
-async function branchCounter(bubble: Locator): Promise<string | null> {
-  const counter = bubble.locator('span.tabular-nums');
-  if ((await counter.count()) === 0) return null;
-  return (await counter.first().innerText()).trim();
-}
-
 async function bubbleText(bubble: Locator): Promise<string> {
   // The bubble body div has class beginning with "rounded-lg".
   const body = bubble.locator('div.rounded-lg').first();
@@ -83,21 +70,11 @@ async function bubbleText(bubble: Locator): Promise<string> {
   return (await body.innerText()).trim();
 }
 
-// Click Edit on a user bubble and submit a replacement. The Edit button is
-// replaced by a textarea + Save/Cancel during edit mode, so pull the textarea
-// off the page itself.
-async function editAndSubmit(page: Page, userBubble: Locator, newText: string): Promise<void> {
-  await userBubble.locator('button[title="Edit message"]').click();
-  const ta = page.locator('textarea').first();
-  await ta.fill(newText);
-  await ta.press('Enter');
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-test.describe('openai use-client-session demo - text chat behaviour', () => {
+test.describe('openai responses-transport demo - text chat behaviour', () => {
   test('fresh send: response streams and renders', async ({ page }, testInfo) => {
     await page.goto(channelUrl(freshChannel(testInfo.title)));
 
@@ -107,9 +84,8 @@ test.describe('openai use-client-session demo - text chat behaviour', () => {
     await input.fill(`Reply with one short sentence acknowledging the marker ${sentinel}.`);
     await input.press('Enter');
 
-    // The FIRST bubble in DOM order is the user prompt; assert it carries the
-    // marker (an assistant echo must not double-match).
-    await expect.poll(async () => bubbleText(allBubbles(page).first()), { timeout: 10_000 }).toContain(sentinel);
+    // The user bubble carries the marker (an assistant echo must not double-match).
+    await expect.poll(async () => bubbleText(userBubbles(page).first()), { timeout: 10_000 }).toContain(sentinel);
 
     await waitForAssistantSettled(page);
     const text = await bubbleText(assistantBubbles(page).last());
@@ -144,11 +120,12 @@ test.describe('openai use-client-session demo - text chat behaviour', () => {
     // back as a weather card, then the model replies — no suspend.
     await waitForAssistantSettled(page);
 
-    // A tool run publishes three messages, each rendered as its own assistant
+    // A tool run publishes three messages, each folded as its own assistant
     // bubble: the model turn carrying the getWeather call (where the WeatherCard
     // renders its structured output — humidity/wind are distinctive to it), the
-    // tool output, then the trailing text reply. The card lands on the call
-    // bubble; the reply naming the location lands on the last bubble.
+    // tool output (hidden — it renders on the call's bubble), then the trailing
+    // text reply. The card lands on the call bubble; the reply naming the
+    // location lands on the last bubble.
     await expect(assistantBubbles(page).filter({ hasText: 'Humidity:' })).toBeVisible({ timeout: 30_000 });
     await expect(assistantBubbles(page).last()).toContainText('London');
   });
@@ -180,9 +157,9 @@ test.describe('openai use-client-session demo - text chat behaviour', () => {
     const deny = page.getByRole('button', { name: 'Deny' });
     await expect(deny).toHaveCount(1);
 
-    // A denial resolves the call with a rejection output rather than running the
-    // tool, so the run still resumes — the model acknowledges instead of
-    // forecasting, and no forecast card is rendered.
+    // A denial publishes the decision plus a rejection output rather than
+    // running the tool, so the run still resumes — the model acknowledges
+    // instead of forecasting, and no forecast card is rendered.
     await deny.click();
     await waitForAssistantSettled(page);
     await expect(page.getByText(/getWeatherForecast\s*—\s*denied/)).toBeVisible();
@@ -274,132 +251,6 @@ test.describe('openai use-client-session demo - text chat behaviour', () => {
     await expect(chip).toHaveCount(0);
   });
 
-  test('regenerate: original user prompt stays visible and the assistant shows branch nav (N / 2)', async ({
-    page,
-  }, testInfo) => {
-    await page.goto(channelUrl(freshChannel(testInfo.title)));
-    await sendPrompt(page, 'Say "first" as your entire reply.');
-
-    await expect(userBubbles(page)).toHaveCount(1);
-    await expect(assistantBubbles(page)).toHaveCount(1);
-
-    await assistantBubbles(page)
-      .last()
-      .getByRole('button', { name: /regenerate/i })
-      .click();
-    await page.waitForTimeout(1000);
-    await waitForAssistantSettled(page);
-
-    // The original user prompt must still be on the visible chain.
-    await expect(userBubbles(page), 'user prompt must remain visible after regenerate').toHaveCount(1);
-    expect(await bubbleText(userBubbles(page).first())).toContain('first');
-
-    // The assistant must show a branch counter with denominator 2; the user
-    // prompt (not the branch anchor for a regenerate) must not.
-    expect(await branchCounter(assistantBubbles(page).last())).toMatch(/^\d+ \/ 2$/);
-    expect(await branchCounter(userBubbles(page).first())).toBeNull();
-  });
-
-  test('edit: user prompt shows branch nav and only the edited branch is visible', async ({ page }, testInfo) => {
-    await page.goto(channelUrl(freshChannel(testInfo.title)));
-    await sendPrompt(page, 'Say "alpha" as your entire reply.');
-
-    const userBubbleStable = allBubbles(page).first();
-    expect(await bubbleText(userBubbleStable)).toContain('alpha');
-
-    await editAndSubmit(page, userBubbleStable, 'Say "bravo" as your entire reply.');
-    await page.waitForTimeout(1000);
-    await waitForAssistantSettled(page);
-
-    await expect(userBubbles(page)).toHaveCount(1);
-    await expect(assistantBubbles(page)).toHaveCount(1);
-
-    const editedUserText = await bubbleText(userBubbles(page).first());
-    expect(editedUserText).toContain('bravo');
-    expect(editedUserText).not.toContain('alpha');
-
-    // The user bubble is the branch anchor for an edit (2/2); the assistant is not.
-    expect(await branchCounter(userBubbles(page).first())).toMatch(/^\d+ \/ 2$/);
-    expect(await branchCounter(assistantBubbles(page).first())).toBeNull();
-  });
-
-  test('three-prompt edit chain P1 -> P2 -> P3 navigates correctly', async ({ page }, testInfo) => {
-    await page.goto(channelUrl(freshChannel(testInfo.title)));
-    await sendPrompt(page, 'Say "alpha" as your entire reply.');
-
-    const userBubbleStable = allBubbles(page).first();
-    await editAndSubmit(page, userBubbleStable, 'Say "bravo" as your entire reply.');
-    await page.waitForTimeout(1000);
-    await waitForAssistantSettled(page);
-    await expect.poll(async () => branchCounter(userBubbles(page).first())).toBe('2 / 2');
-
-    await editAndSubmit(page, userBubbleStable, 'Say "charlie" as your entire reply.');
-    await page.waitForTimeout(1000);
-    await waitForAssistantSettled(page);
-    await expect.poll(async () => bubbleText(userBubbles(page).first())).toContain('charlie');
-    await expect.poll(async () => branchCounter(userBubbles(page).first())).toBe('3 / 3');
-
-    // Navigate back through the chain.
-    await userBubbles(page).first().locator('button[aria-label="Previous branch"]').click();
-    await expect.poll(async () => bubbleText(userBubbles(page).first())).toContain('bravo');
-    await expect.poll(async () => branchCounter(userBubbles(page).first())).toBe('2 / 3');
-
-    await userBubbles(page).first().locator('button[aria-label="Previous branch"]').click();
-    await expect.poll(async () => bubbleText(userBubbles(page).first())).toContain('alpha');
-    await expect.poll(async () => branchCounter(userBubbles(page).first())).toBe('1 / 3');
-  });
-
-  test('multiple regen on different prompts: each prompt has its own independent regen group', async ({
-    page,
-  }, testInfo) => {
-    await page.goto(channelUrl(freshChannel(testInfo.title)));
-    await sendPrompt(page, 'Say "first-one" as your entire reply.');
-
-    await assistantBubbles(page)
-      .last()
-      .getByRole('button', { name: /regenerate/i })
-      .click();
-    await page.waitForTimeout(1000);
-    await waitForAssistantSettled(page);
-    await expect.poll(async () => branchCounter(assistantBubbles(page).last())).toBe('2 / 2');
-
-    await sendPrompt(page, 'Say "second-one" as your entire reply.');
-    await expect.poll(async () => userBubbles(page).count()).toBe(2);
-    await expect.poll(async () => assistantBubbles(page).count()).toBe(2);
-
-    // The first prompt's assistant still shows 2/2; the second has no regen yet.
-    await expect(branchCounter(assistantBubbles(page).first())).resolves.toBe('2 / 2');
-    await expect(branchCounter(assistantBubbles(page).last())).resolves.toBeNull();
-
-    await assistantBubbles(page)
-      .last()
-      .getByRole('button', { name: /regenerate/i })
-      .click();
-    await page.waitForTimeout(1000);
-    await waitForAssistantSettled(page);
-    await expect.poll(async () => branchCounter(assistantBubbles(page).last())).toBe('2 / 2');
-    await expect(branchCounter(assistantBubbles(page).first())).resolves.toBe('2 / 2');
-  });
-
-  test('interleaved edit and regenerate keep independent branch groups', async ({ page }, testInfo) => {
-    await page.goto(channelUrl(freshChannel(testInfo.title)));
-    await sendPrompt(page, 'Say "RED" as your entire reply.');
-
-    await assistantBubbles(page).first().locator('button[title="Regenerate response"]').click();
-    await waitForAssistantSettled(page);
-    await expect.poll(async () => branchCounter(assistantBubbles(page).first())).toBe('2 / 2');
-
-    await editAndSubmit(page, userBubbles(page).first(), 'Say "GREEN" as your entire reply.');
-    await waitForAssistantSettled(page);
-    await expect.poll(async () => branchCounter(userBubbles(page).last())).toBe('2 / 2');
-    await expect.poll(async () => branchCounter(assistantBubbles(page).last())).toBeNull();
-
-    await assistantBubbles(page).last().locator('button[title="Regenerate response"]').click();
-    await waitForAssistantSettled(page);
-    await expect.poll(async () => branchCounter(userBubbles(page).last())).toBe('2 / 2');
-    await expect.poll(async () => branchCounter(assistantBubbles(page).last())).toBe('2 / 2');
-  });
-
   test('cancelling a streaming response cleans up and re-enables the Send button', async ({ page }, testInfo) => {
     await page.goto(channelUrl(freshChannel(testInfo.title)));
     const input = page.getByPlaceholder('Type a message...');
@@ -409,7 +260,7 @@ test.describe('openai use-client-session demo - text chat behaviour', () => {
 
     // Wait until the assistant has produced some streamed output before Stop —
     // cancelling the instant Stop appears races the agent's abort listeners.
-    const assistantBubble = allBubbles(page).filter({ hasText: /./ }).nth(1);
+    const assistantBubble = assistantBubbles(page).first();
     await expect(assistantBubble).toBeVisible({ timeout: 30_000 });
     await expect(assistantBubble).toHaveText(/.{40,}/, { timeout: 30_000 });
 
@@ -428,11 +279,45 @@ test.describe('openai use-client-session demo - text chat behaviour', () => {
     await sendPrompt(page, 'Say "remembered" as your entire reply.');
     expect(await bubbleText(assistantBubbles(page).last())).toContain('remembered');
 
-    // Reload: nothing is held in app state, so the session must replay channel
-    // history and reconstruct the conversation. Scope to the assistant bubble —
-    // the prompt echoes the same word, so a plain text match is ambiguous.
+    // Reload: nothing is held in app state, so the client must page channel
+    // history and refold the thread. Scope to the assistant bubble — the
+    // prompt echoes the same word, so a plain text match is ambiguous.
     await page.goto(channelUrl(channel));
     await expect(assistantBubbles(page).filter({ hasText: 'remembered' })).toBeVisible({ timeout: 30_000 });
+  });
+
+  test('mid-run reload: hydrated history and the live continuation fold to one message', async ({ page }, testInfo) => {
+    const channel = freshChannel(testInfo.title);
+    await page.goto(channelUrl(channel));
+    const input = page.getByPlaceholder('Type a message...');
+    await input.waitFor({ state: 'visible' });
+    // The mock streams the dragon story slowly, so the reload lands mid-stream.
+    await input.fill('Reply with a very long story about a dragon');
+    await input.press('Enter');
+
+    // Wait for some streamed output, then reload while the run is in flight.
+    const streaming = assistantBubbles(page).first();
+    await expect(streaming).toBeVisible({ timeout: 30_000 });
+    await expect(streaming).toHaveText(/.{40,}/, { timeout: 30_000 });
+    await page.reload();
+
+    // The reloaded page hydrates the partial history and folds the live
+    // continuation into the SAME message: exactly one assistant bubble, which
+    // grows to the full story with no duplicated prefix. Wait on the story's
+    // closing sentence rather than the settle helper alone — right after the
+    // reload the run state has not folded yet, so a settle check can slip
+    // through on the hydrated partial while the live half is still streaming.
+    await expect(assistantBubbles(page).last()).toContainText('her patience grew as steadily as her wings.', {
+      timeout: 60_000,
+    });
+    await waitForAssistantSettled(page);
+    await expect(assistantBubbles(page)).toHaveCount(1);
+    const text = await bubbleText(assistantBubbles(page).last());
+    expect(text).toContain('Once upon a time');
+    expect(text).toContain('her patience grew as steadily as her wings.');
+    // The opening words appear exactly once — the history half and the live
+    // half were folded, not concatenated as duplicates.
+    expect(text.indexOf('Once upon a time')).toBe(text.lastIndexOf('Once upon a time'));
   });
 
   test('multi-client sync: a second client on the same channel sees the streamed reply', async ({

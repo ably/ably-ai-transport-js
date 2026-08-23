@@ -1,15 +1,12 @@
 'use client';
 
-import { useState, type CSSProperties } from 'react';
+import { type CSSProperties } from 'react';
 import type { OpenAIMessage, OpenAIToolCallState } from '@ably/ai-transport/openai';
-import { ChevronLeftIcon, ChevronRightIcon, Loader2Icon } from 'lucide-react';
+import { Loader2Icon } from 'lucide-react';
 import { Badge } from '@ably-ai-demos/frontend/components/ui/badge';
 import { Bubble, BubbleContent } from '@ably-ai-demos/frontend/components/ui/bubble';
-import { Button } from '@ably-ai-demos/frontend/components/ui/button';
 import { Message, MessageContent, MessageFooter } from '@ably-ai-demos/frontend/components/ui/message';
 import { Response } from '@ably-ai-demos/frontend/components/ui/response';
-import { Textarea } from '@ably-ai-demos/frontend/components/ui/textarea';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@ably-ai-demos/frontend/components/ui/tooltip';
 import { clientColor } from '@ably-ai-demos/frontend/lib/client-color';
 import { cn } from '@ably-ai-demos/frontend/lib/utils';
 import { toDisplayParts } from '../display';
@@ -25,10 +22,10 @@ interface MessageBubbleProps {
   toolOutputs: Map<string, string>;
   // Per-call tool state (approval decision, client-result status) collected
   // across all visible messages, keyed by call_id. A gated call's approval
-  // state is published on its own message, so it must be paired cross-message
-  // like toolOutputs.
+  // state can fold onto its own message, so it is paired cross-message like
+  // toolOutputs.
   toolStates: Map<string, OpenAIToolCallState>;
-  // Per-message metadata derived from the View at the list-glue layer
+  // Per-message metadata derived from the fold at the list-glue layer
   // (see MessageList) and passed as primitives so the bubble stays a
   // pure renderer with no transport type dependencies.
   clientId: string | undefined;
@@ -38,67 +35,9 @@ interface MessageBubbleProps {
   // it — the list places it on the run's assistant output when any is visible,
   // else on the triggering user bubble.
   errorMessage?: string;
-  hasSiblings: boolean;
-  siblingCount: number;
-  selectedIndex: number;
-  onSelectSibling: (index: number) => void;
-  onRegenerate?: () => void;
-  onEdit?: (newText: string) => void;
   // Approve / deny a gated tool call in this message, addressed by its call_id.
   onApproveTool: (callId: string) => void;
   onDenyTool: (callId: string) => void;
-}
-
-function BranchNavigator({
-  current,
-  total,
-  onSelect,
-}: {
-  current: number;
-  total: number;
-  onSelect: (index: number) => void;
-}) {
-  return (
-    <div
-      data-testid="branch-navigator"
-      className="inline-flex items-center gap-0.5 rounded-md bg-muted px-0.5"
-    >
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={() => onSelect(current - 1)}
-            disabled={current === 0}
-            aria-label="Previous branch"
-          >
-            <ChevronLeftIcon />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Previous branch</TooltipContent>
-      </Tooltip>
-      <span
-        data-testid="branch-counter"
-        className="min-w-[2.5rem] text-center text-[10px] text-muted-foreground tabular-nums"
-      >
-        {current + 1} / {total}
-      </span>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={() => onSelect(current + 1)}
-            disabled={current >= total - 1}
-            aria-label="Next branch"
-          >
-            <ChevronRightIcon />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Next branch</TooltipContent>
-      </Tooltip>
-    </div>
-  );
 }
 
 function InfoBadge({
@@ -149,70 +88,6 @@ function ReasoningBlock({ text }: { text: string }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Inline edit form
-// ---------------------------------------------------------------------------
-
-function EditForm({
-  initialText,
-  onSubmit,
-  onCancel,
-}: {
-  initialText: string;
-  onSubmit: (text: string) => void;
-  onCancel: () => void;
-}) {
-  const [text, setText] = useState(initialText);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = text.trim();
-    if (trimmed && trimmed !== initialText) {
-      onSubmit(trimmed);
-    }
-    onCancel();
-  };
-
-  return (
-    <form
-      onSubmit={handleSubmit}
-      className="w-full"
-    >
-      <Textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        data-testid="edit-input"
-        rows={Math.min(6, text.split('\n').length + 1)}
-        autoFocus
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') onCancel();
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            handleSubmit(e);
-          }
-        }}
-      />
-      <div className="mt-1.5 flex gap-2">
-        <Button
-          type="submit"
-          size="xs"
-          disabled={!text.trim() || text.trim() === initialText}
-        >
-          Save &amp; Submit
-        </Button>
-        <Button
-          type="button"
-          size="xs"
-          variant="ghost"
-          onClick={onCancel}
-        >
-          Cancel
-        </Button>
-      </div>
-    </form>
-  );
-}
-
 export function MessageBubble({
   message,
   toolOutputs,
@@ -221,17 +96,10 @@ export function MessageBubble({
   runId,
   status,
   errorMessage,
-  hasSiblings,
-  siblingCount,
-  selectedIndex,
-  onSelectSibling,
-  onRegenerate,
-  onEdit,
   onApproveTool,
   onDenyTool,
 }: MessageBubbleProps) {
   const isUser = message.role === 'user';
-  const [isEditing, setIsEditing] = useState(false);
 
   const role = message.role;
   const colors = clientId ? clientColor(clientId) : undefined;
@@ -255,118 +123,77 @@ export function MessageBubble({
       {/* Shrink-wrap the turn so the bubble stretches to the badge row's width
           (never narrower), while long content stays capped at 75%. */}
       <MessageContent className="w-fit max-w-[75%] gap-1.5">
-        {isEditing && onEdit ? (
-          <EditForm
-            initialText={messageText}
-            onSubmit={(text) => onEdit(text)}
-            onCancel={() => setIsEditing(false)}
-          />
-        ) : (
-          <>
-            {/* The user's turn is a tinted bubble — the client's palette colour
-                becomes the bubble's --primary, and shadcn's tinted variant
-                derives the background from it. The assistant reply is a muted
-                bubble; its status colour lives on the status badge. */}
-            <Bubble
-              variant={isUser ? 'tinted' : 'muted'}
-              align={isUser ? 'end' : 'start'}
-              className="w-full max-w-full"
-              style={isUser ? bubbleTheme : undefined}
-            >
-              {isUser ? (
-                <BubbleContent className="w-full whitespace-pre-wrap">{messageText}</BubbleContent>
-              ) : (
-                <BubbleContent className="w-full">
-                  {displayParts.map((part, i) =>
-                    part.kind === 'text' ? (
-                      // The assistant reply is markdown; render it through
-                      // Response (Streamdown) so lists, code, and emphasis
-                      // format correctly.
-                      <Response key={i}>{part.text}</Response>
-                    ) : part.kind === 'reasoning' ? (
-                      <ReasoningBlock
-                        key={i}
-                        text={part.text}
-                      />
-                    ) : (
-                      <ToolInvocation
-                        key={i}
-                        part={part}
-                        onApprove={() => onApproveTool(part.callId)}
-                        onDeny={() => onDenyTool(part.callId)}
-                      />
-                    ),
-                  )}
-                  {showThinking && (
-                    <span className="inline-flex items-center gap-1.5 text-muted-foreground">
-                      <Loader2Icon className="size-3.5 animate-spin" />
-                      <span className="shimmer">Thinking…</span>
-                    </span>
-                  )}
-                </BubbleContent>
+        {/* The user's turn is a tinted bubble — the client's palette colour
+            becomes the bubble's --primary, and shadcn's tinted variant
+            derives the background from it. The assistant reply is a muted
+            bubble; its status colour lives on the status badge. */}
+        <Bubble
+          variant={isUser ? 'tinted' : 'muted'}
+          align={isUser ? 'end' : 'start'}
+          className="w-full max-w-full"
+          style={isUser ? bubbleTheme : undefined}
+        >
+          {isUser ? (
+            <BubbleContent className="w-full whitespace-pre-wrap">{messageText}</BubbleContent>
+          ) : (
+            <BubbleContent className="w-full">
+              {displayParts.map((part, i) =>
+                part.kind === 'text' ? (
+                  // The assistant reply is markdown; render it through
+                  // Response (Streamdown) so lists, code, and emphasis
+                  // format correctly.
+                  <Response key={i}>{part.text}</Response>
+                ) : part.kind === 'reasoning' ? (
+                  <ReasoningBlock
+                    key={i}
+                    text={part.text}
+                  />
+                ) : (
+                  <ToolInvocation
+                    key={i}
+                    part={part}
+                    onApprove={() => {
+                      onApproveTool(part.callId);
+                    }}
+                    onDeny={() => {
+                      onDenyTool(part.callId);
+                    }}
+                  />
+                ),
               )}
-            </Bubble>
-            <MessageFooter className="flex flex-wrap items-center gap-1.5">
-              {/* Branch navigator (when the message has siblings) */}
-              {hasSiblings && (
-                <BranchNavigator
-                  current={selectedIndex}
-                  total={siblingCount}
-                  onSelect={onSelectSibling}
+              {showThinking && (
+                <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+                  <Loader2Icon className="size-3.5 animate-spin" />
+                  <span className="shimmer">Thinking…</span>
+                </span>
+              )}
+            </BubbleContent>
+          )}
+        </Bubble>
+        <MessageFooter className="flex flex-wrap items-center gap-1.5">
+          {/* Debug badges (only when we know which run the message belongs to). */}
+          {runId && (
+            <>
+              <InfoBadge
+                label="role"
+                value={role}
+              />
+              {clientId && (
+                <InfoBadge
+                  label="client"
+                  value={clientId}
+                  className={colors?.text}
                 />
               )}
-
-              {/* Edit button (user messages) */}
-              {onEdit && status !== 'streaming' && (
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  onClick={() => setIsEditing(true)}
-                  title="Edit message"
-                  data-testid="edit-message"
-                >
-                  edit
-                </Button>
-              )}
-
-              {/* Regenerate button (assistant messages) */}
-              {onRegenerate && status !== 'streaming' && (
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  onClick={onRegenerate}
-                  title="Regenerate response"
-                  data-testid="regenerate-message"
-                >
-                  regenerate
-                </Button>
-              )}
-
-              {/* Debug badges (only when we know which Run the message belongs to). */}
-              {runId && (
-                <>
-                  <InfoBadge
-                    label="role"
-                    value={role}
-                  />
-                  {clientId && (
-                    <InfoBadge
-                      label="client"
-                      value={clientId}
-                      className={colors?.text}
-                    />
-                  )}
-                  <InfoBadge
-                    label="run"
-                    value={runId.slice(0, 8)}
-                  />
-                  {status && !isUser && <StatusBadge status={status} />}
-                </>
-              )}
-            </MessageFooter>
-            {errorMessage && <div className="mt-1 text-[11px] break-words text-destructive">{errorMessage}</div>}
-          </>
-        )}
+              <InfoBadge
+                label="run"
+                value={runId.slice(0, 8)}
+              />
+              {status && !isUser && <StatusBadge status={status} />}
+            </>
+          )}
+        </MessageFooter>
+        {errorMessage && <div className="mt-1 text-[11px] break-words text-destructive">{errorMessage}</div>}
       </MessageContent>
     </Message>
   );

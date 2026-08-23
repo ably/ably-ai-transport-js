@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
-import type { OpenAIMessage } from '@ably/ai-transport/openai';
-import type { CodecMessage } from '@ably/ai-transport';
 import { TooltipProvider } from '@ably-ai-demos/frontend/components/ui/tooltip';
+import type { ThreadMessage } from '../../lib/fold-thread';
 import { DebugPane } from '../debug-pane';
 
 const PANE_OPEN_STORAGE_KEY = 'ait-demo:debug-pane-open';
@@ -13,7 +12,7 @@ const renderPane = () =>
   render(
     <TooltipProvider>
       <DebugPane
-        messages={[] as CodecMessage<OpenAIMessage>[]}
+        messages={[] as ThreadMessage[]}
         ablyMessages={[]}
         status="ready"
         callbackLog={[]}

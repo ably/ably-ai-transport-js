@@ -1,9 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ClientRun } from '@ably/ai-transport';
-import type { OpenAIInput, OpenAIMessage } from '@ably/ai-transport/openai';
-import { ResponsesCodec } from '@ably/ai-transport/openai';
+import { useAblyMessages, useClientTransport, useTransportEvents } from '@ably/ai-transport/react';
+import type { OpenAIInput, OpenAIOutput } from '@ably/ai-transport/openai';
 import { ChatShell } from '@ably-ai-demos/frontend/components/chat-shell';
 
 import { userTurn, wakeAgent } from '../helpers';
@@ -12,22 +11,19 @@ import type { CallbackLogEntry } from './debug-pane';
 import { DebugPane } from './debug-pane';
 import { useDemoProgress } from '../hooks/use-demo-progress';
 import { useClientTools } from '../hooks/use-client-tools';
+import { useResponsesThread } from '../hooks/use-responses-thread';
 import { useToolResolution } from '../hooks/use-tool-resolution';
 import { DEMO_SCENARIOS } from '../lib/intro-content';
-import { SessionHooks } from '../providers';
-
-const { useClientSession, useView, useAblyMessages } = SessionHooks;
 
 interface ChatProps {
   chatId: string;
   clientId?: string;
-  historyLimit?: number;
-  /** Agent endpoint the demo POSTs invocations to, to wake the serverless agent. */
+  /** Agent endpoint the demo POSTs wake pointers to, to wake the serverless agent. */
   api: string;
 }
 
-export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
-  const { session } = useClientSession();
+export function Chat({ chatId, clientId, api }: ChatProps) {
+  const { transport, error: transportError } = useClientTransport<OpenAIInput, OpenAIOutput>();
 
   const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
   const [statusLog, setStatusLog] = useState<{ time: number; status: string }[]>([]);
@@ -36,107 +32,82 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
     setStatusLog([]);
   }, []);
 
-  const view = useView({ limit: historyLimit ?? 30 });
-  const { messages, hasOlder, loading, loadOlder, branchSelection, runOf } = view;
+  const log = useCallback((type: CallbackLogEntry['type'], summary: string) => {
+    setCallbackLog((prev) => [...prev, { time: Date.now(), type, summary }]);
+  }, []);
+
+  const reportError = useCallback(
+    (error: unknown) => {
+      log('error', error instanceof Error ? error.message : String(error));
+    },
+    [log],
+  );
+
+  // The demo's conversation state: history hydrated to exhaustion, then live
+  // transport events, folded through OpenAI's own accumulator.
+  const { messages, runs, isRunning, activeRunId, hydrated } = useResponsesThread({ onFoldError: reportError });
 
   // Log a client-tool execution into the callback log so the demo shows which
   // client ran the browser tool.
-  const logClientTool = useCallback((summary: string) => {
-    setCallbackLog((prev) => [...prev, { time: Date.now(), type: 'clientTool', summary }]);
-  }, []);
-
-  const reportError = useCallback((error: unknown) => {
-    setCallbackLog((prev) => [
-      ...prev,
-      {
-        time: Date.now(),
-        type: 'error',
-        summary: error instanceof Error ? error.message : 'failed to wake agent',
-      },
-    ]);
-  }, []);
-
-  // Wake the agent for a run by POSTing its invocation pointer. The core session
-  // never sends HTTP — the app owns the trigger.
-  const wakeRun = useCallback(
-    (run: ClientRun<OpenAIInput, OpenAIMessage>) => {
-      void wakeAgent(api, run).catch(reportError);
+  const logClientTool = useCallback(
+    (summary: string) => {
+      log('clientTool', summary);
     },
-    [api, reportError],
+    [log],
   );
 
-  // The same wake for send sites, which hold the `view.send*` promise rather
-  // than the run. A publish or POST failure is surfaced in the log.
+  // Wake the agent by POSTing the published input's pointer. The client
+  // transport never sends HTTP — the app owns the trigger.
   const wake = useCallback(
-    (runPromise: Promise<ClientRun<OpenAIInput, OpenAIMessage>>) => {
-      void runPromise.then(wakeRun).catch(reportError);
+    (eventId: string) => {
+      void wakeAgent(api, { channelName: chatId, eventId }).catch(reportError);
     },
-    [wakeRun, reportError],
+    [api, chatId, reportError],
   );
 
   // Publish a tool resolution, waking the agent only once every call on the run
   // has an answer — a turn that gated two calls must not resume after the first.
-  const resolveToolCall = useToolResolution({ view, onWake: wakeRun });
+  const resolveToolCall = useToolResolution({
+    transport,
+    messages,
+    onWake: ({ eventId }) => {
+      wake(eventId);
+    },
+  });
 
   // Run client-executed tools (getLocation) when they appear unresolved and
   // publish the result through the same gate.
-  useClientTools(view, clientId, resolveToolCall, logClientTool);
+  useClientTools(messages, runs, clientId, resolveToolCall, logClientTool);
 
-  // Derive "is a run in progress?" from the latest visible message's owning
-  // Run status. Stop is shown ONLY while the run is actively streaming
-  // ('active'). Terminal statuses ('complete' | 'cancelled' | 'error') show
-  // Send. The Run carries the runId Stop needs to cancel.
-  const latestRun = runOf(messages.at(-1)?.codecMessageId ?? '');
-  const latestRunId = latestRun?.runId;
-  const latestStatus = latestRun?.status;
-  const isRunInProgress = latestRunId !== undefined && latestStatus === 'active';
-  const status = isRunInProgress ? 'running' : 'idle';
-
+  const status = isRunning ? 'running' : 'idle';
   useEffect(() => {
     setStatusLog((prev) => [...prev, { time: Date.now(), status }]);
   }, [status]);
 
+  // Surface run lifecycle events and transport errors in the debug pane's log.
+  useTransportEvents<OpenAIInput, OpenAIOutput>((event) => {
+    if (event.kind !== 'run-lifecycle') return;
+    const lifecycle = event.event;
+    const head = `runId=${lifecycle.runId.slice(0, 8)}`;
+    if (lifecycle.type === 'start') log('runStart', head);
+    else if (lifecycle.type === 'suspend') log('runSuspend', head);
+    else if (lifecycle.type === 'resume') log('runResume', head);
+    else log('runEnd', `${head}, reason=${lifecycle.reason}`);
+  });
+
   useEffect(() => {
-    const offRun = session.tree.on('run', (event) => {
-      const head = `runId=${event.runId.slice(0, 8)}, clientId=${event.clientId}`;
-      let type: CallbackLogEntry['type'];
-      let summary: string;
-      if (event.type === 'start') {
-        type = 'runStart';
-        summary = head;
-      } else if (event.type === 'suspend') {
-        type = 'runSuspend';
-        summary = head;
-      } else if (event.type === 'resume') {
-        type = 'runResume';
-        summary = head;
-      } else {
-        type = 'runEnd';
-        summary = `${head}, reason=${event.reason}`;
-      }
-      setCallbackLog((prev) => [
-        ...prev,
-        {
-          time: Date.now(),
-          type,
-          summary,
-        },
-      ]);
+    if (transportError) reportError(transportError);
+    if (!transport) return;
+    return transport.on('error', (error) => {
+      reportError(error);
     });
-    const offErr = session.on('error', (error) => {
-      setCallbackLog((prev) => [...prev, { time: Date.now(), type: 'error', summary: error.message }]);
-    });
-    return () => {
-      offRun();
-      offErr();
-    };
-  }, [session]);
+  }, [transport, transportError, reportError]);
 
   const ablyMessages = useAblyMessages();
 
-  // Derive which scenarios are still unfinished from the tree, so the
+  // Derive which scenarios are still unfinished from the thread, so the
   // suggestion chips stay in sync across clients via channel history.
-  const unfinishedScenarios = useDemoProgress(DEMO_SCENARIOS, messages, branchSelection, runOf, ablyMessages);
+  const unfinishedScenarios = useDemoProgress(DEMO_SCENARIOS, messages, ablyMessages);
 
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -149,30 +120,29 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
   // Approve / deny a gated tool call. The resolution publishes immediately; the
   // agent is only woken once every call on the run has an answer, so a turn that
   // gated two calls resumes after the second decision rather than the first.
-  const handleToolApprove = useCallback(
-    (codecMessageId: string, callId: string) => {
-      void resolveToolCall({
-        codecMessageId,
-        callId,
-        input: ResponsesCodec.createToolApprovalResponse(codecMessageId, { call_id: callId, approved: true }),
-      });
+  const decideToolCall = useCallback(
+    (codecMessageId: string, callId: string, approved: boolean) => {
+      const runId = messages.find((message) => message.codecMessageId === codecMessageId)?.runId;
+      if (runId === undefined) return;
+      const inputs: OpenAIInput[] = approved
+        ? [{ kind: 'approval', payload: { call_id: callId, approved: true } }]
+        : [
+            { kind: 'approval', payload: { call_id: callId, approved: false, reason: 'User denied' } },
+            // A denial still owes the model an output for the call, so the
+            // client authors the rejection — the /responses round-trip then has
+            // no dangling function_call.
+            {
+              kind: 'item',
+              payload: {
+                type: 'function_call_output',
+                call_id: callId,
+                output: JSON.stringify({ error: 'The user denied this tool execution.' }),
+              },
+            },
+          ];
+      void resolveToolCall({ codecMessageId, runId, callId, inputs }).catch(reportError);
     },
-    [resolveToolCall],
-  );
-
-  const handleToolDeny = useCallback(
-    (codecMessageId: string, callId: string) => {
-      void resolveToolCall({
-        codecMessageId,
-        callId,
-        input: ResponsesCodec.createToolApprovalResponse(codecMessageId, {
-          call_id: callId,
-          approved: false,
-          reason: 'User denied',
-        }),
-      });
-    },
-    [resolveToolCall],
+    [messages, resolveToolCall, reportError],
   );
 
   return (
@@ -183,20 +153,15 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
       transcript={
         <MessageList
           messages={messages}
-          hasOlder={hasOlder}
-          loading={loading}
-          view={{
-            branchSelection,
-            runOf,
-          }}
-          onLoadOlder={() => void loadOlder()}
-          onRegenerate={(codecMessageId) => wake(view.regenerate(codecMessageId))}
-          onEdit={(codecMessageId, text) =>
-            wake(view.edit(codecMessageId, [ResponsesCodec.createUserMessage(userTurn(text))]))
-          }
+          runs={runs}
+          loading={!hydrated}
           scrollToEndRef={scrollToEndRef}
-          onApproveTool={handleToolApprove}
-          onDenyTool={handleToolDeny}
+          onApproveTool={(codecMessageId, callId) => {
+            decideToolCall(codecMessageId, callId, true);
+          }}
+          onDenyTool={(codecMessageId, callId) => {
+            decideToolCall(codecMessageId, callId, false);
+          }}
         />
       }
       debugPane={
@@ -215,17 +180,25 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
       onInputChange={setInput}
       inputRef={inputRef}
       onSend={(text) => {
-        wake(view.send(ResponsesCodec.createUserMessage(userTurn(text))));
+        if (!transport) return;
+        // Publish first, wake second: the agent reads the conversation off the
+        // channel, so the input has to be there before the POST lands.
+        void transport
+          .publishInput({ kind: 'message', payload: userTurn(text) })
+          .then(({ eventId }) => {
+            wake(eventId);
+          })
+          .catch(reportError);
         scrollToEndRef.current?.();
       }}
       onStop={() => {
-        if (!latestRunId) return;
+        if (!transport || activeRunId === undefined) return;
         // Stop only shows for an ACTIVE run, so a live agent is attached:
         // publishing the cancel signal makes it abort and publish run-end,
         // which flips the run to a terminal status and reverts Stop to Send.
-        void session.cancel(latestRunId);
+        void transport.cancel(activeRunId).catch(reportError);
       }}
-      isRunning={isRunInProgress}
+      isRunning={isRunning}
     />
   );
 }

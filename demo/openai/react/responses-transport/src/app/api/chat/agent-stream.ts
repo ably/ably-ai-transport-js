@@ -15,22 +15,22 @@
  * (getWeatherForecast) cannot be resolved here, so the loop suspends the run:
  * for a gated call it emits a `tool-approval-request` on the call's own message
  * (the tail of the model turn's pipe) before suspending. The client
- * resolves the call — running the browser tool and publishing a `tool-result`,
- * or answering the approval — then sends a continuation that resumes this run
+ * resolves the call — running the browser tool and publishing its
+ * `function_call_output`, or answering the approval — then sends a continuation that resumes this run
  * under the same runId. On resume the loop re-hydrates the conversation: a
  * client `function_call_output` (or a denial's rejection output) is already
  * folded into the model input, and an approved-but-unexecuted gated call is run
  * server-side here before the next model turn.
  *
  * Each unit of work is published under its own `run.pipe`, so each gets a fresh
- * `codec-message-id` and the codec's reducer keys it as a distinct
+ * `codec-message-id` and a consumer's fold keys it as a distinct
  * `OpenAIMessage`. One model turn is one message; the batch of tool outputs for
  * that turn is a second message. A run that calls one tool therefore produces
  * three messages: the turn that emitted the calls, the tool outputs, and the
  * final text turn. This is the agent's choice of chunking — the codec is
  * agnostic, keying messages purely by `codec-message-id`.
  *
- * The `function_call_output` events land in their own message: the codec folds
+ * The `function_call_output` events land in their own message: a consumer folds
  * them by `codec-message-id` alone, so a renderer pairs a call with its output
  * across messages by `call_id`.
  *
@@ -41,9 +41,9 @@
  */
 
 import Ably from 'ably';
-import type { AgentRun, RunEndParams, StreamResult } from '@ably/ai-transport';
+import type { AgentRunTransport, RunEndParams, StreamResult } from '@ably/ai-transport';
 import { ErrorCode } from '@ably/ai-transport';
-import type { OpenAIMessage, OpenAIOutput, OpenAIProjection } from '@ably/ai-transport/openai';
+import type { OpenAIMessage, OpenAIOutput } from '@ably/ai-transport/openai';
 import { approvedUnexecutedCalls } from '@ably/ai-transport/openai';
 import { toResponseInputItems } from 'openai/lib/responses/ResponseInputItems';
 import type { Responses } from 'openai/resources/responses/responses';
@@ -55,7 +55,7 @@ import { executeTool, isClientTool, needsApproval } from './tools';
 const MAX_STEPS = 10;
 
 /** The publishing surface the loop drives — one `pipe` call per message. */
-type AgentLoopRun = Pick<AgentRun<OpenAIOutput, OpenAIProjection, OpenAIMessage>, 'pipe' | 'abortSignal'>;
+type AgentLoopRun = Pick<AgentRunTransport<OpenAIOutput>, 'pipe' | 'abortSignal'>;
 
 /** Inputs for one agent run's loop. */
 export interface AgentLoopRequest {

@@ -1,13 +1,13 @@
 'use client';
 
-import { useState, useRef, useEffect, useMemo } from 'react';
-import type { OpenAIMessage } from '@ably/ai-transport/openai';
-import type { CodecMessage } from '@ably/ai-transport';
+import { useState, useRef, useEffect } from 'react';
 import type * as Ably from 'ably';
 import { ChevronLeftIcon } from 'lucide-react';
 import { Button } from '@ably-ai-demos/frontend/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@ably-ai-demos/frontend/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@ably-ai-demos/frontend/components/ui/tooltip';
+
+import type { ThreadMessage } from '../lib/fold-thread';
 
 /** One transport lifecycle event observed on the session, for the debug pane. */
 export interface CallbackLogEntry {
@@ -20,9 +20,9 @@ export interface CallbackLogEntry {
 }
 
 interface DebugPaneProps {
-  // The visible messages paired with their codec-message-ids; the pane renders
-  // the raw `message` halves (turns) as JSON.
-  messages: CodecMessage<OpenAIMessage>[];
+  // The folded thread; the pane renders each message (its wire identity, run,
+  // items, and tool-call state) as JSON.
+  messages: ThreadMessage[];
   ablyMessages: Ably.InboundMessage[];
   status: string;
   callbackLog: CallbackLogEntry[];
@@ -77,7 +77,7 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
           >
             <div className="mb-1 flex items-center gap-2 text-muted-foreground">
               <span>#{idx}</span>
-              <span>{new Date(entry.timestamp ?? Date.now()).toLocaleTimeString()}</span>
+              <span>{entry.timestamp === undefined ? '—' : new Date(entry.timestamp).toLocaleTimeString()}</span>
               <span className="text-emerald-500">{entry.name ?? '(unnamed)'}</span>
               <span className="text-amber-500">{String(entry.action ?? 'message.create')}</span>
             </div>
@@ -115,7 +115,7 @@ function AblyMessagesTab({ entries }: { entries: Ably.InboundMessage[] }) {
   );
 }
 
-function MessagesTab({ messages, status }: { messages: OpenAIMessage[]; status: string }) {
+function MessagesTab({ messages, status }: { messages: ThreadMessage[]; status: string }) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -131,7 +131,7 @@ function MessagesTab({ messages, status }: { messages: OpenAIMessage[]; status: 
     >
       <div className="mb-3 flex gap-2">
         <div className="rounded border bg-muted/50 px-2 py-1.5 text-[10px]">
-          <span className="text-muted-foreground">Session status: </span>
+          <span className="text-muted-foreground">Run status: </span>
           <span className={`font-mono ${status === 'running' ? 'text-emerald-500' : 'text-muted-foreground'}`}>
             {status}
           </span>
@@ -256,9 +256,6 @@ export function DebugPane({ messages, ablyMessages, status, callbackLog, statusL
 
   const [tab, setTab] = useState<Tab>('ably');
 
-  // Project away the codec-message-id pairing — the pane renders raw messages.
-  const rawMessages = useMemo(() => messages.map((m) => m.message), [messages]);
-
   if (!isOpen) {
     return (
       <Tooltip>
@@ -321,7 +318,7 @@ export function DebugPane({ messages, ablyMessages, status, callbackLog, statusL
         className="flex min-h-0 flex-1 flex-col"
       >
         <MessagesTab
-          messages={rawMessages}
+          messages={messages}
           status={status}
         />
       </TabsContent>

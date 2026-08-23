@@ -1,17 +1,17 @@
 # End-to-end tests
 
 Playwright tests that drive the demo in a browser and assert the user-visible
-behaviour of the Ably AI Transport flow with the OpenAI Responses codec: client
-and agent sessions exchanging AI messages over an Ably channel, rendered in the
-UI — streamed text, a server-side tool call (the weather card), branch
-navigation (edit/regenerate), cancellation, history rebuild on refresh, and
-multi-tab sync.
+behaviour of the Ably AI Transport flow with the OpenAI Responses codec: the
+client and agent transports exchanging AI messages over an Ably channel,
+rendered in the UI — streamed text, server-side / client-side / approval-gated
+tool calls, cancellation, history rebuild on refresh (including a reload
+mid-stream, which must fold to one message), and multi-tab sync.
 
-This demo drives a session directly through the lower-level `useClientSession` /
-`useView` hooks (manual `view.send` / `regenerate` / `edit` plus an explicit
-`wakeAgent` POST), with the generic, codec-agnostic transport parameterized by
-the OpenAI `ResponsesCodec`. Like the Vercel `use-client-session` demo, it covers
-server-side function calls; client-side tools and approvals are not covered yet.
+This demo drives the client transport directly (`transport.publishInput` plus
+an explicit `wakeAgent` POST) with the generic, codec-agnostic transport
+parameterized by the OpenAI `ResponsesCodec`, and folds the decoded events
+through OpenAI's own `accumulateResponse`. The thread is linear — there is no
+branch navigation.
 
 The suite needs no secrets:
 

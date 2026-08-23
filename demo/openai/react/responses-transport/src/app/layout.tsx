@@ -7,7 +7,7 @@ const geist = Geist({ subsets: ['latin'], variable: '--font-sans' });
 
 export const metadata: Metadata = {
   title: 'Ably AI — OpenAI Responses Demo',
-  description: 'Streaming chat over Ably with the AI Transport ClientSession API and the OpenAI Responses codec',
+  description: 'Streaming chat over Ably with the AI Transport client transport and the OpenAI Responses codec',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

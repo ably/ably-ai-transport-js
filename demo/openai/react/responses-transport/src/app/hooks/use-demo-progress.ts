@@ -1,6 +1,6 @@
 /**
  * useDemoProgress — given this demo's scenario list, derives which scenarios are
- * still unfinished from the conversation tree, so the suggestion chips stay in
+ * still unfinished from the folded thread, so the suggestion chips stay in
  * sync across clients via the channel-backed history.
  *
  * A `Scenario` is the single source of truth for both the intro-card walkthrough
@@ -8,7 +8,7 @@
  * trackable, still-unfinished ones. A scenario with no `id` is shown in the
  * intro but never tracked and never offered as a chip.
  *
- * Completion detected from tree state:
+ * Completion detected from the folded thread:
  * - server-weather: the getWeather tool ran (a getWeather function_call paired
  *   with its function_call_output). A tool run splits its work across separate
  *   messages, so the call and its output are paired across turns, not within one.
@@ -16,9 +16,7 @@
  *   with a client-published function_call_output)
  * - approval-forecast: a getWeatherForecast call reached a decision (its
  *   per-call state carries an approval, or its output is present)
- * - multi-tab: more than one distinct turn-client-id appears across turns
- * - regenerate: any assistant node has siblings (forked via Regenerate)
- * - edit: any user node has siblings (forked via Edit)
+ * - multi-tab: more than one distinct publisher clientId appears across user turns
  * - cancel: a cancel signal was seen on the channel
  *
  * The Observability scenario is local UI state, so it carries no `id` and is not
@@ -27,16 +25,17 @@
 
 import { useMemo } from 'react';
 import type * as Ably from 'ably';
-import type { BranchHandle, CodecMessage, RunInfo } from '@ably/ai-transport';
 import { EVENT_CANCEL } from '@ably/ai-transport';
 import type { OpenAIMessage } from '@ably/ai-transport/openai';
 import type { DemoStepId, Scenario } from '@ably-ai-demos/frontend/lib/progress-steps';
+
+import type { ThreadMessage } from '../lib/fold-thread';
 
 /**
  * Whether the named tool ran — a function_call for it paired with its
  * function_call_output. A tool run splits its work across separate messages, so
  * the call and its output are collected across all turns (mirroring the
- * render-time pairing in helpers.ts), not within a single turn.
+ * render-time pairing in display.ts), not within a single turn.
  */
 function ranTool(turns: OpenAIMessage[], name: string): boolean {
   const callIds = new Set<string>();
@@ -72,20 +71,16 @@ function decidedForecast(turns: OpenAIMessage[]): boolean {
 
 /**
  * Filter this demo's scenarios down to the trackable ones still unfinished, in
- * the demo's own order. Drives the suggestion chips. Reruns when the visible
- * turns, branch state, run lookup, or channel messages change.
+ * the demo's own order. Drives the suggestion chips. Reruns when the folded
+ * thread or channel messages change.
  * @param scenarios - The demo's scenarios; only those with an `id` are trackable.
- * @param messages - The visible turns paired with their codec-message-ids.
- * @param branchSelection - Branch handle lookup, for detecting forked (edited/regenerated) nodes.
- * @param runOf - Run lookup, for the client id that owns each turn.
+ * @param messages - The folded thread.
  * @param ablyMessages - Raw channel messages, for detecting a cancel signal.
  * @returns The scenarios not yet demonstrated, in the demo's order.
  */
 export function useDemoProgress(
   scenarios: readonly Scenario[],
-  messages: CodecMessage<OpenAIMessage>[],
-  branchSelection: (codecMessageId: string) => BranchHandle<OpenAIMessage>,
-  runOf: (codecMessageId: string) => RunInfo | undefined,
+  messages: ThreadMessage[],
   ablyMessages: Ably.InboundMessage[],
 ): Scenario[] {
   return useMemo(() => {
@@ -93,24 +88,16 @@ export function useDemoProgress(
 
     if (ablyMessages.some((m) => m.name === EVENT_CANCEL)) completed.add('cancel');
 
-    const turns = messages.map(({ message }) => message);
-    if (ranTool(turns, 'getWeather')) completed.add('server-weather');
-    if (ranTool(turns, 'getLocation')) completed.add('client-weather');
-    if (decidedForecast(turns)) completed.add('approval-forecast');
+    if (ranTool(messages, 'getWeather')) completed.add('server-weather');
+    if (ranTool(messages, 'getLocation')) completed.add('client-weather');
+    if (decidedForecast(messages)) completed.add('approval-forecast');
 
-    const turnClientIds = new Set<string>();
-    for (const { codecMessageId } of messages) {
-      const run = runOf(codecMessageId);
-      if (run?.clientId) turnClientIds.add(run.clientId);
+    const userClientIds = new Set<string>();
+    for (const message of messages) {
+      if (message.role === 'user' && message.clientId !== undefined) userClientIds.add(message.clientId);
     }
-    if (turnClientIds.size > 1) completed.add('multi-tab');
-
-    for (const { codecMessageId, message } of messages) {
-      if (!branchSelection(codecMessageId).hasSiblings) continue;
-      if (message.role === 'assistant') completed.add('regenerate');
-      if (message.role === 'user') completed.add('edit');
-    }
+    if (userClientIds.size > 1) completed.add('multi-tab');
 
     return scenarios.filter((s) => s.id !== undefined && !completed.has(s.id));
-  }, [scenarios, messages, branchSelection, runOf, ablyMessages]);
+  }, [scenarios, messages, ablyMessages]);
 }

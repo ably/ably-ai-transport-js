@@ -304,15 +304,28 @@ describe('createAgentTransport', () => {
       expect(run.abortSignal.aborted).toBe(true);
     });
 
-    it('does not buffer a bare run-id cancel for an unknown run', async () => {
+    it('buffers a bare run-id cancel until the run opens — a durable continuation race', async () => {
       const { transport, channel } = await setup();
 
+      // The client knows a continuation's run-id before this process's
+      // openRun registers it, so the cancel can land in between.
       channel.listener?.(cancelMsg({ [HEADER_RUN_ID]: 'run-later' }));
       await flushMicrotasks();
       const run = transport.openRun({ runId: 'run-later' });
       await flushMicrotasks();
 
-      expect(run.abortSignal.aborted).toBe(false);
+      expect(run.abortSignal.aborted).toBe(true);
+    });
+
+    it('does not carry a buffered run-id cancel across to a later run under a different id', async () => {
+      const { transport, channel } = await setup();
+
+      channel.listener?.(cancelMsg({ [HEADER_RUN_ID]: 'run-later' }));
+      await flushMicrotasks();
+      const other = transport.openRun({ runId: 'run-other' });
+      await flushMicrotasks();
+
+      expect(other.abortSignal.aborted).toBe(false);
     });
 
     it('leaves the run running when onCancel returns false', async () => {
@@ -844,6 +857,28 @@ describe('createAgentTransport', () => {
   });
 
   describe('openRun', () => {
+    it('delivers a failed opening publish to the run onError hook', async () => {
+      const { transport, channel } = await setup();
+      channel.publish.mockRejectedValueOnce(new Ably.ErrorInfo('publish refused', 40160, 401));
+      const errors: Ably.ErrorInfo[] = [];
+
+      transport.openRun(undefined, {
+        onError: (error) => {
+          errors.push(error);
+        },
+      });
+      // The open chain crosses several awaits before the catch runs.
+      for (let tick = 0; tick < 4; tick++) await flushMicrotasks();
+
+      // The only signal a caller that awaits no output verb can observe.
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toBeErrorInfo({
+        code: ErrorCode.SessionSendFailed,
+        statusCode: 500,
+        cause: { code: 40160 },
+      });
+    });
+
     it('publishes ai-run-start with a minted run-id and returns the run handle', async () => {
       const { transport, channel } = await setup({ clientId: 'agent-a' });
 

@@ -193,27 +193,41 @@ export const createFramingActivities = <TInput, TOutput>(
         // which a durable framework holds constant across retries, so a
         // fresh-process retry re-enters the SAME run instead of minting a new
         // id and opening a parallel one.
+        const { promise: openFailed, reject: failOpen } = Promise.withResolvers<never>();
+        // .catch(): the race below observes the rejection; without a pre-attached
+        // handler the losing branch would surface as an unhandled rejection.
+        openFailed.catch(() => {
+          /* observed via the race */
+        });
         const run = transport.openRun(
           {
             input: located,
             runId: input.invocationId,
             invocationId: input.invocationId,
           },
-          { signal: cancelSignal },
+          {
+            signal: cancelSignal,
+            onError: (error) => {
+              failOpen(error);
+            },
+          },
         );
-        // The opening publish is fire-and-forget inside openRun, so its
-        // failure surfaces only through the handle's `opened`. Race the echo
-        // against that rejection: a failed open fails this activity fast for
-        // retry instead of stalling until the activity timeout, while a
-        // successful open still waits for the echo, so the hand-off happens
-        // strictly after the open is on the wire. Subscribing after openRun
-        // is safe: no await separates them, so the echo cannot be delivered
-        // in between.
-        const { promise: openFailed, reject: failOpen } = Promise.withResolvers<never>();
+        // The opening publish is fire-and-forget inside openRun, so a publish
+        // failure never reaches this frame on its own — race it against the
+        // echo, or a failed open would hang this activity until its Temporal
+        // timeout instead of failing fast for retry. A successful open still
+        // waits for the echo, so the hand-off to the next activity happens
+        // strictly after the open is on the wire. Subscribing after openRun is
+        // safe: no await separates them, so the echo cannot be delivered in
+        // between. The transport reports the failure two ways, and either may
+        // be the one a given run gets, so both feed the same rejection (the
+        // second is a no-op).
+        //
         // .catch(): rejection-only view — `opened` resolving must not settle
         // the race, only the echo may.
         run.opened.catch(failOpen);
-        await Promise.race([awaitRunOpen(transport, run.runId, cancelSignal), openFailed]);
+        const opened = awaitRunOpen(transport, run.runId, cancelSignal);
+        await Promise.race([opened, openFailed]);
 
         return { runId: run.runId, invocationId: input.invocationId };
       });

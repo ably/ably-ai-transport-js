@@ -56,7 +56,7 @@ export interface WireMeta {
    * none.
    */
   headers: Record<string, string>;
-  /** Ably channel serial of the message, or `undefined` for an optimistic local echo (no serial assigned yet). */
+  /** Ably channel serial of the message. Present on every wire-delivered event; `undefined` only for a locally synthesised event a consumer constructs itself. */
   serial: string | undefined;
   /** The `codec-message-id` header — the logical message this event belongs to, or `undefined` when the wire carried none. */
   codecMessageId: string | undefined;
@@ -66,23 +66,23 @@ export interface WireMeta {
   stepId: string | undefined;
   /** The `step-start-serial` header — the identity of the step attempt (the serial of its `ai-step-start`), or `undefined` when the message belonged to no step. */
   stepStartSerial: string | undefined;
-  /** Ably server timestamp (epoch ms) of the message, or `undefined` for an optimistic local echo. */
+  /** Ably server timestamp (epoch ms) of the message, or `undefined` for a locally synthesised event. */
   timestamp: number | undefined;
   /** The `role` header (e.g. `"user"`, `"assistant"`), or `undefined` when the wire carried none. */
   role: string | undefined;
   /** The publisher's Ably `clientId`, or `undefined` for an anonymous / wildcard connection. */
   clientId: string | undefined;
-  /** The Ably message name (e.g. `ai-input`, `ai-output`), or `undefined` for an optimistic local echo. */
+  /** The Ably message name (e.g. `ai-input`, `ai-output`), or `undefined` when the platform did not echo it (appends). */
   messageName: string | undefined;
   /**
    * The append version serial (`version.serial`) — the per-delivery identity
    * an appending stream advances. A consumer deduping whole-wire replays keys
    * its high-water-mark on this; a
-   * transport-only consumer can ignore it. `undefined` for an optimistic local
-   * echo.
+   * transport-only consumer can ignore it. `undefined` for a locally
+   * synthesised event.
    */
   versionSerial: string | undefined;
-  /** The append version timestamp (`version.timestamp`, epoch ms), or `undefined` for an optimistic local echo. */
+  /** The append version timestamp (`version.timestamp`, epoch ms), or `undefined` for a locally synthesised event. */
   versionTimestamp: number | undefined;
   /** Structure header `parent` — the codec-message-id of the preceding message in this branch. Carried verbatim; the application interprets it. */
   parent: string | undefined;
@@ -206,13 +206,13 @@ export interface PublishInputOptions {
   regenerates?: string;
   /** Reuse a known run-id (a continuation of an existing run). Omit for a fresh send; the agent mints the run-id at run-start. */
   runId?: string;
-  /** Arbitrary user-provided headers, published in Ably's own `extras.headers` slot (outside the SDK's `extras.ai` envelope) and surfaced back on {@link WireMeta.headers} — on the wire echo and the optimistic local echo alike. */
+  /** Arbitrary user-provided headers, published in Ably's own `extras.headers` slot (outside the SDK's `extras.ai` envelope) and surfaced back on {@link WireMeta.headers}. */
   headers?: Record<string, string>;
 }
 
 /** The identifiers assigned to a published input, returned by {@link ClientTransport.publishInput}. */
 export interface PublishInputResult {
-  /** The codec-message-id the input was published under — the caller's option value, or a freshly minted id. Keys optimistic-echo reconciliation. */
+  /** The codec-message-id the input was published under — the caller's option value, or a freshly minted id. A consumer keying its own optimistic UI reconciles it against the wire delivery by this id. */
   codecMessageId: string;
   /** The per-publish `event-id` stamped on the wire — distinct from `codecMessageId`, this is what an agent's `locateInput` matches to find the input that woke an invocation. */
   eventId: string;
@@ -290,7 +290,7 @@ export interface TransportHistoryResult<TInput, TOutput> {
  * Holds no run registry — a cancel's or steer's `runId` is sourced from
  * {@link PublishInputResult.runId} (resolved from the triggering input's
  * `ai-run-start`) or from `run-lifecycle` events off the receive stream, and
- * an optimistic echo is reconciled against its wire echo by `codecMessageId`.
+ * a consumer keys its own send state on the returned `codecMessageId`.
  * The only cross-message state is the steer ledger behind {@link steer} and
  * the pending `runId` watches behind {@link publishInput}.
  * @template TInput - The codec's input-event domain type accepted by
@@ -309,19 +309,18 @@ export interface ClientTransport<TInput, TOutput> extends TransportReceiver<TInp
   connect(): Promise<void>;
   /**
    * Subscribe to classified transport events — shorthand for
-   * `on('event', handler)`. Fires for live wire events and for the optimistic
-   * local echo a {@link publishInput} emits; history batches do not pass
-   * through here.
+   * `on('event', handler)`. Fires for live wire events; history batches do
+   * not pass through here.
    * @param handler - Called with each {@link TransportEvent} in wire order.
    * @returns An unsubscribe function.
    */
   subscribe(handler: (event: TransportEvent<TInput, TOutput>) => void): () => void;
   /**
-   * Publish one codec input event to the channel. Emits a local `message`
-   * event to `subscribe` handlers immediately (with `serial` and
-   * `versionSerial` `undefined`) so the sender sees its own input before the
-   * wire round-trips; the real echo later carries the same `codecMessageId`
-   * so a consumer keying on it reconciles the two. Requires {@link connect}.
+   * Publish one codec input event to the channel. Nothing is emitted locally:
+   * the sender's own input reaches it back as the ordinary channel delivery
+   * (like any other subscriber's), carrying the returned `codecMessageId` so
+   * a consumer keying its own optimistic UI on it reconciles the delivery.
+   * Requires {@link connect}.
    * @param event - The codec input event to publish.
    * @param opts - Optional per-publish overrides; see {@link PublishInputOptions}.
    * @returns The assigned `codecMessageId` and `eventId`, plus a `runId`
@@ -339,8 +338,8 @@ export interface ClientTransport<TInput, TOutput> extends TransportReceiver<TInp
   /**
    * Publish a steering input into an open run and observe whether the run's
    * output considered it. Returns synchronously with two promises:
-   * `published` resolves with the publish's Ably-assigned serial once the
-   * transport observes the steer's own channel echo, and `outcome` resolves
+   * `published` resolves with the publish acknowledgement's Ably-assigned
+   * serial (no channel echo is involved), and `outcome` resolves
    * at the run's next lifecycle bracket by membership of the steer's
    * codec-message-id in the `steer-codec-message-ids` stamps observed on the
    * run's outputs — consumed on membership; not-consumed only at

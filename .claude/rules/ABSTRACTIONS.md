@@ -92,6 +92,11 @@ The receive side has one classifier and the send sides are split by role:
   surfacing raw on `ably-message`.
 - **ClientTransport** — publish input, cancel, steer, subscribe to the
   classified event stream, and page history backwards from the attach point.
+  Publishing emits nothing locally: the sender's own input comes back as the
+  ordinary channel delivery, keyed by the returned `codecMessageId`, so a
+  consumer that wants optimistic UI renders its own and reconciles on that id.
+  A steer's `published` resolves from the publish acknowledgement's serial,
+  not from the steer's own echo, so steering works with `echoMessages: false`.
 - **AgentTransport** — open runs, locate the input that woke an invocation,
   publish output through a run's pipe or steps, and route inbound cancel and
   steer onto the matching run handle.

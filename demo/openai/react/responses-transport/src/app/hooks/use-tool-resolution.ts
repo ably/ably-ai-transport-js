@@ -9,9 +9,9 @@
  * makes the provider reject the resumed request. The resolution itself always
  * publishes immediately — only the wake POST waits for the last answer.
  *
- * A client's own resolution is wire-only: an input published against an existing
- * codec-message-id gets no optimistic echo, so the folded thread does not reflect
- * the answer until the channel echo lands. Reading the thread alone would
+ * A client's own resolution reaches the fold only as the ordinary channel
+ * delivery (the transport emits nothing locally on publish), so the folded
+ * thread does not reflect the answer until that lands. Reading the thread alone would
  * therefore never see the run become ready. The hook closes that gap by
  * remembering the `call_id`s it has answered and treating them as answered on
  * top of what the thread shows, which keeps the decision in the resolving call

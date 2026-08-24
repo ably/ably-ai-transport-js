@@ -91,12 +91,12 @@ describe('foldMessages', () => {
     expect(messages[0].message.id).toBe('wire-a1');
   });
 
-  it('merges wire-fanned message parts by codec-message-id and dedupes the echo pair', async () => {
+  it('merges wire-fanned message parts by codec-message-id and dedupes a repeated part', async () => {
     const events = [
-      // The wire fans one part out per event; an optimistic echo repeats the
+      // The wire fans one part out per event; a redelivered event repeats the
       // first part verbatim.
       messageEvent(
-        { codecMessageId: 'wire-u1', serial: undefined },
+        { codecMessageId: 'wire-u1' },
         { inputs: [{ kind: 'message', payload: { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'one' }] } }] },
       ),
       messageEvent(

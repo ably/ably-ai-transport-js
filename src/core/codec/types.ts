@@ -178,8 +178,11 @@ export interface Encoder<TInput, TOutput> {
    * Encode and publish a single client input on the `ai-input` wire.
    * Rejects if the codec cannot encode the given input
    * variant.
+   * @returns The publish acknowledgement — the Ably-assigned serials, one per
+   *   wire message the input produced (a batch input fans out), in publish
+   *   order.
    */
-  publishInput(input: TInput, options?: WriteOptions): Promise<void>;
+  publishInput(input: TInput, options?: WriteOptions): Promise<Ably.PublishResult>;
   /**
    * Encode and publish a single agent output on the `ai-output` wire.
    * Rejects if the codec cannot encode the given output

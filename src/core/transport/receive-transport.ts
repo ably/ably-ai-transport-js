@@ -116,10 +116,11 @@ export interface ReceiveTransport<TInput, TOutput> extends TransportReceiver<TIn
   deliverEvent(rawMsg: Ably.InboundMessage): DeliverEventResult<TInput, TOutput>;
   /**
    * Emit a synthesized `event` that has no backing inbound wire message — the
-   * client's optimistic send echo. Delivered to `event` subscribers
-   * synchronously and in registration order, exactly like a classified wire
-   * event, so a consumer keying on `codecMessageId` reconciles it against the
-   * later wire echo. Emits no `ably-message`; there is no raw message.
+   * agent writer's optimistic step-lifecycle seed. Delivered to `event`
+   * subscribers synchronously and in registration order, exactly like a
+   * classified wire event; a consumer reconciles it against the later wire
+   * bracket by `stepStartSerial`. Emits no `ably-message`; there is no raw
+   * message.
    * @param event - The pre-built local event to emit.
    */
   emitEvent(event: TransportEvent<TInput, TOutput>): void;

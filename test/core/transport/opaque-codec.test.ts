@@ -39,9 +39,8 @@ type OpaqueEvent = TransportEvent<OpaqueInput, OpaqueOutput>;
  */
 const createOpaqueCodec = (): WireCodec<OpaqueInput, OpaqueOutput> => ({
   createEncoder: (channel: ChannelWriter): Encoder<OpaqueInput, OpaqueOutput> => ({
-    publishInput: async (input: OpaqueInput, options?: WriteOptions): Promise<void> => {
-      await channel.publish({ name: 'ai-input', data: JSON.stringify(input), extras: options?.extras });
-    },
+    publishInput: async (input: OpaqueInput, options?: WriteOptions): Promise<Ably.PublishResult> =>
+      channel.publish({ name: 'ai-input', data: JSON.stringify(input), extras: options?.extras }),
     publishOutput: async (output: OpaqueOutput, options?: WriteOptions): Promise<void> => {
       await channel.publish({ name: 'ai-output', data: JSON.stringify(output), extras: options?.extras });
     },
@@ -63,7 +62,7 @@ const createOpaqueCodec = (): WireCodec<OpaqueInput, OpaqueOutput> => ({
 });
 
 describe('transports over a discriminant-free codec', () => {
-  it('client transport publishes, echoes, and classifies opaque events untouched', async () => {
+  it('client transport publishes and classifies opaque events untouched', async () => {
     const channel = createMockChannel();
     const transport = createClientTransport({ channel, codec: createOpaqueCodec() });
     const events: OpaqueEvent[] = [];
@@ -72,9 +71,10 @@ describe('transports over a discriminant-free codec', () => {
 
     const sent = await transport.publishInput({ text: 'hello' });
     expect(sent.codecMessageId).toBeTruthy();
-    // The optimistic echo carries the input object as-is.
-    const echo = events.find((e) => e.kind === 'message');
-    expect(echo?.kind === 'message' && echo.inputs[0]).toEqual({ text: 'hello' });
+    // The published wire carries the input object as its JSON form, untouched.
+    const published = channel.publishCalls.find((m) => m.name === 'ai-input');
+    // CAST: this codec's own wire data is its JSON form.
+    expect(JSON.parse(String(published?.data)) as OpaqueInput).toEqual({ text: 'hello' });
 
     // A live output wire classifies to the opaque output as-is.
     channel.listener?.({

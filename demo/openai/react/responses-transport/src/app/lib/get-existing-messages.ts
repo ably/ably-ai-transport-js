@@ -36,7 +36,7 @@ export interface ExistingMessages {
  * The serial an event rides the channel under: a message event's wire serial,
  * or a lifecycle event's own serial.
  * @param event - The decoded event.
- * @returns The serial, or `undefined` (an optimistic local echo has none).
+ * @returns The serial, or `undefined` (a locally synthesised event has none).
  */
 export const serialOf = (event: ThreadEvent): string | undefined =>
   event.kind === 'message' ? event.meta.serial : event.event.serial;

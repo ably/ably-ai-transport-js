@@ -13,8 +13,8 @@
  *   published by a client), so they append to the same chunk list — one fold
  *   path covers both directions;
  * - `{ kind: 'message' }` inputs carry whole `UIMessage`s, one part per wire
- *   event, merged by codec-message-id (part-equality dedupes an optimistic
- *   echo against its wire echo);
+ *   event, merged by codec-message-id (part-equality dedupes a redelivered
+ *   wire event, which repeats identical parts);
  * - `{ kind: 'approval' }` inputs are the one non-provider body: a small step
  *   flips the matching tool part to its approval-responded state.
  *
@@ -84,10 +84,11 @@ const partKey = (part: UIMessage['parts'][number]): string => JSON.stringify(can
 
 /**
  * Merge one wire-fanned part-carrier into the bucket's message: same domain
- * id, parts appended in wire order, deduped by part identity. A `UIMessage`
- * input is a batch — the codec fans one wire event per part under a single
- * codec-message-id — so replacing rather than merging would keep only the
- * last part of a multi-part turn.
+ * id, parts appended in wire order, deduped by part identity (a redelivered
+ * wire event carries identical parts). A `UIMessage` input is a batch — the
+ * codec fans one wire event per part under a single codec-message-id — so
+ * replacing rather than merging would keep only the last part of a
+ * multi-part turn.
  * @param existing - The message merged so far, or `undefined` for the first carrier.
  * @param incoming - The next carrier's message.
  * @returns The merged message.

@@ -16,8 +16,8 @@
  *   arrives under an id of its own and would otherwise never reach the
  *   assistant that called it.
  * - `kind: 'message'` inputs carry a whole `UIMessage` (a user turn). Parts
- *   merge per bucket with JSON-equality dedupe, so an optimistic local echo
- *   and its wire echo fold to one message.
+ *   merge per bucket with JSON-equality dedupe, so a redelivered wire event
+ *   folds to one message.
  * - `kind: 'approval'` inputs flip the matching tool part from
  *   `approval-requested` to `approval-responded`, carrying the decision.
  */

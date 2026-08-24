@@ -24,7 +24,7 @@ The entry points are listed here for orientation; the authoritative list is
 | `@ably/ai-transport/react`             | Transport-shaped React surface for any codec (`ClientTransportProvider`, `useClientTransport`, `useTransportEvents`, `useAblyMessages`) | `ably`, `react`         |
 | `@ably/ai-transport/vercel`            | Vercel AI SDK codec, transport factories pre-bound to it, and the `useChat` adapter (`createChatTransport`)                             | `ably`, `ai`            |
 | `@ably/ai-transport/vercel/react`      | React provider and hook for the `useChat` adapter (`ChatTransportProvider`, `useChatTransport`)                                         | `ably`, `ai`, `react`   |
-| `@ably/ai-transport/openai`            | OpenAI Responses codec (`ResponsesCodec`)                                                                                               | `ably`, `openai`        |
+| `@ably/ai-transport/openai`            | OpenAI Responses codec (`createResponsesCodec`)                                                                                         | `ably`, `openai`        |
 | `@ably/ai-transport/temporal`          | Temporal worker plugin and framing activities                                                                                           | `ably`, `@temporalio/*` |
 | `@ably/ai-transport/temporal/workflow` | Workflow-side halves of the Temporal integration (sandbox-safe: no `ably` import)                                                       | `@temporalio/workflow`  |
 
@@ -100,9 +100,8 @@ our curation point.)
   state: the only cross-message state is the steer ledger and the pending
   run-id watches.
 - **`AgentTransport`** — open runs (`ai-run-start` / `ai-run-resume`, decided
-  by the located input's run-id header; `adoptRun` re-enters durably and
-  puts nothing on the wire until output or a terminal), pipe output through
-  the encoder bracketed in steps,
+  by the located trigger's run-id header; `adoptRun` re-enters durably and
+  puts nothing on the wire until output or a terminal), pipe output through the encoder bracketed in steps,
   locate the input that woke an invocation (`locateInput`), and page history
   for model context. Cancels route onto the matching run handle; steers flip
   `hasInput()`.

@@ -3,16 +3,16 @@
  * message shape, the model-input flatten, and the agent loop's correlation
  * readers.
  *
- * The SDK's OpenAI codec carries inputs as opaque passthrough JSON
- * (`WireCodec<unknown, OpenAIOutput>`), so the application owns this
- * vocabulary: what a turn body, a tool resolution, and an approval decision
- * look like, and how a merge renders them. Everything here stays in OpenAI's
+ * The SDK's OpenAI codec carries inputs as passthrough JSON typed by the
+ * application (`createResponsesCodec<OpenAIInput>()`), so the application owns
+ * this vocabulary: what a turn body, a tool resolution, and an approval
+ * decision look like, and how a merge renders them. Everything here stays in OpenAI's
  * own item vocabulary wherever one exists, so a stored conversation is valid
  * `/responses` input as-is.
  */
 
 import type { Responses } from 'openai/resources/responses/responses';
-import { isModelledOutputItem, type ModelledOutputItem } from '@ably/ai-transport/openai';
+import { createResponsesCodec, isModelledOutputItem, type ModelledOutputItem } from '@ably/ai-transport/openai';
 
 // ---------------------------------------------------------------------------
 // Stored message model
@@ -124,15 +124,25 @@ export interface OpenAIApprovalInput {
  */
 export type OpenAIInput = OpenAIMessageInput | OpenAIRegenerateInput | OpenAIItemInput | OpenAIApprovalInput;
 
+/**
+ * The demo's one codec instance: the SDK's Responses codec instantiated at
+ * this vocabulary, shared by the client provider and the API routes. The type
+ * parameter is a declaration the codec asserts at decode, not a validated
+ * contract — {@link asOpenAIInput} stays the runtime check at the merge
+ * boundary.
+ */
+export const responsesCodec = createResponsesCodec<OpenAIInput>();
+
 /** Whether a value is a non-null object whose keys can be read. */
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
 /**
- * Narrow a decoded passthrough input to this demo's input union. The wire is
- * a trust boundary: an unrecognised body (another app's vocabulary on a
- * shared channel) narrows to `undefined` and the caller skips it.
+ * Validate a decoded passthrough input against this demo's input union. The
+ * codec's type parameter is an unvalidated assertion, so the wire stays a
+ * trust boundary: an unrecognised body (another app's vocabulary on a shared
+ * channel) narrows to `undefined` and the caller skips it.
  * @param input - The decoded input body.
- * @returns The narrowed input, or `undefined` when it is not one of ours.
+ * @returns The validated input, or `undefined` when it is not one of ours.
  */
 export const asOpenAIInput = (input: unknown): OpenAIInput | undefined => {
   if (!isRecord(input)) return undefined;

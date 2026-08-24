@@ -5,4 +5,4 @@ export type {
   OpenAIOutput,
   ToolApprovalRequestEvent,
 } from './codec/index.js';
-export { isModelledOutputItem, ResponsesCodec } from './codec/index.js';
+export { createResponsesCodec, isModelledOutputItem } from './codec/index.js';

@@ -13,7 +13,10 @@ import { describe, expect, it } from 'vitest';
 
 import { HEADER_TRANSPORT_MESSAGE_ID } from '../../../src/constants.js';
 import type { OpenAIOutput } from '../../../src/openai/codec/index.js';
-import { ResponsesCodec } from '../../../src/openai/codec/index.js';
+import { createResponsesCodec } from '../../../src/openai/codec/index.js';
+
+// The codec under test, at its untyped default input instantiation.
+const responsesCodec = createResponsesCodec();
 import { getTransportHeaders } from '../../../src/utils.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
@@ -45,7 +48,7 @@ const setupCollector = async (
   const pubChannel = pubClient.channels.get(channelName);
   const subChannel = subClient.channels.get(channelName);
 
-  const decoder = ResponsesCodec.createDecoder();
+  const decoder = responsesCodec.createDecoder();
   const buckets = new Map<string, Bucket>();
   const waiters = new Set<{ predicate: () => boolean; resolve: () => void }>();
 
@@ -79,7 +82,7 @@ describe('OpenAI wire-codec integration', () => {
   it('roundtrips a streamed text turn over real appends', async () => {
     const { pubChannel, buckets, waitFor } = await setupCollector(uniqueChannelName('openai-codec-text'));
     try {
-      const encoder = ResponsesCodec.createEncoder(pubChannel, {
+      const encoder = responsesCodec.createEncoder(pubChannel, {
         onAblyMessage: stampHeaders('run-1', 'asst-1'),
       });
       for (const event of textRun('msg_1', 'Hello, world!')) {
@@ -111,7 +114,7 @@ describe('OpenAI wire-codec integration', () => {
     const { pubChannel, buckets, waitFor } = await setupCollector(uniqueChannelName('openai-codec-tool'));
     try {
       const args = '{"city":"Berlin"}';
-      const encoder = ResponsesCodec.createEncoder(pubChannel, {
+      const encoder = responsesCodec.createEncoder(pubChannel, {
         onAblyMessage: stampHeaders('run-1', 'asst-1'),
       });
       for (const event of functionCallArgsRun('fc_1', 'call-1', 'getWeather', args)) {
@@ -146,7 +149,7 @@ describe('OpenAI wire-codec integration', () => {
   it('passes application-defined input bodies through the wire verbatim', async () => {
     const { pubChannel, buckets, waitFor } = await setupCollector(uniqueChannelName('openai-codec-inputs'));
     try {
-      const encoder = ResponsesCodec.createEncoder(pubChannel, {
+      const encoder = responsesCodec.createEncoder(pubChannel, {
         onAblyMessage: stampHeaders('run-1', 'user-1'),
       });
       // Inputs are passthrough JSON: these bodies are the application's own

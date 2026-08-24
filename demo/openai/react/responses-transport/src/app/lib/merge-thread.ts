@@ -81,7 +81,7 @@ export interface RunSummary {
  */
 export interface ThreadMerge {
   /** Merge one classified transport event into the thread. Decoded inputs are passthrough JSON and narrow to the demo's union at this boundary (an unrecognised body is skipped). Throws when an event addresses an item the merge has never seen — a decode-sequence bug worth surfacing, not hiding. */
-  apply(event: TransportEvent<unknown, OpenAIOutput>): void;
+  apply(event: TransportEvent<OpenAIInput, OpenAIOutput>): void;
   /** The thread's messages, in first-seen transport-message-id order. */
   messages(): ThreadMessage[];
   /** Every observed run's merged state, keyed by run-id, in first-seen order. */
@@ -331,7 +331,7 @@ export const createThreadMerge = (): ThreadMerge => {
   const runById = new Map<string, RunSummary>();
   let lastRunId: string | undefined;
 
-  const applyMessage = (event: Extract<TransportEvent<unknown, OpenAIOutput>, { kind: 'message' }>): void => {
+  const applyMessage = (event: Extract<TransportEvent<OpenAIInput, OpenAIOutput>, { kind: 'message' }>): void => {
     const { meta, outputs } = event;
     // The narrowing boundary: decoded inputs are passthrough JSON; keep the
     // bodies in this demo's vocabulary and skip anything else (another app's
@@ -362,7 +362,7 @@ export const createThreadMerge = (): ThreadMerge => {
   };
 
   const applyRunLifecycle = (
-    event: Extract<TransportEvent<unknown, OpenAIOutput>, { kind: 'run-lifecycle' }>['event'],
+    event: Extract<TransportEvent<OpenAIInput, OpenAIOutput>, { kind: 'run-lifecycle' }>['event'],
   ): void => {
     const existing = runById.get(event.runId);
     if (!existing) runOrder.push(event.runId);

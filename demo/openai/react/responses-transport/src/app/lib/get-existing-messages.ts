@@ -13,9 +13,10 @@ import type { AgentTransport, TransportEvent } from '@ably/ai-transport';
 import type { OpenAIOutput } from '@ably/ai-transport/openai';
 
 import { createThreadMerge, type ThreadMessage } from './merge-thread';
+import type { OpenAIInput } from './openai-thread';
 
 /** One decoded transport event at the demo's codec instantiation. */
-export type ThreadEvent = TransportEvent<unknown, OpenAIOutput>;
+export type ThreadEvent = TransportEvent<OpenAIInput, OpenAIOutput>;
 
 /** What {@link getExistingMessages} returns. */
 export interface ExistingMessages {
@@ -47,7 +48,7 @@ export const serialOf = (event: ThreadEvent): string | undefined =>
  * @returns The decoded events, the merged thread, and the hydration seam.
  */
 export const getExistingMessages = async (
-  transport: Pick<AgentTransport<unknown, OpenAIOutput>, 'history'>,
+  transport: Pick<AgentTransport<OpenAIInput, OpenAIOutput>, 'history'>,
 ): Promise<ExistingMessages> => {
   const events: ThreadEvent[] = [];
   let exhausted = false;

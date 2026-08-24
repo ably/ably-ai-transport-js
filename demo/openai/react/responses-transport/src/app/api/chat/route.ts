@@ -3,7 +3,7 @@
  * model, and streams the reply back over Ably.
  *
  * Uses the generic, codec-agnostic agent transport (`createAgentTransport`
- * from `@ably/ai-transport`) parameterized by the OpenAI `ResponsesCodec`;
+ * from `@ably/ai-transport`) parameterized by the demo's typed Responses codec instance;
  * there is no OpenAI-specific transport layer. The wake body carries the
  * channel name and the triggering input's `eventId` (matched on the channel
  * via `locateInput`); a continuation input carries the run-id header of the
@@ -36,9 +36,8 @@
 import { after } from 'next/server';
 import Ably from 'ably';
 import { channelAgent, createAgentTransport } from '@ably/ai-transport';
-import { ResponsesCodec } from '@ably/ai-transport/openai';
 
-import { toResponsesInput } from '../../lib/openai-thread';
+import { responsesCodec, toResponsesInput } from '../../lib/openai-thread';
 
 import { getExistingMessages } from '../../lib/get-existing-messages';
 import { runAgentLoop } from './agent-stream';
@@ -74,8 +73,8 @@ export async function POST(req: Request) {
     ...(process.env.ABLY_ENDPOINT ? { endpoint: process.env.ABLY_ENDPOINT } : {}),
   });
 
-  const channel = ably.channels.get(body.channelName, { params: { agent: channelAgent(ResponsesCodec) } });
-  const transport = createAgentTransport({ channel, codec: ResponsesCodec });
+  const channel = ably.channels.get(body.channelName, { params: { agent: channelAgent(responsesCodec) } });
+  const transport = createAgentTransport({ channel, codec: responsesCodec });
   await transport.connect();
 
   const located = await transport.locateInput(body.eventId);

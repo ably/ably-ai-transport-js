@@ -1,5 +1,5 @@
 /**
- * OpenAI Responses codec — `ResponsesCodec`.
+ * OpenAI Responses codec — `createResponsesCodec`.
  *
  * The output direction is assembled by `defineCodec` from the declarative
  * output descriptor table and the decode lifecycle policy: it streams
@@ -9,17 +9,19 @@
  * Hosted tools (web / file search, code interpreter, image gen, MCP, custom
  * tools) are not yet supported (AIT-1121).
  *
- * The input direction is a passthrough: `TInput` is `unknown`, and any
- * JSON-serialisable body a client publishes rides one discrete `ai-input`
- * message and decodes back verbatim. The application defines its own input
- * vocabulary (turn bodies, tool resolutions, approval decisions) and narrows
- * decoded inputs at its own merge boundary — the responses-transport demo
- * carries a worked example.
+ * The input direction is a passthrough parameterized by the application's own
+ * input type: any JSON-serialisable body a client publishes rides one
+ * discrete `ai-input` message and decodes back verbatim as `TInput`. The
+ * factory's type parameter is the application's declaration, not a validated
+ * contract — the codec asserts it at the decode trust boundary, so an
+ * application sharing its channel with other publishers should still validate
+ * at its merge boundary. The responses-transport demo carries a worked
+ * example (its `OpenAIInput` union and `asOpenAIInput` validator).
  *
  * ```ts
- * import { ResponsesCodec } from '@ably/ai-transport/openai';
+ * import { createResponsesCodec } from '@ably/ai-transport/openai';
  *
- * const decoder = ResponsesCodec.createDecoder();
+ * const codec = createResponsesCodec<MyInput>();
  * ```
  */
 
@@ -55,21 +57,24 @@ const outputCodec = defineCodec<never, OpenAIOutput>()({
 });
 
 /**
- * OpenAI Responses codec implementing `WireCodec<unknown, OpenAIOutput>`.
+ * Build an OpenAI Responses codec implementing `WireCodec<TInput, OpenAIOutput>`.
  * Outputs are OpenAI's own stream events plus the codec's two authored
- * events; inputs pass through as JSON (see the module header).
+ * events; inputs pass through as JSON typed by the application's `TInput`
+ * (see the module header).
+ * @template TInput - The application's input-event type. Defaults to `unknown` when not declared.
+ * @returns The codec.
  */
-export const ResponsesCodec: WireCodec<unknown, OpenAIOutput> = {
+export const createResponsesCodec = <TInput = unknown>(): WireCodec<TInput, OpenAIOutput> => ({
   adapterTag: 'openai-responses',
 
-  createEncoder: (channel: ChannelWriter, options?: EncoderOptions): Encoder<unknown, OpenAIOutput> => {
+  createEncoder: (channel: ChannelWriter, options?: EncoderOptions): Encoder<TInput, OpenAIOutput> => {
     const inner = outputCodec.createEncoder(channel, options);
     // The input direction publishes through its own core so it shares the
     // header stamping (transport-message-id from opts.messageId, the caller's
     // extras) every codec input gets.
     const inputCore = createEncoderCore(channel, options ?? {});
     return {
-      publishInput: async (input: unknown, opts?: WriteOptions): Promise<Ably.PublishResult> => {
+      publishInput: async (input: TInput, opts?: WriteOptions): Promise<Ably.PublishResult> => {
         // CAST: TypeScript's lib types JSON.stringify as always returning a
         // string, but it returns undefined for undefined / function / symbol
         // inputs — the case the guard below rejects.
@@ -93,10 +98,10 @@ export const ResponsesCodec: WireCodec<unknown, OpenAIOutput> = {
     };
   },
 
-  createDecoder: (): Decoder<unknown, OpenAIOutput> => {
+  createDecoder: (): Decoder<TInput, OpenAIOutput> => {
     const inner = outputCodec.createDecoder();
     return {
-      decode: (msg: Ably.InboundMessage): { inputs: unknown[]; outputs: OpenAIOutput[] } => {
+      decode: (msg: Ably.InboundMessage): { inputs: TInput[]; outputs: OpenAIOutput[] } => {
         // The passthrough input path: our own `ai-input` wires carry the
         // published body as JSON. A same-named message without the SDK's
         // `extras.ai` envelope is foreign and decodes to nothing. Malformed
@@ -104,13 +109,16 @@ export const ResponsesCodec: WireCodec<unknown, OpenAIOutput> = {
         // message and surfaces an error.
         if (msg.name === EVENT_AI_INPUT) {
           if (!hasAiEnvelope(msg)) return { inputs: [], outputs: [] };
-          return { inputs: [JSON.parse(String(msg.data)) as unknown], outputs: [] };
+          // CAST: wire trust boundary — the body is the JSON a client
+          // published, asserted to the application's declared TInput; the
+          // codec does not validate the shape (see the module header).
+          return { inputs: [JSON.parse(String(msg.data)) as TInput], outputs: [] };
         }
         return inner.decode(msg);
       },
     };
   },
-};
+});
 
 export type { FunctionCallOutputEvent, ModelledOutputItem, OpenAIOutput, ToolApprovalRequestEvent } from './events.js';
 export { isModelledOutputItem } from './events.js';

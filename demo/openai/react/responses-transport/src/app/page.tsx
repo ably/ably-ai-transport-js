@@ -2,8 +2,8 @@
 
 import { Providers, useAblyReady } from '@ably-ai-demos/frontend/ably-provider';
 import { ClientTransportProvider } from '@ably/ai-transport/react';
-import { ResponsesCodec } from '@ably/ai-transport/openai';
 import { Chat } from './components/chat';
+import { responsesCodec } from './lib/openai-thread';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
 import { generateChannelSlug, generateClientName } from '@ably-ai-demos/frontend/lib/channel-name';
@@ -28,7 +28,7 @@ function ChatWhenReady({
   return (
     <ClientTransportProvider
       channelName={channelName}
-      codec={ResponsesCodec}
+      codec={responsesCodec}
       clientId={clientId}
       historyPageSize={historyPageSize}
     >

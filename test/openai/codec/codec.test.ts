@@ -16,7 +16,10 @@ import { describe, expect, it } from 'vitest';
 import { EVENT_AI_INPUT, HEADER_STATUS, HEADER_STREAM, HEADER_STREAM_ID } from '../../../src/constants.js';
 import { ErrorCode } from '../../../src/errors.js';
 import type { OpenAIOutput } from '../../../src/openai/codec/index.js';
-import { ResponsesCodec } from '../../../src/openai/codec/index.js';
+import { createResponsesCodec } from '../../../src/openai/codec/index.js';
+
+// The codec under test, at its untyped default input instantiation.
+const responsesCodec = createResponsesCodec();
 import { getCodecHeaders, getTransportHeaders } from '../../../src/utils.js';
 import {
   completed,
@@ -80,24 +83,24 @@ const roundtrip = async (
   events: OpenAIOutput[],
 ): Promise<{ inbound: Ably.InboundMessage[]; outputs: OpenAIOutput[] }> => {
   const { writer, inbound } = createBridge();
-  const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+  const encoder = responsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
   for (const event of events) await encoder.publishOutput(event);
   await encoder.close();
   const messages = inbound();
-  const decoder = ResponsesCodec.createDecoder();
+  const decoder = responsesCodec.createDecoder();
   const outputs = messages.flatMap((msg) => decoder.decode(msg).outputs);
   return { inbound: messages, outputs };
 };
 
 // Decode a whole inbound sequence's output events through a fresh decoder.
 const decodeOutputs = (messages: Ably.InboundMessage[]): OpenAIOutput[] => {
-  const decoder = ResponsesCodec.createDecoder();
+  const decoder = responsesCodec.createDecoder();
   return messages.flatMap((msg) => decoder.decode(msg).outputs);
 };
 
 // Decode a whole inbound sequence's input events through a fresh decoder.
 const decodeInputs = (messages: Ably.InboundMessage[]): unknown[] => {
-  const decoder = ResponsesCodec.createDecoder();
+  const decoder = responsesCodec.createDecoder();
   return messages.flatMap((msg) => decoder.decode(msg).inputs);
 };
 
@@ -311,7 +314,7 @@ describe('OpenAI codec roundtrip (offline)', () => {
 
   it('rejects a function-call output_item.added that carries no item id', async () => {
     const { writer } = createBridge();
-    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    const encoder = responsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
     // The item id is the stream's slot key; a streamed function_call without one
     // is malformed wire data and is rejected at the encode boundary.
     await expect(
@@ -370,7 +373,7 @@ describe('OpenAI codec roundtrip (offline)', () => {
 
   it('throws on an unmodelled output event (safety net)', async () => {
     const { writer } = createBridge();
-    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    const encoder = responsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
     // A hosted-tool event (web search) the codec doesn't model: it must surface
     // loudly rather than being dropped, since it signals an opt-in feature we
     // don't support yet.
@@ -400,7 +403,7 @@ describe('OpenAI codec roundtrip (offline)', () => {
 
   it('throws on an unmodelled output item type at encode (added and done)', async () => {
     const { writer } = createBridge();
-    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    const encoder = responsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
     // A computer_call_output is a ResponseOutputItem member the codec does not
     // model (and not a valid ResponseInputItem). The item envelope is carried on
     // output_item.added / .done, whose encode asserts the item is modelled, so an
@@ -416,7 +419,7 @@ describe('OpenAI codec roundtrip (offline)', () => {
 
   it('drops the framing events silently at encode (no publish, no throw)', async () => {
     const { writer, inbound } = createBridge();
-    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    const encoder = responsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
     // The codec's drop entries: each encodes to nothing, unlike an undescribed
     // event (which throws — see the safety-net test above).
     await encoder.publishOutput(created());
@@ -464,7 +467,7 @@ describe('OpenAI codec roundtrip (offline)', () => {
 
   it('passes an arbitrary JSON input body through the ai-input wire verbatim', async () => {
     const { writer, inbound } = createBridge();
-    const encoder = ResponsesCodec.createEncoder(writer);
+    const encoder = responsesCodec.createEncoder(writer);
     const body = {
       kind: 'message',
       payload: {
@@ -488,7 +491,7 @@ describe('OpenAI codec roundtrip (offline)', () => {
 
   it('rejects an input that is not JSON-serialisable', async () => {
     const { writer } = createBridge();
-    const encoder = ResponsesCodec.createEncoder(writer);
+    const encoder = responsesCodec.createEncoder(writer);
 
     // A function has no JSON form, so JSON.stringify yields nothing to publish.
     await expect(
@@ -568,7 +571,7 @@ describe('OpenAI codec foreign messages (offline)', () => {
   });
 
   it('decodes a foreign message to no events', () => {
-    const decoder = ResponsesCodec.createDecoder();
+    const decoder = responsesCodec.createDecoder();
 
     expect(decoder.decode(foreignMessage('foreign-1'))).toEqual({ inputs: [], outputs: [] });
   });
@@ -582,7 +585,7 @@ describe('OpenAI codec foreign messages (offline)', () => {
 describe('OpenAI codec client-driven tool wire roundtrip (offline)', () => {
   it('roundtrips a tool-approval-request: call_id/name on headers, arguments in data', async () => {
     const { writer, inbound } = createBridge();
-    const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
+    const encoder = responsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', 'run-1') });
     await encoder.publishOutput(toolApprovalRequestEvent('call_1', 'getWeatherForecast', '{"location":"Paris"}'));
     await encoder.close();
 

@@ -23,6 +23,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { createThreadMerge, type RunSummary, type ThreadMerge, type ThreadMessage } from '../lib/merge-thread';
 import { type ExistingMessages, serialOf } from '../lib/get-existing-messages';
+import type { OpenAIInput } from '../lib/openai-thread';
 
 /** Options for {@link useResponsesThread}. */
 export interface UseResponsesThreadOptions {
@@ -73,12 +74,12 @@ const emptyState = (): ThreadState => ({
  * @returns The thread state; see {@link ResponsesThreadHandle}.
  */
 export function useResponsesThread(options: UseResponsesThreadOptions): ResponsesThreadHandle {
-  const { transport } = useClientTransport<unknown, OpenAIOutput>();
+  const { transport } = useClientTransport<OpenAIInput, OpenAIOutput>();
   const { channelName } = options;
   const historyApi = options.historyApi ?? '/api/messages';
 
   const mergeRef = useRef<ThreadMerge>(createThreadMerge());
-  const bufferRef = useRef<TransportEvent<unknown, OpenAIOutput>[]>([]);
+  const bufferRef = useRef<TransportEvent<OpenAIInput, OpenAIOutput>[]>([]);
   const hydratedRef = useRef(false);
   const onMergeErrorRef = useRef(options.onMergeError);
   useEffect(() => {
@@ -98,7 +99,7 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
     });
   }, []);
 
-  const applyEvent = useCallback((event: TransportEvent<unknown, OpenAIOutput>) => {
+  const applyEvent = useCallback((event: TransportEvent<OpenAIInput, OpenAIOutput>) => {
     try {
       mergeRef.current.apply(event);
     } catch (error) {
@@ -109,7 +110,7 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
     }
   }, []);
 
-  useTransportEvents<unknown, OpenAIOutput>((event) => {
+  useTransportEvents<OpenAIInput, OpenAIOutput>((event) => {
     if (!hydratedRef.current) {
       bufferRef.current.push(event);
       return;
@@ -145,7 +146,7 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
       // client's own attach point. Page backwards and keep only events newer
       // than the seam (Ably serials order lexicographically); a batch that
       // reaches the seam (or exhaustion) ends the walk.
-      const gap: TransportEvent<unknown, OpenAIOutput>[] = [];
+      const gap: TransportEvent<OpenAIInput, OpenAIOutput>[] = [];
       let exhausted = false;
       let reachedSeam = false;
       while (!exhausted && !reachedSeam && !disposed) {

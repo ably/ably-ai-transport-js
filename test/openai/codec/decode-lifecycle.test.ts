@@ -19,7 +19,10 @@ import { describe, expect, it } from 'vitest';
 
 import { HEADER_STREAM } from '../../../src/constants.js';
 import type { OpenAIOutput } from '../../../src/openai/codec/index.js';
-import { ResponsesCodec } from '../../../src/openai/codec/index.js';
+import { createResponsesCodec } from '../../../src/openai/codec/index.js';
+
+// The codec under test, at its untyped default input instantiation.
+const responsesCodec = createResponsesCodec();
 import { getTransportHeaders } from '../../../src/utils.js';
 import {
   completed,
@@ -49,7 +52,7 @@ const transportOf = (m: Ably.InboundMessage): Record<string, string> => getTrans
 // Encode a run through the offline bridge and return the inbound wire messages.
 const encodeInbound = async (events: OpenAIOutput[], runId = 'run-1'): Promise<Ably.InboundMessage[]> => {
   const { writer, inbound } = createBridge();
-  const encoder = ResponsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', runId) });
+  const encoder = responsesCodec.createEncoder(writer, { onAblyMessage: stampHeaders('run-x', runId) });
   // Feed events as-is, as an agent's pipe does; the codec's descriptor
   // table drops the framing events at encode.
   for (const event of events) await encoder.publishOutput(event);
@@ -79,11 +82,11 @@ const midStreamJoin = (msgs: Ably.InboundMessage[]): Ably.InboundMessage => {
 
 // The decoded outputs a joiner sees from a single first-contact update.
 const decodeJoin = (update: Ably.InboundMessage): OpenAIOutput[] =>
-  ResponsesCodec.createDecoder().decode(update).outputs;
+  responsesCodec.createDecoder().decode(update).outputs;
 
 // Decode a whole inbound sequence's outputs through a fresh decoder.
 const decodeAll = (msgs: Ably.InboundMessage[]): OpenAIOutput[] => {
-  const decoder = ResponsesCodec.createDecoder();
+  const decoder = responsesCodec.createDecoder();
   return msgs.flatMap((msg) => decoder.decode(msg).outputs);
 };
 
@@ -190,7 +193,7 @@ describe('OpenAI decoderSynthesiseLifecycle (mid-stream join)', () => {
     // The joiner sees both in-flight streams as first-contact updates.
     const streamCreates = msgs.filter((m) => m.action === 'message.create' && transportOf(m)[HEADER_STREAM] === 'true');
     expect(streamCreates).toHaveLength(2);
-    const decoder = ResponsesCodec.createDecoder();
+    const decoder = responsesCodec.createDecoder();
     const outputs = streamCreates.flatMap((create) => decoder.decode(asFirstContactUpdate(create, msgs)).outputs);
 
     const adds = eventsOfType(outputs, 'response.output_item.added');

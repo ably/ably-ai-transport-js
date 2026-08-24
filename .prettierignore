@@ -25,3 +25,5 @@ demo/**/src/lib/utils.ts
 # formatting (pasted tables, long lines) is preserved as written.
 /aitdr-014.md
 /aitdr-014-decision-log.md
+/aitdr-014-open-questions.md
+/transcript.md

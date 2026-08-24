@@ -116,6 +116,8 @@ export class FakeClientTransport implements ClientTransport<VercelInput, VercelO
   readonly cancelled: string[] = [];
   /** History batches served to `history()`, in call order; empty means exhausted-empty. */
   historyBatches: TransportHistoryResult<VercelInput, VercelOutput>[] = [];
+  /** How many times `history()` was called. */
+  historyCalls = 0;
 
   private readonly _handlers = new Set<(event: Event) => void>();
   private _publishCount = 0;
@@ -167,6 +169,7 @@ export class FakeClientTransport implements ClientTransport<VercelInput, VercelO
 
   // eslint-disable-next-line @typescript-eslint/require-await -- fake resolves immediately
   async history(): Promise<TransportHistoryResult<VercelInput, VercelOutput>> {
+    this.historyCalls += 1;
     const batch = this.historyBatches.shift();
     return batch ?? { events: [], exhausted: true };
   }

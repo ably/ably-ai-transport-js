@@ -24,26 +24,30 @@
  *   wire-only regenerate input with the `regenerates` / `parent` structure
  *   taken from the message array useChat hands over, then POST a fresh run.
  *
- * The adapter keeps two things off {@link WireMeta}, neither of them a fold:
+ * The adapter keeps three things off {@link WireMeta}, none of them a fold:
  * an index from a message's domain id to the `codecMessageId` and `runId` the
  * wire already carries on every event (needed only for messages this client
- * did not publish — its own sends learn both from the publish result), and
- * the set of `toolCallId`s an action has already been published for. Seed
- * both from history via {@link ChatTransport.seed} so a reloaded page can
+ * did not publish — its own sends learn both from the publish result), the
+ * per-kind sets of `toolCallId`s an action has already been published for
+ * (approval decisions and tool outputs are separate actions on the same
+ * call), and the events of runs that have not ended, so
+ * {@link ChatTransport.reconnectToStream} can classify and replay a run whose
+ * history the application's own hydration walk already consumed. Seed all of
+ * it from history via {@link ChatTransport.seed} so a reloaded page can
  * resume a run that suspended before the page loaded.
  */
 
 // Named import for the one SDK type used in an `extends` heritage clause: the
 // `import-x/namespace` rule can't verify a namespaced generic there. Everywhere
 // else the `AI.*` namespace is used.
-import type * as Ably from 'ably';
+import * as Ably from 'ably';
 import type * as AI from 'ai';
 import type { ChatTransport as SdkChatTransport } from 'ai';
 
 import type { ClientTransport, TransportEvent } from '../../core/transport/types.js';
 import { ErrorCode, errorInfoIs } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
-import { LogLevel, makeLogger } from '../../logger.js';
+import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import type { VercelInput, VercelOutput } from '../codec/events.js';
 import { isToolPart } from '../tool-part.js';
 
@@ -97,6 +101,8 @@ export interface ChatTransportOptions<
    * is not resumed. Defaults to 5 pages.
    */
   reconnectScanPages?: number;
+  /** Optional logger for diagnostics. */
+  logger?: Logger;
 }
 
 /**
@@ -174,8 +180,19 @@ class DefaultChatTransport<
 
   /** Domain message id → the wire identity every event already carries on its meta. */
   private readonly _wireIdentityByMessageId = new Map<string, WireIdentity>();
-  /** Tool calls an action has already been published for (by any client, or seeded from history). */
-  private readonly _publishedToolCallIds = new Set<string>();
+  /** Tool calls an approval decision has already been published for (by any client, or seeded from history). */
+  private readonly _publishedApprovalToolCallIds = new Set<string>();
+  /** Tool calls a tool output has already been published for (by any client, an agent, or seeded from history). */
+  private readonly _publishedOutputToolCallIds = new Set<string>();
+  /**
+   * Indexed events of runs that have not ended, chronological: the run
+   * lifecycle events plus each open run's message events. On a run's `end`
+   * its message and earlier lifecycle events are dropped, so an ended run
+   * holds exactly its end event. {@link reconnectToStream} classifies and
+   * replays from here first, so it works even when the application's own
+   * hydration walk consumed the transport's history cursor.
+   */
+  private _retainedRunEvents: AdapterEvent<TMetadata, TDataParts, TTools>[] = [];
   /** The newest assistant's wire identity, for a regenerate that names no message. */
   private _newestAssistant: WireIdentity | undefined;
   /** Active run-stream collectors fed from the live event subscription. */
@@ -185,7 +202,8 @@ class DefaultChatTransport<
   /** Per-open-stream failure hooks: channel continuity loss errors every open stream. */
   private readonly _streamFailers = new Set<(error: Ably.ErrorInfo) => void>();
   private readonly _unsubscribeError: () => void;
-  private readonly _emitter = new EventEmitter<StreamingEvents>(makeLogger({ logLevel: LogLevel.Silent }));
+  private readonly _logger: Logger;
+  private readonly _emitter: EventEmitter<StreamingEvents>;
   private _openStreams = 0;
   private _closed = false;
   private readonly _unsubscribe: () => void;
@@ -195,6 +213,10 @@ class DefaultChatTransport<
     this._channelName = options.channelName;
     this._api = options.api ?? '/api/chat';
     this._reconnectScanPages = options.reconnectScanPages ?? DEFAULT_RECONNECT_SCAN_PAGES;
+    this._logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
+      component: 'ChatTransport',
+    });
+    this._emitter = new EventEmitter<StreamingEvents>(this._logger);
     this._unsubscribe = this._transport.subscribe((event) => {
       if (this._preSeedEvents === undefined) this._indexEvent(event);
       else this._preSeedEvents.push(event);
@@ -211,6 +233,7 @@ class DefaultChatTransport<
   }
 
   seed(events: AdapterEvent<TMetadata, TDataParts, TTools>[]): void {
+    this._logger.trace('ChatTransport.seed();', { events: events.length });
     for (const event of events) this._indexEvent(event);
     const heldBack = this._preSeedEvents ?? [];
     this._preSeedEvents = undefined;
@@ -229,6 +252,7 @@ class DefaultChatTransport<
   }
 
   close(): void {
+    this._logger.trace('ChatTransport.close();');
     this._closed = true;
     this._unsubscribe();
     this._unsubscribeError();
@@ -243,11 +267,17 @@ class DefaultChatTransport<
   async sendMessages(
     options: Parameters<SdkChatTransport<AI.UIMessage<TMetadata, TDataParts, TTools>>['sendMessages']>[0],
   ): Promise<ReadableStream<AI.UIMessageChunk>> {
+    this._logger.trace('ChatTransport.sendMessages();', { trigger: options.trigger });
+    // Guard before anything reaches the wire: a send after close() must not
+    // publish an input no agent is ever woken for.
+    if (this._closed) throw this._closedError();
     if (options.trigger === 'regenerate-message') {
       return this._sendRegenerate(options.messages, options.messageId, options.abortSignal);
     }
     const last = options.messages.at(-1);
-    if (!last) throw new Error('unable to send; no messages');
+    if (!last) {
+      throw new Ably.ErrorInfo('unable to send; no messages', ErrorCode.InvalidArgument, 400);
+    }
     if (last.role === 'assistant') {
       return this._sendContinuation(options.messages, options.abortSignal);
     }
@@ -255,6 +285,27 @@ class DefaultChatTransport<
   }
 
   async reconnectToStream(): Promise<ReadableStream<AI.UIMessageChunk> | null> {
+    this._logger.trace('ChatTransport.reconnectToStream();');
+    // First, classify from the events the adapter has already indexed (the
+    // seed plus everything live since). This is the only source that works
+    // when the application's own hydration walk consumed the transport's
+    // history cursor — the paging fallback below would then see only pages
+    // older than the walk. Retained events are chronological, and this path
+    // runs synchronously, so the run stream's own collector misses nothing.
+    if (this._preSeedEvents === undefined) {
+      const retained = this._classifyResumableRun(this._retainedRunEvents);
+      if (retained !== undefined) {
+        // eslint-disable-next-line unicorn/no-null -- null is required by the AI SDK ChatTransport contract
+        if (retained.runId === undefined) return null;
+        this._logger.debug('ChatTransport.reconnectToStream(); classified from retained events', {
+          runId: retained.runId,
+        });
+        const collector = this._openRunStream();
+        collector.setRunId(retained.runId, [...this._retainedRunEvents]);
+        return collector.stream;
+      }
+    }
+
     // Subscribe before paging, so nothing published during the scan is lost:
     // history() is bounded at the attach point and shares the live decoder, so
     // the buffered live events are strictly newer than every page and the seam
@@ -417,7 +468,7 @@ class DefaultChatTransport<
           codecMessageId: action.codecMessageId,
           runId,
         });
-        this._publishedToolCallIds.add(action.toolCallId);
+        this._publishedActionSet(action.kind).add(action.toolCallId);
         eventId = sent.eventId;
       }
       const response = await this._postChat({ eventId, runId });
@@ -427,6 +478,17 @@ class DefaultChatTransport<
       throw error;
     }
     return collector.stream;
+  }
+
+  /**
+   * The published-`toolCallId` set for one action kind. Approval decisions and
+   * tool outputs are separate actions on the same call — an approved tool
+   * still owes its output — so each kind dedups against its own set only.
+   * @param kind - The action kind.
+   * @returns The set tracking that kind.
+   */
+  private _publishedActionSet(kind: 'approval' | 'output'): Set<string> {
+    return kind === 'approval' ? this._publishedApprovalToolCallIds : this._publishedOutputToolCallIds;
   }
 
   /**
@@ -448,7 +510,11 @@ class DefaultChatTransport<
     // not in `messages`).
     const target = messageId === undefined ? this._newestAssistant : this._wireIdentityByMessageId.get(messageId);
     if (target === undefined) {
-      throw new Error('unable to regenerate; no wire identity known for the regeneration target');
+      throw new Ably.ErrorInfo(
+        'unable to regenerate; no wire identity known for the regeneration target',
+        ErrorCode.InvalidArgument,
+        400,
+      );
     }
     // The new assistant threads under the last message useChat kept — the
     // user message that preceded the regenerated assistant.
@@ -488,12 +554,17 @@ class DefaultChatTransport<
           input: VercelInput<TMetadata, TDataParts, TTools>;
           codecMessageId: string;
           toolCallId: string;
+          kind: 'approval' | 'output';
         }[];
         runId: string;
       }
     | undefined {
-    const actions: { input: VercelInput<TMetadata, TDataParts, TTools>; codecMessageId: string; toolCallId: string }[] =
-      [];
+    const actions: {
+      input: VercelInput<TMetadata, TDataParts, TTools>;
+      codecMessageId: string;
+      toolCallId: string;
+      kind: 'approval' | 'output';
+    }[] = [];
     let runId: string | undefined;
 
     for (const overlay of messages) {
@@ -503,11 +574,12 @@ class DefaultChatTransport<
 
       for (const overlayPart of overlay.parts) {
         if (!isToolPart(overlayPart)) continue;
-        if (this._publishedToolCallIds.has(overlayPart.toolCallId)) continue;
 
         let input: VercelInput<TMetadata, TDataParts, TTools> | undefined;
+        let kind: 'approval' | 'output' = 'output';
         switch (overlayPart.state) {
           case 'approval-responded': {
+            kind = 'approval';
             input = {
               kind: 'approval',
               payload: {
@@ -548,14 +620,21 @@ class DefaultChatTransport<
           // No default
         }
         if (input === undefined) continue;
-        actions.push({ input, codecMessageId: identity.codecMessageId, toolCallId: overlayPart.toolCallId });
+        // Dedup per action kind: an approved call still owes its output, so a
+        // published approval must not swallow the later tool-output action.
+        if (this._publishedActionSet(kind).has(overlayPart.toolCallId)) continue;
+        actions.push({ input, codecMessageId: identity.codecMessageId, toolCallId: overlayPart.toolCallId, kind });
         runId ??= identity.runId;
       }
     }
 
     if (actions.length === 0) return undefined;
     if (runId === undefined) {
-      throw new Error('unable to continue; no run-id known for the suspended assistant message');
+      throw new Ably.ErrorInfo(
+        'unable to continue; no run-id known for the suspended assistant message',
+        ErrorCode.InvalidArgument,
+        400,
+      );
     }
     return { actions, runId };
   }
@@ -568,6 +647,7 @@ class DefaultChatTransport<
    * @param event - The classified transport event.
    */
   private _indexEvent(event: AdapterEvent<TMetadata, TDataParts, TTools>): void {
+    this._retainRunEvent(event);
     if (event.kind !== 'message') return;
     // Skip the optimistic local echo of this client's own publishes (no serial
     // yet); the send paths index their own publishes from the publish result,
@@ -600,9 +680,8 @@ class DefaultChatTransport<
       }
     }
     for (const input of event.inputs) {
-      if (input.kind === 'chunk' || input.kind === 'approval') {
-        this._publishedToolCallIds.add(input.payload.toolCallId);
-      }
+      if (input.kind === 'chunk') this._publishedOutputToolCallIds.add(input.payload.toolCallId);
+      if (input.kind === 'approval') this._publishedApprovalToolCallIds.add(input.payload.toolCallId);
     }
     // A resolution can also reach the wire as agent output (a
     // provider-executed tool, or the agent republishing a resolution): count
@@ -610,8 +689,36 @@ class DefaultChatTransport<
     // the generic chunk union does not narrow by `type`.
     for (const output of event.outputs) {
       if (output.type.startsWith('tool-output-') && 'toolCallId' in output && typeof output.toolCallId === 'string') {
-        this._publishedToolCallIds.add(output.toolCallId);
+        this._publishedOutputToolCallIds.add(output.toolCallId);
       }
+    }
+  }
+
+  /**
+   * Retain one indexed event for the reconnect scan: run lifecycle events
+   * plus each run's message events, chronological, pruned to just the `end`
+   * event once a run ends. The optimistic local echo (no serial) is skipped —
+   * its wire echo is retained instead.
+   * @param event - The classified transport event.
+   */
+  private _retainRunEvent(event: AdapterEvent<TMetadata, TDataParts, TTools>): void {
+    if (event.kind === 'run-lifecycle') {
+      if (event.event.type === 'end') {
+        const ended = event.event.runId;
+        this._retainedRunEvents = this._retainedRunEvents.filter(
+          (retained) =>
+            (retained.kind === 'message'
+              ? retained.meta.runId
+              : retained.kind === 'run-lifecycle'
+                ? retained.event.runId
+                : undefined) !== ended,
+        );
+      }
+      this._retainedRunEvents.push(event);
+      return;
+    }
+    if (event.kind === 'message' && event.meta.runId !== undefined && event.meta.serial !== undefined) {
+      this._retainedRunEvents.push(event);
     }
   }
 
@@ -728,17 +835,29 @@ class DefaultChatTransport<
    * @returns The chat route's response body.
    */
   private async _postChat(body: { eventId: string; runId?: string }): Promise<ChatResponseBody> {
-    if (this._closed) throw new Error('unable to send; the chat transport is closed');
+    if (this._closed) throw this._closedError();
     const response = await fetch(this._api, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ channelName: this._channelName, ...body }),
     });
     if (!response.ok) {
-      throw new Error(`chat request failed with status ${String(response.status)}`);
+      throw new Ably.ErrorInfo(
+        `unable to send; chat request failed with status ${String(response.status)}`,
+        ErrorCode.SessionSendFailed,
+        response.status,
+      );
     }
     // CAST: trust boundary — the response body is the caller's own chat route's JSON.
     return (await response.json()) as ChatResponseBody;
+  }
+
+  /**
+   * Build the terminal-state error a post-`close()` send rejects with.
+   * @returns The error.
+   */
+  private _closedError(): Ably.ErrorInfo {
+    return new Ably.ErrorInfo('unable to send; the chat transport is closed', ErrorCode.SessionClosed, 400);
   }
 }
 

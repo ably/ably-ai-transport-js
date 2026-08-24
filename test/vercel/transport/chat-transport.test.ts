@@ -14,6 +14,7 @@
 import type * as AI from 'ai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { ErrorCode } from '../../../src/errors.js';
 import type { ChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 import { createChatTransport } from '../../../src/vercel/transport/chat-transport.js';
 import {
@@ -38,7 +39,10 @@ const userMessage = (id: string, text: string): AI.UIMessage => ({
  * @returns The fetch mock.
  */
 const stubFetch = (body: unknown, status = 200): ReturnType<typeof vi.fn> => {
-  const mock = vi.fn().mockResolvedValue(Response.json(body, { status }));
+  // A fresh Response per call: a Response body is single-read, and a test may
+  // drive more than one POST through the same stub.
+  // eslint-disable-next-line @typescript-eslint/require-await -- fetch's contract is a promise; the fake resolves immediately
+  const mock = vi.fn().mockImplementation(async () => Response.json(body, { status }));
   vi.stubGlobal('fetch', mock);
   return mock;
 };
@@ -244,13 +248,15 @@ describe('ChatTransport', () => {
       expect(await readAll(stream)).toEqual([]);
     });
 
-    it('rejects when the POST fails', async () => {
+    it('rejects when the POST fails, with the send-failed code and the response status', async () => {
       stubFetch({ error: 'boom' }, 500);
       const { chat } = setup();
 
-      await expect(chat.sendMessages(sendOptions([userMessage('u1', 'hi')]))).rejects.toThrow(
-        'chat request failed with status 500',
-      );
+      await expect(chat.sendMessages(sendOptions([userMessage('u1', 'hi')]))).rejects.toBeErrorInfo({
+        code: ErrorCode.SessionSendFailed,
+        statusCode: 500,
+        message: 'unable to send; chat request failed with status 500',
+      });
     });
 
     it('cancels the run over the channel when the send is aborted', async () => {
@@ -316,7 +322,7 @@ describe('ChatTransport', () => {
 
       await expect(
         chat.sendMessages(sendOptions([userMessage('u1', 'hi')], { trigger: 'regenerate-message', messageId: 'a1' })),
-      ).rejects.toThrow('no wire identity known');
+      ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
   });
 
@@ -496,7 +502,78 @@ describe('ChatTransport', () => {
 
       await expect(
         chat.sendMessages(sendOptions([userMessage('u1', 'forecast please'), approvalRespondedOverlay(true)])),
-      ).rejects.toThrow('no run-id known');
+      ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+    });
+
+    it('publishes the tool output for an approved call whose approval is already published', async () => {
+      stubFetch({ runId: 'run-9' });
+      const { fake, chat } = setup(approvalGapEvents('run-9'));
+
+      // The approval decision goes out first.
+      await chat.sendMessages(sendOptions([userMessage('u1', 'forecast please'), approvalRespondedOverlay(true)]));
+      expect(fake.published).toHaveLength(1);
+      expect(fake.published[0]?.event).toMatchObject({ kind: 'approval' });
+
+      // The client then executes the approved tool; its output is a separate
+      // action on the same call and must still publish.
+      const executed: AI.UIMessage = {
+        id: 'a1',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'dynamic-tool',
+            toolName: 'getWeatherForecast',
+            toolCallId: 'call-1',
+            state: 'output-available',
+            input: { location: 'London' },
+            output: { forecast: 'sunny' },
+          },
+        ],
+      };
+      await chat.sendMessages(sendOptions([userMessage('u1', 'forecast please'), executed]));
+
+      expect(fake.published).toHaveLength(2);
+      expect(fake.published[1]?.event).toEqual({
+        kind: 'chunk',
+        payload: {
+          type: 'tool-output-available',
+          toolCallId: 'call-1',
+          output: { forecast: 'sunny' },
+          dynamic: true,
+        },
+      });
+    });
+
+    it('skips a wire-held approval but still publishes the output for the same call', async () => {
+      stubFetch({ runId: 'run-9' });
+      // Another client's approval decision is already on the wire.
+      const gap: Event[] = [
+        ...approvalGapEvents('run-9'),
+        messageEvent(
+          { codecMessageId: 'wire-a1', runId: 'run-9', serial: 'serial-approval' },
+          { inputs: [{ kind: 'approval', payload: { toolCallId: 'call-1', approved: true } }] },
+        ),
+      ];
+      const { fake, chat } = setup(gap);
+      const executed: AI.UIMessage = {
+        id: 'a1',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'dynamic-tool',
+            toolName: 'getWeatherForecast',
+            toolCallId: 'call-1',
+            state: 'output-available',
+            input: { location: 'London' },
+            output: { forecast: 'sunny' },
+          },
+        ],
+      };
+
+      await chat.sendMessages(sendOptions([userMessage('u1', 'forecast please'), executed]));
+
+      expect(fake.published).toHaveLength(1);
+      expect(fake.published[0]?.event).toMatchObject({ kind: 'chunk' });
     });
   });
 
@@ -675,6 +752,57 @@ describe('ChatTransport', () => {
       expect(await chat.reconnectToStream({ chatId: 'ai:test' })).toBeNull();
     });
 
+    it('classifies and replays from seeded events without paging history', async () => {
+      // The application's hydration walk already consumed the transport's
+      // history cursor, so paging would see nothing — the scan must classify
+      // from the seed instead.
+      const { fake, chat } = setup(openRunHistory());
+
+      const stream = await chat.reconnectToStream({ chatId: 'ai:test' });
+
+      expect(fake.historyCalls).toBe(0);
+      expect(stream).not.toBeNull();
+      if (!stream) return;
+      fake.emit(
+        messageEvent(
+          { codecMessageId: 'wire-a1', runId: 'run-1' },
+          { outputs: [{ type: 'text-delta', id: 't1', delta: ' rest' }] },
+        ),
+      );
+      fake.emit(runEndEvent('run-1'));
+
+      expect(await readAll(stream)).toEqual([
+        { type: 'start', messageId: 'a1' },
+        { type: 'text-start', id: 't1' },
+        { type: 'text-delta', id: 't1', delta: 'partial' },
+        { type: 'text-delta', id: 't1', delta: ' rest' },
+      ]);
+    });
+
+    it('returns null from seeded events when the newest run has ended, without paging', async () => {
+      const { fake, chat } = setup([...openRunHistory(), runEndEvent('run-1')]);
+
+      expect(await chat.reconnectToStream({ chatId: 'ai:test' })).toBeNull();
+      expect(fake.historyCalls).toBe(0);
+    });
+
+    it('replays a run classified from live events observed since seed', async () => {
+      const { fake, chat } = setup();
+      for (const event of openRunHistory()) fake.emit(event);
+
+      const stream = await chat.reconnectToStream({ chatId: 'ai:test' });
+
+      expect(fake.historyCalls).toBe(0);
+      expect(stream).not.toBeNull();
+      if (!stream) return;
+      fake.emit(runEndEvent('run-1'));
+      expect(await readAll(stream)).toEqual([
+        { type: 'start', messageId: 'a1' },
+        { type: 'text-start', id: 't1' },
+        { type: 'text-delta', id: 't1', delta: 'partial' },
+      ]);
+    });
+
     it('closes cleanly when the run ends between the scan and the live phase', async () => {
       const { fake, chat } = setup();
       fake.historyBatches = [{ events: openRunHistory(), exhausted: true }];
@@ -704,9 +832,15 @@ describe('ChatTransport', () => {
       chat.close();
 
       expect(chat.streaming).toBe(false);
-      // Delivery after close reaches no collector.
+      // Delivery after close reaches no collector, and a send rejects with
+      // the closed error before anything reaches the wire.
       fake.emit(runEndEvent('run-1'));
-      await expect(chat.sendMessages(sendOptions([userMessage('u2', 'again')]))).rejects.toThrow('closed');
+      await expect(chat.sendMessages(sendOptions([userMessage('u2', 'again')]))).rejects.toBeErrorInfo({
+        code: ErrorCode.SessionClosed,
+        statusCode: 400,
+        message: 'unable to send; the chat transport is closed',
+      });
+      expect(fake.published.filter((p) => p.event.kind === 'message')).toHaveLength(1);
     });
   });
 });

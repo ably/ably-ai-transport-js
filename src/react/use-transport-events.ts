@@ -10,9 +10,7 @@ import { useEffect, useRef } from 'react';
 import type { TransportEvent } from '../core/transport/types.js';
 import { useClientTransport } from './use-client-transport.js';
 
-/**
- * Options for {@link useTransportEvents}.
- */
+/** Options for {@link useTransportEvents}. */
 export interface UseTransportEventsOptions {
   /** The channel name of the provider whose transport to subscribe. Omit for the nearest provider. */
   channelName?: string;

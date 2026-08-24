@@ -516,7 +516,7 @@ class DefaultChatTransport<
     options: Parameters<SdkChatTransport<AI.UIMessage<TMetadata, TDataParts, TTools>>['sendMessages']>[0],
   ): Promise<ReadableStream<AI.UIMessageChunk>> {
     if (this._closed) {
-      throw new Ably.ErrorInfo('unable to send; the chat transport is closed', ErrorCode.SessionClosed, 400);
+      throw new Ably.ErrorInfo('unable to send; the chat transport is closed', ErrorCode.TransportClosed, 400);
     }
     this._logger.trace('ChatTransport.sendMessages();', { trigger: options.trigger });
 
@@ -544,7 +544,7 @@ class DefaultChatTransport<
 
   async readSince(latestSerial?: string): Promise<ReadSinceResult<TMetadata, TDataParts, TTools>> {
     if (this._closed) {
-      throw new Ably.ErrorInfo('unable to walk history; the chat transport is closed', ErrorCode.SessionClosed, 400);
+      throw new Ably.ErrorInfo('unable to walk history; the chat transport is closed', ErrorCode.TransportClosed, 400);
     }
     this._logger.trace('ChatTransport.readSince();', { latestSerial });
 
@@ -1196,7 +1196,7 @@ class DefaultChatTransport<
    * directions, so the only thing this call reports is whether the route was
    * reachable.
    * @param eventId - The published input's event id, which the agent locates.
-   * @throws {@link Ably.ErrorInfo} with {@link ErrorCode.SessionSendFailed} when the route is unreachable or answers non-2xx.
+   * @throws {@link Ably.ErrorInfo} with {@link ErrorCode.SendFailed} when the route is unreachable or answers non-2xx.
    */
   private async _postChat(eventId: string): Promise<void> {
     let response: Response;
@@ -1210,12 +1210,12 @@ class DefaultChatTransport<
       // `fetch` rejects with a plain TypeError whose own `cause` carries the
       // transport reason (ECONNREFUSED, DNS, and so on), and `errorCause` drops
       // anything that is not already an ErrorInfo — so wrap rather than lose it.
-      throw asErrorInfo(error, ErrorCode.SessionSendFailed, 500, `send; the POST to ${this._api} failed`);
+      throw asErrorInfo(error, ErrorCode.SendFailed, 500, `send; the POST to ${this._api} failed`);
     }
     if (!response.ok) {
       throw new Ably.ErrorInfo(
         `unable to send; the POST to ${this._api} returned ${String(response.status)}`,
-        ErrorCode.SessionSendFailed,
+        ErrorCode.SendFailed,
         response.status,
       );
     }

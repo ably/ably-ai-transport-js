@@ -172,7 +172,7 @@ describe('createReceiveTransport', () => {
     expect(onEvent).not.toHaveBeenCalled();
   });
 
-  // An application's own publish on a channel it shares with a session: it
+  // An application's own publish on a channel it shares with a transport: it
   // carries no SDK wire name and no `extras.ai` envelope, so the codec decoder
   // yields nothing and there is no run-id to make it a wire-only carrier. It
   // must surface as no typed event, while the raw message still flows via

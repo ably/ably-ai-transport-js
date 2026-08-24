@@ -850,9 +850,9 @@ describe('createAgentTransport', () => {
 
       transport.close();
 
-      await expect(transport.connect()).rejects.toMatchObject({ code: ErrorCode.SessionClosed });
-      expect(() => transport.openRun()).toThrowErrorInfo({ code: ErrorCode.SessionClosed });
-      await expect(transport.history()).rejects.toMatchObject({ code: ErrorCode.SessionClosed });
+      await expect(transport.connect()).rejects.toMatchObject({ code: ErrorCode.TransportClosed });
+      expect(() => transport.openRun()).toThrowErrorInfo({ code: ErrorCode.TransportClosed });
+      await expect(transport.history()).rejects.toMatchObject({ code: ErrorCode.TransportClosed });
     });
   });
 
@@ -873,7 +873,7 @@ describe('createAgentTransport', () => {
       // The only signal a caller that awaits no output verb can observe.
       expect(errors).toHaveLength(1);
       expect(errors[0]).toBeErrorInfo({
-        code: ErrorCode.SessionSendFailed,
+        code: ErrorCode.SendFailed,
         statusCode: 500,
         cause: { code: 40160 },
       });

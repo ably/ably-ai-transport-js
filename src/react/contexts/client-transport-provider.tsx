@@ -113,7 +113,6 @@ export const ClientTransportProvider = <TInput, TOutput>({
   if (!alreadyCreatedOrFailed || transportChannelRef.current !== channelName) {
     transportChannelRef.current = channelName;
     if (transportRef.current) {
-      // The disposal queue erases the event types; close() reads none of them.
       transportsToCloseRef.current.push(transportRef.current);
     }
     try {

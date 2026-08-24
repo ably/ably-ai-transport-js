@@ -608,7 +608,7 @@ describe('OpenAI codec roundtrip (offline)', () => {
 
 /**
  * Build a foreign wire — an application's own publish on a channel it shares
- * with a session. It carries no `extras.ai` envelope.
+ * with a transport. It carries no `extras.ai` envelope.
  * @param serial - The wire serial.
  * @param overrides - Fields overriding the foreign message defaults.
  * @returns The foreign InboundMessage.
@@ -626,7 +626,7 @@ const foreignMessage = (serial: string, overrides: Partial<Ably.InboundMessage> 
   }) as unknown as Ably.InboundMessage;
 
 // An application may publish its own messages on a channel it shares with a
-// session. They carry neither the SDK's wire names nor its `extras.ai`
+// transport. They carry neither the SDK's wire names nor its `extras.ai`
 // envelope; interleaving them through the decode path must leave the decoded
 // event sequence identical to the clean sequence.
 describe('OpenAI codec foreign messages (offline)', () => {

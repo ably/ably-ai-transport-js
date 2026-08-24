@@ -9,14 +9,14 @@
  * ```ts
  * const data = (await req.json()) as InvocationData;
  * const invocation = Invocation.fromJSON(data);
- * const run = session.createRun(invocation, { signal: req.signal });
- * while (run.view.hasOlder()) await run.view.loadOlder(); // page channel history for context
- * await run.start();
- * const messages = run.view.getMessages().map((m) => m.message);
+ * const channel = client.channels.get(invocation.sessionName);
+ * const transport = createAgentTransport({ channel, codec });
+ * await transport.connect();
+ * const located = await transport.locateInput(invocation.inputEventId);
  * ```
  *
  * The body carries only what the agent needs out-of-band before the channel
- * is observable: the session/channel name and the `inputEventId` that triggered
+ * is observable: the channel name and the `inputEventId` that triggered
  * the invocation. The agent mints the `invocationId` itself (one per HTTP
  * request) and returns it on the HTTP response, so it is not a body field. Run
  * identity also lives on the channel: the agent mints the `runId` for a fresh
@@ -45,7 +45,11 @@ export interface InvocationData {
    * a fresh run), so run identity is resolved from the channel, not the body.
    */
   inputEventId: string;
-  /** Logical name of the session (chat) — used as the Ably channel name. */
+  /**
+   * The conversation's Ably channel name. The field is named `sessionName`
+   * for wire stability: invocation data persists inside durable workflow
+   * histories (e.g. Temporal payloads), which outlive SDK upgrades.
+   */
   sessionName: string;
 }
 
@@ -66,7 +70,7 @@ export class Invocation {
    * (or minted), not from the body.
    */
   readonly inputEventId: string;
-  /** Logical name of the session (chat). Used as the Ably channel name. */
+  /** The conversation's Ably channel name (see {@link InvocationData.sessionName} for the field's naming). */
   readonly sessionName: string;
 
   private constructor(data: InvocationData) {

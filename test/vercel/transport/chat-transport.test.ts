@@ -188,24 +188,24 @@ describe('ChatTransport', () => {
       expect(await readAll(stream)).toEqual(assistantChunks('a1', 'mine'));
     });
 
-    it('rejects with SessionSendFailed when the route answers non-2xx', async () => {
+    it('rejects with SendFailed when the route answers non-2xx', async () => {
       stubChatFetch(500);
       const { chat } = setup('run-1');
 
       await expect(chat.sendMessages(sendOptions([userMessage('u1', 'hello')]))).rejects.toBeErrorInfoWithCode(
-        ErrorCode.SessionSendFailed,
+        ErrorCode.SendFailed,
       );
       expect(chat.streaming).toBe(false);
     });
 
-    it('rejects with SessionSendFailed when the route is unreachable', async () => {
+    it('rejects with SendFailed when the route is unreachable', async () => {
       stubChatFetchFailure(new TypeError('network down'));
       const { chat } = setup('run-1');
 
       // The plain Error is wrapped so the chain carries it, rather than being
       // dropped by `errorCause` and surviving only in the message.
       await expect(chat.sendMessages(sendOptions([userMessage('u1', 'hello')]))).rejects.toBeErrorInfo({
-        code: ErrorCode.SessionSendFailed,
+        code: ErrorCode.SendFailed,
         message: 'unable to send; the POST to /api/chat failed; network down',
         cause: { message: 'network down' },
       });
@@ -216,9 +216,9 @@ describe('ChatTransport', () => {
       const { fake, chat } = setup();
 
       const stream = await chat.sendMessages(sendOptions([userMessage('u1', 'hello')]));
-      fake.rejectRunId(new Ably.ErrorInfo('run never started', ErrorCode.SessionClosed, 500));
+      fake.rejectRunId(new Ably.ErrorInfo('run never started', ErrorCode.TransportClosed, 500));
 
-      await expect(readAll(stream)).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+      await expect(readAll(stream)).rejects.toBeErrorInfoWithCode(ErrorCode.TransportClosed);
       expect(chat.streaming).toBe(false);
     });
 
@@ -235,7 +235,7 @@ describe('ChatTransport', () => {
       chat.close();
 
       await expect(chat.sendMessages(sendOptions([userMessage('u1', 'hi')]))).rejects.toBeErrorInfoWithCode(
-        ErrorCode.SessionClosed,
+        ErrorCode.TransportClosed,
       );
     });
 
@@ -243,7 +243,7 @@ describe('ChatTransport', () => {
       const { chat } = setup();
       chat.close();
 
-      await expect(chat.readSince()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+      await expect(chat.readSince()).rejects.toBeErrorInfoWithCode(ErrorCode.TransportClosed);
     });
 
     it('resumes nothing once closed', async () => {

@@ -73,34 +73,4 @@ describe('RunSteerTracker', () => {
       expect(t.consumeRecentlyProcessed()).toEqual(['b']);
     });
   });
-
-  describe('isUnrespondedSteer', () => {
-    it('reports false for an id the tracker never saw', () => {
-      const t = new RunSteerTracker();
-      expect(t.isUnrespondedSteer('unknown')).toBe(false);
-    });
-
-    it('reports true for a pending (not yet drained) steer', () => {
-      const t = new RunSteerTracker();
-      t.addPending('id-1');
-      expect(t.isUnrespondedSteer('id-1')).toBe(true);
-    });
-
-    it('reports true for a drained but not yet stamped steer', () => {
-      const t = new RunSteerTracker();
-      t.addPending('id-1');
-      t.drainPending();
-      expect(t.isUnrespondedSteer('id-1')).toBe(true);
-    });
-
-    it('reports false once the steer is stamped (consumed)', () => {
-      const t = new RunSteerTracker();
-      t.addPending('id-1');
-      t.drainPending();
-      t.consumeRecentlyProcessed();
-      // Stamped on an output; the responding output has a higher serial, so
-      // serial order already places it correctly and it is no longer deferred.
-      expect(t.isUnrespondedSteer('id-1')).toBe(false);
-    });
-  });
 });

@@ -65,15 +65,6 @@ describe('RunManager', () => {
       expect(headers[HEADER_RUN_CLIENT_ID]).toBe('user-a');
     });
 
-    it('adopts the external controller so close() aborts it', async () => {
-      const controller = new AbortController();
-      await manager.startRun('run-1', 'user-a', controller);
-      expect(controller.signal.aborted).toBe(false);
-
-      manager.close();
-      expect(controller.signal.aborted).toBe(true);
-    });
-
     it('defaults clientId to empty string when omitted', async () => {
       await manager.startRun('run-1');
 
@@ -82,7 +73,7 @@ describe('RunManager', () => {
     });
 
     it('publishes ai-run-resume (not ai-run-start) when continuation metadata is set', async () => {
-      await manager.startRun('run-1', 'user-a', undefined, {
+      await manager.startRun('run-1', 'user-a', {
         continuation: true,
         invocationId: 'inv-2',
         inputClientId: 'user-b',
@@ -100,7 +91,7 @@ describe('RunManager', () => {
     });
 
     it('omits structural metadata (parent/forkOf/regenerates) on a resume', async () => {
-      await manager.startRun('run-1', 'user-a', undefined, {
+      await manager.startRun('run-1', 'user-a', {
         continuation: true,
         parent: 'p',
         forkOf: 'f',
@@ -115,14 +106,14 @@ describe('RunManager', () => {
     });
 
     it('publishes ai-run-start when continuation is false or unset', async () => {
-      await manager.startRun('run-1', 'user-a', undefined, { continuation: false });
+      await manager.startRun('run-1', 'user-a', { continuation: false });
       await manager.startRun('run-2', 'user-a');
 
       expect(channel.publishNames()).toEqual([EVENT_RUN_START, EVENT_RUN_START]);
     });
 
     it('stamps input-client-id when inputClientId is set', async () => {
-      await manager.startRun('run-1', 'user-a', undefined, { inputClientId: 'user-b' });
+      await manager.startRun('run-1', 'user-a', { inputClientId: 'user-b' });
 
       const headers = headersOf(channel.publishCalls.at(0));
       expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
@@ -136,7 +127,7 @@ describe('RunManager', () => {
     });
 
     it('stamps fork-of when metadata.forkOf is set (edit run-start)', async () => {
-      await manager.startRun('run-1', 'user-a', undefined, { forkOf: 'orig-user-msg' });
+      await manager.startRun('run-1', 'user-a', { forkOf: 'orig-user-msg' });
 
       const headers = headersOf(channel.publishCalls.at(0));
       expect(headers[HEADER_FORK_OF]).toBe('orig-user-msg');
@@ -144,7 +135,7 @@ describe('RunManager', () => {
     });
 
     it('stamps msg-regenerate when metadata.regenerates is set (regenerate run-start)', async () => {
-      await manager.startRun('run-1', 'user-a', undefined, { regenerates: 'orig-asst-msg' });
+      await manager.startRun('run-1', 'user-a', { regenerates: 'orig-asst-msg' });
 
       const headers = headersOf(channel.publishCalls.at(0));
       expect(headers[HEADER_MSG_REGENERATE]).toBe('orig-asst-msg');
@@ -152,7 +143,7 @@ describe('RunManager', () => {
     });
 
     it('stamps input-codec-message-id when metadata.inputCodecMessageId is set', async () => {
-      await manager.startRun('run-1', 'user-a', undefined, { inputCodecMessageId: 'trigger-msg' });
+      await manager.startRun('run-1', 'user-a', { inputCodecMessageId: 'trigger-msg' });
 
       const headers = headersOf(channel.publishCalls.at(0));
       expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
@@ -218,13 +209,11 @@ describe('RunManager', () => {
     });
 
     it('removes run from active set after publish', async () => {
-      const controller = new AbortController();
-      await manager.startRun('run-1', undefined, controller);
+      await manager.startRun('run-1', 'user-a');
       await manager.endRun('run-1', 'complete');
 
-      // The run is gone from the active set, so a later close() does not abort it.
-      manager.close();
-      expect(controller.signal.aborted).toBe(false);
+      // The run is gone from the active set, so its owner is no longer known.
+      expect(manager.getClientId('run-1')).toBeUndefined();
     });
 
     it('defaults clientId to empty string for unknown run', async () => {
@@ -335,15 +324,13 @@ describe('RunManager', () => {
       expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_IDS);
     });
 
-    it('drops the run from the active set so a later close() is a no-op for it', async () => {
-      const controller = new AbortController();
-      await manager.startRun('run-1', 'user-a', controller);
+    it('drops the run from the active set', async () => {
+      await manager.startRun('run-1', 'user-a');
       await manager.suspendRun('run-1', 'inv-1');
 
-      // The agent process terminates on suspend; the run is dropped, so close()
-      // has no controller to abort for it.
-      manager.close();
-      expect(controller.signal.aborted).toBe(false);
+      // The agent process terminates on suspend; the run is dropped, so its
+      // owner is no longer known.
+      expect(manager.getClientId('run-1')).toBeUndefined();
     });
 
     it('defaults run-client-id to empty string for an unknown run', async () => {
@@ -362,20 +349,6 @@ describe('RunManager', () => {
 
     it('returns undefined for unknown run', () => {
       expect(manager.getClientId('nope')).toBeUndefined();
-    });
-  });
-
-  describe('close', () => {
-    it('aborts all active runs', async () => {
-      const controller1 = new AbortController();
-      const controller2 = new AbortController();
-      await manager.startRun('run-1', 'user-a', controller1);
-      await manager.startRun('run-2', 'user-a', controller2);
-
-      manager.close();
-
-      expect(controller1.signal.aborted).toBe(true);
-      expect(controller2.signal.aborted).toBe(true);
     });
   });
 

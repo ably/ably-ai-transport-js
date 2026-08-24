@@ -234,7 +234,7 @@ describe('ClientTransportProvider', () => {
   it('survives a connect() rejection and leaves the tree standing', async () => {
     const fake = createFakeTransport();
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- rejects synchronously
-    fake.connect = () => Promise.reject(new Ably.ErrorInfo('nope', ErrorCode.SessionClosed, 500));
+    fake.connect = () => Promise.reject(new Ably.ErrorInfo('nope', ErrorCode.TransportClosed, 500));
     createClientTransportMock.mockImplementation(() => fake);
 
     const { result } = renderHook(() => useClientTransport(), { wrapper: wrapDefault });

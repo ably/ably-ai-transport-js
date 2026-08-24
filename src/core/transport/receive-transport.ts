@@ -98,8 +98,8 @@ export type DeliverEventResult<TInput, TOutput> =
 
 /**
  * The public {@link TransportReceiver} plus the driving methods its owner calls.
- * The owner (a session, or a standalone consumer) feeds inbound messages in;
- * subscribers observe the classified events out.
+ * The owner (a transport, or a standalone consumer) feeds inbound messages
+ * in; subscribers observe the classified events out.
  * @template TInput - The codec's input-event domain type.
  * @template TOutput - The codec's output-event domain type.
  */
@@ -203,7 +203,7 @@ class DefaultReceiveTransport<TInput, TOutput> implements ReceiveTransport<TInpu
 /**
  * Create a {@link ReceiveTransport} over one codec decoder. The decoder must be
  * unique to this receiver so its stream-tracker state cannot leak across
- * consumers, mirroring the 1:1 decoder-per-consumer invariant.
+ * consumers — one decoder per receive stream.
  * @param decoder - The codec decoder to classify non-lifecycle messages with.
  * @param logger - Logger for diagnostics.
  * @returns The receive transport.

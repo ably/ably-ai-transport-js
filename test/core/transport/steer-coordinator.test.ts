@@ -48,7 +48,7 @@ const makeHarness = (clientId: string | undefined = 'client-a'): Harness => {
   const coord = new SteerCoordinator<TestInput>({
     publish: async (input, opts) => publishImpl.fn(input, opts),
     clientId: () => clientId,
-    isSessionClosed: () => closed.value,
+    isTransportClosed: () => closed.value,
     logger: makeLogger({ logLevel: LogLevel.Silent }),
   });
   return { coord, publishCalls, publishImpl, closed };
@@ -140,12 +140,12 @@ describe('SteerCoordinator', () => {
       expect(h.publishCalls).toHaveLength(0);
     });
 
-    it('rejects with SessionClosed when isSessionClosed() returns true', async () => {
+    it('rejects with TransportClosed when isTransportClosed() returns true', async () => {
       const { coord, closed } = h;
       closed.value = true;
       const { published, outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
-      await expect(published).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
-      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+      await expect(published).rejects.toBeErrorInfoWithCode(ErrorCode.TransportClosed);
+      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.TransportClosed);
       expect(h.publishCalls).toHaveLength(0);
     });
 
@@ -159,13 +159,13 @@ describe('SteerCoordinator', () => {
       await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.InsufficientCapability);
     });
 
-    it('rejects with SessionSendFailed on a generic publish error', async () => {
+    it('rejects with SendFailed on a generic publish error', async () => {
       const { coord, publishImpl } = h;
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock that returns a pre-built rejection
       publishImpl.fn = () => Promise.reject(new Error('network'));
       const { published, outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
-      await expect(published).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSendFailed);
-      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSendFailed);
+      await expect(published).rejects.toBeErrorInfoWithCode(ErrorCode.SendFailed);
+      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.SendFailed);
     });
   });
 
@@ -318,23 +318,23 @@ describe('SteerCoordinator', () => {
   });
 
   describe('drainClosed()', () => {
-    it('rejects in-flight outcomes with SessionClosed', async () => {
+    it('rejects in-flight outcomes with TransportClosed', async () => {
       const { coord } = h;
       const { outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
       await flush();
       const id = lastSteerCodecMessageId(h);
       coord.observeMessage(ablyMsg('ai-input', { [HEADER_CODEC_MESSAGE_ID]: id }));
       coord.drainClosed();
-      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.TransportClosed);
     });
 
-    it('settles pending-echo published with undefined and rejects outcome with SessionClosed', async () => {
+    it('settles pending-echo published with undefined and rejects outcome with TransportClosed', async () => {
       const { coord } = h;
       const { published, outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
       await flush();
       coord.drainClosed();
       await expect(published).resolves.toEqual({ serial: undefined });
-      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.TransportClosed);
     });
   });
 });

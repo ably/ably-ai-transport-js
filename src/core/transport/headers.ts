@@ -34,7 +34,6 @@ import {
   HEADER_STEP_ID,
   HEADER_STEP_REASON,
   HEADER_STEP_START_SERIAL,
-  HEADER_SUPERSEDES,
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { RunEndReason, RunLifecycleEvent, StepEndReason, StepLifecycleEvent } from './types.js';
@@ -54,12 +53,6 @@ import type { RunEndReason, RunLifecycleEvent, StepEndReason, StepLifecycleEvent
  *   `msg-regenerate`. Distinct from `forkOf`: regenerate is a
  *   continuation of the prior run (no run-level fork), with the message
  *   replacement resolved when a consumer materialises messages.
- * @param opts.supersedes - Run-id this client tool-result fork supersedes (the
- *   suspended run it resolves). Stamps `supersedes` so a consumer
- *   reconstructing conversation structure hides that dead run from branch
- *   selection — a single response renders linearly while concurrent forks
- *   still branch. Unlike `forkOf`, the superseded sibling is not kept
- *   navigable.
  * @param opts.invocationId - Agent-minted invocation id. Stamped by the agent on every event it publishes for the invocation (run lifecycle + outputs) so the client can observe it; not set by the client on the input.
  * @param opts.inputClientId - ClientId of the input event (the `ai-input`) that
  *   drove the current invocation. The agent reads it from the publisher's
@@ -94,7 +87,6 @@ export const buildTransportHeaders = (opts: {
   parent?: string;
   forkOf?: string;
   regenerates?: string;
-  supersedes?: string;
   invocationId?: string;
   inputClientId?: string;
   inputCodecMessageId?: string;
@@ -112,7 +104,6 @@ export const buildTransportHeaders = (opts: {
   if (opts.parent) h[HEADER_PARENT] = opts.parent;
   if (opts.forkOf) h[HEADER_FORK_OF] = opts.forkOf;
   if (opts.regenerates) h[HEADER_MSG_REGENERATE] = opts.regenerates;
-  if (opts.supersedes) h[HEADER_SUPERSEDES] = opts.supersedes;
   if (opts.invocationId) h[HEADER_INVOCATION_ID] = opts.invocationId;
   if (opts.inputClientId !== undefined) h[HEADER_INPUT_CLIENT_ID] = opts.inputClientId;
   if (opts.inputCodecMessageId !== undefined) h[HEADER_INPUT_CODEC_MESSAGE_ID] = opts.inputCodecMessageId;

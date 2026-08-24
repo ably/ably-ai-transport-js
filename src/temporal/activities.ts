@@ -51,7 +51,7 @@ export interface FramingActivitiesOptions<TInput, TOutput> {
   historyPageSize?: number;
 }
 
-/** The latest lifecycle state of a run, folded from channel history. */
+/** The latest lifecycle state of a run, merged from channel history. */
 type RunState = 'start' | 'suspend' | 'resume' | 'end';
 
 /**
@@ -115,7 +115,7 @@ export const createFramingActivities = <TInput, TOutput>(
   };
 
   /**
-   * Fold the run's latest lifecycle state from channel history, paging
+   * Merge the run's latest lifecycle state from channel history, paging
    * backwards until the run is seen, the channel is exhausted, or the page
    * bound is hit. `undefined` means the run was not found in the pages read —
    * a paging artefact, not a fact about the run; each activity decides what
@@ -292,7 +292,7 @@ type GateResult = 'ok' | 'suspended' | 'ended' | 'not-found';
  * @template TOutput - The codec's output-event domain type.
  * @param transport - The connected transport whose history to page.
  * @param runId - The run to gate on.
- * @param latestRunState - The history fold to classify with.
+ * @param latestRunState - The history merge to classify with.
  * @returns The gate's verdict.
  */
 const gateOpenRun = async <TInput, TOutput>(

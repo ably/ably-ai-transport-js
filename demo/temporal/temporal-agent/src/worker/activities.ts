@@ -55,7 +55,7 @@ import { stepIdFor } from '@ably/ai-transport/temporal';
 import { createModel } from '../app/api/chat/model.js';
 import { SYSTEM_PROMPT } from '../app/api/chat/prompt.js';
 import { tools } from '../app/api/chat/tools.js';
-import { foldMessages } from '../lib/fold-messages.js';
+import { mergeMessages } from '../lib/merge-messages.js';
 import { logger, makeAbly } from './ably.js';
 import type { InferenceOutcome, ToolCallInfo } from './shared.js';
 
@@ -89,19 +89,19 @@ async function withAgentTransport<T>(
 }
 
 /**
- * Page the channel's history to exhaustion and fold it into the conversation.
+ * Page the channel's history to exhaustion and merge it into the conversation.
  * History is bounded at the attach point, which is enough: the trigger — and
  * every earlier step's output — was published before this activity attached.
  */
 async function loadConversation(transport: Transport): Promise<UIMessage[]> {
-  let events: Parameters<typeof foldMessages>[0] = [];
+  let events: Parameters<typeof mergeMessages>[0] = [];
   let exhausted = false;
   while (!exhausted) {
     const batch = await transport.history();
     events = [...batch.events, ...events];
     exhausted = batch.exhausted;
   }
-  return foldMessages(events);
+  return mergeMessages(events);
 }
 
 async function publishRunTerminal(run: Run, outcome: InferenceOutcome): Promise<void> {
@@ -186,7 +186,7 @@ async function runOneInference(run: Run, conversation: UIMessage[], stepId: stri
 
   if (conversation.length === 0) {
     // Never hand streamText an empty prompt ("messages must not be empty").
-    return { kind: 'error', errorMessage: 'conversation fold returned no messages' };
+    return { kind: 'error', errorMessage: 'conversation merge returned no messages' };
   }
 
   const step = run.createStep({ stepId });
@@ -202,9 +202,9 @@ async function runOneInference(run: Run, conversation: UIMessage[], stepId: stri
   });
 
   // Tee the chunk stream: one branch goes to the wire through the step, the
-  // other folds locally so pending tool calls can be classified without
+  // other merges locally so pending tool calls can be classified without
   // waiting for the wire echo.
-  const [wireStream, foldStream] = toUIMessageStream({ stream: result.fullStream }).tee();
+  const [wireStream, mergeStream] = toUIMessageStream({ stream: result.fullStream }).tee();
   const pipeResult = await step.pipe(wireStream);
   const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
   await step.end(
@@ -212,8 +212,8 @@ async function runOneInference(run: Run, conversation: UIMessage[], stepId: stri
   );
 
   if (outcome.reason !== 'suspend') {
-    // The fold branch is not needed on a terminal outcome; release its buffer.
-    void foldStream.cancel();
+    // The merge branch is not needed on a terminal outcome; release its buffer.
+    void mergeStream.cancel();
     if (outcome.reason === 'error') return { kind: 'error', errorMessage: outcome.error.message };
     return { kind: outcome.reason };
   }
@@ -225,7 +225,7 @@ async function runOneInference(run: Run, conversation: UIMessage[], stepId: stri
   // `input-available` only, so a just-approved call is NOT caught here — the
   // follow-up workflow spawned by the `tool-approval-response` handles it via
   // the pre-check above.
-  const assistant = await lastFoldedMessage(foldStream);
+  const assistant = await lastMergedMessage(mergeStream);
   const serverToolCalls = filterServerToolCalls(pendingToolCalls(assistant ? [assistant] : []));
   if (serverToolCalls.length > 0) {
     return { kind: 'server-tools', serverToolCalls };
@@ -234,8 +234,8 @@ async function runOneInference(run: Run, conversation: UIMessage[], stepId: stri
   return { kind: 'suspend' };
 }
 
-/** Fold a chunk stream through the AI SDK reducer and return the final message. */
-async function lastFoldedMessage(stream: ReadableStream<UIMessageChunk>): Promise<UIMessage | undefined> {
+/** Merge a chunk stream through the AI SDK reducer and return the final message. */
+async function lastMergedMessage(stream: ReadableStream<UIMessageChunk>): Promise<UIMessage | undefined> {
   let last: UIMessage | undefined;
   for await (const message of readUIMessageStream({ stream })) last = message;
   return last;

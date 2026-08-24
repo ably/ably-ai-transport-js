@@ -11,7 +11,7 @@ const config = [
   {
     // chat.tsx runs an effect that synchronises React with an external system —
     // exactly what effects are for: it appends a status-transition entry
-    // whenever the folded run status changes. The React-Compiler rule
+    // whenever the merged run status changes. The React-Compiler rule
     // react-hooks/set-state-in-effect can't tell this apart from accidental
     // cascading setState. Scope the rule off to just this file rather than
     // suppress inline.

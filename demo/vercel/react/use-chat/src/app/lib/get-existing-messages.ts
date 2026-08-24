@@ -1,7 +1,7 @@
 /**
  * getExistingMessages — the demo's swappable history source for the agent
  * route's model context: page the transport's channel history to exhaustion
- * and fold it through the demo's fold helper. Swapping the channel for a
+ * and merge it through the demo's merge helper. Swapping the channel for a
  * database later means reimplementing only this function.
  */
 
@@ -9,12 +9,12 @@ import type { UIMessage } from 'ai';
 import type { AgentTransport, TransportEvent } from '@ably/ai-transport';
 import type { VercelInput, VercelOutput } from '@ably/ai-transport/vercel';
 
-import { foldMessages } from './fold-messages';
+import { mergeMessages } from './merge-messages';
 
 /**
- * Page the whole existing conversation off the channel and fold it.
+ * Page the whole existing conversation off the channel and merge it.
  * @param transport - A connected transport whose `history()` to page.
- * @returns The folded conversation, oldest message first.
+ * @returns The merged conversation, oldest message first.
  */
 export const getExistingMessages = async (
   transport: Pick<AgentTransport<VercelInput, VercelOutput>, 'history'>,
@@ -27,5 +27,5 @@ export const getExistingMessages = async (
     events = [...batch.events, ...events];
     exhausted = batch.exhausted;
   }
-  return foldMessages(events);
+  return mergeMessages(events);
 };

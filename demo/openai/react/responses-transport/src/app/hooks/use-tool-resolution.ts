@@ -9,8 +9,8 @@
  * makes the provider reject the resumed request. The resolution itself always
  * publishes immediately — only the wake POST waits for the last answer.
  *
- * A client's own resolution reaches the fold only as the ordinary channel
- * delivery (the transport emits nothing locally on publish), so the folded
+ * A client's own resolution reaches the merge only as the ordinary channel
+ * delivery (the transport emits nothing locally on publish), so the merged
  * thread does not reflect the answer until that lands. Reading the thread alone would
  * therefore never see the run become ready. The hook closes that gap by
  * remembering the `call_id`s it has answered and treating them as answered on
@@ -30,7 +30,7 @@ import type { OpenAIOutput } from '@ably/ai-transport/openai';
 
 import { unansweredCalls, type OpenAIInput } from '../lib/openai-thread';
 
-import type { ThreadMessage } from '../lib/fold-thread';
+import type { ThreadMessage } from '../lib/merge-thread';
 
 /** One tool call's resolution: the inputs to publish and the call they answer. */
 export interface ToolResolution {
@@ -58,7 +58,7 @@ export interface ToolResolutionWake {
 export interface UseToolResolutionOptions {
   /** The client transport to publish the resolution on. */
   transport: ClientTransport<OpenAIInput, OpenAIOutput> | undefined;
-  /** The folded thread, read to find the run's still-unanswered calls. */
+  /** The merged thread, read to find the run's still-unanswered calls. */
   messages: ThreadMessage[];
   /** Wakes the agent for a run, POSTing the resolution's pointer to the agent endpoint. */
   onWake: (wake: ToolResolutionWake) => void;
@@ -92,7 +92,7 @@ export function useToolResolution(options: UseToolResolutionOptions) {
       let eventId: string | undefined;
       for (const input of inputs) {
         // Address the resolution at the message holding the call, under the
-        // suspended run's id, so the fold amends that message and the agent's
+        // suspended run's id, so the merge amends that message and the agent's
         // continuation resumes the right run.
         const result = await transport.publishInput(input, { codecMessageId, runId });
         eventId = result.eventId;

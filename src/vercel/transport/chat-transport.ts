@@ -1,6 +1,6 @@
 /**
  * A `ChatTransport` for `useChat`, built directly on the standalone
- * {@link ClientTransport}. It holds no conversation state and folds nothing:
+ * {@link ClientTransport}. It holds no conversation state and merges nothing:
  * the UI is driven exclusively through useChat, and this adapter turns the
  * channel's decoded event stream into the `ReadableStream<UIMessageChunk>`
  * useChat consumes, and turns useChat's sends into channel publishes plus an
@@ -24,7 +24,7 @@
  *   wire-only regenerate input with the `regenerates` / `parent` structure
  *   taken from the message array useChat hands over, then POST a fresh run.
  *
- * The adapter keeps three things off {@link WireMeta}, none of them a fold:
+ * The adapter keeps three things off {@link WireMeta}, none of them a merge:
  * an index from a message's domain id to the `codecMessageId` and `runId` the
  * wire already carries on every event (needed only for messages this client
  * did not publish — its own sends learn both from the publish result), the

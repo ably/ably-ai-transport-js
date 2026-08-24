@@ -6,7 +6,7 @@
  * run-manager lifecycle publisher and the {@link createRunStepWriter} step/pipe
  * machinery — with its own receive path: it mints a codec decoder, wraps it in
  * a receive transport, and — once {@link AgentTransport.connect} subscribes and
- * attaches — folds every inbound wire message through it (`deliverEvent`, then
+ * attaches — merges every inbound wire message through it (`deliverEvent`, then
  * `deliverAblyMessage`), so a consumer subscribes to the transport directly.
  * The same listener dispatches `ai-cancel` envelopes onto the registered run
  * (consulting the run's `onCancel` hook, and buffering a cancel that races
@@ -14,7 +14,7 @@
  * client input under an open run's run-id — onto the run's steer tracker,
  * flipping the handle's `hasInput()` and firing its `onSteer` hint. The
  * steering message also surfaces as an ordinary event on the receive stream
- * for the agent to fold into its own context; a steer that lands before its
+ * for the agent to merge into its own context; a steer that lands before its
  * run's `openRun` is buffered and reconciled at registration. Everything
  * else the client publishes surfaces as ordinary events only.
  *
@@ -152,7 +152,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
   private readonly _historyPageSize: number;
   private readonly _logger: Logger;
   private readonly _runManager: RunManager;
-  /** The one decoder shared by the live fold and the history scan, so a stream spanning the attach boundary is never double-decoded ({@link locateInput}'s throwaway scans stay separate). */
+  /** The one decoder shared by the live merge and the history scan, so a stream spanning the attach boundary is never double-decoded ({@link locateInput}'s throwaway scans stay separate). */
   private readonly _decoder: ReturnType<WireCodec<TInput, TOutput>['createDecoder']>;
   private readonly _receiver: ReceiveTransport<TInput, TOutput>;
   private readonly _connectGuard = new ConnectGuard();
@@ -167,7 +167,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
 
   /** The channel listener — one bound reference so `close()` can unsubscribe it. */
   private readonly _onMessage: (message: Ably.InboundMessage) => void;
-  /** The lazily opened, single-flight history pager behind {@link history}. Decode failures surface on the receive stream's `error`, matching the live fold. */
+  /** The lazily opened, single-flight history pager behind {@link history}. Decode failures surface on the receive stream's `error`, matching the live merge. */
   private readonly _historyPager: HistoryPager<TInput, TOutput>;
   /** The public `on`, forwarding to the receiver via the shared dispatch. */
   readonly on: TransportReceiver<TInput, TOutput>['on'];
@@ -296,7 +296,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
     // The run's cancel controller: an accepted cancel aborts it, ending
     // in-flight pipes `'cancelled'` and firing the handle's `abortSignal`.
     const controller = new AbortController();
-    // The handle's abort signal folds in the caller's external signal, so
+    // The handle's abort signal merges in the caller's external signal, so
     // either an accepted cancel or the caller's own abort ends the run's pipes.
     const signal = hooks?.signal ? AbortSignal.any([controller.signal, hooks.signal]) : controller.signal;
     // The handle's publish gate: 'open' accepts output, 'suspended' blocks it
@@ -678,7 +678,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
   }
 
   /**
-   * The channel listener body: fold the wire through the receiver, route
+   * The channel listener body: merge the wire through the receiver, route
    * steering messages, and dispatch cancel envelopes.
    * @param message - The inbound wire message.
    */
@@ -686,7 +686,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
     if (this._closed) return;
     // A failed decode drops the message (the receiver emitted `error`); its
     // raw `ably-message` is not emitted, and cancel dispatch does not run for
-    // a message the fold never applied.
+    // a message the merge never applied.
     const delivery = this._receiver.deliverEvent(message);
     if (delivery.outcome === 'failed') return;
     if (delivery.outcome === 'classified') this._observeRunSteer(delivery.event);
@@ -714,7 +714,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
    * steer id buffers per run-id for `openRun` to pull — a steer can land
    * between `connect()` and a continuation's `openRun`, after the attach
    * point where `history()` no longer sees it.
-   * @param event - The classified event the receive fold produced.
+   * @param event - The classified event the receive merge produced.
    */
   private _observeRunSteer(event: TransportEvent<TInput, TOutput>): void {
     if (event.kind !== 'message') return;
@@ -860,7 +860,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
 /**
  * Create a standalone {@link AgentTransport} over a channel and codec.
  * Composes the run-manager lifecycle publisher and the run-step-writer output
- * path, so a developer can drive agent runs while folding the channel's
+ * path, so a developer can drive agent runs while merging the channel's
  * events into their own state. Construction is synchronous and passive;
  * {@link AgentTransport.connect} subscribes the transport's listener and
  * attaches the channel, after which live events flow, cancels route onto run

@@ -3,7 +3,7 @@
  *
  * `createAgentTransport` is mocked: the transport is covered by its own tests,
  * and mocking it leaves exactly what these activities own observable — how a
- * run is located and opened, the history fold that gates the terminal
+ * run is located and opened, the history merge that gates the terminal
  * activities, what they publish, and that the client and transport they built
  * are always torn down.
  */
@@ -83,7 +83,7 @@ interface StubTransport {
 const lifecycle = (type: 'start' | 'suspend' | 'resume' | 'end', runId: string): Event =>
   ({
     kind: 'run-lifecycle',
-    // CAST: only kind/runId/type are read by the fold under test.
+    // CAST: only kind/runId/type are read by the merge under test.
     event: { type, runId, clientId: '', invocationId: '', serial: `s-${type}` },
   }) as Event;
 
@@ -225,7 +225,7 @@ describe('openRun', () => {
 });
 
 describe('endRun', () => {
-  it('gates on the history fold, adopts without publishing, and ends with the reason', async () => {
+  it('gates on the history merge, adopts without publishing, and ends with the reason', async () => {
     await activities().endRun({ ids, invocation, reason: 'complete' });
 
     expect(transport.adoptRun).toHaveBeenCalledWith('run-1', expect.anything());
@@ -304,7 +304,7 @@ describe('endRun', () => {
 });
 
 describe('suspendRun', () => {
-  it('gates on the history fold, adopts without publishing, and suspends', async () => {
+  it('gates on the history merge, adopts without publishing, and suspends', async () => {
     await activities().suspendRun({ ids, invocation });
 
     expect(transport.adoptRun).toHaveBeenCalledWith('run-1', expect.anything());

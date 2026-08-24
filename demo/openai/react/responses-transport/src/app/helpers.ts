@@ -51,7 +51,7 @@ export interface WakeAgentResult {
  * the run (fresh, or resuming the run the trigger's own run-id header names),
  * and returns the run-id on the HTTP
  * response. The same run-id also arrives on the channel as `ai-run-start` /
- * `ai-run-resume`, which is how the thread fold tracks the run without
+ * `ai-run-resume`, which is how the thread merge tracks the run without
  * reading this response.
  * @param api - The agent endpoint URL.
  * @param body - The wake pointer; see {@link WakeAgentBody}.

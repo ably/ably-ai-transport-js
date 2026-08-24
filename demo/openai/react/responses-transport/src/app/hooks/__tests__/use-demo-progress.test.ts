@@ -5,7 +5,7 @@ import { EVENT_CANCEL } from '@ably/ai-transport';
 
 import { useDemoProgress } from '../use-demo-progress';
 import type { DemoStepId, Scenario } from '@ably-ai-demos/frontend/lib/progress-steps';
-import type { ThreadMessage } from '../../lib/fold-thread';
+import type { ThreadMessage } from '../../lib/merge-thread';
 import { DEMO_SCENARIOS } from '../../lib/intro-content';
 
 // --- fixtures ----------------------------------------------------------------

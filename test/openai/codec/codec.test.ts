@@ -128,7 +128,7 @@ describe('OpenAI codec roundtrip (offline)', () => {
     const types = outputs.map((e) => e.type);
 
     // The item envelope leads, then the content-part opener, then the streamed
-    // text, then the closes — the (start, delta*, end) bracket a consumer folds.
+    // text, then the closes — the (start, delta*, end) bracket a consumer merges.
     expect(types).toContain('response.content_part.added');
     expect(types).toContain('response.output_item.done');
     expect(types.indexOf('response.output_item.added')).toBeLessThan(types.indexOf('response.content_part.added'));

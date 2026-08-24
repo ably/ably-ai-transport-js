@@ -1,10 +1,10 @@
 /**
- * Fold a channel's decoded transport events into the conversation's
- * `UIMessage[]`. The transport delivers classified events and folds nothing
- * itself; this helper is the demo's one fold, shared by the worker's
+ * Merge a channel's decoded transport events into the conversation's
+ * `UIMessage[]`. The transport delivers classified events and merges nothing
+ * itself; this helper is the demo's one merge, shared by the worker's
  * activities (model context assembly).
  *
- * How it folds:
+ * How it merges:
  *
  * - `message` events bucket by `meta.codecMessageId`, in first-seen order —
  *   the logical message a wire event belongs to.
@@ -13,7 +13,7 @@
  *   `readUIMessageStream`.
  * - `kind: 'message'` inputs carry a whole `UIMessage` (a user turn). Parts
  *   merge per bucket with JSON-equality dedupe, so a redelivered wire event
- *   folds to one message.
+ *   merges to one message.
  * - `kind: 'approval'` inputs flip the matching tool part from
  *   `approval-requested` to `approval-responded`, carrying the decision.
  */
@@ -32,7 +32,7 @@ interface Bucket {
   chunks: UIMessageChunk[];
   /** The whole message a `kind: 'message'` input carried, parts merged across echoes. */
   message?: UIMessage;
-  /** Approval decisions addressed to this message, applied after the fold. */
+  /** Approval decisions addressed to this message, applied after the merge. */
   approvals: VercelApprovalDecision[];
 }
 
@@ -46,7 +46,7 @@ const isToolPart = (part: UIMessage['parts'][number]): part is ToolPart =>
  * Merge a whole-message input into the bucket. The first one is taken as the
  * base; later echoes of the same codec-message-id contribute only parts not
  * already present (JSON equality), so the optimistic echo and the wire echo
- * fold to one message.
+ * merge to one message.
  */
 const mergeMessage = (bucket: Bucket, payload: UIMessage): void => {
   if (!bucket.message) {
@@ -60,7 +60,7 @@ const mergeMessage = (bucket: Bucket, payload: UIMessage): void => {
 };
 
 /** Replay a bucket's chunks through the AI SDK's reducer; the last snapshot is the message. */
-const foldChunks = async (chunks: readonly UIMessageChunk[]): Promise<UIMessage | undefined> => {
+const mergeChunks = async (chunks: readonly UIMessageChunk[]): Promise<UIMessage | undefined> => {
   if (chunks.length === 0) return undefined;
   const stream = new ReadableStream<UIMessageChunk>({
     start(controller) {
@@ -90,12 +90,12 @@ const applyApproval = (message: UIMessage, decision: VercelApprovalDecision): vo
 };
 
 /**
- * Fold decoded transport events (history batches, oldest first) into the
+ * Merge decoded transport events (history batches, oldest first) into the
  * conversation's messages, in first-seen message order.
  * @param events - The classified transport events, in chronological order.
- * @returns The folded `UIMessage[]`, ready for `convertToModelMessages`.
+ * @returns The merged `UIMessage[]`, ready for `convertToModelMessages`.
  */
-export const foldMessages = async (events: readonly VercelTransportEvent[]): Promise<UIMessage[]> => {
+export const mergeMessages = async (events: readonly VercelTransportEvent[]): Promise<UIMessage[]> => {
   const buckets = new Map<string, Bucket>();
   for (const event of events) {
     if (event.kind !== 'message') continue;
@@ -127,7 +127,7 @@ export const foldMessages = async (events: readonly VercelTransportEvent[]): Pro
 
   const messages: UIMessage[] = [];
   for (const bucket of buckets.values()) {
-    const message = bucket.message ?? (await foldChunks(bucket.chunks));
+    const message = bucket.message ?? (await mergeChunks(bucket.chunks));
     if (!message) continue;
     for (const approval of bucket.approvals) applyApproval(message, approval);
     messages.push(message);

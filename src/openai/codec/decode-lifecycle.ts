@@ -21,9 +21,9 @@
  *
  * This policy is the repair, and it is part of the decoder's contract: the
  * synthesised openers are what make the sequences the decoder hands out well
- * formed, and so safe to hand to a strict fold. On each stream start it
+ * formed, and so safe to hand to a strict merge. On each stream start it
  * synthesises the missing `output_item.added` and prepends it, so the item
- * exists before the part opener folds. The `synthesise*` helpers build the
+ * exists before the part opener merges. The `synthesise*` helpers build the
  * minimal part-container shell: a `message` for `output_text` / `refusal`
  * parts, a `reasoning` item for `reasoning_text` / summary parts. Which
  * container to build follows from the re-stamped `part` header — it names the
@@ -33,11 +33,11 @@
  * Synthesis is unconditional and stateless. A client present at the real start,
  * or a sibling part stream on the same item (e.g. an `output_text` and a
  * `refusal` under one message), may re-introduce an item id already seen — so a
- * consumer's fold must treat `output_item.added` as find-or-create on the item
+ * consumer's merge must treat `output_item.added` as find-or-create on the item
  * id, collapsing redundant adds into the one item. That obligation is what lets
  * the policy stay free of per-run tracking and hold no state.
  *
- * Repairing the opener lands the parts in a consumer's fold, but the joiner may
+ * Repairing the opener lands the parts in a consumer's merge, but the joiner may
  * still not see the ones it picked up mid-stream. The rebuilt part opener seeds
  * its slot at the real `content_index`, so when the first part received sits
  * above index 0 the item's positional content has a leading hole until the

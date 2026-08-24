@@ -7,25 +7,25 @@
  * run). The route:
  *
  * 1. Locates the triggering input in channel history (`locateInput`).
- * 2. Assembles the model context by folding the whole channel history —
+ * 2. Assembles the model context by merging the whole channel history —
  *    bounded at the attach point, which is after the trigger was published
- *    since the agent connects per-POST — through the same fold helper the
- *    client hydrates with (`lib/fold-messages.ts`).
+ *    since the agent connects per-POST — through the same merge helper the
+ *    client hydrates with (`lib/merge-messages.ts`).
  * 3. Opens the run (a fresh open publishes `ai-run-start`; a continuation
  *    named by the POST's run-id publishes `ai-run-resume`), responds with the
  *    run-id immediately, and pipes the `streamText` output to the channel in
  *    `after()`. Every start chunk names a `messageId`, so the client, the
- *    store, and the fold agree on each assistant message's domain id.
+ *    store, and the merge agree on each assistant message's domain id.
  * 4. Suspends or ends the run from the `vercelRunOutcome` of the pipe.
  *
  * Tool patterns: server-executed tools (getWeather) run inline; a
  * client-executed tool (getLocation, no `execute`) or an approval-gated tool
  * (getWeatherForecast, `needsApproval`) leaves the finish reason at
  * `tool-calls`, so the run SUSPENDS and the client resumes it with a
- * continuation POST under the same run-id. On the continuation, the folded
+ * continuation POST under the same run-id. On the continuation, the merged
  * history carries the tool output (a `{ kind: 'chunk' }` input) or the
  * approval decision (the `{ kind: 'approval' }` body, flipped onto the tool
- * part by the fold), so `streamText` executes the approved tool and answers.
+ * part by the merge), so `streamText` executes the approved tool and answers.
  *
  * Persistence is client-owned in this demo: the sender POSTs each completed
  * turn to `/api/messages` from useChat's `onFinish`.
@@ -38,7 +38,7 @@ import { channelAgent } from '@ably/ai-transport';
 import { createAgentTransport, vercelRunOutcome } from '@ably/ai-transport/vercel';
 import { createModel } from './model';
 import { tools } from './tools';
-import { type ChatTransportEvent, foldMessages } from '../../lib/fold-messages';
+import { type ChatTransportEvent, mergeMessages } from '../../lib/merge-messages';
 
 /** The invocation pointer the SDK's chat transport POSTs. */
 interface ChatRequestBody {
@@ -80,7 +80,7 @@ export async function POST(req: Request) {
     return Response.json({ error: `input ${eventId} not found in channel history` }, { status: 404 });
   }
 
-  // Model context: fold the whole channel history. Everything the model needs
+  // Model context: merge the whole channel history. Everything the model needs
   // is on the channel — prior turns, the triggering input, and (on a
   // continuation) the suspended run so far with its tool resolution or
   // approval decision.
@@ -90,7 +90,7 @@ export async function POST(req: Request) {
     events.unshift(...batch.events);
     if (batch.exhausted) break;
   }
-  const conversation = (await foldMessages(events)).map((entry) => entry.message);
+  const conversation = (await mergeMessages(events)).map((entry) => entry.message);
 
   // The located input drives the open: a continuation input carries the
   // run-id header of the run it resumes, and a fresh send carries none —
@@ -111,7 +111,7 @@ export async function POST(req: Request) {
     try {
       // `generateMessageId` puts a domain id on the stream's `start` chunk, so
       // the id useChat renders, the id the client persists, and the id the
-      // hydration fold reconstructs are all the same.
+      // hydration merge reconstructs are all the same.
       const pipeResult = await run.pipe(
         toUIMessageStream({ stream: result.fullStream, generateMessageId: () => crypto.randomUUID() }),
       );

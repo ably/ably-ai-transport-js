@@ -22,7 +22,7 @@ import {
   type DemoStepId,
   type Scenario,
 } from '@ably-ai-demos/frontend';
-import { type ChatTransportEvent, foldMessages } from '../lib/fold-messages';
+import { type ChatTransportEvent, mergeMessages } from '../lib/merge-messages';
 
 // The scenarios this linear demo can drive: the shared baseline entries whose
 // completion it can detect from a plain message list (server/client/approval
@@ -194,7 +194,7 @@ export function Chat({ chatId, clientId, chatTransport, initialMessages, initial
   // channel normally duplicates the store seed, so loading it prepends nothing
   // — the affordance surfaces the paging path, and would recover any message
   // the store lost. Batches accumulate so a stream spanning batch boundaries
-  // refolds whole once its opener is paged in.
+  // re-merges whole once its opener is paged in.
   const [hasOlder, setHasOlder] = useState(initialHasOlder);
   const olderEventsRef = useRef<ChatTransportEvent[]>([]);
   const loadOlder = useCallback(() => {
@@ -202,10 +202,10 @@ export function Chat({ chatId, clientId, chatTransport, initialMessages, initial
     void (async () => {
       const batch = await transport.history();
       olderEventsRef.current = [...batch.events, ...olderEventsRef.current];
-      const folded = await foldMessages(olderEventsRef.current);
+      const merged = await mergeMessages(olderEventsRef.current);
       setMessages((current) => {
         const ids = new Set(current.map((m) => m.id));
-        const fresh = folded.map((entry) => entry.message).filter((m) => !ids.has(m.id));
+        const fresh = merged.map((entry) => entry.message).filter((m) => !ids.has(m.id));
         return fresh.length === 0 ? current : [...fresh, ...current];
       });
       if (batch.exhausted) setHasOlder(false);

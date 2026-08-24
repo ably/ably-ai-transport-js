@@ -14,7 +14,7 @@ Hydration happens before the chat mounts, in two parts:
 1. a REST endpoint (`/api/messages`) serves the stored conversation as the
    seed;
 2. the client pages channel history back to the newest stored message and
-   folds that gap — anything streamed since the last persisted turn — on top
+   merges that gap — anything streamed since the last persisted turn — on top
    of the seed, using the provider's own reducer (`readUIMessageStream`).
 
 The merge seeds `useChat({ messages })` in one shot, and the same gap events
@@ -36,7 +36,7 @@ approval-gated tool (getWeatherForecast). Each fresh visit opens a new channel
 Most of what this demo publishes rides the wire in the AI SDK's own
 vocabulary: a new turn is a `UIMessage` (`{ kind: 'message' }`), and a client
 tool's result is the SDK's own `tool-output-available` chunk
-(`{ kind: 'chunk' }`) — so one fold path (`readUIMessageStream`) covers inputs
+(`{ kind: 'chunk' }`) — so one merge path (`readUIMessageStream`) covers inputs
 and outputs alike.
 
 The tool-approval decision is the exception, published as the codec-defined
@@ -46,7 +46,7 @@ has no chunk for a client-side approval decision — responding is
 is no provider type to reuse. The body deliberately captures the intermediate
 "approved, not yet executed" state: that is what the useChat adapter reads
 from the wire to know a resolution has already been published, so a hydrated
-page never publishes the same decision twice, and it is what the agent's fold
+page never publishes the same decision twice, and it is what the agent's merge
 flips onto the tool part so `streamText` executes the approved tool on the
 continuation.
 
@@ -81,7 +81,7 @@ conversation is restored from the REST seed plus the channel-history gap.
 ## Tests
 
 ```bash
-pnpm test          # unit tests (hydration, message folding, store, chat wiring)
+pnpm test          # unit tests (hydration, message merging, store, chat wiring)
 pnpm run test:e2e  # Playwright e2e against an Ably sandbox app (no keys needed)
 ```
 

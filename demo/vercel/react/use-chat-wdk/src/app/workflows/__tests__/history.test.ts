@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { WdkTransportEvent } from '../../lib/fold-messages';
+import type { WdkTransportEvent } from '../../lib/merge-messages';
 import { collectHistory, latestRunLifecycle } from '../history';
 
 function lifecycle(runId: string, type: 'start' | 'suspend' | 'resume', invocationId = ''): WdkTransportEvent {

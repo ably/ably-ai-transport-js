@@ -1,8 +1,8 @@
 /**
  * getExistingMessages — the demo's one swappable history source.
  *
- * Pages a transport's channel history to exhaustion and folds it through the
- * same fold helper the frontend renders with. Both readers of the existing
+ * Pages a transport's channel history to exhaustion and merges it through the
+ * same merge helper the frontend renders with. Both readers of the existing
  * conversation go through here: the chat route (model context) and the
  * messages endpoint (client hydration). Swapping the channel for a database
  * later means reimplementing only this function — its callers already consume
@@ -12,16 +12,16 @@
 import type { AgentTransport, TransportEvent } from '@ably/ai-transport';
 import type { OpenAIOutput } from '@ably/ai-transport/openai';
 
-import { createThreadFold, type ThreadMessage } from './fold-thread';
+import { createThreadMerge, type ThreadMessage } from './merge-thread';
 
 /** One decoded transport event at the demo's codec instantiation. */
 export type ThreadEvent = TransportEvent<unknown, OpenAIOutput>;
 
 /** What {@link getExistingMessages} returns. */
 export interface ExistingMessages {
-  /** Every decoded event, oldest first — what a client-side fold consumes. */
+  /** Every decoded event, oldest first — what a client-side merge consumes. */
   events: ThreadEvent[];
-  /** The folded thread, oldest message first — what the model context consumes. */
+  /** The merged thread, oldest message first — what the model context consumes. */
   messages: ThreadMessage[];
   /**
    * The channel serial of the newest event included, or `undefined` for an
@@ -42,9 +42,9 @@ export const serialOf = (event: ThreadEvent): string | undefined =>
   event.kind === 'message' ? event.meta.serial : event.event.serial;
 
 /**
- * Page the whole existing conversation off the channel and fold it.
+ * Page the whole existing conversation off the channel and merge it.
  * @param transport - A connected transport whose `history()` to page.
- * @returns The decoded events, the folded thread, and the hydration seam.
+ * @returns The decoded events, the merged thread, and the hydration seam.
  */
 export const getExistingMessages = async (
   transport: Pick<AgentTransport<unknown, OpenAIOutput>, 'history'>,
@@ -53,14 +53,14 @@ export const getExistingMessages = async (
   let exhausted = false;
   while (!exhausted) {
     const batch = await transport.history();
-    // The fold consumes events in chronological order, and each batch is older
-    // than the previous one — so collect by prepending, then fold once whole.
+    // The merge consumes events in chronological order, and each batch is older
+    // than the previous one — so collect by prepending, then merge once whole.
     events.unshift(...batch.events);
     exhausted = batch.exhausted;
   }
 
-  const fold = createThreadFold();
-  for (const event of events) fold.apply(event);
+  const merge = createThreadMerge();
+  for (const event of events) merge.apply(event);
 
   // Delivery order is chronological, so the newest serial is the last one an
   // event carries.
@@ -70,5 +70,5 @@ export const getExistingMessages = async (
     if (event) latestSerial = serialOf(event);
   }
 
-  return { events, messages: fold.messages(), latestSerial };
+  return { events, messages: merge.messages(), latestSerial };
 };

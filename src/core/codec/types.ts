@@ -2,7 +2,7 @@
  * Core codec interfaces — the wire tier.
  *
  * A codec encodes and decodes: it describes the wire as a flat stream of
- * TInput / TOutput values and does nothing else. Folding events into messages
+ * TInput / TOutput values and does nothing else. Merging events into messages
  * is the application's job, so no reducer or projection contract lives here.
  *
  * All types are framework-agnostic. Domain codecs (e.g. the Vercel codec)
@@ -221,7 +221,7 @@ export interface DecodedMessage<TInput, TOutput> {
  * Stateful decoder for a single channel subscription. Maintains internal
  * stream-tracker state across messages so that mid-stream join (history
  * compaction, partial-history page boundary, rewind miss) synthesizes any
- * missing start events before deltas leave the decoder — a consumer's fold
+ * missing start events before deltas leave the decoder — a consumer's merge
  * (the provider's own strict reducer included) always sees a clean
  * `(start, delta*, end)` sequence. That repair is a contract, not a
  * convenience: the provider reducers throw on a delta with no opener.
@@ -244,7 +244,7 @@ export interface Decoder<TInput, TOutput> {
 /**
  * A codec: encode and decode, nothing else. This is the whole contract the
  * transports require — they publish inputs and classify inbound messages
- * without ever folding a projection, so they stay parameterized by `TInput` /
+ * without ever merging a projection, so they stay parameterized by `TInput` /
  * `TOutput` alone. The transport carries both as opaque values and never
  * inspects them; a codec's `TInput` is simply its own body union.
  * @template TInput - The union of input bodies the client publishes on the

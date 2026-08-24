@@ -1,14 +1,14 @@
 /**
- * Fold classified transport events into `UIMessage[]` — the message assembly
+ * Merge classified transport events into `UIMessage[]` — the message assembly
  * every workflow activity shares when it needs conversation state (model
  * context, pending-tool classification).
  *
- * The fold buckets `message` events by their wire `codec-message-id` in
+ * The merge buckets `message` events by their wire `codec-message-id` in
  * first-seen order and reduces each bucket with the AI SDK's own reducer
  * (`readUIMessageStream`):
  *
  * - Agent output chunks and client `kind: 'chunk'` tool-resolution inputs are
- *   chunk-shaped already and fold directly. A `tool-output-*` chunk routes to
+ *   chunk-shaped already and merge directly. A `tool-output-*` chunk routes to
  *   the bucket that owns its `toolCallId` (a tool activity publishes its
  *   result as its own wire message, but the result belongs on the assistant
  *   message that made the call).
@@ -18,7 +18,7 @@
  *   a synthesized `tool-approval-response` chunk against the matching
  *   `tool-approval-request` already in the owning bucket.
  *
- * Output published under an AIT step folds at most one attempt per `step-id`:
+ * Output published under an AIT step merges at most one attempt per `step-id`:
  * the canonical attempt is the one with the latest `step-start-serial`, so a
  * durable retry's output supersedes the dead attempt's instead of appending
  * beside it. `excludeStepId` additionally drops one step's output entirely —
@@ -33,9 +33,9 @@ import type { VercelInput, VercelOutput } from '@ably/ai-transport/vercel';
 /** One classified event off the Vercel-codec agent transport. */
 export type WdkTransportEvent = TransportEvent<VercelInput, VercelOutput>;
 
-/** Options for {@link foldMessages}. */
-export interface FoldMessagesOptions {
-  /** Drop all output stamped with this step-id before folding (the caller's own step, about to be superseded by a fresh attempt). */
+/** Options for {@link mergeMessages}. */
+export interface MergeMessagesOptions {
+  /** Drop all output stamped with this step-id before merging (the caller's own step, about to be superseded by a fresh attempt). */
   excludeStepId?: string;
 }
 
@@ -55,12 +55,12 @@ function chunkToolCallId(chunk: UIMessageChunk): string | undefined {
 /**
  * Reduce a chunk list to the final `UIMessage` state via the AI SDK's own
  * reducer. Undecodable or orphaned chunks are skipped (`terminateOnError`
- * stays false) so a partial stream still folds to its best-known state.
+ * stays false) so a partial stream still merges to its best-known state.
  * @param chunks - The chunk-shaped events, in serial order.
- * @param seed - An initial message to fold onto (a whole-message input).
- * @returns The folded message, or undefined when nothing folded.
+ * @param seed - An initial message to merge onto (a whole-message input).
+ * @returns The merged message, or undefined when nothing merged.
  */
-export async function foldChunkList(chunks: UIMessageChunk[], seed?: UIMessage): Promise<UIMessage | undefined> {
+export async function mergeChunkList(chunks: UIMessageChunk[], seed?: UIMessage): Promise<UIMessage | undefined> {
   const stream = new ReadableStream<UIMessageChunk>({
     start(controller) {
       for (const chunk of chunks) controller.enqueue(chunk);
@@ -72,7 +72,7 @@ export async function foldChunkList(chunks: UIMessageChunk[], seed?: UIMessage):
     ...(seed === undefined ? {} : { message: seed }),
     stream,
     onError: () => {
-      /* a partial or orphaned chunk sequence folds to its best-known state */
+      /* a partial or orphaned chunk sequence merges to its best-known state */
     },
   });
   for await (const state of states) latest = state;
@@ -80,16 +80,16 @@ export async function foldChunkList(chunks: UIMessageChunk[], seed?: UIMessage):
 }
 
 /**
- * Fold classified transport events (chronological, e.g. from paging
+ * Merge classified transport events (chronological, e.g. from paging
  * `AgentTransport.history()` to exhaustion) into the conversation's
  * `UIMessage[]`, in first-seen message order.
  * @param events - The classified events, oldest first.
- * @param opts - See {@link FoldMessagesOptions}.
- * @returns The folded messages.
+ * @param opts - See {@link MergeMessagesOptions}.
+ * @returns The merged messages.
  */
-export async function foldMessages(events: WdkTransportEvent[], opts?: FoldMessagesOptions): Promise<UIMessage[]> {
+export async function mergeMessages(events: WdkTransportEvent[], opts?: MergeMessagesOptions): Promise<UIMessage[]> {
   // Pass 1: the canonical attempt per step-id — the latest step-start-serial
-  // wins, so a superseded attempt's output never folds.
+  // wins, so a superseded attempt's output never merges.
   const canonicalAttempt = new Map<string, string>();
   for (const event of events) {
     if (event.kind !== 'message') continue;
@@ -158,7 +158,7 @@ export async function foldMessages(events: WdkTransportEvent[], opts?: FoldMessa
           break;
         }
         case 'regenerate':
-          // A wire-only structure signal; it carries no content to fold.
+          // A wire-only structure signal; it carries no content to merge.
           break;
       }
     }
@@ -167,7 +167,7 @@ export async function foldMessages(events: WdkTransportEvent[], opts?: FoldMessa
   // Pass 3: reduce each bucket to its final message state.
   const messages: UIMessage[] = [];
   for (const bucket of buckets.values()) {
-    const message = bucket.chunks.length > 0 ? await foldChunkList(bucket.chunks, bucket.message) : bucket.message;
+    const message = bucket.chunks.length > 0 ? await mergeChunkList(bucket.chunks, bucket.message) : bucket.message;
     if (message) messages.push(message);
   }
   return messages;

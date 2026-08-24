@@ -4,7 +4,7 @@
  * Reads the provider's transport pair (`useChatTransport`) and resolves in one
  * shot: connect the transport (idempotent — the provider connects too), fetch
  * the persisted seed from `/api/messages`, page the channel-history gap back
- * to the newest stored message, fold seed + gap into the messages `useChat`
+ * to the newest stored message, merge seed + gap into the messages `useChat`
  * initializes from, and seed the adapter's wire indices with the gap events
  * (`chatTransport.seed`, called exactly once).
  *
@@ -53,7 +53,7 @@ interface HydrationResult {
 const hydrations = new WeakMap<ChatTransport, Promise<HydrationResult>>();
 
 /**
- * Connect, fetch the seed, page the gap, fold, and seed the adapter.
+ * Connect, fetch the seed, page the gap, merge, and seed the adapter.
  * @param transport - The provider's client transport.
  * @param chatTransport - The useChat adapter to seed.
  * @param channelName - The store's conversation id.

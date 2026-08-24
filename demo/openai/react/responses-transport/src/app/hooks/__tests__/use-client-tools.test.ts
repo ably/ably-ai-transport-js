@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor } from '@testing-library/react';
 import type { RunStatus } from '@ably/ai-transport';
 
-import type { RunSummary, ThreadMessage } from '../../lib/fold-thread';
+import type { RunSummary, ThreadMessage } from '../../lib/merge-thread';
 import { useClientTools } from '../use-client-tools';
 
 // The thread: the user trigger (carrying the initiator's clientId) and an

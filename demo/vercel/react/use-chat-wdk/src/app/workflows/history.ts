@@ -5,14 +5,14 @@
  * everything it knows about the conversation comes from paging
  * `AgentTransport.history()` backwards to exhaustion. The collected events
  * serve two reads: the run-lifecycle gate (is this run still ours to drive?)
- * and the message fold (`foldMessages`) for model context and pending-tool
+ * and the message merge (`mergeMessages`) for model context and pending-tool
  * classification.
  */
 
 import type { AgentTransport, RunLifecycleEvent } from '@ably/ai-transport';
 import type { VercelInput, VercelOutput } from '@ably/ai-transport/vercel';
 
-import type { WdkTransportEvent } from '../lib/fold-messages';
+import type { WdkTransportEvent } from '../lib/merge-messages';
 
 /** The Vercel-codec agent transport every activity runs against. */
 export type WdkAgentTransport = AgentTransport<VercelInput, VercelOutput>;
@@ -36,7 +36,7 @@ export async function collectHistory(transport: {
 
 /**
  * The run's latest lifecycle event in the collected history — the gate every
- * re-entering activity folds before publishing anything. `undefined` means the
+ * re-entering activity merges before publishing anything. `undefined` means the
  * run's opening event is not visible yet (a paging/propagation artefact, not a
  * fact about the run); the caller decides what a miss means for its retry
  * semantics.

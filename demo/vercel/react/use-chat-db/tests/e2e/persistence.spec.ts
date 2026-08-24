@@ -188,7 +188,7 @@ test.describe('use-chat-db - useChat persistence over the chat transport', () =>
 
     // Suspend the run at approval-requested, then reload before answering. A
     // suspended run is never persisted, so on reload it lives only in the
-    // channel-history gap — hydration folds it and seeds the transport's wire
+    // channel-history gap — hydration merges it and seeds the transport's wire
     // indices with the suspended run's id.
     await send(page, "what's the weather forecast for London?");
     await expect(page.getByRole('button', { name: /Approve/i }).first()).toBeVisible({ timeout: 60_000 });

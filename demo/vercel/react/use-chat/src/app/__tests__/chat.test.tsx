@@ -123,7 +123,7 @@ describe('<Chat>', () => {
     );
     expect(sentText).toContain('hello');
 
-    // useChat consumes the transport's chunk stream; the folded assistant
+    // useChat consumes the transport's chunk stream; the merged assistant
     // reply renders in the transcript.
     await waitFor(() => {
       expect(screen.queryByText('Hi there')).not.toBeNull();

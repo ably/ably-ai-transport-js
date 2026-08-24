@@ -22,10 +22,10 @@ interface MessageBubbleProps {
   toolOutputs: Map<string, string>;
   // Per-call tool state (approval decision, client-result status) collected
   // across all visible messages, keyed by call_id. A gated call's approval
-  // state can fold onto its own message, so it is paired cross-message like
+  // state can merge onto its own message, so it is paired cross-message like
   // toolOutputs.
   toolStates: Map<string, OpenAIToolCallState>;
-  // Per-message metadata derived from the fold at the list-glue layer
+  // Per-message metadata derived from the merge at the list-glue layer
   // (see MessageList) and passed as primitives so the bubble stays a
   // pure renderer with no transport type dependencies.
   clientId: string | undefined;

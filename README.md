@@ -83,8 +83,8 @@ import type { AgentTransport } from '@ably/ai-transport';
 const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY });
 
 // Assemble the conversation from the channel: bucket each message's events by
-// its codec-message-id, then fold every bucket with the AI SDK's own reducer.
-async function foldConversation(transport: AgentTransport<VercelInput, VercelOutput>): Promise<UIMessage[]> {
+// its codec-message-id, then merge every bucket with the AI SDK's own reducer.
+async function mergeConversation(transport: AgentTransport<VercelInput, VercelOutput>): Promise<UIMessage[]> {
   const buckets = new Map<string, UIMessageChunk[]>();
   const wholeMessages = new Map<string, UIMessage>();
   for (let batch = await transport.history(); ; batch = await transport.history()) {
@@ -149,7 +149,7 @@ export async function POST(req: Request) {
   );
 
   after(async () => {
-    const conversation = await foldConversation(transport);
+    const conversation = await mergeConversation(transport);
 
     const result = streamText({
       model: anthropic('claude-sonnet-4-6'),

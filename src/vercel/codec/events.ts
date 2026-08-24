@@ -9,7 +9,7 @@
  * - **`VercelInput`** = the bodies a client publishes on `ai-input`. Each
  *   body is the provider's own vocabulary where one exists — a `UIMessage`
  *   for a new turn, a `tool-output-*` chunk for a tool resolution — so the
- *   provider's own reducer (`readUIMessageStream`) folds inputs and outputs
+ *   provider's own reducer (`readUIMessageStream`) merges inputs and outputs
  *   through one code path. The approval decision is the one action with no
  *   provider-typed body, so the codec defines a small body of its own.
  *
@@ -51,7 +51,7 @@ export interface VercelApprovalDecision {
 
 /**
  * A new conversation turn: the message body is the AI SDK's own `UIMessage`,
- * so an application folds it with the same provider machinery that folds the
+ * so an application merges it with the same provider machinery that merges the
  * output chunks.
  * @template TMetadata - Per-message metadata type.
  * @template TDataParts - Custom data-part types.

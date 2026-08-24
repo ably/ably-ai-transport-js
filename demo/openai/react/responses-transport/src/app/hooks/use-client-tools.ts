@@ -2,15 +2,15 @@
  * useClientTools — runs client-executed tools when they appear unresolved in the
  * conversation and publishes their result so the suspended agent run resumes.
  *
- * Watches the folded thread for a `function_call` whose tool name is a client
+ * Watches the merged thread for a `function_call` whose tool name is a client
  * tool (no server executor; see `isClientTool` in `../api/chat/tools`) that has
  * no `function_call_output` yet, on a run that has suspended. It waits for the
  * run to suspend so a resume never races the run's still-streaming output (a
- * server tool in the same turn whose result has not folded yet). It runs the
+ * server tool in the same turn whose result has not merged yet). It runs the
  * tool in the browser, then hands a `kind: 'item'` input carrying the
  * `function_call_output` — addressed to the function_call's codec-message-id —
  * to `resolve`, which publishes it and wakes the agent only once every call on
- * the run is answered. The fold appends the output onto that message (paired
+ * the run is answered. The merge appends the output onto that message (paired
  * with its call by `call_id` at render time), and the continuation reuses the
  * run's runId so the agent picks the result up off the channel and resumes.
  *
@@ -28,7 +28,7 @@ import { useEffect, useRef } from 'react';
 import { resolvedCallIds, type OpenAIItem } from '../lib/openai-thread';
 
 import { isClientTool } from '../api/chat/tools';
-import type { RunSummary, ThreadMessage } from '../lib/fold-thread';
+import type { RunSummary, ThreadMessage } from '../lib/merge-thread';
 import type { ToolResolution } from './use-tool-resolution';
 
 /** Publishes one tool resolution, waking the agent only when the run's last call is answered. */
@@ -75,8 +75,8 @@ function runInitiatorClientId(messages: ThreadMessage[], run: RunSummary): strin
 
 /**
  * Watch the thread for unresolved client-tool calls and execute them.
- * @param messages - The folded thread to watch and to resolve calls against.
- * @param runs - The folded run state, for the suspend gate and initiator lookup.
+ * @param messages - The merged thread to watch and to resolve calls against.
+ * @param runs - The merged run state, for the suspend gate and initiator lookup.
  * @param clientId - This client's id; only calls from runs it initiated are executed.
  * @param resolve - Publishes the tool result and owns the decision to wake the agent.
  * @param onLog - Optional callback to surface each execution in the demo's debug log.
@@ -108,7 +108,7 @@ export function useClientTools(
       // poking the agent to resume it. A single model turn can emit a server
       // tool and a client tool in the same message; resuming while the run is
       // still active races the run's own output (its server-tool result has not
-      // folded yet), and the provider rejects the resume for a missing output.
+      // merged yet), and the provider rejects the resume for a missing output.
       // The run flips to suspended once the agent pauses it awaiting this input.
       if (run.status !== 'suspended') continue;
 

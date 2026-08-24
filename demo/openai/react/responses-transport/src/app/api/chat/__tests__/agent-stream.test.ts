@@ -137,7 +137,7 @@ describe('runAgentLoop', () => {
 
     // The function_call and its approval request ride the SAME message. Their
     // shared codec-message-id is why the client's later approval-response — and
-    // its pending/decided state — fold onto one message rather than stranding.
+    // its pending/decided state — merge onto one message rather than stranding.
     // The full call — its name and call_id — rides the output_item.added
     // envelope (the function_call_arguments stream's opener); output_item.done
     // reduces to id/type/status, so read the correlation off `added`.

@@ -15,7 +15,7 @@
 import type { TransportHistoryOptions, TransportHistoryResult } from '@ably/ai-transport';
 import type { VercelInput, VercelOutput } from '@ably/ai-transport/vercel';
 import type { UIMessage } from 'ai';
-import { type ChatTransportEvent, foldMessages } from './fold-messages';
+import { type ChatTransportEvent, mergeMessages } from './merge-messages';
 
 /** The one method hydration needs — satisfied by both `ClientTransport` and `AgentTransport`. */
 export interface HistorySource {
@@ -34,7 +34,7 @@ export interface GapEvents {
 /**
  * Whether a classified event carries the message with the given domain id —
  * the signal that paging has reached the newest stored message. Three ways a
- * wire event references it: the wire codec-message-id equals it (the fold
+ * wire event references it: the wire codec-message-id equals it (the merge
  * falls back to the codec-message-id as the domain id when a stream names
  * none), a `message`-kind input carries it as its payload's `id`, or an
  * output `start` chunk names it as the stream's `messageId`.
@@ -53,7 +53,7 @@ const referencesMessage = (event: ChatTransportEvent, domainId: string): boolean
  * Page transport history backwards from the attach point until the newest
  * stored message is reached, or the channel start when nothing is stored.
  * Stopping at the batch that references the stored message may include a
- * partial fold of it (and of older, already-stored messages) — harmless,
+ * partial merge of it (and of older, already-stored messages) — harmless,
  * because {@link mergeConversation} trims the gap at the seam.
  * @param source - The transport whose `history()` to page.
  * @param newestStoredId - The domain id of the newest stored message, or `undefined` when the store is empty.
@@ -73,9 +73,9 @@ export async function collectGapEvents(source: HistorySource, newestStoredId: st
 
 /**
  * Build the full conversation: the stored seed followed by the gap messages
- * folded from channel history. The fold is trimmed at the seam — everything
+ * merged from channel history. The merge is trimmed at the seam — everything
  * up to and including the newest gap message whose domain id the seed already
- * holds is dropped (a stored message's refold is at best partial), and any
+ * holds is dropped (a stored message's re-merge is at best partial), and any
  * remaining seed-known id is deduped with the seed winning.
  * @param seed - The stored messages, oldest-first.
  * @param gapEvents - The events {@link collectGapEvents} returned.
@@ -83,12 +83,12 @@ export async function collectGapEvents(source: HistorySource, newestStoredId: st
  */
 export async function mergeConversation(seed: UIMessage[], gapEvents: ChatTransportEvent[]): Promise<UIMessage[]> {
   const seedIds = new Set(seed.map((message) => message.id));
-  const folded = await foldMessages(gapEvents);
+  const merged = await mergeMessages(gapEvents);
   let seam = -1;
-  for (const [index, entry] of folded.entries()) {
+  for (const [index, entry] of merged.entries()) {
     if (seedIds.has(entry.message.id)) seam = index;
   }
-  const gap = folded
+  const gap = merged
     .slice(seam + 1)
     .map((entry) => entry.message)
     .filter((message) => !seedIds.has(message.id));

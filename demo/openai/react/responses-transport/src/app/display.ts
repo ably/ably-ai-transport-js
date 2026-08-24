@@ -3,7 +3,7 @@
  *
  * A run splits its work across messages: each `pipe`/`send` mints a fresh
  * codec-message-id, so a `function_call` and its `function_call_output` land in
- * separate messages, and a call's out-of-band `toolCallState` folds onto the
+ * separate messages, and a call's out-of-band `toolCallState` merges onto the
  * message holding the call. These helpers pair a call with its output and state
  * by `call_id`, order-independent, so a tool interaction becomes one display
  * part even though its pieces arrive across sibling messages.
@@ -49,7 +49,7 @@ export type DisplayPart =
       output?: string;
       /** The gated call's approval decision, present only for an approval-gated tool. */
       approval?: OpenAIToolCallState['approval'];
-      /** The client-side execution result status, present once a client result or error folds. */
+      /** The client-side execution result status, present once a client result or error merges. */
       result?: OpenAIToolCallState['result'];
     };
 
@@ -89,7 +89,7 @@ export const collectToolOutputs = (messages: OpenAIMessage[]): Map<string, strin
 /**
  * Collect every message's `toolCallStates` across the given messages into a
  * `call_id` → state map. A call's state (its approval decision and its
- * client-result status) folds onto the message holding the `function_call`, but
+ * client-result status) merges onto the message holding the `function_call`, but
  * a run can page a message in before its call, so (as with
  * {@link collectToolOutputs}) this collector gathers the state across messages
  * and pairs it with the call by `call_id` (see {@link toDisplayParts}).

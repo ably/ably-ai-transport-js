@@ -63,7 +63,7 @@ How it works:
 
 1. Builds a fresh Ably client and channel, and a `createAgentTransport` over it.
 2. `connect()`, then `locateInput(eventId)` finds the triggering input in channel history (404 if missing).
-3. Pages `history()` to exhaustion and folds the events into `UIMessage[]` (`src/app/lib/fold-messages.ts`).
+3. Pages `history()` to exhaustion and merges the events into `UIMessage[]` (`src/app/lib/merge-messages.ts`).
 4. Opens the run — a resume when `runId` is present, a fresh run otherwise — and responds `{runId}` immediately.
 5. Inside `after()`: `streamText` with the conversation and tools, pipes the UIMessage chunk stream into `run.pipe(...)`, then `run.suspend()` when a client tool or approval is pending, else `run.end(...)`.
 

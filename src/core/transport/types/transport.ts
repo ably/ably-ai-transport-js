@@ -3,7 +3,7 @@
  * receive-side event stream.
  *
  * These are the transport's public boundary: publish and subscribe to codec
- * events with run/step bracketing, and fold those events into the
+ * events with run/step bracketing, and merge those events into the
  * application's own state.
  */
 
@@ -38,7 +38,7 @@ import type { SteerResult } from './steer.js';
 export interface WireMeta {
   /**
    * The complete `extras.ai.transport` header tier, verbatim. The transport
-   * writes and reads run/step/structure headers here; a consumer folds a
+   * writes and reads run/step/structure headers here; a consumer merges a
    * message by reading this bucket. Empty object when the wire carried no
    * transport tier.
    */
@@ -170,7 +170,7 @@ export interface TransportReceiver<TInput, TOutput> {
   on(event: 'event', handler: (e: TransportEvent<TInput, TOutput>) => void): () => void;
   /**
    * Subscribe to the raw inbound Ably messages, emitted AFTER the matching
-   * typed `event` so a handler sees state any earlier subscriber folded.
+   * typed `event` so a handler sees state any earlier subscriber merged.
    * @param event - The literal `'ably-message'`.
    * @param handler - Called with each raw inbound Ably message.
    * @returns An unsubscribe function.
@@ -659,7 +659,7 @@ export interface LocatedInput<TInput> {
  * page the conversation's history for LLM context, and observe the channel —
  * cancel signals route onto the matching run handle, and a steering message
  * under an open run's run-id both surfaces as an ordinary event on the
- * receive stream (for the agent to fold itself) and flips the run handle's
+ * receive stream (for the agent to merge itself) and flips the run handle's
  * {@link AgentRunTransport.hasInput}.
  * @template TInput - The codec's input-event domain type, located by {@link locateInput}.
  * @template TOutput - The codec's output-event domain type, published by the run/step handles.

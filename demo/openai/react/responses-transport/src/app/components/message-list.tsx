@@ -8,13 +8,13 @@ import { useStickToBottom } from '@ably-ai-demos/frontend/hooks/use-stick-to-bot
 import { MessageBubble } from './message-bubble';
 import { DEMO_SCENARIOS, INTRO_DESCRIPTION, INTRO_TITLE } from '../lib/intro-content';
 import { collectToolCallStates, collectToolOutputs, toDisplayParts } from '../display';
-import type { RunSummary, ThreadMessage } from '../lib/fold-thread';
+import type { RunSummary, ThreadMessage } from '../lib/merge-thread';
 
 interface MessageListProps {
-  // The folded thread, in order. All correlation (run status, approvals) keys
+  // The merged thread, in order. All correlation (run status, approvals) keys
   // on each message's codec-message-id and run-id.
   messages: ThreadMessage[];
-  // The folded run state, for per-message status and error placement.
+  // The merged run state, for per-message status and error placement.
   runs: ReadonlyMap<string, RunSummary>;
   // True while history hydration is still paging.
   loading: boolean;
@@ -22,7 +22,7 @@ interface MessageListProps {
   // container can scroll to the latest after sending.
   scrollToEndRef: RefObject<(() => void) | null>;
   // Approve / deny a gated tool call. The codec-message-id addresses the
-  // assistant message the approval folds onto; the call_id names the gated call.
+  // assistant message the approval merges onto; the call_id names the gated call.
   onApproveTool: (codecMessageId: string, callId: string) => void;
   onDenyTool: (codecMessageId: string, callId: string) => void;
 }
@@ -46,7 +46,7 @@ export function MessageList({ messages, runs, loading, scrollToEndRef, onApprove
   // front, keyed by call_id, so a call's tool card can show a result published
   // in a sibling message.
   const toolOutputs = collectToolOutputs(messages);
-  // A gated call's approval state folds onto the message holding the call, but
+  // A gated call's approval state merges onto the message holding the call, but
   // collect it across messages too so pairing stays order-independent.
   const toolStates = collectToolCallStates(messages);
 

@@ -46,11 +46,11 @@ export function Chat({ chatId, clientId, api }: ChatProps) {
   );
 
   // The demo's conversation state: hydrated from the messages endpoint plus a
-  // gap walk to the live attach point, then live transport events, all folded
+  // gap walk to the live attach point, then live transport events, all merged
   // through OpenAI's own accumulator.
   const { messages, runs, isRunning, activeRunId, hydrated } = useResponsesThread({
     channelName: chatId,
-    onFoldError: reportError,
+    onMergeError: reportError,
   });
 
   // Log a client-tool execution into the callback log so the demo shows which

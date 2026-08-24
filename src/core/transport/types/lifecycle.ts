@@ -136,7 +136,7 @@ export type RunLifecycleEvent =
  * `step-start-serial`): a `step-start` carries that as its own `serial`, and a
  * `step-end` back-references it. The canonical attempt for a step-id is the one
  * whose `step-start` has the latest `serial`; a consumer materialising the
- * run's output folds only the canonical attempt's output.
+ * run's output merges only the canonical attempt's output.
  *
  * Both arms also carry the invocation correlation (`invocationId`) and the
  * three concentric client-identity scopes (`runClientId` ⊃ `invocationClientId`

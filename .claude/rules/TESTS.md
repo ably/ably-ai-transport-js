@@ -84,7 +84,7 @@ Independently, setting `ABLY_LOCAL_SANDBOX_URL` (e.g. `http://localhost:9010`) p
 
 Happy-path scenarios that validate the wire protocol and real Ably behavior:
 
-1. Text response roundtrip (codec level, folded through the provider's own reducer)
+1. Text response roundtrip (codec level, merged through the provider's own reducer)
 2. Tool call roundtrip (codec level)
 3. Full transport: send -> stream -> receive
 4. Tool call through transport
@@ -92,7 +92,7 @@ Happy-path scenarios that validate the wire protocol and real Ably behavior:
 6. Multi-run sequential
 7. Concurrent runs
 8. History paging: stream a run, a fresh client pages the channel to chronological batches
-9. Attach boundary: a run streaming across the attach point folds to one message (the shared live/history decoder), not a duplicated prefix
+9. Attach boundary: a run streaming across the attach point merges to one message (the shared live/history decoder), not a duplicated prefix
 10. Error propagation: server error mid-stream, client receives and stream closes cleanly
 11. Multi-client sync: two clients on the same channel both see the streamed response
 12. Durable cross-process re-entry: a second transport adopts the run via `adoptRun` and publishes only the terminal

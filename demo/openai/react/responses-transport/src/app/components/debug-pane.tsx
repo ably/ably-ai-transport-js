@@ -7,7 +7,7 @@ import { Button } from '@ably-ai-demos/frontend/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@ably-ai-demos/frontend/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@ably-ai-demos/frontend/components/ui/tooltip';
 
-import type { ThreadMessage } from '../lib/fold-thread';
+import type { ThreadMessage } from '../lib/merge-thread';
 
 /** One transport lifecycle event observed on the session, for the debug pane. */
 export interface CallbackLogEntry {
@@ -20,7 +20,7 @@ export interface CallbackLogEntry {
 }
 
 interface DebugPaneProps {
-  // The folded thread; the pane renders each message (its wire identity, run,
+  // The merged thread; the pane renders each message (its wire identity, run,
   // items, and tool-call state) as JSON.
   messages: ThreadMessage[];
   ablyMessages: Ably.InboundMessage[];

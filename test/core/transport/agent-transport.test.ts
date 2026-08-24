@@ -116,7 +116,7 @@ const locatedInput = (transport: Record<string, string>): LocatedInput<unknown> 
  * @returns The wire message.
  */
 const cancelMsg = (headers: Record<string, string>): Ably.InboundMessage =>
-  // CAST: cancels route by header; the fold reads name/extras/version only.
+  // CAST: cancels route by header; the merge reads name/extras/version only.
   ({
     name: EVENT_CANCEL,
     action: 'message.create',
@@ -619,7 +619,7 @@ describe('createAgentTransport', () => {
       );
       expect(steers).toBe(1);
       // The first pass's context already contains the buffered steer, so the
-      // drain folds it into that pass and its outputs carry the stamp.
+      // drain merges it into that pass and its outputs carry the stamp.
       expect(run.hasInput()).toBe(true);
       await run.pipe(streamOf({ type: 'out' }));
 

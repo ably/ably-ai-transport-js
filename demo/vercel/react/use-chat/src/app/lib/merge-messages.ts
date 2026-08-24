@@ -1,5 +1,5 @@
 /**
- * Fold the channel's classified transport events into the `UIMessage[]`
+ * Merge the channel's classified transport events into the `UIMessage[]`
  * conversation the route feeds to the model.
  *
  * The wire carries three shapes that matter here, all on `kind: 'message'`
@@ -10,12 +10,12 @@
  *   of every event sharing a codec-message-id rebuilds the message; identical
  *   parts (e.g. a redelivered wire) are deduplicated.
  * - Assistant output chunks stream under the assistant message's
- *   codec-message-id. Each bucket folds through the AI SDK's own reducer
- *   (`readUIMessageStream`); the last yielded message is the folded result.
+ *   codec-message-id. Each bucket merges through the AI SDK's own reducer
+ *   (`readUIMessageStream`); the last yielded message is the merged result.
  * - A client's tool resolution (`kind: 'chunk'`) is a `tool-output-*` chunk
  *   addressed to the assistant it amends, so it appends into that assistant's
  *   chunk bucket and the reducer resolves the tool part. A `kind: 'approval'`
- *   input records the decision; after folding, the matching tool part flips
+ *   input records the decision; after merging, the matching tool part flips
  *   from `approval-requested` to `approval-responded`.
  *
  * `kind: 'regenerate'` inputs carry no content and contribute nothing.
@@ -44,8 +44,8 @@ function partKey(value: unknown): string {
   return JSON.stringify(value);
 }
 
-/** Fold one assistant bucket's chunks through the AI SDK reducer; the last yielded message wins. */
-async function foldChunks(chunks: UIMessageChunk[]): Promise<UIMessage | undefined> {
+/** Merge one assistant bucket's chunks through the AI SDK reducer; the last yielded message wins. */
+async function mergeChunks(chunks: UIMessageChunk[]): Promise<UIMessage | undefined> {
   const stream = new ReadableStream<UIMessageChunk>({
     start(controller) {
       for (const chunk of chunks) controller.enqueue(chunk);
@@ -78,12 +78,12 @@ function applyApprovals(message: UIMessage, approvals: Map<string, VercelApprova
 }
 
 /**
- * Fold classified transport events (chronological, oldest first) into the
+ * Merge classified transport events (chronological, oldest first) into the
  * conversation as `UIMessage[]`.
  * @param events - The channel's history events, oldest first.
  * @returns The conversation messages, oldest first.
  */
-export async function foldMessages(events: VercelEvent[]): Promise<UIMessage[]> {
+export async function mergeMessages(events: VercelEvent[]): Promise<UIMessage[]> {
   /** codec-message-ids in first-appearance order. */
   const order: string[] = [];
   /** User messages under assembly, keyed by codec-message-id. */
@@ -155,8 +155,8 @@ export async function foldMessages(events: VercelEvent[]): Promise<UIMessage[]> 
       messages.push(user.message);
       continue;
     }
-    const folded = await foldChunks(chunkBuckets.get(id) ?? []);
-    if (folded) messages.push(applyApprovals(folded, approvals));
+    const merged = await mergeChunks(chunkBuckets.get(id) ?? []);
+    if (merged) messages.push(applyApprovals(merged, approvals));
   }
   return messages;
 }

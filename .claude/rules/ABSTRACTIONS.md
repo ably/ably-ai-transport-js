@@ -55,10 +55,10 @@ format (encode/decode of events and messages); the **transport** owns runs,
 steps, channel I/O, cancel and steer routing, and history paging. The
 transport is parameterized by the codec and never hardcodes a wire format.
 
-**The SDK does not assemble messages.** Folding decoded events into messages,
+**The SDK does not assemble messages.** Merging decoded events into messages,
 storing them, and rendering a thread belong to the application. The wire
 carries the provider's own event vocabulary, which is what lets the provider's
-own reducer do the fold (`readUIMessageStream` from `ai`; OpenAI's
+own reducer do the merge (`readUIMessageStream` from `ai`; OpenAI's
 `accumulateResponse`). The application's one structural job is
 demultiplexing: bucket a batch's `message` events by `meta.codecMessageId`
 and feed each bucket to the provider's reducer — delivery order is
@@ -73,7 +73,7 @@ codec-message-id, parent, fork and regenerate structure) travels on
 `PublishInputOptions` on the way out and `WireMeta` on the way back — never on
 the event itself. Codecs pick the provider's own types for bodies wherever one
 exists (a `UIMessage` for a turn, a `tool-output-*` chunk for a resolution, a
-`function_call_output` item), so the provider's reducer folds inputs and
+`function_call_output` item), so the provider's reducer merges inputs and
 outputs through one code path; the approval decision is the one codec-defined
 body, because no provider models it.
 
@@ -110,7 +110,7 @@ our curation point.)
   `TransportEvent` (`message` / `run-lifecycle` / `step-lifecycle`), emit to
   subscribers. `history()` is bounded at the channel attach point and shares
   the live decoder, so a stream spanning the boundary is decoded once — live
-  and history cannot overlap, and a consumer folds each delivered event once,
+  and history cannot overlap, and a consumer merges each delivered event once,
   in delivery order, with no dedup machinery.
 
 ## Composition, not inheritance
@@ -200,5 +200,5 @@ Default*` directly.
 10. **Single shared channel, caller-owned** — one Ably channel per transport,
     shared by all features. The caller resolves and owns the channel; the
     transport subscribes its own listener and never detaches it.
-11. **No message assembly in the SDK** — no reducer, no fold driver, no
-    projection type; the application folds with the provider's own machinery.
+11. **No message assembly in the SDK** — no reducer, no merge driver, no
+    projection type; the application merges with the provider's own machinery.

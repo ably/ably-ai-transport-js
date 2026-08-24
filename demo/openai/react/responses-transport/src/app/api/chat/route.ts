@@ -10,7 +10,7 @@
  * run it resumes, so the trigger alone decides whether the open is a fresh
  * `ai-run-start` or an `ai-run-resume`. The conversation for the model comes from
  * `getExistingMessages` — the demo's one swappable history source, which pages
- * the transport's history to exhaustion and folds it through the same fold
+ * the transport's history to exhaustion and merges it through the same merge
  * helper the frontend renders with — then flattens into the `/responses`
  * `input` array by `toResponsesInput`.
  *
@@ -88,7 +88,7 @@ export async function POST(req: Request) {
   // The conversation for the model: the existing thread via the demo's one
   // swappable history source (see get-existing-messages.ts), flattened into
   // the /responses input array. The triggering input is already on the channel
-  // (the client publishes before it POSTs), so the fold covers it too.
+  // (the client publishes before it POSTs), so the merge covers it too.
   const { messages: priorMessages } = await getExistingMessages(transport);
   const input = toResponsesInput(priorMessages);
 
@@ -129,6 +129,6 @@ export async function POST(req: Request) {
 
   // Return the run-id on the HTTP response. The same id also arrives on the
   // channel as `ai-run-start` / `ai-run-resume`, which is how the client's
-  // fold tracks the run without reading this response.
+  // merge tracks the run without reading this response.
   return Response.json({ runId: run.runId });
 }

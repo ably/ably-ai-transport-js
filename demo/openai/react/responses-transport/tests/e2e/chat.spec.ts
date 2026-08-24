@@ -120,7 +120,7 @@ test.describe('openai responses-transport demo - text chat behaviour', () => {
     // back as a weather card, then the model replies — no suspend.
     await waitForAssistantSettled(page);
 
-    // A tool run publishes three messages, each folded as its own assistant
+    // A tool run publishes three messages, each merged as its own assistant
     // bubble: the model turn carrying the getWeather call (where the WeatherCard
     // renders its structured output — humidity/wind are distinctive to it), the
     // tool output (hidden — it renders on the call's bubble), then the trailing
@@ -192,7 +192,7 @@ test.describe('openai responses-transport demo - text chat behaviour', () => {
       await waitForAssistantSettled(page);
       await expect(assistantBubbles(page).last()).toContainText('current location');
 
-      // The resolved call is folded into channel history, so a fresh load rebuilds
+      // The resolved call is merged into channel history, so a fresh load rebuilds
       // it — and the tool must not re-execute or sit unresolved.
       await page.reload();
       await expect(page.getByText(/Location:\s*51\.5074, -0\.1278/)).toBeVisible({ timeout: 30_000 });
@@ -280,13 +280,15 @@ test.describe('openai responses-transport demo - text chat behaviour', () => {
     expect(await bubbleText(assistantBubbles(page).last())).toContain('remembered');
 
     // Reload: nothing is held in app state, so the client must page channel
-    // history and refold the thread. Scope to the assistant bubble — the
+    // history and re-merge the thread. Scope to the assistant bubble — the
     // prompt echoes the same word, so a plain text match is ambiguous.
     await page.goto(channelUrl(channel));
     await expect(assistantBubbles(page).filter({ hasText: 'remembered' })).toBeVisible({ timeout: 30_000 });
   });
 
-  test('mid-run reload: hydrated history and the live continuation fold to one message', async ({ page }, testInfo) => {
+  test('mid-run reload: hydrated history and the live continuation merge to one message', async ({
+    page,
+  }, testInfo) => {
     const channel = freshChannel(testInfo.title);
     await page.goto(channelUrl(channel));
     const input = page.getByPlaceholder('Type a message...');
@@ -301,11 +303,11 @@ test.describe('openai responses-transport demo - text chat behaviour', () => {
     await expect(streaming).toHaveText(/.{40,}/, { timeout: 30_000 });
     await page.reload();
 
-    // The reloaded page hydrates the partial history and folds the live
+    // The reloaded page hydrates the partial history and merges the live
     // continuation into the SAME message: exactly one assistant bubble, which
     // grows to the full story with no duplicated prefix. Wait on the story's
     // closing sentence rather than the settle helper alone — right after the
-    // reload the run state has not folded yet, so a settle check can slip
+    // reload the run state has not merged yet, so a settle check can slip
     // through on the hydrated partial while the live half is still streaming.
     await expect(assistantBubbles(page).last()).toContainText('her patience grew as steadily as her wings.', {
       timeout: 60_000,
@@ -316,7 +318,7 @@ test.describe('openai responses-transport demo - text chat behaviour', () => {
     expect(text).toContain('Once upon a time');
     expect(text).toContain('her patience grew as steadily as her wings.');
     // The opening words appear exactly once — the history half and the live
-    // half were folded, not concatenated as duplicates.
+    // half were merged, not concatenated as duplicates.
     expect(text.indexOf('Once upon a time')).toBe(text.lastIndexOf('Once upon a time'));
   });
 

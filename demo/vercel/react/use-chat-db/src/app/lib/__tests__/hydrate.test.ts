@@ -96,14 +96,14 @@ describe('mergeConversation', () => {
     expect(conversation[0].parts).toEqual([{ type: 'text', text: 'the complete stored copy' }]);
   });
 
-  it('trims partial refolds older than the seam, even under fallback ids', async () => {
+  it('trims partial re-merges older than the seam, even under fallback ids', async () => {
     // The stopping batch can carry the tail of an older, already-stored stream
-    // whose `start` chunk was never paged in: its fold falls back to the wire
-    // id, which the seed does not hold. Everything folded before the seam is
+    // whose `start` chunk was never paged in: its merge falls back to the wire
+    // id, which the seed does not hold. Everything merged before the seam is
     // dropped with it.
     const seed = [userMessage('u0', 'older stored'), userMessage('u1', 'seam')];
     const gapEvents = [
-      // Tail of the stored older assistant's stream — no start, so it folds
+      // Tail of the stored older assistant's stream — no start, so it merges
       // under the wire id 'wire-a0'.
       messageEvent({ codecMessageId: 'wire-a0', runId: 'run-0' }, { outputs: [{ type: 'text-end', id: 't1' }] }),
       // The seam (the newest stored message) and the genuinely new tail.

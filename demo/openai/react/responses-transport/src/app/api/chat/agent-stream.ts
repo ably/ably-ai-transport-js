@@ -19,18 +19,18 @@
  * `function_call_output`, or answering the approval — then sends a continuation that resumes this run
  * under the same runId. On resume the loop re-hydrates the conversation: a
  * client `function_call_output` (or a denial's rejection output) is already
- * folded into the model input, and an approved-but-unexecuted gated call is run
+ * merged into the model input, and an approved-but-unexecuted gated call is run
  * server-side here before the next model turn.
  *
  * Each unit of work is published under its own `run.pipe`, so each gets a fresh
- * `codec-message-id` and a consumer's fold keys it as a distinct
+ * `codec-message-id` and a consumer's merge keys it as a distinct
  * `OpenAIMessage`. One model turn is one message; the batch of tool outputs for
  * that turn is a second message. A run that calls one tool therefore produces
  * three messages: the turn that emitted the calls, the tool outputs, and the
  * final text turn. This is the agent's choice of chunking — the codec is
  * agnostic, keying messages purely by `codec-message-id`.
  *
- * The `function_call_output` events land in their own message: a consumer folds
+ * The `function_call_output` events land in their own message: a consumer merges
  * them by `codec-message-id` alone, so a renderer pairs a call with its output
  * across messages by `call_id`.
  *
@@ -125,7 +125,7 @@ async function* outputStream(outputs: OpenAIOutput[]): AsyncGenerator<OpenAIOutp
  * own pipe puts it on the SAME `codec-message-id` as the `function_call` it
  * gates, so the request's `approval: 'pending'` state, the client's
  * `tool-approval-response` decision (addressed to that message), and the
- * `function_call` itself all fold onto one message. Publishing the request as a
+ * `function_call` itself all merge onto one message. Publishing the request as a
  * separate message would strand the pending state on a message the response
  * never amends — the approval card would never resolve, and the resume-side
  * {@link approvedUnexecutedCalls} (which pairs a call with its approval on one

@@ -84,7 +84,7 @@ describe('transports over a discriminant-free codec', () => {
       data: JSON.stringify({ delta: 'world' }),
       extras: { ai: { transport: { 'run-id': 'run-1' } } },
       version: { serial: 's-1' },
-      // CAST: minimal InboundMessage stub — only the fields the fold reads.
+      // CAST: minimal InboundMessage stub — only the fields the merge reads.
     } as unknown as Ably.InboundMessage);
     const live = events.find((e) => e.kind === 'message' && e.outputs.length > 0);
     expect(live?.kind === 'message' && live.outputs[0]).toEqual({ delta: 'world' });

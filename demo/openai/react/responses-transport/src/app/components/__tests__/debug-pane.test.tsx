@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import { TooltipProvider } from '@ably-ai-demos/frontend/components/ui/tooltip';
-import type { ThreadMessage } from '../../lib/fold-thread';
+import type { ThreadMessage } from '../../lib/merge-thread';
 import { DebugPane } from '../debug-pane';
 
 const PANE_OPEN_STORAGE_KEY = 'ait-demo:debug-pane-open';

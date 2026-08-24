@@ -1,5 +1,5 @@
 /**
- * Tests for the thread fold — the demo's obligations over the SDK's decoded
+ * Tests for the thread merge — the demo's obligations over the SDK's decoded
  * event stream: seeding OpenAI's accumulator without `response.created`,
  * output-index bookkeeping, collapsing the decoder's synthesised duplicate
  * openers, merging reduced `output_item.done` items, and the tool/input apply
@@ -17,7 +17,7 @@ import type { OpenAIOutput } from '@ably/ai-transport/openai';
 import type { OpenAIInput, OpenAIMessage } from '../openai-thread';
 import type { Responses } from 'openai/resources/responses/responses';
 
-import { createThreadFold } from '../fold-thread';
+import { createThreadMerge } from '../merge-thread';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -205,10 +205,10 @@ const streamedText = (codecMessageId: string, itemId: string, pieces: string[]):
   outputEvent(codecMessageId, [itemDone({ type: 'message', id: itemId, status: 'completed' })]),
 ];
 
-const foldAll = (events: Event[]) => {
-  const fold = createThreadFold();
-  for (const event of events) fold.apply(event);
-  return fold;
+const mergeAll = (events: Event[]) => {
+  const merge = createThreadMerge();
+  for (const event of events) merge.apply(event);
+  return merge;
 };
 
 const messageText = (message: OpenAIMessage): string =>
@@ -224,10 +224,10 @@ const messageText = (message: OpenAIMessage): string =>
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('createThreadFold', () => {
-  it('folds a full streamed text message through the accumulator without response.created', () => {
-    const fold = foldAll(streamedText('m1', 'i1', ['Hello, ', 'world']));
-    const messages = fold.messages();
+describe('createThreadMerge', () => {
+  it('merges a full streamed text message through the accumulator without response.created', () => {
+    const merge = mergeAll(streamedText('m1', 'i1', ['Hello, ', 'world']));
+    const messages = merge.messages();
     expect(messages).toHaveLength(1);
     const message = messages[0];
     expect(message.codecMessageId).toBe('m1');
@@ -244,8 +244,8 @@ describe('createThreadFold', () => {
   it('collapses the synthesised duplicate output_item.added by item id', () => {
     // streamedText already carries the duplicate (the stream start's
     // synthesised bracket); assert it produced ONE item, not two.
-    const fold = foldAll(streamedText('m1', 'i1', ['hi']));
-    expect(fold.messages()[0].items).toHaveLength(1);
+    const merge = mergeAll(streamedText('m1', 'i1', ['hi']));
+    expect(merge.messages()[0].items).toHaveLength(1);
   });
 
   it('merges a reduced output_item.done (status + logprobs residue) instead of replacing the item', () => {
@@ -258,7 +258,7 @@ describe('createThreadFold', () => {
         itemDone({ type: 'message', id: 'i1', status: 'completed', content: [{ type: 'output_text', logprobs }] }),
       ]),
     ];
-    const message = foldAll(events).messages()[0];
+    const message = mergeAll(events).messages()[0];
     const item = message.items[0];
     if (item.type !== 'message' || item.content[0]?.type !== 'output_text') throw new Error('expected a text message');
     // Replaying the reduced done verbatim would erase the streamed text.
@@ -267,19 +267,19 @@ describe('createThreadFold', () => {
     expect(item.content[0].logprobs).toEqual(logprobs);
   });
 
-  it('merges a reasoning done item, keeping the streamed summary and folding encrypted_content', () => {
+  it('merges a reasoning done item, keeping the streamed summary and merging encrypted_content', () => {
     const events = [
       outputEvent('m1', [itemAdded(reasoningItem('rs1')), summaryPartAdded('rs1', 0, 0)]),
       outputEvent('m1', [summaryDelta('rs1', 0, 'thinking...')]),
       outputEvent('m1', [itemDone({ type: 'reasoning', id: 'rs1', encrypted_content: 'blob' })]),
     ];
-    const item = foldAll(events).messages()[0].items[0];
+    const item = mergeAll(events).messages()[0].items[0];
     if (item.type !== 'reasoning') throw new Error('expected a reasoning item');
     expect(item.summary[0]?.text).toBe('thinking...');
     expect(item.encrypted_content).toBe('blob');
   });
 
-  it('folds a function-call arguments stream and its reduced done', () => {
+  it('merges a function-call arguments stream and its reduced done', () => {
     const events = [
       outputEvent('m1', [itemAdded(fnCallItem('fc1', 'call-1', 'getWeather', ''))]),
       outputEvent('m1', [argsDelta('fc1', 0, '{"location":')]),
@@ -287,13 +287,13 @@ describe('createThreadFold', () => {
       outputEvent('m1', [argsDone('fc1', 0, '{"location":"Tokyo"}', 'getWeather')]),
       outputEvent('m1', [itemDone({ type: 'function_call', id: 'fc1', status: 'completed' })]),
     ];
-    const item = foldAll(events).messages()[0].items[0];
+    const item = mergeAll(events).messages()[0].items[0];
     if (item.type !== 'function_call') throw new Error('expected a function_call item');
     expect(item.arguments).toBe('{"location":"Tokyo"}');
     expect(item.status).toBe('completed');
   });
 
-  it('mid-run reload: partial history plus the live continuation fold to ONE message', () => {
+  it('mid-run reload: partial history plus the live continuation merge to ONE message', () => {
     const itemId = 'i1';
     // History, decoded from the channel: the real opener and the first deltas.
     const history = [
@@ -309,14 +309,14 @@ describe('createThreadFold', () => {
       outputEvent('m1', [textDone(itemId, 0, 0, 'Once upon a time, the end.')]),
       outputEvent('m1', [itemDone({ type: 'message', id: itemId, status: 'completed' })]),
     ];
-    const fold = foldAll([...history, ...live]);
-    const messages = fold.messages();
+    const merge = mergeAll([...history, ...live]);
+    const messages = merge.messages();
     expect(messages).toHaveLength(1);
     expect(messages[0].items).toHaveLength(1);
     expect(messageText(messages[0])).toBe('Once upon a time, the end.');
   });
 
-  it('multi-batch history folds identically to a single batch', () => {
+  it('multi-batch history merges identically to a single batch', () => {
     const events = [
       inputEvent('m0', [userTurnInput('hi')]),
       runStart('r1', 'm0'),
@@ -328,7 +328,7 @@ describe('createThreadFold', () => {
     const newerBatch = events.slice(4);
     const olderBatch = events.slice(0, 4);
     const reassembled = [...olderBatch, ...newerBatch];
-    expect(foldAll(reassembled).messages()).toEqual(foldAll(events).messages());
+    expect(mergeAll(reassembled).messages()).toEqual(mergeAll(events).messages());
   });
 
   it('dedupes identical parts a redelivered wire event repeats under one codec-message-id', () => {
@@ -337,7 +337,7 @@ describe('createThreadFold', () => {
       // A redelivered event repeats the same turn verbatim.
       inputEvent('m0', [userTurnInput('hi')], { serial: 's-2', clientId: 'client-a' }),
     ];
-    const messages = foldAll(events).messages();
+    const messages = mergeAll(events).messages();
     expect(messages).toHaveLength(1);
     const item = messages[0].items[0];
     if (item?.type !== 'message') throw new Error('expected a message item');
@@ -347,12 +347,12 @@ describe('createThreadFold', () => {
 
   it('appends distinct parts of the same message across wire echoes', () => {
     const events = [inputEvent('m0', [userTurnInput('part one. ')]), inputEvent('m0', [userTurnInput('part two.')])];
-    const item = foldAll(events).messages()[0].items[0];
+    const item = mergeAll(events).messages()[0].items[0];
     if (item?.type !== 'message') throw new Error('expected a message item');
     expect(item.content).toHaveLength(2);
   });
 
-  it('folds a tool-approval-request into pending state and an approval input into a decision', () => {
+  it('merges a tool-approval-request into pending state and an approval input into a decision', () => {
     const request: OpenAIOutput = {
       type: 'tool-approval-request',
       call_id: 'call-1',
@@ -363,14 +363,14 @@ describe('createThreadFold', () => {
       outputEvent('m1', [itemAdded(fnCallItem('fc1', 'call-1', 'getWeatherForecast', '{}'))]),
       outputEvent('m1', [request]),
     ];
-    const pending = foldAll(events).messages()[0];
+    const pending = mergeAll(events).messages()[0];
     expect(pending.toolCallStates?.['call-1']).toEqual({
       approval: 'pending',
       name: 'getWeatherForecast',
       arguments: '{"location":"Paris"}',
     });
 
-    const denied = foldAll([
+    const denied = mergeAll([
       ...events,
       inputEvent('m1', [{ kind: 'approval', payload: { call_id: 'call-1', approved: false, reason: 'User denied' } }]),
     ]).messages()[0];
@@ -391,7 +391,7 @@ describe('createThreadFold', () => {
       outputEvent('m2', [{ type: 'function_call_output', item: fco }]),
       inputEvent('m2', [{ kind: 'item', payload: fco }]),
     ];
-    const messages = foldAll(events).messages();
+    const messages = mergeAll(events).messages();
     expect(messages).toHaveLength(2);
     expect(messages[1].items).toEqual([fco]);
   });
@@ -408,37 +408,37 @@ describe('createThreadFold', () => {
       // The client's resolution amends the assistant message by codec-message-id.
       inputEvent('m1', [{ kind: 'item', payload: fco }]),
     ];
-    const items = foldAll(events).messages()[0].items;
+    const items = mergeAll(events).messages()[0].items;
     expect(items.map((item) => item.type)).toEqual(['function_call', 'function_call_output']);
   });
 
   it('tracks run lifecycle: start/resume are running, suspend and end are not', () => {
-    const fold = createThreadFold();
-    expect(fold.isRunning()).toBe(false);
+    const merge = createThreadMerge();
+    expect(merge.isRunning()).toBe(false);
 
-    fold.apply(runStart('r1', 'm0'));
-    expect(fold.isRunning()).toBe(true);
-    expect(fold.activeRunId()).toBe('r1');
-    expect(fold.runs().get('r1')).toEqual({ status: 'active', inputCodecMessageId: 'm0' });
+    merge.apply(runStart('r1', 'm0'));
+    expect(merge.isRunning()).toBe(true);
+    expect(merge.activeRunId()).toBe('r1');
+    expect(merge.runs().get('r1')).toEqual({ status: 'active', inputCodecMessageId: 'm0' });
 
-    fold.apply(runLifecycle('suspend', 'r1'));
-    expect(fold.isRunning()).toBe(false);
-    expect(fold.runs().get('r1')?.status).toBe('suspended');
+    merge.apply(runLifecycle('suspend', 'r1'));
+    expect(merge.isRunning()).toBe(false);
+    expect(merge.runs().get('r1')?.status).toBe('suspended');
 
-    fold.apply(runLifecycle('resume', 'r1'));
-    expect(fold.isRunning()).toBe(true);
+    merge.apply(runLifecycle('resume', 'r1'));
+    expect(merge.isRunning()).toBe(true);
 
-    fold.apply(runEnd('r1', 'complete'));
-    expect(fold.isRunning()).toBe(false);
-    expect(fold.runs().get('r1')?.status).toBe('complete');
+    merge.apply(runEnd('r1', 'complete'));
+    expect(merge.isRunning()).toBe(false);
+    expect(merge.runs().get('r1')?.status).toBe('complete');
     // The trigger stamp survives the lifecycle transitions.
-    expect(fold.runs().get('r1')?.inputCodecMessageId).toBe('m0');
+    expect(merge.runs().get('r1')?.inputCodecMessageId).toBe('m0');
   });
 
   it('records the terminal error message on an errored run-end', () => {
-    const fold = createThreadFold();
-    fold.apply(runStart('r1'));
-    fold.apply({
+    const merge = createThreadMerge();
+    merge.apply(runStart('r1'));
+    merge.apply({
       kind: 'run-lifecycle',
       event: {
         type: 'end',
@@ -450,20 +450,20 @@ describe('createThreadFold', () => {
         error: new Ably.ErrorInfo('model exploded', 104008, 500),
       },
     });
-    expect(fold.runs().get('r1')).toEqual({ status: 'error', errorMessage: 'model exploded' });
+    expect(merge.runs().get('r1')).toEqual({ status: 'error', errorMessage: 'model exploded' });
   });
 
   it('throws (rather than silently dropping content) on a stream event whose item was never opened', () => {
-    const fold = createThreadFold();
+    const merge = createThreadMerge();
     expect(() => {
-      fold.apply(outputEvent('m1', [textDelta('never-opened', 0, 'lost')]));
+      merge.apply(outputEvent('m1', [textDelta('never-opened', 0, 'lost')]));
     }).toThrow(/no accumulated item for item_id never-opened/);
   });
 
   it('ignores foreign carriers: no codec-message-id, or no decoded events', () => {
-    const fold = createThreadFold();
-    fold.apply({ kind: 'message', meta: makeMeta({}), inputs: [], outputs: [] });
-    fold.apply({ kind: 'message', meta: makeMeta({ codecMessageId: 'm9', runId: 'r9' }), inputs: [], outputs: [] });
-    expect(fold.messages()).toEqual([]);
+    const merge = createThreadMerge();
+    merge.apply({ kind: 'message', meta: makeMeta({}), inputs: [], outputs: [] });
+    merge.apply({ kind: 'message', meta: makeMeta({ codecMessageId: 'm9', runId: 'r9' }), inputs: [], outputs: [] });
+    expect(merge.messages()).toEqual([]);
   });
 });

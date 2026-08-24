@@ -19,7 +19,7 @@ export type MessageStatus = 'streaming' | 'complete' | 'cancelled' | 'error' | '
 
 interface MessageBubbleProps {
   message: UIMessage;
-  // Per-message metadata derived from the View at the list-glue layer
+  // Per-message metadata derived from the app's own fold at the list-glue layer
   // (see the message lists) and passed as primitives so the bubble stays a
   // pure renderer with no SDK type dependencies.
   clientId: string | undefined;

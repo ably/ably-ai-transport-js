@@ -24,6 +24,7 @@ The demo links the SDK from the repo root (`link:../../../..`) and loads its bui
 ```bash
 # 1. Build the SDK (from the repository root)
 pnpm install
+pnpm run build
 
 # 2. Configure env (from this directory)
 cp .env.local.example .env.local

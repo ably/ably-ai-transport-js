@@ -6,7 +6,8 @@
 - **No `as` casts** unless strictly necessary. Valid reasons: trust boundaries (wire data from `JSON.parse`), Ably SDK `any` types after runtime guards, TypeScript limitations (template literal narrowing in `data-*` part construction). Every `as` cast must have a comment explaining why.
 - **No `unknown`** where a concrete type is available. Use the actual return type from SDK methods (e.g. `Promise<Ably.ChannelStateChange | null>` not `Promise<unknown>`). Exception: a promise awaited purely as a synchronisation barrier — its resolved value is never read, only its settling is awaited for ordering — may be typed `Promise<unknown>`. Document at the declaration that the value is intentionally discarded.
 - **No `!` non-null assertions.** Use explicit narrowing (destructure into a local variable, add a runtime guard, or restructure to avoid the need).
-- **No `@ts-ignore`, `@ts-expect-error`, `@ts-nocheck`**, or `eslint-disable` directives in source, example, or demo code.
+- **No `@ts-ignore`, `@ts-expect-error`, or `@ts-nocheck`** in source, example, or demo code — type errors are fixed, never suppressed.
+- **`eslint-disable` only as a documented exception.** A single-line `eslint-disable-next-line` is allowed when the flagged code is deliberately unidiomatic and restructuring would harm the design (e.g. `promise-function-async` on a method that must return a cached promise by reference, `unicorn/no-null` where a dependency's contract requires `null`). Every directive names the one rule it disables and carries a trailing `--` comment stating the reason. File-wide or reasonless disables are never allowed.
 - Use `AI.isDataUIPart()` to narrow `data-*` parts — never cast with `as { id?; data? }`.
 
 ## Import types from dependencies, don't redefine them

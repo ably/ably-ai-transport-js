@@ -73,19 +73,19 @@ interface PendingAppend {
 export interface EncoderCore {
   /**
    * Publish a single discrete (non-streaming) message described by a payload.
-   * @throws {Ably.ErrorInfo} TransportClosed if the core is closed.
+   * @throws {Ably.ErrorInfo} SessionClosed if the core is closed.
    */
   publishDiscrete(payload: MessagePayload, opts?: WriteOptions): Promise<Ably.PublishResult>;
 
   /**
    * Publish multiple discrete messages atomically in a single channel publish.
-   * @throws {Ably.ErrorInfo} TransportClosed if the core is closed.
+   * @throws {Ably.ErrorInfo} SessionClosed if the core is closed.
    */
   publishDiscreteBatch(payloads: MessagePayload[], opts?: WriteOptions): Promise<Ably.PublishResult>;
 
   /**
    * Start a streamed message with status:streaming.
-   * @throws {Ably.ErrorInfo} TransportClosed if the core is closed; InternalError if the publish succeeds but returns no serial.
+   * @throws {Ably.ErrorInfo} SessionClosed if the core is closed; InternalError if the publish succeeds but returns no serial.
    */
   startStream(streamId: string, payload: StreamPayload, opts?: WriteOptions): Promise<void>;
 

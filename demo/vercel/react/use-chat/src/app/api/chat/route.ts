@@ -28,14 +28,12 @@ import { streamText, convertToModelMessages, stepCountIs, toUIMessageStream } fr
 import Ably from 'ably';
 import { LiveObjects } from 'ably/liveobjects';
 import { createAgentTransport, vercelRunOutcome } from '@ably/ai-transport/vercel';
-import type { TransportEvent } from '@ably/ai-transport';
-import type { VercelInput, VercelOutput } from '@ably/ai-transport/vercel';
 import { channelAgent, ErrorCode, OBJECT_MODES, resolveChannelModes } from '@ably/ai-transport';
 import { createModel } from './model';
 import { tools } from './tools';
 import { makeChecklistTool } from './checklist-tool';
 import { checklistFrom, type ChecklistItemRow, type ChecklistRoot } from '../../lib/checklist';
-import { foldMessages } from '../../lib/fold-messages';
+import { getExistingMessages } from '../../lib/get-existing-messages';
 
 /**
  * The pointer body the useChat adapter POSTs. The adapter also sends `runId`
@@ -101,16 +99,9 @@ export async function POST(req: Request) {
       return Response.json({ error: 'input event not found' }, { status: 404 });
     }
 
-    // Page the whole channel history (each call returns the next older batch,
-    // so prepend) and fold it into the conversation for the model.
-    let events: TransportEvent<VercelInput, VercelOutput>[] = [];
-    let exhausted = false;
-    while (!exhausted) {
-      const batch = await transport.history();
-      events = [...batch.events, ...events];
-      exhausted = batch.exhausted;
-    }
-    conversation = await foldMessages(events);
+    // The conversation for the model, via the demo's swappable history source
+    // (see get-existing-messages.ts).
+    conversation = await getExistingMessages(transport);
 
     // The located input drives the open: a continuation input carries the
     // run-id header of the run it resumes, and a fresh send carries none —

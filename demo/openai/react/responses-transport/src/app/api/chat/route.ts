@@ -8,10 +8,11 @@
  * channel name and the triggering input's `eventId` (matched on the channel
  * via `locateInput`); a continuation input carries the run-id header of the
  * run it resumes, so the trigger alone decides whether the open is a fresh
- * `ai-run-start` or an `ai-run-resume`. The conversation for the model is the transport's own
- * history, paged to exhaustion and folded through the same fold helper the
- * frontend renders with (`createThreadFold`), then flattened into the
- * `/responses` `input` array by `toResponsesInput`.
+ * `ai-run-start` or an `ai-run-resume`. The conversation for the model comes from
+ * `getExistingMessages` — the demo's one swappable history source, which pages
+ * the transport's history to exhaustion and folds it through the same fold
+ * helper the frontend renders with — then flattens into the `/responses`
+ * `input` array by `toResponsesInput`.
  *
  * Tools run inside the agentic loop (`runAgentLoop`). A server-executed tool
  * does not suspend the run — the loop runs it, publishes its
@@ -37,7 +38,7 @@ import Ably from 'ably';
 import { channelAgent, createAgentTransport } from '@ably/ai-transport';
 import { ResponsesCodec, toResponsesInput } from '@ably/ai-transport/openai';
 
-import { createThreadFold } from '../../lib/fold-thread';
+import { getExistingMessages } from '../../lib/get-existing-messages';
 import { runAgentLoop } from './agent-stream';
 
 /** The wake body the demo's client POSTs (see `wakeAgent` in `src/app/helpers.ts`). */
@@ -82,23 +83,11 @@ export async function POST(req: Request) {
     return Response.json({ error: `no input event found for eventId ${body.eventId}` }, { status: 400 });
   }
 
-  // The conversation for the model: the channel's history paged to exhaustion,
-  // folded through the SAME fold helper the frontend renders with, then
-  // flattened into the /responses input array. The triggering input is already
-  // on the channel (the client publishes before it POSTs), so the fold covers
-  // it too.
-  const fold = createThreadFold();
-  const events: Parameters<typeof fold.apply>[0][] = [];
-  let exhausted = false;
-  while (!exhausted) {
-    const batch = await transport.history();
-    // The fold consumes events in chronological order, and each batch is older
-    // than the previous one — so collect by prepending, then fold once whole.
-    events.unshift(...batch.events);
-    exhausted = batch.exhausted;
-  }
-  for (const event of events) fold.apply(event);
-  const priorMessages = fold.messages();
+  // The conversation for the model: the existing thread via the demo's one
+  // swappable history source (see get-existing-messages.ts), flattened into
+  // the /responses input array. The triggering input is already on the channel
+  // (the client publishes before it POSTs), so the fold covers it too.
+  const { messages: priorMessages } = await getExistingMessages(transport);
   const input = toResponsesInput(priorMessages);
 
   // The located input drives the open: a continuation input carries the

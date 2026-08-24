@@ -43,9 +43,13 @@ export function Chat({ chatId, clientId, api }: ChatProps) {
     [log],
   );
 
-  // The demo's conversation state: history hydrated to exhaustion, then live
-  // transport events, folded through OpenAI's own accumulator.
-  const { messages, runs, isRunning, activeRunId, hydrated } = useResponsesThread({ onFoldError: reportError });
+  // The demo's conversation state: hydrated from the messages endpoint plus a
+  // gap walk to the live attach point, then live transport events, all folded
+  // through OpenAI's own accumulator.
+  const { messages, runs, isRunning, activeRunId, hydrated } = useResponsesThread({
+    channelName: chatId,
+    onFoldError: reportError,
+  });
 
   // Log a client-tool execution into the callback log so the demo shows which
   // client ran the browser tool.

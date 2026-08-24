@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import type { ClientTransport, PublishInputResult } from '@ably/ai-transport';
-import type { OpenAIInput, OpenAIOutput } from '@ably/ai-transport/openai';
+import type { OpenAIOutput } from '@ably/ai-transport/openai';
+
+import type { OpenAIInput } from '../../lib/openai-thread';
 
 import type { ThreadMessage } from '../../lib/fold-thread';
 import { useToolResolution } from '../use-tool-resolution';

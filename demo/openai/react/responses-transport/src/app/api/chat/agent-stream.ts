@@ -43,8 +43,9 @@
 import Ably from 'ably';
 import type { AgentRunTransport, RunEndParams, StreamResult } from '@ably/ai-transport';
 import { ErrorCode } from '@ably/ai-transport';
-import type { OpenAIMessage, OpenAIOutput } from '@ably/ai-transport/openai';
-import { approvedUnexecutedCalls } from '@ably/ai-transport/openai';
+import type { OpenAIOutput } from '@ably/ai-transport/openai';
+
+import { approvedUnexecutedCalls, type OpenAIMessage } from '../../lib/openai-thread';
 import { toResponseInputItems } from 'openai/lib/responses/ResponseInputItems';
 import type { Responses } from 'openai/resources/responses/responses';
 

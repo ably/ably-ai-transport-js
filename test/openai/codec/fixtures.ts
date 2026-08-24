@@ -10,7 +10,7 @@ import type { Responses } from 'openai/resources/responses/responses';
 
 import { HEADER_CODEC_MESSAGE_ID, HEADER_RUN_ID } from '../../../src/constants.js';
 import type { ChannelWriter } from '../../../src/core/codec/index.js';
-import type { OpenAIMessage, OpenAIOutput } from '../../../src/openai/codec/index.js';
+import type { OpenAIOutput } from '../../../src/openai/codec/index.js';
 
 // --- minimal domain objects --------------------------------------------------
 
@@ -402,19 +402,6 @@ export const textRun = (itemId: string, text: string): Responses.ResponseStreamE
     itemDone(messageItem(itemId, [{ type: 'output_text', text, annotations: [] }])),
     completed(),
   ];
-};
-
-// A plain-text user message: one input message item with a single `input_text` part.
-export const userTurn = (text: string): OpenAIMessage => ({
-  role: 'user',
-  items: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }],
-});
-
-// The first `input_text` part's text from a (user) message, or '' if absent.
-export const firstInputText = (message: OpenAIMessage | undefined): string => {
-  const item = message?.items.find((i): i is Responses.ResponseInputItem.Message => i.type === 'message');
-  const part = item?.content.find((p) => p.type === 'input_text');
-  return part?.type === 'input_text' ? part.text : '';
 };
 
 // --- transport-header helpers ------------------------------------------------

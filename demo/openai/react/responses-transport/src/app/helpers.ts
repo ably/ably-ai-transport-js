@@ -1,4 +1,4 @@
-import type { OpenAIMessage } from '@ably/ai-transport/openai';
+import type { OpenAIMessage } from './lib/openai-thread';
 
 import { toDisplayParts } from './display';
 

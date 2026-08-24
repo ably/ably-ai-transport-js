@@ -7,7 +7,9 @@
 
 import { describe, expect, it } from 'vitest';
 import type { TransportEvent, TransportHistoryResult, WireMeta } from '@ably/ai-transport';
-import type { OpenAIInput, OpenAIOutput } from '@ably/ai-transport/openai';
+import type { OpenAIOutput } from '@ably/ai-transport/openai';
+
+import type { OpenAIInput } from '../openai-thread';
 
 import { getExistingMessages, serialOf } from '../get-existing-messages';
 

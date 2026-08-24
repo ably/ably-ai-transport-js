@@ -26,8 +26,9 @@
 
 import { useCallback, useRef } from 'react';
 import type { ClientTransport } from '@ably/ai-transport';
-import type { OpenAIInput, OpenAIOutput } from '@ably/ai-transport/openai';
-import { unansweredCalls } from '@ably/ai-transport/openai';
+import type { OpenAIOutput } from '@ably/ai-transport/openai';
+
+import { unansweredCalls, type OpenAIInput } from '../lib/openai-thread';
 
 import type { ThreadMessage } from '../lib/fold-thread';
 

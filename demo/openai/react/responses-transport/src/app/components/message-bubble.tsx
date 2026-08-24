@@ -1,7 +1,7 @@
 'use client';
 
 import { type CSSProperties } from 'react';
-import type { OpenAIMessage, OpenAIToolCallState } from '@ably/ai-transport/openai';
+import type { OpenAIMessage, OpenAIToolCallState } from '../lib/openai-thread';
 import { Loader2Icon } from 'lucide-react';
 import { Badge } from '@ably-ai-demos/frontend/components/ui/badge';
 import { Bubble, BubbleContent } from '@ably-ai-demos/frontend/components/ui/bubble';

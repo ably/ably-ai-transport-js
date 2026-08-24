@@ -16,7 +16,7 @@
  * whole conversation.
  */
 
-import type { OpenAIItem, OpenAIMessage, OpenAIToolCallState } from '@ably/ai-transport/openai';
+import type { OpenAIItem, OpenAIMessage, OpenAIToolCallState } from './lib/openai-thread';
 
 /**
  * A display part of a message: a run of message text, a reasoning summary, or a

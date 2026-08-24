@@ -25,8 +25,7 @@
  */
 
 import { useEffect, useRef } from 'react';
-import type { OpenAIItem } from '@ably/ai-transport/openai';
-import { resolvedCallIds } from '@ably/ai-transport/openai';
+import { resolvedCallIds, type OpenAIItem } from '../lib/openai-thread';
 
 import { isClientTool } from '../api/chat/tools';
 import type { RunSummary, ThreadMessage } from '../lib/fold-thread';

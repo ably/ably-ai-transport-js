@@ -36,7 +36,9 @@
 import { after } from 'next/server';
 import Ably from 'ably';
 import { channelAgent, createAgentTransport } from '@ably/ai-transport';
-import { ResponsesCodec, toResponsesInput } from '@ably/ai-transport/openai';
+import { ResponsesCodec } from '@ably/ai-transport/openai';
+
+import { toResponsesInput } from '../../lib/openai-thread';
 
 import { getExistingMessages } from '../../lib/get-existing-messages';
 import { runAgentLoop } from './agent-stream';

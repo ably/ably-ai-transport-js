@@ -24,7 +24,7 @@ The entry points are listed here for orientation; the authoritative list is
 | `@ably/ai-transport/react`             | Generic React hooks and providers for any codec                            | `ably`, `react`         |
 | `@ably/ai-transport/vercel`            | Vercel AI SDK codec, convenience factories, and the chat-transport adapter | `ably`, `ai`            |
 | `@ably/ai-transport/vercel/react`      | React hooks for Vercel's `useChat`                                         | `ably`, `ai`, `react`   |
-| `@ably/ai-transport/openai`            | OpenAI Responses codec                                                     | `ably`, `openai`        |
+| `@ably/ai-transport/openai`            | OpenAI Responses codec (`createResponsesCodec`)                            | `ably`, `openai`        |
 | `@ably/ai-transport/temporal`          | Worker-side durable execution: framing activities and the plugin           | `ably`, `@temporalio/*` |
 | `@ably/ai-transport/temporal/workflow` | Workflow-side helpers                                                      | `@temporalio/workflow`  |
 

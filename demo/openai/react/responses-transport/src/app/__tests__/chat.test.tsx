@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 import * as Ably from 'ably';
 import type { PublishInputResult, TransportEvent, WireMeta } from '@ably/ai-transport';
 import type { OpenAIOutput } from '@ably/ai-transport/openai';
+import type { OpenAIInput } from '../lib/openai-thread';
 import type { Responses } from 'openai/resources/responses/responses';
 import { Chat } from '../components/chat';
 
@@ -24,7 +25,7 @@ Element.prototype.scrollIntoView = () => {};
 // hoisted vi.mock factory runs, which lets every import stay at the top.
 // ---------------------------------------------------------------------------
 
-type Event = TransportEvent<unknown, OpenAIOutput>;
+type Event = TransportEvent<OpenAIInput, OpenAIOutput>;
 
 const mockState = vi.hoisted(() => {
   const state = {

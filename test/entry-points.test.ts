@@ -21,7 +21,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ModelledOutputItem, OpenAIOutput } from '../src/openai/index.js';
-import { ResponsesCodec } from '../src/openai/index.js';
+import { createResponsesCodec } from '../src/openai/index.js';
 import type { VercelInput, VercelOutput } from '../src/vercel/index.js';
 import { createUIMessageCodec } from '../src/vercel/index.js';
 
@@ -64,10 +64,12 @@ describe('@ably/ai-transport/vercel', () => {
 
 describe('@ably/ai-transport/openai', () => {
   it('publishes a wire codec that encodes and decodes and holds no state', () => {
-    expect(ResponsesCodec).toHaveProperty('createEncoder', expect.any(Function));
-    expect(ResponsesCodec).toHaveProperty('createDecoder', expect.any(Function));
+    const codec = createResponsesCodec();
+
+    expect(codec).toHaveProperty('createEncoder', expect.any(Function));
+    expect(codec).toHaveProperty('createDecoder', expect.any(Function));
     for (const method of REDUCER_SURFACE) {
-      expect(ResponsesCodec, `wire codec unexpectedly carries ${method}`).not.toHaveProperty(method);
+      expect(codec, `wire codec unexpectedly carries ${method}`).not.toHaveProperty(method);
     }
   });
 

@@ -14,9 +14,9 @@
 
 import Ably from 'ably';
 import { channelAgent, createAgentTransport } from '@ably/ai-transport';
-import { ResponsesCodec } from '@ably/ai-transport/openai';
 
 import { getExistingMessages, seedableEvents } from '../../lib/get-existing-messages';
+import { responsesCodec } from '../../lib/openai-thread';
 
 export async function GET(req: Request) {
   const channelName = new URL(req.url).searchParams.get('channelName');
@@ -37,8 +37,8 @@ export async function GET(req: Request) {
   });
 
   try {
-    const channel = ably.channels.get(channelName, { params: { agent: channelAgent(ResponsesCodec) } });
-    const transport = createAgentTransport({ channel, codec: ResponsesCodec });
+    const channel = ably.channels.get(channelName, { params: { agent: channelAgent(responsesCodec) } });
+    const transport = createAgentTransport({ channel, codec: responsesCodec });
     await transport.connect();
     try {
       const all = await getExistingMessages(transport);

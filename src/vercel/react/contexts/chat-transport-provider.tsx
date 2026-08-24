@@ -5,11 +5,11 @@
  * and layers the {@link ChatTransport} useChat adapter over it.
  *
  * The adapter holds no conversation state, so it is created once per
- * transport (a channel-name change recreates both). A superseded adapter is
- * closed from an effect when the transport is recreated, and the current one
- * is closed on a true unmount via a microtask-deferred close that React
- * Strict Mode's synchronous remount cancels — the same lifecycle the generic
- * provider gives the transport itself. Descendants read the pair with
+ * transport (a channel-name change recreates both). A replaced adapter — a
+ * new transport, or changed route options — is closed once its successor
+ * commits, so it stops observing the transport; the final adapter needs no
+ * unmount close, because the generic provider closes the transport it
+ * subscribes to. Descendants read the pair with
  * {@link import('../use-chat-transport.js').useChatTransport} and hand
  * `chatTransport` straight to `useChat({ transport })`.
  */
@@ -57,59 +57,36 @@ const ChatTransportBridge = ({
 }: PropsWithChildren<{ channelName: string; api?: string; logger?: Logger }>): ReactNode => {
   const { transport, error } = useClientTransport<VercelInput, VercelOutput>();
 
-  const adapterRef = useRef<ChatTransportSlot['chatTransport']>(undefined);
-  const adapterTransportRef = useRef<ChatTransportSlot['transport']>(undefined);
-  const adaptersToCloseRef = useRef<NonNullable<ChatTransportSlot['chatTransport']>[]>([]);
-  const pendingCloseRef = useRef(false);
-
-  // Recreate the adapter when the transport it wraps changes (the generic
-  // provider recreates the transport on a channelName change), queueing the
-  // superseded adapter for the close effect below.
-  if (transport !== adapterTransportRef.current) {
-    adapterTransportRef.current = transport;
-    if (adapterRef.current) {
-      adaptersToCloseRef.current.push(adapterRef.current);
-      adapterRef.current = undefined;
-    }
-    if (transport) {
-      adapterRef.current = createChatTransport({
-        transport,
-        channelName,
-        ...(api === undefined ? {} : { api }),
-        ...(logger === undefined ? {} : { logger }),
-      });
-    }
-  }
-  const chatTransport = adapterRef.current;
+  // Every adapter this bridge has created but not yet reconciled against a
+  // commit. The adapter subscribes to the transport on construction, so one
+  // created in a render that never commits (Strict Mode discards one of its
+  // double renders' memo results) must still be closed.
+  const createdAdaptersRef = useRef<ChatTransportSlot['chatTransport'][]>([]);
 
   const slot = useMemo<ChatTransportSlot>(() => {
     if (!transport) return { transport: undefined, chatTransport: undefined, error };
+    const chatTransport = createChatTransport({
+      transport,
+      channelName,
+      ...(api === undefined ? {} : { api }),
+      ...(logger === undefined ? {} : { logger }),
+    });
+    createdAdaptersRef.current.push(chatTransport);
     return { transport, chatTransport, error: undefined };
-  }, [transport, chatTransport, error]);
+  }, [transport, error, channelName, api, logger]);
 
-  // Close adapters superseded by a transport change. The render path above
-  // queues the stale adapter; this effect's cleanup — which runs on the next
-  // transport change or on unmount — closes every queued one.
-  useEffect(
-    () => () => {
-      for (const adapter of adaptersToCloseRef.current) adapter.close();
-      adaptersToCloseRef.current = [];
-    },
-    [transport],
-  );
-
-  // Close the adapter when the component truly unmounts, mirroring the
-  // generic provider's transport close: deferred a microtask so Strict
-  // Mode's synchronous remount resets the flag and cancels it.
+  // Close every adapter the committed one replaced or superseded: a prior
+  // adapter (new transport or changed route options) and any discarded
+  // render's creation. Without this a replaced adapter would stay subscribed
+  // to a live transport, buffering pre-seed events for its lifetime.
   useEffect(() => {
-    pendingCloseRef.current = false;
-    return () => {
-      pendingCloseRef.current = true;
-      void Promise.resolve().then(() => {
-        if (pendingCloseRef.current) adapterRef.current?.close();
-      });
-    };
-  }, []);
+    const survivors: ChatTransportSlot['chatTransport'][] = [];
+    for (const adapter of createdAdaptersRef.current) {
+      if (adapter === slot.chatTransport) survivors.push(adapter);
+      else adapter?.close();
+    }
+    createdAdaptersRef.current = survivors;
+  }, [slot]);
 
   const parentContext = useContext(ChatTransportContext);
   const contextValue = useMemo(

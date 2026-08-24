@@ -384,4 +384,57 @@ describe('useAblyMessages', () => {
 
     expect(result.current).toEqual([msg1, msg2]);
   });
+
+  it('resets the log when the provider recreates the transport', () => {
+    const fakes = [createFakeTransport(), createFakeTransport()];
+    let next = 0;
+    createClientTransportMock.mockImplementation(() => fakes[next++]);
+    const channelRef = { value: 'ai:first' };
+    const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
+      createElement(ClientTransportProvider, { channelName: channelRef.value, codec: {} as never }, children);
+
+    const { result, rerender } = renderHook(() => useAblyMessages(), { wrapper });
+    // CAST: the hook stores the messages opaquely; a minimal stub suffices.
+    const msg = { name: 'ai-output', data: 'one' } as Ably.InboundMessage;
+    act(() => {
+      fakes[0]?.emitAblyMessage(msg);
+    });
+    expect(result.current).toEqual([msg]);
+
+    // A channel-name change recreates the transport; the log starts over.
+    channelRef.value = 'ai:second';
+    rerender();
+    expect(result.current).toEqual([]);
+
+    // CAST: minimal stub, as above.
+    const msg2 = { name: 'ai-output', data: 'two' } as Ably.InboundMessage;
+    act(() => {
+      fakes[1]?.emitAblyMessage(msg2);
+    });
+    expect(result.current).toEqual([msg2]);
+  });
+
+  it('reads a named provider through the channelName option', () => {
+    const fakes = new Map<string, FakeTransport>();
+    createClientTransportMock.mockImplementation((options) => {
+      // CAST: the mock records the options bag; only channel.name is read.
+      const name = (options as { channel: { name: string } }).channel.name;
+      const fake = createFakeTransport();
+      fakes.set(name, fake);
+      return fake;
+    });
+
+    const { result } = renderHook(() => useAblyMessages({ channelName: 'ai:outer' }), { wrapper: wrapNested });
+
+    // CAST: minimal stub, as above.
+    const outerMsg = { name: 'ai-output', data: 'outer' } as Ably.InboundMessage;
+    act(() => {
+      fakes.get('ai:outer')?.emitAblyMessage(outerMsg);
+      // CAST: minimal stub, as above.
+      fakes.get('ai:inner')?.emitAblyMessage({ name: 'ai-output', data: 'inner' } as Ably.InboundMessage);
+    });
+
+    // Only the named provider's messages land; the nearer provider's do not.
+    expect(result.current).toEqual([outerMsg]);
+  });
 });

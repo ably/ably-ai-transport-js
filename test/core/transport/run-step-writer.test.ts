@@ -120,13 +120,18 @@ describe('createRunStepWriter', () => {
     });
 
     it('uses an explicit stepClientId over the sticky one', async () => {
-      const { writer, emitted } = setup({ getPriorStepClientId: () => 'prior-client' });
+      const { writer, emitted } = setup();
+
+      // Seed the in-process cursor, then override it on the next step.
+      const first = writer.createStep({ stepClientId: 'prior-client' });
+      await first.start();
+      await first.end();
 
       const step = writer.createStep({ stepClientId: 'explicit-client' });
       await step.start();
       await step.end();
 
-      expect(emitted[0]).toMatchObject({ type: 'step-start', stepClientId: 'explicit-client' });
+      expect(emitted.at(-2)).toMatchObject({ type: 'step-start', stepClientId: 'explicit-client' });
     });
 
     it('mints a monotonic id scoped to the invocation', async () => {

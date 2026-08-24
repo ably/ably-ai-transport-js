@@ -1,112 +1,190 @@
 // @vitest-environment jsdom
 
 /**
- * ChatTransportProvider lifecycle: the bridge closes a superseded adapter
- * when the transport is recreated (a channelName change), closes the current
- * adapter on a true unmount via the microtask-deferred close, and survives a
- * React Strict Mode remount without closing anything.
+ * ChatTransportProvider: the Vercel bridge over the generic
+ * ClientTransportProvider. It builds one useChat adapter per client
+ * transport, forwards the route options, closes an adapter its successor
+ * replaces (and any adapter a discarded Strict Mode render created), and
+ * surfaces the generic provider's construction error through the slot.
  */
 
-import { render } from '@testing-library/react';
+import { renderHook } from '@testing-library/react';
 import type * as Ably from 'ably';
-import { createElement, type ReactElement, type ReactNode, StrictMode } from 'react';
+import { createElement, type ReactNode, StrictMode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { ClientTransport } from '../../../src/core/transport/types.js';
+import { ErrorCode } from '../../../src/errors.js';
 import { ChatTransportProvider } from '../../../src/vercel/react/contexts/chat-transport-provider.js';
 import { useChatTransport } from '../../../src/vercel/react/use-chat-transport.js';
-import type { ChatTransport } from '../../../src/vercel/transport/chat-transport.js';
+import type { ChatTransport, ChatTransportOptions } from '../../../src/vercel/transport/chat-transport.js';
 
-/** Flush microtasks (but NOT macrotasks) so the deferred unmount close fires. */
-const flushMicrotasks = async (): Promise<void> => {
-  await new Promise<void>((resolve) => {
-    queueMicrotask(resolve);
-  });
-  await new Promise<void>((resolve) => {
-    queueMicrotask(resolve);
-  });
+/** Inert unsubscribe for the fake transport's events. */
+const noopUnsubscribe = (): void => {
+  /* inert */
 };
+
+/**
+ * Minimal channels.get stub: the provider only threads the channel through.
+ * @param name - The requested channel name.
+ * @param options - The resolved channel options.
+ * @returns A stub carrying both, standing in for the channel.
+ */
+const channelsGet = (name: string, options?: Ably.ChannelOptions): unknown => ({ name, options });
 
 vi.mock('ably/react', async () => {
   const { createElement: h, Fragment } = await import('react');
-  // CAST: the provider only calls channels.get; the channel is never used by
-  // the mocked transport factory.
-  const client = {
-    channels: { get: (name: string) => ({ name }) as unknown as Ably.RealtimeChannel },
-  } as unknown as Ably.Realtime;
   return {
-    useAbly: () => client,
+    useAbly: () => ({ channels: { get: channelsGet } }),
     ChannelProvider: ({ children }: { children?: ReactNode }) => h(Fragment, undefined, children),
   };
 });
 
+const createClientTransportMock = vi.hoisted(() => vi.fn<(options: unknown) => unknown>());
 vi.mock('../../../src/core/transport/client-transport.js', () => ({
-  createClientTransport: vi.fn(() => ({
+  createClientTransport: (options: unknown) => createClientTransportMock(options),
+}));
+
+/** One recorded adapter creation: the options passed and the fake returned. */
+interface CreatedAdapter {
+  /** The options `createChatTransport` was called with. */
+  options: ChatTransportOptions;
+  /** The fake adapter, exposing its close count. */
+  adapter: ChatTransport & { closeCalls: number };
+}
+
+const createdAdapters = vi.hoisted(() => [] as { options: unknown; adapter: { closeCalls: number } }[]);
+vi.mock('../../../src/vercel/transport/chat-transport.js', () => ({
+  createChatTransport: (options: unknown) => {
+    const adapter = {
+      closeCalls: 0,
+      close(): void {
+        this.closeCalls += 1;
+      },
+    };
+    createdAdapters.push({ options, adapter });
+    return adapter;
+  },
+}));
+
+/**
+ * The recorded creations, typed for assertions.
+ * @returns Every adapter creation the mocked factory recorded, in order.
+ */
+const created = (): CreatedAdapter[] =>
+  // CAST: the mock records what the bridge passed; the tests read known fields.
+  createdAdapters as unknown as CreatedAdapter[];
+
+const createFakeTransport = (): ClientTransport<unknown, unknown> =>
+  // CAST: the provider calls only the members stubbed here.
+  ({
     connect: async () => {
       /* connected */
+      await Promise.resolve();
     },
-    close: vi.fn(),
-  })),
-}));
+    subscribe: () => noopUnsubscribe,
+    on: () => noopUnsubscribe,
+    close: () => {
+      /* closed */
+    },
+  }) as unknown as ClientTransport<unknown, unknown>;
 
-// Every adapter the mocked factory hands out, in creation order, so the
-// tests can assert which one was closed.
-const adapters = vi.hoisted(() => [] as { close: ReturnType<typeof vi.fn> }[]);
+const wrap =
+  (props: { channelName: string; api?: string; reconnectScanPages?: number; strict?: boolean }) =>
+  ({ children }: { children: ReactNode }): ReactNode => {
+    const provider = createElement(
+      ChatTransportProvider,
+      {
+        channelName: props.channelName,
+        ...(props.api === undefined ? {} : { api: props.api }),
+        ...(props.reconnectScanPages === undefined ? {} : { reconnectScanPages: props.reconnectScanPages }),
+      },
+      children,
+    );
+    return props.strict ? createElement(StrictMode, undefined, provider) : provider;
+  };
 
-vi.mock('../../../src/vercel/transport/chat-transport.js', () => ({
-  createChatTransport: vi.fn(() => {
-    const adapter = { close: vi.fn() };
-    adapters.push(adapter);
-    // CAST: the bridge stores and closes the adapter; no other member is read.
-    return adapter as unknown as ChatTransport;
-  }),
-}));
+beforeEach(() => {
+  vi.clearAllMocks();
+  createdAdapters.length = 0;
+  createClientTransportMock.mockImplementation(() => createFakeTransport());
+});
 
-// The probe records the slot the provider published on every render.
-const captured: { chatTransport: ChatTransport | undefined } = { chatTransport: undefined };
-const Probe = (): ReactNode => {
-  captured.chatTransport = useChatTransport().chatTransport;
-  return false;
-};
+describe('ChatTransportProvider', () => {
+  it('provides the client transport and an adapter built over it', () => {
+    const { result } = renderHook(() => useChatTransport(), { wrapper: wrap({ channelName: 'ai:test' }) });
 
-const ui = (channelName: string): ReactElement =>
-  createElement(ChatTransportProvider, { channelName }, createElement(Probe));
-
-describe('ChatTransportProvider lifecycle', () => {
-  beforeEach(() => {
-    adapters.length = 0;
-    captured.chatTransport = undefined;
+    expect(result.current.transport).toBeDefined();
+    expect(result.current.chatTransport).toBeDefined();
+    expect(result.current.error).toBeUndefined();
+    const creation = created().at(-1);
+    expect(creation?.options.transport).toBe(result.current.transport);
+    expect(creation?.options.channelName).toBe('ai:test');
   });
 
-  it('closes the superseded adapter when channelName changes', () => {
-    const { rerender } = render(ui('ai:one'));
-    expect(adapters).toHaveLength(1);
-    expect(captured.chatTransport).toBeDefined();
+  it('forwards the route options to the adapter', () => {
+    renderHook(() => useChatTransport(), {
+      wrapper: wrap({ channelName: 'ai:test', api: '/api/custom' }),
+    });
 
-    rerender(ui('ai:two'));
-
-    expect(adapters).toHaveLength(2);
-    expect(adapters[0]?.close).toHaveBeenCalledTimes(1);
-    expect(adapters[1]?.close).not.toHaveBeenCalled();
+    const creation = created().at(-1);
+    expect(creation?.options.api).toBe('/api/custom');
   });
 
-  it('closes the adapter on a true unmount, deferred a microtask', async () => {
-    const { unmount } = render(ui('ai:one'));
-    expect(adapters).toHaveLength(1);
+  it('registers the slot by channel name for a named lookup', () => {
+    const { result } = renderHook(() => useChatTransport({ channelName: 'ai:test' }), {
+      wrapper: wrap({ channelName: 'ai:test' }),
+    });
 
-    unmount();
-    // The close is deferred so a Strict Mode remount could cancel it.
-    expect(adapters[0]?.close).not.toHaveBeenCalled();
-
-    await flushMicrotasks();
-    expect(adapters[0]?.close).toHaveBeenCalledTimes(1);
+    expect(result.current.chatTransport).toBeDefined();
   });
 
-  it('survives a Strict Mode remount without closing the adapter', async () => {
-    render(createElement(StrictMode, undefined, ui('ai:one')));
+  it('surfaces a transport construction failure as the slot error, with no adapter', () => {
+    createClientTransportMock.mockImplementation(() => {
+      throw new Error('boom');
+    });
 
-    await flushMicrotasks();
+    const { result } = renderHook(() => useChatTransport(), { wrapper: wrap({ channelName: 'ai:test' }) });
 
-    expect(adapters).toHaveLength(1);
-    expect(adapters[0]?.close).not.toHaveBeenCalled();
+    expect(result.current.transport).toBeUndefined();
+    expect(result.current.chatTransport).toBeUndefined();
+    // A plain Error from the factory is something the developer cannot act
+    // on, so the provider surfaces it as InternalError, not a request fault.
+    expect(result.current.error).toBeErrorInfoWithCode(ErrorCode.InternalError);
+    expect(created()).toHaveLength(0);
+  });
+
+  it('closes the replaced adapter when a route option changes on the same transport', () => {
+    const { result, rerender } = renderHook(() => useChatTransport(), {
+      // The wrapper re-reads apiRef on each render, so rerender() below
+      // re-renders the provider with the changed route option.
+      wrapper: ({ children }: { children: ReactNode }): ReactNode =>
+        wrap({ channelName: 'ai:test', api: apiRef.value })({ children }),
+    });
+    const first = result.current.chatTransport;
+
+    apiRef.value = '/api/other';
+    rerender();
+
+    const creations = created();
+    expect(creations).toHaveLength(2);
+    expect(result.current.chatTransport).not.toBe(first);
+    expect(creations[0]?.adapter.closeCalls).toBe(1);
+    expect(creations[1]?.adapter.closeCalls).toBe(0);
+    // The same transport backs both adapters — only the adapter was rebuilt.
+    expect(creations[0]?.options.transport).toBe(creations[1]?.options.transport);
+  });
+
+  it('creates exactly one live adapter under Strict Mode, closing any discarded creation', () => {
+    const { result } = renderHook(() => useChatTransport(), {
+      wrapper: wrap({ channelName: 'ai:test', strict: true }),
+    });
+
+    const live = created().filter(({ adapter }) => adapter.closeCalls === 0);
+    expect(live).toHaveLength(1);
+    expect(result.current.chatTransport).toBe(live[0]?.adapter);
   });
 });
+
+/** Mutable api value the route-option-change test rerenders against. */
+const apiRef = { value: '/api/first' };

@@ -38,9 +38,17 @@ class TestChat extends AbstractChat<AI.UIMessage> {
   }
 }
 
-/** Let the Chat's own promise chains settle without leaning on wall-clock time. */
+/**
+ * Let the Chat's own promise chains settle without leaning on wall-clock time.
+ * The AbstractChat pipeline crosses macrotask boundaries (stream reads and
+ * state callbacks), so a microtask flush alone is not enough; this yields the
+ * event loop a few times rather than sleeping a magic duration.
+ * @returns Resolves once the pipeline has had a chance to settle.
+ */
 const flush = async (): Promise<void> => {
-  for (let i = 0; i < 20; i++) await Promise.resolve();
+  for (let i = 0; i < 10; i++) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
 };
 
 describe('ChatTransport drives useChat with no external message state', () => {

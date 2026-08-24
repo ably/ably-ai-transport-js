@@ -84,6 +84,16 @@ export interface LifecyclePolicy<TOutput> {
 
 /**
  * The parts a codec supplies to {@link defineCodec}.
+ *
+ * The `kind` / `type` constraints bind ONLY this declarative authoring
+ * helper, never the transports: {@link WireCodec} and everything generic that
+ * consumes it are unconstrained, carry events opaquely, and read no event
+ * content (pinned by the opaque-codec transport tests). The descriptor tables
+ * here dispatch each event to its wire form by a typed discriminant, and
+ * `kind` / `type` are the field names that dispatch keys on — mirroring how
+ * every provider SDK discriminates its own unions. A provider whose events
+ * discriminate differently wraps them, or implements {@link WireCodec}
+ * directly without this helper.
  * @template TInput - The codec's input union.
  * @template TOutput - The codec's output union.
  */

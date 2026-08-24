@@ -206,12 +206,17 @@ describe('<Chat>', () => {
       }),
     );
     mockState.cancel.mockClear();
-    // The demo wakes the agent by POSTing the wake pointer after each publish.
-    // Stub fetch so the POST succeeds rather than hitting the network; the
-    // agent route returns the run-id, which wakeAgent reads.
+    // Two fetch surfaces: the hydration GET to the messages endpoint (answered
+    // with an empty seed, so the gap walk pages mockState.historyBatches), and
+    // the wake POST to the chat route (answered with the run-id wakeAgent
+    // reads).
     vi.stubGlobal(
       'fetch',
-      vi.fn(() => Promise.resolve(Response.json({ runId: 'run-1' }))),
+      vi.fn((url: RequestInfo | URL) =>
+        String(url).includes('/api/messages')
+          ? Promise.resolve(Response.json({ events: [], latestSerial: undefined }))
+          : Promise.resolve(Response.json({ runId: 'run-1' })),
+      ),
     );
   });
 
@@ -244,12 +249,15 @@ describe('<Chat>', () => {
       },
     });
 
-    // The wake POST carries the channel and the published input's eventId.
-    await waitFor(() => {
-      expect(fetch).toHaveBeenCalledTimes(1);
-    });
+    // The wake POST carries the channel and the published input's eventId
+    // (the hydration GET to the messages endpoint fires separately on mount).
     const fetchMock = vi.mocked(fetch);
-    const [url, init] = fetchMock.mock.calls[0];
+    const wakeCall = await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([target]) => String(target) === 'api/chat');
+      if (!call) throw new Error('wake POST not observed yet');
+      return call;
+    });
+    const [url, init] = wakeCall;
     expect(url).toBe('api/chat');
     expect(JSON.parse(String(init?.body))).toEqual({ channelName: 'ai:test', eventId: 'ev-1' });
 
@@ -269,6 +277,42 @@ describe('<Chat>', () => {
     await renderChat();
     expect(screen.queryByText('restored prompt')).not.toBeNull();
     expect(screen.queryByText('restored reply')).not.toBeNull();
+  });
+
+  it('hydrates from the messages endpoint seed and walks only the gap newer than its seam', async () => {
+    const withSerial = (event: Event, serial: string): Event =>
+      event.kind === 'message' ? { ...event, meta: { ...event.meta, serial } } : event;
+    // The endpoint's read covered the stored prompt (seam s-2); the gap walk
+    // must fold only the newer assistant turn, even though the first history
+    // batch replays the stored prompt too, and must stop at the seam without
+    // paging the older batch.
+    const seedEvents = [withSerial(userMessageEvent('cm-u1', 'stored prompt'), 's-2')];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: RequestInfo | URL) =>
+        String(url).includes('/api/messages')
+          ? Promise.resolve(Response.json({ events: seedEvents, latestSerial: 's-2' }))
+          : Promise.resolve(Response.json({ runId: 'run-1' })),
+      ),
+    );
+    mockState.historyBatches = [
+      {
+        events: [
+          withSerial(userMessageEvent('cm-u1', 'stored prompt'), 's-2'),
+          withSerial(assistantTurnEvent('cm-a1', 'run-1', 'newer reply'), 's-3'),
+        ],
+        exhausted: false,
+      },
+      { events: [withSerial(userMessageEvent('cm-u0', 'beyond the seam'), 's-1')], exhausted: true },
+    ];
+
+    await renderChat();
+
+    expect(screen.getAllByText('stored prompt')).toHaveLength(1);
+    expect(screen.queryByText('newer reply')).not.toBeNull();
+    // The walk stopped at the seam: the older batch was never paged.
+    expect(screen.queryByText('beyond the seam')).toBeNull();
+    expect(mockState.historyBatches).toHaveLength(1);
   });
 
   it('shows Send (not Stop) when the latest run is suspended', async () => {

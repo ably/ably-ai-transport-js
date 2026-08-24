@@ -19,7 +19,7 @@ import type { InferenceOutcome } from '../shared';
 
 const workflowsPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../workflows.ts');
 
-const invocation: InvocationData = { sessionName: 'ai:test', inputEventId: 'evt-1' };
+const invocation: InvocationData = { channelName: 'ai:test', inputEventId: 'evt-1' };
 const invocationId = 'wf-1';
 const runIds: RunIdentity = { runId: 'run-1', invocationId };
 

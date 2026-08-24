@@ -42,7 +42,7 @@ async function temporalClient(): Promise<Client> {
 export async function POST(req: Request): Promise<Response> {
   // CAST: trust boundary — the body is this app's own chat transport's JSON.
   const request = (await req.json()) as ChatRequestBody;
-  const invocation: InvocationData = { sessionName: request.channelName, inputEventId: request.eventId };
+  const invocation: InvocationData = { channelName: request.channelName, inputEventId: request.eventId };
   const invocationId = crypto.randomUUID();
 
   const client = await temporalClient();

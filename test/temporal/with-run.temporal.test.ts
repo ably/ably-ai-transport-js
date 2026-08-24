@@ -25,7 +25,7 @@ import type { FixtureInput } from './workflows/fixtures.js';
 
 const workflowsPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'workflows/fixtures.ts');
 
-const invocation: InvocationData = { inputEventId: 'evt-1', sessionName: 'ai:test' };
+const invocation: InvocationData = { inputEventId: 'evt-1', channelName: 'ai:test' };
 const invocationId = 'wf-1';
 const ids: RunIdentity = { runId: 'run-1', invocationId };
 

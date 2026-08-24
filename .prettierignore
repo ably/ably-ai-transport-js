@@ -20,3 +20,8 @@ demo/**/.well-known/workflow/
 # Vendored shadcn/ui primitives — regeneratable, kept in shadcn's own formatting
 demo/**/src/components/ui/
 demo/**/src/lib/utils.ts
+
+# Root-level planning and design notes — prose documents, not source; their
+# formatting (pasted tables, long lines) is preserved as written.
+/aitdr-014.md
+/aitdr-014-decision-log.md

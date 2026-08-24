@@ -7,7 +7,7 @@ describe('Invocation', () => {
   // mints a fresh run-id, or reads a continuation's off the triggering input).
   const data: InvocationData = {
     inputEventId: 'ev-1',
-    sessionName: 'chat-session',
+    channelName: 'chat-session',
   };
 
   describe('toJSON', () => {
@@ -19,7 +19,7 @@ describe('Invocation', () => {
     it('round-trips through fromJSON', () => {
       const roundTripped = Invocation.fromJSON(Invocation.fromJSON(data).toJSON());
       expect(roundTripped.inputEventId).toBe(data.inputEventId);
-      expect(roundTripped.sessionName).toBe(data.sessionName);
+      expect(roundTripped.channelName).toBe(data.channelName);
     });
 
     it('is picked up by JSON.stringify as the toJSON hook', () => {

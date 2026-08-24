@@ -94,6 +94,11 @@ export interface ClientTransportOptions<TInput, TOutput> {
  */
 const isWireOnlyInput = (opts: PublishInputOptions | undefined): boolean => opts?.codecMessageId !== undefined;
 
+/** The unwatch for a publish that registered no runId watch. */
+const noopUnwatch = (): void => {
+  /* nothing to deregister */
+};
+
 /**
  * Merge user-provided headers into an outgoing Ably message's own
  * `extras.headers` slot, outside the SDK's `extras.ai` envelope so they can
@@ -300,9 +305,16 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
           }
         : undefined,
     );
-    // Watch before the publish so a run-start racing the publish's own ack can
-    // never slip past; a failed publish removes the watch again.
-    const { runId, unwatch } = this._watchRunId(codecMessageId);
+    // The run's id: a continuation already names it in the options, so it
+    // resolves immediately — an addressed run answers with `ai-run-resume`,
+    // which carries no input-codec-message-id for a watch to match. A fresh
+    // publish watches for the `ai-run-start` that will name it. Watch before
+    // the publish so a run-start racing the publish's own ack can never slip
+    // past; a failed publish removes the watch again.
+    const { runId, unwatch } =
+      opts?.runId === undefined
+        ? this._watchRunId(codecMessageId)
+        : { runId: Promise.resolve(opts.runId), unwatch: noopUnwatch };
     try {
       await encoder.publishInput(event, { extras: { headers }, messageId: codecMessageId });
     } catch (error) {
@@ -445,12 +457,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
    *   the publish itself fails).
    */
   private _watchRunId(codecMessageId: string): { runId: Promise<string>; unwatch: () => void } {
-    let resolve!: (runId: string) => void;
-    let reject!: (err: Ably.ErrorInfo) => void;
-    const runId = new Promise<string>((res, rej) => {
-      resolve = res;
-      reject = rej;
-    });
+    const { promise: runId, resolve, reject } = Promise.withResolvers<string>();
     runId.catch(() => {
       /* the caller may ignore runId entirely */
     });

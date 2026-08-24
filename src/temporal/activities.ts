@@ -204,19 +204,33 @@ export const createFramingActivities = <TInput, TOutput>(
         // which a durable framework holds constant across retries, so a
         // fresh-process retry re-enters the SAME run instead of minting a new
         // id and opening a parallel one.
+        const { promise: openFailed, reject: failOpen } = Promise.withResolvers<never>();
+        // .catch(): the race below observes the rejection; without a pre-attached
+        // handler the losing branch would surface as an unhandled rejection.
+        openFailed.catch(() => {
+          /* observed via the race */
+        });
         const run = transport.openRun(
           {
             input: located,
             runId: input.invocationId,
             invocationId: input.invocationId,
           },
-          { signal: cancelSignal },
+          {
+            signal: cancelSignal,
+            onError: (error) => {
+              failOpen(error);
+            },
+          },
         );
-        // Await the opening event's own channel echo before returning, so the
-        // hand-off happens strictly after the open is on the wire. Subscribing
+        // The opening publish is fire-and-forget inside openRun, so a publish
+        // failure surfaces only through the run's onError hook — race it
+        // against the echo, or a failed open would hang this activity until
+        // its Temporal timeout instead of failing fast for retry. Subscribing
         // after openRun is safe: no await separates them, so the echo cannot
         // be delivered in between.
-        await awaitRunOpen(transport, run.runId, cancelSignal);
+        const opened = awaitRunOpen(transport, run.runId, cancelSignal);
+        await Promise.race([opened, openFailed]);
 
         return { runId: run.runId, invocationId: input.invocationId };
       });
@@ -294,24 +308,25 @@ const gateOpenRun = async <TInput, TOutput>(
 };
 
 /**
- * Throw the gate's failure as the error the old adopt path raised, so the
- * workflow-side retry semantics are unchanged: a suspended or ended run is a
- * non-retryable misuse, a run not found in the pages read is retryable.
+ * Throw the gate's failure. The codes drive the workflow-side retry
+ * semantics: a suspended or ended run is a non-retryable misuse
+ * (`InvalidArgument`), a run not found in the pages read is retryable
+ * (`InputEventNotFound` — a paging artefact, not a fact about the run).
  * @param state - The gate's non-`ok` verdict.
  * @param runId - The gated run, for the message.
  */
 const rejectGate = (state: Exclude<GateResult, 'ok'>, runId: string): never => {
   if (state === 'not-found') {
     throw new Ably.ErrorInfo(
-      `unable to adopt run ${runId}; its opening event was not found in channel history`,
+      `unable to re-enter run ${runId}; its opening event was not found in channel history`,
       ErrorCode.NotFound,
       404,
     );
   }
   throw new Ably.ErrorInfo(
     state === 'suspended'
-      ? `unable to adopt run ${runId}; the run is suspended — resume it via a fresh openRun`
-      : `unable to adopt run ${runId}; the run has already ended`,
+      ? `unable to re-enter run ${runId}; the run is suspended — resume it via a fresh openRun`
+      : `unable to re-enter run ${runId}; the run has already ended`,
     ErrorCode.InvalidArgument,
     400,
   );

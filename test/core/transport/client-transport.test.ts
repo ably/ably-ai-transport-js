@@ -462,6 +462,19 @@ describe('createClientTransport', () => {
   });
 
   describe('publishInput runId', () => {
+    it('resolves immediately with the continuation run-id named in the options', async () => {
+      // A continuation's run answers with ai-run-resume, which names no
+      // triggering input — there is nothing for a watch to match, so the
+      // known id resolves without any lifecycle event.
+      const fixture = await setup();
+      const sent = await fixture.transport.publishInput(
+        { kind: 'user-message', content: 'go on' },
+        { codecMessageId: 'm-1', runId: 'run-known' },
+      );
+
+      await expect(sent.runId).resolves.toBe('run-known');
+    });
+
     it('resolves from the first run-start carrying the publish codec-message-id', async () => {
       const fixture = await setup();
       const sent = await fixture.transport.publishInput({ kind: 'user-message', content: 'hi' });

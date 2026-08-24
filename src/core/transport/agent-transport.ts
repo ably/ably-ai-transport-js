@@ -166,7 +166,7 @@ export const createAgentTransport = <TInput, TOutput>(
   const logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
     component: 'AgentTransport',
   });
-  const runManager = createRunManager(channel, options.logger);
+  const runManager = createRunManager(channel, logger);
 
   // The one decoder shared by the live fold and the history scan, so a stream
   // spanning the attach boundary is never double-decoded (locateInput's
@@ -186,6 +186,8 @@ export const createAgentTransport = <TInput, TOutput>(
   const runIdByInputCodecMessageId = new Map<string, string>();
   /** Cancels that arrived before their target run was opened, keyed by input codec-message-id. */
   const deferredCancels = new Map<string, Ably.InboundMessage>();
+  /** Cancels addressed by run-id whose run is not registered yet, for a durable continuation's `openRun` to pull. */
+  const deferredCancelsByRunId = new Map<string, Ably.InboundMessage>();
   /** Steering-message codec-message-ids observed before their run was opened, keyed by run-id. */
   const preOpenSteersByRunId = new Map<string, Set<string>>();
 
@@ -303,12 +305,26 @@ export const createAgentTransport = <TInput, TOutput>(
 
     if (!reg) {
       // The run isn't known yet. A fresh-send cancel can race ahead of the
-      // `openRun` that establishes the input-codec-message-id → run linkage.
-      // Buffer it by input-codec-message-id so `openRun` can pull and honour
-      // it. A bare run-id cancel for an unknown run is a no-op (the run never
-      // existed here, or already ended).
+      // `openRun` that establishes the input-codec-message-id → run linkage —
+      // buffer it by input-codec-message-id so `openRun` can pull and honour
+      // it. A run-id cancel can likewise race a durable continuation's
+      // `openRun` (the client knows the run-id before this process registers
+      // it), so buffer that by run-id the same way.
       if (inputCodecMessageId !== undefined) {
         bufferDeferredCancel(inputCodecMessageId, msg);
+      } else if (runId !== undefined) {
+        const evicted = evictOldestIfFull(deferredCancelsByRunId, runId, DEFERRED_CANCEL_LIMIT);
+        if (evicted !== undefined) {
+          logger.warn('AgentTransport.handleCancelMessage(); deferred run-id cancel buffer full, dropping oldest', {
+            evictedRunId: evicted,
+            limit: DEFERRED_CANCEL_LIMIT,
+          });
+        }
+        deferredCancelsByRunId.set(runId, msg);
+        logger.debug('AgentTransport.handleCancelMessage(); buffered early run-id cancel', {
+          runId,
+          serial: msg.serial,
+        });
       }
       return;
     }
@@ -363,7 +379,7 @@ export const createAgentTransport = <TInput, TOutput>(
           500,
           errorCause(error),
         );
-        logger.error('AgentTransport.onMessage(); cancel routing error');
+        logger.error('AgentTransport.onMessage(); cancel routing error', { serial: message.serial });
         receiver.emitError(errInfo);
       });
     }
@@ -601,6 +617,7 @@ export const createAgentTransport = <TInput, TOutput>(
     const deregister = (): void => {
       registeredRuns.delete(runId);
       preOpenSteersByRunId.delete(runId);
+      deferredCancelsByRunId.delete(runId);
       if (inputCodecMessageId !== undefined) {
         if (runIdByInputCodecMessageId.get(inputCodecMessageId) === runId) {
           runIdByInputCodecMessageId.delete(inputCodecMessageId);
@@ -627,13 +644,17 @@ export const createAgentTransport = <TInput, TOutput>(
     }
 
     // Honour a cancel that arrived before this openRun established the
-    // input-codec-message-id → run linkage. Fire-and-forget: with no onCancel
-    // hook the abort happens synchronously (no await precedes it), and a hook
-    // error is surfaced inside cancelRegistration.
-    if (inputCodecMessageId !== undefined) {
-      const buffered = deferredCancels.get(inputCodecMessageId);
+    // input-codec-message-id → run linkage or registered the run-id.
+    // Fire-and-forget: with no onCancel hook the abort happens synchronously
+    // (no await precedes it), and a hook error is surfaced inside
+    // cancelRegistration.
+    {
+      const buffered =
+        (inputCodecMessageId === undefined ? undefined : deferredCancels.get(inputCodecMessageId)) ??
+        deferredCancelsByRunId.get(runId);
       if (buffered !== undefined) {
-        deferredCancels.delete(inputCodecMessageId);
+        if (inputCodecMessageId !== undefined) deferredCancels.delete(inputCodecMessageId);
+        deferredCancelsByRunId.delete(runId);
         logger.debug('AgentTransport.openRun(); honouring buffered cancel', { runId, inputCodecMessageId });
         void cancelRegistration(registration, buffered);
       }
@@ -669,11 +690,26 @@ export const createAgentTransport = <TInput, TOutput>(
     })();
     // Swallow a rejection here so an opened-but-never-piped run cannot surface
     // an unhandled rejection; the failure still propagates to any `pipe` / `end`
-    // await site through the same promise. A run whose open failed receives no
-    // signals, so drop its registration.
-    openPromise.catch(() => {
+    // await site through the same promise, and is also delivered to the run's
+    // `onError` hook — the only signal a caller that awaits no output verb
+    // (e.g. one waiting on the opening event's channel echo) can observe. A
+    // run whose open failed receives no signals, so drop its registration.
+    openPromise.catch((error: unknown) => {
       logger.error('AgentTransport.openRun(); open publish failed', { runId });
       deregister();
+      const onError = hooks?.onError;
+      if (!onError) return;
+      const errInfo = new Ably.ErrorInfo(
+        `unable to open run ${runId}; ${errorMessage(error)}`,
+        ErrorCode.SessionSendFailed,
+        500,
+        errorCause(error),
+      );
+      try {
+        onError(errInfo);
+      } catch {
+        logger.error('AgentTransport.openRun(); onError callback threw', { runId });
+      }
     });
 
     // The output verbs await the opening publish so `ai-run-start` precedes the
@@ -717,7 +753,7 @@ export const createAgentTransport = <TInput, TOutput>(
         consideredSteerIds.push(...ids);
         return ids;
       },
-      logger: options.logger,
+      logger,
       requireConnected,
       assertPublishable: (verb) => {
         if (state === 'open') return;

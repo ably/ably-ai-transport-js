@@ -217,14 +217,17 @@ export interface PublishInputResult {
   /** The per-publish `event-id` stamped on the wire — distinct from `codecMessageId`, this is what an agent's `locateInput` matches to find the input that woke an invocation. */
   eventId: string;
   /**
-   * The run-id of the run this input triggers. Resolves when the transport
-   * observes the first `ai-run-start` whose `input-codec-message-id` header
-   * matches this publish's {@link codecMessageId} — stamped when the agent
-   * opens its run with `inputCodecMessageId`, the same threading cancel
-   * routing relies on. Never resolves for an input that triggers no run.
-   * Rejects on {@link ClientTransport.close} and on channel continuity loss;
-   * a rejection handler is pre-attached, so a caller that ignores `runId`
-   * never sees an unhandled rejection.
+   * The run-id of the run this input triggers. A continuation
+   * ({@link PublishInputOptions.runId} set) resolves immediately with that id
+   * — the addressed run answers with `ai-run-resume`, which names no
+   * triggering input. A fresh publish resolves when the transport observes
+   * the first `ai-run-start` whose `input-codec-message-id` header matches
+   * this publish's {@link codecMessageId} — stamped when the agent opens its
+   * run with `inputCodecMessageId`, the same threading cancel routing relies
+   * on. Never resolves for a fresh input that triggers no run. Rejects on
+   * {@link ClientTransport.close} and on channel continuity loss; a rejection
+   * handler is pre-attached, so a caller that ignores `runId` never sees an
+   * unhandled rejection.
    */
   runId: Promise<string>;
 }
@@ -602,7 +605,7 @@ export interface OpenRunHooks<TOutput> {
 
   /**
    * Called with non-fatal run-scoped errors that have no other delivery
-   * path. Fires in two scenarios:
+   * path. Fires in three scenarios:
    * - Stream failures in `pipe` — the underlying error is also returned on
    *   {@link StreamResult.error}, but this callback delivers it wrapped as an
    *   `Ably.ErrorInfo` (code `RunResponseStreamFailed`) for standardized observability.
@@ -611,12 +614,16 @@ export interface OpenRunHooks<TOutput> {
    * - A throw from the `onSteer` handler (code `RunSteerHandlerFailed`). The run is
    *   unaffected — the steering message has already folded in, so only the
    *   notification failed.
+   * - A failed opening publish (`openRun` returns without awaiting it). The
+   *   failure also rejects every later output verb through the shared open
+   *   promise, but a caller that awaits no output verb — one waiting on the
+   *   opening event's channel echo, say — observes it only here.
    *
-   * Publish failures in the opening publish and `end` are not delivered here —
-   * those reject their returned promise with an `Ably.ErrorInfo`, and the
-   * caller should handle it at the await site. Run errors never render the
-   * transport unusable, but the run may be in an inconsistent state; the
-   * caller should typically `end` it with reason `'error'`.
+   * Publish failures in `end` are not delivered here — `end` rejects its
+   * returned promise with an `Ably.ErrorInfo`, and the caller should handle
+   * it at the await site. Run errors never render the transport unusable, but
+   * the run may be in an inconsistent state; the caller should typically
+   * `end` it with reason `'error'`.
    *
    * A failure in the `onCancel` or `onSteer` handler with no `onError` set
    * falls back to the transport's `error` stream so it is never silently

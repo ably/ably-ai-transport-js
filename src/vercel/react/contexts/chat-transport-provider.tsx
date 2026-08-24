@@ -5,13 +5,16 @@
  * and layers the {@link ChatTransport} useChat adapter over it.
  *
  * The adapter holds no conversation state, so it is created once per
- * transport (a channel-name change recreates both) and closed alongside it.
- * Descendants read the pair with
+ * transport (a channel-name change recreates both). A replaced adapter — a
+ * new transport, or changed route options — is closed once its successor
+ * commits, so it stops observing the transport; the final adapter needs no
+ * unmount close, because the generic provider closes the transport it
+ * subscribes to. Descendants read the pair with
  * {@link import('../use-chat-transport.js').useChatTransport} and hand
  * `chatTransport` straight to `useChat({ transport })`.
  */
 
-import { type PropsWithChildren, type ReactNode, useContext, useMemo } from 'react';
+import { type PropsWithChildren, type ReactNode, useContext, useEffect, useMemo, useRef } from 'react';
 
 import type { ClientTransportProviderProps } from '../../../react/index.js';
 import { ClientTransportProvider, useClientTransport } from '../../../react/index.js';
@@ -51,19 +54,36 @@ const ChatTransportBridge = ({
 }: PropsWithChildren<{ channelName: string; api?: string; reconnectScanPages?: number }>): ReactNode => {
   const { transport, error } = useClientTransport<VercelInput, VercelOutput>();
 
+  // Every adapter this bridge has created but not yet reconciled against a
+  // commit. The adapter subscribes to the transport on construction, so one
+  // created in a render that never commits (Strict Mode discards one of its
+  // double renders' memo results) must still be closed.
+  const createdAdaptersRef = useRef<ChatTransportSlot['chatTransport'][]>([]);
+
   const slot = useMemo<ChatTransportSlot>(() => {
     if (!transport) return { transport: undefined, chatTransport: undefined, error };
-    return {
+    const chatTransport = createChatTransport({
       transport,
-      chatTransport: createChatTransport({
-        transport,
-        channelName,
-        ...(api === undefined ? {} : { api }),
-        ...(reconnectScanPages === undefined ? {} : { reconnectScanPages }),
-      }),
-      error: undefined,
-    };
+      channelName,
+      ...(api === undefined ? {} : { api }),
+      ...(reconnectScanPages === undefined ? {} : { reconnectScanPages }),
+    });
+    createdAdaptersRef.current.push(chatTransport);
+    return { transport, chatTransport, error: undefined };
   }, [transport, error, channelName, api, reconnectScanPages]);
+
+  // Close every adapter the committed one replaced or superseded: a prior
+  // adapter (new transport or changed route options) and any discarded
+  // render's creation. Without this a replaced adapter would stay subscribed
+  // to a live transport, buffering pre-seed events for its lifetime.
+  useEffect(() => {
+    const survivors: ChatTransportSlot['chatTransport'][] = [];
+    for (const adapter of createdAdaptersRef.current) {
+      if (adapter === slot.chatTransport) survivors.push(adapter);
+      else adapter?.close();
+    }
+    createdAdaptersRef.current = survivors;
+  }, [slot]);
 
   const parentContext = useContext(ChatTransportContext);
   const contextValue = useMemo(

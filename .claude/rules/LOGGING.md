@@ -72,25 +72,25 @@ Log messages follow the pattern `ClassName.methodName(); <description>`:
 
 ```ts
 // Method entry (trace)
-this._logger.trace('ClientTransport.publishInput();');
+this._logger.trace('Foo.doThing();');
 
 // Successful completion (debug)
-this._logger.debug('DefaultRunManager.startRun(); run started', { runId });
+this._logger.debug('DefaultFoo.doThing(); thing done', { thingId });
 
 // With context object
-this._logger.debug('ClientTransport.publishInput(); input published', { codecMessageId, eventId });
+this._logger.debug('Foo.publish(); published', { messageId, eventId });
 
 // Decision/branch (debug)
-this._logger.debug('AgentTransport.openRun(); honouring buffered cancel', { runId, inputCodecMessageId });
+this._logger.debug('Foo.open(); honouring buffered request', { requestId });
 
 // Warning
-this._logger.warn('DefaultDecoderCore.decode(); unexpected message action', {
+this._logger.warn('DefaultFoo.decode(); unexpected message action', {
   action,
   serial: message.serial,
 });
 
 // Error
-this._logger.error('AgentTransport.openRun(); open publish failed', { runId });
+this._logger.error('Foo.open(); publish failed', { thingId });
 ```
 
 ## When to Log at Each Level

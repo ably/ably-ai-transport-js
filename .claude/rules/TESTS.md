@@ -34,11 +34,10 @@ Every exported function and every non-trivial internal module gets its own test 
 
 ### Style
 
-- Mock writers that record calls (`createMockWriter`, `createMockChannel`)
+- Mock writers that record calls (the mock channel helper records every publish for synchronous assertion)
 - `flushMicrotasks()` instead of `setTimeout` — never use timeouts in tests
-- `mockFetch.nextCall()` / `mockFetch.waitForCalls(n)` to await fire-and-forget POSTs
-- `mockChannel.waitForPublishes(n)` to await encoder publish operations
-- `simulateMessage()` for synchronous channel event simulation
+- Stub global `fetch` with a vi mock that mints a fresh `Response` per call
+- Deliver inbound messages by invoking the listener the mock channel captured at subscribe
 - For streams that stay open, simulate a terminal event (`finish`) to close deterministically, then drain with `reader.read()`
 
 ### What to unit test

@@ -1213,6 +1213,7 @@ describe('createAgentTransport', () => {
       let pages = 0;
 
       const result = await transport.history({
+        limit: 2,
         onPage: () => {
           pages++;
         },

@@ -15,6 +15,9 @@ types and functions it re-exports are public API. New codecs add a new entry
 point — plus a `/react` one if they ship React hooks — rather than changing an
 existing one.
 
+The entry points are listed here for orientation; the authoritative list is
+`package.json`'s `exports` map.
+
 | Entry point                            | Purpose                                                                    | Peer deps               |
 | -------------------------------------- | -------------------------------------------------------------------------- | ----------------------- |
 | `@ably/ai-transport`                   | Core, codec-agnostic transport and codec contracts                         | `ably`                  |

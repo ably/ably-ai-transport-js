@@ -34,9 +34,11 @@ Every exported function and every non-trivial internal module gets its own test 
 
 ### Style
 
-- Mock the channel and the writer rather than the Ably SDK; shared mocks live in `test/helper/`
+- Mock the channel and the writer rather than the Ably SDK; shared mocks live in `test/helper/` and record every publish for synchronous assertion
 - `flushMicrotasks()` instead of `setTimeout` — never use timeouts in tests
-- For streams that stay open, simulate a terminal event (`finish`) to close deterministically, then drain the reader
+- Stub global `fetch` with a vi mock that mints a fresh `Response` per call
+- Deliver inbound messages by invoking the listener the mock channel captured at subscribe
+- For streams that stay open, simulate a terminal event (`finish`) to close deterministically, then drain with `reader.read()`
 
 ### What to unit test
 

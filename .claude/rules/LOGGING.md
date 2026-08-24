@@ -82,7 +82,7 @@ Log messages follow the pattern `ClassName.methodName(); <description>`:
 this._logger.trace('DefaultFoo.bar();');
 
 // Successful completion (debug)
-this._logger.debug('DefaultRunManager.startRun(); run started', { runId });
+this._logger.debug('DefaultFoo.doThing(); thing done', { thingId });
 
 // With context object
 this._logger.debug('DefaultFoo.bar(); promoting serial', { msgId, serial });

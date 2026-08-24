@@ -69,9 +69,10 @@ Codes should either exist here or be a custom code in the `104xxx` range. Custom
 export enum ErrorCode {
   BadRequest = 40000,
   InvalidArgument = 40003,
-  // Custom SDK-specific codes (104xxx range)
-  StreamedMessageFinalizeFailed = 104000,
-  SessionSubscriptionFailed = 104001,
+  // Custom SDK-specific codes (104xxx range) — generic examples; the
+  // authoritative list is src/errors.ts
+  FooFailed = 104000,
+  BarError = 104001,
   // ...
 }
 ```

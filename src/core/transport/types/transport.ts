@@ -313,12 +313,15 @@ export interface ClientTransport<TInput, TOutput> extends TransportReceiver<TInp
   publishInput(event: TInput, opts?: PublishInputOptions): Promise<PublishInputResult>;
   /**
    * Publish an `ai-cancel` envelope targeting the given run. Stateless — the
-   * caller supplies a `runId` captured from a `run-lifecycle` start event. The
-   * envelope carries a per-cancel `event-id` for rewind redelivery; the read
-   * side ignores it, so cancels are idempotent. Requires {@link connect}.
-   * @param runId - The run to cancel.
+   * caller supplies the run's id. The envelope carries a per-cancel
+   * `event-id` for rewind redelivery; the read side ignores it, so cancels
+   * are idempotent. Requires {@link connect}.
+   * @param runId - The run to cancel: a run-id string from a `run-lifecycle`
+   *   start event, or a promise of one (typically
+   *   {@link PublishInputResult.runId}) — the cancel publishes once it
+   *   resolves, and this call rejects if it rejects.
    */
-  cancel(runId: string): Promise<void>;
+  cancel(runId: string | Promise<string>): Promise<void>;
   /**
    * Publish a steering input into an open run and observe whether the run's
    * output considered it. Returns synchronously with two promises:

@@ -46,6 +46,7 @@ import type { TransportEvent } from '../../../src/core/transport/types/transport
 import { ErrorCode } from '../../../src/errors.js';
 import { getTransportHeaders } from '../../../src/utils.js';
 import { createMockChannel, type MockChannel } from '../../helper/mock-channel.js';
+import { flushMicrotasks } from '../../helper/streams.js';
 import { boomMsg, inboundMessage, outputMsg } from '../../helper/wire-messages.js';
 
 interface TestInput {
@@ -490,6 +491,29 @@ describe('createClientTransport', () => {
       const [msg] = channel.publishCalls;
       const headers = getTransportHeaders(msg as Ably.InboundMessage);
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
+    });
+
+    it('accepts a pending run-id promise and publishes once it resolves', async () => {
+      const { transport, channel } = await setup();
+      const { promise, resolve } = Promise.withResolvers<string>();
+
+      const cancelled = transport.cancel(promise);
+      await flushMicrotasks();
+      expect(channel.publishCalls).toHaveLength(0);
+
+      resolve('run-2');
+      await cancelled;
+
+      expect(channel.publishCalls).toHaveLength(1);
+      const [msg] = channel.publishCalls;
+      expect(getTransportHeaders(msg as Ably.InboundMessage)[HEADER_RUN_ID]).toBe('run-2');
+    });
+
+    it('rejects without publishing when the run-id promise rejects', async () => {
+      const { transport, channel } = await setup();
+
+      await expect(transport.cancel(Promise.reject(new Error('no run')))).rejects.toThrow('no run');
+      expect(channel.publishCalls).toHaveLength(0);
     });
   });
 

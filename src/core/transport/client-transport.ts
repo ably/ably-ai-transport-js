@@ -271,10 +271,14 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     return { transportMessageId, eventId, runId };
   }
 
-  async cancel(runId: string): Promise<void> {
-    this._logger.trace('ClientTransport.cancel();', { runId });
+  async cancel(runId: string | Promise<string>): Promise<void> {
+    this._logger.trace('ClientTransport.cancel();', {
+      runId: typeof runId === 'string' ? runId : '(pending promise)',
+    });
     await this._requireOpen('cancel');
-    await this._channel.publish(buildCancelMessage({ runId }));
+    // A promise-valued runId (e.g. a fresh publishInput result's) resolves
+    // from the run's ai-run-start; the cancel publishes once it does.
+    await this._channel.publish(buildCancelMessage({ runId: await runId }));
   }
 
   steer(runId: string | Promise<string>, event: TInput): SteerResult {

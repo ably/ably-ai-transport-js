@@ -47,7 +47,14 @@ const stubChatRoute = (runId: string): void => {
   vi.stubGlobal('fetch', fetchMock);
 };
 
-const flush = async (): Promise<void> => new Promise((r) => setTimeout(r, 10));
+const flush = async (): Promise<void> => {
+  // The AbstractChat pipeline crosses macrotask boundaries (stream reads and
+  // state callbacks), so a pure microtask flush is not enough; yield the
+  // event loop a few times rather than sleeping a magic duration.
+  for (let i = 0; i < 10; i++) {
+    await new Promise((r) => setImmediate(r));
+  }
+};
 
 describe('ChatTransport drives useChat with no external message state', () => {
   beforeEach(() => {

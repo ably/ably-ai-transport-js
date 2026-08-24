@@ -1,5 +1,7 @@
 import type { StreamResult } from '@ably/ai-transport';
-import type { OpenAIMessage, OpenAIOutput } from '@ably/ai-transport/openai';
+import type { OpenAIOutput } from '@ably/ai-transport/openai';
+
+import type { OpenAIMessage } from '../../../lib/openai-thread';
 import type { Responses } from 'openai/resources/responses/responses';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 

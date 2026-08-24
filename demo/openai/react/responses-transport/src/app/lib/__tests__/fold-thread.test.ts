@@ -12,7 +12,9 @@
 import { describe, expect, it } from 'vitest';
 import * as Ably from 'ably';
 import type { TransportEvent, WireMeta } from '@ably/ai-transport';
-import type { OpenAIInput, OpenAIMessage, OpenAIOutput } from '@ably/ai-transport/openai';
+import type { OpenAIOutput } from '@ably/ai-transport/openai';
+
+import type { OpenAIInput, OpenAIMessage } from '../openai-thread';
 import type { Responses } from 'openai/resources/responses/responses';
 
 import { createThreadFold } from '../fold-thread';

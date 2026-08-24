@@ -26,7 +26,7 @@
 import { useMemo } from 'react';
 import type * as Ably from 'ably';
 import { EVENT_CANCEL } from '@ably/ai-transport';
-import type { OpenAIMessage } from '@ably/ai-transport/openai';
+import type { OpenAIMessage } from '../lib/openai-thread';
 import type { DemoStepId, Scenario } from '@ably-ai-demos/frontend/lib/progress-steps';
 
 import type { ThreadMessage } from '../lib/fold-thread';

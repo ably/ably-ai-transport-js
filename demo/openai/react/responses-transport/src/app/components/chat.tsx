@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAblyMessages, useClientTransport, useTransportEvents } from '@ably/ai-transport/react';
-import type { OpenAIInput, OpenAIOutput } from '@ably/ai-transport/openai';
+import type { OpenAIOutput } from '@ably/ai-transport/openai';
+
+import type { OpenAIInput } from '../lib/openai-thread';
 import { ChatShell } from '@ably-ai-demos/frontend/components/chat-shell';
 
 import { userTurn, wakeAgent } from '../helpers';

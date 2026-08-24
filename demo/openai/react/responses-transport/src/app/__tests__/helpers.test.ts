@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { OpenAIMessage } from '@ably/ai-transport/openai';
+import type { OpenAIMessage } from '../lib/openai-thread';
 
 import { turnText, userTurn } from '../helpers';
 

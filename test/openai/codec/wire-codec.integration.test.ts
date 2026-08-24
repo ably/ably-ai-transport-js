@@ -12,19 +12,19 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { HEADER_CODEC_MESSAGE_ID } from '../../../src/constants.js';
-import type { OpenAIInput, OpenAIOutput } from '../../../src/openai/codec/index.js';
+import type { OpenAIOutput } from '../../../src/openai/codec/index.js';
 import { ResponsesCodec } from '../../../src/openai/codec/index.js';
 import { getTransportHeaders } from '../../../src/utils.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
-import { eventsOfType, functionCallArgsRun, stampHeaders, textRun, userTurn } from './fixtures.js';
+import { eventsOfType, functionCallArgsRun, stampHeaders, textRun } from './fixtures.js';
 
 /** One decoded bucket: the outputs and inputs decoded under a codec-message-id. */
 interface Bucket {
   /** The decoded output events, in delivery order. */
   outputs: OpenAIOutput[];
   /** The decoded input events, in delivery order. */
-  inputs: OpenAIInput[];
+  inputs: unknown[];
 }
 
 /**
@@ -114,7 +114,7 @@ describe('OpenAI wire-codec integration', () => {
 
     await waitFor(
       () => eventsOfType(buckets.get('asst-1')?.outputs ?? [], 'response.output_item.done').length === 1,
-      'the reconstructed output_item.done',
+      'the expected wire events',
     );
 
     const outputs = buckets.get('asst-1')?.outputs ?? [];
@@ -150,7 +150,7 @@ describe('OpenAI wire-codec integration', () => {
 
     await waitFor(
       () => eventsOfType(buckets.get('asst-1')?.outputs ?? [], 'function_call_output').length === 1,
-      'the function_call_output item',
+      'the expected wire events',
     );
 
     const outputs = buckets.get('asst-1')?.outputs ?? [];
@@ -167,33 +167,35 @@ describe('OpenAI wire-codec integration', () => {
     expect(resolution?.item).toEqual({ type: 'function_call_output', call_id: 'call-1', output: '{"tempC":21}' });
   }, 30000);
 
-  it('roundtrips the client input kinds: message, item, and approval', async () => {
+  it('passes application-defined input bodies through the wire verbatim', async () => {
     const { pubChannel, buckets, waitFor } = await setupCollector(uniqueChannelName('openai-codec-inputs'));
     const encoder = ResponsesCodec.createEncoder(pubChannel, {
       onAblyMessage: stampHeaders('run-1', 'user-1'),
     });
-    await encoder.publishInput({ kind: 'message', payload: userTurn('What is the weather?') });
-    await encoder.publishInput(
-      { kind: 'item', payload: { type: 'function_call_output', call_id: 'call-1', output: '{"ok":true}' } },
-      { messageId: 'user-1' },
-    );
-    await encoder.publishInput(
-      { kind: 'approval', payload: { call_id: 'call-2', approved: false, reason: 'not now' } },
-      { messageId: 'user-1' },
-    );
+    // Inputs are passthrough JSON: these bodies are the application's own
+    // vocabulary, not codec types.
+    const turn = {
+      kind: 'message',
+      payload: {
+        role: 'user',
+        items: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'What is the weather?' }] }],
+      },
+    };
+    const resolution = {
+      kind: 'item',
+      payload: { type: 'function_call_output', call_id: 'call-1', output: '{"ok":true}' },
+    };
+    const decision = { kind: 'approval', payload: { call_id: 'call-2', approved: false, reason: 'not now' } };
+    await encoder.publishInput(turn);
+    await encoder.publishInput(resolution, { messageId: 'user-1' });
+    await encoder.publishInput(decision, { messageId: 'user-1' });
     await encoder.close();
 
     await waitFor(() => (buckets.get('user-1')?.inputs.length ?? 0) === 3, 'all three client inputs');
 
     const inputs = buckets.get('user-1')?.inputs ?? [];
-    expect(inputs[0]).toEqual({ kind: 'message', payload: userTurn('What is the weather?') });
-    expect(inputs[1]).toEqual({
-      kind: 'item',
-      payload: { type: 'function_call_output', call_id: 'call-1', output: '{"ok":true}' },
-    });
-    expect(inputs[2]).toEqual({
-      kind: 'approval',
-      payload: { call_id: 'call-2', approved: false, reason: 'not now' },
-    });
+    expect(inputs[0]).toEqual(turn);
+    expect(inputs[1]).toEqual(resolution);
+    expect(inputs[2]).toEqual(decision);
   }, 30000);
 });

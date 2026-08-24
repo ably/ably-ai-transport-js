@@ -18,7 +18,7 @@
 
 import { useClientTransport, useTransportEvents } from '@ably/ai-transport/react';
 import type { TransportEvent } from '@ably/ai-transport';
-import type { OpenAIInput, OpenAIOutput } from '@ably/ai-transport/openai';
+import type { OpenAIOutput } from '@ably/ai-transport/openai';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { createThreadFold, type RunSummary, type ThreadFold, type ThreadMessage } from '../lib/fold-thread';
@@ -73,12 +73,12 @@ const emptyState = (): ThreadState => ({
  * @returns The thread state; see {@link ResponsesThreadHandle}.
  */
 export function useResponsesThread(options: UseResponsesThreadOptions): ResponsesThreadHandle {
-  const { transport } = useClientTransport<OpenAIInput, OpenAIOutput>();
+  const { transport } = useClientTransport<unknown, OpenAIOutput>();
   const { channelName } = options;
   const historyApi = options.historyApi ?? '/api/messages';
 
   const foldRef = useRef<ThreadFold>(createThreadFold());
-  const bufferRef = useRef<TransportEvent<OpenAIInput, OpenAIOutput>[]>([]);
+  const bufferRef = useRef<TransportEvent<unknown, OpenAIOutput>[]>([]);
   const hydratedRef = useRef(false);
   const onFoldErrorRef = useRef(options.onFoldError);
   useEffect(() => {
@@ -98,7 +98,7 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
     });
   }, []);
 
-  const applyEvent = useCallback((event: TransportEvent<OpenAIInput, OpenAIOutput>) => {
+  const applyEvent = useCallback((event: TransportEvent<unknown, OpenAIOutput>) => {
     try {
       foldRef.current.apply(event);
     } catch (error) {
@@ -112,7 +112,7 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
     }
   }, []);
 
-  useTransportEvents<OpenAIInput, OpenAIOutput>((event) => {
+  useTransportEvents<unknown, OpenAIOutput>((event) => {
     if (!hydratedRef.current) {
       bufferRef.current.push(event);
       return;
@@ -148,7 +148,7 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
       // client's own attach point. Page backwards and keep only events newer
       // than the seam (Ably serials order lexicographically); a batch that
       // reaches the seam (or exhaustion) ends the walk.
-      const gap: TransportEvent<OpenAIInput, OpenAIOutput>[] = [];
+      const gap: TransportEvent<unknown, OpenAIOutput>[] = [];
       let exhausted = false;
       let reachedSeam = false;
       while (!exhausted && !reachedSeam && !disposed) {

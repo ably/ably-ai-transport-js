@@ -13,14 +13,14 @@
  * appearing on it is a layering regression, not a feature.
  *
  * The type-level half matters as much as the runtime half: a caller has to be
- * able to *name* the input and output unions to annotate their own state. Each
- * test below spells those types on a local, so dropping the type export breaks
- * the build here rather than in a consumer's.
+ * able to *name* the codec's event types to annotate their own state. Each test
+ * below spells those types on a local, so dropping the type export breaks the
+ * build here rather than in a consumer's.
  */
 
 import { describe, expect, it } from 'vitest';
 
-import type { OpenAIInput, OpenAIOutput } from '../src/openai/index.js';
+import type { ModelledOutputItem, OpenAIOutput } from '../src/openai/index.js';
 import { ResponsesCodec } from '../src/openai/index.js';
 import type { VercelInput, VercelOutput } from '../src/vercel/index.js';
 import { createUIMessageCodec } from '../src/vercel/index.js';
@@ -67,10 +67,10 @@ describe('@ably/ai-transport/openai', () => {
   });
 
   it('publishes the types a caller needs to name the codec events', () => {
-    const inputs: OpenAIInput[] = [];
     const outputs: OpenAIOutput[] = [];
+    const items: ModelledOutputItem[] = [];
 
-    expect(inputs).toEqual([]);
     expect(outputs).toEqual([]);
+    expect(items).toEqual([]);
   });
 });

@@ -10,17 +10,17 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_FORK_OF,
-  HEADER_INPUT_CODEC_MESSAGE_ID,
-  HEADER_INPUT_CODEC_MESSAGE_IDS,
+  HEADER_INPUT_TRANSPORT_MESSAGE_ID,
+  HEADER_INPUT_TRANSPORT_MESSAGE_IDS,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_ID,
-  HEADER_STEER_CODEC_MESSAGE_IDS,
+  HEADER_STEER_TRANSPORT_MESSAGE_IDS,
   HEADER_STEP_ID,
   HEADER_STEP_START_SERIAL,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../../src/constants.js';
 import { wireMetaFromMessage } from '../../../src/core/transport/wire-meta.js';
 import { inboundMessage } from '../../helper/wire-messages.js';
@@ -47,7 +47,7 @@ describe('wireMetaFromMessage', () => {
       inboundMessage({
         name: 'ai-output',
         transport: {
-          [HEADER_CODEC_MESSAGE_ID]: 'm1',
+          [HEADER_TRANSPORT_MESSAGE_ID]: 'm1',
           [HEADER_RUN_ID]: 'R1',
           [HEADER_STEP_ID]: 'step1',
           [HEADER_STEP_START_SERIAL]: 'ss1',
@@ -63,7 +63,7 @@ describe('wireMetaFromMessage', () => {
 
     expect(meta).toMatchObject({
       serial: 's1',
-      codecMessageId: 'm1',
+      transportMessageId: 'm1',
       runId: 'R1',
       stepId: 'step1',
       stepStartSerial: 'ss1',
@@ -83,35 +83,35 @@ describe('wireMetaFromMessage', () => {
           [HEADER_PARENT]: 'p1',
           [HEADER_FORK_OF]: 'f1',
           [HEADER_MSG_REGENERATE]: 'r1',
-          [HEADER_INPUT_CODEC_MESSAGE_ID]: 'i1',
+          [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: 'i1',
         },
       }),
     );
 
-    expect(meta).toMatchObject({ parent: 'p1', forkOf: 'f1', regenerates: 'r1', inputCodecMessageId: 'i1' });
+    expect(meta).toMatchObject({ parent: 'p1', forkOf: 'f1', regenerates: 'r1', inputTransportMessageId: 'i1' });
   });
 
-  it('parses the steer-codec-message-ids stamp into the typed field', () => {
+  it('parses the steer-transport-message-ids stamp into the typed field', () => {
     const meta = wireMetaFromMessage(
-      inboundMessage({ transport: { [HEADER_STEER_CODEC_MESSAGE_IDS]: '["s1","s2"]' } }),
+      inboundMessage({ transport: { [HEADER_STEER_TRANSPORT_MESSAGE_IDS]: '["s1","s2"]' } }),
     );
 
-    expect(meta.steerCodecMessageIds).toEqual(['s1', 's2']);
+    expect(meta.steerTransportMessageIds).toEqual(['s1', 's2']);
   });
 
-  it('parses the input-codec-message-ids receipt into the typed field', () => {
+  it('parses the input-transport-message-ids receipt into the typed field', () => {
     const meta = wireMetaFromMessage(
-      inboundMessage({ transport: { [HEADER_INPUT_CODEC_MESSAGE_IDS]: '["in-1","steer-1"]' } }),
+      inboundMessage({ transport: { [HEADER_INPUT_TRANSPORT_MESSAGE_IDS]: '["in-1","steer-1"]' } }),
     );
 
-    expect(meta.inputCodecMessageIds).toEqual(['in-1', 'steer-1']);
+    expect(meta.inputTransportMessageIds).toEqual(['in-1', 'steer-1']);
   });
 
   it('degrades a malformed steer stamp to undefined, keeping the raw header', () => {
-    const meta = wireMetaFromMessage(inboundMessage({ transport: { [HEADER_STEER_CODEC_MESSAGE_IDS]: '{bad' } }));
+    const meta = wireMetaFromMessage(inboundMessage({ transport: { [HEADER_STEER_TRANSPORT_MESSAGE_IDS]: '{bad' } }));
 
-    expect(meta.steerCodecMessageIds).toBeUndefined();
-    expect(meta.transport[HEADER_STEER_CODEC_MESSAGE_IDS]).toBe('{bad');
+    expect(meta.steerTransportMessageIds).toBeUndefined();
+    expect(meta.transport[HEADER_STEER_TRANSPORT_MESSAGE_IDS]).toBe('{bad');
   });
 
   it('leaves every typed field undefined when the headers and Ably fields are absent', () => {

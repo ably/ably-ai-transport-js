@@ -37,7 +37,10 @@ describe('useChatHydration', () => {
     // The gap: the batch referencing the newest stored id (a1) plus the
     // suspended tail the store never saw.
     const gapEvents = [
-      messageEvent({ codecMessageId: 'wire-a1', runId: 'run-1' }, { outputs: [{ type: 'start', messageId: 'a1' }] }),
+      messageEvent(
+        { transportMessageId: 'wire-a1', runId: 'run-1' },
+        { outputs: [{ type: 'start', messageId: 'a1' }] },
+      ),
       userEvent('wire-u2', 'u2', 'unpersisted turn'),
     ];
     fakeTransport.historyBatches = [

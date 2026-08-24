@@ -83,14 +83,14 @@ import type { AgentTransport } from '@ably/ai-transport';
 const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY });
 
 // Assemble the conversation from the channel: bucket each message's events by
-// its codec-message-id, then merge every bucket with the AI SDK's own reducer.
+// its transport-message-id, then merge every bucket with the AI SDK's own reducer.
 async function mergeConversation(transport: AgentTransport<VercelInput, VercelOutput>): Promise<UIMessage[]> {
   const buckets = new Map<string, UIMessageChunk[]>();
   const wholeMessages = new Map<string, UIMessage>();
   for (let batch = await transport.history(); ; batch = await transport.history()) {
     for (const event of batch.events) {
-      if (event.kind !== 'message' || event.meta.codecMessageId === undefined) continue;
-      const id = event.meta.codecMessageId;
+      if (event.kind !== 'message' || event.meta.transportMessageId === undefined) continue;
+      const id = event.meta.transportMessageId;
       const bucket = buckets.get(id) ?? [];
       buckets.set(id, bucket);
       bucket.push(...event.outputs);
@@ -143,7 +143,7 @@ export async function POST(req: Request) {
   const run = transport.openRun(
     {
       ...(runId ? { runId, publish: 'resume' as const } : {}),
-      ...(located?.meta.codecMessageId ? { inputCodecMessageId: located.meta.codecMessageId } : {}),
+      ...(located?.meta.transportMessageId ? { inputTransportMessageId: located.meta.transportMessageId } : {}),
     },
     { signal: req.signal }, // Fires when any client cancels this run
   );

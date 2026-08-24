@@ -8,7 +8,7 @@
  * run to suspend so a resume never races the run's still-streaming output (a
  * server tool in the same turn whose result has not merged yet). It runs the
  * tool in the browser, then hands a `kind: 'item'` input carrying the
- * `function_call_output` — addressed to the function_call's codec-message-id —
+ * `function_call_output` — addressed to the function_call's transport-message-id —
  * to `resolve`, which publishes it and wakes the agent only once every call on
  * the run is answered. The merge appends the output onto that message (paired
  * with its call by `call_id` at render time), and the continuation reuses the
@@ -19,7 +19,7 @@
  * re-execute on refresh. The `handledRef` dedup guards against a re-render
  * re-running an in-flight executor. Only the initiating client runs the tool:
  * the run's triggering input (the user message named by the run-start's
- * `inputCodecMessageId`) carries its publisher's clientId, and the gate on it
+ * `inputTransportMessageId`) carries its publisher's clientId, and the gate on it
  * keeps other tabs on the same channel — which see the call but lack the
  * browser context (geolocation) — from answering it.
  */
@@ -69,8 +69,8 @@ function parseArgs(argumentsJson: string): Record<string, unknown> {
 
 /** The clientId of the user message that triggered a run, or undefined when unknown. */
 function runInitiatorClientId(messages: ThreadMessage[], run: RunSummary): string | undefined {
-  if (run.inputCodecMessageId === undefined) return undefined;
-  return messages.find((message) => message.codecMessageId === run.inputCodecMessageId)?.clientId;
+  if (run.inputTransportMessageId === undefined) return undefined;
+  return messages.find((message) => message.transportMessageId === run.inputTransportMessageId)?.clientId;
 }
 
 /**
@@ -119,7 +119,7 @@ export function useClientTools(
         if (handledRef.current.has(item.call_id)) continue;
 
         handledRef.current.add(item.call_id);
-        void executeClientTool(resolve, message.codecMessageId, message.runId, item, onLog);
+        void executeClientTool(resolve, message.transportMessageId, message.runId, item, onLog);
       }
     }
   }, [messages, runs, clientId, resolve, onLog]);
@@ -128,7 +128,7 @@ export function useClientTools(
 /** Run one client-tool call and hand its result (or error) to the resolution gate. */
 async function executeClientTool(
   resolve: ResolveToolCall,
-  codecMessageId: string,
+  transportMessageId: string,
   runId: string,
   call: Extract<OpenAIItem, { type: 'function_call' }>,
   onLog?: (summary: string) => void,
@@ -152,7 +152,7 @@ async function executeClientTool(
   }
 
   await resolve({
-    codecMessageId,
+    transportMessageId,
     runId,
     callId: call.call_id,
     inputs: [{ kind: 'item', payload: { type: 'function_call_output', call_id: call.call_id, output } }],

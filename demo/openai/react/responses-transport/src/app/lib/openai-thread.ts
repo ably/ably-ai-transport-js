@@ -100,7 +100,7 @@ export interface OpenAIRegenerateInput {
 /**
  * A tool resolution: OpenAI's own `function_call_output` item, published
  * against the assistant message holding the `function_call` (addressed by the
- * publish options' `codecMessageId`).
+ * publish options' `transportMessageId`).
  */
 export interface OpenAIItemInput {
   /** Discriminator. */

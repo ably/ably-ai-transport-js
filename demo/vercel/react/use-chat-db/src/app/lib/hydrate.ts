@@ -34,8 +34,8 @@ export interface GapEvents {
 /**
  * Whether a classified event carries the message with the given domain id —
  * the signal that paging has reached the newest stored message. Three ways a
- * wire event references it: the wire codec-message-id equals it (the merge
- * falls back to the codec-message-id as the domain id when a stream names
+ * wire event references it: the wire transport-message-id equals it (the merge
+ * falls back to the transport-message-id as the domain id when a stream names
  * none), a `message`-kind input carries it as its payload's `id`, or an
  * output `start` chunk names it as the stream's `messageId`.
  * @param event - The classified event to test.
@@ -44,7 +44,7 @@ export interface GapEvents {
  */
 const referencesMessage = (event: ChatTransportEvent, domainId: string): boolean => {
   if (event.kind !== 'message') return false;
-  if (event.meta.codecMessageId === domainId) return true;
+  if (event.meta.transportMessageId === domainId) return true;
   if (event.inputs.some((input) => input.kind === 'message' && input.payload.id === domainId)) return true;
   return event.outputs.some((output) => output.type === 'start' && output.messageId === domainId);
 };

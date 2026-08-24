@@ -6,7 +6,7 @@
  *
  * How it merges:
  *
- * - `message` events bucket by `meta.codecMessageId`, in first-seen order —
+ * - `message` events bucket by `meta.transportMessageId`, in first-seen order —
  *   the logical message a wire event belongs to.
  * - Agent outputs and `kind: 'chunk'` inputs (tool resolutions) are UIMessage
  *   chunks; each bucket's chunks replay through the AI SDK's own reducer,
@@ -44,7 +44,7 @@ const isToolPart = (part: UIMessage['parts'][number]): part is ToolPart =>
 
 /**
  * Merge a whole-message input into the bucket. The first one is taken as the
- * base; later echoes of the same codec-message-id contribute only parts not
+ * base; later echoes of the same transport-message-id contribute only parts not
  * already present (JSON equality), so the optimistic echo and the wire echo
  * merge to one message.
  */
@@ -99,7 +99,7 @@ export const mergeMessages = async (events: readonly VercelTransportEvent[]): Pr
   const buckets = new Map<string, Bucket>();
   for (const event of events) {
     if (event.kind !== 'message') continue;
-    const id = event.meta.codecMessageId;
+    const id = event.meta.transportMessageId;
     if (id === undefined) continue;
     let bucket = buckets.get(id);
     if (!bucket) {

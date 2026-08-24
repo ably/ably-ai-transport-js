@@ -67,13 +67,13 @@ export const inputs = ({ event, batch }: InputBuilder<VercelInput>): readonly In
   // --- multi-part client message ------------------------------------------------
 
   // The message fans out into one wire event per part, all sharing the
-  // `message` kind and codec-message-id, each carrying its `partType`. The
+  // `message` kind and transport-message-id, each carrying its `partType`. The
   // message id (a codec header) and role (a transport header) are per-message,
   // stamped on every part so the decode side can rebuild the envelope from any
-  // one; a consumer merges parts sharing a codec-message-id.
+  // one; a consumer merges parts sharing a transport-message-id.
   batch('message', {
     // A message with no encodable parts (empty, or only unmapped types like
-    // step-start) still publishes one empty text part, so the codec-message-id
+    // step-start) still publishes one empty text part, so the transport-message-id
     // and role survive and it round-trips to a one-part message. The driver's
     // bare-headers fallback cannot round-trip (it carries no partType), so the
     // ≥1-encodable-part guarantee lives here.

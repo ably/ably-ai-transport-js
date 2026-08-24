@@ -23,7 +23,7 @@ afterEach(() => {
 /**
  * A stand-in for the run's publishing surface. Each `pipe` drains its stream
  * into its own message, mirroring the transport minting a fresh
- * `codec-message-id` per pipe — so `messages` holds one entry per unit of work
+ * `transport-message-id` per pipe — so `messages` holds one entry per unit of work
  * the loop published.
  */
 function makeRun(signal: AbortSignal): {
@@ -136,7 +136,7 @@ describe('runAgentLoop', () => {
     const events = messages[0] ?? [];
 
     // The function_call and its approval request ride the SAME message. Their
-    // shared codec-message-id is why the client's later approval-response — and
+    // shared transport-message-id is why the client's later approval-response — and
     // its pending/decided state — merge onto one message rather than stranding.
     // The full call — its name and call_id — rides the output_item.added
     // envelope (the function_call_arguments stream's opener); output_item.done

@@ -54,9 +54,9 @@ function argsSummary(args: string): string | undefined {
 interface ToolInvocationProps {
   /** The tool display part — the call plus its approval decision and output. */
   part: Extract<DisplayPart, { kind: 'tool' }>;
-  /** Approve a pending gated call. Bound by the list to this call's codec-message-id + call_id. */
+  /** Approve a pending gated call. Bound by the list to this call's transport-message-id + call_id. */
   onApprove?: () => void;
-  /** Deny a pending gated call. Bound by the list to this call's codec-message-id + call_id. */
+  /** Deny a pending gated call. Bound by the list to this call's transport-message-id + call_id. */
   onDeny?: () => void;
 }
 

@@ -15,7 +15,7 @@ function historyOf(...batches: Event[][]): HistorySource {
 }
 
 const startEvent = (wireId: string, domainId: string): Event =>
-  messageEvent({ codecMessageId: wireId, runId: 'run-1' }, { outputs: [{ type: 'start', messageId: domainId }] });
+  messageEvent({ transportMessageId: wireId, runId: 'run-1' }, { outputs: [{ type: 'start', messageId: domainId }] });
 
 describe('collectGapEvents', () => {
   it('pages to the channel start when nothing is stored, collecting oldest-first', async () => {
@@ -52,8 +52,8 @@ describe('collectGapEvents', () => {
     expect(result.events).toEqual([...stored, ...gap]);
   });
 
-  it('stops when the wire codec-message-id equals the newest stored id', async () => {
-    const stored = [messageEvent({ codecMessageId: 'm1' }, { outputs: [{ type: 'finish' }] })];
+  it('stops when the wire transport-message-id equals the newest stored id', async () => {
+    const stored = [messageEvent({ transportMessageId: 'm1' }, { outputs: [{ type: 'finish' }] })];
     const source = historyOf(stored, [userEvent('wire-u0', 'u0')]);
 
     const result = await collectGapEvents(source, 'm1');
@@ -68,7 +68,7 @@ describe('mergeConversation', () => {
     const gapEvents = [
       userEvent('wire-u2', 'u2'),
       messageEvent(
-        { codecMessageId: 'wire-a2', runId: 'run-2' },
+        { transportMessageId: 'wire-a2', runId: 'run-2' },
         {
           outputs: [
             { type: 'start', messageId: 'a2' },
@@ -105,7 +105,7 @@ describe('mergeConversation', () => {
     const gapEvents = [
       // Tail of the stored older assistant's stream — no start, so it merges
       // under the wire id 'wire-a0'.
-      messageEvent({ codecMessageId: 'wire-a0', runId: 'run-0' }, { outputs: [{ type: 'text-end', id: 't1' }] }),
+      messageEvent({ transportMessageId: 'wire-a0', runId: 'run-0' }, { outputs: [{ type: 'text-end', id: 't1' }] }),
       // The seam (the newest stored message) and the genuinely new tail.
       userEvent('wire-u1', 'u1', 'seam'),
       userEvent('wire-u2', 'u2', 'new turn'),

@@ -4,7 +4,7 @@
  * Prove the full send → stream → receive lifecycle through
  * `createClientTransport` and `createAgentTransport`, with the Vercel codec on
  * the wire and message assembly done the way an application does it: bucket
- * the classified events by codec-message-id and merge each bucket through the
+ * the classified events by transport-message-id and merge each bucket through the
  * provider's own reducer (`readUIMessageStream`). The SDK merges nothing.
  *
  * Scenarios follow the testing strategy's list — text roundtrip through the
@@ -67,7 +67,7 @@ const waitForEvents = async (
 
 /**
  * The application's demultiplex-and-merge: bucket output chunks (and
- * chunk-shaped input bodies) by codec-message-id in first-seen order, merge
+ * chunk-shaped input bodies) by transport-message-id in first-seen order, merge
  * each bucket through the provider's own reducer, and return the final
  * message per bucket.
  * @param events - The classified events, in delivery order.
@@ -81,7 +81,7 @@ const mergeMessages = async (events: Event[]): Promise<AI.UIMessage[]> => {
   const buckets = new Map<string, Bucket>();
   for (const event of events) {
     if (event.kind !== 'message') continue;
-    const id = event.meta.codecMessageId;
+    const id = event.meta.transportMessageId;
     if (id === undefined) continue;
     const bucket = buckets.get(id) ?? { chunks: [] };
     buckets.set(id, bucket);
@@ -217,7 +217,7 @@ const runAgentTurn = async (
 ): Promise<string> => {
   const located = await locateWithRetry(agent, eventId);
   const run = agent.openRun({
-    ...(located.meta.codecMessageId !== undefined && { inputCodecMessageId: located.meta.codecMessageId }),
+    ...(located.meta.transportMessageId !== undefined && { inputTransportMessageId: located.meta.transportMessageId }),
   });
   await run.pipe(source);
   await run.end({ reason: 'complete' });
@@ -268,7 +268,9 @@ describe('standalone transport integration', () => {
     // Turn 1: the agent calls a client tool and suspends.
     const located = await locateWithRetry(agent, sent.eventId);
     const run = agent.openRun({
-      ...(located.meta.codecMessageId !== undefined && { inputCodecMessageId: located.meta.codecMessageId }),
+      ...(located.meta.transportMessageId !== undefined && {
+        inputTransportMessageId: located.meta.transportMessageId,
+      }),
     });
     await run.pipe(
       new ReadableStream<VercelOutput>({
@@ -289,13 +291,13 @@ describe('standalone transport integration', () => {
     await run.suspend();
     await waitForEvents(events, (all) => lifecycleOf(all).some((e) => e.type === 'suspend'));
 
-    // The assistant's codec-message-id, read off the wire like the useChat
+    // The assistant's transport-message-id, read off the wire like the useChat
     // adapter does.
     const assistantEvent = events.find(
       (e) => e.kind === 'message' && e.meta.runId === run.runId && e.outputs.length > 0,
     );
-    const assistantId = assistantEvent?.kind === 'message' ? assistantEvent.meta.codecMessageId : undefined;
-    if (assistantId === undefined) throw new Error('no assistant codec-message-id observed');
+    const assistantId = assistantEvent?.kind === 'message' ? assistantEvent.meta.transportMessageId : undefined;
+    if (assistantId === undefined) throw new Error('no assistant transport-message-id observed');
 
     // The client resolves the tool with the provider's own chunk, addressed to
     // the assistant, under the suspended run.
@@ -304,7 +306,7 @@ describe('standalone transport integration', () => {
         kind: 'chunk',
         payload: { type: 'tool-output-available', toolCallId: 'tc-1', output: { city: 'Berlin' }, dynamic: true },
       },
-      { codecMessageId: assistantId, runId: run.runId },
+      { transportMessageId: assistantId, runId: run.runId },
     );
 
     await waitForEvents(events, (all) =>
@@ -378,13 +380,13 @@ describe('standalone transport integration', () => {
     expect(messages.map((message) => textOf(message))).toEqual(['one', 'answer one', 'two', 'answer two']);
     // Every assistant event names its own run.
     for (const event of events) {
-      if (event.kind === 'message' && event.meta.codecMessageId === 'a2') {
+      if (event.kind === 'message' && event.meta.transportMessageId === 'a2') {
         expect(event.meta.runId).toBe(runB);
       }
     }
   }, 45_000);
 
-  it('concurrent runs: interleaved streams demultiplex by codec-message-id', async () => {
+  it('concurrent runs: interleaved streams demultiplex by transport-message-id', async () => {
     const { agent, events } = await setup('t-concurrent');
 
     const runA = agent.openRun();

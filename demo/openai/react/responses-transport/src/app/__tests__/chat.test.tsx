@@ -82,7 +82,7 @@ const makeMeta = (overrides: Partial<WireMeta>): WireMeta => ({
   codec: {},
   headers: {},
   serial: 's-1',
-  codecMessageId: undefined,
+  transportMessageId: undefined,
   runId: undefined,
   stepId: undefined,
   stepStartSerial: undefined,
@@ -95,15 +95,15 @@ const makeMeta = (overrides: Partial<WireMeta>): WireMeta => ({
   parent: undefined,
   forkOf: undefined,
   regenerates: undefined,
-  inputCodecMessageId: undefined,
-  inputCodecMessageIds: undefined,
-  steerCodecMessageIds: undefined,
+  inputTransportMessageId: undefined,
+  inputTransportMessageIds: undefined,
+  steerTransportMessageIds: undefined,
   ...overrides,
 });
 
-const userMessageEvent = (codecMessageId: string, text: string): Event => ({
+const userMessageEvent = (transportMessageId: string, text: string): Event => ({
   kind: 'message',
-  meta: makeMeta({ codecMessageId, role: 'user', clientId: 'user-a' }),
+  meta: makeMeta({ transportMessageId, role: 'user', clientId: 'user-a' }),
   inputs: [
     {
       kind: 'message',
@@ -121,21 +121,21 @@ const messageItem = (id: string, text: string): Responses.ResponseOutputMessage 
   content: [{ type: 'output_text', text, annotations: [] }],
 });
 
-const assistantTurnEvent = (codecMessageId: string, runId: string, text: string): Event => ({
+const assistantTurnEvent = (transportMessageId: string, runId: string, text: string): Event => ({
   kind: 'message',
-  meta: makeMeta({ codecMessageId, role: 'assistant', runId }),
+  meta: makeMeta({ transportMessageId, role: 'assistant', runId }),
   inputs: [],
   // CAST: mirrors the decoded item envelope, which carries no sequence_number.
   outputs: [
     {
       type: 'response.output_item.added',
-      item: messageItem(`i-${codecMessageId}`, text),
+      item: messageItem(`i-${transportMessageId}`, text),
       output_index: 0,
     } as OpenAIOutput,
   ],
 });
 
-const runStart = (runId: string, inputCodecMessageId?: string): Event => ({
+const runStart = (runId: string, inputTransportMessageId?: string): Event => ({
   kind: 'run-lifecycle',
   event: {
     type: 'start',
@@ -143,7 +143,7 @@ const runStart = (runId: string, inputCodecMessageId?: string): Event => ({
     clientId: 'agent',
     invocationId: 'inv-1',
     serial: 's-run',
-    ...(inputCodecMessageId !== undefined && { inputCodecMessageId }),
+    ...(inputTransportMessageId !== undefined && { inputTransportMessageId }),
   },
 });
 
@@ -200,7 +200,7 @@ describe('<Chat>', () => {
     mockState.publishInput.mockReset();
     mockState.publishInput.mockImplementation(
       async (): Promise<PublishInputResult> => ({
-        codecMessageId: 'cm-user-1',
+        transportMessageId: 'cm-user-1',
         eventId: 'ev-1',
         runId: Promise.resolve('run-1'),
       }),

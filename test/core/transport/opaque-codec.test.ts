@@ -70,7 +70,7 @@ describe('transports over a discriminant-free codec', () => {
     await transport.connect();
 
     const sent = await transport.publishInput({ text: 'hello' });
-    expect(sent.codecMessageId).toBeTruthy();
+    expect(sent.transportMessageId).toBeTruthy();
     // The published wire carries the input object as its JSON form, untouched.
     const published = channel.publishCalls.find((m) => m.name === 'ai-input');
     // CAST: this codec's own wire data is its JSON form.

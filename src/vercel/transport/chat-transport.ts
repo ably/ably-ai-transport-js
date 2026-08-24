@@ -15,7 +15,7 @@
  * - **Continuation** (last message is an assistant with tool parts the user
  *   just resolved): publish one action per resolved tool part not yet
  *   published — a tool-output chunk body, or the approval-decision body —
- *   addressed to the assistant's wire codec-message-id, then POST
+ *   addressed to the assistant's wire transport-message-id, then POST
  *   `{channelName, eventId, runId}` — the agent resumes that run. Actions are
  *   published only on `sendMessages`, never spontaneously on observing a
  *   resolved part, so a hydrated page cannot re-trigger a continuation for
@@ -25,7 +25,7 @@
  *   taken from the message array useChat hands over, then POST a fresh run.
  *
  * The adapter keeps three things off {@link WireMeta}, none of them a merge:
- * an index from a message's domain id to the `codecMessageId` and `runId` the
+ * an index from a message's domain id to the `transportMessageId` and `runId` the
  * wire already carries on every event (needed only for messages this client
  * did not publish — its own sends learn both from the publish result), the
  * per-kind sets of `toolCallId`s an action has already been published for
@@ -122,7 +122,7 @@ export interface ChatTransport<
 > extends SdkChatTransport<AI.UIMessage<TMetadata, TDataParts, TTools>> {
   /**
    * Seed the adapter's wire indices from history events the application
-   * already read (its hydration pass): the domain-id to codec-message-id and
+   * already read (its hydration pass): the domain-id to transport-message-id and
    * run-id index, and the published-`toolCallId` set. Call it once, after
    * hydration; live events observed before the call are held back and indexed
    * after the (strictly older) seed events, keeping the indices chronological.
@@ -159,8 +159,8 @@ interface StreamingEvents {
 
 /** The wire identity the adapter keeps per domain message id. */
 interface WireIdentity {
-  /** The message's wire codec-message-id — what an action addresses. */
-  codecMessageId: string;
+  /** The message's wire transport-message-id — what an action addresses. */
+  transportMessageId: string;
   /** The run the message was published under, or `undefined` for a run-less input. */
   runId: string | undefined;
 }
@@ -428,7 +428,7 @@ class DefaultChatTransport<
     try {
       const sent = await this._transport.publishInput({ kind: 'message', payload: message });
       // Index the send locally: the publish result already names both ids.
-      this._wireIdentityByMessageId.set(message.id, { codecMessageId: sent.codecMessageId, runId: undefined });
+      this._wireIdentityByMessageId.set(message.id, { transportMessageId: sent.transportMessageId, runId: undefined });
       const response = await this._postChat({ eventId: sent.eventId });
       collector.setRunId(response.runId);
     } catch (error) {
@@ -465,7 +465,7 @@ class DefaultChatTransport<
       let eventId = '';
       for (const action of actions) {
         const sent = await this._transport.publishInput(action.input, {
-          codecMessageId: action.codecMessageId,
+          transportMessageId: action.transportMessageId,
           runId,
         });
         this._publishedActionSet(action.kind).add(action.toolCallId);
@@ -526,8 +526,8 @@ class DefaultChatTransport<
       const sent = await this._transport.publishInput(
         { kind: 'regenerate' },
         {
-          regenerates: target.codecMessageId,
-          ...(parent === undefined ? {} : { parent: parent.codecMessageId }),
+          regenerates: target.transportMessageId,
+          ...(parent === undefined ? {} : { parent: parent.transportMessageId }),
         },
       );
       const response = await this._postChat({ eventId: sent.eventId });
@@ -544,7 +544,7 @@ class DefaultChatTransport<
    * action per resolved part not yet published: the approval-decision body for
    * an `approval-responded` part, or the provider's own tool-output chunk for
    * an `output-available` / `output-error` part. Each action addresses the
-   * assistant's wire codec-message-id and names the run to continue.
+   * assistant's wire transport-message-id and names the run to continue.
    * @param messages - useChat's current message list.
    * @returns The actions and the suspended run's id, or `undefined` when nothing needs publishing.
    */
@@ -552,7 +552,7 @@ class DefaultChatTransport<
     | {
         actions: {
           input: VercelInput<TMetadata, TDataParts, TTools>;
-          codecMessageId: string;
+          transportMessageId: string;
           toolCallId: string;
           kind: 'approval' | 'output';
         }[];
@@ -561,7 +561,7 @@ class DefaultChatTransport<
     | undefined {
     const actions: {
       input: VercelInput<TMetadata, TDataParts, TTools>;
-      codecMessageId: string;
+      transportMessageId: string;
       toolCallId: string;
       kind: 'approval' | 'output';
     }[] = [];
@@ -623,7 +623,12 @@ class DefaultChatTransport<
         // Dedup per action kind: an approved call still owes its output, so a
         // published approval must not swallow the later tool-output action.
         if (this._publishedActionSet(kind).has(overlayPart.toolCallId)) continue;
-        actions.push({ input, codecMessageId: identity.codecMessageId, toolCallId: overlayPart.toolCallId, kind });
+        actions.push({
+          input,
+          transportMessageId: identity.transportMessageId,
+          toolCallId: overlayPart.toolCallId,
+          kind,
+        });
         runId ??= identity.runId;
       }
     }
@@ -649,10 +654,10 @@ class DefaultChatTransport<
   private _indexEvent(event: AdapterEvent<TMetadata, TDataParts, TTools>): void {
     this._retainRunEvent(event);
     if (event.kind !== 'message') return;
-    const { codecMessageId, runId, role } = event.meta;
-    if (codecMessageId !== undefined) {
+    const { transportMessageId, runId, role } = event.meta;
+    if (transportMessageId !== undefined) {
       // The domain id: an output stream's `start` chunk carries it; a message
-      // input carries it on its body. Fall back to the codec-message-id — the
+      // input carries it on its body. Fall back to the transport-message-id — the
       // id the provider reducer assigns when no start named one.
       let domainId: string | undefined;
       for (const output of event.outputs) {
@@ -660,19 +665,19 @@ class DefaultChatTransport<
         // Structural read: the generic chunk union does not narrow by `type`,
         // but only the start chunk carries `messageId`.
         const startId = 'messageId' in output && typeof output.messageId === 'string' ? output.messageId : undefined;
-        domainId = startId ?? codecMessageId;
+        domainId = startId ?? transportMessageId;
       }
       for (const input of event.inputs) {
         if (input.kind === 'message') domainId = input.payload.id;
       }
       if (domainId !== undefined) {
-        const identity = { codecMessageId, runId };
+        const identity = { transportMessageId, runId };
         this._wireIdentityByMessageId.set(domainId, identity);
         if (role === 'assistant') this._newestAssistant = identity;
       } else if (role === 'assistant' && runId !== undefined) {
         // An assistant event with no start in this wire (a mid-stream append):
         // keep the newest-assistant cursor fresh without a domain id.
-        this._newestAssistant = { codecMessageId, runId };
+        this._newestAssistant = { transportMessageId, runId };
       }
     }
     for (const input of event.inputs) {

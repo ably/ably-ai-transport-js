@@ -5,7 +5,7 @@
  * attaches the channel, after which live wires classify onto the
  * `subscribe`/`on('event')` stream and `ai-cancel` envelopes route onto the
  * matching run handle's `abortSignal` (by run-id, by the triggering input's
- * codec-message-id, or from the deferred buffer when the cancel beat its
+ * transport-message-id, or from the deferred buffer when the cancel beat its
  * `openRun`). `openRun` publishes `ai-run-start` (or `ai-run-resume` for a
  * continuation) and returns a run handle whose `pipe` / `createStep` stream
  * output between an `ai-step-start` / `ai-step-end` bracket; the writer's
@@ -18,9 +18,9 @@
  * wiring: no live emission, a cursor kept across calls, and decode failures
  * routed onto `error`. A steering message — a client input under an open
  * run's run-id — routes onto the run's steer tracking (`hasInput()`, the
- * `onSteer` hint, and the `steer-codec-message-ids` stamp on the next step
+ * `onSteer` hint, and the `steer-transport-message-ids` stamp on the next step
  * attempt), buffering pre-open arrivals; the run's terminal (`ai-run-end` /
- * `ai-run-suspend`) carries the `input-codec-message-ids` receipt naming the
+ * `ai-run-suspend`) carries the `input-transport-message-ids` receipt naming the
  * trigger and every stamped steer once the run has produced output.
  * `close()` unsubscribes and is terminal. These tests pin that
  * contract against a mock channel and a minimal codec double, driving the
@@ -32,14 +32,14 @@ import { describe, expect, it } from 'vitest';
 
 import {
   EVENT_CANCEL,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
-  HEADER_INPUT_CODEC_MESSAGE_ID,
-  HEADER_INPUT_CODEC_MESSAGE_IDS,
+  HEADER_INPUT_TRANSPORT_MESSAGE_ID,
+  HEADER_INPUT_TRANSPORT_MESSAGE_IDS,
   HEADER_INVOCATION_ID,
   HEADER_PARENT,
   HEADER_RUN_ID,
-  HEADER_STEER_CODEC_MESSAGE_IDS,
+  HEADER_STEER_TRANSPORT_MESSAGE_IDS,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../../src/constants.js';
 import type { ChannelWriter, Decoder, Encoder, EncoderOptions, WireCodec } from '../../../src/core/codec/types.js';
 import { createAgentTransport } from '../../../src/core/transport/agent-transport.js';
@@ -127,32 +127,32 @@ const cancelMsg = (headers: Record<string, string>): Ably.InboundMessage =>
 /**
  * Build an inbound steering wire: a client input under a run's run-id.
  * @param runId - The run the steer targets.
- * @param codecMessageId - The steering message's codec-message-id.
+ * @param transportMessageId - The steering message's transport-message-id.
  * @returns The wire message.
  */
-const steerMsg = (runId: string, codecMessageId: string): Ably.InboundMessage =>
-  wireMsg({ [HEADER_RUN_ID]: runId, [HEADER_CODEC_MESSAGE_ID]: codecMessageId });
+const steerMsg = (runId: string, transportMessageId: string): Ably.InboundMessage =>
+  wireMsg({ [HEADER_RUN_ID]: runId, [HEADER_TRANSPORT_MESSAGE_ID]: transportMessageId });
 
 /**
  * Read the steer stamp the writer put on a published output message.
  * @param message - The message the per-run `onAblyMessage` hook observed.
- * @returns The raw `steer-codec-message-ids` header, or `undefined`.
+ * @returns The raw `steer-transport-message-ids` header, or `undefined`.
  */
 const steerStampOf = (message: Ably.Message): string | undefined =>
   // CAST: the hook observes the outbound message; only its extras are read.
-  getTransportHeaders(message as Ably.InboundMessage)[HEADER_STEER_CODEC_MESSAGE_IDS];
+  getTransportHeaders(message as Ably.InboundMessage)[HEADER_STEER_TRANSPORT_MESSAGE_IDS];
 
 /**
  * Read the input receipt off a published run lifecycle message.
  * @param channel - The mock channel that captured the publish.
  * @param name - The lifecycle message name (`ai-run-end` or `ai-run-suspend`).
- * @returns The raw `input-codec-message-ids` header, or `undefined`.
+ * @returns The raw `input-transport-message-ids` header, or `undefined`.
  */
 const receiptOf = (channel: MockChannel, name: string): string | undefined => {
   const msg = channel.publishCalls.find((m) => m.name === name);
   if (!msg) throw new Error(`expected ${name}`);
   // CAST: the mock captured the outbound message; only its extras are read.
-  return getTransportHeaders(msg as Ably.InboundMessage)[HEADER_INPUT_CODEC_MESSAGE_IDS];
+  return getTransportHeaders(msg as Ably.InboundMessage)[HEADER_INPUT_TRANSPORT_MESSAGE_IDS];
 };
 
 /**
@@ -286,8 +286,8 @@ describe('createAgentTransport', () => {
     it('drops a cancel that names no run-id — the wire addresses runs by run-id only', async () => {
       const { transport, channel } = await setup();
 
-      const run = transport.openRun({ inputCodecMessageId: 'in-1' });
-      channel.listener?.(cancelMsg({ [HEADER_INPUT_CODEC_MESSAGE_ID]: 'in-1' }));
+      const run = transport.openRun({ inputTransportMessageId: 'in-1' });
+      channel.listener?.(cancelMsg({ [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: 'in-1' }));
       await flushMicrotasks();
 
       expect(run.abortSignal.aborted).toBe(false);
@@ -550,7 +550,7 @@ describe('createAgentTransport', () => {
       const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
       let steers = 0;
 
-      const run = transport.openRun({ runId: 'run-1', inputCodecMessageId: 'in-1' }, { onSteer: () => steers++ });
+      const run = transport.openRun({ runId: 'run-1', inputTransportMessageId: 'in-1' }, { onSteer: () => steers++ });
       await run.pipe(streamOf({ type: 'out' }));
       channel.listener?.(steerMsg('run-1', 'in-1'));
 
@@ -703,7 +703,7 @@ describe('createAgentTransport', () => {
     it('stamps the trigger and every stamped steer on the run-end', async () => {
       const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
 
-      const run = transport.openRun({ runId: 'run-1', inputCodecMessageId: 'in-1' });
+      const run = transport.openRun({ runId: 'run-1', inputTransportMessageId: 'in-1' });
       await run.pipe(streamOf({ type: 'out' }));
       channel.listener?.(steerMsg('run-1', 'steer-1'));
       expect(run.hasInput()).toBe(true);
@@ -716,7 +716,7 @@ describe('createAgentTransport', () => {
     it('excludes an undrained pending steer from the run-end receipt', async () => {
       const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
 
-      const run = transport.openRun({ runId: 'run-1', inputCodecMessageId: 'in-1' });
+      const run = transport.openRun({ runId: 'run-1', inputTransportMessageId: 'in-1' });
       await run.pipe(streamOf({ type: 'out' }));
       channel.listener?.(steerMsg('run-1', 'steer-1'));
       await run.end({ reason: 'complete' });
@@ -727,7 +727,7 @@ describe('createAgentTransport', () => {
     it('excludes a drained steer no step attempt has taken for stamping', async () => {
       const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
 
-      const run = transport.openRun({ runId: 'run-1', inputCodecMessageId: 'in-1' });
+      const run = transport.openRun({ runId: 'run-1', inputTransportMessageId: 'in-1' });
       await run.pipe(streamOf({ type: 'out' }));
       channel.listener?.(steerMsg('run-1', 'steer-1'));
       expect(run.hasInput()).toBe(true);
@@ -739,7 +739,7 @@ describe('createAgentTransport', () => {
     it('omits the receipt when the run produced no output', async () => {
       const { transport, channel } = await setup();
 
-      const run = transport.openRun({ runId: 'run-1', inputCodecMessageId: 'in-1' });
+      const run = transport.openRun({ runId: 'run-1', inputTransportMessageId: 'in-1' });
       await run.end({ reason: 'complete' });
 
       expect(receiptOf(channel, 'ai-run-end')).toBeUndefined();
@@ -758,7 +758,7 @@ describe('createAgentTransport', () => {
     it('stamps considered-so-far on the suspend and accumulates onto the final end', async () => {
       const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
 
-      const run = transport.openRun({ runId: 'run-1', inputCodecMessageId: 'in-1' });
+      const run = transport.openRun({ runId: 'run-1', inputTransportMessageId: 'in-1' });
       await run.pipe(streamOf({ type: 'out' }));
       channel.listener?.(steerMsg('run-1', 'steer-1'));
       expect(run.hasInput()).toBe(true);
@@ -872,42 +872,42 @@ describe('createAgentTransport', () => {
       expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_PARENT]).toBe('parent-cmid');
     });
 
-    it('anchors the opening event to its trigger with input-codec-message-id', async () => {
+    it('anchors the opening event to its trigger with input-transport-message-id', async () => {
       const { transport, channel } = await setup();
 
-      const run = transport.openRun({ inputCodecMessageId: 'cm-trigger' });
+      const run = transport.openRun({ inputTransportMessageId: 'cm-trigger' });
       await run.end({ reason: 'complete' });
 
       const start = channel.publishCalls.find((m) => m.name === 'ai-run-start');
       if (!start) throw new Error('expected ai-run-start');
-      expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('cm-trigger');
+      expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('cm-trigger');
     });
 
-    it("a located input's codec-message-id defaults the input anchor", async () => {
+    it("a located input's transport-message-id defaults the input anchor", async () => {
       const { transport, channel } = await setup();
 
       const run = transport.openRun({
-        input: locatedInput({ [HEADER_CODEC_MESSAGE_ID]: 'cm-from-trigger' }),
+        input: locatedInput({ [HEADER_TRANSPORT_MESSAGE_ID]: 'cm-from-trigger' }),
       });
       await run.end({ reason: 'complete' });
 
       const start = channel.publishCalls.find((m) => m.name === 'ai-run-start');
       if (!start) throw new Error('expected ai-run-start');
-      expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('cm-from-trigger');
+      expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('cm-from-trigger');
     });
 
-    it('an explicit inputCodecMessageId wins over the located input', async () => {
+    it('an explicit inputTransportMessageId wins over the located input', async () => {
       const { transport, channel } = await setup();
 
       const run = transport.openRun({
-        input: locatedInput({ [HEADER_CODEC_MESSAGE_ID]: 'cm-from-trigger' }),
-        inputCodecMessageId: 'cm-explicit',
+        input: locatedInput({ [HEADER_TRANSPORT_MESSAGE_ID]: 'cm-from-trigger' }),
+        inputTransportMessageId: 'cm-explicit',
       });
       await run.end({ reason: 'complete' });
 
       const start = channel.publishCalls.find((m) => m.name === 'ai-run-start');
       if (!start) throw new Error('expected ai-run-start');
-      expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('cm-explicit');
+      expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('cm-explicit');
     });
 
     it('a located input carrying a run-id header resumes that run', async () => {

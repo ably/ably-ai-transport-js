@@ -3,7 +3,7 @@
  * using OpenAI's own stream accumulator (`accumulateResponse` from
  * `openai/lib/responses/ResponseAccumulator`) for the streamed assistant
  * content. The transport hands out decoded events; this merge owns everything
- * above that: demultiplexing by codec-message-id, per-message accumulation,
+ * above that: demultiplexing by transport-message-id, per-message accumulation,
  * tool-call state, and run tracking.
  *
  * The accumulator is strict and index-addressed, so the merge owns four pieces
@@ -37,7 +37,7 @@
  * `tool-approval-request`) and the client input bodies (`message`, `item`,
  * `approval`) apply as small steps onto the per-message items and
  * `toolCallStates`. A `message` input arrives part-by-part on the wire under
- * one codec-message-id, so its content parts merge with identical parts
+ * one transport-message-id, so its content parts merge with identical parts
  * deduplicated.
  */
 
@@ -56,8 +56,8 @@ import {
 
 /** One merged message of the thread: an {@link OpenAIMessage} plus its wire identity. */
 export interface ThreadMessage extends OpenAIMessage {
-  /** The codec-message-id every event of this message shares. */
-  codecMessageId: string;
+  /** The transport-message-id every event of this message shares. */
+  transportMessageId: string;
   /** The run this message was published under, when the wire carried one. */
   runId?: string;
   /** The Ably clientId of the message's publisher, when known. */
@@ -70,8 +70,8 @@ export interface RunSummary {
   status: RunStatus;
   /** The terminal error message, present when the run ended in error. */
   errorMessage?: string;
-  /** The codec-message-id of the input that triggered the run, when stamped on run-start. */
-  inputCodecMessageId?: string;
+  /** The transport-message-id of the input that triggered the run, when stamped on run-start. */
+  inputTransportMessageId?: string;
 }
 
 /**
@@ -82,7 +82,7 @@ export interface RunSummary {
 export interface ThreadMerge {
   /** Merge one classified transport event into the thread. Decoded inputs are passthrough JSON and narrow to the demo's union at this boundary (an unrecognised body is skipped). Throws when an event addresses an item the merge has never seen — a decode-sequence bug worth surfacing, not hiding. */
   apply(event: TransportEvent<unknown, OpenAIOutput>): void;
-  /** The thread's messages, in first-seen codec-message-id order. */
+  /** The thread's messages, in first-seen transport-message-id order. */
   messages(): ThreadMessage[];
   /** Every observed run's merged state, keyed by run-id, in first-seen order. */
   runs(): ReadonlyMap<string, RunSummary>;
@@ -123,7 +123,7 @@ const seedSnapshot = (id: string): Responses.Response => ({
 
 /** The per-message merge state. */
 interface MessageMerge {
-  codecMessageId: string;
+  transportMessageId: string;
   role: 'user' | 'assistant';
   runId?: string;
   clientId?: string;
@@ -156,7 +156,7 @@ const appendFunctionCallOutput = (merge: MessageMerge, item: Responses.ResponseI
 
 /**
  * Merge a `message`-kind input body into the merge. Each wire event carries
- * one content part under the shared codec-message-id. Message items merge
+ * one content part under the shared transport-message-id. Message items merge
  * into one item per merge with identical parts deduplicated (a redelivered
  * event repeats parts verbatim); any other item type appends with a
  * whole-item dedupe.
@@ -337,21 +337,21 @@ export const createThreadMerge = (): ThreadMerge => {
     // bodies in this demo's vocabulary and skip anything else (another app's
     // body on a shared channel).
     const inputs = event.inputs.map(asOpenAIInput).filter((input) => input !== undefined);
-    const codecMessageId = meta.codecMessageId;
-    if (codecMessageId === undefined) return;
+    const transportMessageId = meta.transportMessageId;
+    if (transportMessageId === undefined) return;
     if (inputs.length === 0 && outputs.length === 0) return;
 
-    let merge = mergeById.get(codecMessageId);
+    let merge = mergeById.get(transportMessageId);
     if (!merge) {
       merge = {
-        codecMessageId,
+        transportMessageId,
         role: roleOf(meta, inputs, outputs),
-        snapshot: seedSnapshot(codecMessageId),
+        snapshot: seedSnapshot(transportMessageId),
         indexByItemId: new Map(),
         appended: [],
         toolCallStates: {},
       };
-      mergeById.set(codecMessageId, merge);
+      mergeById.set(transportMessageId, merge);
       merges.push(merge);
     }
     if (merge.runId === undefined && meta.runId !== undefined) merge.runId = meta.runId;
@@ -371,7 +371,9 @@ export const createThreadMerge = (): ThreadMerge => {
       case 'start': {
         summary = {
           status: 'active',
-          ...(event.inputCodecMessageId !== undefined && { inputCodecMessageId: event.inputCodecMessageId }),
+          ...(event.inputTransportMessageId !== undefined && {
+            inputTransportMessageId: event.inputTransportMessageId,
+          }),
         };
         break;
       }
@@ -410,7 +412,7 @@ export const createThreadMerge = (): ThreadMerge => {
         const hasStates = Object.keys(merge.toolCallStates).length > 0;
         if (items.length === 0 && !hasStates) continue;
         out.push({
-          codecMessageId: merge.codecMessageId,
+          transportMessageId: merge.transportMessageId,
           role: merge.role,
           items,
           ...(hasStates && { toolCallStates: merge.toolCallStates }),

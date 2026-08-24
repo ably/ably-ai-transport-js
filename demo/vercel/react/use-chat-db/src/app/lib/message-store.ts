@@ -8,7 +8,7 @@ import type { UIMessage } from 'ai';
  * this for a durable store.
  *
  * It holds only **domain `UIMessage`s** (never the transport's internal
- * `codecMessageId`): the domain `message.id` is the only id shared between the
+ * `transportMessageId`): the domain `message.id` is the only id shared between the
  * store and the channel, which is what lets hydration page the history gap
  * back to the newest stored message and merge without duplication (see
  * `lib/hydrate.ts`).

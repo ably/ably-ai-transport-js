@@ -6,7 +6,7 @@
  * `event` publishes one discrete message (fields/data lensed onto the member's
  * `payload`, or kind-only when `wireOnly`); a `batch` explodes the domain
  * message into one wire event per part and publishes them atomically, with a
- * built-in ≥1-event guarantee so the codec-message-id and role survive an empty
+ * built-in ≥1-event guarantee so the transport-message-id and role survive an empty
  * decomposition. Headers are always built through the descriptor's declared
  * fields ({@link writeFields}), so the imperative paths can't drift.
  */
@@ -31,7 +31,7 @@ export interface InputDescriptorEncoder<U> {
    * Encode one input through its descriptor.
    * @param input - The input to encode.
    * @param core - The input encoder core to publish through.
-   * @param ctx - Per-write context (write options, carrying the codec-message-id).
+   * @param ctx - Per-write context (write options, carrying the transport-message-id).
    * @returns The publish acknowledgement — the Ably-assigned serials, one per
    *   wire message the input produced, in publish order.
    */

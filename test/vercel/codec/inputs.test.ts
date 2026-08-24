@@ -13,7 +13,7 @@ import type * as Ably from 'ably';
 import type * as AI from 'ai';
 import { describe, expect, it } from 'vitest';
 
-import { EVENT_AI_INPUT, HEADER_CODEC_MESSAGE_ID, HEADER_ROLE } from '../../../src/constants.js';
+import { EVENT_AI_INPUT, HEADER_ROLE, HEADER_TRANSPORT_MESSAGE_ID } from '../../../src/constants.js';
 import type { ChannelWriter } from '../../../src/core/codec/types.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { createUIMessageCodec } from '../../../src/vercel/codec/index.js';
@@ -103,7 +103,7 @@ describe('Vercel wire-codec inputs', () => {
       expect(input.payload.id).toBe('m1');
       expect(input.payload.role).toBe('user');
     }
-    // A consumer merging the parts by codec-message-id gets the whole message back.
+    // A consumer merging the parts by transport-message-id gets the whole message back.
     const parts = decoded.flatMap((input) => (input.kind === 'message' ? input.payload.parts : []));
     expect(parts).toEqual(message.parts);
   });
@@ -120,7 +120,7 @@ describe('Vercel wire-codec inputs', () => {
     expect(wire.data).toEqual(chunk);
 
     const decoder = codec.createDecoder();
-    const { inputs } = decoder.decode(asInbound(wire, { [HEADER_CODEC_MESSAGE_ID]: 'assistant-1' }));
+    const { inputs } = decoder.decode(asInbound(wire, { [HEADER_TRANSPORT_MESSAGE_ID]: 'assistant-1' }));
     expect(inputs).toEqual([{ kind: 'chunk', payload: chunk }]);
   });
 

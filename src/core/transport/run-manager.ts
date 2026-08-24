@@ -27,18 +27,18 @@ import type { RunEndReason, StepEndReason } from './types.js';
  * structural `parent` / `forkOf` / `regenerates` fields.
  */
 interface StartRunMetadata {
-  /** Structural parent codec-message-id (fresh run-start only). */
+  /** Structural parent transport-message-id (fresh run-start only). */
   parent?: string;
-  /** Forked user-prompt codec-message-id for an edit (fresh run-start only). */
+  /** Forked user-prompt transport-message-id for an edit (fresh run-start only). */
   forkOf?: string;
-  /** Regenerated assistant codec-message-id (fresh run-start only). */
+  /** Regenerated assistant transport-message-id (fresh run-start only). */
   regenerates?: string;
   /** Agent-minted invocation id, carried on the lifecycle event. */
   invocationId?: string;
   /** ClientId of the triggering input event. */
   inputClientId?: string;
-  /** Codec-message-id of the triggering input event. */
-  inputCodecMessageId?: string;
+  /** Transport-message-id of the triggering input event. */
+  inputTransportMessageId?: string;
   /** When true, publish `ai-run-resume` (re-entry) instead of `ai-run-start`. */
   continuation?: boolean;
 }
@@ -98,30 +98,30 @@ export interface RunManager {
    * live AbortController to retain. A cancel arriving during suspension is a
    * no-op; the resuming invocation re-registers the run via {@link startRun}.
    * Carries the same per-invocation attribution as {@link endRun}
-   * (`inputClientId`, `inputCodecMessageId`), since a suspend is the terminal
+   * (`inputClientId`, `inputTransportMessageId`), since a suspend is the terminal
    * event of the suspending invocation just as run-end is of an ending one.
    * When `consideredInputIds` is supplied and non-empty, it is stamped as the
-   * `input-codec-message-ids` bracket receipt — the codec-message-ids of every
+   * `input-transport-message-ids` bracket receipt — the transport-message-ids of every
    * input the run's output has considered so far.
    */
   suspendRun(
     runId: string,
     invocationId?: string,
     inputClientId?: string,
-    inputCodecMessageId?: string,
+    inputTransportMessageId?: string,
     consideredInputIds?: string[],
   ): Promise<void>;
   /**
    * End a run. Publishes run-end on the channel (stamping `reason` as the
    * run-reason header) and drops the run's active-run entry. Carries the same
    * per-invocation attribution as {@link suspendRun} (`invocationId`,
-   * `inputClientId`, `inputCodecMessageId`), since run-end is the terminal event
+   * `inputClientId`, `inputTransportMessageId`), since run-end is the terminal event
    * of the ending invocation. When `reason` is `'error'` and an `error` is
    * supplied, its `code` and `message` are additionally stamped as the
    * `error-code` / `error-message` headers — a codec-agnostic baseline failure
    * detail for consumers; omitting `error` publishes a bare `reason: 'error'`.
    * When `consideredInputIds` is supplied and non-empty, it is stamped as the
-   * `input-codec-message-ids` bracket receipt — the codec-message-ids of every
+   * `input-transport-message-ids` bracket receipt — the transport-message-ids of every
    * input the run's output considered.
    */
   endRun(
@@ -129,7 +129,7 @@ export interface RunManager {
     reason: RunEndReason,
     invocationId?: string,
     inputClientId?: string,
-    inputCodecMessageId?: string,
+    inputTransportMessageId?: string,
     error?: Ably.ErrorInfo,
     consideredInputIds?: string[],
   ): Promise<void>;
@@ -222,7 +222,7 @@ class DefaultRunManager implements RunManager {
       regenerates: continuation ? undefined : metadata?.regenerates,
       invocationId: metadata?.invocationId,
       inputClientId: metadata?.inputClientId,
-      inputCodecMessageId: metadata?.inputCodecMessageId,
+      inputTransportMessageId: metadata?.inputTransportMessageId,
     });
 
     await this._channel.publish({
@@ -237,14 +237,14 @@ class DefaultRunManager implements RunManager {
     runId: string,
     invocationId?: string,
     inputClientId?: string,
-    inputCodecMessageId?: string,
+    inputTransportMessageId?: string,
     consideredInputIds?: string[],
   ): Promise<void> {
     this._logger?.trace('DefaultRunManager.suspendRun();', { runId });
     await this._publishTerminal(EVENT_RUN_SUSPEND, runId, {
       invocationId,
       inputClientId,
-      inputCodecMessageId,
+      inputTransportMessageId,
       consideredInputIds,
     });
     this._logger?.debug('DefaultRunManager.suspendRun(); run suspended', { runId });
@@ -255,7 +255,7 @@ class DefaultRunManager implements RunManager {
     reason: RunEndReason,
     invocationId?: string,
     inputClientId?: string,
-    inputCodecMessageId?: string,
+    inputTransportMessageId?: string,
     error?: Ably.ErrorInfo,
     consideredInputIds?: string[],
   ): Promise<void> {
@@ -268,7 +268,7 @@ class DefaultRunManager implements RunManager {
       reason,
       invocationId,
       inputClientId,
-      inputCodecMessageId,
+      inputTransportMessageId,
       consideredInputIds,
       ...errorAttribution,
     });
@@ -287,9 +287,9 @@ class DefaultRunManager implements RunManager {
    * @param attribution.reason - Terminal reason; set for run-end, omitted for run-suspend.
    * @param attribution.invocationId - The invocation's id.
    * @param attribution.inputClientId - ClientId of the triggering input event.
-   * @param attribution.inputCodecMessageId - Codec-message-id of the triggering input event.
-   * @param attribution.consideredInputIds - Codec-message-ids of every input the
-   *   run's output considered, stamped as the `input-codec-message-ids` bracket
+   * @param attribution.inputTransportMessageId - Transport-message-id of the triggering input event.
+   * @param attribution.consideredInputIds - Transport-message-ids of every input the
+   *   run's output considered, stamped as the `input-transport-message-ids` bracket
    *   receipt. Omitted when absent or empty.
    * @param attribution.errorCode - Numeric error code; set for run-end only when a terminal error is surfaced.
    * @param attribution.errorMessage - Error message; paired with errorCode.
@@ -301,7 +301,7 @@ class DefaultRunManager implements RunManager {
       reason?: RunEndReason;
       invocationId?: string;
       inputClientId?: string;
-      inputCodecMessageId?: string;
+      inputTransportMessageId?: string;
       consideredInputIds?: string[];
       errorCode?: number;
       errorMessage?: string;

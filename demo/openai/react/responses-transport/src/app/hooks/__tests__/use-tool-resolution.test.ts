@@ -26,14 +26,14 @@ const gatedCall = (callId: string) => ({
 const makeThread = (callIds: string[]) => {
   const publishInput = vi.fn(
     async (): Promise<PublishInputResult> => ({
-      codecMessageId: 'cm-0',
+      transportMessageId: 'cm-0',
       eventId: 'ev-1',
       runId: Promise.resolve('r1'),
     }),
   );
   const messages: ThreadMessage[] = [
     {
-      codecMessageId: 'cm-0',
+      transportMessageId: 'cm-0',
       runId: 'r1',
       role: 'assistant',
       items: callIds.map(gatedCall),
@@ -64,7 +64,7 @@ describe('useToolResolution', () => {
 
   it('wakes the agent when the run has a single call and it is answered', async () => {
     const { resolve, publishInput, onWake } = setup(['c1']);
-    await resolve({ codecMessageId: 'cm-0', runId: 'r1', callId: 'c1', inputs: [approval('c1')] });
+    await resolve({ transportMessageId: 'cm-0', runId: 'r1', callId: 'c1', inputs: [approval('c1')] });
     expect(publishInput).toHaveBeenCalledTimes(1);
     expect(onWake).toHaveBeenCalledTimes(1);
     expect(onWake).toHaveBeenCalledWith({ eventId: 'ev-1' });
@@ -72,15 +72,15 @@ describe('useToolResolution', () => {
 
   it('publishes but does not wake while another call is still unanswered', async () => {
     const { resolve, publishInput, onWake } = setup(['c1', 'c2']);
-    await resolve({ codecMessageId: 'cm-0', runId: 'r1', callId: 'c1', inputs: [approval('c1')] });
+    await resolve({ transportMessageId: 'cm-0', runId: 'r1', callId: 'c1', inputs: [approval('c1')] });
     expect(publishInput).toHaveBeenCalledTimes(1);
     expect(onWake).not.toHaveBeenCalled();
   });
 
   it('wakes once the second of two calls is answered', async () => {
     const { resolve, publishInput, onWake } = setup(['c1', 'c2']);
-    await resolve({ codecMessageId: 'cm-0', runId: 'r1', callId: 'c1', inputs: [approval('c1')] });
-    await resolve({ codecMessageId: 'cm-0', runId: 'r1', callId: 'c2', inputs: [approval('c2')] });
+    await resolve({ transportMessageId: 'cm-0', runId: 'r1', callId: 'c1', inputs: [approval('c1')] });
+    await resolve({ transportMessageId: 'cm-0', runId: 'r1', callId: 'c2', inputs: [approval('c2')] });
     expect(publishInput).toHaveBeenCalledTimes(2);
     expect(onWake).toHaveBeenCalledTimes(1);
   });
@@ -88,8 +88,8 @@ describe('useToolResolution', () => {
   it('wakes exactly once when both answers race', async () => {
     const { resolve, onWake } = setup(['c1', 'c2']);
     await Promise.all([
-      resolve({ codecMessageId: 'cm-0', runId: 'r1', callId: 'c1', inputs: [approval('c1')] }),
-      resolve({ codecMessageId: 'cm-0', runId: 'r1', callId: 'c2', inputs: [approval('c2')] }),
+      resolve({ transportMessageId: 'cm-0', runId: 'r1', callId: 'c1', inputs: [approval('c1')] }),
+      resolve({ transportMessageId: 'cm-0', runId: 'r1', callId: 'c2', inputs: [approval('c2')] }),
     ]);
     expect(onWake).toHaveBeenCalledTimes(1);
   });
@@ -101,15 +101,15 @@ describe('useToolResolution', () => {
       kind: 'item',
       payload: { type: 'function_call_output', call_id: 'c1', output: '{"error":"denied"}' },
     };
-    await resolve({ codecMessageId: 'cm-0', runId: 'r1', callId: 'c1', inputs: [decision, rejection] });
-    expect(publishInput).toHaveBeenNthCalledWith(1, decision, { codecMessageId: 'cm-0', runId: 'r1' });
-    expect(publishInput).toHaveBeenNthCalledWith(2, rejection, { codecMessageId: 'cm-0', runId: 'r1' });
+    await resolve({ transportMessageId: 'cm-0', runId: 'r1', callId: 'c1', inputs: [decision, rejection] });
+    expect(publishInput).toHaveBeenNthCalledWith(1, decision, { transportMessageId: 'cm-0', runId: 'r1' });
+    expect(publishInput).toHaveBeenNthCalledWith(2, rejection, { transportMessageId: 'cm-0', runId: 'r1' });
   });
 
   it('does nothing without a transport', async () => {
     const onWake = vi.fn();
     const { result } = renderHook(() => useToolResolution({ transport: undefined, messages: [], onWake }));
-    await result.current({ codecMessageId: 'cm-0', runId: 'r1', callId: 'c1', inputs: [approval('c1')] });
+    await result.current({ transportMessageId: 'cm-0', runId: 'r1', callId: 'c1', inputs: [approval('c1')] });
     expect(onWake).not.toHaveBeenCalled();
   });
 });

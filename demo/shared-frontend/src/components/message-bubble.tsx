@@ -36,7 +36,7 @@ interface MessageBubbleProps {
   onEdit?: (newText: string) => void;
   // Approve/deny receive the tool part itself, so each demo's container reads
   // whichever token its write path needs — the Vercel `approval.id` or the
-  // `(codecMessageId, toolCallId)` pair — without the bubble taking a side.
+  // `(transportMessageId, toolCallId)` pair — without the bubble taking a side.
   onToolApprove?: (toolPart: ToolUIPart | DynamicToolUIPart) => void;
   onToolDeny?: (toolPart: ToolUIPart | DynamicToolUIPart) => void;
 }

@@ -40,7 +40,7 @@ const noAnchors = (): StepWriterAnchors => ({
   forkOf: undefined,
   regenerates: undefined,
   inputClientId: undefined,
-  inputCodecMessageId: undefined,
+  inputTransportMessageId: undefined,
 });
 
 /**

@@ -11,20 +11,20 @@
 import type * as Ably from 'ably';
 
 import {
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_FORK_OF,
-  HEADER_INPUT_CODEC_MESSAGE_ID,
-  HEADER_INPUT_CODEC_MESSAGE_IDS,
+  HEADER_INPUT_TRANSPORT_MESSAGE_ID,
+  HEADER_INPUT_TRANSPORT_MESSAGE_IDS,
   HEADER_MSG_REGENERATE,
   HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_ID,
-  HEADER_STEER_CODEC_MESSAGE_IDS,
+  HEADER_STEER_TRANSPORT_MESSAGE_IDS,
   HEADER_STEP_ID,
   HEADER_STEP_START_SERIAL,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../constants.js';
 import { getCodecHeaders, getTransportHeaders, getUserHeaders } from '../../utils.js';
-import { parseCodecMessageIdsHeader } from './headers.js';
+import { parseTransportMessageIdsHeader } from './headers.js';
 import type { WireMeta } from './types/transport.js';
 
 /**
@@ -43,7 +43,7 @@ export const wireMetaFromMessage = (rawMsg: Ably.InboundMessage): WireMeta => {
     codec,
     headers: getUserHeaders(rawMsg),
     serial: rawMsg.serial,
-    codecMessageId: transport[HEADER_CODEC_MESSAGE_ID],
+    transportMessageId: transport[HEADER_TRANSPORT_MESSAGE_ID],
     runId: transport[HEADER_RUN_ID],
     stepId: transport[HEADER_STEP_ID],
     stepStartSerial: transport[HEADER_STEP_START_SERIAL],
@@ -56,8 +56,8 @@ export const wireMetaFromMessage = (rawMsg: Ably.InboundMessage): WireMeta => {
     parent: transport[HEADER_PARENT],
     forkOf: transport[HEADER_FORK_OF],
     regenerates: transport[HEADER_MSG_REGENERATE],
-    inputCodecMessageId: transport[HEADER_INPUT_CODEC_MESSAGE_ID],
-    inputCodecMessageIds: parseCodecMessageIdsHeader(transport[HEADER_INPUT_CODEC_MESSAGE_IDS]),
-    steerCodecMessageIds: parseCodecMessageIdsHeader(transport[HEADER_STEER_CODEC_MESSAGE_IDS]),
+    inputTransportMessageId: transport[HEADER_INPUT_TRANSPORT_MESSAGE_ID],
+    inputTransportMessageIds: parseTransportMessageIdsHeader(transport[HEADER_INPUT_TRANSPORT_MESSAGE_IDS]),
+    steerTransportMessageIds: parseTransportMessageIdsHeader(transport[HEADER_STEER_TRANSPORT_MESSAGE_IDS]),
   };
 };

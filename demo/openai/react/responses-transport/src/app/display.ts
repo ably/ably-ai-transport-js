@@ -2,7 +2,7 @@
  * Project an `OpenAIMessage[]` into display parts.
  *
  * A run splits its work across messages: each `pipe`/`send` mints a fresh
- * codec-message-id, so a `function_call` and its `function_call_output` land in
+ * transport-message-id, so a `function_call` and its `function_call_output` land in
  * separate messages, and a call's out-of-band `toolCallState` merges onto the
  * message holding the call. These helpers pair a call with its output and state
  * by `call_id`, order-independent, so a tool interaction becomes one display

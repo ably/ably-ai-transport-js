@@ -127,8 +127,8 @@ export function Chat({ chatId, clientId, api }: ChatProps) {
   // agent is only woken once every call on the run has an answer, so a turn that
   // gated two calls resumes after the second decision rather than the first.
   const decideToolCall = useCallback(
-    (codecMessageId: string, callId: string, approved: boolean) => {
-      const runId = messages.find((message) => message.codecMessageId === codecMessageId)?.runId;
+    (transportMessageId: string, callId: string, approved: boolean) => {
+      const runId = messages.find((message) => message.transportMessageId === transportMessageId)?.runId;
       if (runId === undefined) return;
       const inputs: OpenAIInput[] = approved
         ? [{ kind: 'approval', payload: { call_id: callId, approved: true } }]
@@ -146,7 +146,7 @@ export function Chat({ chatId, clientId, api }: ChatProps) {
               },
             },
           ];
-      void resolveToolCall({ codecMessageId, runId, callId, inputs }).catch(reportError);
+      void resolveToolCall({ transportMessageId, runId, callId, inputs }).catch(reportError);
     },
     [messages, resolveToolCall, reportError],
   );
@@ -162,11 +162,11 @@ export function Chat({ chatId, clientId, api }: ChatProps) {
           runs={runs}
           loading={!hydrated}
           scrollToEndRef={scrollToEndRef}
-          onApproveTool={(codecMessageId, callId) => {
-            decideToolCall(codecMessageId, callId, true);
+          onApproveTool={(transportMessageId, callId) => {
+            decideToolCall(transportMessageId, callId, true);
           }}
-          onDenyTool={(codecMessageId, callId) => {
-            decideToolCall(codecMessageId, callId, false);
+          onDenyTool={(transportMessageId, callId) => {
+            decideToolCall(transportMessageId, callId, false);
           }}
         />
       }

@@ -14,7 +14,7 @@
  *   provider-typed body, so the codec defines a small body of its own.
  *
  * Addressing never rides an input: the transport's publish options carry the
- * `codecMessageId` / `parent` / `regenerates` structure, and `WireMeta`
+ * `transportMessageId` / `parent` / `regenerates` structure, and `WireMeta`
  * reports them on the way back.
  */
 
@@ -81,7 +81,7 @@ export interface VercelRegenerateInput {
 /**
  * A tool resolution: the body is the AI SDK's own tool-output chunk, published
  * against the assistant message it amends (addressed by the publish options'
- * `codecMessageId`). Two resolutions on one assistant address distinct tool
+ * `transportMessageId`). Two resolutions on one assistant address distinct tool
  * calls, matched inside the body by `toolCallId`, so last-writer-wins per part
  * merges them without contest.
  */
@@ -94,7 +94,7 @@ export interface VercelChunkInput {
 
 /**
  * A tool-approval decision, published against the assistant message whose
- * tool call it gates (addressed by the publish options' `codecMessageId`).
+ * tool call it gates (addressed by the publish options' `transportMessageId`).
  * See {@link VercelApprovalDecision} for why this body is codec-defined.
  */
 export interface VercelApprovalInput {

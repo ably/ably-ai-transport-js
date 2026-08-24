@@ -8,7 +8,7 @@
  *     resolves from the publish acknowledgement's serial, so it works even
  *     for a client that receives no echo of its own publishes
  *     (`echoMessages: false`).
- *   - {@link _consumedByRunId} — accumulator of `steer-codec-message-ids`
+ *   - {@link _consumedByRunId} — accumulator of `steer-transport-message-ids`
  *     stamps observed on the run's response messages.
  *   - {@link _deadRunIds} — runs whose `run-end` the SDK has merged (with
  *     the terminal reason); subsequent `steer()` calls reject synchronously,
@@ -31,7 +31,7 @@ import {
   EVENT_RUN_SUSPEND,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
-  HEADER_STEER_CODEC_MESSAGE_IDS,
+  HEADER_STEER_TRANSPORT_MESSAGE_IDS,
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
@@ -70,8 +70,8 @@ export interface SteerCoordinatorOptions<TInput> {
  * {@link SteerCoordinator}'s per-runId bucket.
  */
 interface InflightSteer {
-  /** The steer's codec-message-id; matched against the accumulated consumed set. */
-  steerCodecMessageId: string;
+  /** The steer's transport-message-id; matched against the accumulated consumed set. */
+  steerTransportMessageId: string;
   /** Resolve the outcome promise (called on every lifecycle event the entry survives to). */
   resolve: (outcome: SteerOutcome) => void;
   /** Reject the outcome promise (continuity loss, transport close). */
@@ -93,8 +93,8 @@ export class SteerCoordinator<TInput> {
   private readonly _inflightSteers = new Map<string, InflightSteer[]>();
 
   /**
-   * Per-run union of codec-message-ids the agent has stamped as consumed on
-   * its response messages (`steer-codec-message-ids` header). Cleared on
+   * Per-run union of transport-message-ids the agent has stamped as consumed on
+   * its response messages (`steer-transport-message-ids` header). Cleared on
    * `run-end` after resolving the matching in-flight bucket, and on close.
    */
   private readonly _consumedByRunId = new Map<string, Set<string>>();
@@ -201,12 +201,12 @@ export class SteerCoordinator<TInput> {
         return;
       }
 
-      const codecMessageId = crypto.randomUUID();
+      const transportMessageId = crypto.randomUUID();
       const inputEventId = crypto.randomUUID();
       const headers = buildTransportHeaders({
         role: 'user',
         runId: resolvedRunId,
-        codecMessageId,
+        transportMessageId,
         runClientId: this._clientId(),
         inputEventId,
       });
@@ -217,7 +217,7 @@ export class SteerCoordinator<TInput> {
       const epoch = this._drainEpoch;
       let ack: Ably.PublishResult;
       try {
-        ack = await this._publish(input, { extras: { headers }, messageId: codecMessageId });
+        ack = await this._publish(input, { extras: { headers }, messageId: transportMessageId });
       } catch (error) {
         const cause = errorCause(error);
         const isPermission = cause?.statusCode === 401 || cause?.statusCode === 403;
@@ -259,9 +259,9 @@ export class SteerCoordinator<TInput> {
 
       // Register the outcome handler on the run's bucket. The next
       // `run-suspend`/`run-end` for this run resolves it by checking whether
-      // `steerCodecMessageId` is in the accumulated consumed set.
+      // `steerTransportMessageId` is in the accumulated consumed set.
       const entry: InflightSteer = {
-        steerCodecMessageId: codecMessageId,
+        steerTransportMessageId: transportMessageId,
         resolve: resolveOutcome,
         reject: rejectOutcome,
       };
@@ -277,7 +277,7 @@ export class SteerCoordinator<TInput> {
    * Process an inbound channel message. The coordinator inspects two
    * orthogonal facets:
    *   1. Stamp accumulation — if the message carries
-   *      `steer-codec-message-ids`, union the listed ids into the run's
+   *      `steer-transport-message-ids`, union the listed ids into the run's
    *      consumed set.
    *   2. Lifecycle resolution — on `ai-run-suspend` / `ai-run-end`,
    *      resolve in-flight outcomes for the run by membership.
@@ -286,12 +286,12 @@ export class SteerCoordinator<TInput> {
   observeMessage(msg: Ably.InboundMessage): void {
     const headers = getTransportHeaders(msg);
 
-    // (1) Stamp accumulation: union the `steer-codec-message-ids` delta
+    // (1) Stamp accumulation: union the `steer-transport-message-ids` delta
     // for the run. Lifecycle events do NOT carry this header in the agent
     // implementation, but the parse is gated on its presence so an
     // accidental stamp would just be a harmless union.
     const runIdHeader = headers[HEADER_RUN_ID];
-    const steerIdsStamp = headers[HEADER_STEER_CODEC_MESSAGE_IDS];
+    const steerIdsStamp = headers[HEADER_STEER_TRANSPORT_MESSAGE_IDS];
     if (runIdHeader !== undefined && steerIdsStamp !== undefined) {
       try {
         // CAST: trust boundary — the agent always stamps a JSON array of
@@ -306,12 +306,12 @@ export class SteerCoordinator<TInput> {
           }
           for (const id of parsed) if (typeof id === 'string') bucket.add(id);
         } else {
-          this._logger.warn('SteerCoordinator.observeMessage(); ignoring non-array steer-codec-message-ids', {
+          this._logger.warn('SteerCoordinator.observeMessage(); ignoring non-array steer-transport-message-ids', {
             runId: runIdHeader,
           });
         }
       } catch (error) {
-        this._logger.warn('SteerCoordinator.observeMessage(); failed to parse steer-codec-message-ids', {
+        this._logger.warn('SteerCoordinator.observeMessage(); failed to parse steer-transport-message-ids', {
           runId: runIdHeader,
           error: errorMessage(error),
         });
@@ -387,7 +387,7 @@ export class SteerCoordinator<TInput> {
     if (bucket !== undefined && bucket.length > 0) {
       const remaining: InflightSteer[] = [];
       for (const entry of bucket) {
-        const consumed = consumedSet?.has(entry.steerCodecMessageId) ?? false;
+        const consumed = consumedSet?.has(entry.steerTransportMessageId) ?? false;
         if (consumed) {
           entry.resolve(
             terminalReason === undefined ? { consumed: true } : { consumed: true, runTerminalReason: terminalReason },

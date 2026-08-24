@@ -3,7 +3,7 @@
  * every workflow activity shares when it needs conversation state (model
  * context, pending-tool classification).
  *
- * The merge buckets `message` events by their wire `codec-message-id` in
+ * The merge buckets `message` events by their wire `transport-message-id` in
  * first-seen order and reduces each bucket with the AI SDK's own reducer
  * (`readUIMessageStream`):
  *
@@ -39,7 +39,7 @@ export interface MergeMessagesOptions {
   excludeStepId?: string;
 }
 
-/** One bucket of chunk-shaped content plus any whole-message payload, keyed by codec-message-id. */
+/** One bucket of chunk-shaped content plus any whole-message payload, keyed by transport-message-id. */
 interface Bucket {
   /** The whole `UIMessage` a `kind: 'message'` input carried; last payload wins. */
   message?: UIMessage;
@@ -99,7 +99,7 @@ export async function mergeMessages(events: WdkTransportEvent[], opts?: MergeMes
     if (prior === undefined || stepStartSerial > prior) canonicalAttempt.set(stepId, stepStartSerial);
   }
 
-  // Pass 2: bucket by codec-message-id, routing tool resolutions to the bucket
+  // Pass 2: bucket by transport-message-id, routing tool resolutions to the bucket
   // that owns their toolCallId.
   const buckets = new Map<string, Bucket>();
   const bucketByToolCallId = new Map<string, Bucket>();
@@ -121,7 +121,7 @@ export async function mergeMessages(events: WdkTransportEvent[], opts?: MergeMes
   for (const event of events) {
     if (event.kind !== 'message') continue;
     const { meta } = event;
-    const key = meta.codecMessageId ?? meta.serial ?? crypto.randomUUID();
+    const key = meta.transportMessageId ?? meta.serial ?? crypto.randomUUID();
     const excluded = opts?.excludeStepId !== undefined && meta.stepId === opts.excludeStepId;
     const superseded =
       meta.stepId !== undefined &&

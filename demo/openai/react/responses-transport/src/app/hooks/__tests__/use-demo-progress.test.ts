@@ -11,8 +11,8 @@ import { DEMO_SCENARIOS } from '../../lib/intro-content';
 // --- fixtures ----------------------------------------------------------------
 
 let nextId = 0;
-const asThread = (message: Omit<ThreadMessage, 'codecMessageId'>): ThreadMessage => ({
-  codecMessageId: `cm-${nextId++}`,
+const asThread = (message: Omit<ThreadMessage, 'transportMessageId'>): ThreadMessage => ({
+  transportMessageId: `cm-${nextId++}`,
   ...message,
 });
 

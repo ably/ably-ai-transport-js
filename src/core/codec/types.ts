@@ -53,7 +53,7 @@ export interface Extras {
 export interface WriteOptions {
   /** Override the default extras for this write. */
   extras?: Extras;
-  /** Message identity for consumer-side routing. Stamped as `codec-message-id`. */
+  /** Message identity for consumer-side routing. Stamped as `transport-message-id`. */
   messageId?: string;
 }
 
@@ -161,7 +161,7 @@ export interface EncoderOptions {
    * Fallback domain message id surfaced to output escape hatches as
    * `ctx.messageId` (e.g. the Vercel `start` hatch injects it when a chunk
    * carries no `messageId` of its own). Unrelated to the wire
-   * codec-message-id transport header, which `WriteOptions.messageId` stamps.
+   * transport-message-id transport header, which `WriteOptions.messageId` stamps.
    */
   messageId?: string;
 }

@@ -7,26 +7,26 @@ import { useClientTools } from '../use-client-tools';
 
 // The thread: the user trigger (carrying the initiator's clientId) and an
 // assistant turn holding an unresolved getLocation client-tool call (no
-// function_call_output yet), addressed to codec-message-id `cm-1` on run `r1`.
+// function_call_output yet), addressed to transport-message-id `cm-1` on run `r1`.
 const makeThread = (
   runStatus: RunStatus,
   initiatorClientId = 'c',
 ): { messages: ThreadMessage[]; runs: ReadonlyMap<string, RunSummary> } => {
   const messages: ThreadMessage[] = [
     {
-      codecMessageId: 'cm-0',
+      transportMessageId: 'cm-0',
       role: 'user',
       clientId: initiatorClientId,
       items: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'where am I?' }] }],
     },
     {
-      codecMessageId: 'cm-1',
+      transportMessageId: 'cm-1',
       role: 'assistant',
       runId: 'r1',
       items: [{ type: 'function_call', call_id: 'c1', name: 'getLocation', arguments: '{}', status: 'completed' }],
     },
   ];
-  const runs = new Map<string, RunSummary>([['r1', { status: runStatus, inputCodecMessageId: 'cm-0' }]]);
+  const runs = new Map<string, RunSummary>([['r1', { status: runStatus, inputTransportMessageId: 'cm-0' }]]);
   return { messages, runs };
 };
 
@@ -64,7 +64,7 @@ describe('useClientTools', () => {
       expect(resolve).toHaveBeenCalledTimes(1);
     });
     expect(resolve).toHaveBeenCalledWith({
-      codecMessageId: 'cm-1',
+      transportMessageId: 'cm-1',
       runId: 'r1',
       callId: 'c1',
       inputs: [

@@ -60,7 +60,7 @@ storing them, and rendering a thread belong to the application. The wire
 carries the provider's own event vocabulary, which is what lets the provider's
 own reducer do the merge (`readUIMessageStream` from `ai`; OpenAI's
 `accumulateResponse`). The application's one structural job is
-demultiplexing: bucket a batch's `message` events by `meta.codecMessageId`
+demultiplexing: bucket a batch's `message` events by `meta.transportMessageId`
 and feed each bucket to the provider's reducer — delivery order is
 conversation order, so no sorting is needed. The decoder's mid-stream-join
 repair (synthesising the openers a late joiner never saw) is the contract
@@ -69,7 +69,7 @@ fix the decoder — do not add a reducer to the SDK.
 
 **The transport constrains nothing about an input.** An input is a
 codec-defined body the transport carries opaquely. Addressing (the
-codec-message-id, parent, fork and regenerate structure) travels on
+transport-message-id, parent, fork and regenerate structure) travels on
 `PublishInputOptions` on the way out and `WireMeta` on the way back — never on
 the event itself. Codecs pick the provider's own types for bodies wherever one
 exists (a `UIMessage` for a turn, a `tool-output-*` chunk for a resolution, a
@@ -94,7 +94,7 @@ our curation point.)
 
 - **`ClientTransport`** — publish inputs (nothing is emitted locally: the
   sender's own input reaches it back as the ordinary channel delivery, keyed
-  by the returned `codecMessageId`), cancel and steer runs (a steer's
+  by the returned `transportMessageId`), cancel and steer runs (a steer's
   `published` resolves from the publish acknowledgement's serial), subscribe
   to the classified event stream, and page history. Holds no conversation
   state: the only cross-message state is the steer ledger and the pending

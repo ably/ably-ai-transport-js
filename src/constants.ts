@@ -39,8 +39,8 @@ export const HEADER_INVOCATION_ID = 'invocation-id';
  * Header: per-event identifier stamped by the client on every
  * client-published event in a send — user-message events AND amend
  * events (tool-approval responses, client tool outputs). Distinct from
- * `codec-message-id` so it survives edits/retries that reuse the same
- * codec-message-id, and so amend events that target an existing message can
+ * `transport-message-id` so it survives edits/retries that reuse the same
+ * transport-message-id, and so amend events that target an existing message can
  * carry their own per-send identity. The invocation body lists every
  * inputEventId the agent must observe on the channel before starting LLM
  * work — `AgentTransport.locateInput` matches on this header.
@@ -48,7 +48,7 @@ export const HEADER_INVOCATION_ID = 'invocation-id';
 export const HEADER_EVENT_ID = 'event-id';
 
 /** Header: message identity. Assigned per message (user or assistant). Used for optimistic reconciliation on the client. */
-export const HEADER_CODEC_MESSAGE_ID = 'codec-message-id';
+export const HEADER_TRANSPORT_MESSAGE_ID = 'transport-message-id';
 
 /** Header: clientId of the user who initiated the run. Stamped by the client on its user input and re-stamped by the agent on the run's lifecycle and stream messages. */
 export const HEADER_RUN_CLIENT_ID = 'run-client-id';
@@ -73,14 +73,14 @@ export const HEADER_ROLE = 'role';
 // Fork / branching headers
 // ---------------------------------------------------------------------------
 
-/** Header: the codec-message-id of the immediately preceding message in this branch. */
+/** Header: the transport-message-id of the immediately preceding message in this branch. */
 export const HEADER_PARENT = 'parent';
 
-/** Header: the codec-message-id of the message this one replaces (creates a fork). */
+/** Header: the transport-message-id of the message this one replaces (creates a fork). */
 export const HEADER_FORK_OF = 'fork-of';
 
 /**
- * Header: the codec-message-id of the assistant message this run regenerates.
+ * Header: the transport-message-id of the assistant message this run regenerates.
  *
  * Stamped on the regenerate wire (and echoed on `run-start`) when the
  * client requested a regeneration. A regenerate run parents at the SAME input
@@ -105,7 +105,7 @@ export const HEADER_MSG_REGENERATE = 'msg-regenerate';
  * genuinely concurrent forks from multiple clients still surface as sibling
  * branches. Distinct from `fork-of` / `msg-regenerate`,
  * which create a NAVIGABLE sibling (both kept visible); `supersedes` HIDES the
- * superseded run. Value is a run-id, not a codec-message-id.
+ * superseded run. Value is a run-id, not a transport-message-id.
  */
 export const HEADER_SUPERSEDES = 'supersedes';
 
@@ -168,19 +168,19 @@ export const HEADER_STEP_REASON = 'step-reason';
 export const HEADER_STEP_CLIENT_ID = 'step-client-id';
 
 /**
- * Header: the `codec-message-id` of the input event that triggered the run.
+ * Header: the `transport-message-id` of the input event that triggered the run.
  * The triggering input is the one whose `event-id` matches the invocation's
  * `inputEventId` (the last input of the originating send). The agent
  * re-stamps it on every event it publishes for the invocation (run
  * lifecycle + assistant outputs), mirroring `input-client-id`. This is the
- * codec-message-id the client owns at send time, so it lets the client
+ * transport-message-id the client owns at send time, so it lets the client
  * correlate any of those events back to the originating input without
  * depending on a client-minted run-id or invocation-id.
  */
-export const HEADER_INPUT_CODEC_MESSAGE_ID = 'input-codec-message-id';
+export const HEADER_INPUT_TRANSPORT_MESSAGE_ID = 'input-transport-message-id';
 
 /**
- * Header: JSON-stringified array of codec-message-ids of steers the agent's
+ * Header: JSON-stringified array of transport-message-ids of steers the agent's
  * loop drained from pending into "recently processed" since the previous
  * step attempt opened. Stamped on a step attempt's assistant outputs via the
  * step's default headers (alongside `step-id` / `step-start-serial`); omitted when
@@ -190,16 +190,16 @@ export const HEADER_INPUT_CODEC_MESSAGE_ID = 'input-codec-message-id';
  * Used by clients to resolve `ClientTransport.steer(...)` outcomes by
  * membership: accumulate the union across the run's observed responses, then on
  * `ai-run-suspend` / `ai-run-end` check whether the steer's own
- * codec-message-id is in the union. Order-insensitive — it does not rely on
+ * transport-message-id is in the union. Order-insensitive — it does not rely on
  * channel-serial monotonicity, which is not guaranteed for cross-publisher
  * delivery.
  */
-export const HEADER_STEER_CODEC_MESSAGE_IDS = 'steer-codec-message-ids';
+export const HEADER_STEER_TRANSPORT_MESSAGE_IDS = 'steer-transport-message-ids';
 
 /**
- * Header: JSON-stringified array of codec-message-ids of every input the
+ * Header: JSON-stringified array of transport-message-ids of every input the
  * run's output considered — the triggering input plus each steer a step
- * attempt stamped as `steer-codec-message-ids`. Stamped on the run's bracket
+ * attempt stamped as `steer-transport-message-ids`. Stamped on the run's bracket
  * events (`ai-run-end` and `ai-run-suspend`); a suspend carries the ids
  * considered so far, and a later end carries the full accumulated list.
  * Omitted when the run produced no output (nothing was considered).
@@ -210,7 +210,7 @@ export const HEADER_STEER_CODEC_MESSAGE_IDS = 'steer-codec-message-ids';
  * scanning the run's outputs. Checklist semantics — the list only contains
  * ids an attempt actually took, so a skipped input is never falsely claimed.
  */
-export const HEADER_INPUT_CODEC_MESSAGE_IDS = 'input-codec-message-ids';
+export const HEADER_INPUT_TRANSPORT_MESSAGE_IDS = 'input-transport-message-ids';
 
 // ---------------------------------------------------------------------------
 // Run-end error headers (set on `ai-run-end` when `run-reason: error`)
@@ -229,12 +229,12 @@ export const HEADER_ERROR_MESSAGE = 'error-message';
 /**
  * Message name: client->agent cancel intent. Targets a run by `run-id` (a
  * continuation, whose run-id the client already knows) and/or by
- * `input-codec-message-id` (a fresh send, whose run-id the agent mints at
+ * `input-transport-message-id` (a fresh send, whose run-id the agent mints at
  * run-start — so the client can only key the cancel by the triggering input's
- * codec-message-id it owns at send time). The agent resolves whichever is
+ * transport-message-id it owns at send time). The agent resolves whichever is
  * present to the registered run; a cancel that arrives before the run is known
  * (the input-event lookup hasn't resolved the input id to a run yet) is
- * buffered by `input-codec-message-id` and honoured when the run resolves it.
+ * buffered by `input-transport-message-id` and honoured when the run resolves it.
  * Also carries an `event-id` so channel rewind redelivers it to a per-request /
  * serverless agent that attaches after the cancel was published.
  */

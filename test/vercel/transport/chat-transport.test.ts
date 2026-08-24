@@ -3,7 +3,7 @@
  * ClientTransport.
  *
  * The adapter holds no conversation state: it indexes the wire identity
- * (codec-message-id, run-id) every event already carries and the set of tool
+ * (transport-message-id, run-id) every event already carries and the set of tool
  * calls whose resolution is on the wire, publishes bodies from the codec's
  * own union, and streams one run's output chunks per send. These tests drive
  * it against a fake ClientTransport, covering the fresh send, the
@@ -98,11 +98,11 @@ const sendOptions = (
  */
 const approvalGapEvents = (runId?: string): Event[] => [
   messageEvent(
-    { codecMessageId: 'wire-u1', role: 'user' },
+    { transportMessageId: 'wire-u1', role: 'user' },
     { inputs: [{ kind: 'message', payload: userMessage('u1', 'forecast please') }] },
   ),
   messageEvent(
-    { codecMessageId: 'wire-a1', runId, role: 'assistant' },
+    { transportMessageId: 'wire-a1', runId, role: 'assistant' },
     {
       outputs: [
         { type: 'start', messageId: 'a1' },
@@ -151,7 +151,7 @@ const noopResolve = (): void => {
 const openRunHistory = (): Event[] => [
   runStartEvent('run-1'),
   messageEvent(
-    { codecMessageId: 'wire-a1', runId: 'run-1', role: 'assistant' },
+    { transportMessageId: 'wire-a1', runId: 'run-1', role: 'assistant' },
     {
       outputs: [
         { type: 'start', messageId: 'a1' },
@@ -186,7 +186,7 @@ describe('ChatTransport', () => {
 
       fake.emit(
         messageEvent(
-          { codecMessageId: 'wire-a1', runId: 'run-1' },
+          { transportMessageId: 'wire-a1', runId: 'run-1' },
           {
             outputs: [
               { type: 'start', messageId: 'a1' },
@@ -198,7 +198,10 @@ describe('ChatTransport', () => {
       );
       // Another run's output must not leak into this stream.
       fake.emit(
-        messageEvent({ codecMessageId: 'wire-x', runId: 'run-other' }, { outputs: [{ type: 'text-end', id: 't9' }] }),
+        messageEvent(
+          { transportMessageId: 'wire-x', runId: 'run-other' },
+          { outputs: [{ type: 'text-end', id: 't9' }] },
+        ),
       );
       fake.emit(runEndEvent('run-other'));
       fake.emit(runEndEvent('run-1'));
@@ -226,7 +229,7 @@ describe('ChatTransport', () => {
       await Promise.resolve();
       fake.emit(
         messageEvent(
-          { codecMessageId: 'wire-a1', runId: 'run-1' },
+          { transportMessageId: 'wire-a1', runId: 'run-1' },
           { outputs: [{ type: 'text-delta', id: 't1', delta: 'early' }] },
         ),
       );
@@ -340,7 +343,7 @@ describe('ChatTransport', () => {
         kind: 'approval',
         payload: { toolCallId: 'call-1', approved: true },
       });
-      expect(fake.published[0]?.opts).toEqual({ codecMessageId: 'wire-a1', runId: 'run-9' });
+      expect(fake.published[0]?.opts).toEqual({ transportMessageId: 'wire-a1', runId: 'run-9' });
       expect(fetchMock).toHaveBeenCalledWith(
         '/api/chat',
         expect.objectContaining({
@@ -356,7 +359,7 @@ describe('ChatTransport', () => {
       stubFetch({ runId: 'run-9' });
       const gap: Event[] = [
         messageEvent(
-          { codecMessageId: 'wire-a1', runId: 'run-9', role: 'assistant' },
+          { transportMessageId: 'wire-a1', runId: 'run-9', role: 'assistant' },
           {
             outputs: [
               { type: 'start', messageId: 'a1' },
@@ -393,14 +396,14 @@ describe('ChatTransport', () => {
           dynamic: true,
         },
       });
-      expect(fake.published[0]?.opts).toEqual({ codecMessageId: 'wire-a1', runId: 'run-9' });
+      expect(fake.published[0]?.opts).toEqual({ transportMessageId: 'wire-a1', runId: 'run-9' });
     });
 
     it('publishes the tool-output-error chunk for a failed client tool', async () => {
       stubFetch({ runId: 'run-9' });
       const gap: Event[] = [
         messageEvent(
-          { codecMessageId: 'wire-a1', runId: 'run-9', role: 'assistant' },
+          { transportMessageId: 'wire-a1', runId: 'run-9', role: 'assistant' },
           {
             outputs: [
               { type: 'start', messageId: 'a1' },
@@ -439,7 +442,7 @@ describe('ChatTransport', () => {
       // resolution is an output chunk, and the published set counts it.
       const gap: Event[] = [
         messageEvent(
-          { codecMessageId: 'wire-a1', runId: 'run-9', role: 'assistant' },
+          { transportMessageId: 'wire-a1', runId: 'run-9', role: 'assistant' },
           {
             outputs: [
               { type: 'start', messageId: 'a1' },
@@ -479,7 +482,7 @@ describe('ChatTransport', () => {
         ...approvalGapEvents('run-9'),
         // Another client's approval action, observed on the wire.
         messageEvent(
-          { codecMessageId: 'wire-a1', runId: 'run-9', serial: 'serial-3' },
+          { transportMessageId: 'wire-a1', runId: 'run-9', serial: 'serial-3' },
           { inputs: [{ kind: 'approval', payload: { toolCallId: 'call-1', approved: true } }] },
         ),
       ];
@@ -550,7 +553,7 @@ describe('ChatTransport', () => {
       const gap: Event[] = [
         ...approvalGapEvents('run-9'),
         messageEvent(
-          { codecMessageId: 'wire-a1', runId: 'run-9', serial: 'serial-approval' },
+          { transportMessageId: 'wire-a1', runId: 'run-9', serial: 'serial-approval' },
           { inputs: [{ kind: 'approval', payload: { toolCallId: 'call-1', approved: true } }] },
         ),
       ];
@@ -585,7 +588,7 @@ describe('ChatTransport', () => {
       // A live event lands during hydration: another client resolved call-1.
       fake.emit(
         messageEvent(
-          { codecMessageId: 'wire-a1', runId: 'run-9', serial: 'serial-9' },
+          { transportMessageId: 'wire-a1', runId: 'run-9', serial: 'serial-9' },
           {
             inputs: [
               {
@@ -600,7 +603,7 @@ describe('ChatTransport', () => {
       // the held-back live resolution on top.
       chat.seed([
         messageEvent(
-          { codecMessageId: 'wire-a1', runId: 'run-9', role: 'assistant' },
+          { transportMessageId: 'wire-a1', runId: 'run-9', role: 'assistant' },
           {
             outputs: [
               { type: 'start', messageId: 'a1' },
@@ -646,7 +649,7 @@ describe('ChatTransport', () => {
       // Live continuation after the replay.
       fake.emit(
         messageEvent(
-          { codecMessageId: 'wire-a1', runId: 'run-1' },
+          { transportMessageId: 'wire-a1', runId: 'run-1' },
           { outputs: [{ type: 'text-delta', id: 't1', delta: ' rest' }] },
         ),
       );
@@ -689,7 +692,7 @@ describe('ChatTransport', () => {
             runStartEvent('run-old', 'serial-1'),
             runStartEvent('run-new', 'serial-2'),
             messageEvent(
-              { codecMessageId: 'wire-new', runId: 'run-new' },
+              { transportMessageId: 'wire-new', runId: 'run-new' },
               { outputs: [{ type: 'text-delta', id: 't2', delta: 'newest' }] },
             ),
           ],
@@ -714,7 +717,7 @@ describe('ChatTransport', () => {
         {
           events: [
             messageEvent(
-              { codecMessageId: 'wire-a1', runId: 'run-1' },
+              { transportMessageId: 'wire-a1', runId: 'run-1' },
               { outputs: [{ type: 'text-delta', id: 't1', delta: 'late' }] },
             ),
           ],
@@ -723,7 +726,7 @@ describe('ChatTransport', () => {
         {
           events: [
             messageEvent(
-              { codecMessageId: 'wire-a1', runId: 'run-1' },
+              { transportMessageId: 'wire-a1', runId: 'run-1' },
               { outputs: [{ type: 'text-delta', id: 't1', delta: 'earlier' }] },
             ),
           ],
@@ -747,7 +750,7 @@ describe('ChatTransport', () => {
       if (!stream) return;
       fake.emit(
         messageEvent(
-          { codecMessageId: 'wire-a1', runId: 'run-1' },
+          { transportMessageId: 'wire-a1', runId: 'run-1' },
           { outputs: [{ type: 'text-delta', id: 't1', delta: ' rest' }] },
         ),
       );

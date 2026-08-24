@@ -22,7 +22,7 @@ interface QuirkyOutput {
 
 interface NoopInput {
   kind: 'noop';
-  codecMessageId: string;
+  transportMessageId: string;
   payload: Record<string, never>;
 }
 
@@ -35,7 +35,7 @@ const codec = defineCodec<NoopInput, QuirkyOutput>()({
       data: { encode: () => '', decode: () => ({ kind: 'looks-like-input' }) },
     }),
   ],
-  // A single event with no fields/data rebuilds to the { kind, codecMessageId, payload } envelope.
+  // A single event with no fields/data rebuilds to the { kind, transportMessageId, payload } envelope.
   input: ({ event }) => [event('noop')],
 });
 
@@ -178,7 +178,7 @@ describe('defineCodec — encoder wiring', () => {
     const writer = createMockWriter();
     const encoder = codec.createEncoder(writer);
 
-    await encoder.publishInput({ kind: 'noop', codecMessageId: 'cm-1', payload: {} });
+    await encoder.publishInput({ kind: 'noop', transportMessageId: 'cm-1', payload: {} });
 
     expect(writer.published).toHaveLength(1);
     const msg = writer.published[0];
@@ -361,7 +361,7 @@ type NoteOutput =
 
 interface PingInput {
   kind: 'ping';
-  codecMessageId: string;
+  transportMessageId: string;
   payload: Record<string, never>;
 }
 

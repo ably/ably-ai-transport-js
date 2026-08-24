@@ -21,7 +21,7 @@ const makeMeta = (overrides: Partial<WireMeta>): WireMeta => ({
   codec: {},
   headers: {},
   serial: 's-1',
-  codecMessageId: undefined,
+  transportMessageId: undefined,
   runId: undefined,
   stepId: undefined,
   stepStartSerial: undefined,
@@ -34,15 +34,15 @@ const makeMeta = (overrides: Partial<WireMeta>): WireMeta => ({
   parent: undefined,
   forkOf: undefined,
   regenerates: undefined,
-  inputCodecMessageId: undefined,
-  inputCodecMessageIds: undefined,
-  steerCodecMessageIds: undefined,
+  inputTransportMessageId: undefined,
+  inputTransportMessageIds: undefined,
+  steerTransportMessageIds: undefined,
   ...overrides,
 });
 
-const userEvent = (codecMessageId: string, text: string, serial: string): Event => ({
+const userEvent = (transportMessageId: string, text: string, serial: string): Event => ({
   kind: 'message',
-  meta: makeMeta({ codecMessageId, role: 'user', serial }),
+  meta: makeMeta({ transportMessageId, role: 'user', serial }),
   inputs: [
     {
       kind: 'message',
@@ -73,7 +73,7 @@ describe('getExistingMessages', () => {
     const existing = await getExistingMessages(source);
 
     expect(existing.events).toHaveLength(3);
-    expect(existing.messages.map((m) => m.codecMessageId)).toEqual(['cm-1', 'cm-2']);
+    expect(existing.messages.map((m) => m.transportMessageId)).toEqual(['cm-1', 'cm-2']);
     expect(existing.latestSerial).toBe('s-4');
   });
 

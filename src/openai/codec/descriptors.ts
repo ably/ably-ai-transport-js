@@ -437,7 +437,7 @@ export const outputs = ({
   // --- server-executed tool result (codec's own output event) --------------
   // Not a Responses stream event: OpenAI surfaces tool output only as model
   // input on the next turn, so the agent publishes this after running the
-  // tool. A consumer merges the item into the message its codec-message-id
+  // tool. A consumer merges the item into the message its transport-message-id
   // names (paired with its function_call by call_id at render time). Like the
   // item envelopes above, the item is carried under the `item` key of its wire
   // `data` envelope (see that note for the rationale).

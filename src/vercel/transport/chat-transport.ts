@@ -21,8 +21,8 @@
  *   resolved part, so a hydrated page cannot re-trigger a continuation for
  *   work already done.
  * - **Regeneration** (`trigger: 'regenerate-message'`): publish the codec's
- *   wire-only regenerate input with the `regenerates` / `parent` structure
- *   taken from the message array useChat hands over, then POST a fresh run.
+ *   wire-only regenerate signal, then POST a fresh run. The agent rebuilds the
+ *   conversation from the channel, so the signal carries no addressing.
  *
  * The adapter keeps three things off {@link WireMeta}, none of them a merge:
  * an index from a message's domain id to the `transportMessageId` and `runId` the
@@ -193,8 +193,6 @@ class DefaultChatTransport<
    * hydration walk consumed the transport's history cursor.
    */
   private _retainedRunEvents: AdapterEvent<TMetadata, TDataParts, TTools>[] = [];
-  /** The newest assistant's wire identity, for a regenerate that names no message. */
-  private _newestAssistant: WireIdentity | undefined;
   /** Active run-stream collectors fed from the live event subscription. */
   private readonly _collectors = new Set<(event: AdapterEvent<TMetadata, TDataParts, TTools>) => void>();
   /** Live events held back until {@link seed} indexes the older history first; `undefined` once seeded. */
@@ -272,7 +270,7 @@ class DefaultChatTransport<
     // publish an input no agent is ever woken for.
     if (this._closed) throw this._closedError();
     if (options.trigger === 'regenerate-message') {
-      return this._sendRegenerate(options.messages, options.messageId, options.abortSignal);
+      return this._sendRegenerate(options.abortSignal);
     }
     const last = options.messages.at(-1);
     if (!last) {
@@ -492,44 +490,16 @@ class DefaultChatTransport<
   }
 
   /**
-   * Publish the wire-only regenerate input and wake the agent with a
-   * fresh-run POST.
-   * @param messages - useChat's truncated message list.
-   * @param messageId - The regenerated assistant's domain id, when useChat names one.
+   * Publish the wire-only regenerate signal and wake the agent with a
+   * fresh-run POST. The signal carries no addressing — the agent rebuilds the
+   * conversation from the channel.
    * @param abortSignal - useChat's per-send abort signal.
    * @returns The new run's chunk stream.
    */
-  private async _sendRegenerate(
-    messages: AI.UIMessage<TMetadata, TDataParts, TTools>[],
-    messageId: string | undefined,
-    abortSignal: AbortSignal | undefined,
-  ): Promise<ReadableStream<AI.UIMessageChunk>> {
-    // The regeneration target: the named assistant, or — when useChat names
-    // none — the newest assistant observed on the wire (useChat has already
-    // truncated the array at the regeneration target, so the target itself is
-    // not in `messages`).
-    const target = messageId === undefined ? this._newestAssistant : this._wireIdentityByMessageId.get(messageId);
-    if (target === undefined) {
-      throw new Ably.ErrorInfo(
-        'unable to regenerate; no wire identity known for the regeneration target',
-        ErrorCode.InvalidArgument,
-        400,
-      );
-    }
-    // The new assistant threads under the last message useChat kept — the
-    // user message that preceded the regenerated assistant.
-    const parentDomainId = messages.at(-1)?.id;
-    const parent = parentDomainId === undefined ? undefined : this._wireIdentityByMessageId.get(parentDomainId);
-
+  private async _sendRegenerate(abortSignal: AbortSignal | undefined): Promise<ReadableStream<AI.UIMessageChunk>> {
     const collector = this._openRunStream(abortSignal);
     try {
-      const sent = await this._transport.publishInput(
-        { kind: 'regenerate' },
-        {
-          regenerates: target.transportMessageId,
-          ...(parent === undefined ? {} : { parent: parent.transportMessageId }),
-        },
-      );
+      const sent = await this._transport.publishInput({ kind: 'regenerate' });
       const response = await this._postChat({ eventId: sent.eventId });
       collector.setRunId(response.runId);
     } catch (error) {
@@ -654,7 +624,7 @@ class DefaultChatTransport<
   private _indexEvent(event: AdapterEvent<TMetadata, TDataParts, TTools>): void {
     this._retainRunEvent(event);
     if (event.kind !== 'message') return;
-    const { transportMessageId, runId, role } = event.meta;
+    const { transportMessageId, runId } = event.meta;
     if (transportMessageId !== undefined) {
       // The domain id: an output stream's `start` chunk carries it; a message
       // input carries it on its body. Fall back to the transport-message-id — the
@@ -671,13 +641,7 @@ class DefaultChatTransport<
         if (input.kind === 'message') domainId = input.payload.id;
       }
       if (domainId !== undefined) {
-        const identity = { transportMessageId, runId };
-        this._wireIdentityByMessageId.set(domainId, identity);
-        if (role === 'assistant') this._newestAssistant = identity;
-      } else if (role === 'assistant' && runId !== undefined) {
-        // An assistant event with no start in this wire (a mid-stream append):
-        // keep the newest-assistant cursor fresh without a domain id.
-        this._newestAssistant = { transportMessageId, runId };
+        this._wireIdentityByMessageId.set(domainId, { transportMessageId, runId });
       }
     }
     for (const input of event.inputs) {

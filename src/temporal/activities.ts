@@ -199,9 +199,9 @@ export const createFramingActivities = <TInput, TOutput>(
         }
 
         // The located input drives the open: its run-id header names the run
-        // a continuation re-enters (publishing `ai-run-resume`); without one,
-        // a fresh turn opens under the pinned `runId` — the invocation id,
-        // which a durable framework holds constant across retries, so a
+        // a continuation re-enters (publishing `ai-run-resume`); without one, a
+        // fresh turn opens under the pinned `runId` — the invocation id, which
+        // a durable framework holds constant across retries, so a
         // fresh-process retry re-enters the SAME run instead of minting a new
         // id and opening a parallel one.
         const { promise: openFailed, reject: failOpen } = Promise.withResolvers<never>();

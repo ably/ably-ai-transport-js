@@ -135,7 +135,7 @@ export async function openActivity(input: AitTurnInput, workflowRunId: string): 
       throw new RetryableError(`input event ${input.eventId} not found in channel history`, { retryAfter: '1s' });
     }
 
-    // The located input drives the open: its run-id header names the run a
+    // The trigger drives the open: its run-id header names the run a
     // continuation re-enters, and a fresh turn opens under the pinned run id
     // — the workflow run id, the same derivation the chat route used for its
     // {runId} response.

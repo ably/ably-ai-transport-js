@@ -290,7 +290,7 @@ describe('ChatTransport', () => {
   });
 
   describe('regeneration', () => {
-    it('publishes the wire-only regenerate with structure from the named target', async () => {
+    it('publishes the bare wire-only regenerate signal and POSTs a fresh run', async () => {
       const fetchMock = stubFetch({ runId: 'run-2' });
       const { fake, chat } = setup([...approvalGapEvents('run-1'), runEndEvent('run-1')]);
 
@@ -300,7 +300,9 @@ describe('ChatTransport', () => {
 
       expect(fake.published).toHaveLength(1);
       expect(fake.published[0]?.event).toEqual({ kind: 'regenerate' });
-      expect(fake.published[0]?.opts).toEqual({ regenerates: 'wire-a1', parent: 'wire-u1' });
+      // The signal carries no addressing: the agent rebuilds the conversation
+      // from the channel.
+      expect(fake.published[0]?.opts).toBeUndefined();
       expect(fetchMock).toHaveBeenCalledWith(
         '/api/chat',
         expect.objectContaining({ body: JSON.stringify({ channelName: 'ai:test', eventId: 'ev-1' }) }),
@@ -308,24 +310,6 @@ describe('ChatTransport', () => {
 
       fake.emit(runEndEvent('run-2'));
       expect(await readAll(stream)).toEqual([]);
-    });
-
-    it('falls back to the newest assistant when useChat names no target', async () => {
-      stubFetch({ runId: 'run-2' });
-      const { fake, chat } = setup([...approvalGapEvents('run-1'), runEndEvent('run-1')]);
-
-      await chat.sendMessages(sendOptions([userMessage('u1', 'forecast please')], { trigger: 'regenerate-message' }));
-
-      expect(fake.published[0]?.opts).toEqual({ regenerates: 'wire-a1', parent: 'wire-u1' });
-    });
-
-    it('throws when no wire identity is known for the target', async () => {
-      stubFetch({ runId: 'run-2' });
-      const { chat } = setup();
-
-      await expect(
-        chat.sendMessages(sendOptions([userMessage('u1', 'hi')], { trigger: 'regenerate-message', messageId: 'a1' })),
-      ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
     });
   });
 

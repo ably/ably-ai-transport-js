@@ -11,11 +11,8 @@
 import type * as Ably from 'ably';
 
 import {
-  HEADER_FORK_OF,
   HEADER_INPUT_TRANSPORT_MESSAGE_ID,
   HEADER_INPUT_TRANSPORT_MESSAGE_IDS,
-  HEADER_MSG_REGENERATE,
-  HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_ID,
   HEADER_STEER_TRANSPORT_MESSAGE_IDS,
@@ -53,9 +50,6 @@ export const wireMetaFromMessage = (rawMsg: Ably.InboundMessage): WireMeta => {
     messageName: rawMsg.name,
     versionSerial: rawMsg.version.serial,
     versionTimestamp: rawMsg.version.timestamp,
-    parent: transport[HEADER_PARENT],
-    forkOf: transport[HEADER_FORK_OF],
-    regenerates: transport[HEADER_MSG_REGENERATE],
     inputTransportMessageId: transport[HEADER_INPUT_TRANSPORT_MESSAGE_ID],
     inputTransportMessageIds: parseTransportMessageIdsHeader(transport[HEADER_INPUT_TRANSPORT_MESSAGE_IDS]),
     steerTransportMessageIds: parseTransportMessageIdsHeader(transport[HEADER_STEER_TRANSPORT_MESSAGE_IDS]),

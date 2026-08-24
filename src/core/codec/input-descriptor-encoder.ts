@@ -65,7 +65,7 @@ export const createInputDescriptorEncoder = <U extends { kind: string }>(
     ctx: InputEncodeContext,
   ): Promise<Ably.PublishResult> => {
     if (descriptor.wireOnly) {
-      // Kind only: no fields, no data — the parent/target ride transport headers.
+      // Kind only: no fields, no data — the signal is its kind.
       return core.publishDiscrete(
         { name: wireName, data: '', codecHeaders: { [KIND_HEADER]: descriptor.kind } },
         ctx.opts,

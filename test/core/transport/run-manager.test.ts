@@ -10,13 +10,10 @@ import {
   EVENT_STEP_START,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
-  HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
   HEADER_INPUT_TRANSPORT_MESSAGE_ID,
   HEADER_INPUT_TRANSPORT_MESSAGE_IDS,
   HEADER_INVOCATION_ID,
-  HEADER_MSG_REGENERATE,
-  HEADER_PARENT,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
@@ -90,21 +87,6 @@ describe('RunManager', () => {
       expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('trigger-msg');
     });
 
-    it('omits structural metadata (parent/forkOf/regenerates) on a resume', async () => {
-      await manager.startRun('run-1', 'user-a', {
-        continuation: true,
-        parent: 'p',
-        forkOf: 'f',
-        regenerates: 'r',
-      });
-
-      const headers = headersOf(channel.publishCalls.at(0));
-      // ...but not structure — the original run-start owns that.
-      expect(headers).not.toHaveProperty(HEADER_PARENT);
-      expect(headers).not.toHaveProperty(HEADER_FORK_OF);
-      expect(headers).not.toHaveProperty(HEADER_MSG_REGENERATE);
-    });
-
     it('publishes ai-run-start when continuation is false or unset', async () => {
       await manager.startRun('run-1', 'user-a', { continuation: false });
       await manager.startRun('run-2', 'user-a');
@@ -124,22 +106,6 @@ describe('RunManager', () => {
 
       const headers = headersOf(channel.publishCalls.at(0));
       expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
-    });
-
-    it('stamps fork-of when metadata.forkOf is set (edit run-start)', async () => {
-      await manager.startRun('run-1', 'user-a', { forkOf: 'orig-user-msg' });
-
-      const headers = headersOf(channel.publishCalls.at(0));
-      expect(headers[HEADER_FORK_OF]).toBe('orig-user-msg');
-      expect(headers[HEADER_MSG_REGENERATE]).toBeUndefined();
-    });
-
-    it('stamps msg-regenerate when metadata.regenerates is set (regenerate run-start)', async () => {
-      await manager.startRun('run-1', 'user-a', { regenerates: 'orig-asst-msg' });
-
-      const headers = headersOf(channel.publishCalls.at(0));
-      expect(headers[HEADER_MSG_REGENERATE]).toBe('orig-asst-msg');
-      expect(headers[HEADER_FORK_OF]).toBeUndefined();
     });
 
     it('stamps input-transport-message-id when metadata.inputTransportMessageId is set', async () => {

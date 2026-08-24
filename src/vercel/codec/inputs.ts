@@ -59,9 +59,8 @@ export const inputs = ({ event, batch }: InputBuilder<VercelInput>): readonly In
 
   // --- wire-only signal ---------------------------------------------------------
 
-  // `regenerate` carries no body; the `regenerates` / `parent` structure rides
-  // the transport headers built from the publish options, so it stamps only
-  // the `kind` header and decodes to [].
+  // `regenerate` carries no body and no addressing, so it stamps only the
+  // `kind` header and decodes to [].
   event('regenerate', { wireOnly: true }),
 
   // --- multi-part client message ------------------------------------------------

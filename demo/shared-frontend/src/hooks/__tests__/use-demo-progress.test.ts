@@ -2,13 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import type * as Ably from 'ably';
 import type * as AI from 'ai';
-import {
-  EVENT_CANCEL,
-  EVENT_RUN_START,
-  HEADER_FORK_OF,
-  HEADER_MSG_REGENERATE,
-  HEADER_RUN_CLIENT_ID,
-} from '@ably/ai-transport';
+import { EVENT_CANCEL, EVENT_RUN_START, HEADER_RUN_CLIENT_ID } from '@ably/ai-transport';
 
 import { useDemoProgress } from '../use-demo-progress';
 import type { Scenario } from '../../lib/progress-steps';
@@ -26,8 +20,7 @@ const SCENARIOS: Scenario[] = [
   { id: 'approval-forecast', tag: 'Approval', title: 'Approval-gated tool', blurb: 'b', prompt: 'forecast?' },
   { id: 'retry-stock', tag: 'Retry', title: 'Durable retry', blurb: 'b', prompt: 'stock price?' },
   { id: 'multi-tab', tag: 'Sync', title: 'Multi-client sync', blurb: 'b', gesture: 'open in a new tab' },
-  { id: 'edit', tag: 'Branching', title: 'Edit', blurb: 'b', gesture: 'edit a message' },
-  { id: 'regenerate', tag: 'Branching', title: 'Regenerate', blurb: 'b', gesture: 'regenerate a reply' },
+  { id: 'regenerate', tag: 'Regenerate', title: 'Regenerate', blurb: 'b', gesture: 'regenerate a reply' },
   { id: 'cancel', tag: 'Cancel', title: 'Cancel mid-stream', blurb: 'b', gesture: 'stop mid-stream' },
   { tag: 'Observability', title: 'Observability', blurb: 'b', gesture: 'open the Debug pane' },
 ];
@@ -53,10 +46,14 @@ function toolPart(name: string, state: 'input-available' | 'output-available'): 
   } as AI.ToolUIPart;
 }
 
-// CAST: the hook reads only `name` and the `extras.ai.transport` headers off
-// each inbound message; build the minimal shape and assert the type.
-function wireMessage(name: string | undefined, transportHeaders: Record<string, string> = {}): Ably.InboundMessage {
-  return { name, extras: { ai: { transport: transportHeaders } } } as Ably.InboundMessage;
+// CAST: the hook reads only `name` and the `extras.ai` header tiers off each
+// inbound message; build the minimal shape and assert the type.
+function wireMessage(
+  name: string | undefined,
+  transportHeaders: Record<string, string> = {},
+  codecHeaders: Record<string, string> = {},
+): Ably.InboundMessage {
+  return { name, extras: { ai: { transport: transportHeaders, codec: codecHeaders } } } as Ably.InboundMessage;
 }
 
 function progress(
@@ -81,7 +78,6 @@ describe('useDemoProgress', () => {
       'approval-forecast',
       'retry-stock',
       'multi-tab',
-      'edit',
       'regenerate',
       'cancel',
     ]);
@@ -121,14 +117,9 @@ describe('useDemoProgress', () => {
     expect(ids(progress([], { ablyMessages: [wireMessage(EVENT_CANCEL)] }))).not.toContain('cancel');
   });
 
-  it('marks regenerate done when a message carries the msg-regenerate transport header', () => {
-    const ablyMessages = [wireMessage('ai-input', { [HEADER_MSG_REGENERATE]: 'cm-1' })];
+  it('marks regenerate done when an input carries the codec-tier regenerate kind', () => {
+    const ablyMessages = [wireMessage('ai-input', {}, { kind: 'regenerate' })];
     expect(ids(progress([], { ablyMessages }))).not.toContain('regenerate');
-  });
-
-  it('marks edit done when a message carries the fork-of transport header', () => {
-    const ablyMessages = [wireMessage('ai-input', { [HEADER_FORK_OF]: 'cm-1' })];
-    expect(ids(progress([], { ablyMessages }))).not.toContain('edit');
   });
 
   it('marks multi-tab done when ai-run-start messages carry more than one run-client-id', () => {

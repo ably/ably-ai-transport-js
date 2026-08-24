@@ -29,7 +29,7 @@ const SCENARIOS: readonly Scenario[] = [
     blurb:
       'The assistant plans a task checklist in Ably LiveObjects and flips each step to done as it works. The widget below the chat renders the live progress and restores it on reload.',
   },
-  ...COMMON_SCENARIOS.slice(6),
+  ...COMMON_SCENARIOS.slice(5),
 ];
 
 /**

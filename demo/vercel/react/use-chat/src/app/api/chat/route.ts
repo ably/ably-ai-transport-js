@@ -103,11 +103,10 @@ export async function POST(req: Request) {
     // (see get-existing-messages.ts).
     conversation = await getExistingMessages(transport);
 
-    // The located input drives the open: a continuation input carries the
-    // run-id header of the run it resumes, and a fresh send carries none —
-    // the transport re-enters or starts accordingly, anchors the run to the
-    // trigger so cancels route, and threads its structure so clients can
-    // anchor the reply.
+    // The trigger drives the open: a continuation input carries the run-id
+    // header of the run it resumes, and a fresh send carries none — the
+    // transport re-enters or starts accordingly and anchors the run to the
+    // trigger so cancels route.
     run = transport.openRun({ input: located }, { signal: req.signal });
   } catch (error) {
     close();

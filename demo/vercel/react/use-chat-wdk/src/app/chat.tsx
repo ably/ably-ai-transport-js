@@ -30,7 +30,7 @@ const INTRO_DESCRIPTION =
   'specific piece; try them in order.';
 
 // COMMON_SCENARIOS order: server-weather[0], client-weather[1], approval-forecast[2],
-// multi-tab[3], edit[4], regenerate[5], cancel[6], observability[7]. This demo drives
+// multi-tab[3], regenerate[4], cancel[5], observability[6]. This demo drives
 // the tool + cancel + observability scenarios, and adds its own durable ones.
 const SCENARIOS: readonly Scenario[] = [
   {
@@ -71,8 +71,8 @@ const SCENARIOS: readonly Scenario[] = [
       'Every workflow and its activities appear as they run, correlated to the AIT run id, with WDK-side status ' +
       'polled from the real Workflow observability API.',
   },
-  COMMON_SCENARIOS[6], // cancel
-  COMMON_SCENARIOS[7], // observability
+  COMMON_SCENARIOS[5], // cancel
+  COMMON_SCENARIOS[6], // observability
 ];
 
 /**

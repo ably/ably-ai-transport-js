@@ -29,9 +29,8 @@ import { getToolName, isToolUIPart, type UIMessage } from 'ai';
 import {
   EVENT_CANCEL,
   EVENT_RUN_START,
+  getCodecHeaders,
   getTransportHeaders,
-  HEADER_FORK_OF,
-  HEADER_MSG_REGENERATE,
   HEADER_RUN_CLIENT_ID,
 } from '@ably/ai-transport';
 import type { DemoStepId, Scenario } from '../lib/progress-steps';
@@ -56,8 +55,9 @@ export function useDemoProgress(
     for (const m of ablyMessages) {
       if (m.name === EVENT_CANCEL) completed.add('cancel');
       const headers = getTransportHeaders(m);
-      if (headers[HEADER_MSG_REGENERATE] !== undefined) completed.add('regenerate');
-      if (headers[HEADER_FORK_OF] !== undefined) completed.add('edit');
+      // The regenerate signal is a wire-only input; its codec-tier kind header
+      // is the only marker it carries.
+      if (getCodecHeaders(m).kind === 'regenerate') completed.add('regenerate');
       if (m.name === EVENT_RUN_START) {
         const runClientId = headers[HEADER_RUN_CLIENT_ID];
         if (runClientId !== undefined) runClientIds.add(runClientId);

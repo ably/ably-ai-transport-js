@@ -22,9 +22,8 @@
  * identity also lives on the channel: the agent mints the `runId` for a fresh
  * run and reads the existing `runId` off the triggering input event for a
  * continuation — so the body carries no run-id either. Per-message metadata —
- * `clientId`, `parent`, `forkOf`, continuation status — likewise lives on the
- * channel and is resolved by the agent from the triggering input event, not
- * from the body. The `inputClientId` the agent re-stamps on its own publishes
+ * `clientId`, continuation status — likewise lives on the channel and is
+ * resolved by the agent from the triggering input event, not from the body. The `inputClientId` the agent re-stamps on its own publishes
  * comes from the publisher's Ably `clientId` on the matched input event, not
  * from a body field.
  */

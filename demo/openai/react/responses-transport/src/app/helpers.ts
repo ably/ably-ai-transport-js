@@ -49,8 +49,7 @@ export interface WakeAgentResult {
  * HTTP — so the application owns this step. The agent locates the input on the
  * channel by `eventId`, rebuilds the conversation from channel history, opens
  * the run (fresh, or resuming the run the trigger's own run-id header names),
- * and returns the run-id on the HTTP
- * response. The same run-id also arrives on the channel as `ai-run-start` /
+ * and returns the run-id on the HTTP response. The same run-id also arrives on the channel as `ai-run-start` /
  * `ai-run-resume`, which is how the thread merge tracks the run without
  * reading this response.
  * @param api - The agent endpoint URL.

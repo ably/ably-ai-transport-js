@@ -85,28 +85,6 @@ const PRE_OPEN_STEER_LIMIT = 200;
  * suspended run stays registered — a cancel addressed to it should still fire
  * its abort signal, since a later invocation may be about to continue it.
  */
-/**
- * The resolved parameters `_createRun` builds a run handle from. The public
- * verbs (`openRun`, `adoptRun`) own all identity, input and structure
- * resolution and hand the result here verbatim.
- */
-interface CreateRunParams {
-  /** The run's resolved id. */
-  runId: string;
-  /** The invocation's resolved id. */
-  invocationId: string;
-  /** The opening action: publish `ai-run-start`, publish `ai-run-resume`, or adopt without publishing. */
-  open: 'start' | 'resume' | 'adopt';
-  /** The triggering input's transport-message-id, when known. */
-  inputTransportMessageId?: string;
-  /** Structural parent transport-message-id (fresh open only). */
-  parent?: string;
-  /** Forked transport-message-id for an edit (fresh open only). */
-  forkOf?: string;
-  /** Regenerated transport-message-id (fresh open only). */
-  regenerates?: string;
-}
-
 interface RegisteredRun {
   /** The run's id. */
   runId: string;
@@ -124,6 +102,22 @@ interface RegisteredRun {
    * the trigger and already-answered steers) and fires its `onSteer` hint.
    */
   onSteerMessage: (transportMessageId: string) => void;
+}
+
+/**
+ * The resolved parameters `_createRun` builds a run handle from. The public
+ * verbs (`openRun`, `adoptRun`) own all identity and located-input resolution
+ * and hand the result here verbatim.
+ */
+interface CreateRunParams {
+  /** The run's resolved id. */
+  runId: string;
+  /** The invocation's resolved id. */
+  invocationId: string;
+  /** The opening action: publish `ai-run-start`, publish `ai-run-resume`, or adopt without publishing. */
+  open: 'start' | 'resume' | 'adopt';
+  /** The triggering input's transport-message-id, when known. */
+  inputTransportMessageId?: string;
 }
 
 /**
@@ -240,12 +234,6 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
         invocationId,
         open: continuation ? 'resume' : 'start',
         inputTransportMessageId: opts?.inputTransportMessageId ?? inputMeta?.transportMessageId,
-        // Structure defaults from the located input apply to a fresh open
-        // only: a resume never re-stamps structure, and the input's own
-        // anchors must not leak into a resumed run's output fallbacks.
-        parent: opts?.parent ?? (continuation ? undefined : inputMeta?.parent),
-        forkOf: opts?.forkOf ?? (continuation ? undefined : inputMeta?.forkOf),
-        regenerates: opts?.regenerates ?? (continuation ? undefined : inputMeta?.regenerates),
       },
       hooks,
     );
@@ -336,7 +324,9 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
      */
     const consideredInputIds = (): string[] | undefined => {
       if (!hasProducedOutput) return undefined;
-      return inputTransportMessageId === undefined ? [...consideredSteerIds] : [inputTransportMessageId, ...consideredSteerIds];
+      return inputTransportMessageId === undefined
+        ? [...consideredSteerIds]
+        : [inputTransportMessageId, ...consideredSteerIds];
     };
 
     /**
@@ -395,7 +385,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
           if (trackSteer(id)) seededAny = true;
         }
         if (seededAny) {
-          this._logger.debug('AgentTransport.openRun(); seeded pre-open steers', { runId });
+          this._logger.debug('AgentTransport._createRun(); seeded pre-open steers', { runId });
           notifySteer();
         }
       }
@@ -409,7 +399,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
       const buffered = this._deferredCancelsByRunId.get(runId);
       if (buffered !== undefined) {
         this._deferredCancelsByRunId.delete(runId);
-        this._logger.debug('AgentTransport.openRun(); honouring buffered cancel', { runId });
+        this._logger.debug('AgentTransport._createRun(); honouring buffered cancel', { runId });
         void this._cancelRegistration(registration, buffered);
       }
     }
@@ -430,9 +420,6 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
         return;
       }
       await this._runManager.startRun(runId, this._clientId, {
-        parent: params.parent,
-        forkOf: params.forkOf,
-        regenerates: params.regenerates,
         invocationId,
         // Anchor the opening event to its trigger, so a client that published
         // the input resolves the run-id from the run-start's
@@ -448,7 +435,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
     // (e.g. one waiting on the opening event's channel echo) can observe. A
     // run whose open failed receives no signals, so drop its registration.
     openPromise.catch((error: unknown) => {
-      this._logger.error('AgentTransport.openRun(); open publish failed', { runId });
+      this._logger.error('AgentTransport._createRun(); open publish failed', { runId });
       deregister();
       const onError = hooks?.onError;
       if (!onError) return;
@@ -461,7 +448,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
       try {
         onError(errInfo);
       } catch {
-        this._logger.error('AgentTransport.openRun(); onError callback threw', { runId });
+        this._logger.error('AgentTransport._createRun(); onError callback threw', { runId });
       }
     });
 
@@ -513,13 +500,10 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
           400,
         );
       },
-      // Anchors come straight from the openRun structure options — there is no
+      // The anchor comes straight from the open options — there is no
       // triggering-input resolution (a durable agent reads it via locateInput and
-      // threads it through openRun / per-pipe options itself).
+      // threads it through openRun itself).
       getAnchors: () => ({
-        parentFallback: params.parent,
-        forkOf: params.forkOf,
-        regenerates: params.regenerates,
         inputClientId: undefined,
         inputTransportMessageId,
       }),

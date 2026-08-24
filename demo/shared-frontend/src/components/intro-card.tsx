@@ -47,18 +47,12 @@ export const COMMON_SCENARIOS: readonly Scenario[] = [
     blurb: 'Both tabs share the same Ably channel. Messages, streams, and run state stay in sync.',
   },
   {
-    id: 'edit',
-    tag: 'Branching',
-    title: 'Edit (branch)',
-    gesture: 'hover a user message, click Edit',
-    blurb: 'Re-sends as a forked branch rooted at the edited message.',
-  },
-  {
     id: 'regenerate',
-    tag: 'Branching',
-    title: 'Regenerate (branch)',
+    tag: 'Regenerate',
+    title: 'Regenerate',
     gesture: 'hover an assistant reply, click Regenerate',
-    blurb: 'Forks a new branch from that point. The previous branch is kept — the channel history holds both.',
+    blurb:
+      'Publishes a regenerate signal over Ably; the agent replies again, and the channel history holds both replies.',
   },
   {
     id: 'cancel',

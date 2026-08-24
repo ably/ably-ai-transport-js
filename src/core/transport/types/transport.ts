@@ -22,12 +22,11 @@ import type { SteerResult } from './steer.js';
  * a receive-stream consumer alongside the decoded events.
  *
  * The transport reads these fields off the `extras.ai.transport` header tier
- * (and the message's own Ably fields) but never interprets the structure
- * fields (`parent` / `forkOf` / `regenerates` / `inputTransportMessageId`) — those
- * are carried verbatim for a consumer reconstructing conversation structure;
- * the application interprets them. Every typed field is optional: a given wire
- * message populates only
- * the fields its message name and headers carry.
+ * (and the message's own Ably fields) but never interprets
+ * `inputTransportMessageId` — it is carried verbatim for a consumer
+ * correlating a run to its trigger; the application interprets it. Every
+ * typed field is optional: a given wire message populates only the fields its
+ * message name and headers carry.
  *
  * The typed fields are a convenience projection of the two raw header buckets.
  * {@link transport} and {@link codec} carry the complete `extras.ai.transport`
@@ -84,13 +83,7 @@ export interface WireMeta {
   versionSerial: string | undefined;
   /** The append version timestamp (`version.timestamp`, epoch ms), or `undefined` for a locally synthesised event. */
   versionTimestamp: number | undefined;
-  /** Structure header `parent` — the transport-message-id of the preceding message in this branch. Carried verbatim; the application interprets it. */
-  parent: string | undefined;
-  /** Structure header `fork-of` — the transport-message-id this message replaces. Carried verbatim; the application interprets it. */
-  forkOf: string | undefined;
-  /** Structure header `msg-regenerate` — the transport-message-id this run regenerates. Carried verbatim; the application interprets it. */
-  regenerates: string | undefined;
-  /** Structure header `input-transport-message-id` — the transport-message-id of the input that triggered this run. Carried verbatim; the application interprets it. */
+  /** The `input-transport-message-id` header — the transport-message-id of the input that triggered this run. Carried verbatim; the application interprets it. */
   inputTransportMessageId: string | undefined;
   /**
    * The parsed `input-transport-message-ids` bracket receipt — on an
@@ -198,12 +191,6 @@ export interface TransportReceiver<TInput, TOutput> {
 export interface PublishInputOptions {
   /** The transport-message-id to publish under. Defaults to a fresh id when omitted. */
   transportMessageId?: string;
-  /** Structure: the transport-message-id of the preceding message in this branch. Omit for linear chat. Carried verbatim; the application interprets it. */
-  parent?: string;
-  /** Structure: the transport-message-id this input replaces (an edit fork). Omit for linear chat. Carried verbatim; the application interprets it. */
-  forkOf?: string;
-  /** Structure: the transport-message-id this input regenerates. Omit for linear chat. Carried verbatim; the application interprets it. */
-  regenerates?: string;
   /** Reuse a known run-id (a continuation of an existing run). Omit for a fresh send; the agent mints the run-id at run-start. */
   runId?: string;
   /** Arbitrary user-provided headers, published in Ably's own `extras.headers` slot (outside the SDK's `extras.ai` envelope) and surfaced back on {@link WireMeta.headers}. */
@@ -529,10 +516,8 @@ export interface OpenRunOptions {
    *   continuation) selects the opening event — present means the open
    *   re-enters that run with `ai-run-resume`; absent means a fresh
    *   `ai-run-start` (under {@link runId} when pinned, else a minted id).
-   * - `meta.transportMessageId` defaults {@link inputTransportMessageId}, and — on a
-   *   fresh open only — `meta.parent` / `meta.forkOf` / `meta.regenerates`
-   *   default the structure options. An explicitly supplied option wins over
-   *   the input's value.
+   * - `meta.transportMessageId` defaults {@link inputTransportMessageId}. An
+   *   explicitly supplied option wins over the input's value.
    */
   input?: LocatedInput<unknown>;
   /**
@@ -544,12 +529,6 @@ export interface OpenRunOptions {
   runId?: string;
   /** Reuse a fixed invocation-id. Omit to mint a fresh one (one per HTTP request). */
   invocationId?: string;
-  /** Structure: the transport-message-id of the parent message. Omit for a root run. */
-  parent?: string;
-  /** Structure: the transport-message-id being forked (an edit). Omit unless forking. */
-  forkOf?: string;
-  /** Structure: the transport-message-id this run regenerates. Omit unless regenerating. */
-  regenerates?: string;
   /**
    * The triggering input's transport-message-id (thread it from
    * {@link AgentTransport.locateInput}'s `meta.transportMessageId`, or the trigger
@@ -690,13 +669,13 @@ export interface AgentTransport<TInput, TOutput> extends TransportReceiver<TInpu
    * (`openRun({ input: located })`): the input's run-id header decides the
    * opening event — a continuation re-enters that run with `ai-run-resume`, a
    * fresh send opens with `ai-run-start` — and the input's metadata defaults
-   * the anchor and structure options (see {@link OpenRunOptions.input}).
-   * Without a located input, a supplied `opts.runId` marks a continuation and
-   * a fresh open publishes `ai-run-start`. The run is registered for cancel
+   * the input anchor (see {@link OpenRunOptions.input}).
+   * Without a located input, a supplied `opts.runId` marks a continuation and a
+   * fresh open publishes `ai-run-start`. The run is registered for cancel
    * routing until it ends; a cancel already buffered for
    * `opts.inputTransportMessageId` is honoured immediately. Requires
    * {@link connect}.
-   * @param opts - Optional located input, run identity and structure; see {@link OpenRunOptions}.
+   * @param opts - Optional located input and run identity; see {@link OpenRunOptions}.
    * @param hooks - Optional per-run callbacks and external AbortSignal; see
    *   {@link OpenRunHooks}.
    * @returns A handle to drive the run's output and lifecycle.

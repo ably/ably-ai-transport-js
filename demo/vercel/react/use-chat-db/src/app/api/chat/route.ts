@@ -92,10 +92,10 @@ export async function POST(req: Request) {
   }
   const conversation = (await mergeMessages(events)).map((entry) => entry.message);
 
-  // The located input drives the open: a continuation input carries the
-  // run-id header of the run it resumes, and a fresh send carries none —
-  // the transport re-enters or starts accordingly, anchors the run to the
-  // trigger so cancels route, and threads its structure headers.
+  // The trigger drives the open: a continuation input carries the run-id
+  // header of the run it resumes, and a fresh send carries none — the
+  // transport re-enters or starts accordingly and anchors the run to the
+  // trigger so cancels route.
   const run = transport.openRun({ input: located }, { signal: req.signal });
 
   const result = streamText({

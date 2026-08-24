@@ -323,7 +323,7 @@ describe('cleanupRun', () => {
     await activities().cleanupRun({ ids, invocation, errorMessage: 'workflow blew up' });
 
     expect(transport.adoptRun).toHaveBeenCalledWith('run-1');
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- asymmetric matcher for the wrapped error
+
     const wrapped: unknown = expect.objectContaining({ message: 'workflow blew up' });
     expect(runHandle.end).toHaveBeenCalledWith({ reason: 'error', error: wrapped });
   });
@@ -336,7 +336,7 @@ describe('cleanupRun', () => {
 
     await activities().cleanupRun({ ids, invocation });
 
-    expect(transport.adoptRun).not.toHaveBeenCalled();
+    expect(transport.openRun).not.toHaveBeenCalled();
     expect(runHandle.end).not.toHaveBeenCalled();
   });
 
@@ -345,7 +345,7 @@ describe('cleanupRun', () => {
 
     await activities().cleanupRun({ ids, invocation });
 
-    expect(transport.adoptRun).not.toHaveBeenCalled();
+    expect(transport.openRun).not.toHaveBeenCalled();
   });
 
   it('always tears down the transport and the client', async () => {

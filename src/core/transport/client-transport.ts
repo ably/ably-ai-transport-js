@@ -67,7 +67,7 @@ export interface ClientTransportOptions<TInput, TOutput> {
   channel: Ably.RealtimeChannel;
   /** The wire tier of the codec: its encoder serializes inputs to the wire and its decoder classifies inbound messages. */
   codec: WireCodec<TInput, TOutput>;
-  /** The publishing client's Ably `clientId`, stamped as `run-client-id` on inputs. When omitted (anonymous), the header is not stamped and the local echo's `clientId` is `undefined`. */
+  /** The publishing client's Ably `clientId`, stamped as `run-client-id` on inputs. When omitted (anonymous), the header is not stamped and a receiver reads `WireMeta.clientId` as `undefined`. */
   clientId?: string;
   /** Wire-message limit per `channel.history()` round trip in {@link ClientTransport.history}. Defaults to 100. */
   historyPageSize?: number;
@@ -219,18 +219,11 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     const transportMessageId = opts?.transportMessageId ?? crypto.randomUUID();
     const eventId = crypto.randomUUID();
 
-    const parent = opts?.parent;
-    const forkOf = opts?.forkOf;
-    const regenerates = opts?.regenerates;
-
     const headers = buildTransportHeaders({
       role: 'user',
       runId: opts?.runId,
       transportMessageId,
       runClientId: this._clientId,
-      ...(parent !== undefined && { parent }),
-      ...(forkOf !== undefined && { forkOf }),
-      ...(regenerates !== undefined && { regenerates }),
       inputEventId: eventId,
     });
 

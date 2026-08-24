@@ -14,8 +14,8 @@
  *   provider-typed body, so the codec defines a small body of its own.
  *
  * Addressing never rides an input: the transport's publish options carry the
- * `transportMessageId` / `parent` / `regenerates` structure, and `WireMeta`
- * reports them on the way back.
+ * `transportMessageId` (and a continuation's `runId`), and `WireMeta` reports
+ * them on the way back.
  */
 
 import type * as AI from 'ai';
@@ -69,9 +69,9 @@ export interface VercelMessageInput<
 }
 
 /**
- * A regeneration signal. Carries no body: the `regenerates` and `parent`
- * structure ride the transport's publish options, and `WireMeta` reports them
- * on the way back.
+ * A regeneration signal. Carries no body and no addressing: the agent
+ * rebuilds the conversation from the channel and regenerates its newest
+ * reply.
  */
 export interface VercelRegenerateInput {
   /** Discriminator. */

@@ -54,21 +54,6 @@ export type RunLifecycleEvent =
        * in practice it is present.
        */
       serial: string | undefined;
-      /** The transport-message-id of the parent message, if known. Omitted for root runs. */
-      parent?: string;
-      /**
-       * The transport-message-id of the user prompt being forked, when the run is an
-       * edit. Carried verbatim from the `fork-of` wire header.
-       */
-      forkOf?: string;
-      /**
-       * The transport-message-id of the assistant message this run regenerates, when
-       * the run is a regenerate continuation. Carried verbatim from the
-       * `msg-regenerate` wire header. A regenerate is a continuation (no
-       * `forkOf` at the run level); a consumer reconstructing conversation
-       * structure realises the message replacement when materialising messages.
-       */
-      regenerates?: string;
       /**
        * The transport-message-id of the input event that triggered this run — the
        * `input-transport-message-id` wire header the agent stamps on run-start. It

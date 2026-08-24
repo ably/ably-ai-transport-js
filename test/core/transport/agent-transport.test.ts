@@ -36,7 +36,6 @@ import {
   HEADER_INPUT_TRANSPORT_MESSAGE_ID,
   HEADER_INPUT_TRANSPORT_MESSAGE_IDS,
   HEADER_INVOCATION_ID,
-  HEADER_PARENT,
   HEADER_RUN_ID,
   HEADER_STEER_TRANSPORT_MESSAGE_IDS,
   HEADER_TRANSPORT_MESSAGE_ID,
@@ -1046,17 +1045,6 @@ describe('createAgentTransport', () => {
       expect(channel.publishNames()).not.toContain('ai-run-resume');
     });
 
-    it('stamps parent structure on the run-start', async () => {
-      const { transport, channel } = await setup();
-
-      const run = transport.openRun({ parent: 'parent-cmid' });
-      await run.end({ reason: 'complete' });
-
-      const start = channel.publishCalls.find((m) => m.name === 'ai-run-start');
-      if (!start) throw new Error('expected ai-run-start');
-      expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_PARENT]).toBe('parent-cmid');
-    });
-
     it('anchors the opening event to its trigger with input-transport-message-id', async () => {
       const { transport, channel } = await setup();
 
@@ -1068,7 +1056,42 @@ describe('createAgentTransport', () => {
       expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('cm-trigger');
     });
 
-    it("a located input's transport-message-id defaults the input anchor", async () => {
+    it('a trigger carrying a run-id header resumes that run', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({ input: locatedInput({ [HEADER_RUN_ID]: 'run-continued' }) });
+      await run.end({ reason: 'complete' });
+
+      expect(run.runId).toBe('run-continued');
+      expect(channel.publishNames()).toContain('ai-run-resume');
+      expect(channel.publishNames()).not.toContain('ai-run-start');
+    });
+
+    it('a trigger without a run-id header opens a fresh run under the pinned runId', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({ input: locatedInput({}), runId: 'run-durable' });
+      await run.end({ reason: 'complete' });
+
+      expect(run.runId).toBe('run-durable');
+      expect(channel.publishNames()).toContain('ai-run-start');
+      expect(channel.publishNames()).not.toContain('ai-run-resume');
+    });
+
+    it("a trigger's run-id wins over the pinned runId", async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({
+        input: locatedInput({ [HEADER_RUN_ID]: 'run-continued' }),
+        runId: 'run-durable',
+      });
+      await run.end({ reason: 'complete' });
+
+      expect(run.runId).toBe('run-continued');
+      expect(channel.publishNames()).toContain('ai-run-resume');
+    });
+
+    it("a trigger's transport-message-id defaults the input anchor", async () => {
       const { transport, channel } = await setup();
 
       const run = transport.openRun({
@@ -1083,7 +1106,7 @@ describe('createAgentTransport', () => {
       );
     });
 
-    it('an explicit inputTransportMessageId wins over the located input', async () => {
+    it('an explicit inputTransportMessageId wins over the trigger', async () => {
       const { transport, channel } = await setup();
 
       const run = transport.openRun({
@@ -1095,41 +1118,6 @@ describe('createAgentTransport', () => {
       const start = channel.publishCalls.find((m) => m.name === 'ai-run-start');
       if (!start) throw new Error('expected ai-run-start');
       expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('cm-explicit');
-    });
-
-    it('a located input carrying a run-id header resumes that run', async () => {
-      const { transport, channel } = await setup();
-
-      const run = transport.openRun({ input: locatedInput({ [HEADER_RUN_ID]: 'run-continued' }) });
-      await run.end({ reason: 'complete' });
-
-      expect(run.runId).toBe('run-continued');
-      expect(channel.publishNames()).toContain('ai-run-resume');
-      expect(channel.publishNames()).not.toContain('ai-run-start');
-    });
-
-    it('a located input without a run-id header opens a fresh run under the pinned runId', async () => {
-      const { transport, channel } = await setup();
-
-      const run = transport.openRun({ input: locatedInput({}), runId: 'run-durable' });
-      await run.end({ reason: 'complete' });
-
-      expect(run.runId).toBe('run-durable');
-      expect(channel.publishNames()).toContain('ai-run-start');
-      expect(channel.publishNames()).not.toContain('ai-run-resume');
-    });
-
-    it("a located input's run-id wins over the pinned runId", async () => {
-      const { transport, channel } = await setup();
-
-      const run = transport.openRun({
-        input: locatedInput({ [HEADER_RUN_ID]: 'run-continued' }),
-        runId: 'run-durable',
-      });
-      await run.end({ reason: 'complete' });
-
-      expect(run.runId).toBe('run-continued');
-      expect(channel.publishNames()).toContain('ai-run-resume');
     });
   });
 
@@ -1212,6 +1200,12 @@ describe('createAgentTransport', () => {
       // The anchor names the input that openRun answered; an adopt answers
       // none, so it claims none.
       expect(receiptOf(channel, 'ai-run-end')).toBeUndefined();
+    });
+
+    it('throws before connect()', async () => {
+      const { transport } = await setup({ connect: false });
+
+      expect(() => transport.adoptRun('run-1')).toThrowErrorInfo({ code: ErrorCode.InvalidArgument });
     });
   });
 

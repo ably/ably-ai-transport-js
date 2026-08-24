@@ -92,8 +92,8 @@ export async function POST(req: Request) {
   const { messages: priorMessages } = await getExistingMessages(transport);
   const input = toResponsesInput(priorMessages);
 
-  // The located input drives the open: a continuation input carries the
-  // run-id header of the run it resumes, and a fresh send carries none — the
+  // The trigger drives the open: a continuation input carries the run-id
+  // header of the run it resumes, and a fresh send carries none — the
   // transport re-enters or starts accordingly and anchors the run to the
   // trigger so cancels route.
   const run = transport.openRun({ input: located }, { signal: req.signal });

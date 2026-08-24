@@ -29,6 +29,7 @@ import { getToolName, isToolUIPart, type UIMessage } from 'ai';
 import {
   EVENT_CANCEL,
   EVENT_RUN_START,
+  getCodecHeaders,
   getTransportHeaders,
   HEADER_RUN_CLIENT_ID,
 } from '@ably/ai-transport';

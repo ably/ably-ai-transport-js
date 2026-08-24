@@ -40,9 +40,6 @@ const createMockCodec = (): WireCodec<TestInput, TestOutput> => ({
 });
 
 const noAnchors = (): StepWriterAnchors => ({
-  parentFallback: undefined,
-  forkOf: undefined,
-  regenerates: undefined,
   inputClientId: undefined,
   inputTransportMessageId: undefined,
 });
@@ -50,7 +47,7 @@ const noAnchors = (): StepWriterAnchors => ({
 /**
  * Build a writer over a real run manager, capturing the emitted step events.
  * @param overrides - Optional seams to override for a given test.
- * @param overrides.getAnchors - Step-writer anchors (parent, fork, input identity).
+ * @param overrides.getAnchors - Step-writer anchors (input identity).
  * @returns The writer under test, the captured step events, and the mock channel.
  */
 const setup = (overrides?: {

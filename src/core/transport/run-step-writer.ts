@@ -83,12 +83,6 @@ interface SteerIdsRef {
  * them at construction.
  */
 export interface StepWriterAnchors {
-  /** The reply run's structural-parent fallback (its triggering input node), or undefined before the run resolves. */
-  parentFallback: string | undefined;
-  /** The run's `forkOf` anchor (an edit run's source), stamped on every output. */
-  forkOf: string | undefined;
-  /** The run's `msg-regenerate` anchor, echoed on every output so an early reader can populate the regenerate link. */
-  regenerates: string | undefined;
   /** The triggering input's publisher client-id, re-stamped as `input-client-id` on the agent's own publishes. */
   inputClientId: string | undefined;
   /** The triggering input's transport-message-id, stamped as `input-transport-message-id`. */
@@ -429,18 +423,9 @@ export const createRunStepWriter = <TInput, TOutput>(
       runId,
       transportMessageId,
       runClientId: runOwnerClientId,
-      // Resolved from the triggering input once at run-start. Owning it here
-      // means agent routes don't have to thread the parent to keep
-      // conversation threading correct.
-      parent: anchors.parentFallback,
-      forkOf: anchors.forkOf,
       invocationId,
       inputClientId: anchors.inputClientId,
       inputTransportMessageId: anchors.inputTransportMessageId,
-      // Echo `msg-regenerate` on the assistant message so a client receiving
-      // the assistant chunk before `ai-run-start` can still resolve the
-      // regenerate link from headers.
-      regenerates: anchors.regenerates,
       stepId: step.stepId,
       stepClientId: step.stepClientId,
     });

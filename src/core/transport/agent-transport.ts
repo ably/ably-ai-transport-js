@@ -89,8 +89,8 @@ const PRE_OPEN_STEER_LIMIT = 200;
 
 /**
  * The resolved parameters `_createRun` builds a run handle from. The public
- * verbs (`openRun`, `adoptRun`) own all identity, input and structure
- * resolution and hand the result here verbatim.
+ * verbs (`openRun`, `adoptRun`) own all identity and input resolution and
+ * hand the result here verbatim.
  */
 interface CreateRunParams {
   /** The run's resolved id. */
@@ -103,12 +103,6 @@ interface CreateRunParams {
   inputTransportMessageId?: string;
   /** The triggering input's publisher, stamped on the opening event as `input-client-id`. */
   inputClientId?: string;
-  /** Structural parent transport-message-id (fresh open only). */
-  parent?: string;
-  /** Forked transport-message-id for an edit (fresh open only). */
-  forkOf?: string;
-  /** Regenerated transport-message-id (fresh open only). */
-  regenerates?: string;
 }
 
 /**
@@ -131,6 +125,22 @@ interface RegisteredRun {
    * the trigger and already-answered steers) and fires its `onSteer` hint.
    */
   onSteerMessage: (transportMessageId: string) => void;
+}
+
+/**
+ * The resolved parameters `_createRun` builds a run handle from. The public
+ * verbs (`openRun`, `adoptRun`) own all identity and located-input resolution
+ * and hand the result here verbatim.
+ */
+interface CreateRunParams {
+  /** The run's resolved id. */
+  runId: string;
+  /** The invocation's resolved id. */
+  invocationId: string;
+  /** The opening action: publish `ai-run-start`, publish `ai-run-resume`, or adopt without publishing. */
+  open: 'start' | 'resume' | 'adopt';
+  /** The triggering input's transport-message-id, when known. */
+  inputTransportMessageId?: string;
 }
 
 /**
@@ -307,12 +317,6 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
         // run answers, so several clients on one channel can agree that only
         // the sender executes the run's client-side tools.
         inputClientId: inputMeta?.clientId,
-        // Structure defaults from the located input apply to a fresh open
-        // only: a resume never re-stamps structure, and the input's own
-        // anchors must not leak into a resumed run's output fallbacks.
-        parent: opts?.parent ?? (continuation ? undefined : inputMeta?.parent),
-        forkOf: opts?.forkOf ?? (continuation ? undefined : inputMeta?.forkOf),
-        regenerates: opts?.regenerates ?? (continuation ? undefined : inputMeta?.regenerates),
       },
       hooks,
     );
@@ -482,7 +486,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
       const buffered = this._deferredCancelsByRunId.get(runId);
       if (buffered !== undefined) {
         this._deferredCancelsByRunId.delete(runId);
-        this._logger.debug('AgentTransport.openRun(); honouring buffered cancel', { runId });
+        this._logger.debug('AgentTransport._createRun(); honouring buffered cancel', { runId });
         void this._cancelRegistration(registration, buffered);
       }
     }
@@ -503,9 +507,6 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
         return;
       }
       await this._runManager.startRun(runId, this._clientId, {
-        parent: params.parent,
-        forkOf: params.forkOf,
-        regenerates: params.regenerates,
         invocationId,
         // The triggering input's publisher, so several clients on one channel
         // can agree that only the sender executes the run's client-side tools.
@@ -542,7 +543,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
       try {
         onError(errInfo);
       } catch {
-        this._logger.error('AgentTransport.openRun(); onError callback threw', { runId });
+        this._logger.error('AgentTransport._createRun(); onError callback threw', { runId });
       }
     });
 
@@ -594,13 +595,10 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
           400,
         );
       },
-      // Anchors come straight from the openRun structure options — there is no
+      // The anchor comes straight from the open options — there is no
       // triggering-input resolution (a durable agent reads it via locateInput and
-      // threads it through openRun / per-pipe options itself).
+      // threads it through openRun itself).
       getAnchors: () => ({
-        parentFallback: params.parent,
-        forkOf: params.forkOf,
-        regenerates: params.regenerates,
         inputClientId: params.inputClientId,
         inputTransportMessageId,
       }),

@@ -23,16 +23,9 @@ import type { RunEndReason, StepEndReason } from './types.js';
 
 /**
  * Per-invocation metadata carried on a run's opening lifecycle event. A
- * continuation (re-entering an existing run) sets `continuation` and omits the
- * structural `parent` / `forkOf` / `regenerates` fields.
+ * continuation (re-entering an existing run) sets `continuation`.
  */
 interface StartRunMetadata {
-  /** Structural parent transport-message-id (fresh run-start only). */
-  parent?: string;
-  /** Forked user-prompt transport-message-id for an edit (fresh run-start only). */
-  forkOf?: string;
-  /** Regenerated assistant transport-message-id (fresh run-start only). */
-  regenerates?: string;
   /** Agent-minted invocation id, carried on the lifecycle event. */
   invocationId?: string;
   /** ClientId of the triggering input event. */
@@ -87,9 +80,7 @@ export interface RunManager {
    * Register a run and publish its opening lifecycle event. Seeds the owner
    * entry (via {@link registerRun}) then publishes `ai-run-start` for a fresh
    * run, or `ai-run-resume` when `metadata.continuation` is set (a subsequent
-   * invocation re-entering an existing run). A resume omits the structural
-   * `parent` / `forkOf` / `regenerates` headers — the original run-start owns
-   * the run's structure.
+   * invocation re-entering an existing run).
    */
   startRun(runId: string, clientId?: string, metadata?: StartRunMetadata): Promise<void>;
   /**
@@ -204,21 +195,15 @@ class DefaultRunManager implements RunManager {
     const resolvedClientId = clientId ?? '';
 
     // A continuation re-enters an already-started run: publish `ai-run-resume`
-    // rather than `ai-run-start`. Resume is a pure re-entry signal — the
-    // original run-start already established the run's structure, so the
-    // parent / forkOf / regenerates metadata is NOT re-stamped here (doing so
-    // would point the run at content within itself). The agent learned this is
-    // a continuation from the run-id on the triggering input; the re-entry is
-    // conveyed to clients by the event name, not a header echo. The
+    // rather than `ai-run-start`. Resume is a pure re-entry signal — the agent
+    // learned this is a continuation from the run-id on the triggering input;
+    // the re-entry is conveyed to clients by the event name. The
     // invocation-id / input attribution headers are carried on both.
     const continuation = metadata?.continuation === true;
 
     const headers = buildLifecycleHeaders({
       runId,
       runClientId: resolvedClientId,
-      parent: continuation ? undefined : metadata?.parent,
-      forkOf: continuation ? undefined : metadata?.forkOf,
-      regenerates: continuation ? undefined : metadata?.regenerates,
       invocationId: metadata?.invocationId,
       inputClientId: metadata?.inputClientId,
       inputTransportMessageId: metadata?.inputTransportMessageId,

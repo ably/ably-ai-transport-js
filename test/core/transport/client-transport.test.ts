@@ -33,8 +33,6 @@ import {
   EVENT_RUN_SUSPEND,
   HEADER_EVENT_ID,
   HEADER_INPUT_TRANSPORT_MESSAGE_ID,
-  HEADER_MSG_REGENERATE,
-  HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
@@ -365,27 +363,13 @@ describe('createClientTransport', () => {
       }
     });
 
-    it('honours an explicit transportMessageId and structure headers', async () => {
+    it('honours an explicit transportMessageId', async () => {
       const { transport, encoderCalls } = await setup();
 
-      await transport.publishInput(
-        { kind: 'user-message', content: 'hi' },
-        { transportMessageId: 'cmid-1', parent: 'parent-1' },
-      );
+      await transport.publishInput({ kind: 'user-message', content: 'hi' }, { transportMessageId: 'cmid-1' });
 
       const headers = encoderCalls[0]?.options?.extras?.headers ?? {};
       expect(headers[HEADER_TRANSPORT_MESSAGE_ID]).toBe('cmid-1');
-      expect(headers[HEADER_PARENT]).toBe('parent-1');
-    });
-
-    it('maps the regenerates option to msg-regenerate', async () => {
-      const { transport, encoderCalls } = await setup();
-
-      await transport.publishInput({ kind: 'regenerate' }, { regenerates: 'assistant-1', parent: 'user-1' });
-
-      const headers = encoderCalls[0]?.options?.extras?.headers ?? {};
-      expect(headers[HEADER_MSG_REGENERATE]).toBe('assistant-1');
-      expect(headers[HEADER_PARENT]).toBe('user-1');
     });
 
     it('stamps user headers into Ably extras.headers, outside the ai envelope', async () => {

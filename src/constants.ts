@@ -73,25 +73,6 @@ export const HEADER_ROLE = 'role';
 // Fork / branching headers
 // ---------------------------------------------------------------------------
 
-/** Header: the transport-message-id of the immediately preceding message in this branch. */
-export const HEADER_PARENT = 'parent';
-
-/** Header: the transport-message-id of the message this one replaces (creates a fork). */
-export const HEADER_FORK_OF = 'fork-of';
-
-/**
- * Header: the transport-message-id of the assistant message this run regenerates.
- *
- * Stamped on the regenerate wire (and echoed on `run-start`) when the
- * client requested a regeneration. A regenerate run parents at the SAME input
- * as the reply it regenerates, so it joins that input's reply runs as a
- * same-parent sibling (no fork-of). The transport carries the header verbatim;
- * a consumer reconstructing conversation structure uses it to resolve the
- * message-level sibling group and to drop the regenerated message from the
- * earlier reply (Spec: AIT-CT13d).
- */
-export const HEADER_MSG_REGENERATE = 'msg-regenerate';
-
 // ---------------------------------------------------------------------------
 // Run lifecycle headers
 // ---------------------------------------------------------------------------
@@ -237,8 +218,7 @@ export const EVENT_RUN_SUSPEND = 'ai-run-suspend';
 /**
  * Message name: server publishes this when a subsequent invocation re-enters an
  * already-started run (e.g. a tool-result follow-up under the same `runId`).
- * A pure re-entry signal: unlike `ai-run-start` it carries no `parent` / `fork-of`
- * (the original `ai-run-start` already established the run's structure).
+ * A pure re-entry signal, distinguished from `ai-run-start` by name alone.
  */
 export const EVENT_RUN_RESUME = 'ai-run-resume';
 

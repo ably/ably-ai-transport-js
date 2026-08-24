@@ -49,10 +49,14 @@ function toolPart(name: string, state: 'input-available' | 'output-available'): 
   } as AI.ToolUIPart;
 }
 
-// CAST: the hook reads only `name` and the `extras.ai.transport` headers off
-// each inbound message; build the minimal shape and assert the type.
-function wireMessage(name: string | undefined, transportHeaders: Record<string, string> = {}): Ably.InboundMessage {
-  return { name, extras: { ai: { transport: transportHeaders } } } as Ably.InboundMessage;
+// CAST: the hook reads only `name` and the `extras.ai` header tiers off each
+// inbound message; build the minimal shape and assert the type.
+function wireMessage(
+  name: string | undefined,
+  transportHeaders: Record<string, string> = {},
+  codecHeaders: Record<string, string> = {},
+): Ably.InboundMessage {
+  return { name, extras: { ai: { transport: transportHeaders, codec: codecHeaders } } } as Ably.InboundMessage;
 }
 
 function progress(

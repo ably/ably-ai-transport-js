@@ -754,7 +754,7 @@ describe('createClientTransport', () => {
         ErrorCode.OperationCancelled,
       );
 
-      const after = await transport.history();
+      const after = await transport.history({ limit: 2 });
       expect(after.events.map((e) => (e.kind === 'message' ? e.outputs[0]?.text : undefined))).toEqual(['one', 'two']);
       expect(after.exhausted).toBe(true);
     });
@@ -763,6 +763,7 @@ describe('createClientTransport', () => {
       const { transport } = await setup({ pages: [[outputMsg('s2', 'two')], [outputMsg('s1', 'one')]] });
 
       const result = await transport.history({
+        limit: 2,
         onPage: () => {
           throw new Error('heartbeat exploded');
         },

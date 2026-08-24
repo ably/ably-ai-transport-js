@@ -1353,6 +1353,7 @@ describe('createAgentTransport', () => {
       let pages = 0;
 
       const result = await transport.history({
+        limit: 2,
         onPage: () => {
           pages++;
         },
@@ -1395,7 +1396,7 @@ describe('createAgentTransport', () => {
         ErrorCode.OperationCancelled,
       );
 
-      const after = await transport.history();
+      const after = await transport.history({ limit: 2 });
       expect(after.events.map((e) => (e.kind === 'message' ? e.outputs[0]?.text : undefined))).toEqual(['one', 'two']);
       expect(after.exhausted).toBe(true);
     });

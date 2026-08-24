@@ -238,9 +238,10 @@ export interface PublishInputResult {
 /** Options for {@link ClientTransport.history} and {@link AgentTransport.history}. */
 export interface TransportHistoryOptions {
   /**
-   * Stop paging once at least this many events have been collected. Page
-   * granular: the call finishes the page it is on, so the batch may exceed the
-   * limit. Omit to page all the way to channel exhaustion.
+   * Keep fetching pages until at least this many wire messages have been
+   * scanned. Page granular: the call finishes the page it is on, so the batch
+   * may exceed the limit. Omit to fetch one page per call — the caller's own
+   * loop is then the pager, so counting calls counts pages.
    */
   limit?: number;
   /**

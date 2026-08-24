@@ -12,8 +12,8 @@
  *   chunks; each bucket's chunks replay through the AI SDK's own reducer,
  *   `readUIMessageStream`.
  * - `kind: 'message'` inputs carry a whole `UIMessage` (a user turn). Parts
- *   merge per bucket with JSON-equality dedupe, so an optimistic local echo
- *   and its wire echo fold to one message.
+ *   merge per bucket with JSON-equality dedupe, so a redelivered wire event
+ *   folds to one message.
  * - `kind: 'approval'` inputs flip the matching tool part from
  *   `approval-requested` to `approval-responded`, carrying the decision.
  */

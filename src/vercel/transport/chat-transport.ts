@@ -649,10 +649,6 @@ class DefaultChatTransport<
   private _indexEvent(event: AdapterEvent<TMetadata, TDataParts, TTools>): void {
     this._retainRunEvent(event);
     if (event.kind !== 'message') return;
-    // Skip the optimistic local echo of this client's own publishes (no serial
-    // yet); the send paths index their own publishes from the publish result,
-    // and the wire echo carries the same identity.
-    if (event.meta.serial === undefined) return;
     const { codecMessageId, runId, role } = event.meta;
     if (codecMessageId !== undefined) {
       // The domain id: an output stream's `start` chunk carries it; a message
@@ -697,8 +693,7 @@ class DefaultChatTransport<
   /**
    * Retain one indexed event for the reconnect scan: run lifecycle events
    * plus each run's message events, chronological, pruned to just the `end`
-   * event once a run ends. The optimistic local echo (no serial) is skipped —
-   * its wire echo is retained instead.
+   * event once a run ends.
    * @param event - The classified transport event.
    */
   private _retainRunEvent(event: AdapterEvent<TMetadata, TDataParts, TTools>): void {
@@ -717,7 +712,7 @@ class DefaultChatTransport<
       this._retainedRunEvents.push(event);
       return;
     }
-    if (event.kind === 'message' && event.meta.runId !== undefined && event.meta.serial !== undefined) {
+    if (event.kind === 'message' && event.meta.runId !== undefined) {
       this._retainedRunEvents.push(event);
     }
   }

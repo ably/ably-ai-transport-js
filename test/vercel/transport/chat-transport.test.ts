@@ -578,24 +578,6 @@ describe('ChatTransport', () => {
   });
 
   describe('wire-identity tracking', () => {
-    it('ignores optimistic local echoes (no serial) when indexing', async () => {
-      stubFetch({ runId: 'run-9' });
-      const { fake, chat } = setup();
-      // The same assistant events, but as optimistic echoes: never indexed, so
-      // the continuation finds no wire identity to address.
-      for (const event of approvalGapEvents('run-9')) {
-        if (event.kind !== 'message') continue;
-        fake.emit({ ...event, meta: { ...event.meta, serial: undefined } });
-      }
-
-      const stream = await chat.sendMessages(
-        sendOptions([userMessage('u1', 'forecast please'), approvalRespondedOverlay(true)]),
-      );
-
-      expect(fake.published).toHaveLength(0);
-      expect(await readAll(stream)).toEqual([]);
-    });
-
     it('indexes live events observed before seed() after the older gap events', async () => {
       const fetchMock = stubFetch({ runId: 'run-9' });
       const fake = new FakeClientTransport();

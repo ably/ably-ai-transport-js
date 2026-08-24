@@ -329,11 +329,10 @@ describe('createThreadFold', () => {
     expect(foldAll(reassembled).messages()).toEqual(foldAll(events).messages());
   });
 
-  it('reconciles the optimistic echo with the wire echo by codec-message-id, deduping identical parts', () => {
+  it('dedupes identical parts a redelivered wire event repeats under one codec-message-id', () => {
     const events = [
-      // Optimistic local echo: the whole turn, no serial.
-      inputEvent('m0', [userTurnInput('hi')], { serial: undefined, clientId: 'client-a' }),
-      // Wire echo: the same turn reassembled from its one part event.
+      inputEvent('m0', [userTurnInput('hi')], { serial: 's-1', clientId: 'client-a' }),
+      // A redelivered event repeats the same turn verbatim.
       inputEvent('m0', [userTurnInput('hi')], { serial: 's-2', clientId: 'client-a' }),
     ];
     const messages = foldAll(events).messages();

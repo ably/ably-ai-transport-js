@@ -92,11 +92,13 @@ our curation point.)
 
 ## The transports
 
-- **`ClientTransport`** — publish inputs (with an optimistic local echo for an
-  input that introduces content; an input naming an existing `codecMessageId`
-  amends and is not echoed), cancel and steer runs, subscribe to the
-  classified event stream, and page history. Holds no conversation state: the
-  only cross-message state is the steer ledger and the pending run-id watches.
+- **`ClientTransport`** — publish inputs (nothing is emitted locally: the
+  sender's own input reaches it back as the ordinary channel delivery, keyed
+  by the returned `codecMessageId`), cancel and steer runs (a steer's
+  `published` resolves from the publish acknowledgement's serial), subscribe
+  to the classified event stream, and page history. Holds no conversation
+  state: the only cross-message state is the steer ledger and the pending
+  run-id watches.
 - **`AgentTransport`** — open runs (`ai-run-start` / `ai-run-resume`, decided
   by the located input's run-id header; `adoptRun` re-enters durably and
   puts nothing on the wire until output or a terminal), pipe output through

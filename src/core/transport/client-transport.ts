@@ -10,28 +10,28 @@
  * and channel listener by hand.
  *
  * On the send side, `publishInput` stamps the transport-tier headers a `user`
- * input carries (`buildTransportHeaders`), publishes the event through the
- * codec's encoder, and emits an optimistic local `message` echo so the sender
- * sees its own input before the wire round-trips. `cancel` publishes a
+ * input carries (`buildTransportHeaders`) and publishes the event through the
+ * codec's encoder; the sender's own input reaches it back as the ordinary
+ * channel delivery, like any other subscriber's. `cancel` publishes a
  * stateless `ai-cancel` envelope for a run the caller names. `steer` publishes
  * a steering input into an open run through the {@link SteerCoordinator},
- * which matches the steer's own channel echo (resolving `published` with the
- * Ably-assigned serial), accumulates the `steer-codec-message-ids` stamps the
- * agent puts on the run's outputs, and resolves each steer's `outcome` by id
- * membership at the run's next lifecycle bracket. A channel state listener
- * drains in-flight steers on continuity loss — post-loss the channel will not
- * deliver the echoes or lifecycle events that would resolve them.
+ * which resolves `published` from the publish acknowledgement's serial,
+ * accumulates the `steer-codec-message-ids` stamps the agent puts on the
+ * run's outputs, and resolves each steer's `outcome` by id membership at the
+ * run's next lifecycle bracket. A channel state listener drains in-flight
+ * steers on continuity loss — post-loss the channel will not deliver the
+ * lifecycle events that would resolve them.
  *
  * `history` pages the channel backwards from the attach point and returns each
  * older slice as a batch of classified events — decoded on the same decoder as
  * the live stream, so a stream spanning the attach boundary is never
  * double-decoded.
  *
- * The transport holds no run registry: a consumer keying on `codecMessageId`
- * reconciles the local echo against the later wire echo, and sources a
- * cancel's or steer's `runId` from `publishInput`'s returned `runId` promise
- * (resolved from the first `ai-run-start` whose `input-codec-message-id`
- * matches the publish) or from the receive stream's run-lifecycle events.
+ * The transport holds no run registry: a consumer keys its own send on the
+ * returned `codecMessageId` and sources a cancel's or steer's `runId` from
+ * `publishInput`'s returned `runId` promise (resolved from the first
+ * `ai-run-start` whose `input-codec-message-id` matches the publish) or from
+ * the receive stream's run-lifecycle events.
  */
 
 import * as Ably from 'ably';
@@ -56,7 +56,6 @@ import type {
   TransportHistoryResult,
   TransportReceiver,
 } from './types/transport.js';
-import { wireMetaFromLocalEcho } from './wire-meta.js';
 
 /**
  * Options for {@link createClientTransport}.
@@ -75,16 +74,6 @@ export interface ClientTransportOptions<TInput, TOutput> {
   /** Optional logger for diagnostics. */
   logger?: Logger;
 }
-
-/**
- * An input published against an existing `codecMessageId` amends something
- * that is already there, so it gets no optimistic echo; an input publishing
- * without one introduces content, so it is echoed. The rule reads only the
- * transport's own options — the input body is opaque to the transport.
- * @param opts - The publish options for the input.
- * @returns True when the input is wire-only (no optimistic echo).
- */
-const isWireOnlyInput = (opts: PublishInputOptions | undefined): boolean => opts?.codecMessageId !== undefined;
 
 /** The unwatch for a publish that registered no runId watch. */
 const noopUnwatch = (): void => {
@@ -187,7 +176,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
       publish: async (input, opts) => {
         const encoder = this._codec.createEncoder(this._channel);
         try {
-          await encoder.publishInput(input, opts);
+          return await encoder.publishInput(input, opts);
         } finally {
           await encoder.close();
         }
@@ -246,19 +235,6 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     });
 
     const userHeaders = opts?.headers;
-
-    // Optimistic echo for fresh local content only; emitted before the publish
-    // so the sender sees its own input without the round-trip. It carries the
-    // same user headers the publish will stamp, so the echo and the wire echo
-    // surface identical metadata.
-    if (!isWireOnlyInput(opts)) {
-      this._receiver.emitEvent({
-        kind: 'message',
-        meta: wireMetaFromLocalEcho(headers, this._clientId, userHeaders ?? {}),
-        inputs: [event],
-        outputs: [],
-      });
-    }
 
     const encoder = this._codec.createEncoder(
       this._channel,

@@ -283,25 +283,14 @@ describe('createAgentTransport', () => {
       expect(channel.publishNames()).not.toContain('ai-run-end');
     });
 
-    it('routes a fresh-send cancel by the triggering input codec-message-id', async () => {
+    it('drops a cancel that names no run-id — the wire addresses runs by run-id only', async () => {
       const { transport, channel } = await setup();
 
       const run = transport.openRun({ inputCodecMessageId: 'in-1' });
       channel.listener?.(cancelMsg({ [HEADER_INPUT_CODEC_MESSAGE_ID]: 'in-1' }));
       await flushMicrotasks();
 
-      expect(run.abortSignal.aborted).toBe(true);
-    });
-
-    it('honours a cancel buffered before its openRun', async () => {
-      const { transport, channel } = await setup();
-
-      channel.listener?.(cancelMsg({ [HEADER_INPUT_CODEC_MESSAGE_ID]: 'in-1' }));
-      await flushMicrotasks();
-      const run = transport.openRun({ inputCodecMessageId: 'in-1' });
-      await flushMicrotasks();
-
-      expect(run.abortSignal.aborted).toBe(true);
+      expect(run.abortSignal.aborted).toBe(false);
     });
 
     it('buffers a bare run-id cancel until the run opens — a durable continuation race', async () => {

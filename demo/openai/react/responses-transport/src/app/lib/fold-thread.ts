@@ -36,9 +36,9 @@
  * The codec's two non-OpenAI output events (`function_call_output`,
  * `tool-approval-request`) and the client input bodies (`message`, `item`,
  * `approval`) apply as small steps onto the per-message items and
- * `toolCallStates`. A `message` input arrives whole on the optimistic local
- * echo and part-by-part on the wire echo, so its content parts merge with
- * identical parts deduplicated.
+ * `toolCallStates`. A `message` input arrives part-by-part on the wire under
+ * one codec-message-id, so its content parts merge with identical parts
+ * deduplicated.
  */
 
 import type { RunStatus, TransportEvent, WireMeta } from '@ably/ai-transport';
@@ -153,11 +153,11 @@ const appendFunctionCallOutput = (fold: MessageFold, item: Responses.ResponseInp
 };
 
 /**
- * Merge a `message`-kind input body into the fold. The optimistic local echo
- * carries the whole turn; each wire echo carries one content part under the
- * same codec-message-id. Message items merge into one item per fold with
- * identical parts deduplicated; any other item type appends with a whole-item
- * dedupe.
+ * Merge a `message`-kind input body into the fold. Each wire event carries
+ * one content part under the shared codec-message-id. Message items merge
+ * into one item per fold with identical parts deduplicated (a redelivered
+ * event repeats parts verbatim); any other item type appends with a
+ * whole-item dedupe.
  */
 const mergeTurn = (fold: MessageFold, payload: OpenAIMessage): void => {
   for (const item of payload.items) {

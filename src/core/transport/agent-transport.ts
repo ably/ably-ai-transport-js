@@ -9,8 +9,8 @@
  * attaches — folds every inbound wire message through it (`deliverEvent`, then
  * `deliverAblyMessage`), so a consumer subscribes to the transport directly.
  * The same listener dispatches `ai-cancel` envelopes onto the registered run
- * (consulting the run's `onCancel` hook, and buffering a fresh-send cancel
- * that races ahead of its `openRun`) and routes a steering message — a
+ * (consulting the run's `onCancel` hook, and buffering a cancel that races
+ * ahead of its run's `openRun`) and routes a steering message — a
  * client input under an open run's run-id — onto the run's steer tracker,
  * flipping the handle's `hasInput()` and firing its `onSteer` hint. The
  * steering message also surfaces as an ordinary event on the receive stream
@@ -160,11 +160,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
 
   /** Open runs by run-id — the cancel-routing registry. */
   private readonly _registeredRuns = new Map<string, RegisteredRun>();
-  /** Reverse index: triggering input codec-message-id → run-id, for fresh-send cancels keyed by input. */
-  private readonly _runIdByInputCodecMessageId = new Map<string, string>();
-  /** Cancels that arrived before their target run was opened, keyed by input codec-message-id. */
-  private readonly _deferredCancels = new Map<string, Ably.InboundMessage>();
-  /** Cancels addressed by run-id whose run is not registered yet, for a durable continuation's `openRun` to pull. */
+  /** Cancels whose target run is not registered yet (a cancel can race its run's `openRun`), for `openRun` to pull. */
   private readonly _deferredCancelsByRunId = new Map<string, Ably.InboundMessage>();
   /** Steering-message codec-message-ids observed before their run was opened, keyed by run-id. */
   private readonly _preOpenSteersByRunId = new Map<string, Set<string>>();
@@ -375,26 +371,17 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
       },
     };
     this._registeredRuns.set(runId, registration);
-    if (inputCodecMessageId !== undefined) {
-      this._runIdByInputCodecMessageId.set(inputCodecMessageId, runId);
-    }
 
     /**
-     * Remove this run from the routing maps: the registry, the input reverse
-     * index (only while it still points at this run), and any stale deferred
-     * cancel for its input. Called when the run ends or its open publish
-     * fails. A suspended run stays registered (see {@link RegisteredRun}).
+     * Remove this run from the routing maps: the registry, the pre-open steer
+     * buffer, and any stale deferred cancel. Called when the run ends or its
+     * open publish fails. A suspended run stays registered (see
+     * {@link RegisteredRun}).
      */
     const deregister = (): void => {
       this._registeredRuns.delete(runId);
       this._preOpenSteersByRunId.delete(runId);
       this._deferredCancelsByRunId.delete(runId);
-      if (inputCodecMessageId !== undefined) {
-        if (this._runIdByInputCodecMessageId.get(inputCodecMessageId) === runId) {
-          this._runIdByInputCodecMessageId.delete(inputCodecMessageId);
-        }
-        this._deferredCancels.delete(inputCodecMessageId);
-      }
     };
 
     // Pull the steers that landed before this openRun (between connect() and
@@ -414,19 +401,15 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
       }
     }
 
-    // Honour a cancel that arrived before this openRun established the
-    // input-codec-message-id → run linkage or registered the run-id.
+    // Honour a cancel that arrived before this openRun registered the run-id.
     // Fire-and-forget: with no onCancel hook the abort happens synchronously
     // (no await precedes it), and a hook error is surfaced inside
     // _cancelRegistration.
     {
-      const buffered =
-        (inputCodecMessageId === undefined ? undefined : this._deferredCancels.get(inputCodecMessageId)) ??
-        this._deferredCancelsByRunId.get(runId);
+      const buffered = this._deferredCancelsByRunId.get(runId);
       if (buffered !== undefined) {
-        if (inputCodecMessageId !== undefined) this._deferredCancels.delete(inputCodecMessageId);
         this._deferredCancelsByRunId.delete(runId);
-        this._logger.debug('AgentTransport.openRun(); honouring buffered cancel', { runId, inputCodecMessageId });
+        this._logger.debug('AgentTransport.openRun(); honouring buffered cancel', { runId });
         void this._cancelRegistration(registration, buffered);
       }
     }
@@ -815,77 +798,39 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
     }
   }
 
-  /**
-   * Buffer a cancel that arrived before its target run was opened, keyed by the
-   * triggering input's codec-message-id. FIFO-evicts the oldest entry at
-   * {@link DEFERRED_CANCEL_LIMIT}. A later cancel for the same input replaces
-   * the earlier one — the intent is identical.
-   * @param inputCodecMessageId - The triggering input's codec-message-id.
-   * @param msg - The raw cancel message (passed to `onCancel`).
-   */
-  private _bufferDeferredCancel(inputCodecMessageId: string, msg: Ably.InboundMessage): void {
-    const evicted = evictOldestIfFull(this._deferredCancels, inputCodecMessageId, DEFERRED_CANCEL_LIMIT);
-    if (evicted !== undefined) {
-      this._logger.warn('AgentTransport._bufferDeferredCancel(); deferred-cancel buffer full, dropping oldest', {
-        evictedInputCodecMessageId: evicted,
-        limit: DEFERRED_CANCEL_LIMIT,
-      });
-    }
-    this._deferredCancels.set(inputCodecMessageId, msg);
-    this._logger.debug('AgentTransport._bufferDeferredCancel(); buffered early cancel', {
-      inputCodecMessageId,
-      serial: msg.serial,
-    });
-  }
-
   private async _handleCancelMessage(msg: Ably.InboundMessage): Promise<void> {
-    const { runId, inputCodecMessageId } = readCancelTarget(msg);
+    const { runId } = readCancelTarget(msg);
 
-    // Malformed cancel: drop with warn. A cancel must identify its target by
-    // `run-id` (a continuation, whose run-id the client knows) and/or by
-    // `input-codec-message-id` (a fresh send, before the agent minted the
-    // run-id). Neither present means there is nothing to route to.
-    if (!runId && !inputCodecMessageId) {
-      this._logger.warn('AgentTransport._handleCancelMessage(); missing run-id and input-codec-message-id', {
+    // Malformed cancel: drop with warn. A cancel identifies its target by
+    // `run-id` only — a client that has not yet learned the run-id awaits
+    // PublishInputResult.runId before cancelling.
+    if (!runId) {
+      this._logger.warn('AgentTransport._handleCancelMessage(); missing run-id', {
         serial: msg.serial,
       });
       return;
     }
 
-    // Primary path — match by run-id (continuations, whose run-id the client
-    // already knows). Resolve the input-codec-message-id to a run-id when the
-    // run-id wasn't supplied (a fresh-send cancel whose target run has already
-    // opened with that input, so the linkage exists).
-    const resolvedRunId =
-      runId ?? (inputCodecMessageId ? this._runIdByInputCodecMessageId.get(inputCodecMessageId) : undefined);
-    const reg = resolvedRunId ? this._registeredRuns.get(resolvedRunId) : undefined;
-
+    const reg = this._registeredRuns.get(runId);
     if (!reg) {
-      // The run isn't known yet. A fresh-send cancel can race ahead of the
-      // `openRun` that establishes the input-codec-message-id → run linkage —
-      // buffer it by input-codec-message-id so `openRun` can pull and honour
-      // it. A run-id cancel can likewise race a durable continuation's
-      // `openRun` (the client knows the run-id before this process registers
-      // it), so buffer that by run-id the same way.
-      if (inputCodecMessageId !== undefined) {
-        this._bufferDeferredCancel(inputCodecMessageId, msg);
-      } else if (runId !== undefined) {
-        const evicted = evictOldestIfFull(this._deferredCancelsByRunId, runId, DEFERRED_CANCEL_LIMIT);
-        if (evicted !== undefined) {
-          this._logger.warn(
-            'AgentTransport._handleCancelMessage(); deferred run-id cancel buffer full, dropping oldest',
-            {
-              evictedRunId: evicted,
-              limit: DEFERRED_CANCEL_LIMIT,
-            },
-          );
-        }
-        this._deferredCancelsByRunId.set(runId, msg);
-        this._logger.debug('AgentTransport._handleCancelMessage(); buffered early run-id cancel', {
-          runId,
-          serial: msg.serial,
+      // The run isn't registered yet: a cancel can race its run's `openRun` —
+      // the client learns the run-id from the ai-run-start echo, which can
+      // land before the opening process registers the run (a durable
+      // continuation), or a redelivered cancel can precede a re-entry. Buffer
+      // it by run-id for `openRun` to pull; a later cancel for the same run
+      // replaces the earlier one — the intent is identical.
+      const evicted = evictOldestIfFull(this._deferredCancelsByRunId, runId, DEFERRED_CANCEL_LIMIT);
+      if (evicted !== undefined) {
+        this._logger.warn('AgentTransport._handleCancelMessage(); deferred-cancel buffer full, dropping oldest', {
+          evictedRunId: evicted,
+          limit: DEFERRED_CANCEL_LIMIT,
         });
       }
+      this._deferredCancelsByRunId.set(runId, msg);
+      this._logger.debug('AgentTransport._handleCancelMessage(); buffered early cancel', {
+        runId,
+        serial: msg.serial,
+      });
       return;
     }
 

@@ -5,9 +5,6 @@
  * WireMeta: the raw `transport` / `codec` header buckets verbatim, plus a typed
  * convenience projection of the transport tier's identity and structure fields
  * and the message's own Ably fields. It never interprets structure fields.
- * `wireMetaFromLocalEcho` builds the same projection off client-stamped
- * transport headers for an optimistic echo, with the wire-assigned fields
- * absent.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -25,7 +22,7 @@ import {
   HEADER_STEP_ID,
   HEADER_STEP_START_SERIAL,
 } from '../../../src/constants.js';
-import { wireMetaFromLocalEcho, wireMetaFromMessage } from '../../../src/core/transport/wire-meta.js';
+import { wireMetaFromMessage } from '../../../src/core/transport/wire-meta.js';
 import { inboundMessage } from '../../helper/wire-messages.js';
 
 describe('wireMetaFromMessage', () => {
@@ -131,21 +128,5 @@ describe('wireMetaFromMessage', () => {
     expect(meta.transport).toEqual({});
     expect(meta.codec).toEqual({});
     expect(meta.headers).toEqual({});
-  });
-});
-
-describe('wireMetaFromLocalEcho', () => {
-  it('parses the id-list headers into the typed fields, like the wire builder', () => {
-    const meta = wireMetaFromLocalEcho(
-      {
-        [HEADER_STEER_CODEC_MESSAGE_IDS]: '["s1"]',
-        [HEADER_INPUT_CODEC_MESSAGE_IDS]: '["in-1"]',
-      },
-      'client-1',
-      {},
-    );
-
-    expect(meta.steerCodecMessageIds).toEqual(['s1']);
-    expect(meta.inputCodecMessageIds).toEqual(['in-1']);
   });
 });

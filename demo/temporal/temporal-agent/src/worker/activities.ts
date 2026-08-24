@@ -75,7 +75,7 @@ async function withAgentTransport<T>(
 ): Promise<T> {
   const ably = makeAbly();
   try {
-    const channel = ably.channels.get(invocation.sessionName, { params: { agent: channelAgent() } });
+    const channel = ably.channels.get(invocation.channelName, { params: { agent: channelAgent() } });
     const transport = createAgentTransport({ channel, logger });
     await transport.connect();
     try {

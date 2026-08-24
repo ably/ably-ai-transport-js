@@ -50,7 +50,7 @@ interface TestOutput {
 }
 type Event = TransportEvent<TestInput, TestOutput>;
 
-const invocation: InvocationData = { inputEventId: 'evt-1', sessionName: 'ai:room-7' };
+const invocation: InvocationData = { inputEventId: 'evt-1', channelName: 'ai:room-7' };
 const ids: RunIdentity = { runId: 'run-1', invocationId: 'wf-1' };
 
 // CAST: the mocked transport never reads the codec.
@@ -160,7 +160,7 @@ beforeEach(() => {
       return runHandle;
     }),
   };
-  client = { close: vi.fn(), channels: { get: vi.fn(() => ({ name: invocation.sessionName })) } };
+  client = { close: vi.fn(), channels: { get: vi.fn(() => ({ name: invocation.channelName })) } };
   createClient = vi.fn(() => client);
   // CAST: the stub implements only what the activities call.
   vi.mocked(createAgentTransport).mockImplementation(

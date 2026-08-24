@@ -9,7 +9,7 @@
  * ```ts
  * const data = (await req.json()) as InvocationData;
  * const invocation = Invocation.fromJSON(data);
- * const channel = client.channels.get(invocation.sessionName);
+ * const channel = client.channels.get(invocation.channelName);
  * const transport = createAgentTransport({ channel, codec });
  * await transport.connect();
  * const located = await transport.locateInput(invocation.inputEventId);
@@ -45,12 +45,8 @@ export interface InvocationData {
    * a fresh run), so run identity is resolved from the channel, not the body.
    */
   inputEventId: string;
-  /**
-   * The conversation's Ably channel name. The field is named `sessionName`
-   * for wire stability: invocation data persists inside durable workflow
-   * histories (e.g. Temporal payloads), which outlive SDK upgrades.
-   */
-  sessionName: string;
+  /** The conversation's Ably channel name. */
+  channelName: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -70,12 +66,12 @@ export class Invocation {
    * (or minted), not from the body.
    */
   readonly inputEventId: string;
-  /** The conversation's Ably channel name (see {@link InvocationData.sessionName} for the field's naming). */
-  readonly sessionName: string;
+  /** The conversation's Ably channel name. */
+  readonly channelName: string;
 
   private constructor(data: InvocationData) {
     this.inputEventId = data.inputEventId;
-    this.sessionName = data.sessionName;
+    this.channelName = data.channelName;
   }
 
   /**
@@ -96,7 +92,7 @@ export class Invocation {
   toJSON(): InvocationData {
     return {
       inputEventId: this.inputEventId,
-      sessionName: this.sessionName,
+      channelName: this.channelName,
     };
   }
 }

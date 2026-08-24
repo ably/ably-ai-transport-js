@@ -83,7 +83,7 @@ export const createFramingActivities = <TInput, TOutput>(
    * "do not publish a terminal" is the whole hand-off discipline a durable
    * activity needs.
    * @template T - The body's return type.
-   * @param invocationData - The invocation whose `sessionName` is the channel.
+   * @param invocationData - The invocation whose `channelName` is the channel.
    * @param body - The work to run against the transport.
    * @returns Whatever `body` returns.
    */
@@ -95,7 +95,7 @@ export const createFramingActivities = <TInput, TOutput>(
     const client = createClient();
     try {
       return await withHeartbeat(heartbeat, async () => {
-        const channel = client.channels.get(invocation.sessionName);
+        const channel = client.channels.get(invocation.channelName);
         const transport = createAgentTransport<TInput, TOutput>({
           channel,
           codec,

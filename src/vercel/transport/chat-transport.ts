@@ -844,7 +844,7 @@ class DefaultChatTransport<
     if (!response.ok) {
       throw new Ably.ErrorInfo(
         `unable to send; chat request failed with status ${String(response.status)}`,
-        ErrorCode.SendFailed,
+        ErrorCode.SessionSendFailed,
         response.status,
       );
     }
@@ -857,7 +857,7 @@ class DefaultChatTransport<
    * @returns The error.
    */
   private _closedError(): Ably.ErrorInfo {
-    return new Ably.ErrorInfo('unable to send; the chat transport is closed', ErrorCode.TransportClosed, 400);
+    return new Ably.ErrorInfo('unable to send; the chat transport is closed', ErrorCode.SessionClosed, 400);
   }
 }
 

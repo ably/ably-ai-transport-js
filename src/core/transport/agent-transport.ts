@@ -39,11 +39,11 @@ import { errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
 import type { WireCodec } from '../codec/types.js';
 import { readCancelTarget } from './cancel-envelope.js';
 import { ConnectGuard, subscribeAndAttach } from './channel-support.js';
-import { walkHistoryBatch } from './history-walk.js';
+import { DEFAULT_HISTORY_PAGE_SIZE, HistoryPager } from './history-pager.js';
 import { evictOldestIfFull } from './internal/bounded-map.js';
-import { type HistoryPagesCursor, loadHistoryPages } from './load-history-pages.js';
-import { createReceiveTransport } from './receive-transport.js';
-import { createRunManager } from './run-manager.js';
+import { loadHistoryPages } from './load-history-pages.js';
+import { createReceiveTransport, forwardReceiverOn, type ReceiveTransport } from './receive-transport.js';
+import { createRunManager, type RunManager } from './run-manager.js';
 import { RunSteerTracker } from './run-steer-tracker.js';
 import { createRunStepWriter, stepEndReasonFor } from './run-step-writer.js';
 import type {
@@ -62,11 +62,9 @@ import type {
   TransportEvent,
   TransportHistoryOptions,
   TransportHistoryResult,
+  TransportReceiver,
 } from './types.js';
 import { wireMetaFromMessage } from './wire-meta.js';
-
-/** Default wire-message limit per channel-history page for {@link AgentTransport.locateInput} and {@link AgentTransport.history}. */
-const DEFAULT_HISTORY_PAGE_SIZE = 100;
 
 /**
  * Maximum number of cancels buffered for runs not yet opened (see
@@ -88,7 +86,7 @@ const PRE_OPEN_STEER_LIMIT = 200;
  * its abort signal, since a later invocation may be about to continue it.
  */
 /**
- * The resolved parameters `createRun` builds a run handle from. The public
+ * The resolved parameters `_createRun` builds a run handle from. The public
  * verbs (`openRun`, `adoptRun`) own all identity, input and structure
  * resolution and hand the result here verbatim.
  */
@@ -146,335 +144,90 @@ export interface AgentTransportOptions<TInput, TOutput> {
   logger?: Logger;
 }
 
-/**
- * Create a standalone {@link AgentTransport} over a channel and codec.
- * Composes the run-manager lifecycle publisher and the run-step-writer output
- * path, so a developer can drive agent runs while folding the channel's
- * events into their own state. Construction is synchronous and passive;
- * {@link AgentTransport.connect} subscribes the transport's listener and
- * attaches the channel, after which live events flow, cancels route onto run
- * handles, and the run/history surface opens.
- * @param options - See {@link AgentTransportOptions}.
- * @returns The agent transport.
- */
-export const createAgentTransport = <TInput, TOutput>(
-  options: AgentTransportOptions<TInput, TOutput>,
-): AgentTransport<TInput, TOutput> => {
-  const { channel, codec, clientId } = options;
-  const historyPageSize = options.historyPageSize ?? DEFAULT_HISTORY_PAGE_SIZE;
-  const logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
-    component: 'AgentTransport',
-  });
-  const runManager = createRunManager(channel, logger);
-
-  // The one decoder shared by the live fold and the history scan, so a stream
-  // spanning the attach boundary is never double-decoded (locateInput's
-  // throwaway scans stay separate).
-  const decoder = codec.createDecoder();
-  const receiver = createReceiveTransport<TInput, TOutput>(decoder, logger);
-  const connectGuard = new ConnectGuard();
-  let closed = false;
-
-  // ---------------------------------------------------------------------------
-  // Cancel routing
-  // ---------------------------------------------------------------------------
+/** Default {@link AgentTransport}. See the file header for the composition. */
+class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, TOutput> {
+  private readonly _channel: Ably.RealtimeChannel;
+  private readonly _codec: WireCodec<TInput, TOutput>;
+  private readonly _clientId: string | undefined;
+  private readonly _historyPageSize: number;
+  private readonly _logger: Logger;
+  private readonly _runManager: RunManager;
+  /** The one decoder shared by the live fold and the history scan, so a stream spanning the attach boundary is never double-decoded ({@link locateInput}'s throwaway scans stay separate). */
+  private readonly _decoder: ReturnType<WireCodec<TInput, TOutput>['createDecoder']>;
+  private readonly _receiver: ReceiveTransport<TInput, TOutput>;
+  private readonly _connectGuard = new ConnectGuard();
+  private _closed = false;
 
   /** Open runs by run-id — the cancel-routing registry. */
-  const registeredRuns = new Map<string, RegisteredRun>();
+  private readonly _registeredRuns = new Map<string, RegisteredRun>();
   /** Reverse index: triggering input codec-message-id → run-id, for fresh-send cancels keyed by input. */
-  const runIdByInputCodecMessageId = new Map<string, string>();
+  private readonly _runIdByInputCodecMessageId = new Map<string, string>();
   /** Cancels that arrived before their target run was opened, keyed by input codec-message-id. */
-  const deferredCancels = new Map<string, Ably.InboundMessage>();
+  private readonly _deferredCancels = new Map<string, Ably.InboundMessage>();
   /** Cancels addressed by run-id whose run is not registered yet, for a durable continuation's `openRun` to pull. */
-  const deferredCancelsByRunId = new Map<string, Ably.InboundMessage>();
+  private readonly _deferredCancelsByRunId = new Map<string, Ably.InboundMessage>();
   /** Steering-message codec-message-ids observed before their run was opened, keyed by run-id. */
-  const preOpenSteersByRunId = new Map<string, Set<string>>();
+  private readonly _preOpenSteersByRunId = new Map<string, Set<string>>();
 
-  /**
-   * Union a steer's codec-message-id into the bounded pre-open buffer,
-   * FIFO-evicting the oldest run's buffer at {@link PRE_OPEN_STEER_LIMIT}.
-   * @param runId - The run the steer belongs to.
-   * @param codecMessageId - The steer's codec-message-id.
-   */
-  const bufferPreOpenSteerId = (runId: string, codecMessageId: string): void => {
-    const evicted = evictOldestIfFull(preOpenSteersByRunId, runId, PRE_OPEN_STEER_LIMIT);
-    if (evicted !== undefined) {
-      logger.warn('AgentTransport.bufferPreOpenSteerId(); pre-open steer buffer full, dropping oldest run', {
-        evictedRunId: evicted,
-        limit: PRE_OPEN_STEER_LIMIT,
-      });
-    }
-    const set = preOpenSteersByRunId.get(runId);
-    if (set) set.add(codecMessageId);
-    else preOpenSteersByRunId.set(runId, new Set([codecMessageId]));
-  };
+  /** The channel listener — one bound reference so `close()` can unsubscribe it. */
+  private readonly _onMessage: (message: Ably.InboundMessage) => void;
+  /** The lazily opened, single-flight history pager behind {@link history}. Decode failures surface on the receive stream's `error`, matching the live fold. */
+  private readonly _historyPager: HistoryPager<TInput, TOutput>;
+  /** The public `on`, forwarding to the receiver via the shared dispatch. */
+  readonly on: TransportReceiver<TInput, TOutput>['on'];
 
-  /**
-   * Fire a cancel against a registered run: consult its `onCancel`
-   * authorization hook (if any), then abort the run's controller. Shared by
-   * the live dispatch and the deferred-cancel pull so both honour `onCancel`
-   * and surface handler errors identically.
-   * @param reg - The target run registration.
-   * @param msg - The raw cancel message (passed to `onCancel`).
-   */
-  const cancelRegistration = async (reg: RegisteredRun, msg: Ably.InboundMessage): Promise<void> => {
-    const { runId } = reg;
-    logger.debug('AgentTransport.cancelRegistration(); matched run', { runId });
-
-    const request: CancelRequest = { message: msg, runId };
-
-    try {
-      if (reg.onCancel) {
-        const allowed = await reg.onCancel(request);
-        if (!allowed) {
-          logger.debug('AgentTransport.cancelRegistration(); cancel rejected by onCancel', { runId });
-          return;
-        }
-      }
-      reg.controller.abort();
-      logger.debug('AgentTransport.cancelRegistration(); run cancelled', { runId });
-    } catch (error) {
-      const errInfo = new Ably.ErrorInfo(
-        `unable to process cancel for run ${runId}; onCancel handler threw: ${errorMessage(error)}`,
-        ErrorCode.RunCancelHandlerFailed,
-        500,
-        errorCause(error),
-      );
-      logger.error('AgentTransport.cancelRegistration(); onCancel threw', { runId });
-      // Route to the run's onError when it supplied one, otherwise the
-      // transport's error stream — one delivery path, never both. A throwing
-      // onError is caught and logged so a bad handler cannot kill cancel
-      // routing.
-      if (reg.onError) {
-        try {
-          reg.onError(errInfo);
-        } catch {
-          logger.error('AgentTransport.cancelRegistration(); onError callback threw', { runId });
-        }
-      } else {
-        receiver.emitError(errInfo);
-      }
-    }
-  };
-
-  /**
-   * Buffer a cancel that arrived before its target run was opened, keyed by the
-   * triggering input's codec-message-id. FIFO-evicts the oldest entry at
-   * {@link DEFERRED_CANCEL_LIMIT}. A later cancel for the same input replaces
-   * the earlier one — the intent is identical.
-   * @param inputCodecMessageId - The triggering input's codec-message-id.
-   * @param msg - The raw cancel message (passed to `onCancel`).
-   */
-  const bufferDeferredCancel = (inputCodecMessageId: string, msg: Ably.InboundMessage): void => {
-    const evicted = evictOldestIfFull(deferredCancels, inputCodecMessageId, DEFERRED_CANCEL_LIMIT);
-    if (evicted !== undefined) {
-      logger.warn('AgentTransport.bufferDeferredCancel(); deferred-cancel buffer full, dropping oldest', {
-        evictedInputCodecMessageId: evicted,
-        limit: DEFERRED_CANCEL_LIMIT,
-      });
-    }
-    deferredCancels.set(inputCodecMessageId, msg);
-    logger.debug('AgentTransport.bufferDeferredCancel(); buffered early cancel', {
-      inputCodecMessageId,
-      serial: msg.serial,
+  constructor(options: AgentTransportOptions<TInput, TOutput>) {
+    this._channel = options.channel;
+    this._codec = options.codec;
+    this._clientId = options.clientId;
+    this._historyPageSize = options.historyPageSize ?? DEFAULT_HISTORY_PAGE_SIZE;
+    this._logger = (options.logger ?? makeLogger({ logLevel: LogLevel.Silent })).withContext({
+      component: 'AgentTransport',
     });
-  };
-
-  const handleCancelMessage = async (msg: Ably.InboundMessage): Promise<void> => {
-    const { runId, inputCodecMessageId } = readCancelTarget(msg);
-
-    // Malformed cancel: drop with warn. A cancel must identify its target by
-    // `run-id` (a continuation, whose run-id the client knows) and/or by
-    // `input-codec-message-id` (a fresh send, before the agent minted the
-    // run-id). Neither present means there is nothing to route to.
-    if (!runId && !inputCodecMessageId) {
-      logger.warn('AgentTransport.handleCancelMessage(); missing run-id and input-codec-message-id', {
-        serial: msg.serial,
-      });
-      return;
-    }
-
-    // Primary path — match by run-id (continuations, whose run-id the client
-    // already knows). Resolve the input-codec-message-id to a run-id when the
-    // run-id wasn't supplied (a fresh-send cancel whose target run has already
-    // opened with that input, so the linkage exists).
-    const resolvedRunId =
-      runId ?? (inputCodecMessageId ? runIdByInputCodecMessageId.get(inputCodecMessageId) : undefined);
-    const reg = resolvedRunId ? registeredRuns.get(resolvedRunId) : undefined;
-
-    if (!reg) {
-      // The run isn't known yet. A fresh-send cancel can race ahead of the
-      // `openRun` that establishes the input-codec-message-id → run linkage —
-      // buffer it by input-codec-message-id so `openRun` can pull and honour
-      // it. A run-id cancel can likewise race a durable continuation's
-      // `openRun` (the client knows the run-id before this process registers
-      // it), so buffer that by run-id the same way.
-      if (inputCodecMessageId !== undefined) {
-        bufferDeferredCancel(inputCodecMessageId, msg);
-      } else if (runId !== undefined) {
-        const evicted = evictOldestIfFull(deferredCancelsByRunId, runId, DEFERRED_CANCEL_LIMIT);
-        if (evicted !== undefined) {
-          logger.warn('AgentTransport.handleCancelMessage(); deferred run-id cancel buffer full, dropping oldest', {
-            evictedRunId: evicted,
-            limit: DEFERRED_CANCEL_LIMIT,
-          });
-        }
-        deferredCancelsByRunId.set(runId, msg);
-        logger.debug('AgentTransport.handleCancelMessage(); buffered early run-id cancel', {
-          runId,
-          serial: msg.serial,
-        });
-      }
-      return;
-    }
-
-    await cancelRegistration(reg, msg);
-  };
-
-  // ---------------------------------------------------------------------------
-  // Channel listener and lifecycle
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Route a classified `message` event into steer tracking. A client input
-   * under a registered run's run-id goes onto that run's closure (which skips
-   * the trigger and already-tracked steers); with no registered run yet, the
-   * steer id buffers per run-id for `openRun` to pull — a steer can land
-   * between `connect()` and a continuation's `openRun`, after the attach
-   * point where `history()` no longer sees it.
-   * @param event - The classified event the receive fold produced.
-   */
-  const observeRunSteer = (event: TransportEvent<TInput, TOutput>): void => {
-    if (event.kind !== 'message') return;
-    const { meta } = event;
-    const eventRunId = meta.runId;
-    if (eventRunId === undefined) return;
-    if (event.inputs.length === 0 || meta.codecMessageId === undefined) return;
-
-    const reg = registeredRuns.get(eventRunId);
-    if (reg) {
-      reg.onSteerMessage(meta.codecMessageId);
-      return;
-    }
-    bufferPreOpenSteerId(eventRunId, meta.codecMessageId);
-  };
-
-  const onMessage = (message: Ably.InboundMessage): void => {
-    if (closed) return;
-    // A failed decode drops the message (the receiver emitted `error`); its
-    // raw `ably-message` is not emitted, and cancel dispatch does not run for
-    // a message the fold never applied.
-    const delivery = receiver.deliverEvent(message);
-    if (delivery.outcome === 'failed') return;
-    if (delivery.outcome === 'classified') observeRunSteer(delivery.event);
-    receiver.deliverAblyMessage(message);
-    if (message.name === EVENT_CANCEL) {
-      // Fire-and-forget async dispatch — onCancel errors are surfaced inside
-      // cancelRegistration; this backstop catches anything else.
-      handleCancelMessage(message).catch((error: unknown) => {
-        const errInfo = new Ably.ErrorInfo(
-          `unable to route cancel message; ${errorMessage(error)}`,
-          ErrorCode.RunCancelHandlerFailed,
-          500,
-          errorCause(error),
-        );
-        logger.error('AgentTransport.onMessage(); cancel routing error', { serial: message.serial });
-        receiver.emitError(errInfo);
-      });
-    }
-  };
-
-  /**
-   * Build the terminal-state error every post-`close()` call rejects with.
-   * @param method - The method name being guarded, for the error message.
-   * @returns The error.
-   */
-  const closedError = (method: string): Ably.ErrorInfo =>
-    new Ably.ErrorInfo(`unable to ${method}; transport is closed`, ErrorCode.TransportClosed, 400);
-
-  /**
-   * Guard a verb: reject once closed, and require a successful `connect()`
-   * (the shared guard supplies the retry guidance on a failed one).
-   * @param method - The method name being guarded, for the error message.
-   */
-  const requireOpen = async (method: string): Promise<void> => {
-    if (closed) throw closedError(method);
-    await connectGuard.requireConnected(method);
-  };
+    this._runManager = createRunManager(this._channel, this._logger);
+    this._decoder = this._codec.createDecoder();
+    this._receiver = createReceiveTransport<TInput, TOutput>(this._decoder, this._logger);
+    this.on = forwardReceiverOn(this._receiver);
+    this._historyPager = new HistoryPager({
+      channel: this._channel,
+      pageSize: this._historyPageSize,
+      decoder: this._decoder,
+      logger: this._logger,
+      onDecodeError: (err) => {
+        this._receiver.emitError(err);
+      },
+    });
+    this._onMessage = (message) => {
+      this._handleMessage(message);
+    };
+  }
 
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- preserve reference equality across calls
-  const connect = (): Promise<void> => {
-    if (closed) {
-      return Promise.reject(closedError('connect'));
+  connect(): Promise<void> {
+    if (this._closed) {
+      return Promise.reject(this._closedError('connect'));
     }
-    logger.trace('AgentTransport.connect();');
-    return connectGuard.connect(async () =>
-      subscribeAndAttach(channel, onMessage, logger, 'AgentTransport', (error) => {
-        receiver.emitError(error);
+    this._logger.trace('AgentTransport.connect();');
+    return this._connectGuard.connect(async () =>
+      subscribeAndAttach(this._channel, this._onMessage, this._logger, 'AgentTransport', (error) => {
+        this._receiver.emitError(error);
       }),
     );
-  };
+  }
 
-  const subscribe = (handler: (event: TransportEvent<TInput, TOutput>) => void): (() => void) =>
-    receiver.on('event', handler);
+  subscribe(handler: (event: TransportEvent<TInput, TOutput>) => void): () => void {
+    return this._receiver.on('event', handler);
+  }
 
-  const on = (
-    event: 'event' | 'ably-message' | 'error',
-    handler:
-      | ((e: TransportEvent<TInput, TOutput>) => void)
-      | ((msg: Ably.InboundMessage) => void)
-      | ((err: Ably.ErrorInfo) => void),
-  ): (() => void) => {
-    switch (event) {
-      case 'event': {
-        // CAST: the public overloads pair each event name with its handler
-        // type; TypeScript cannot correlate the union members in the
-        // implementation signature.
-        return receiver.on(event, handler as (e: TransportEvent<TInput, TOutput>) => void);
-      }
-      case 'ably-message': {
-        // CAST: see the 'event' case.
-        return receiver.on(event, handler as (msg: Ably.InboundMessage) => void);
-      }
-      case 'error': {
-        // CAST: see the 'event' case.
-        return receiver.on(event, handler as (err: Ably.ErrorInfo) => void);
-      }
-    }
-  };
+  close(): void {
+    if (this._closed) return;
+    this._logger.info('AgentTransport.close();');
+    this._closed = true;
+    this._channel.unsubscribe(this._onMessage);
+  }
 
-  const close = (): void => {
-    if (closed) return;
-    logger.info('AgentTransport.close();');
-    closed = true;
-    channel.unsubscribe(onMessage);
-  };
-
-  // ---------------------------------------------------------------------------
-  // Run surface
-  // ---------------------------------------------------------------------------
-
-  /**
-   * The shared open-verb guards: a closed transport throws, and a run opened
-   * without connect() could silently miss the cancel and steering signals
-   * addressed to it, so the receive path is required first. Synchronous — the
-   * open verbs return the handle without awaiting, and the open publish still
-   * awaits the connect completing.
-   * @param verb - The public method name, for the error message.
-   */
-  const assertCanOpen = (verb: 'openRun' | 'adoptRun'): void => {
-    if (closed) throw closedError(verb);
-    if (!connectGuard.attempted) {
-      throw new Ably.ErrorInfo(
-        `unable to open run; connect() must be called before ${verb}()`,
-        ErrorCode.InvalidArgument,
-        400,
-      );
-    }
-  };
-
-  const openRun = (opts?: OpenRunOptions, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput> => {
-    assertCanOpen('openRun');
+  openRun(opts?: OpenRunOptions, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput> {
+    this._assertCanOpen('openRun');
     const inputMeta = opts?.input?.meta;
     // The opening event: with a located input, its run-id header decides — a
     // continuation re-enters the run the client stamped, a fresh send starts
@@ -484,8 +237,8 @@ export const createAgentTransport = <TInput, TOutput>(
     // (a durable agent's stable fresh-run id), else minted.
     const runId = inputMeta?.runId ?? opts?.runId ?? crypto.randomUUID();
     const invocationId = opts?.invocationId ?? crypto.randomUUID();
-    logger.trace('AgentTransport.openRun();', { runId, invocationId, continuation });
-    return createRun(
+    this._logger.trace('AgentTransport.openRun();', { runId, invocationId, continuation });
+    return this._createRun(
       {
         runId,
         invocationId,
@@ -500,29 +253,48 @@ export const createAgentTransport = <TInput, TOutput>(
       },
       hooks,
     );
-  };
+  }
 
-  const adoptRun = (runId: string, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput> => {
-    assertCanOpen('adoptRun');
+  adoptRun(runId: string, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput> {
+    this._assertCanOpen('adoptRun');
     if (runId === '') {
       throw new Ably.ErrorInfo('unable to adopt run; runId must be non-empty', ErrorCode.InvalidArgument, 400);
     }
     const invocationId = crypto.randomUUID();
-    logger.trace('AgentTransport.adoptRun();', { runId, invocationId });
-    return createRun({ runId, invocationId, open: 'adopt' }, hooks);
-  };
+    this._logger.trace('AgentTransport.adoptRun();', { runId, invocationId });
+    return this._createRun({ runId, invocationId, open: 'adopt' }, hooks);
+  }
+
+  /**
+   * The shared open-verb guards: a closed transport throws, and a run opened
+   * without connect() could silently miss the cancel and steering signals
+   * addressed to it, so the receive path is required first. Synchronous — the
+   * open verbs return the handle without awaiting, and the open publish still
+   * awaits the connect completing.
+   * @param verb - The public method name, for the error message.
+   */
+  private _assertCanOpen(verb: 'openRun' | 'adoptRun'): void {
+    if (this._closed) throw this._closedError(verb);
+    if (!this._connectGuard.attempted) {
+      throw new Ably.ErrorInfo(
+        `unable to open run; connect() must be called before ${verb}()`,
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+  }
 
   /**
    * Build a run handle from resolved parameters: register it for cancel and
    * steer routing, fire the opening publish (`'start'` / `'resume'`) or seed
    * the run-manager owner entry without publishing (`'adopt'`), and wire the
    * step writer. All identity and structure resolution belongs to the public
-   * verbs; this function consumes the resolved values verbatim.
+   * verbs; this method consumes the resolved values verbatim.
    * @param params - The resolved run identity, open mode, anchor and structure.
    * @param hooks - The caller's per-run callbacks and external AbortSignal.
    * @returns The run's write handle.
    */
-  const createRun = (params: CreateRunParams, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput> => {
+  private _createRun(params: CreateRunParams, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput> {
     const { runId, invocationId, inputCodecMessageId } = params;
 
     // The run's cancel controller: an accepted cancel aborts it, ending
@@ -587,8 +359,8 @@ export const createAgentTransport = <TInput, TOutput>(
           500,
           errorCause(error),
         );
-        logger.error('AgentTransport.notifySteer(); onSteer threw', { runId });
-        receiver.emitError(errInfo);
+        this._logger.error('AgentTransport.notifySteer(); onSteer threw', { runId });
+        this._receiver.emitError(errInfo);
       }
     };
 
@@ -602,9 +374,9 @@ export const createAgentTransport = <TInput, TOutput>(
         if (trackSteer(codecMessageId)) notifySteer();
       },
     };
-    registeredRuns.set(runId, registration);
+    this._registeredRuns.set(runId, registration);
     if (inputCodecMessageId !== undefined) {
-      runIdByInputCodecMessageId.set(inputCodecMessageId, runId);
+      this._runIdByInputCodecMessageId.set(inputCodecMessageId, runId);
     }
 
     /**
@@ -614,29 +386,29 @@ export const createAgentTransport = <TInput, TOutput>(
      * fails. A suspended run stays registered (see {@link RegisteredRun}).
      */
     const deregister = (): void => {
-      registeredRuns.delete(runId);
-      preOpenSteersByRunId.delete(runId);
-      deferredCancelsByRunId.delete(runId);
+      this._registeredRuns.delete(runId);
+      this._preOpenSteersByRunId.delete(runId);
+      this._deferredCancelsByRunId.delete(runId);
       if (inputCodecMessageId !== undefined) {
-        if (runIdByInputCodecMessageId.get(inputCodecMessageId) === runId) {
-          runIdByInputCodecMessageId.delete(inputCodecMessageId);
+        if (this._runIdByInputCodecMessageId.get(inputCodecMessageId) === runId) {
+          this._runIdByInputCodecMessageId.delete(inputCodecMessageId);
         }
-        deferredCancels.delete(inputCodecMessageId);
+        this._deferredCancels.delete(inputCodecMessageId);
       }
     };
 
     // Pull the steers that landed before this openRun (between connect() and
     // here, after the attach point). One onSteer hint covers the batch.
     {
-      const bufferedSteers = preOpenSteersByRunId.get(runId);
+      const bufferedSteers = this._preOpenSteersByRunId.get(runId);
       if (bufferedSteers) {
-        preOpenSteersByRunId.delete(runId);
+        this._preOpenSteersByRunId.delete(runId);
         let seededAny = false;
         for (const id of bufferedSteers) {
           if (trackSteer(id)) seededAny = true;
         }
         if (seededAny) {
-          logger.debug('AgentTransport.openRun(); seeded pre-open steers', { runId });
+          this._logger.debug('AgentTransport.openRun(); seeded pre-open steers', { runId });
           notifySteer();
         }
       }
@@ -646,16 +418,16 @@ export const createAgentTransport = <TInput, TOutput>(
     // input-codec-message-id → run linkage or registered the run-id.
     // Fire-and-forget: with no onCancel hook the abort happens synchronously
     // (no await precedes it), and a hook error is surfaced inside
-    // cancelRegistration.
+    // _cancelRegistration.
     {
       const buffered =
-        (inputCodecMessageId === undefined ? undefined : deferredCancels.get(inputCodecMessageId)) ??
-        deferredCancelsByRunId.get(runId);
+        (inputCodecMessageId === undefined ? undefined : this._deferredCancels.get(inputCodecMessageId)) ??
+        this._deferredCancelsByRunId.get(runId);
       if (buffered !== undefined) {
-        if (inputCodecMessageId !== undefined) deferredCancels.delete(inputCodecMessageId);
-        deferredCancelsByRunId.delete(runId);
-        logger.debug('AgentTransport.openRun(); honouring buffered cancel', { runId, inputCodecMessageId });
-        void cancelRegistration(registration, buffered);
+        if (inputCodecMessageId !== undefined) this._deferredCancels.delete(inputCodecMessageId);
+        this._deferredCancelsByRunId.delete(runId);
+        this._logger.debug('AgentTransport.openRun(); honouring buffered cancel', { runId, inputCodecMessageId });
+        void this._cancelRegistration(registration, buffered);
       }
     }
 
@@ -666,15 +438,15 @@ export const createAgentTransport = <TInput, TOutput>(
     // through `requireConnected`, so `ai-run-start` is on the wire before any
     // `ai-output`.
     const openPromise = (async (): Promise<void> => {
-      await connectGuard.requireConnected('openRun');
+      await this._connectGuard.requireConnected('openRun');
       if (params.open === 'adopt') {
         // Attach-without-publishing: seed the run manager's owner entry so
         // output and terminals stamp the real run-client-id, but put nothing
         // on the wire — the caller publishes only what it means to publish.
-        runManager.registerRun(runId, clientId);
+        this._runManager.registerRun(runId, this._clientId);
         return;
       }
-      await runManager.startRun(runId, clientId, {
+      await this._runManager.startRun(runId, this._clientId, {
         parent: params.parent,
         forkOf: params.forkOf,
         regenerates: params.regenerates,
@@ -693,20 +465,20 @@ export const createAgentTransport = <TInput, TOutput>(
     // (e.g. one waiting on the opening event's channel echo) can observe. A
     // run whose open failed receives no signals, so drop its registration.
     openPromise.catch((error: unknown) => {
-      logger.error('AgentTransport.openRun(); open publish failed', { runId });
+      this._logger.error('AgentTransport.openRun(); open publish failed', { runId });
       deregister();
       const onError = hooks?.onError;
       if (!onError) return;
       const errInfo = new Ably.ErrorInfo(
         `unable to open run ${runId}; ${errorMessage(error)}`,
-        ErrorCode.SendFailed,
+        ErrorCode.SessionSendFailed,
         500,
         errorCause(error),
       );
       try {
         onError(errInfo);
       } catch {
-        logger.error('AgentTransport.openRun(); onError callback threw', { runId });
+        this._logger.error('AgentTransport.openRun(); onError callback threw', { runId });
       }
     });
 
@@ -719,14 +491,14 @@ export const createAgentTransport = <TInput, TOutput>(
     const stepWriter = createRunStepWriter<TInput, TOutput>({
       getRunId: () => runId,
       invocationId,
-      codec,
-      channel,
-      runManager,
+      codec: this._codec,
+      channel: this._channel,
+      runManager: this._runManager,
       // Emit the writer's optimistic step-start / step-end seed on the
       // transport's own receive stream, so a subscriber sees the bracket
       // before the wire echo and reconciles it by `stepStartSerial`.
       emitStepLifecycle: (event) => {
-        receiver.emitEvent({ kind: 'step-lifecycle', event });
+        this._receiver.emitEvent({ kind: 'step-lifecycle', event });
       },
       // The caller's per-run hooks, `onError` included: the writer fires it
       // with a wrapped pipe stream failure alongside the `StreamResult.error`
@@ -745,7 +517,7 @@ export const createAgentTransport = <TInput, TOutput>(
         consideredSteerIds.push(...ids);
         return ids;
       },
-      logger,
+      logger: this._logger,
       requireConnected,
       assertPublishable: (verb) => {
         if (state === 'open') return;
@@ -826,7 +598,7 @@ export const createAgentTransport = <TInput, TOutput>(
       pipe: stepWriter.pipe,
       createStep,
       suspend: async (): Promise<void> => {
-        logger.trace('AgentRunTransport.suspend();', { runId });
+        this._logger.trace('AgentRunTransport.suspend();', { runId });
         if (state !== 'open') return;
         // A suspend mid-step would strand the open step (no `ai-step-end` before
         // the run pauses); require the caller to end it first. Unlike end,
@@ -839,10 +611,10 @@ export const createAgentTransport = <TInput, TOutput>(
           );
         }
         state = 'suspended';
-        await runManager.suspendRun(runId, invocationId, undefined, undefined, consideredInputIds());
+        await this._runManager.suspendRun(runId, invocationId, undefined, undefined, consideredInputIds());
       },
       resume: async (): Promise<void> => {
-        logger.trace('AgentRunTransport.resume();', { runId });
+        this._logger.trace('AgentRunTransport.resume();', { runId });
         if (state === 'ended') {
           throw new Ably.ErrorInfo(
             `unable to resume run; run ${runId} has already ended`,
@@ -853,11 +625,11 @@ export const createAgentTransport = <TInput, TOutput>(
         // A pure re-entry signal: republish `ai-run-resume` under the same run-id
         // with no structure headers (continuation). The gate re-opens only once
         // the publish succeeds, so a failed resume leaves the run suspended.
-        await runManager.startRun(runId, clientId, { invocationId, continuation: true });
+        await this._runManager.startRun(runId, this._clientId, { invocationId, continuation: true });
         state = 'open';
       },
       end: async (params: RunEndParams): Promise<void> => {
-        logger.trace('AgentRunTransport.end();', { runId, reason: params.reason });
+        this._logger.trace('AgentRunTransport.end();', { runId, reason: params.reason });
         if (state === 'ended') return;
         state = 'ended';
         // The run stops receiving signals the moment it is terminal, even if
@@ -869,91 +641,38 @@ export const createAgentTransport = <TInput, TOutput>(
         try {
           await stepWriter.closeActiveStep(stepEndReasonFor(params.reason));
         } catch {
-          logger.error('AgentRunTransport.end(); failed to auto-close active step', { runId });
+          this._logger.error('AgentRunTransport.end(); failed to auto-close active step', { runId });
         }
         const error = params.reason === 'error' ? params.error : undefined;
-        await runManager.endRun(runId, params.reason, invocationId, undefined, undefined, error, consideredInputIds());
+        await this._runManager.endRun(
+          runId,
+          params.reason,
+          invocationId,
+          undefined,
+          undefined,
+          error,
+          consideredInputIds(),
+        );
       },
     };
-  };
+  }
 
-  // ---------------------------------------------------------------------------
-  // History
-  // ---------------------------------------------------------------------------
+  async history(opts?: TransportHistoryOptions): Promise<TransportHistoryResult<TInput, TOutput>> {
+    this._logger.trace('AgentTransport.history();');
+    await this._requireOpen('history');
+    return this._historyPager.next(opts);
+  }
 
-  /**
-   * The shared backward history cursor, opened lazily on the first `history()`
-   * call (capturing the attach serial then) and advanced by one caller at a
-   * time under the tail chain below.
-   */
-  let historyCursor: HistoryPagesCursor | undefined;
-  /**
-   * Tail of the single-flight history chain. Each `history()` links behind
-   * the current tail so the cursor is never paged concurrently. A link's
-   * failure is its own to throw — the tail stores a settled void promise, so
-   * a follower is isolated from a prior link's rejection.
-   */
-  let historyTail: Promise<void> = Promise.resolve();
-
-  /**
-   * Fetch and classify the next older slice of channel history via the shared
-   * {@link walkHistoryBatch}, on the lazily opened cursor and the live
-   * stream's decoder. A decode failure is surfaced on the receive stream's
-   * `error`, matching the live fold.
-   * @param opts - The caller's batch bounds.
-   * @returns The batch of classified events and the exhaustion flag.
-   */
-  const walkHistory = async (
-    opts: TransportHistoryOptions | undefined,
-  ): Promise<TransportHistoryResult<TInput, TOutput>> => {
-    historyCursor ??= await loadHistoryPages(channel, {
-      pageLimit: historyPageSize,
-      untilAttach: true,
-      logger,
-    });
-    return walkHistoryBatch(
-      {
-        cursor: historyCursor,
-        decoder,
-        logger,
-        onDecodeError: (err) => {
-          receiver.emitError(err);
-        },
-      },
-      opts,
-    );
-  };
-
-  const history = async (opts?: TransportHistoryOptions): Promise<TransportHistoryResult<TInput, TOutput>> => {
-    logger.trace('AgentTransport.history();');
-    await requireOpen('history');
-    // Link behind the tail so the shared cursor is advanced by one caller at
-    // a time; a prior link's failure is its own to throw.
-    const prev = historyTail;
-    const mine = (async (): Promise<TransportHistoryResult<TInput, TOutput>> => {
-      await prev;
-      return walkHistory(opts);
-    })();
-    historyTail = (async (): Promise<void> => {
-      try {
-        await mine;
-      } catch {
-        /* a link's failure is its own caller's to observe */
-      }
-    })();
-    return mine;
-  };
-
-  const locateInput = async (
-    eventId: string,
-    opts?: TransportHistoryOptions,
-  ): Promise<LocatedInput<TInput> | undefined> => {
-    logger.trace('AgentTransport.locateInput();', { eventId });
-    await requireOpen('locateInput');
+  async locateInput(eventId: string, opts?: TransportHistoryOptions): Promise<LocatedInput<TInput> | undefined> {
+    this._logger.trace('AgentTransport.locateInput();', { eventId });
+    await this._requireOpen('locateInput');
     // A throwaway decoder so the history scan never perturbs the live receive
     // stream's dedup state, keeping the 1:1 decoder-per-stream invariant.
-    const scanDecoder = codec.createDecoder();
-    const cursor = await loadHistoryPages(channel, { pageLimit: historyPageSize, logger });
+    const scanDecoder = this._codec.createDecoder();
+    const cursor = await loadHistoryPages(this._channel, {
+      pageLimit: this._historyPageSize,
+      logger: this._logger,
+    });
     let scanned = 0;
     while (cursor.hasNext() && (opts?.limit === undefined || scanned < opts.limit)) {
       if (opts?.signal?.aborted) {
@@ -966,14 +685,246 @@ export const createAgentTransport = <TInput, TOutput>(
       for (const msg of page) {
         if (getTransportHeaders(msg)[HEADER_EVENT_ID] === eventId) {
           const { inputs } = scanDecoder.decode(msg);
-          logger.debug('AgentTransport.locateInput(); input located', { eventId, serial: msg.serial });
+          this._logger.debug('AgentTransport.locateInput(); input located', { eventId, serial: msg.serial });
           return { meta: wireMetaFromMessage(msg), inputs };
         }
       }
     }
-    logger.debug('AgentTransport.locateInput(); no matching input in history', { eventId });
+    this._logger.debug('AgentTransport.locateInput(); no matching input in history', { eventId });
     return undefined;
-  };
+  }
 
-  return { connect, subscribe, on, openRun, adoptRun, locateInput, history, close };
-};
+  /**
+   * The channel listener body: fold the wire through the receiver, route
+   * steering messages, and dispatch cancel envelopes.
+   * @param message - The inbound wire message.
+   */
+  private _handleMessage(message: Ably.InboundMessage): void {
+    if (this._closed) return;
+    // A failed decode drops the message (the receiver emitted `error`); its
+    // raw `ably-message` is not emitted, and cancel dispatch does not run for
+    // a message the fold never applied.
+    const delivery = this._receiver.deliverEvent(message);
+    if (delivery.outcome === 'failed') return;
+    if (delivery.outcome === 'classified') this._observeRunSteer(delivery.event);
+    this._receiver.deliverAblyMessage(message);
+    if (message.name === EVENT_CANCEL) {
+      // Fire-and-forget async dispatch — onCancel errors are surfaced inside
+      // _cancelRegistration; this backstop catches anything else.
+      this._handleCancelMessage(message).catch((error: unknown) => {
+        const errInfo = new Ably.ErrorInfo(
+          `unable to route cancel message; ${errorMessage(error)}`,
+          ErrorCode.RunCancelHandlerFailed,
+          500,
+          errorCause(error),
+        );
+        this._logger.error('AgentTransport._handleMessage(); cancel routing error', { serial: message.serial });
+        this._receiver.emitError(errInfo);
+      });
+    }
+  }
+
+  /**
+   * Route a classified `message` event into steer tracking. A client input
+   * under a registered run's run-id goes onto that run's closure (which skips
+   * the trigger and already-tracked steers); with no registered run yet, the
+   * steer id buffers per run-id for `openRun` to pull — a steer can land
+   * between `connect()` and a continuation's `openRun`, after the attach
+   * point where `history()` no longer sees it.
+   * @param event - The classified event the receive fold produced.
+   */
+  private _observeRunSteer(event: TransportEvent<TInput, TOutput>): void {
+    if (event.kind !== 'message') return;
+    const { meta } = event;
+    const eventRunId = meta.runId;
+    if (eventRunId === undefined) return;
+    if (event.inputs.length === 0 || meta.codecMessageId === undefined) return;
+
+    const reg = this._registeredRuns.get(eventRunId);
+    if (reg) {
+      reg.onSteerMessage(meta.codecMessageId);
+      return;
+    }
+    this._bufferPreOpenSteerId(eventRunId, meta.codecMessageId);
+  }
+
+  /**
+   * Union a steer's codec-message-id into the bounded pre-open buffer,
+   * FIFO-evicting the oldest run's buffer at {@link PRE_OPEN_STEER_LIMIT}.
+   * @param runId - The run the steer belongs to.
+   * @param codecMessageId - The steer's codec-message-id.
+   */
+  private _bufferPreOpenSteerId(runId: string, codecMessageId: string): void {
+    const evicted = evictOldestIfFull(this._preOpenSteersByRunId, runId, PRE_OPEN_STEER_LIMIT);
+    if (evicted !== undefined) {
+      this._logger.warn('AgentTransport._bufferPreOpenSteerId(); pre-open steer buffer full, dropping oldest run', {
+        evictedRunId: evicted,
+        limit: PRE_OPEN_STEER_LIMIT,
+      });
+    }
+    const set = this._preOpenSteersByRunId.get(runId);
+    if (set) set.add(codecMessageId);
+    else this._preOpenSteersByRunId.set(runId, new Set([codecMessageId]));
+  }
+
+  /**
+   * Fire a cancel against a registered run: consult its `onCancel`
+   * authorization hook (if any), then abort the run's controller. Shared by
+   * the live dispatch and the deferred-cancel pull so both honour `onCancel`
+   * and surface handler errors identically.
+   * @param reg - The target run registration.
+   * @param msg - The raw cancel message (passed to `onCancel`).
+   */
+  private async _cancelRegistration(reg: RegisteredRun, msg: Ably.InboundMessage): Promise<void> {
+    const { runId } = reg;
+    this._logger.debug('AgentTransport._cancelRegistration(); matched run', { runId });
+
+    const request: CancelRequest = { message: msg, runId };
+
+    try {
+      if (reg.onCancel) {
+        const allowed = await reg.onCancel(request);
+        if (!allowed) {
+          this._logger.debug('AgentTransport._cancelRegistration(); cancel rejected by onCancel', { runId });
+          return;
+        }
+      }
+      reg.controller.abort();
+      this._logger.debug('AgentTransport._cancelRegistration(); run cancelled', { runId });
+    } catch (error) {
+      const errInfo = new Ably.ErrorInfo(
+        `unable to process cancel for run ${runId}; onCancel handler threw: ${errorMessage(error)}`,
+        ErrorCode.RunCancelHandlerFailed,
+        500,
+        errorCause(error),
+      );
+      this._logger.error('AgentTransport._cancelRegistration(); onCancel threw', { runId });
+      // Route to the run's onError when it supplied one, otherwise the
+      // transport's error stream — one delivery path, never both. A throwing
+      // onError is caught and logged so a bad handler cannot kill cancel
+      // routing.
+      if (reg.onError) {
+        try {
+          reg.onError(errInfo);
+        } catch {
+          this._logger.error('AgentTransport._cancelRegistration(); onError callback threw', { runId });
+        }
+      } else {
+        this._receiver.emitError(errInfo);
+      }
+    }
+  }
+
+  /**
+   * Buffer a cancel that arrived before its target run was opened, keyed by the
+   * triggering input's codec-message-id. FIFO-evicts the oldest entry at
+   * {@link DEFERRED_CANCEL_LIMIT}. A later cancel for the same input replaces
+   * the earlier one — the intent is identical.
+   * @param inputCodecMessageId - The triggering input's codec-message-id.
+   * @param msg - The raw cancel message (passed to `onCancel`).
+   */
+  private _bufferDeferredCancel(inputCodecMessageId: string, msg: Ably.InboundMessage): void {
+    const evicted = evictOldestIfFull(this._deferredCancels, inputCodecMessageId, DEFERRED_CANCEL_LIMIT);
+    if (evicted !== undefined) {
+      this._logger.warn('AgentTransport._bufferDeferredCancel(); deferred-cancel buffer full, dropping oldest', {
+        evictedInputCodecMessageId: evicted,
+        limit: DEFERRED_CANCEL_LIMIT,
+      });
+    }
+    this._deferredCancels.set(inputCodecMessageId, msg);
+    this._logger.debug('AgentTransport._bufferDeferredCancel(); buffered early cancel', {
+      inputCodecMessageId,
+      serial: msg.serial,
+    });
+  }
+
+  private async _handleCancelMessage(msg: Ably.InboundMessage): Promise<void> {
+    const { runId, inputCodecMessageId } = readCancelTarget(msg);
+
+    // Malformed cancel: drop with warn. A cancel must identify its target by
+    // `run-id` (a continuation, whose run-id the client knows) and/or by
+    // `input-codec-message-id` (a fresh send, before the agent minted the
+    // run-id). Neither present means there is nothing to route to.
+    if (!runId && !inputCodecMessageId) {
+      this._logger.warn('AgentTransport._handleCancelMessage(); missing run-id and input-codec-message-id', {
+        serial: msg.serial,
+      });
+      return;
+    }
+
+    // Primary path — match by run-id (continuations, whose run-id the client
+    // already knows). Resolve the input-codec-message-id to a run-id when the
+    // run-id wasn't supplied (a fresh-send cancel whose target run has already
+    // opened with that input, so the linkage exists).
+    const resolvedRunId =
+      runId ?? (inputCodecMessageId ? this._runIdByInputCodecMessageId.get(inputCodecMessageId) : undefined);
+    const reg = resolvedRunId ? this._registeredRuns.get(resolvedRunId) : undefined;
+
+    if (!reg) {
+      // The run isn't known yet. A fresh-send cancel can race ahead of the
+      // `openRun` that establishes the input-codec-message-id → run linkage —
+      // buffer it by input-codec-message-id so `openRun` can pull and honour
+      // it. A run-id cancel can likewise race a durable continuation's
+      // `openRun` (the client knows the run-id before this process registers
+      // it), so buffer that by run-id the same way.
+      if (inputCodecMessageId !== undefined) {
+        this._bufferDeferredCancel(inputCodecMessageId, msg);
+      } else if (runId !== undefined) {
+        const evicted = evictOldestIfFull(this._deferredCancelsByRunId, runId, DEFERRED_CANCEL_LIMIT);
+        if (evicted !== undefined) {
+          this._logger.warn(
+            'AgentTransport._handleCancelMessage(); deferred run-id cancel buffer full, dropping oldest',
+            {
+              evictedRunId: evicted,
+              limit: DEFERRED_CANCEL_LIMIT,
+            },
+          );
+        }
+        this._deferredCancelsByRunId.set(runId, msg);
+        this._logger.debug('AgentTransport._handleCancelMessage(); buffered early run-id cancel', {
+          runId,
+          serial: msg.serial,
+        });
+      }
+      return;
+    }
+
+    await this._cancelRegistration(reg, msg);
+  }
+
+  /**
+   * Build the terminal-state error every post-`close()` call rejects with.
+   * @param method - The method name being guarded, for the error message.
+   * @returns The error.
+   */
+  private _closedError(method: string): Ably.ErrorInfo {
+    return new Ably.ErrorInfo(`unable to ${method}; transport is closed`, ErrorCode.SessionClosed, 400);
+  }
+
+  /**
+   * Guard a verb: reject once closed, and require a successful `connect()`
+   * (the shared guard supplies the retry guidance on a failed one).
+   * @param method - The method name being guarded, for the error message.
+   */
+  private async _requireOpen(method: string): Promise<void> {
+    if (this._closed) throw this._closedError(method);
+    await this._connectGuard.requireConnected(method);
+  }
+}
+
+/**
+ * Create a standalone {@link AgentTransport} over a channel and codec.
+ * Composes the run-manager lifecycle publisher and the run-step-writer output
+ * path, so a developer can drive agent runs while folding the channel's
+ * events into their own state. Construction is synchronous and passive;
+ * {@link AgentTransport.connect} subscribes the transport's listener and
+ * attaches the channel, after which live events flow, cancels route onto run
+ * handles, and the run/history surface opens.
+ * @template TInput - The codec's input-event domain type.
+ * @template TOutput - The codec's output-event domain type.
+ * @param options - See {@link AgentTransportOptions}.
+ * @returns The agent transport.
+ */
+export const createAgentTransport = <TInput, TOutput>(
+  options: AgentTransportOptions<TInput, TOutput>,
+): AgentTransport<TInput, TOutput> => new DefaultAgentTransport(options);

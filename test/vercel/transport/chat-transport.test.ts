@@ -253,7 +253,7 @@ describe('ChatTransport', () => {
       const { chat } = setup();
 
       await expect(chat.sendMessages(sendOptions([userMessage('u1', 'hi')]))).rejects.toBeErrorInfo({
-        code: ErrorCode.SendFailed,
+        code: ErrorCode.SessionSendFailed,
         statusCode: 500,
         message: 'unable to send; chat request failed with status 500',
       });
@@ -836,7 +836,7 @@ describe('ChatTransport', () => {
       // the closed error before anything reaches the wire.
       fake.emit(runEndEvent('run-1'));
       await expect(chat.sendMessages(sendOptions([userMessage('u2', 'again')]))).rejects.toBeErrorInfo({
-        code: ErrorCode.TransportClosed,
+        code: ErrorCode.SessionClosed,
         statusCode: 400,
         message: 'unable to send; the chat transport is closed',
       });

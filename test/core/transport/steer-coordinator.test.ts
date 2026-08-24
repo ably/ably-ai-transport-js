@@ -144,8 +144,8 @@ describe('SteerCoordinator', () => {
       const { coord, closed } = h;
       closed.value = true;
       const { published, outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
-      await expect(published).rejects.toBeErrorInfoWithCode(ErrorCode.TransportClosed);
-      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.TransportClosed);
+      await expect(published).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
       expect(h.publishCalls).toHaveLength(0);
     });
 
@@ -164,8 +164,8 @@ describe('SteerCoordinator', () => {
       // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock that returns a pre-built rejection
       publishImpl.fn = () => Promise.reject(new Error('network'));
       const { published, outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
-      await expect(published).rejects.toBeErrorInfoWithCode(ErrorCode.SendFailed);
-      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.SendFailed);
+      await expect(published).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSendFailed);
+      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.SessionSendFailed);
     });
   });
 
@@ -325,7 +325,7 @@ describe('SteerCoordinator', () => {
       const id = lastSteerCodecMessageId(h);
       coord.observeMessage(ablyMsg('ai-input', { [HEADER_CODEC_MESSAGE_ID]: id }));
       coord.drainClosed();
-      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.TransportClosed);
+      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
     });
 
     it('settles pending-echo published with undefined and rejects outcome with TransportClosed', async () => {
@@ -334,7 +334,7 @@ describe('SteerCoordinator', () => {
       await flush();
       coord.drainClosed();
       await expect(published).resolves.toEqual({ serial: undefined });
-      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.TransportClosed);
+      await expect(outcome).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
     });
   });
 });

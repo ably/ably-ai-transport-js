@@ -212,3 +212,39 @@ export const createReceiveTransport = <TInput, TOutput>(
   decoder: Decoder<TInput, TOutput>,
   logger: Logger,
 ): ReceiveTransport<TInput, TOutput> => new DefaultReceiveTransport(decoder, logger);
+
+/**
+ * Build a `TransportReceiver.on` that forwards to `receiver` — the one place
+ * the overload-dispatch switch lives, shared by both transports' public `on`.
+ * @param receiver - The receiver to forward subscriptions to.
+ * @returns The forwarding `on`, carrying the receiver's own overloads.
+ */
+export const forwardReceiverOn = <TInput, TOutput>(
+  receiver: TransportReceiver<TInput, TOutput>,
+): TransportReceiver<TInput, TOutput>['on'] => {
+  const on = (
+    event: 'event' | 'ably-message' | 'error',
+    handler:
+      | ((e: TransportEvent<TInput, TOutput>) => void)
+      | ((msg: Ably.InboundMessage) => void)
+      | ((err: Ably.ErrorInfo) => void),
+  ): (() => void) => {
+    switch (event) {
+      case 'event': {
+        // CAST: the public overloads pair each event name with its handler
+        // type; TypeScript cannot correlate the union members in the
+        // implementation signature.
+        return receiver.on(event, handler as (e: TransportEvent<TInput, TOutput>) => void);
+      }
+      case 'ably-message': {
+        // CAST: see the 'event' case.
+        return receiver.on(event, handler as (msg: Ably.InboundMessage) => void);
+      }
+      case 'error': {
+        // CAST: see the 'event' case.
+        return receiver.on(event, handler as (err: Ably.ErrorInfo) => void);
+      }
+    }
+  };
+  return on;
+};

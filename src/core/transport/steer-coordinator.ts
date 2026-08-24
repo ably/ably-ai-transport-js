@@ -200,7 +200,7 @@ export class SteerCoordinator<TInput> {
       }
 
       if (this._isTransportClosed()) {
-        const err = new Ably.ErrorInfo('unable to steer; transport is closed', ErrorCode.TransportClosed, 400);
+        const err = new Ably.ErrorInfo('unable to steer; transport is closed', ErrorCode.SessionClosed, 400);
         rejectPublished(err);
         rejectOutcome(err);
         return;
@@ -241,7 +241,7 @@ export class SteerCoordinator<TInput> {
           isPermission
             ? `unable to publish steer; missing publish capability on the channel`
             : `unable to publish steer; ${errorMessage(error)}`,
-          isPermission ? ErrorCode.InsufficientCapability : ErrorCode.SendFailed,
+          isPermission ? ErrorCode.InsufficientCapability : ErrorCode.SessionSendFailed,
           isPermission ? 401 : 500,
           cause,
         );
@@ -367,7 +367,7 @@ export class SteerCoordinator<TInput> {
     if (this._inflightSteers.size > 0) {
       const closedErr = new Ably.ErrorInfo(
         'unable to await steer outcome; transport is closed',
-        ErrorCode.TransportClosed,
+        ErrorCode.SessionClosed,
         400,
       );
       for (const bucket of this._inflightSteers.values()) {
@@ -378,7 +378,7 @@ export class SteerCoordinator<TInput> {
     if (this._pendingEchoes.size > 0) {
       const echoClosedErr = new Ably.ErrorInfo(
         'unable to await steer publish; transport is closed',
-        ErrorCode.TransportClosed,
+        ErrorCode.SessionClosed,
         400,
       );
       for (const entry of this._pendingEchoes.values()) {

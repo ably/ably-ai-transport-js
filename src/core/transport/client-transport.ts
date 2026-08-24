@@ -43,9 +43,8 @@ import type { Decoder, WireCodec } from '../codec/types.js';
 import { buildCancelMessage } from './cancel-envelope.js';
 import { ConnectGuard, continuityLostError, isContinuityLost, subscribeAndAttach } from './channel-support.js';
 import { buildTransportHeaders } from './headers.js';
-import { walkHistoryBatch } from './history-walk.js';
-import { type HistoryPagesCursor, loadHistoryPages } from './load-history-pages.js';
-import { createReceiveTransport, type ReceiveTransport } from './receive-transport.js';
+import { DEFAULT_HISTORY_PAGE_SIZE, HistoryPager } from './history-pager.js';
+import { createReceiveTransport, forwardReceiverOn, type ReceiveTransport } from './receive-transport.js';
 import { SteerCoordinator } from './steer-coordinator.js';
 import type { SteerResult } from './types/steer.js';
 import type {
@@ -55,16 +54,9 @@ import type {
   TransportEvent,
   TransportHistoryOptions,
   TransportHistoryResult,
+  TransportReceiver,
 } from './types/transport.js';
 import { wireMetaFromLocalEcho } from './wire-meta.js';
-
-/**
- * Default wire-message limit per Ably history page, used when
- * {@link ClientTransportOptions.historyPageSize} is unset. Over-provisions for
- * the many-Ably-messages-per-domain-message ratio so a single round trip
- * usually covers several domain messages.
- */
-const DEFAULT_HISTORY_PAGE_SIZE = 100;
 
 /**
  * Options for {@link createClientTransport}.
@@ -125,6 +117,8 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
   /** The one decoder shared by the live fold and the history scan, so a stream spanning the attach boundary is never double-decoded. */
   private readonly _decoder: Decoder<TInput, TOutput>;
   private readonly _receiver: ReceiveTransport<TInput, TOutput>;
+  /** The public `on`, forwarding to the receiver via the shared dispatch. */
+  readonly on: TransportReceiver<TInput, TOutput>['on'];
   private readonly _connectGuard = new ConnectGuard();
   /** The channel listener — one bound reference so `close()` can unsubscribe it. */
   private readonly _onMessage: (message: Ably.InboundMessage) => void;
@@ -152,19 +146,8 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
    */
   private _hasAttachedOnce: boolean;
   private _closed = false;
-  /**
-   * The shared backward history cursor, opened lazily on the first `history()`
-   * call (capturing the attach serial then) and advanced by one caller at a
-   * time under {@link _historyTail}.
-   */
-  private _historyCursor: HistoryPagesCursor | undefined;
-  /**
-   * Tail of the single-flight history chain. Each `history()` links behind the
-   * current tail so the cursor is never paged concurrently. A link's failure
-   * is its own to throw — the tail stores a settled void promise, so a
-   * follower is isolated from a prior link's rejection.
-   */
-  private _historyTail: Promise<void> = Promise.resolve();
+  /** The lazily opened, single-flight history pager behind {@link history}. Decode failures surface on the receive stream's `error`, matching the live fold. */
+  private readonly _historyPager: HistoryPager<TInput, TOutput>;
 
   constructor(options: ClientTransportOptions<TInput, TOutput>) {
     this._channel = options.channel;
@@ -176,6 +159,16 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     });
     this._decoder = this._codec.createDecoder();
     this._receiver = createReceiveTransport<TInput, TOutput>(this._decoder, this._logger);
+    this.on = forwardReceiverOn(this._receiver);
+    this._historyPager = new HistoryPager({
+      channel: this._channel,
+      pageSize: this._historyPageSize,
+      decoder: this._decoder,
+      logger: this._logger,
+      onDecodeError: (err) => {
+        this._receiver.emitError(err);
+      },
+    });
     this._onMessage = (message: Ably.InboundMessage) => {
       if (this._closed) return;
       // A failed decode drops the message (the receiver emitted `error`); its
@@ -225,34 +218,6 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
 
   subscribe(handler: (event: TransportEvent<TInput, TOutput>) => void): () => void {
     return this._receiver.on('event', handler);
-  }
-
-  on(event: 'event', handler: (e: TransportEvent<TInput, TOutput>) => void): () => void;
-  on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
-  on(event: 'error', handler: (err: Ably.ErrorInfo) => void): () => void;
-  on(
-    event: 'event' | 'ably-message' | 'error',
-    handler:
-      | ((e: TransportEvent<TInput, TOutput>) => void)
-      | ((msg: Ably.InboundMessage) => void)
-      | ((err: Ably.ErrorInfo) => void),
-  ): () => void {
-    switch (event) {
-      case 'event': {
-        // CAST: the public overloads pair each event name with its handler
-        // type; TypeScript cannot correlate the union members in the
-        // implementation signature.
-        return this._receiver.on(event, handler as (e: TransportEvent<TInput, TOutput>) => void);
-      }
-      case 'ably-message': {
-        // CAST: see the 'event' case.
-        return this._receiver.on(event, handler as (msg: Ably.InboundMessage) => void);
-      }
-      case 'error': {
-        // CAST: see the 'event' case.
-        return this._receiver.on(event, handler as (err: Ably.ErrorInfo) => void);
-      }
-    }
   }
 
   async publishInput(event: TInput, opts?: PublishInputOptions): Promise<PublishInputResult> {
@@ -325,7 +290,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
         isPermission
           ? 'unable to publish input; missing publish capability on the channel'
           : `unable to publish input; ${errorMessage(error)}`,
-        isPermission ? ErrorCode.InsufficientCapability : ErrorCode.SendFailed,
+        isPermission ? ErrorCode.InsufficientCapability : ErrorCode.SessionSendFailed,
         isPermission ? 401 : 500,
         cause,
       );
@@ -359,22 +324,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
   async history(opts?: TransportHistoryOptions): Promise<TransportHistoryResult<TInput, TOutput>> {
     this._logger.trace('ClientTransport.history();');
     await this._requireOpen('history');
-
-    // Link behind the tail so the shared cursor is advanced by one caller at a
-    // time; a prior link's failure is its own to throw.
-    const prev = this._historyTail;
-    const mine = (async (): Promise<TransportHistoryResult<TInput, TOutput>> => {
-      await prev;
-      return this._walkHistory(opts);
-    })();
-    this._historyTail = (async (): Promise<void> => {
-      try {
-        await mine;
-      } catch {
-        /* a link's failure is its own caller's to observe */
-      }
-    })();
-    return mine;
+    return this._historyPager.next(opts);
   }
 
   close(): void {
@@ -385,37 +335,6 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     this._channel.off(this._onChannelStateChange);
     this._steer.drainClosed();
     this._drainRunIdWatches(this._closedError('await run start'));
-  }
-
-  /**
-   * Fetch and classify the next older slice of channel history via the shared
-   * {@link walkHistoryBatch}, on the lazily opened cursor and the live
-   * stream's decoder. A decode failure is surfaced on the receive stream's
-   * `error`, matching the live fold.
-   * @param opts - The caller's batch bounds.
-   * @returns The batch of classified events and the exhaustion flag.
-   */
-  private async _walkHistory(
-    opts: TransportHistoryOptions | undefined,
-  ): Promise<TransportHistoryResult<TInput, TOutput>> {
-    if (this._historyCursor === undefined) {
-      this._historyCursor = await loadHistoryPages(this._channel, {
-        pageLimit: this._historyPageSize,
-        untilAttach: true,
-        logger: this._logger,
-      });
-    }
-    return walkHistoryBatch(
-      {
-        cursor: this._historyCursor,
-        decoder: this._decoder,
-        logger: this._logger,
-        onDecodeError: (err) => {
-          this._receiver.emitError(err);
-        },
-      },
-      opts,
-    );
   }
 
   /**
@@ -527,7 +446,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
    * @returns The error.
    */
   private _closedError(method: string): Ably.ErrorInfo {
-    return new Ably.ErrorInfo(`unable to ${method}; transport is closed`, ErrorCode.TransportClosed, 400);
+    return new Ably.ErrorInfo(`unable to ${method}; transport is closed`, ErrorCode.SessionClosed, 400);
   }
 }
 

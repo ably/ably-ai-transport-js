@@ -82,10 +82,9 @@ describe('defineCodec — decoder direction routing', () => {
 
     const { inputs, outputs } = decoder.decode(aiMessage(EVENT_AI_OUTPUT, { kind: 'quirky' }));
 
-    // The decoded event is { type: 'quirky', kind: 'looks-like-input' }. The old
-    // `'kind' in event` check would have placed it in `inputs`; routing by the wire
-    // name keeps it in `outputs`. The domain `kind` field is reconstructed by the
-    // data decoder and is distinct from the `kind` wire dispatch header.
+    // The decoded event is { type: 'quirky', kind: 'looks-like-input' }: a
+    // domain `kind` field must not be mistaken for the `kind` wire dispatch
+    // header — routing goes by the wire name, so this stays in `outputs`.
     expect(outputs).toEqual([{ type: 'quirky', kind: 'looks-like-input' }]);
     expect(inputs).toEqual([]);
   });
@@ -113,7 +112,7 @@ describe('defineCodec — decoder direction routing', () => {
 // Foreign messages
 //
 // An application may publish its own messages on a channel it shares with a
-// session — a chat message, a presence-adjacent notification, its own streamed
+// transport — a chat message, a presence-adjacent notification, its own streamed
 // content. None of it carries the SDK's wire names or `extras.ai` envelope, and
 // every action it can arrive under must decode to nothing.
 // ---------------------------------------------------------------------------

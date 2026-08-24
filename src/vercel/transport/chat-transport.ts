@@ -127,7 +127,7 @@ export interface ChatTransport<
    * hydration; live events observed before the call are held back and indexed
    * after the (strictly older) seed events, keeping the indices chronological.
    * Seeding is what stops a reloaded page from re-publishing a resolution an
-   * earlier session already published.
+   * earlier page load already published.
    *
    * Live indexing WAITS for this call, so an application that does no
    * hydration must still call `seed([])` once on mount — without it, the
@@ -844,7 +844,7 @@ class DefaultChatTransport<
     if (!response.ok) {
       throw new Ably.ErrorInfo(
         `unable to send; chat request failed with status ${String(response.status)}`,
-        ErrorCode.SessionSendFailed,
+        ErrorCode.SendFailed,
         response.status,
       );
     }
@@ -857,7 +857,7 @@ class DefaultChatTransport<
    * @returns The error.
    */
   private _closedError(): Ably.ErrorInfo {
-    return new Ably.ErrorInfo('unable to send; the chat transport is closed', ErrorCode.SessionClosed, 400);
+    return new Ably.ErrorInfo('unable to send; the chat transport is closed', ErrorCode.TransportClosed, 400);
   }
 }
 

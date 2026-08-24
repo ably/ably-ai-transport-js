@@ -1,17 +1,15 @@
 /**
- * createRunStepWriter unit tests — the Tree-decoupled write path.
+ * createRunStepWriter unit tests.
  *
- * The writer no longer touches a Tree. It seeds its optimistic step-start /
- * step-end through the injected `emitStepLifecycle` callback, and re-derives the
- * sticky `stepClientId` through the injected `getPriorStepClientId` callback.
- * These tests exercise both seams over a real {@link createRunManager} and a
- * minimal codec double, so a regression that re-couples the writer to a Tree (or
- * breaks the step-client-id ladder) is caught here rather than only through the
- * full agent-session suite.
+ * The writer seeds its optimistic step-start / step-end through the injected
+ * `emitStepLifecycle` callback and resolves each step's sticky `stepClientId`
+ * through its precedence ladder (explicit option, in-process cursor, then the
+ * triggering input's publisher). These tests exercise those seams over a real
+ * {@link createRunManager} and a minimal codec double.
  */
 
 import type * as Ably from 'ably';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import type { ChannelWriter, Encoder, EncoderOptions, WireCodec } from '../../../src/core/codec/types.js';
 import { createRunManager } from '../../../src/core/transport/run-manager.js';
@@ -48,12 +46,10 @@ const noAnchors = (): StepWriterAnchors => ({
 /**
  * Build a writer over a real run manager, capturing the emitted step events.
  * @param overrides - Optional seams to override for a given test.
- * @param overrides.getPriorStepClientId - Sticky step-client-id resolver for the run.
  * @param overrides.getAnchors - Step-writer anchors (parent, fork, input identity).
  * @returns The writer under test, the captured step events, and the mock channel.
  */
 const setup = (overrides?: {
-  getPriorStepClientId?: (runId: string) => string | undefined;
   getAnchors?: () => StepWriterAnchors;
 }): {
   writer: ReturnType<typeof createRunStepWriter<TestInput, TestOutput>>;
@@ -69,11 +65,6 @@ const setup = (overrides?: {
     channel,
     runManager: createRunManager(channel),
     emitStepLifecycle: (event) => emitted.push(event),
-    getPriorStepClientId:
-      overrides?.getPriorStepClientId ??
-      (() => {
-        /* default: no prior step, so nothing to inherit */
-      }),
     hooks: {},
     signal: new AbortController().signal,
     logger: undefined,
@@ -102,22 +93,8 @@ describe('createRunStepWriter', () => {
     expect(end).toMatchObject({ type: 'step-end', runId: 'run-1', stepStartSerial: 'serial-1', reason: 'complete' });
   });
 
-  it('inherits the sticky stepClientId from getPriorStepClientId when no explicit or cursor value', async () => {
-    const getPriorStepClientId = vi.fn(() => 'prior-client');
-    const { writer, emitted } = setup({ getPriorStepClientId });
-
-    await writer.pipe(streamOf<TestOutput>({ type: 'text', text: 'hi' }));
-
-    expect(getPriorStepClientId).toHaveBeenCalledWith('run-1');
-    expect(emitted[0]).toMatchObject({ type: 'step-start', stepClientId: 'prior-client' });
-    expect(emitted[1]).toMatchObject({ type: 'step-end', stepClientId: 'prior-client' });
-  });
-
   it('falls back to the triggering input publisher when no prior step exists', async () => {
     const { writer, emitted } = setup({
-      getPriorStepClientId: () => {
-        /* no prior step: forces the inputClientId fallback */
-      },
       getAnchors: () => ({ ...noAnchors(), inputClientId: 'input-client' }),
     });
 

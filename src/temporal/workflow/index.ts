@@ -64,8 +64,8 @@ export interface OpenRunOptions {
 /**
  * A handle on an open run, held in workflow state.
  *
- * Carries plain data plus calls that schedule activities. It never holds a live
- * Ably session — each activity builds and tears down its own.
+ * Carries plain data plus calls that schedule activities. It never holds a
+ * live Ably client — each activity builds and tears down its own.
  */
 export interface RunHandle {
   /** The run's identity, to thread through the application's own activities. */

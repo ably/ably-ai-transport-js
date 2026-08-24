@@ -120,16 +120,6 @@ export interface RunStepWriterContext<TInput, TOutput> {
    * @param event - The optimistic step-start / step-end event (its `serial` is `undefined`).
    */
   emitStepLifecycle(event: StepLifecycleEvent): void;
-  /**
-   * The sticky `stepClientId` to inherit for a run's next step: the
-   * `step-client-id` of the run's latest preceding step, re-derived from durable
-   * channel state. Backs the second rung of {@link resolveStepClientId}'s ladder
-   * so a fresh adopting process (whose in-process cursor is empty) still inherits
-   * the run's prior step's client rather than resetting to the default.
-   * @param runId - The run whose prior step's client to read.
-   * @returns The latest preceding step's client, or `undefined` when the run has no prior step yet.
-   */
-  getPriorStepClientId(runId: string): string | undefined;
   /** The run's callbacks — `onAblyMessage` (per published message), `onCancelled` (final write on cancel), `onError`. */
   hooks: OpenRunHooks<TOutput>;
   /** The run's composite abort signal (internal controller composed with any external signal). */
@@ -298,11 +288,7 @@ export const createRunStepWriter = <TInput, TOutput>(
    * cursor:
    *   1. an explicit {@link StepOptions.stepClientId} (the steer seam populates) wins;
    *   2. else inherit the prior step's client — STICKY — from the in-process
-   *      cursor (the provisioned/serverless fast-path), falling back to
-   *      re-deriving it from durable channel state
-   *      ({@link RunStepWriterContext.getPriorStepClientId}) so a fresh-process
-   *      step with no cursor still inherits the run's prior step's client rather
-   *      than resetting to the default;
+   *      cursor;
    *   3. else (no prior step — the run's FIRST step) default to the triggering
    *      input's publisher (`input-client-id`), NOT the run owner: the two coincide
    *      on a fresh turn but diverge on a non-owner continuation, and the input's
@@ -311,8 +297,7 @@ export const createRunStepWriter = <TInput, TOutput>(
    * @returns The resolved step client (empty string when nothing resolves a value).
    */
   const resolveStepClientId = (explicit?: string): string => {
-    const resolved =
-      explicit ?? lastStepClientId ?? ctx.getPriorStepClientId(ctx.getRunId()) ?? ctx.getAnchors().inputClientId ?? '';
+    const resolved = explicit ?? lastStepClientId ?? ctx.getAnchors().inputClientId ?? '';
     lastStepClientId = resolved;
     return resolved;
   };

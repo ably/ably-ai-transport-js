@@ -10,11 +10,7 @@ import { useEffect, useRef } from 'react';
 import type { TransportEvent } from '../core/transport/types.js';
 import { useClientTransport } from './use-client-transport.js';
 
-/**
- * Options for {@link useTransportEvents}.
- * @template TInput - The codec's input-event domain type.
- * @template TOutput - The codec's output-event domain type.
- */
+/** Options for {@link useTransportEvents}. */
 export interface UseTransportEventsOptions {
   /** The channel name of the provider whose transport to subscribe. Omit for the nearest provider. */
   channelName?: string;

@@ -74,7 +74,7 @@ const DEFAULT_HISTORY_PAGE_SIZE = 100;
 export interface ClientTransportOptions<TInput, TOutput> {
   /** The Ably channel to publish on and receive from. The transport subscribes its own listener on `connect()`; the channel itself stays caller-owned (never detached). */
   channel: Ably.RealtimeChannel;
-  /** The wire tier of the codec: its encoder serializes inputs to the wire and its decoder classifies inbound messages. Any full `Codec` satisfies it. */
+  /** The wire tier of the codec: its encoder serializes inputs to the wire and its decoder classifies inbound messages. */
   codec: WireCodec<TInput, TOutput>;
   /** The publishing client's Ably `clientId`, stamped as `run-client-id` on inputs. When omitted (anonymous), the header is not stamped and the local echo's `clientId` is `undefined`. */
   clientId?: string;
@@ -200,7 +200,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
         }
       },
       clientId: () => this._clientId,
-      isSessionClosed: () => this._closed,
+      isTransportClosed: () => this._closed,
       logger: this._logger,
     });
     this._hasAttachedOnce = this._channel.state === 'attached';
@@ -325,7 +325,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
         isPermission
           ? 'unable to publish input; missing publish capability on the channel'
           : `unable to publish input; ${errorMessage(error)}`,
-        isPermission ? ErrorCode.InsufficientCapability : ErrorCode.SessionSendFailed,
+        isPermission ? ErrorCode.InsufficientCapability : ErrorCode.SendFailed,
         isPermission ? 401 : 500,
         cause,
       );
@@ -527,7 +527,7 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
    * @returns The error.
    */
   private _closedError(method: string): Ably.ErrorInfo {
-    return new Ably.ErrorInfo(`unable to ${method}; transport is closed`, ErrorCode.SessionClosed, 400);
+    return new Ably.ErrorInfo(`unable to ${method}; transport is closed`, ErrorCode.TransportClosed, 400);
   }
 }
 

@@ -171,7 +171,7 @@ describe('createEncoderCore', () => {
     it('throws after close', async () => {
       const core = createEncoderCore(writer);
       await core.close();
-      await expect(core.publishDiscrete(payload())).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+      await expect(core.publishDiscrete(payload())).rejects.toBeErrorInfoWithCode(ErrorCode.TransportClosed);
     });
   });
 
@@ -205,7 +205,7 @@ describe('createEncoderCore', () => {
     it('throws after close', async () => {
       const core = createEncoderCore(writer);
       await core.close();
-      await expect(core.publishDiscreteBatch([payload()])).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+      await expect(core.publishDiscreteBatch([payload()])).rejects.toBeErrorInfoWithCode(ErrorCode.TransportClosed);
     });
   });
 
@@ -234,7 +234,7 @@ describe('createEncoderCore', () => {
     it('throws after close', async () => {
       const core = createEncoderCore(writer);
       await core.close();
-      await expect(core.startStream('s1', streamPayload())).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+      await expect(core.startStream('s1', streamPayload())).rejects.toBeErrorInfoWithCode(ErrorCode.TransportClosed);
     });
   });
 
@@ -264,7 +264,7 @@ describe('createEncoderCore', () => {
       await core.close();
       expect(() => {
         core.appendStream('s1', 'data');
-      }).toThrowErrorInfoWithCode(ErrorCode.SessionClosed);
+      }).toThrowErrorInfoWithCode(ErrorCode.TransportClosed);
     });
   });
 
@@ -306,7 +306,7 @@ describe('createEncoderCore', () => {
       const core = createEncoderCore(writer);
       await core.startStream('s1', streamPayload({ name: 'text' }));
       await core.close();
-      await expect(core.closeStream('s1', streamPayload())).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+      await expect(core.closeStream('s1', streamPayload())).rejects.toBeErrorInfoWithCode(ErrorCode.TransportClosed);
     });
   });
 
@@ -355,7 +355,7 @@ describe('createEncoderCore', () => {
     it('rejects after close', async () => {
       const core = createEncoderCore(writer);
       await core.close();
-      await expect(core.cancelAllStreams()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+      await expect(core.cancelAllStreams()).rejects.toBeErrorInfoWithCode(ErrorCode.TransportClosed);
     });
   });
 
@@ -499,8 +499,8 @@ describe('createEncoderCore', () => {
 
       await expect(core.close()).rejects.toBeErrorInfoWithCode(ErrorCode.StreamedMessageFinalizeFailed);
 
-      // Encoder should still be closed — further writes throw SessionClosed
-      await expect(core.publishDiscrete(payload())).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+      // Encoder should still be closed — further writes throw TransportClosed
+      await expect(core.publishDiscrete(payload())).rejects.toBeErrorInfoWithCode(ErrorCode.TransportClosed);
     });
 
     it('attaches the first recovery failure as cause when flush recovery fails', async () => {

@@ -5,9 +5,9 @@
  *
  * These tests instantiate a concrete `AbstractChat` subclass (what useChat
  * wraps) whose message state is mutated ONLY by the Chat's own state
- * callbacks, and drive the three paths the old sync hook used to carry: a
- * fresh send, a tool-continuation resume, and a reload with a run still in
- * flight (`resumeStream` → `reconnectToStream`).
+ * callbacks, and drive the adapter's three send-side paths: a fresh send, a
+ * tool-continuation resume, and a reload with a run still in flight
+ * (`resumeStream` → `reconnectToStream`).
  */
 
 import type * as AI from 'ai';

@@ -76,12 +76,12 @@ export enum ErrorCode {
    * An operation was attempted on a transport or encoder that has already
    * been closed.
    */
-  SessionClosed = 104004,
+  TransportClosed = 104004,
 
   /**
    * A send failed — the channel publish of an input or steer failed.
    */
-  SessionSendFailed = 104005,
+  SendFailed = 104005,
 
   /**
    * The Ably channel lost message continuity — after its initial attach, the
@@ -90,12 +90,6 @@ export enum ErrorCode {
    * all events.
    */
   SessionContinuityNotGuaranteed = 104006,
-
-  /**
-   * An operation was attempted but the channel is not in a usable state
-   * (not ATTACHED or ATTACHING).
-   */
-  SessionChannelNotReady = 104007,
 
   /**
    * An error occurred while piping a response stream to the channel — either

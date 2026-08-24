@@ -165,7 +165,7 @@ describe('subscribeAndAttach', () => {
     const onError = vi.fn();
 
     await expect(
-      subscribeAndAttach(channel, noopListener, silentLogger, 'DefaultClientSession', onError),
+      subscribeAndAttach(channel, noopListener, silentLogger, 'ClientTransport', onError),
     ).resolves.toBeUndefined();
     expect(subscribe).toHaveBeenCalledWith(noopListener);
     // attach() is forced after subscribe: subscribe's implicit attach can resolve
@@ -182,7 +182,7 @@ describe('subscribeAndAttach', () => {
     const channel = { subscribe, attach, unsubscribe: vi.fn() } as unknown as Ably.RealtimeChannel;
     const onError = vi.fn();
 
-    const rejection = subscribeAndAttach(channel, noopListener, silentLogger, 'DefaultAgentSession', onError);
+    const rejection = subscribeAndAttach(channel, noopListener, silentLogger, 'AgentTransport', onError);
     await expect(rejection).rejects.toBeErrorInfo({
       code: ErrorCode.SessionSubscriptionFailed,
       statusCode: 500,
@@ -203,7 +203,7 @@ describe('subscribeAndAttach', () => {
     const channel = { subscribe, attach, unsubscribe: vi.fn() } as unknown as Ably.RealtimeChannel;
     const onError = vi.fn();
 
-    const rejection = subscribeAndAttach(channel, noopListener, silentLogger, 'DefaultClientSession', onError);
+    const rejection = subscribeAndAttach(channel, noopListener, silentLogger, 'ClientTransport', onError);
     await expect(rejection).rejects.toBeErrorInfo({
       code: ErrorCode.SessionSubscriptionFailed,
       statusCode: 500,
@@ -220,7 +220,7 @@ describe('subscribeAndAttach', () => {
     const attach = vi.fn<() => Promise<void>>().mockReturnValue(Promise.resolve());
     const channel = { subscribe, attach, unsubscribe } as unknown as Ably.RealtimeChannel;
 
-    await subscribeAndAttach(channel, noopListener, silentLogger, 'DefaultClientSession', vi.fn());
+    await subscribeAndAttach(channel, noopListener, silentLogger, 'ClientTransport', vi.fn());
 
     expect(unsubscribe).toHaveBeenCalledWith(noopListener);
     // The unsubscribe runs before the (re-)subscribe. Default to 0 so an

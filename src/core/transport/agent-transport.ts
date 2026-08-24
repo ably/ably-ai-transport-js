@@ -25,10 +25,9 @@
  * context for an inference call.
  *
  * The transport holds no conversation state, so the sticky `step-client-id`
- * inheritance relies solely on the writer's in-process cursor
- * (`getPriorStepClientId` returns `undefined`), and the optimistic
- * step-lifecycle seed a run's output verbs produce is emitted on the
- * transport's own receive stream.
+ * inheritance relies solely on the writer's in-process cursor, and the
+ * optimistic step-lifecycle seed a run's output verbs produce is emitted on
+ * the transport's own receive stream.
  */
 
 import * as Ably from 'ably';
@@ -137,7 +136,7 @@ interface RegisteredRun {
 export interface AgentTransportOptions<TInput, TOutput> {
   /** The Ably channel to publish run/step lifecycle and output on, and to receive cancel and steering signals from. The transport subscribes its own listener on `connect()`; the channel itself stays caller-owned (never detached). */
   channel: Ably.RealtimeChannel;
-  /** The wire tier of the codec: its encoder serializes output and its decoder classifies the live receive stream, {@link AgentTransport.locateInput}, and {@link AgentTransport.history}. Any full `Codec` satisfies it. */
+  /** The wire tier of the codec: its encoder serializes output and its decoder classifies the live receive stream, {@link AgentTransport.locateInput}, and {@link AgentTransport.history}. */
   codec: WireCodec<TInput, TOutput>;
   /** The agent's Ably `clientId`, stamped as `run-client-id` on the run's lifecycle and output. The run manager stamps an empty string when omitted. */
   clientId?: string;
@@ -391,7 +390,7 @@ export const createAgentTransport = <TInput, TOutput>(
    * @returns The error.
    */
   const closedError = (method: string): Ably.ErrorInfo =>
-    new Ably.ErrorInfo(`unable to ${method}; transport is closed`, ErrorCode.SessionClosed, 400);
+    new Ably.ErrorInfo(`unable to ${method}; transport is closed`, ErrorCode.TransportClosed, 400);
 
   /**
    * Guard a verb: reject once closed, and require a successful `connect()`
@@ -670,13 +669,12 @@ export const createAgentTransport = <TInput, TOutput>(
       await connectGuard.requireConnected('openRun');
       if (params.open === 'adopt') {
         // Attach-without-publishing: seed the run manager's owner entry so
-        // output and terminals stamp the real run-client-id and close() aborts
-        // the controller, but put nothing on the wire — the caller publishes
-        // only what it means to publish.
-        runManager.registerRun(runId, clientId, controller);
+        // output and terminals stamp the real run-client-id, but put nothing
+        // on the wire — the caller publishes only what it means to publish.
+        runManager.registerRun(runId, clientId);
         return;
       }
-      await runManager.startRun(runId, clientId, controller, {
+      await runManager.startRun(runId, clientId, {
         parent: params.parent,
         forkOf: params.forkOf,
         regenerates: params.regenerates,
@@ -701,7 +699,7 @@ export const createAgentTransport = <TInput, TOutput>(
       if (!onError) return;
       const errInfo = new Ably.ErrorInfo(
         `unable to open run ${runId}; ${errorMessage(error)}`,
-        ErrorCode.SessionSendFailed,
+        ErrorCode.SendFailed,
         500,
         errorCause(error),
       );
@@ -729,12 +727,6 @@ export const createAgentTransport = <TInput, TOutput>(
       // before the wire echo and reconciles it by `stepStartSerial`.
       emitStepLifecycle: (event) => {
         receiver.emitEvent({ kind: 'step-lifecycle', event });
-      },
-      // The transport keeps no durable state to re-derive a run's prior step
-      // client from: sticky inheritance rests entirely on the writer's
-      // in-process `lastStepClientId` cursor.
-      getPriorStepClientId: () => {
-        /* no durable state, no prior step client */
       },
       // The caller's per-run hooks, `onError` included: the writer fires it
       // with a wrapped pipe stream failure alongside the `StreamResult.error`
@@ -861,7 +853,7 @@ export const createAgentTransport = <TInput, TOutput>(
         // A pure re-entry signal: republish `ai-run-resume` under the same run-id
         // with no structure headers (continuation). The gate re-opens only once
         // the publish succeeds, so a failed resume leaves the run suspended.
-        await runManager.startRun(runId, clientId, controller, { invocationId, continuation: true });
+        await runManager.startRun(runId, clientId, { invocationId, continuation: true });
         state = 'open';
       },
       end: async (params: RunEndParams): Promise<void> => {

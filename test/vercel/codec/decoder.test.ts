@@ -240,7 +240,7 @@ describe('Vercel decoder', () => {
 
   // -- foreign messages -----------------------------------------------------
   //
-  // An application sharing the session's channel publishes its own messages
+  // An application sharing the transport's channel publishes its own messages
   // there. They carry neither the SDK's wire names nor its `extras.ai`
   // envelope, and must decode to nothing without disturbing a live stream.
 

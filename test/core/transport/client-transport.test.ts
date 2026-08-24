@@ -1,6 +1,5 @@
 /**
- * createClientTransport unit tests — the self-contained, Tree-free client
- * transport.
+ * createClientTransport unit tests — the self-contained client transport.
  *
  * The transport owns its receive path: `connect()` subscribes its listener and
  * attaches the channel, live wires classify onto the `subscribe`/`on('event')`
@@ -519,7 +518,7 @@ describe('createClientTransport', () => {
 
       fixture.transport.close();
 
-      await expect(sent.runId).rejects.toMatchObject({ code: ErrorCode.SessionClosed });
+      await expect(sent.runId).rejects.toMatchObject({ code: ErrorCode.TransportClosed });
     });
 
     it('rejects a pending runId on channel continuity loss', async () => {
@@ -751,13 +750,13 @@ describe('createClientTransport', () => {
       expect(events).toHaveLength(0);
 
       await expect(transport.publishInput({ kind: 'user-message', content: 'hi' })).rejects.toMatchObject({
-        code: ErrorCode.SessionClosed,
+        code: ErrorCode.TransportClosed,
       });
-      await expect(transport.connect()).rejects.toMatchObject({ code: ErrorCode.SessionClosed });
-      await expect(transport.history()).rejects.toMatchObject({ code: ErrorCode.SessionClosed });
+      await expect(transport.connect()).rejects.toMatchObject({ code: ErrorCode.TransportClosed });
+      await expect(transport.history()).rejects.toMatchObject({ code: ErrorCode.TransportClosed });
       const steer = transport.steer('run-1', { kind: 'user-message', content: 'go' });
-      await expect(steer.published).rejects.toMatchObject({ code: ErrorCode.SessionClosed });
-      await expect(steer.outcome).rejects.toMatchObject({ code: ErrorCode.SessionClosed });
+      await expect(steer.published).rejects.toMatchObject({ code: ErrorCode.TransportClosed });
+      await expect(steer.outcome).rejects.toMatchObject({ code: ErrorCode.TransportClosed });
     });
 
     it('drains an in-flight steer outcome and removes the channel state listener', async () => {
@@ -771,7 +770,7 @@ describe('createClientTransport', () => {
 
       transport.close();
 
-      await expect(result.outcome).rejects.toMatchObject({ code: ErrorCode.SessionClosed });
+      await expect(result.outcome).rejects.toMatchObject({ code: ErrorCode.TransportClosed });
       expect(channel.stateListeners.size).toBe(0);
     });
   });

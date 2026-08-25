@@ -1,11 +1,11 @@
 /**
- * createAgentTransport unit tests — the standalone, Tree-free agent transport.
+ * createAgentTransport unit tests — the standalone agent transport.
  *
  * The transport owns its receive path: `connect()` subscribes its listener and
  * attaches the channel, after which live wires classify onto the
  * `subscribe`/`on('event')` stream and `ai-cancel` envelopes route onto the
  * matching run handle's `abortSignal` (by run-id, by the triggering input's
- * codec-message-id, or from the deferred buffer when the cancel beat its
+ * transport-message-id, or from the deferred buffer when the cancel beat its
  * `openRun`). `openRun` publishes `ai-run-start` (or `ai-run-resume` for a
  * continuation) and returns a run handle whose `pipe` / `createStep` stream
  * output between an `ai-step-start` / `ai-step-end` bracket; the writer's
@@ -18,9 +18,9 @@
  * wiring: no live emission, a cursor kept across calls, and decode failures
  * routed onto `error`. A steering message — a client input under an open
  * run's run-id — routes onto the run's steer tracking (`hasInput()`, the
- * `onSteer` hint, and the `steer-codec-message-ids` stamp on the next step
+ * `onSteer` hint, and the `steer-transport-message-ids` stamp on the next step
  * attempt), buffering pre-open arrivals; the run's terminal (`ai-run-end` /
- * `ai-run-suspend`) carries the `input-codec-message-ids` receipt naming the
+ * `ai-run-suspend`) carries the `input-transport-message-ids` receipt naming the
  * trigger and every stamped steer once the run has produced output.
  * `close()` unsubscribes and is terminal. These tests pin that
  * contract against a mock channel and a minimal codec double, driving the
@@ -32,24 +32,24 @@ import { describe, expect, it } from 'vitest';
 
 import {
   EVENT_CANCEL,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_EVENT_ID,
-  HEADER_INPUT_CODEC_MESSAGE_ID,
-  HEADER_INPUT_CODEC_MESSAGE_IDS,
+  HEADER_INPUT_TRANSPORT_MESSAGE_ID,
+  HEADER_INPUT_TRANSPORT_MESSAGE_IDS,
   HEADER_INVOCATION_ID,
-  HEADER_PARENT,
   HEADER_RUN_ID,
-  HEADER_STEER_CODEC_MESSAGE_IDS,
+  HEADER_STEER_TRANSPORT_MESSAGE_IDS,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../../src/constants.js';
 import type { ChannelWriter, Decoder, Encoder, EncoderOptions, WireCodec } from '../../../src/core/codec/types.js';
 import { createAgentTransport } from '../../../src/core/transport/agent-transport.js';
-import type { CancelRequest, TransportEvent } from '../../../src/core/transport/types.js';
+import type { CancelRequest, LocatedInput, TransportEvent } from '../../../src/core/transport/types.js';
+import { wireMetaFromMessage } from '../../../src/core/transport/wire-meta.js';
 import { ErrorCode } from '../../../src/errors.js';
 import { getTransportHeaders } from '../../../src/utils.js';
 import { createMockChannel, type MockChannel } from '../../helper/mock-channel.js';
 import { createMockEncoder } from '../../helper/mock-encoder.js';
 import { flushMicrotasks, pausedStream, streamOf } from '../../helper/streams.js';
-import { boomMsg, outputMsg } from '../../helper/wire-messages.js';
+import { boomMsg, inboundMessage, outputMsg } from '../../helper/wire-messages.js';
 
 interface TestInput {
   kind: string;
@@ -99,12 +99,23 @@ const wireMsg = (headers: Record<string, string>): Ably.InboundMessage =>
   }) as unknown as Ably.InboundMessage;
 
 /**
+ * Build a {@link LocatedInput} whose meta carries the given transport headers —
+ * the located-input fixture the openRun tests hand to the transport.
+ * @param transport - The transport-tier headers on the input's wire message.
+ * @returns The located input.
+ */
+const locatedInput = (transport: Record<string, string>): LocatedInput<unknown> => ({
+  meta: wireMetaFromMessage(inboundMessage({ name: 'ai-input', transport, serial: 'trigger-serial' })),
+  inputs: [],
+});
+
+/**
  * Build an inbound `ai-cancel` envelope carrying the given transport headers.
  * @param headers - The transport-tier headers naming the cancel's target.
  * @returns The wire message.
  */
 const cancelMsg = (headers: Record<string, string>): Ably.InboundMessage =>
-  // CAST: cancels route by header; the fold reads name/extras/version only.
+  // CAST: cancels route by header; the merge reads name/extras/version only.
   ({
     name: EVENT_CANCEL,
     action: 'message.create',
@@ -115,32 +126,32 @@ const cancelMsg = (headers: Record<string, string>): Ably.InboundMessage =>
 /**
  * Build an inbound steering wire: a client input under a run's run-id.
  * @param runId - The run the steer targets.
- * @param codecMessageId - The steering message's codec-message-id.
+ * @param transportMessageId - The steering message's transport-message-id.
  * @returns The wire message.
  */
-const steerMsg = (runId: string, codecMessageId: string): Ably.InboundMessage =>
-  wireMsg({ [HEADER_RUN_ID]: runId, [HEADER_CODEC_MESSAGE_ID]: codecMessageId });
+const steerMsg = (runId: string, transportMessageId: string): Ably.InboundMessage =>
+  wireMsg({ [HEADER_RUN_ID]: runId, [HEADER_TRANSPORT_MESSAGE_ID]: transportMessageId });
 
 /**
  * Read the steer stamp the writer put on a published output message.
  * @param message - The message the per-run `onAblyMessage` hook observed.
- * @returns The raw `steer-codec-message-ids` header, or `undefined`.
+ * @returns The raw `steer-transport-message-ids` header, or `undefined`.
  */
 const steerStampOf = (message: Ably.Message): string | undefined =>
   // CAST: the hook observes the outbound message; only its extras are read.
-  getTransportHeaders(message as Ably.InboundMessage)[HEADER_STEER_CODEC_MESSAGE_IDS];
+  getTransportHeaders(message as Ably.InboundMessage)[HEADER_STEER_TRANSPORT_MESSAGE_IDS];
 
 /**
  * Read the input receipt off a published run lifecycle message.
  * @param channel - The mock channel that captured the publish.
  * @param name - The lifecycle message name (`ai-run-end` or `ai-run-suspend`).
- * @returns The raw `input-codec-message-ids` header, or `undefined`.
+ * @returns The raw `input-transport-message-ids` header, or `undefined`.
  */
 const receiptOf = (channel: MockChannel, name: string): string | undefined => {
   const msg = channel.publishCalls.find((m) => m.name === name);
   if (!msg) throw new Error(`expected ${name}`);
   // CAST: the mock captured the outbound message; only its extras are read.
-  return getTransportHeaders(msg as Ably.InboundMessage)[HEADER_INPUT_CODEC_MESSAGE_IDS];
+  return getTransportHeaders(msg as Ably.InboundMessage)[HEADER_INPUT_TRANSPORT_MESSAGE_IDS];
 };
 
 /**
@@ -271,36 +282,38 @@ describe('createAgentTransport', () => {
       expect(channel.publishNames()).not.toContain('ai-run-end');
     });
 
-    it('routes a fresh-send cancel by the triggering input codec-message-id', async () => {
+    it('drops a cancel that names no run-id — the wire addresses runs by run-id only', async () => {
       const { transport, channel } = await setup();
 
-      const run = transport.openRun({ inputCodecMessageId: 'in-1' });
-      channel.listener?.(cancelMsg({ [HEADER_INPUT_CODEC_MESSAGE_ID]: 'in-1' }));
+      const run = transport.openRun({ inputTransportMessageId: 'in-1' });
+      channel.listener?.(cancelMsg({ [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: 'in-1' }));
       await flushMicrotasks();
 
-      expect(run.abortSignal.aborted).toBe(true);
+      expect(run.abortSignal.aborted).toBe(false);
     });
 
-    it('honours a cancel buffered before its openRun', async () => {
+    it('buffers a bare run-id cancel until the run opens — a durable continuation race', async () => {
       const { transport, channel } = await setup();
 
-      channel.listener?.(cancelMsg({ [HEADER_INPUT_CODEC_MESSAGE_ID]: 'in-1' }));
-      await flushMicrotasks();
-      const run = transport.openRun({ inputCodecMessageId: 'in-1' });
-      await flushMicrotasks();
-
-      expect(run.abortSignal.aborted).toBe(true);
-    });
-
-    it('does not buffer a bare run-id cancel for an unknown run', async () => {
-      const { transport, channel } = await setup();
-
+      // The client knows a continuation's run-id before this process's
+      // openRun registers it, so the cancel can land in between.
       channel.listener?.(cancelMsg({ [HEADER_RUN_ID]: 'run-later' }));
       await flushMicrotasks();
       const run = transport.openRun({ runId: 'run-later' });
       await flushMicrotasks();
 
-      expect(run.abortSignal.aborted).toBe(false);
+      expect(run.abortSignal.aborted).toBe(true);
+    });
+
+    it('does not carry a buffered run-id cancel across to a later run under a different id', async () => {
+      const { transport, channel } = await setup();
+
+      channel.listener?.(cancelMsg({ [HEADER_RUN_ID]: 'run-later' }));
+      await flushMicrotasks();
+      const other = transport.openRun({ runId: 'run-other' });
+      await flushMicrotasks();
+
+      expect(other.abortSignal.aborted).toBe(false);
     });
 
     it('leaves the run running when onCancel returns false', async () => {
@@ -355,6 +368,75 @@ describe('createAgentTransport', () => {
       expect(run.abortSignal.aborted).toBe(false);
       expect(errors).toHaveLength(1);
       expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.RunCancelHandlerFailed);
+    });
+
+    it("routes a throwing onCancel to the run's onError instead of the error stream", async () => {
+      const { transport, channel, errors } = await setup();
+      const runErrors: Ably.ErrorInfo[] = [];
+
+      const run = transport.openRun(
+        { runId: 'run-1' },
+        {
+          // eslint-disable-next-line @typescript-eslint/require-await -- mock hook
+          onCancel: async () => {
+            throw new Error('hook blew up');
+          },
+          onError: (error) => runErrors.push(error),
+        },
+      );
+      channel.listener?.(cancelMsg({ [HEADER_RUN_ID]: 'run-1' }));
+      await flushMicrotasks();
+
+      expect(run.abortSignal.aborted).toBe(false);
+      expect(runErrors).toHaveLength(1);
+      expect(runErrors[0]).toBeErrorInfoWithCode(ErrorCode.RunCancelHandlerFailed);
+      expect(errors).toHaveLength(0);
+    });
+
+    it('isolates a throwing onError so cancel routing survives', async () => {
+      const { transport, channel, errors } = await setup();
+
+      const run = transport.openRun(
+        { runId: 'run-1' },
+        {
+          // eslint-disable-next-line @typescript-eslint/require-await -- mock hook
+          onCancel: async () => {
+            throw new Error('hook blew up');
+          },
+          onError: () => {
+            throw new Error('onError blew up');
+          },
+        },
+      );
+      channel.listener?.(cancelMsg({ [HEADER_RUN_ID]: 'run-1' }));
+      await flushMicrotasks();
+
+      // Nothing double-delivers to the error stream, and a later cancel for
+      // another run still routes.
+      expect(errors).toHaveLength(0);
+      const other = transport.openRun({ runId: 'run-2' });
+      channel.listener?.(cancelMsg({ [HEADER_RUN_ID]: 'run-2' }));
+      await flushMicrotasks();
+      expect(other.abortSignal.aborted).toBe(true);
+      expect(run.abortSignal.aborted).toBe(false);
+    });
+
+    it("fires the run's onError with a wrapped StreamError when a pipe source fails", async () => {
+      const { transport } = await setup();
+      const runErrors: Ably.ErrorInfo[] = [];
+
+      const run = transport.openRun({ runId: 'run-1' }, { onError: (error) => runErrors.push(error) });
+      const failing = (async function* (): AsyncGenerator<TestOutput> {
+        await flushMicrotasks();
+        yield { type: 'out', text: 'a' };
+        throw new Error('provider stream failed');
+      })();
+      const result = await run.pipe(failing);
+
+      expect(result.reason).toBe('error');
+      expect(result.error?.message).toBe('provider stream failed');
+      expect(runErrors).toHaveLength(1);
+      expect(runErrors[0]).toBeErrorInfoWithCode(ErrorCode.RunResponseStreamFailed);
     });
 
     it('drops a malformed cancel naming no target', async () => {
@@ -467,7 +549,7 @@ describe('createAgentTransport', () => {
       const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
       let steers = 0;
 
-      const run = transport.openRun({ runId: 'run-1', inputCodecMessageId: 'in-1' }, { onSteer: () => steers++ });
+      const run = transport.openRun({ runId: 'run-1', inputTransportMessageId: 'in-1' }, { onSteer: () => steers++ });
       await run.pipe(streamOf({ type: 'out' }));
       channel.listener?.(steerMsg('run-1', 'in-1'));
 
@@ -536,7 +618,7 @@ describe('createAgentTransport', () => {
       );
       expect(steers).toBe(1);
       // The first pass's context already contains the buffered steer, so the
-      // drain folds it into that pass and its outputs carry the stamp.
+      // drain merges it into that pass and its outputs carry the stamp.
       expect(run.hasInput()).toBe(true);
       await run.pipe(streamOf({ type: 'out' }));
 
@@ -620,7 +702,7 @@ describe('createAgentTransport', () => {
     it('stamps the trigger and every stamped steer on the run-end', async () => {
       const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
 
-      const run = transport.openRun({ runId: 'run-1', inputCodecMessageId: 'in-1' });
+      const run = transport.openRun({ runId: 'run-1', inputTransportMessageId: 'in-1' });
       await run.pipe(streamOf({ type: 'out' }));
       channel.listener?.(steerMsg('run-1', 'steer-1'));
       expect(run.hasInput()).toBe(true);
@@ -633,7 +715,7 @@ describe('createAgentTransport', () => {
     it('excludes an undrained pending steer from the run-end receipt', async () => {
       const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
 
-      const run = transport.openRun({ runId: 'run-1', inputCodecMessageId: 'in-1' });
+      const run = transport.openRun({ runId: 'run-1', inputTransportMessageId: 'in-1' });
       await run.pipe(streamOf({ type: 'out' }));
       channel.listener?.(steerMsg('run-1', 'steer-1'));
       await run.end({ reason: 'complete' });
@@ -644,7 +726,7 @@ describe('createAgentTransport', () => {
     it('excludes a drained steer no step attempt has taken for stamping', async () => {
       const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
 
-      const run = transport.openRun({ runId: 'run-1', inputCodecMessageId: 'in-1' });
+      const run = transport.openRun({ runId: 'run-1', inputTransportMessageId: 'in-1' });
       await run.pipe(streamOf({ type: 'out' }));
       channel.listener?.(steerMsg('run-1', 'steer-1'));
       expect(run.hasInput()).toBe(true);
@@ -656,7 +738,7 @@ describe('createAgentTransport', () => {
     it('omits the receipt when the run produced no output', async () => {
       const { transport, channel } = await setup();
 
-      const run = transport.openRun({ runId: 'run-1', inputCodecMessageId: 'in-1' });
+      const run = transport.openRun({ runId: 'run-1', inputTransportMessageId: 'in-1' });
       await run.end({ reason: 'complete' });
 
       expect(receiptOf(channel, 'ai-run-end')).toBeUndefined();
@@ -675,7 +757,7 @@ describe('createAgentTransport', () => {
     it('stamps considered-so-far on the suspend and accumulates onto the final end', async () => {
       const { transport, channel } = await setup({ decoded: [{ kind: 'user' }] });
 
-      const run = transport.openRun({ runId: 'run-1', inputCodecMessageId: 'in-1' });
+      const run = transport.openRun({ runId: 'run-1', inputTransportMessageId: 'in-1' });
       await run.pipe(streamOf({ type: 'out' }));
       channel.listener?.(steerMsg('run-1', 'steer-1'));
       expect(run.hasInput()).toBe(true);
@@ -729,6 +811,28 @@ describe('createAgentTransport', () => {
   });
 
   describe('openRun', () => {
+    it('delivers a failed opening publish to the run onError hook', async () => {
+      const { transport, channel } = await setup();
+      channel.publish.mockRejectedValueOnce(new Ably.ErrorInfo('publish refused', 40160, 401));
+      const errors: Ably.ErrorInfo[] = [];
+
+      transport.openRun(undefined, {
+        onError: (error) => {
+          errors.push(error);
+        },
+      });
+      // The open chain crosses several awaits before the catch runs.
+      for (let tick = 0; tick < 4; tick++) await flushMicrotasks();
+
+      // The only signal a caller that awaits no output verb can observe.
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toBeErrorInfo({
+        code: ErrorCode.SessionSendFailed,
+        statusCode: 500,
+        cause: { code: 40160 },
+      });
+    });
+
     it('publishes ai-run-start with a minted run-id and returns the run handle', async () => {
       const { transport, channel } = await setup({ clientId: 'agent-a' });
 
@@ -756,15 +860,131 @@ describe('createAgentTransport', () => {
       expect(channel.publishNames()).not.toContain('ai-run-start');
     });
 
-    it('stamps parent structure on the run-start', async () => {
+    it('anchors the opening event to its trigger with input-transport-message-id', async () => {
       const { transport, channel } = await setup();
 
-      const run = transport.openRun({ parent: 'parent-cmid' });
+      const run = transport.openRun({ inputTransportMessageId: 'cm-trigger' });
       await run.end({ reason: 'complete' });
 
       const start = channel.publishCalls.find((m) => m.name === 'ai-run-start');
       if (!start) throw new Error('expected ai-run-start');
-      expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_PARENT]).toBe('parent-cmid');
+      expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('cm-trigger');
+    });
+
+    it('a trigger carrying a run-id header resumes that run', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({ input: locatedInput({ [HEADER_RUN_ID]: 'run-continued' }) });
+      await run.end({ reason: 'complete' });
+
+      expect(run.runId).toBe('run-continued');
+      expect(channel.publishNames()).toContain('ai-run-resume');
+      expect(channel.publishNames()).not.toContain('ai-run-start');
+    });
+
+    it('a trigger without a run-id header opens a fresh run under the pinned runId', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({ input: locatedInput({}), runId: 'run-durable' });
+      await run.end({ reason: 'complete' });
+
+      expect(run.runId).toBe('run-durable');
+      expect(channel.publishNames()).toContain('ai-run-start');
+      expect(channel.publishNames()).not.toContain('ai-run-resume');
+    });
+
+    it("a trigger's run-id wins over the pinned runId", async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({
+        input: locatedInput({ [HEADER_RUN_ID]: 'run-continued' }),
+        runId: 'run-durable',
+      });
+      await run.end({ reason: 'complete' });
+
+      expect(run.runId).toBe('run-continued');
+      expect(channel.publishNames()).toContain('ai-run-resume');
+    });
+
+    it("a trigger's transport-message-id defaults the input anchor", async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({
+        input: locatedInput({ [HEADER_TRANSPORT_MESSAGE_ID]: 'cm-from-trigger' }),
+      });
+      await run.end({ reason: 'complete' });
+
+      const start = channel.publishCalls.find((m) => m.name === 'ai-run-start');
+      if (!start) throw new Error('expected ai-run-start');
+      expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe(
+        'cm-from-trigger',
+      );
+    });
+
+    it('an explicit inputTransportMessageId wins over the trigger', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({
+        input: locatedInput({ [HEADER_TRANSPORT_MESSAGE_ID]: 'cm-from-trigger' }),
+        inputTransportMessageId: 'cm-explicit',
+      });
+      await run.end({ reason: 'complete' });
+
+      const start = channel.publishCalls.find((m) => m.name === 'ai-run-start');
+      if (!start) throw new Error('expected ai-run-start');
+      expect(getTransportHeaders(start as Ably.InboundMessage)[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('cm-explicit');
+    });
+  });
+
+  describe('adoptRun', () => {
+    it('attaches without publishing any lifecycle event', async () => {
+      const { transport, channel } = await setup();
+
+      transport.adoptRun('run-adopted');
+      await flushMicrotasks();
+
+      expect(channel.publishNames()).not.toContain('ai-run-start');
+      expect(channel.publishNames()).not.toContain('ai-run-resume');
+    });
+
+    it('registers the run for cancel routing', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.adoptRun('run-adopted');
+      await flushMicrotasks();
+      channel.listener?.(cancelMsg({ [HEADER_RUN_ID]: 'run-adopted' }));
+      await flushMicrotasks();
+
+      expect(run.abortSignal.aborted).toBe(true);
+    });
+
+    it('publishes a terminal when the caller ends the run', async () => {
+      const { transport, channel } = await setup({ clientId: 'agent-a' });
+
+      const run = transport.adoptRun('run-adopted');
+      await run.end({ reason: 'error' });
+
+      // Only the terminal reaches the channel — no opening event precedes it.
+      expect(channel.publishNames()).toEqual(['ai-run-end']);
+      const end = channel.publishCalls.find((m) => m.name === 'ai-run-end');
+      if (!end) throw new Error('expected ai-run-end');
+      // The registered owner entry stamps the real run-client-id.
+      expect(getTransportHeaders(end as Ably.InboundMessage)['run-client-id']).toBe('agent-a');
+    });
+
+    it('throws on an empty runId', async () => {
+      const { transport } = await setup();
+
+      expect(() => transport.adoptRun('')).toThrowErrorInfo({
+        code: ErrorCode.InvalidArgument,
+        message: 'unable to adopt run; runId must be non-empty',
+      });
+    });
+
+    it('throws before connect()', async () => {
+      const { transport } = await setup({ connect: false });
+
+      expect(() => transport.adoptRun('run-1')).toThrowErrorInfo({ code: ErrorCode.InvalidArgument });
     });
   });
 
@@ -956,9 +1176,73 @@ describe('createAgentTransport', () => {
 
       expect(located).toBeUndefined();
     });
+
+    it('fires onPage after each page fetch during the scan', async () => {
+      const { transport } = await setup({
+        decoded: [{ kind: 'user-message' }],
+        historyPages: [[wireMsg({ [HEADER_EVENT_ID]: 'evt-0' })], [wireMsg({ [HEADER_EVENT_ID]: 'evt-1' })]],
+      });
+      let pages = 0;
+
+      await transport.locateInput('evt-1', {
+        onPage: () => {
+          pages++;
+        },
+      });
+
+      expect(pages).toBe(2);
+    });
+
+    it('stops scanning at the limit and resolves undefined', async () => {
+      const { transport } = await setup({
+        decoded: [{ kind: 'user-message' }],
+        historyPages: [[wireMsg({ [HEADER_EVENT_ID]: 'evt-0' })], [wireMsg({ [HEADER_EVENT_ID]: 'evt-1' })]],
+      });
+      let pages = 0;
+
+      const located = await transport.locateInput('evt-1', {
+        limit: 1,
+        onPage: () => {
+          pages++;
+        },
+      });
+
+      // The first page's one message meets the limit, so the matching second
+      // page is never fetched — a bounded miss, not proof of absence.
+      expect(located).toBeUndefined();
+      expect(pages).toBe(1);
+    });
+
+    it('rejects with OperationCancelled when the signal aborts', async () => {
+      const { transport } = await setup({
+        decoded: [{ kind: 'user-message' }],
+        historyPages: [[wireMsg({ [HEADER_EVENT_ID]: 'evt-0' })]],
+      });
+
+      await expect(transport.locateInput('evt-0', { signal: AbortSignal.abort() })).rejects.toBeErrorInfoWithCode(
+        ErrorCode.OperationCancelled,
+      );
+    });
   });
 
   describe('history', () => {
+    it('fires onPage after each page fetch', async () => {
+      const { transport } = await setup({
+        historyPages: [[outputMsg('s2', 'two')], [outputMsg('s1', 'one')]],
+      });
+      let pages = 0;
+
+      const result = await transport.history({
+        limit: 2,
+        onPage: () => {
+          pages++;
+        },
+      });
+
+      expect(result.exhausted).toBe(true);
+      expect(pages).toBe(2);
+    });
+
     it('returns classified events without emitting to the subscribe stream', async () => {
       const { transport, events } = await setup({
         historyPages: [[outputMsg('s2', 'two'), outputMsg('s1', 'one')]],

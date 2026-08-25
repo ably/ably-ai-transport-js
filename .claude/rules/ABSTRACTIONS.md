@@ -15,13 +15,18 @@ types and functions it re-exports are public API. New codecs add a new entry
 point — plus a `/react` one if they ship React hooks — rather than changing an
 existing one.
 
-| Entry point                       | Purpose                                                                                                          | Peer deps             |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------------------- | --------------------- |
-| `@ably/ai-transport`              | Core, codec-agnostic transport and codec interfaces (`createClientSession`, `createAgentSession`, `defineCodec`) | `ably`                |
-| `@ably/ai-transport/react`        | Generic React hooks and providers for any codec                                                                  | `ably`, `react`       |
-| `@ably/ai-transport/vercel`       | Vercel AI SDK codec, convenience factories, and the chat-transport adapter                                       | `ably`, `ai`          |
-| `@ably/ai-transport/vercel/react` | React hooks for Vercel's `useChat`                                                                               | `ably`, `ai`, `react` |
-| `@ably/ai-transport/openai`       | OpenAI Responses codec (`ResponsesCodec`)                                                                        | `ably`, `openai`      |
+The entry points are listed here for orientation; the authoritative list is
+`package.json`'s `exports` map.
+
+| Entry point                            | Purpose                                                                                                                                 | Peer deps               |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| `@ably/ai-transport`                   | Core, codec-agnostic transports and codec interfaces (`createClientTransport`, `createAgentTransport`, `defineCodec`, `WireCodec`)      | `ably`                  |
+| `@ably/ai-transport/react`             | Transport-shaped React surface for any codec (`ClientTransportProvider`, `useClientTransport`, `useTransportEvents`, `useAblyMessages`) | `ably`, `react`         |
+| `@ably/ai-transport/vercel`            | Vercel AI SDK codec, transport factories pre-bound to it, and the `useChat` adapter (`createChatTransport`)                             | `ably`, `ai`            |
+| `@ably/ai-transport/vercel/react`      | React provider and hook for the `useChat` adapter (`ChatTransportProvider`, `useChatTransport`)                                         | `ably`, `ai`, `react`   |
+| `@ably/ai-transport/openai`            | OpenAI Responses codec (`createResponsesCodec`)                                                                                         | `ably`, `openai`        |
+| `@ably/ai-transport/temporal`          | Temporal worker plugin and framing activities                                                                                           | `ably`, `@temporalio/*` |
+| `@ably/ai-transport/temporal/workflow` | Workflow-side halves of the Temporal integration (sandbox-safe: no `ably` import)                                                       | `@temporalio/workflow`  |
 
 ## Two-layer architecture
 
@@ -30,24 +35,47 @@ The codec layer is implemented once per provider — each such implementation a
 _codec_ (Vercel, OpenAI, …). This separation is the most important invariant to
 preserve:
 
-- **Generic layer** (`src/core/`, `src/react/`) — defines the
-  `Codec<TInput, TOutput, TProjection, TMessage>` interface (see
-  `src/core/codec/types.ts`) and the codec-parameterized transport
-  (`ClientSession`, `AgentSession`, `Tree`, View pagination). It is
-  framework-agnostic: it must know nothing about any specific codec's wire
-  types (e.g. Vercel's `UIMessageChunk` / `UIMessage`, OpenAI's
-  `ResponseStreamEvent`), and must read or write only transport-tier metadata —
-  never codec-specific domain metadata (see header discipline below).
+- **Generic layer** (`src/core/`, `src/react/`) — defines the wire-only
+  `WireCodec<TInput, TOutput>` interface (see `src/core/codec/types.ts`) and
+  the codec-parameterized transports (`ClientTransport`, `AgentTransport`, run
+  and step bracketing, cancel and steer routing, history paging). It is
+  framework-agnostic: `TInput` and `TOutput` are unconstrained type
+  parameters, the transport carries them as opaque values, never inspects
+  them, and reads or writes only transport-tier metadata — never
+  codec-specific domain metadata (see header discipline below).
 - **Codec layer** (`src/vercel/`, `src/openai/`, …) — one _codec_ per provider,
-  each implementing the `Codec` for that provider's wire format against its
-  types, and optionally adding convenience factories and React hooks. Vercel is
-  the fullest worked example: its chat-transport adapter wraps a generic
-  `ClientSession` to satisfy the interface `useChat` expects.
+  each implementing the `WireCodec` for that provider's wire format against
+  its types, and optionally adding convenience factories and React hooks.
+  Vercel is the fullest worked example: its `createChatTransport` adapter
+  wraps a generic `ClientTransport` to satisfy the interface `useChat`
+  expects.
 
 Codec and transport are themselves distinct: the **codec** owns the wire
-format (encode/decode of events and messages); the **transport** owns sessions,
-runs, channel I/O, and conversation state. The transport is parameterized by
-the codec and never hardcodes a wire format.
+format (encode/decode of events and messages); the **transport** owns runs,
+steps, channel I/O, cancel and steer routing, and history paging. The
+transport is parameterized by the codec and never hardcodes a wire format.
+
+**The SDK does not assemble messages.** Merging decoded events into messages,
+storing them, and rendering a thread belong to the application. The wire
+carries the provider's own event vocabulary, which is what lets the provider's
+own reducer do the merge (`readUIMessageStream` from `ai`; OpenAI's
+`accumulateResponse`). The application's one structural job is
+demultiplexing: bucket a batch's `message` events by `meta.transportMessageId`
+and feed each bucket to the provider's reducer — delivery order is
+conversation order, so no sorting is needed. The decoder's mid-stream-join
+repair (synthesising the openers a late joiner never saw) is the contract
+that makes the strict provider reducers safe to lean on; if a gap turns up,
+fix the decoder — do not add a reducer to the SDK.
+
+**The transport constrains nothing about an input.** An input is a
+codec-defined body the transport carries opaquely. Addressing (the
+transport-message-id, parent, fork and regenerate structure) travels on
+`PublishInputOptions` on the way out and `WireMeta` on the way back — never on
+the event itself. Codecs pick the provider's own types for bodies wherever one
+exists (a `UIMessage` for a turn, a `tool-output-*` chunk for a resolution, a
+`function_call_output` item), so the provider's reducer merges inputs and
+outputs through one code path; the approval decision is the one codec-defined
+body, because no provider models it.
 
 **Wire curation belongs to the codec, at encode.** Every event a codec
 supports is transmitted (as a discrete event or a stream, possibly with a
@@ -62,44 +90,35 @@ provider SDK may still supply its own conversion first — Vercel's
 the codec's union models — but that is the provider's shape conversion, not
 our curation point.)
 
-## Tree / View / Session split
+## The transports
 
-The client side separates three concerns, with the Tree as the single source
-of truth:
-
-- **Tree** — complete conversation state (every node, from live messages and
-  history) and active-run tracking. Emits unfiltered events for every change.
-- **View** — a read-only pagination projection over the Tree (`View<TMessage>`):
-  which history-loaded nodes are visible, re-emitting the Tree's events scoped
-  to the visible window. Those events are **disjoint by kind**, not graded by
-  importance: content folds announce themselves on the message-list event, run
-  lifecycle on the run event. A status-only transition changes what the Run
-  reads report while leaving the message list identical, so it fires the latter
-  and _only_ the latter — anything rendering Run state must subscribe to it, and
-  a consumer watching the message-list event alone will never see a run end.
-  The branch a View walks is supplied by an injected
-  **BranchSource** strategy, so one projection serves both sides — the client's
-  whole-tree branch navigation and the agent's leaf-pinned read. The client's
-  `session.view` extends the base as `ClientView` (branch navigation + the write
-  path). See `src/core/transport/types/view.ts` and `branch-source.ts`.
-- **Session** — channel subscription, decode loop, and the send delegate behind
-  the View's write path (plus `cancel`). Wires the channel into the Tree and
-  exposes both as `session.tree` and `session.view`. Surfaces only an `error`
-  event; all data events live on the Tree and View.
+- **`ClientTransport`** — publish inputs (nothing is emitted locally: the
+  sender's own input reaches it back as the ordinary channel delivery, keyed
+  by the returned `transportMessageId`), cancel and steer runs (a steer's
+  `published` resolves from the publish acknowledgement's serial), subscribe
+  to the classified event stream, and page history. Holds no conversation
+  state: the only cross-message state is the steer ledger and the pending
+  run-id watches.
+- **`AgentTransport`** — open runs (`ai-run-start` / `ai-run-resume`, decided
+  by the located trigger's run-id header; `adoptRun` re-enters durably and
+  puts nothing on the wire until output or a terminal), pipe output through the encoder bracketed in steps,
+  locate the input that woke an invocation (`locateInput`), and page history
+  for model context. Cancels route onto the matching run handle; steers flip
+  `hasInput()`.
+- Both share one receive path (`receive-transport.ts`): decode, classify into
+  `TransportEvent` (`message` / `run-lifecycle` / `step-lifecycle`), emit to
+  subscribers. `history()` is bounded at the channel attach point and shares
+  the live decoder, so a stream spanning the boundary is decoded once — live
+  and history cannot overlap, and a consumer merges each delivered event once,
+  in delivery order, with no dedup machinery.
 
 ## Composition, not inheritance
 
-Sessions are assembled from composable parts, not class hierarchies. A
-`ClientSession` composes the codec, the Tree (state) and View (projection), and
-the channel subscription + decode loop. An `AgentSession` composes the codec's
-encoder with per-run stream piping and run tracking for cancel routing.
-
-The same applies one level down: a View composes an injected **BranchSource**
-strategy (visible-node resolution, message flattening, sibling navigation)
-rather than specialising via subclasses, so the one View implementation serves
-the client's navigable whole-tree branch and the agent's leaf-pinned branch
-alike. The read base is `View<TMessage>`; the client's writable/navigable
-surface is `ClientView extends View`.
+Transports are assembled from composable parts, not class hierarchies. A
+`ClientTransport` composes the codec's encoder/decoder, the receive stream,
+the steer coordinator, and the history walk. An `AgentTransport` composes the
+codec's encoder with per-run stream piping (the run/step writer) and run
+registration for cancel routing.
 
 ## Dependency injection
 
@@ -110,11 +129,10 @@ no singletons or service locators.
 
 Use ES6 classes with the **interface + default implementation** pattern:
 
-- Define a public **interface** for the contract (e.g. `ClientSession`, `Tree`,
-  `View`).
-- Implement it with a **`Default*` class** (e.g. `DefaultClientSession`,
-  `DefaultTree`, `DefaultView`). The interface is public API; the class is
-  internal.
+- Define a public **interface** for the contract (e.g. `ClientTransport`,
+  `TransportReceiver`).
+- Implement it with a **`Default*` class** (e.g. `DefaultClientTransport`).
+  The interface is public API; the class is internal.
 
 ### Private state
 
@@ -122,11 +140,11 @@ Use `private readonly` fields with an underscore prefix. Store all
 constructor-injected dependencies as private fields:
 
 ```ts
-class DefaultFoo<TEvent, TMessage> implements Foo<TMessage> {
-  private readonly _dep: SomeDependency<TMessage>;
+class DefaultFoo<TInput, TOutput> implements Foo<TInput, TOutput> {
+  private readonly _dep: SomeDependency<TOutput>;
   private readonly _logger: Logger;
 
-  constructor(options: FooOptions<TEvent, TMessage>) {
+  constructor(options: FooOptions<TInput, TOutput>) {
     this._dep = options.dep;
     this._logger = options.logger.withContext({ component: 'Foo' });
   }
@@ -140,8 +158,8 @@ implementation.
 
 ### Factory functions as entry points
 
-Public entry points (e.g. `createClientSession()`) are factory functions that
-instantiate and wire up the internal classes. Consumers never call `new
+Public entry points (e.g. `createClientTransport()`) are factory functions
+that instantiate and wire up the internal classes. Consumers never call `new
 Default*` directly.
 
 ### Classes vs plain functions
@@ -153,13 +171,14 @@ Default*` directly.
 
 ## Summary of principles
 
-1. **Generic-vs-codec split** — the generic transport/codec knows nothing about
-   any specific codec; each codec (Vercel, OpenAI, …) implements the `Codec`
+1. **Generic-vs-codec split** — the generic transport knows nothing about any
+   specific codec; each codec (Vercel, OpenAI, …) implements the `WireCodec`
    and provides wrappers.
 2. **Codec/transport separation** — codec owns the wire format; transport owns
-   sessions, runs, and state, parameterized by the codec.
-3. **Codec-parameterized** — generic components are parameterized by
-   `<TInput, TOutput, TProjection, TMessage>` via the `Codec` interface.
+   runs, steps, and channel I/O, parameterized by the codec.
+3. **Codec-parameterized, unconstrained** — generic components are
+   parameterized by `<TInput, TOutput>` via `WireCodec`; the transport never
+   inspects an event.
 4. **Constructor/option injection** — no singletons, no globals.
 5. **Composition, not inheritance** — compose features; no class hierarchies.
 6. **Interface-first** — public contracts are interfaces; implementations are
@@ -169,13 +188,16 @@ Default*` directly.
    always present) and an optional codec tier (`extras.ai.codec`). The generic
    layer reads and writes only the transport tier; codec-specific metadata
    belongs in the codec tier, owned by the codec layer. The envelope is also
-   what marks a wire as ours: a session shares its channel with the
+   what marks a wire as ours: a transport shares its channel with the
    application, so a message without `extras.ai` is **foreign** — it decodes
-   to no events, creates no tree node, and drives no run, while still
-   surfacing raw on `ably-message`. Classify foreign traffic by the envelope,
-   never by the wire `name`, which the platform does not echo on appends.
+   to no events and drives no run, while still surfacing raw on
+   `ably-message`. Classify foreign traffic by the envelope, never by the wire
+   `name`, which the platform does not echo on appends.
 8. **Explicit exports** — only what an `index.ts` re-exports is public API.
 9. **Self-contained features** — each manages its own subscriptions, state, and
    cleanup.
-10. **Single shared channel** — one Ably channel per transport, shared by all
-    features.
+10. **Single shared channel, caller-owned** — one Ably channel per transport,
+    shared by all features. The caller resolves and owns the channel; the
+    transport subscribes its own listener and never detaches it.
+11. **No message assembly in the SDK** — no reducer, no merge driver, no
+    projection type; the application merges with the provider's own machinery.

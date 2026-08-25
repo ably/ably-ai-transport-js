@@ -1,5 +1,5 @@
 /**
- * Channel-mode resolution shared by the sessions and the React provider.
+ * Channel-mode resolution for AI Transport channels.
  *
  * Presence, pub/sub, and annotation publishing are all part of the server's
  * default channel-mode set, so a channel attached with no mode flags is granted
@@ -14,8 +14,9 @@
  * {@link AIT_BASE_MODES} is exactly the server default, so opting into extra
  * modes adds the extras and changes nothing else.
  *
- * Every place that resolves the session's channel options — both session
- * constructors and the React `<ChannelProvider>` — must funnel through
+ * Every place that resolves channel options for an AI Transport channel —
+ * the React `<ClientTransportProvider>` and the ably-js `<ChannelProvider>`
+ * it renders — must funnel through
  * {@link resolveChannelModes} so they all request the SAME modes in the SAME
  * order. ably-js compares modes order- and duplicate-sensitively when deciding
  * whether a `setOptions` call needs a reattach; identical arrays compare equal,
@@ -42,9 +43,9 @@ export const AIT_BASE_MODES: readonly Ably.ChannelMode[] = [
 
 /**
  * The channel modes required to read and write Ably LiveObjects. Pass as the
- * session's `channelModes` option (`channelModes: OBJECT_MODES`) to enable the
- * `object` accessor on a session and the LiveObjects channel hooks under a
- * `<ClientSessionProvider>`.
+ * `channelModes` prop of `<ClientTransportProvider>`
+ * (`channelModes: OBJECT_MODES`) to request object access on the transport's
+ * channel, enabling the LiveObjects channel hooks under the provider.
  */
 export const OBJECT_MODES: readonly Ably.ChannelMode[] = ['OBJECT_SUBSCRIBE', 'OBJECT_PUBLISH'];
 

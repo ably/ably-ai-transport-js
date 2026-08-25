@@ -1,40 +1,40 @@
+/**
+ * React context carrying the {@link ChatTransport} instances registered by
+ * {@link import('./chat-transport-provider.js').ChatTransportProvider}. Each
+ * provider merges its slot into the parent record, so nested providers with
+ * distinct channel names are all reachable by name, and the nearest one is
+ * the default.
+ */
+
 import type * as Ably from 'ably';
-import type * as AI from 'ai';
 import { createContext } from 'react';
 
-import type { ClientSession } from '../../../core/transport/types.js';
-import type { VercelInput, VercelOutput, VercelProjection } from '../../codec/index.js';
+import type { ClientTransport } from '../../../core/transport/types.js';
+import type { VercelInput, VercelOutput } from '../../codec/events.js';
 import type { ChatTransport } from '../../transport/chat-transport.js';
 
 /**
- * A single entry in the chat transport registry, holding both the
- * underlying {@link ClientSession} and the {@link ChatTransport} wrapping it.
+ * One provider's registration: the client transport and the useChat adapter
+ * built on it, or the construction error when creating them threw.
  */
 export interface ChatTransportSlot {
-  /** The underlying client session used to create the chat transport. */
-  readonly session: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
-  /** Construction error from the underlying {@link ClientSession}, or `undefined` on success. */
-  readonly sessionError?: Ably.ErrorInfo | undefined;
-  /** The chat transport adapter for use with Vercel's useChat hook. */
-  readonly chatTransport: ChatTransport;
+  /** The provider's client transport, or `undefined` when construction failed. */
+  transport: ClientTransport<VercelInput, VercelOutput> | undefined;
+  /** The useChat adapter over {@link transport}, or `undefined` when construction failed. */
+  chatTransport: ChatTransport | undefined;
+  /** The construction error, or `undefined` when the pair was created. */
+  error: Ably.ErrorInfo | undefined;
 }
 
-/**
- * The shape of the single {@link ChatTransportContext} value.
- * Combines the nearest slot with the full registry in one context object.
- */
-interface ChatTransportContextValue {
-  /** The slot from the nearest {@link ChatTransportProvider} in the tree. */
-  readonly nearest: ChatTransportSlot | undefined;
-  /** All registered slots, keyed by channelName. */
-  readonly providers: Readonly<Record<string, ChatTransportSlot>>;
+/** The context value: the nearest provider's slot plus every named provider's slot. */
+export interface ChatTransportContextValue {
+  /** The nearest enclosing provider's slot. */
+  nearest: ChatTransportSlot | undefined;
+  /** Every enclosing provider's slot, keyed by channel name. */
+  providers: Record<string, ChatTransportSlot>;
 }
 
-/**
- * Context that carries both the nearest {@link ChatTransportSlot} and the full registry of
- * registered slots keyed by channelName. Populated by {@link ChatTransportProvider};
- * read by {@link useChatTransport}.
- */
+/** The context {@link import('./chat-transport-provider.js').ChatTransportProvider} publishes into. */
 export const ChatTransportContext = createContext<ChatTransportContextValue>({
   nearest: undefined,
   providers: {},

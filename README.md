@@ -4,9 +4,9 @@
 
 # Ably AI Transport JavaScript SDK
 
-Ably AI Transport is a durable session layer for AI applications. Your agent streams tokens into a session rather than into an HTTP response, so a client that reconnects picks up where it left off, the same conversation is open on any device the user picks up, and any participant can cancel, interrupt, or steer a response that is still in flight.
+Ably AI Transport is a durable transport for AI applications. Your agent streams tokens onto an Ably channel rather than into an HTTP response, so a client that reconnects picks up where it left off, the same conversation is open on any device the user picks up, and any participant can cancel, interrupt, or steer a response that is still in flight.
 
-AI Transport is not an agent framework. It replaces the transport between your agents and your users and works alongside the stack you already have: Vercel AI SDK, Vercel Workflow Development Kit, Temporal, or your own framework through a custom codec. Sessions are built on [Ably](https://ably.com/) channels, so ordering, persistence, history, and presence come from the platform rather than from your application code.
+AI Transport is not an agent framework. It replaces the transport between your agents and your users and works alongside the stack you already have: Vercel AI SDK, Vercel Workflow Development Kit, Temporal, or your own framework through a custom codec. The transport runs over [Ably](https://ably.com/) channels, so ordering, persistence, history, and presence come from the platform rather than from your application code. The wire carries the provider's own event vocabulary, so the provider's own tooling — Vercel's `useChat` and `readUIMessageStream`, OpenAI's response accumulator — assembles messages on the client; the SDK moves bytes, brackets runs, and pages history.
 
 > [!NOTE]
 > This SDK is pre-release (`0.x`). The public API is still changing and minor versions can carry breaking changes. [CHANGELOG.md](./CHANGELOG.md) records what moved in each release.
@@ -41,7 +41,7 @@ This SDK supports the following platforms:
 | Browsers      | All major desktop and mobile browsers, including Chrome, Firefox, Edge, and Safari.           |
 | TypeScript    | Fully supported, the library is written in TypeScript and ships its own type definitions.     |
 | React         | Versions 18 and 19, through `@ably/ai-transport/react` and `@ably/ai-transport/vercel/react`. |
-| Vercel AI SDK | Version 6, through the codec, session factories, and `useChat` transport adapter.             |
+| Vercel AI SDK | Versions 6 and 7, through the codec, transport factories, and `useChat` transport adapter.    |
 | Temporal      | TypeScript SDK v1, through the durable-execution helpers in `@ably/ai-transport/temporal`.    |
 
 The Ably Pub/Sub SDK (`ably`) version 2.23.0 or newer is required in every case. `ai`, `react`, and `@temporalio/activity` are optional peer dependencies, each needed only by the entry point that uses it.
@@ -74,47 +74,96 @@ The following code streams a model response from a Next.js route handler into a 
 
 ```typescript
 import { after } from 'next/server';
-import { streamText, convertToModelMessages } from 'ai';
+import { convertToModelMessages, readUIMessageStream, streamText, type UIMessage, type UIMessageChunk } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import * as Ably from 'ably';
-import { Invocation } from '@ably/ai-transport';
-import { createAgentSession, vercelRunOutcome } from '@ably/ai-transport/vercel';
+import { createAgentTransport, type VercelInput, type VercelOutput } from '@ably/ai-transport/vercel';
+import type { AgentTransport } from '@ably/ai-transport';
 
 const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY });
 
-export async function POST(req: Request) {
-  // The POST only triggers the agent. Tokens reach every subscribed client
-  // over the session, so the response body carries nothing but the run ids.
-  const invocation = Invocation.fromJSON(await req.json());
+// Assemble the conversation from the channel: bucket each message's events by
+// its transport-message-id, then merge every bucket with the AI SDK's own reducer.
+async function mergeConversation(transport: AgentTransport<VercelInput, VercelOutput>): Promise<UIMessage[]> {
+  const buckets = new Map<string, UIMessageChunk[]>();
+  const wholeMessages = new Map<string, UIMessage>();
+  for (let batch = await transport.history(); ; batch = await transport.history()) {
+    for (const event of batch.events) {
+      if (event.kind !== 'message' || event.meta.transportMessageId === undefined) continue;
+      const id = event.meta.transportMessageId;
+      const bucket = buckets.get(id) ?? [];
+      buckets.set(id, bucket);
+      bucket.push(...event.outputs);
+      for (const input of event.inputs) {
+        if (input.kind === 'chunk') bucket.push(input.payload);
+        if (input.kind === 'message') {
+          const existing = wholeMessages.get(id);
+          if (existing) existing.parts.push(...input.payload.parts);
+          else wholeMessages.set(id, structuredClone(input.payload));
+        }
+      }
+    }
+    if (batch.exhausted) break;
+  }
+  const conversation: UIMessage[] = [];
+  for (const [id, chunks] of buckets) {
+    const whole = wholeMessages.get(id);
+    if (whole) {
+      conversation.push(whole);
+      continue;
+    }
+    const stream = new ReadableStream<UIMessageChunk>({
+      start: (c) => {
+        for (const chunk of chunks) c.enqueue(chunk);
+        c.close();
+      },
+    });
+    let last: UIMessage | undefined;
+    for await (const message of readUIMessageStream({ stream })) last = message;
+    if (last) conversation.push(last);
+  }
+  return conversation;
+}
 
-  const session = createAgentSession({ client: ably, channelName: invocation.sessionName });
-  await session.connect();
-  const run = session.createRun(invocation, { signal: req.signal });
+export async function POST(req: Request) {
+  // The POST only names the input that woke the agent. Tokens reach every
+  // subscribed client over the channel, so the response carries only the run id.
+  const { channelName, eventId, runId } = (await req.json()) as {
+    channelName: string;
+    eventId: string;
+    runId?: string;
+  };
+
+  const transport = createAgentTransport({ channel: ably.channels.get(channelName) });
+  await transport.connect();
+
+  // Find the input that woke this invocation, then open the run it triggers —
+  // a fresh run, or a resume when the client named the run to continue.
+  const located = await transport.locateInput(eventId);
+  const run = transport.openRun(
+    {
+      ...(runId ? { runId, publish: 'resume' as const } : {}),
+      ...(located?.meta.transportMessageId ? { inputTransportMessageId: located.meta.transportMessageId } : {}),
+    },
+    { signal: req.signal }, // Fires when any client cancels this run
+  );
 
   after(async () => {
-    // Page in the conversation so far, then open the run on the session.
-    while (run.view.hasOlder()) await run.view.loadOlder();
-    await run.start();
-    const conversation = run.view.getMessages().map(({ message }) => message);
+    const conversation = await mergeConversation(transport);
 
     const result = streamText({
       model: anthropic('claude-sonnet-4-6'),
       system: 'You are a helpful assistant.',
       messages: await convertToModelMessages(conversation),
-      abortSignal: run.abortSignal, // Fires when any client cancels this run
+      abortSignal: run.abortSignal,
     });
 
     const pipeResult = await run.pipe(result.toUIMessageStream());
-    const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
-    if (outcome.reason === 'suspend') {
-      await run.suspend(); // Paused on a client-executed tool or an approval
-    } else {
-      await run.end(outcome);
-    }
-    await session.end();
+    await run.end({ reason: pipeResult.reason === 'error' ? 'error' : 'complete' });
+    transport.close();
   });
 
-  return Response.json({ runId: run.runId, invocationId: run.invocationId });
+  return Response.json({ runId: run.runId });
 }
 ```
 
@@ -127,7 +176,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import * as Ably from 'ably';
 import { AblyProvider } from 'ably/react';
 import { useChat } from '@ai-sdk/react';
-import { ChatTransportProvider, useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
+import { ChatTransportProvider, useChatTransport } from '@ably/ai-transport/vercel/react';
 
 export default function Page() {
   return (
@@ -141,17 +190,13 @@ export default function Page() {
 
 function Chat() {
   const [input, setInput] = useState('');
-  const { session, chatTransport } = useChatTransport();
-  const { messages, setMessages, sendMessage, status } = useChat({ transport: chatTransport });
-
-  // Anything the agent publishes, and anything the user sends from another
-  // device, arrives over the session rather than in a fetch response.
-  useMessageSync({ setMessages });
-
-  const stop = () => {
-    const active = session.view.runs().find((run) => run.status === 'active');
-    if (active) void session.cancel(active.runId);
-  };
+  const { chatTransport } = useChatTransport();
+  // The adapter drops straight into useChat: sends publish to the channel,
+  // the streamed reply arrives over it, and `resume` reconnects to a run
+  // still in flight after a reload. Anything the agent publishes, and
+  // anything the user sends from another device, arrives over the channel
+  // rather than in a fetch response.
+  const { messages, sendMessage, stop, status } = useChat({ transport: chatTransport, resume: true });
 
   return (
     <form
@@ -173,7 +218,7 @@ function Chat() {
       {status === 'submitted' || status === 'streaming' ? (
         <button
           type="button"
-          onClick={stop}
+          onClick={() => void stop()}
         >
           Stop
         </button>

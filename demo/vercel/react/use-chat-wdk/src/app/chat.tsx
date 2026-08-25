@@ -2,14 +2,15 @@
 
 import { useChat } from '@ai-sdk/react';
 import { lastAssistantMessageIsCompleteWithApprovalResponses, lastAssistantMessageIsCompleteWithToolCalls } from 'ai';
-import { useAblyMessages, useChatTransport, useMessageSync, useView } from '@ably/ai-transport/vercel/react';
-import { type RefObject, useCallback, useEffect, useRef, useState } from 'react';
+import { useAblyMessages } from '@ably/ai-transport/react';
+import { useChatTransport } from '@ably/ai-transport/vercel/react';
+import type { ChatTransport } from '@ably/ai-transport/vercel';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  BranchingMessageList,
-  ChatShell,
+  Chat as ChatContainer,
   COMMON_SCENARIOS,
-  DebugPane,
-  useDemoProgress,
+  hasClientTool,
+  runClientTool,
   type CallbackLogEntry,
   type ClientToolLogEntry,
   type Scenario,
@@ -17,11 +18,10 @@ import {
 
 import { FaultControls } from './components/fault-controls';
 import { WdkProcessPanel } from './components/wdk-process-panel';
-import { useClientTools } from './hooks/use-client-tools';
-import type { FaultMode } from './lib/fault';
+import { FAULT_COOKIE, type FaultMode } from './lib/fault';
 
 // The intro heading + blurb this durable demo shows above the transcript.
-const INTRO_TITLE = 'Durable sessions on Vercel Workflows';
+const INTRO_TITLE = 'Durable agents on Vercel Workflows';
 const INTRO_DESCRIPTION =
   'The same Ably-backed useChat client as the use-chat demo — but each turn runs on Vercel’s Workflow ' +
   'Development Kit. A durable workflow drives the agent loop across separate, retryable activity processes, ' +
@@ -30,8 +30,8 @@ const INTRO_DESCRIPTION =
   'specific piece; try them in order.';
 
 // COMMON_SCENARIOS order: server-weather[0], client-weather[1], approval-forecast[2],
-// multi-tab[3], edit[4], regenerate[5], cancel[6], observability[7]. This demo drives
-// the tool + sync + cancel + observability scenarios, and adds its own durable ones.
+// multi-tab[3], regenerate[4], cancel[5], observability[6]. This demo drives
+// the tool + cancel + observability scenarios, and adds its own durable ones.
 const SCENARIOS: readonly Scenario[] = [
   {
     // No built-in detector exists for a plain durable turn, so borrow the
@@ -44,8 +44,7 @@ const SCENARIOS: readonly Scenario[] = [
     prompt: 'Say "Hello from a durable Vercel Workflow!"',
     blurb:
       'Each turn runs as a Vercel Workflow. An open activity opens the AIT run, then a separate inference activity — ' +
-      'a fresh process — runs the model and streams the reply. The badges under it show its run, step, and how many ' +
-      'attempts the step took.',
+      'a fresh process — runs the model and streams the reply over the Ably channel.',
   },
   {
     tag: 'Fault injection',
@@ -57,9 +56,9 @@ const SCENARIOS: readonly Scenario[] = [
       </>
     ),
     blurb:
-      'The activity throws on its first attempt; WDK re-runs it as a fresh process, and AIT’s stable step id makes ' +
-      'the retry supersede the dead attempt — the conversation settles once, with no duplicate. Watch it happen in ' +
-      'the WDK processes panel.',
+      'The activity throws on its first attempt; WDK re-runs it as a fresh process, and AIT’s pinned run id and ' +
+      'stable step id make the retry re-enter the same run — the conversation settles once, with no duplicate. ' +
+      'Watch it happen in the WDK processes panel.',
   },
   COMMON_SCENARIOS[0], // server-weather
   COMMON_SCENARIOS[1], // client-weather
@@ -72,31 +71,44 @@ const SCENARIOS: readonly Scenario[] = [
       'Every workflow and its activities appear as they run, correlated to the AIT run id, with WDK-side status ' +
       'polled from the real Workflow observability API.',
   },
-  COMMON_SCENARIOS[6], // cancel
-  COMMON_SCENARIOS[3], // multi-tab
-  COMMON_SCENARIOS[7], // observability
+  COMMON_SCENARIOS[5], // cancel
+  COMMON_SCENARIOS[6], // observability
 ];
 
-// ---------------------------------------------------------------------------
-// Chat component
-// ---------------------------------------------------------------------------
+/**
+ * The outer component reads the ChatTransportProvider's slot and only mounts
+ * the chat once the adapter exists — useChat needs a transport at first
+ * render, and a construction failure renders as an error notice instead.
+ */
+export function Chat({ chatId, clientId }: { chatId: string; clientId?: string }) {
+  const { chatTransport, error } = useChatTransport();
 
-export function Chat({
+  if (!chatTransport) {
+    return (
+      <div className="flex h-dvh items-center justify-center text-sm text-destructive">
+        Unable to create the chat transport{error ? `: ${error.message}` : ''}
+      </div>
+    );
+  }
+
+  return (
+    <ChatInner
+      chatId={chatId}
+      clientId={clientId}
+      chatTransport={chatTransport}
+    />
+  );
+}
+
+function ChatInner({
   chatId,
   clientId,
-  historyLimit,
-  faultRef,
+  chatTransport,
 }: {
   chatId: string;
   clientId?: string;
-  historyLimit?: number;
-  faultRef: RefObject<FaultMode | undefined>;
+  chatTransport: ChatTransport;
 }) {
-  // The ChatTransport + underlying ClientSession are created by
-  // ChatTransportProvider in page.tsx. The client is identical to the non-durable
-  // `use-chat` demo — only the server execution model (Vercel Workflows) differs.
-  const { chatTransport, session } = useChatTransport();
-
   // -- Callback & status logging for the debug pane ------------------------
   const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
   const [statusLog, setStatusLog] = useState<{ time: number; status: string; error?: string }[]>([]);
@@ -120,38 +132,72 @@ export function Chat({
     });
   }, []);
 
-  const { setMessages, sendMessage, stop, status, error, regenerate, addToolResult, addToolApprovalResponse } = useChat(
-    {
-      id: chatId,
-      transport: chatTransport,
-      // Auto-submit a continuation once a client-side tool result or a server-tool
-      // approval resolves, so the suspended run resumes (on a fresh workflow).
-      sendAutomaticallyWhen: ({ messages: msgs }) =>
-        lastAssistantMessageIsCompleteWithToolCalls({ messages: msgs }) ||
-        lastAssistantMessageIsCompleteWithApprovalResponses({ messages: msgs }),
-      onToolCall: ({ toolCall }) => {
-        setCallbackLog((prev) => [
-          ...prev,
-          { time: Date.now(), type: 'onToolCall', summary: `${toolCall.toolName}(${JSON.stringify(toolCall.input)})` },
-        ]);
-      },
-      onFinish: ({ message, finishReason }) => {
-        setCallbackLog((prev) => [
-          ...prev,
-          {
-            time: Date.now(),
-            type: 'onFinish',
-            summary: `reason=${String(finishReason)}, parts=${String(message.parts.length)}`,
-          },
-        ]);
-      },
-      onError: (err) => {
-        setCallbackLog((prev) => [...prev, { time: Date.now(), type: 'onError', summary: err.message }]);
-      },
-    },
-  );
+  // This demo does no history hydration (the persistence story lives in the
+  // use-chat-db demo), so the adapter's wire indices seed empty: from here on
+  // it indexes live events, which is what a continuation needs to address the
+  // suspended run.
+  useEffect(() => {
+    chatTransport.seed([]);
+  }, [chatTransport]);
 
-  useMessageSync({ setMessages });
+  // onToolCall fires while the send's stream is still being consumed; the
+  // helpers it needs come from the useChat return below, so thread them
+  // through a ref.
+  const addToolOutputRef = useRef<ReturnType<typeof useChat>['addToolOutput'] | null>(null);
+
+  const { messages, sendMessage, stop, status, error, addToolOutput, addToolApprovalResponse } = useChat({
+    id: chatId,
+    transport: chatTransport,
+    // Rejoin an in-flight run's stream after a reload: the adapter classifies
+    // the open run from channel history and replays it.
+    resume: true,
+    // Auto-submit a continuation once a client-side tool result or a server-tool
+    // approval resolves, so the suspended run resumes (on a fresh workflow).
+    sendAutomaticallyWhen: ({ messages: msgs }) =>
+      lastAssistantMessageIsCompleteWithToolCalls({ messages: msgs }) ||
+      lastAssistantMessageIsCompleteWithApprovalResponses({ messages: msgs }),
+    onToolCall: ({ toolCall }) => {
+      setCallbackLog((prev) => [
+        ...prev,
+        { time: Date.now(), type: 'onToolCall', summary: `${toolCall.toolName}(${JSON.stringify(toolCall.input)})` },
+      ]);
+      // Client-executed tools (no server `execute`): run them in the browser
+      // and feed the output back; sendAutomaticallyWhen then publishes the
+      // resolution and resumes the suspended run.
+      if (!hasClientTool(toolCall.toolName)) return;
+      void runClientTool(toolCall.toolName, toolCall.toolCallId, toolCall.input, recordClientTool).then((result) => {
+        const add = addToolOutputRef.current;
+        if (!add) return;
+        if ('output' in result) {
+          void add({ tool: toolCall.toolName, toolCallId: toolCall.toolCallId, output: result.output });
+        } else {
+          void add({
+            state: 'output-error',
+            tool: toolCall.toolName,
+            toolCallId: toolCall.toolCallId,
+            errorText: result.errorText,
+          });
+        }
+      });
+    },
+    onFinish: ({ message, finishReason }) => {
+      setCallbackLog((prev) => [
+        ...prev,
+        {
+          time: Date.now(),
+          type: 'onFinish',
+          summary: `reason=${String(finishReason)}, parts=${String(message.parts.length)}`,
+        },
+      ]);
+    },
+    onError: (err) => {
+      setCallbackLog((prev) => [...prev, { time: Date.now(), type: 'onError', summary: err.message }]);
+    },
+  });
+
+  useEffect(() => {
+    addToolOutputRef.current = addToolOutput;
+  }, [addToolOutput]);
 
   // Track status transitions, annotating an `error` transition with the
   // accompanying error message useChat exposes alongside the status.
@@ -162,104 +208,67 @@ export function Chat({
     ]);
   }, [status, error]);
 
-  // useChat.stop() targets the run it owns; Stop shows while it is mid-request.
   const isRunning = status === 'submitted' || status === 'streaming';
-
-  // Auto-loads first page on mount.
-  const { messages, hasOlder, loading, loadOlder, branchSelection, runOf } = useView({ limit: historyLimit ?? 30 });
-
-  useClientTools(session, messages, addToolResult, runOf, clientId, recordClientTool);
 
   const ablyMessages = useAblyMessages();
 
-  const unfinishedScenarios = useDemoProgress(SCENARIOS, messages, branchSelection, runOf, ablyMessages);
-
-  const [input, setInput] = useState('');
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  // Snap-to-live-edge callback published by the transcript; sending always
-  // jumps to the bottom so the new turn and its streamed reply are in view.
-  const scrollToEndRef = useRef<(() => void) | null>(null);
-  const handleSelectPrompt = useCallback((prompt: string) => {
-    setInput(prompt);
-    inputRef.current?.focus();
+  // Armed fault for the next turn. It rides a one-shot cookie the chat route
+  // consumes (the AIT transport owns the POST body, so demo controls travel
+  // out-of-band); the route clears the cookie with the send that carried it.
+  const [fault, setFault] = useState<FaultMode | undefined>(undefined);
+  const armFault = useCallback((next: FaultMode | undefined) => {
+    setFault(next);
+    document.cookie = next ? `${FAULT_COOKIE}=${next}; path=/` : `${FAULT_COOKIE}=; path=/; max-age=0`;
   }, []);
 
-  // Armed fault for the next turn. Mirrored into `faultRef` so the transport's
-  // prepareSendMessagesRequest (created in page.tsx) reads the current value.
-  const [fault, setFault] = useState<FaultMode | undefined>(undefined);
-  const armFault = useCallback(
-    (next: FaultMode | undefined) => {
-      setFault(next);
-      faultRef.current = next;
-    },
-    [faultRef],
-  );
-
-  // The transport consumes the armed fault with the send that carries it
-  // (one-shot — see page.tsx); disarm the toggle visually to match.
+  // The route consumes the armed fault with the send that carries it; disarm
+  // the toggle visually to match.
   useEffect(() => {
     if (status === 'submitted') setFault(undefined);
   }, [status]);
 
   return (
-    <ChatShell
-      title="Ably AI Transport — Vercel WDK"
-      channelName={chatId}
-      clientId={clientId}
-      input={input}
-      onInputChange={setInput}
-      inputRef={inputRef}
-      onSend={(text) => {
-        scrollToEndRef.current?.();
-        sendMessage({ text });
-      }}
-      onStop={stop}
-      isRunning={isRunning}
-      suggestions={unfinishedScenarios}
-      onSelectPrompt={handleSelectPrompt}
-      extraSlot={
-        <FaultControls
-          fault={fault}
-          onChange={armFault}
-        />
-      }
-      transcript={
-        <BranchingMessageList
-          messages={messages}
-          hasOlder={hasOlder}
-          loading={loading}
-          view={{ branchSelection, runOf }}
-          onLoadOlder={loadOlder}
-          scrollToEndRef={scrollToEndRef}
+    <div className="flex h-dvh overflow-hidden">
+      <div className="min-w-0 flex-1">
+        <ChatContainer
+          chatId={chatId}
+          clientId={clientId}
+          headerTitle="Ably AI Transport — Vercel WDK"
           scenarios={SCENARIOS}
           introTitle={INTRO_TITLE}
           introDescription={INTRO_DESCRIPTION}
-          onRegenerate={(cm) => regenerate({ messageId: cm.message.id })}
-          onEdit={(cm, text) => sendMessage({ text, messageId: cm.message.id })}
-          onToolApprove={(_cm, toolPart) => {
-            const id = toolPart.approval?.id;
-            if (id) addToolApprovalResponse({ id, approved: true });
+          messages={messages}
+          isRunning={isRunning}
+          onSend={(text) => {
+            void sendMessage({ text });
           }}
-          onToolDeny={(_cm, toolPart) => {
-            const id = toolPart.approval?.id;
-            if (id) addToolApprovalResponse({ id, approved: false, reason: 'User denied' });
+          onStop={() => {
+            void stop();
           }}
+          onToolApprove={(toolPart) => {
+            const id = toolPart.approval?.id;
+            if (id) void addToolApprovalResponse({ id, approved: true });
+          }}
+          onToolDeny={(toolPart) => {
+            const id = toolPart.approval?.id;
+            if (id) void addToolApprovalResponse({ id, approved: false, reason: 'User denied' });
+          }}
+          ablyMessages={ablyMessages}
+          callbackLog={callbackLog}
+          clientToolLog={clientToolLog}
+          statusLog={statusLog}
+          onClearLogs={clearLogs}
+          extraSlot={
+            <FaultControls
+              fault={fault}
+              onChange={armFault}
+            />
+          }
         />
-      }
-      debugPane={
-        <>
-          <WdkProcessPanel channelName={chatId} />
-          <DebugPane
-            messages={messages}
-            ablyMessages={ablyMessages}
-            status={status}
-            callbackLog={callbackLog}
-            statusLog={statusLog}
-            clientToolLog={clientToolLog}
-            onClearLogs={clearLogs}
-          />
-        </>
-      }
-    />
+      </div>
+      {/* The shared Chat owns its debug pane; the WDK process view renders as
+          a sibling column so both panels stay visible. */}
+      <WdkProcessPanel channelName={chatId} />
+    </div>
   );
 }

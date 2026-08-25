@@ -2,15 +2,15 @@ import { describe, it, expect } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import type * as Ably from 'ably';
 import type * as AI from 'ai';
-import { EVENT_CANCEL, type BranchHandle, type CodecMessage, type RunInfo } from '@ably/ai-transport';
+import { EVENT_CANCEL, EVENT_RUN_START, HEADER_RUN_CLIENT_ID } from '@ably/ai-transport';
 
 import { useDemoProgress } from '../use-demo-progress';
 import type { Scenario } from '../../lib/progress-steps';
 
 // useDemoProgress filters a demo's scenario list down to the trackable ones
-// (those with an `id`) that are still unfinished, detecting completion from the
-// conversation tree, run metadata, branch siblings, and the channel's raw
-// messages. These tests pin each built-in completion detector.
+// (those with an `id`) that are still unfinished, detecting completion from
+// the conversation's tool activity and the channel's raw messages (event
+// names + transport headers). These tests pin each built-in detector.
 
 // A demo's scenario list: the eight trackable scenarios plus one intro-only
 // entry (no id) that is never offered as a chip.
@@ -20,35 +20,17 @@ const SCENARIOS: Scenario[] = [
   { id: 'approval-forecast', tag: 'Approval', title: 'Approval-gated tool', blurb: 'b', prompt: 'forecast?' },
   { id: 'retry-stock', tag: 'Retry', title: 'Durable retry', blurb: 'b', prompt: 'stock price?' },
   { id: 'multi-tab', tag: 'Sync', title: 'Multi-client sync', blurb: 'b', gesture: 'open in a new tab' },
-  { id: 'edit', tag: 'Branching', title: 'Edit', blurb: 'b', gesture: 'edit a message' },
-  { id: 'regenerate', tag: 'Branching', title: 'Regenerate', blurb: 'b', gesture: 'regenerate a reply' },
+  { id: 'regenerate', tag: 'Regenerate', title: 'Regenerate', blurb: 'b', gesture: 'regenerate a reply' },
   { id: 'cancel', tag: 'Cancel', title: 'Cancel mid-stream', blurb: 'b', gesture: 'stop mid-stream' },
   { tag: 'Observability', title: 'Observability', blurb: 'b', gesture: 'open the Debug pane' },
 ];
 
-const noBranch = (): BranchHandle<AI.UIMessage> => ({
-  hasSiblings: false,
-  siblings: [],
-  index: 0,
-  selected: undefined,
-  select: () => {},
-});
-
-function withSiblings(): BranchHandle<AI.UIMessage> {
-  const sib: AI.UIMessage = { id: 's', role: 'user', parts: [] };
-  return { hasSiblings: true, siblings: [sib, sib], index: 0, selected: sib, select: () => {} };
+function userTurn(id: string, text = 'hello'): AI.UIMessage {
+  return { id, role: 'user', parts: [{ type: 'text', text }] };
 }
 
-function completeRun(clientId: string): RunInfo {
-  return { runId: `run-${clientId}`, clientId, invocationId: '', steps: [], status: 'complete' };
-}
-
-function userTurn(id: string, text = 'hello'): CodecMessage<AI.UIMessage> {
-  return { codecMessageId: id, message: { id, role: 'user', parts: [{ type: 'text', text }] } };
-}
-
-function assistantTurn(id: string, parts: AI.UIMessage['parts']): CodecMessage<AI.UIMessage> {
-  return { codecMessageId: id, message: { id, role: 'assistant', parts } };
+function assistantTurn(id: string, parts: AI.UIMessage['parts']): AI.UIMessage {
+  return { id, role: 'assistant', parts };
 }
 
 // CAST: `ToolUIPart` is a discriminated union keyed on `state`; a plain object
@@ -64,26 +46,26 @@ function toolPart(name: string, state: 'input-available' | 'output-available'): 
   } as AI.ToolUIPart;
 }
 
-// CAST: the hook reads only `.name` off each inbound message; build the minimal
-// shape and assert the InboundMessage type.
-function cancelMessage(): Ably.InboundMessage {
-  return { name: EVENT_CANCEL } as Ably.InboundMessage;
+// CAST: the hook reads only `name` and the `extras.ai` header tiers off each
+// inbound message; build the minimal shape and assert the type.
+function wireMessage(
+  name: string | undefined,
+  transportHeaders: Record<string, string> = {},
+  codecHeaders: Record<string, string> = {},
+): Ably.InboundMessage {
+  return { name, extras: { ai: { transport: transportHeaders, codec: codecHeaders } } } as Ably.InboundMessage;
 }
 
 function progress(
-  messages: CodecMessage<AI.UIMessage>[],
+  messages: AI.UIMessage[],
   opts: {
-    branchSelection?: (id: string) => BranchHandle<AI.UIMessage>;
-    runOf?: (id: string) => RunInfo | undefined;
     ablyMessages?: Ably.InboundMessage[];
     scenarios?: Scenario[];
   } = {},
 ): Scenario[] {
-  const branchSelection = opts.branchSelection ?? noBranch;
-  const runOf = opts.runOf ?? (() => undefined);
   const ablyMessages = opts.ablyMessages ?? [];
   const scenarios = opts.scenarios ?? SCENARIOS;
-  return renderHook(() => useDemoProgress(scenarios, messages, branchSelection, runOf, ablyMessages)).result.current;
+  return renderHook(() => useDemoProgress(scenarios, messages, ablyMessages)).result.current;
 }
 
 const ids = (result: Scenario[]) => result.map((s) => s.id);
@@ -96,7 +78,6 @@ describe('useDemoProgress', () => {
       'approval-forecast',
       'retry-stock',
       'multi-tab',
-      'edit',
       'regenerate',
       'cancel',
     ]);
@@ -133,31 +114,41 @@ describe('useDemoProgress', () => {
   });
 
   it('marks cancel done when an ai-cancel message appears on the channel', () => {
-    expect(ids(progress([], { ablyMessages: [cancelMessage()] }))).not.toContain('cancel');
+    expect(ids(progress([], { ablyMessages: [wireMessage(EVENT_CANCEL)] }))).not.toContain('cancel');
   });
 
-  it('marks multi-tab done when runs from more than one client appear', () => {
-    const messages = [userTurn('u1'), userTurn('u2')];
-    const runOf = (id: string): RunInfo | undefined =>
-      id === 'u1' ? completeRun('client-a') : completeRun('client-b');
-    expect(ids(progress(messages, { runOf }))).not.toContain('multi-tab');
+  it('marks regenerate done when an input carries the codec-tier regenerate kind', () => {
+    const ablyMessages = [wireMessage('ai-input', {}, { kind: 'regenerate' })];
+    expect(ids(progress([], { ablyMessages }))).not.toContain('regenerate');
   });
 
-  it('keeps multi-tab while every run belongs to a single client', () => {
-    const messages = [userTurn('u1'), userTurn('u2')];
-    const runOf = (): RunInfo | undefined => completeRun('client-a');
-    expect(ids(progress(messages, { runOf }))).toContain('multi-tab');
+  it('marks multi-tab done when ai-run-start messages carry more than one run-client-id', () => {
+    const ablyMessages = [
+      wireMessage(EVENT_RUN_START, { [HEADER_RUN_CLIENT_ID]: 'client-a' }),
+      wireMessage(EVENT_RUN_START, { [HEADER_RUN_CLIENT_ID]: 'client-b' }),
+    ];
+    expect(ids(progress([], { ablyMessages }))).not.toContain('multi-tab');
   });
 
-  it('marks regenerate done when an assistant message has siblings', () => {
-    const messages = [userTurn('u1'), assistantTurn('a1', [{ type: 'text', text: 'hi' }])];
-    const branchSelection = (id: string): BranchHandle<AI.UIMessage> => (id === 'a1' ? withSiblings() : noBranch());
-    expect(ids(progress(messages, { branchSelection }))).not.toContain('regenerate');
+  it('keeps multi-tab while every run starts from a single client', () => {
+    const ablyMessages = [
+      wireMessage(EVENT_RUN_START, { [HEADER_RUN_CLIENT_ID]: 'client-a' }),
+      wireMessage(EVENT_RUN_START, { [HEADER_RUN_CLIENT_ID]: 'client-a' }),
+    ];
+    expect(ids(progress([], { ablyMessages }))).toContain('multi-tab');
   });
 
-  it('marks edit done when a user message has siblings', () => {
-    const messages = [userTurn('u1'), assistantTurn('a1', [{ type: 'text', text: 'hi' }])];
-    const branchSelection = (id: string): BranchHandle<AI.UIMessage> => (id === 'u1' ? withSiblings() : noBranch());
-    expect(ids(progress(messages, { branchSelection }))).not.toContain('edit');
+  it('ignores run-client-id headers on messages that are not ai-run-start', () => {
+    const ablyMessages = [
+      wireMessage(EVENT_RUN_START, { [HEADER_RUN_CLIENT_ID]: 'client-a' }),
+      wireMessage('ai-output', { [HEADER_RUN_CLIENT_ID]: 'client-b' }),
+    ];
+    expect(ids(progress([], { ablyMessages }))).toContain('multi-tab');
+  });
+
+  it('handles wire messages with no extras.ai envelope', () => {
+    // CAST: a foreign message published by the application carries no extras.
+    const foreign = { name: 'app-event' } as Ably.InboundMessage;
+    expect(ids(progress([], { ablyMessages: [foreign] }))).toContain('regenerate');
   });
 });

@@ -2,16 +2,16 @@
  * Cancel-envelope unit tests.
  *
  * The publish side (buildCancelMessage) and the read side (readCancelTarget)
- * are inverses over the cancel wire shape: the target identifiers round-trip,
- * an event-id is always stamped for rewind redelivery but is never read back
- * (cancels are idempotent), and a malformed cancel surfaces as both fields
- * undefined.
+ * are inverses over the cancel wire shape: the target run-id round-trips, an
+ * event-id is always stamped for rewind redelivery but is never read back
+ * (cancels are idempotent), and a malformed cancel surfaces as an undefined
+ * run-id.
  */
 
 import type * as Ably from 'ably';
 import { describe, expect, it } from 'vitest';
 
-import { EVENT_CANCEL, HEADER_EVENT_ID, HEADER_INPUT_CODEC_MESSAGE_ID, HEADER_RUN_ID } from '../../../src/constants.js';
+import { EVENT_CANCEL, HEADER_EVENT_ID, HEADER_RUN_ID } from '../../../src/constants.js';
 import { buildCancelMessage, readCancelTarget } from '../../../src/core/transport/cancel-envelope.js';
 
 // The transport headers carried under the message's `extras.ai.transport`.
@@ -36,41 +36,25 @@ describe('buildCancelMessage', () => {
     expect(a).not.toBe(b);
   });
 
-  it('stamps run-id when targeting a continuation', () => {
+  it('stamps the target run-id', () => {
     const headers = transportHeaders(buildCancelMessage({ runId: 'R1' }));
     expect(headers[HEADER_RUN_ID]).toBe('R1');
-    expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBeUndefined();
-  });
-
-  it('stamps input-codec-message-id when targeting a fresh send', () => {
-    const headers = transportHeaders(buildCancelMessage({ inputCodecMessageId: 'C1' }));
-    expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('C1');
-    expect(headers[HEADER_RUN_ID]).toBeUndefined();
-  });
-
-  it('stamps both identifiers when both are supplied', () => {
-    const headers = transportHeaders(buildCancelMessage({ runId: 'R1', inputCodecMessageId: 'C1' }));
-    expect(headers[HEADER_RUN_ID]).toBe('R1');
-    expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('C1');
   });
 });
 
 describe('readCancelTarget', () => {
-  it('reads back the target identifiers built by buildCancelMessage', () => {
-    const built = buildCancelMessage({ runId: 'R1', inputCodecMessageId: 'C1' });
+  it('reads back the run-id built by buildCancelMessage', () => {
+    const built = buildCancelMessage({ runId: 'R1' });
     const target = readCancelTarget(inbound(transportHeaders(built)));
-    expect(target).toEqual({ runId: 'R1', inputCodecMessageId: 'C1' });
+    expect(target).toEqual({ runId: 'R1' });
   });
 
   it('ignores the event-id — cancels are idempotent', () => {
     const target = readCancelTarget(inbound({ [HEADER_EVENT_ID]: 'E1', [HEADER_RUN_ID]: 'R1' }));
-    expect(target).toEqual({ runId: 'R1', inputCodecMessageId: undefined });
+    expect(target).toEqual({ runId: 'R1' });
   });
 
-  it('returns both fields undefined for a malformed cancel carrying neither identifier', () => {
-    expect(readCancelTarget(inbound({ [HEADER_EVENT_ID]: 'E1' }))).toEqual({
-      runId: undefined,
-      inputCodecMessageId: undefined,
-    });
+  it('returns an undefined run-id for a malformed cancel', () => {
+    expect(readCancelTarget(inbound({ [HEADER_EVENT_ID]: 'E1' }))).toEqual({ runId: undefined });
   });
 });

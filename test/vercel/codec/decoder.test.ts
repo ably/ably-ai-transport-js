@@ -5,16 +5,12 @@ import { describe, expect, it } from 'vitest';
 import {
   EVENT_AI_INPUT,
   EVENT_AI_OUTPUT,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_DISCRETE,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
   HEADER_EVENT_ID,
-  HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
   HEADER_INVOCATION_ID,
-  HEADER_MSG_REGENERATE,
-  HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
@@ -22,14 +18,15 @@ import {
   HEADER_STATUS,
   HEADER_STREAM,
   HEADER_STREAM_ID,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../../src/constants.js';
 import { createUIMessageCodec } from '../../../src/vercel/codec/index.js';
 
 const UIMessageCodec = createUIMessageCodec();
 
-// The codec is now assembled by defineCodec; createDecoder is the generic
-// factory it produces (a plain closure, safe to destructure).
-const createDecoder = UIMessageCodec.createDecoder;
+// createDecoder is a plain closure on the assembled codec, safe to reference
+// unbound.
+const createDecoder: typeof UIMessageCodec.createDecoder = () => UIMessageCodec.createDecoder();
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -46,13 +43,10 @@ const TRANSPORT_HEADER_KEYS = new Set<string>([
   HEADER_RUN_ID,
   HEADER_INVOCATION_ID,
   HEADER_EVENT_ID,
-  HEADER_CODEC_MESSAGE_ID,
+  HEADER_TRANSPORT_MESSAGE_ID,
   HEADER_RUN_CLIENT_ID,
   HEADER_INPUT_CLIENT_ID,
   HEADER_ROLE,
-  HEADER_PARENT,
-  HEADER_FORK_OF,
-  HEADER_MSG_REGENERATE,
   HEADER_RUN_REASON,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
@@ -81,9 +75,7 @@ const withHeaders = (msg: Partial<Ably.InboundMessage>, headers: Record<string, 
 const eventTypesOf = (outputs: AI.UIMessageChunk[]): string[] => outputs.map((e) => e.type);
 
 const messagesOf = (inputs: ReturnType<ReturnType<typeof createDecoder>['decode']>['inputs']): AI.UIMessage[] =>
-  inputs
-    .filter((e): e is Extract<typeof e, { kind: 'user-message' }> => e.kind === 'user-message')
-    .map((e) => e.message);
+  inputs.filter((e): e is Extract<typeof e, { kind: 'message' }> => e.kind === 'message').map((e) => e.payload);
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -242,7 +234,7 @@ describe('Vercel decoder', () => {
 
   // -- foreign messages -----------------------------------------------------
   //
-  // An application sharing the session's channel publishes its own messages
+  // An application sharing the transport's channel publishes its own messages
   // there. They carry neither the SDK's wire names nor its `extras.ai`
   // envelope, and must decode to nothing without disturbing a live stream.
 
@@ -1091,325 +1083,82 @@ describe('Vercel decoder', () => {
   // -- discrete message decoding (writeMessages relays) ---------------------
 
   describe('discrete message decoding', () => {
-    it('decodes a text user-message part into a UIMessage', () => {
+    it('decodes a text message part into a message input', () => {
       const decoder = createDecoder();
       const msg = withHeaders(
         { name: EVENT_AI_INPUT, data: 'Hello world' },
         {
           [HEADER_STREAM]: 'false',
-          [HEADER_DISCRETE]: 'true',
           [HEADER_ROLE]: 'user',
-          [HEADER_CODEC_MESSAGE_ID]: 'msg-1',
-          kind: 'user-message',
+          kind: 'message',
           partType: 'text',
-          messageId: 'ui-1',
-        },
-      );
-
-      const { inputs } = decoder.decode(msg);
-      const messages = messagesOf(inputs);
-
-      expect(messages).toHaveLength(1);
-      expect(messages[0]).toEqual(
-        expect.objectContaining({
-          id: 'ui-1',
-          role: 'user',
-          parts: [{ type: 'text', text: 'Hello world' }],
-        }),
-      );
-    });
-
-    it('decodes a file user-message part into a UIMessage', () => {
-      const decoder = createDecoder();
-      const msg = withHeaders(
-        { name: EVENT_AI_INPUT, data: 'https://example.com/img.png' },
-        {
-          [HEADER_STREAM]: 'false',
-          [HEADER_DISCRETE]: 'true',
-          [HEADER_ROLE]: 'user',
-          [HEADER_CODEC_MESSAGE_ID]: 'msg-2',
-          kind: 'user-message',
-          partType: 'file',
-          messageId: 'ui-2',
-          mediaType: 'image/png',
-        },
-      );
-
-      const { inputs } = decoder.decode(msg);
-      const messages = messagesOf(inputs);
-
-      expect(messages).toHaveLength(1);
-      expect(messages[0]).toEqual(
-        expect.objectContaining({
-          id: 'ui-2',
-          role: 'user',
-          parts: [{ type: 'file', mediaType: 'image/png', url: 'https://example.com/img.png' }],
-        }),
-      );
-    });
-
-    it('decodes data-* user-message part as a discrete message', () => {
-      const decoder = createDecoder();
-      const msg = withHeaders(
-        { name: EVENT_AI_INPUT, data: { agentLabel: 'Returns', tasks: [] } },
-        {
-          [HEADER_STREAM]: 'false',
-          [HEADER_DISCRETE]: 'true',
-          [HEADER_ROLE]: 'user',
-          [HEADER_CODEC_MESSAGE_ID]: 'msg-d1',
-          kind: 'user-message',
-          partType: 'data-agent-progress',
-          messageId: 'ui-d1',
-          id: 'dp-1',
-        },
-      );
-
-      const { inputs } = decoder.decode(msg);
-      const messages = messagesOf(inputs);
-
-      expect(messages).toHaveLength(1);
-      expect(messages[0]).toEqual(
-        expect.objectContaining({
-          id: 'ui-d1',
-          role: 'user',
-          parts: [{ type: 'data-agent-progress', id: 'dp-1', data: { agentLabel: 'Returns', tasks: [] } }],
-        }),
-      );
-    });
-
-    it('decodes agent-published data-* events under ai-output as projection events, not user-message parts', () => {
-      const decoder = createDecoder();
-      // Agent-published data-* events ride `ai-output` with the codec `kind`
-      // header carrying the codec event type. They carry no HEADER_DISCRETE and
-      // produce an output event so the accumulator can merge them into
-      // the streamed assistant response message.
-      const msg = withHeaders(
-        { name: EVENT_AI_OUTPUT, data: { agentLabel: 'Returns', tasks: [] } },
-        {
-          [HEADER_STREAM]: 'false',
-          [HEADER_ROLE]: 'assistant',
-          [HEADER_RUN_ID]: 'run-1',
-          [HEADER_CODEC_MESSAGE_ID]: 'msg-d2',
-          kind: 'data-agent-progress',
+          messageId: 'm1',
         },
       );
 
       const { inputs, outputs } = decoder.decode(msg);
+      expect(outputs).toHaveLength(0);
       const messages = messagesOf(inputs);
-
-      expect(messages).toHaveLength(0);
-      expect(outputs).toHaveLength(1);
-      expect(outputs[0]).toEqual(
-        expect.objectContaining({ type: 'data-agent-progress', data: { agentLabel: 'Returns', tasks: [] } }),
-      );
+      expect(messages).toHaveLength(1);
+      expect(messages[0]?.id).toBe('m1');
+      expect(messages[0]?.role).toBe('user');
+      expect(messages[0]?.parts).toEqual([{ type: 'text', text: 'Hello world' }]);
     });
 
-    it('preserves role from headers', () => {
+    it('decodes agent-published data-* events under ai-output as output events, not message parts', () => {
       const decoder = createDecoder();
       const msg = withHeaders(
-        { name: EVENT_AI_INPUT, data: 'System message' },
+        { name: EVENT_AI_OUTPUT, data: { chart: [1, 2] } },
+        { [HEADER_STREAM]: 'false', kind: 'data-chart', id: 'd1' },
+      );
+
+      const { inputs, outputs } = decoder.decode(msg);
+      expect(inputs).toHaveLength(0);
+      expect(outputs).toHaveLength(1);
+      expect(outputs[0]).toMatchObject({ type: 'data-chart', data: { chart: [1, 2] } });
+    });
+
+    it('preserves the role header on a decoded message input', () => {
+      const decoder = createDecoder();
+      const msg = withHeaders(
+        { name: EVENT_AI_INPUT, data: 'system note' },
         {
           [HEADER_STREAM]: 'false',
-          [HEADER_DISCRETE]: 'true',
           [HEADER_ROLE]: 'system',
-          [HEADER_CODEC_MESSAGE_ID]: 'msg-4',
-          kind: 'user-message',
+          kind: 'message',
           partType: 'text',
-          messageId: 'ui-4',
+          messageId: 'm2',
         },
       );
 
-      const { inputs } = decoder.decode(msg);
-      const messages = messagesOf(inputs);
-
-      expect(messages).toHaveLength(1);
+      const messages = messagesOf(decoder.decode(msg).inputs);
       expect(messages[0]?.role).toBe('system');
     });
 
-    it('decodes a discrete user-message part as a UserMessage', () => {
+    it('dispatches a message part on kind alone — no HEADER_DISCRETE marker required', () => {
       const decoder = createDecoder();
-      const msg = withHeaders(
-        { name: EVENT_AI_INPUT, data: 'hi' },
-        {
-          [HEADER_STREAM]: 'false',
-          [HEADER_DISCRETE]: 'true',
-          [HEADER_ROLE]: 'user',
-          [HEADER_CODEC_MESSAGE_ID]: 'msg-5',
-          kind: 'user-message',
-          partType: 'text',
-          messageId: 'ui-5',
-        },
-      );
-
-      const { inputs, outputs } = decoder.decode(msg);
-      expect(outputs).toHaveLength(0);
-      expect(inputs).toHaveLength(1);
-      expect(inputs[0]?.kind).toBe('user-message');
-    });
-
-    it('decodes ai-input tool-approval-response into a ToolApprovalResponse input', () => {
-      const decoder = createDecoder();
-      const msg = withHeaders(
-        { name: EVENT_AI_INPUT, data: '' },
-        {
-          [HEADER_STREAM]: 'false',
-          [HEADER_CODEC_MESSAGE_ID]: 'continuation-codec-message-id',
-          kind: 'tool-approval-response',
-          toolCallId: 'tc-1',
-          approved: 'true',
-          reason: 'ok',
-        },
-      );
-
-      const { inputs, outputs } = decoder.decode(msg);
-      expect(outputs).toHaveLength(0);
-      expect(inputs).toHaveLength(1);
-      const input = inputs[0];
-      expect(input?.kind).toBe('tool-approval-response');
-      if (input?.kind !== 'tool-approval-response') return;
-      expect(input.payload.toolCallId).toBe('tc-1');
-      expect(input.payload.approved).toBe(true);
-      expect(input.payload.reason).toBe('ok');
-      expect(input.codecMessageId).toBe('continuation-codec-message-id');
-    });
-
-    it('decodes ai-input tool-result wire into a ToolResult input', () => {
-      const decoder = createDecoder();
-      // Client-side tool-result rides the `ai-input` wire with
-      // kind: 'tool-result'.
-      const msg = withHeaders(
-        { name: EVENT_AI_INPUT, data: { output: { latitude: 51.5, longitude: -0.1 } } },
-        {
-          [HEADER_STREAM]: 'false',
-          [HEADER_CODEC_MESSAGE_ID]: 'continuation-codec-message-id',
-          kind: 'tool-result',
-          toolCallId: 'tc-1',
-        },
-      );
-
-      const { inputs, outputs } = decoder.decode(msg);
-      expect(outputs).toHaveLength(0);
-      expect(inputs).toHaveLength(1);
-      const input = inputs[0];
-      expect(input?.kind).toBe('tool-result');
-      if (input?.kind !== 'tool-result') return;
-      expect(input.payload.toolCallId).toBe('tc-1');
-      expect(input.payload.output).toEqual({ latitude: 51.5, longitude: -0.1 });
-      expect(input.codecMessageId).toBe('continuation-codec-message-id');
-    });
-
-    it('decodes ai-input tool-result-error wire into a ToolResultError input', () => {
-      const decoder = createDecoder();
-      const msg = withHeaders(
-        { name: EVENT_AI_INPUT, data: { message: 'geolocation denied' } },
-        {
-          [HEADER_STREAM]: 'false',
-          [HEADER_CODEC_MESSAGE_ID]: 'continuation-codec-message-id',
-          kind: 'tool-result-error',
-          toolCallId: 'tc-1',
-        },
-      );
-
-      const { inputs, outputs } = decoder.decode(msg);
-      expect(outputs).toHaveLength(0);
-      expect(inputs).toHaveLength(1);
-      const input = inputs[0];
-      expect(input?.kind).toBe('tool-result-error');
-      if (input?.kind !== 'tool-result-error') return;
-      expect(input.payload.toolCallId).toBe('tc-1');
-      expect(input.payload.message).toBe('geolocation denied');
-      expect(input.codecMessageId).toBe('continuation-codec-message-id');
-    });
-
-    it('rejects non-object tool-result wire data — output is undefined', () => {
-      const decoder = createDecoder();
-      const msg = withHeaders(
-        { name: EVENT_AI_INPUT, data: 'oops' },
-        {
-          [HEADER_STREAM]: 'false',
-          [HEADER_CODEC_MESSAGE_ID]: 'continuation-codec-message-id',
-          kind: 'tool-result',
-          toolCallId: 'tc-1',
-        },
-      );
-
-      const { inputs } = decoder.decode(msg);
-      const input = inputs[0];
-      expect(input?.kind).toBe('tool-result');
-      if (input?.kind !== 'tool-result') return;
-      expect(input.payload.toolCallId).toBe('tc-1');
-      expect(input.payload.output).toBeUndefined();
-    });
-
-    it('rejects non-string tool-result-error message — falls back to empty', () => {
-      const decoder = createDecoder();
-      const msg = withHeaders(
-        { name: EVENT_AI_INPUT, data: { message: 99 } },
-        {
-          [HEADER_STREAM]: 'false',
-          [HEADER_CODEC_MESSAGE_ID]: 'continuation-codec-message-id',
-          kind: 'tool-result-error',
-          toolCallId: 'tc-1',
-        },
-      );
-
-      const { inputs } = decoder.decode(msg);
-      const input = inputs[0];
-      expect(input?.kind).toBe('tool-result-error');
-      if (input?.kind !== 'tool-result-error') return;
-      expect(input.payload.toolCallId).toBe('tc-1');
-      expect(input.payload.message).toBe('');
-    });
-
-    it('dispatches a user-message part on kind alone — no HEADER_DISCRETE marker required', () => {
-      const decoder = createDecoder();
-      // The discrete marker is deliberately omitted. Input dispatch is now a
-      // single `kind` switch, so a `kind: 'user-message'` part reconstructs
-      // without consulting HEADER_DISCRETE.
       const msg = withHeaders(
         { name: EVENT_AI_INPUT, data: 'no marker' },
         {
-          [HEADER_STREAM]: 'false',
           [HEADER_ROLE]: 'user',
-          [HEADER_CODEC_MESSAGE_ID]: 'msg-nd',
-          kind: 'user-message',
+          kind: 'message',
           partType: 'text',
-          messageId: 'ui-nd',
+          messageId: 'm3',
         },
       );
 
-      expect(HEADER_DISCRETE in (msg.extras as { ai: { transport: Record<string, string> } }).ai.transport).toBe(false);
-
-      const { inputs } = decoder.decode(msg);
-      const messages = messagesOf(inputs);
+      const messages = messagesOf(decoder.decode(msg).inputs);
       expect(messages).toHaveLength(1);
-      expect(messages[0]).toEqual(
-        expect.objectContaining({ id: 'ui-nd', role: 'user', parts: [{ type: 'text', text: 'no marker' }] }),
-      );
+      expect(messages[0]?.parts).toEqual([{ type: 'text', text: 'no marker' }]);
     });
 
     it('decodes ai-input regenerate wires into zero events (routing lives on transport headers)', () => {
       const decoder = createDecoder();
-      // The regenerate wire carries `parent` and `msg-regenerate`
-      // on transport headers so the agent's input-event lookup can resolve
-      // run-routing metadata from the matched event's headers. The decoder
-      // itself has no domain events to emit — regenerate wires are wire-only.
-      const msg = withHeaders(
-        { name: EVENT_AI_INPUT, data: '' },
-        {
-          [HEADER_STREAM]: 'false',
-          [HEADER_CODEC_MESSAGE_ID]: 'regen-codec-message-id',
-          [HEADER_ROLE]: 'user',
-          kind: 'regenerate',
-          parent: 'user-U1',
-          'msg-regenerate': 'asst-A1',
-          'event-id': 'prompt-1',
-        },
-      );
+      const msg = withHeaders({ name: EVENT_AI_INPUT, data: '' }, { [HEADER_STREAM]: 'false', kind: 'regenerate' });
 
       const { inputs, outputs } = decoder.decode(msg);
-      expect(inputs).toEqual([]);
-      expect(outputs).toEqual([]);
+      expect(inputs).toHaveLength(0);
+      expect(outputs).toHaveLength(0);
     });
   });
 });

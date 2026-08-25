@@ -72,7 +72,7 @@ export const getCodecHeaders = (message: Ably.InboundMessage): Record<string, st
  * Whether an Ably message carries the SDK's reserved `extras.ai` envelope.
  * Every wire the SDK publishes carries it — including stream appends, whose
  * `name` the platform does not echo — so its absence identifies a foreign
- * message: an application's own publish on a channel it shares with a session.
+ * message: an application's own publish on a channel it shares with a transport.
  * @param message - The Ably message to inspect.
  * @returns True when the message carries an `extras.ai` envelope.
  */

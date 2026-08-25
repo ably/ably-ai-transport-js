@@ -119,7 +119,7 @@ const _toolCallsInState = (
   state: 'input-available' | 'approval-responded',
 ): PendingToolCall[] => {
   // Scan back to the last assistant message rather than requiring the trailing
-  // message to be one. A client steering message can fold into the run while a
+  // message to be one. A client steering message can merge into the run while a
   // tool-call pass is streaming; in raw run.messages order it sorts after the
   // assistant tool-call message, pushing it off the tail. An open tool_use must
   // still be resolved (its tool_result produced) before that steer can be

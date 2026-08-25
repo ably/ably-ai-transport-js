@@ -10,13 +10,10 @@ import {
   EVENT_STEP_START,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
-  HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
-  HEADER_INPUT_CODEC_MESSAGE_ID,
-  HEADER_INPUT_CODEC_MESSAGE_IDS,
+  HEADER_INPUT_TRANSPORT_MESSAGE_ID,
+  HEADER_INPUT_TRANSPORT_MESSAGE_IDS,
   HEADER_INVOCATION_ID,
-  HEADER_MSG_REGENERATE,
-  HEADER_PARENT,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
@@ -65,15 +62,6 @@ describe('RunManager', () => {
       expect(headers[HEADER_RUN_CLIENT_ID]).toBe('user-a');
     });
 
-    it('adopts the external controller so close() aborts it', async () => {
-      const controller = new AbortController();
-      await manager.startRun('run-1', 'user-a', controller);
-      expect(controller.signal.aborted).toBe(false);
-
-      manager.close();
-      expect(controller.signal.aborted).toBe(true);
-    });
-
     it('defaults clientId to empty string when omitted', async () => {
       await manager.startRun('run-1');
 
@@ -82,11 +70,11 @@ describe('RunManager', () => {
     });
 
     it('publishes ai-run-resume (not ai-run-start) when continuation metadata is set', async () => {
-      await manager.startRun('run-1', 'user-a', undefined, {
+      await manager.startRun('run-1', 'user-a', {
         continuation: true,
         invocationId: 'inv-2',
         inputClientId: 'user-b',
-        inputCodecMessageId: 'trigger-msg',
+        inputTransportMessageId: 'trigger-msg',
       });
 
       const msg = channel.publishCalls.at(0);
@@ -96,33 +84,18 @@ describe('RunManager', () => {
       expect(headers[HEADER_RUN_ID]).toBe('run-1');
       expect(headers[HEADER_INVOCATION_ID]).toBe('inv-2');
       expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
-      expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
-    });
-
-    it('omits structural metadata (parent/forkOf/regenerates) on a resume', async () => {
-      await manager.startRun('run-1', 'user-a', undefined, {
-        continuation: true,
-        parent: 'p',
-        forkOf: 'f',
-        regenerates: 'r',
-      });
-
-      const headers = headersOf(channel.publishCalls.at(0));
-      // ...but not structure — the original run-start owns that.
-      expect(headers).not.toHaveProperty(HEADER_PARENT);
-      expect(headers).not.toHaveProperty(HEADER_FORK_OF);
-      expect(headers).not.toHaveProperty(HEADER_MSG_REGENERATE);
+      expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('trigger-msg');
     });
 
     it('publishes ai-run-start when continuation is false or unset', async () => {
-      await manager.startRun('run-1', 'user-a', undefined, { continuation: false });
+      await manager.startRun('run-1', 'user-a', { continuation: false });
       await manager.startRun('run-2', 'user-a');
 
       expect(channel.publishNames()).toEqual([EVENT_RUN_START, EVENT_RUN_START]);
     });
 
     it('stamps input-client-id when inputClientId is set', async () => {
-      await manager.startRun('run-1', 'user-a', undefined, { inputClientId: 'user-b' });
+      await manager.startRun('run-1', 'user-a', { inputClientId: 'user-b' });
 
       const headers = headersOf(channel.publishCalls.at(0));
       expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
@@ -135,34 +108,18 @@ describe('RunManager', () => {
       expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
     });
 
-    it('stamps fork-of when metadata.forkOf is set (edit run-start)', async () => {
-      await manager.startRun('run-1', 'user-a', undefined, { forkOf: 'orig-user-msg' });
+    it('stamps input-transport-message-id when metadata.inputTransportMessageId is set', async () => {
+      await manager.startRun('run-1', 'user-a', { inputTransportMessageId: 'trigger-msg' });
 
       const headers = headersOf(channel.publishCalls.at(0));
-      expect(headers[HEADER_FORK_OF]).toBe('orig-user-msg');
-      expect(headers[HEADER_MSG_REGENERATE]).toBeUndefined();
+      expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('trigger-msg');
     });
 
-    it('stamps msg-regenerate when metadata.regenerates is set (regenerate run-start)', async () => {
-      await manager.startRun('run-1', 'user-a', undefined, { regenerates: 'orig-asst-msg' });
-
-      const headers = headersOf(channel.publishCalls.at(0));
-      expect(headers[HEADER_MSG_REGENERATE]).toBe('orig-asst-msg');
-      expect(headers[HEADER_FORK_OF]).toBeUndefined();
-    });
-
-    it('stamps input-codec-message-id when metadata.inputCodecMessageId is set', async () => {
-      await manager.startRun('run-1', 'user-a', undefined, { inputCodecMessageId: 'trigger-msg' });
-
-      const headers = headersOf(channel.publishCalls.at(0));
-      expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
-    });
-
-    it('omits input-codec-message-id when inputCodecMessageId is unset', async () => {
+    it('omits input-transport-message-id when inputTransportMessageId is unset', async () => {
       await manager.startRun('run-1', 'user-a');
 
       const headers = headersOf(channel.publishCalls.at(0));
-      expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
+      expect(headers).not.toHaveProperty(HEADER_INPUT_TRANSPORT_MESSAGE_ID);
     });
   });
 
@@ -218,13 +175,11 @@ describe('RunManager', () => {
     });
 
     it('removes run from active set after publish', async () => {
-      const controller = new AbortController();
-      await manager.startRun('run-1', undefined, controller);
+      await manager.startRun('run-1', 'user-a');
       await manager.endRun('run-1', 'complete');
 
-      // The run is gone from the active set, so a later close() does not abort it.
-      manager.close();
-      expect(controller.signal.aborted).toBe(false);
+      // The run is gone from the active set, so its owner is no longer known.
+      expect(manager.getClientId('run-1')).toBeUndefined();
     });
 
     it('defaults clientId to empty string for unknown run', async () => {
@@ -250,20 +205,20 @@ describe('RunManager', () => {
       expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
     });
 
-    it('stamps input-codec-message-id when inputCodecMessageId is provided', async () => {
+    it('stamps input-transport-message-id when inputTransportMessageId is provided', async () => {
       await manager.startRun('run-1', 'user-a');
       await manager.endRun('run-1', 'complete', 'inv-1', 'user-b', 'trigger-msg');
 
       const headers = headersOf(channel.publishCalls.at(1));
-      expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
+      expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('trigger-msg');
     });
 
-    it('omits input-codec-message-id when inputCodecMessageId is unset', async () => {
+    it('omits input-transport-message-id when inputTransportMessageId is unset', async () => {
       await manager.startRun('run-1', 'user-a');
       await manager.endRun('run-1', 'complete');
 
       const headers = headersOf(channel.publishCalls.at(1));
-      expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
+      expect(headers).not.toHaveProperty(HEADER_INPUT_TRANSPORT_MESSAGE_ID);
     });
 
     it('stamps the input receipt when consideredInputIds is provided', async () => {
@@ -271,7 +226,7 @@ describe('RunManager', () => {
       await manager.endRun('run-1', 'complete', undefined, undefined, undefined, undefined, ['in-1', 'steer-1']);
 
       const headers = headersOf(channel.publishCalls.at(1));
-      expect(headers[HEADER_INPUT_CODEC_MESSAGE_IDS]).toBe(JSON.stringify(['in-1', 'steer-1']));
+      expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_IDS]).toBe(JSON.stringify(['in-1', 'steer-1']));
     });
 
     it('omits the input receipt when consideredInputIds is unset', async () => {
@@ -279,7 +234,7 @@ describe('RunManager', () => {
       await manager.endRun('run-1', 'complete');
 
       const headers = headersOf(channel.publishCalls.at(1));
-      expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_IDS);
+      expect(headers).not.toHaveProperty(HEADER_INPUT_TRANSPORT_MESSAGE_IDS);
     });
   });
 
@@ -314,7 +269,7 @@ describe('RunManager', () => {
 
       const headers = headersOf(channel.publishCalls.at(1));
       expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
-      expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
+      expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('trigger-msg');
     });
 
     it('stamps the input receipt when consideredInputIds is provided', async () => {
@@ -322,7 +277,7 @@ describe('RunManager', () => {
       await manager.suspendRun('run-1', 'inv-1', undefined, undefined, ['in-1', 'steer-1']);
 
       const headers = headersOf(channel.publishCalls.at(1));
-      expect(headers[HEADER_INPUT_CODEC_MESSAGE_IDS]).toBe(JSON.stringify(['in-1', 'steer-1']));
+      expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_IDS]).toBe(JSON.stringify(['in-1', 'steer-1']));
     });
 
     it('omits input attribution when not provided', async () => {
@@ -331,19 +286,17 @@ describe('RunManager', () => {
 
       const headers = headersOf(channel.publishCalls.at(1));
       expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
-      expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
-      expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_IDS);
+      expect(headers).not.toHaveProperty(HEADER_INPUT_TRANSPORT_MESSAGE_ID);
+      expect(headers).not.toHaveProperty(HEADER_INPUT_TRANSPORT_MESSAGE_IDS);
     });
 
-    it('drops the run from the active set so a later close() is a no-op for it', async () => {
-      const controller = new AbortController();
-      await manager.startRun('run-1', 'user-a', controller);
+    it('drops the run from the active set', async () => {
+      await manager.startRun('run-1', 'user-a');
       await manager.suspendRun('run-1', 'inv-1');
 
-      // The agent process terminates on suspend; the run is dropped, so close()
-      // has no controller to abort for it.
-      manager.close();
-      expect(controller.signal.aborted).toBe(false);
+      // The agent process terminates on suspend; the run is dropped, so its
+      // owner is no longer known.
+      expect(manager.getClientId('run-1')).toBeUndefined();
     });
 
     it('defaults run-client-id to empty string for an unknown run', async () => {
@@ -362,20 +315,6 @@ describe('RunManager', () => {
 
     it('returns undefined for unknown run', () => {
       expect(manager.getClientId('nope')).toBeUndefined();
-    });
-  });
-
-  describe('close', () => {
-    it('aborts all active runs', async () => {
-      const controller1 = new AbortController();
-      const controller2 = new AbortController();
-      await manager.startRun('run-1', 'user-a', controller1);
-      await manager.startRun('run-2', 'user-a', controller2);
-
-      manager.close();
-
-      expect(controller1.signal.aborted).toBe(true);
-      expect(controller2.signal.aborted).toBe(true);
     });
   });
 

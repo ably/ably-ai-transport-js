@@ -8,25 +8,22 @@ import {
   EVENT_RUN_SUSPEND,
   EVENT_STEP_END,
   EVENT_STEP_START,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_ERROR_CODE,
   HEADER_ERROR_MESSAGE,
-  HEADER_FORK_OF,
   HEADER_INPUT_CLIENT_ID,
-  HEADER_INPUT_CODEC_MESSAGE_ID,
-  HEADER_INPUT_CODEC_MESSAGE_IDS,
+  HEADER_INPUT_TRANSPORT_MESSAGE_ID,
+  HEADER_INPUT_TRANSPORT_MESSAGE_IDS,
   HEADER_INVOCATION_ID,
-  HEADER_MSG_REGENERATE,
-  HEADER_PARENT,
   HEADER_ROLE,
   HEADER_RUN_CLIENT_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
-  HEADER_STEER_CODEC_MESSAGE_IDS,
+  HEADER_STEER_TRANSPORT_MESSAGE_IDS,
   HEADER_STEP_CLIENT_ID,
   HEADER_STEP_ID,
   HEADER_STEP_REASON,
   HEADER_STEP_START_SERIAL,
+  HEADER_TRANSPORT_MESSAGE_ID,
 } from '../../../src/constants.js';
 import {
   buildLifecycleHeaders,
@@ -34,63 +31,41 @@ import {
   buildStepHeaders,
   buildTransportHeaders,
   isStepLifecycleName,
-  parseCodecMessageIdsHeader,
   parseRunLifecycle,
   parseStepLifecycle,
+  parseTransportMessageIdsHeader,
 } from '../../../src/core/transport/headers.js';
 import { ErrorCode } from '../../../src/errors.js';
 
 describe('buildTransportHeaders', () => {
-  it('includes role, runId, and codecMessageId', () => {
+  it('includes role, runId, and transportMessageId', () => {
     const headers = buildTransportHeaders({
       role: 'user',
       runId: 'run-1',
-      codecMessageId: 'msg-1',
+      transportMessageId: 'msg-1',
     });
 
     expect(headers[HEADER_ROLE]).toBe('user');
     expect(headers[HEADER_RUN_ID]).toBe('run-1');
-    expect(headers[HEADER_CODEC_MESSAGE_ID]).toBe('msg-1');
+    expect(headers[HEADER_TRANSPORT_MESSAGE_ID]).toBe('msg-1');
   });
 
   it('includes runClientId when provided', () => {
     const headers = buildTransportHeaders({
       role: 'assistant',
       runId: 'run-1',
-      codecMessageId: 'msg-1',
+      transportMessageId: 'msg-1',
       runClientId: 'user-a',
     });
 
     expect(headers[HEADER_RUN_CLIENT_ID]).toBe('user-a');
   });
 
-  it('includes parent when provided', () => {
-    const headers = buildTransportHeaders({
-      role: 'user',
-      runId: 'run-1',
-      codecMessageId: 'msg-1',
-      parent: 'parent-msg',
-    });
-
-    expect(headers[HEADER_PARENT]).toBe('parent-msg');
-  });
-
-  it('includes forkOf when provided', () => {
-    const headers = buildTransportHeaders({
-      role: 'user',
-      runId: 'run-1',
-      codecMessageId: 'msg-1',
-      forkOf: 'fork-msg',
-    });
-
-    expect(headers[HEADER_FORK_OF]).toBe('fork-msg');
-  });
-
   it('includes inputClientId when provided', () => {
     const headers = buildTransportHeaders({
       role: 'assistant',
       runId: 'run-1',
-      codecMessageId: 'msg-1',
+      transportMessageId: 'msg-1',
       inputClientId: 'user-b',
     });
 
@@ -104,40 +79,29 @@ describe('buildTransportHeaders', () => {
     const headers = buildTransportHeaders({
       role: 'assistant',
       runId: 'run-1',
-      codecMessageId: 'msg-1',
+      transportMessageId: 'msg-1',
       inputClientId: '',
     });
 
     expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('');
   });
 
-  it('includes inputCodecMessageId when provided', () => {
+  it('includes inputTransportMessageId when provided', () => {
     const headers = buildTransportHeaders({
       role: 'assistant',
       runId: 'run-1',
-      codecMessageId: 'msg-1',
-      inputCodecMessageId: 'trigger-msg',
+      transportMessageId: 'msg-1',
+      inputTransportMessageId: 'trigger-msg',
     });
 
-    expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger-msg');
-  });
-
-  it('includes regenerates as msg-regenerate when provided', () => {
-    const headers = buildTransportHeaders({
-      role: 'user',
-      runId: 'run-1',
-      codecMessageId: 'msg-1',
-      regenerates: 'asst-original',
-    });
-
-    expect(headers[HEADER_MSG_REGENERATE]).toBe('asst-original');
+    expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('trigger-msg');
   });
 
   it('includes step-id, step-start-serial, and step-client-id when provided (step output)', () => {
     const headers = buildTransportHeaders({
       role: 'assistant',
       runId: 'run-1',
-      codecMessageId: 'msg-1',
+      transportMessageId: 'msg-1',
       stepId: 'step-0',
       stepStartSerial: 's-att-1',
       stepClientId: 'stepper',
@@ -152,46 +116,43 @@ describe('buildTransportHeaders', () => {
     const headers = buildTransportHeaders({
       role: 'user',
       runId: 'run-1',
-      codecMessageId: 'msg-1',
+      transportMessageId: 'msg-1',
     });
 
     expect(headers).not.toHaveProperty(HEADER_RUN_CLIENT_ID);
-    expect(headers).not.toHaveProperty(HEADER_PARENT);
-    expect(headers).not.toHaveProperty(HEADER_FORK_OF);
     expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
-    expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
-    expect(headers).not.toHaveProperty(HEADER_MSG_REGENERATE);
+    expect(headers).not.toHaveProperty(HEADER_INPUT_TRANSPORT_MESSAGE_ID);
     expect(headers).not.toHaveProperty(HEADER_STEP_ID);
     expect(headers).not.toHaveProperty(HEADER_STEP_START_SERIAL);
     expect(headers).not.toHaveProperty(HEADER_STEP_CLIENT_ID);
   });
 });
 
-describe('parseCodecMessageIdsHeader', () => {
+describe('parseTransportMessageIdsHeader', () => {
   it('parses a JSON array of ids', () => {
-    expect(parseCodecMessageIdsHeader('["s1","s2"]')).toEqual(['s1', 's2']);
+    expect(parseTransportMessageIdsHeader('["s1","s2"]')).toEqual(['s1', 's2']);
   });
 
   it('returns undefined for an absent header', () => {
     const transport: Record<string, string> = {};
-    expect(parseCodecMessageIdsHeader(transport[HEADER_STEER_CODEC_MESSAGE_IDS])).toBeUndefined();
+    expect(parseTransportMessageIdsHeader(transport[HEADER_STEER_TRANSPORT_MESSAGE_IDS])).toBeUndefined();
   });
 
   it('returns undefined for malformed JSON', () => {
-    expect(parseCodecMessageIdsHeader('not-json')).toBeUndefined();
+    expect(parseTransportMessageIdsHeader('not-json')).toBeUndefined();
   });
 
   it('returns undefined for valid JSON that is not an array', () => {
-    expect(parseCodecMessageIdsHeader('{"s1":true}')).toBeUndefined();
+    expect(parseTransportMessageIdsHeader('{"s1":true}')).toBeUndefined();
   });
 
   it('filters non-string entries, keeping the rest', () => {
-    expect(parseCodecMessageIdsHeader('["s1",2,null,"s2"]')).toEqual(['s1', 's2']);
+    expect(parseTransportMessageIdsHeader('["s1",2,null,"s2"]')).toEqual(['s1', 's2']);
   });
 
   it('returns undefined when nothing survives filtering', () => {
-    expect(parseCodecMessageIdsHeader('[]')).toBeUndefined();
-    expect(parseCodecMessageIdsHeader('[1,null]')).toBeUndefined();
+    expect(parseTransportMessageIdsHeader('[]')).toBeUndefined();
+    expect(parseTransportMessageIdsHeader('[1,null]')).toBeUndefined();
   });
 });
 
@@ -207,34 +168,25 @@ describe('buildLifecycleHeaders', () => {
     expect(buildLifecycleHeaders({ runId: 'r', runClientId: '' })).not.toHaveProperty(HEADER_RUN_REASON);
   });
 
-  it('stamps structural and correlation headers when provided', () => {
+  it('stamps correlation headers when provided', () => {
     const headers = buildLifecycleHeaders({
       runId: 'run-1',
       runClientId: 'user-a',
-      parent: 'p',
-      forkOf: 'f',
-      regenerates: 'g',
       invocationId: 'inv-1',
       inputClientId: 'user-b',
-      inputCodecMessageId: 'trigger',
+      inputTransportMessageId: 'trigger',
     });
-    expect(headers[HEADER_PARENT]).toBe('p');
-    expect(headers[HEADER_FORK_OF]).toBe('f');
-    expect(headers[HEADER_MSG_REGENERATE]).toBe('g');
     expect(headers[HEADER_INVOCATION_ID]).toBe('inv-1');
     expect(headers[HEADER_INPUT_CLIENT_ID]).toBe('user-b');
-    expect(headers[HEADER_INPUT_CODEC_MESSAGE_ID]).toBe('trigger');
+    expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_ID]).toBe('trigger');
   });
 
   it('omits every optional header when not provided', () => {
     const headers = buildLifecycleHeaders({ runId: 'run-1', runClientId: 'user-a' });
     expect(headers).not.toHaveProperty(HEADER_RUN_REASON);
-    expect(headers).not.toHaveProperty(HEADER_PARENT);
-    expect(headers).not.toHaveProperty(HEADER_FORK_OF);
-    expect(headers).not.toHaveProperty(HEADER_MSG_REGENERATE);
     expect(headers).not.toHaveProperty(HEADER_INVOCATION_ID);
     expect(headers).not.toHaveProperty(HEADER_INPUT_CLIENT_ID);
-    expect(headers).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_ID);
+    expect(headers).not.toHaveProperty(HEADER_INPUT_TRANSPORT_MESSAGE_ID);
   });
 
   it('stamps empty-string correlation values (distinguished from omitted)', () => {
@@ -249,11 +201,13 @@ describe('buildLifecycleHeaders', () => {
       runClientId: 'user-a',
       consideredInputIds: ['in-1', 'steer-1'],
     });
-    expect(headers[HEADER_INPUT_CODEC_MESSAGE_IDS]).toBe(JSON.stringify(['in-1', 'steer-1']));
+    expect(headers[HEADER_INPUT_TRANSPORT_MESSAGE_IDS]).toBe(JSON.stringify(['in-1', 'steer-1']));
 
-    expect(buildLifecycleHeaders({ runId: 'r', runClientId: '' })).not.toHaveProperty(HEADER_INPUT_CODEC_MESSAGE_IDS);
+    expect(buildLifecycleHeaders({ runId: 'r', runClientId: '' })).not.toHaveProperty(
+      HEADER_INPUT_TRANSPORT_MESSAGE_IDS,
+    );
     expect(buildLifecycleHeaders({ runId: 'r', runClientId: '', consideredInputIds: [] })).not.toHaveProperty(
-      HEADER_INPUT_CODEC_MESSAGE_IDS,
+      HEADER_INPUT_TRANSPORT_MESSAGE_IDS,
     );
   });
 
@@ -325,9 +279,7 @@ describe('parseRunLifecycle', () => {
         [HEADER_RUN_ID]: 'run-1',
         [HEADER_RUN_CLIENT_ID]: 'user-a',
         [HEADER_INVOCATION_ID]: 'inv-1',
-        [HEADER_PARENT]: 'parent-msg',
-        [HEADER_FORK_OF]: 'fork-msg',
-        [HEADER_MSG_REGENERATE]: 'asst-original',
+        [HEADER_INPUT_TRANSPORT_MESSAGE_ID]: 'trigger-msg',
       },
       's2',
       2000,
@@ -340,9 +292,7 @@ describe('parseRunLifecycle', () => {
       serial: 's2',
       invocationId: 'inv-1',
       timestamp: 2000,
-      parent: 'parent-msg',
-      forkOf: 'fork-msg',
-      regenerates: 'asst-original',
+      inputTransportMessageId: 'trigger-msg',
     });
   });
 
@@ -359,10 +309,8 @@ describe('parseRunLifecycle', () => {
       noTimestamp,
     );
 
-    expect(event).not.toHaveProperty('parent');
     expect(event).not.toHaveProperty('timestamp');
-    expect(event).not.toHaveProperty('forkOf');
-    expect(event).not.toHaveProperty('regenerates');
+    expect(event).not.toHaveProperty('inputTransportMessageId');
   });
 
   it('parses a run-end with an explicit reason', () => {

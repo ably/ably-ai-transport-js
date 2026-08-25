@@ -1,37 +1,37 @@
 /**
  * The self-contained client transport: publish, receive, and history over one
- * channel and codec, without the Tree, View, or React layers.
+ * channel and codec.
  *
  * {@link createClientTransport} owns its whole receive path: it mints a codec
  * decoder, wraps it in a receive transport, and — once {@link
- * ClientTransport.connect} subscribes and attaches — folds every inbound wire
+ * ClientTransport.connect} subscribes and attaches — merges every inbound wire
  * message through it (`deliverEvent`, then `deliverAblyMessage`), so a
  * consumer subscribes to the transport directly instead of wiring a receiver
  * and channel listener by hand.
  *
  * On the send side, `publishInput` stamps the transport-tier headers a `user`
- * input carries (`buildTransportHeaders`), publishes the event through the
- * codec's encoder, and emits an optimistic local `message` echo so the sender
- * sees its own input before the wire round-trips. `cancel` publishes a
+ * input carries (`buildTransportHeaders`) and publishes the event through the
+ * codec's encoder; the sender's own input reaches it back as the ordinary
+ * channel delivery, like any other subscriber's. `cancel` publishes a
  * stateless `ai-cancel` envelope for a run the caller names. `steer` publishes
  * a steering input into an open run through the {@link SteerCoordinator},
- * which matches the steer's own channel echo (resolving `published` with the
- * Ably-assigned serial), accumulates the `steer-codec-message-ids` stamps the
- * agent puts on the run's outputs, and resolves each steer's `outcome` by id
- * membership at the run's next lifecycle bracket. A channel state listener
- * drains in-flight steers on continuity loss — post-loss the channel will not
- * deliver the echoes or lifecycle events that would resolve them.
+ * which resolves `published` from the publish acknowledgement's serial,
+ * accumulates the `steer-transport-message-ids` stamps the agent puts on the
+ * run's outputs, and resolves each steer's `outcome` by id membership at the
+ * run's next lifecycle bracket. A channel state listener drains in-flight
+ * steers on continuity loss — post-loss the channel will not deliver the
+ * lifecycle events that would resolve them.
  *
  * `history` pages the channel backwards from the attach point and returns each
  * older slice as a batch of classified events — decoded on the same decoder as
  * the live stream, so a stream spanning the attach boundary is never
  * double-decoded.
  *
- * The transport holds no run registry: a consumer keying on `codecMessageId`
- * reconciles the local echo against the later wire echo, and sources a
- * cancel's or steer's `runId` from `publishInput`'s returned `runId` promise
- * (resolved from the first `ai-run-start` whose `input-codec-message-id`
- * matches the publish) or from the receive stream's run-lifecycle events.
+ * The transport holds no run registry: a consumer keys its own send on the
+ * returned `transportMessageId` and sources a cancel's or steer's `runId` from
+ * `publishInput`'s returned `runId` promise (resolved from the first
+ * `ai-run-start` whose `input-transport-message-id` matches the publish) or from
+ * the receive stream's run-lifecycle events.
  */
 
 import * as Ably from 'ably';
@@ -39,13 +39,12 @@ import * as Ably from 'ably';
 import { ErrorCode } from '../../errors.js';
 import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage } from '../../utils.js';
-import type { CodecInputEvent, CodecOutputEvent, Decoder, WireCodec } from '../codec/types.js';
+import type { Decoder, WireCodec } from '../codec/types.js';
 import { buildCancelMessage } from './cancel-envelope.js';
+import { ConnectGuard, continuityLostError, isContinuityLost, subscribeAndAttach } from './channel-support.js';
 import { buildTransportHeaders } from './headers.js';
-import { walkHistoryBatch } from './history-walk.js';
-import { type HistoryPagesCursor, loadHistoryPages } from './load-history-pages.js';
-import { createReceiveTransport, type ReceiveTransport } from './receive-transport.js';
-import { ConnectGuard, continuityLostError, isContinuityLost, subscribeAndAttach } from './session-support.js';
+import { DEFAULT_HISTORY_PAGE_SIZE, HistoryPager } from './history-pager.js';
+import { createReceiveTransport, forwardReceiverOn, type ReceiveTransport } from './receive-transport.js';
 import { SteerCoordinator } from './steer-coordinator.js';
 import type { SteerResult } from './types/steer.js';
 import type {
@@ -55,28 +54,20 @@ import type {
   TransportEvent,
   TransportHistoryOptions,
   TransportHistoryResult,
+  TransportReceiver,
 } from './types/transport.js';
-import { wireMetaFromLocalEcho } from './wire-meta.js';
-
-/**
- * Default wire-message limit per Ably history page, used when
- * {@link ClientTransportOptions.historyPageSize} is unset. Over-provisions for
- * the many-Ably-messages-per-domain-message ratio so a single round trip
- * usually covers several domain messages.
- */
-const DEFAULT_HISTORY_PAGE_SIZE = 100;
 
 /**
  * Options for {@link createClientTransport}.
  * @template TInput - The codec's input-event domain type.
  * @template TOutput - The codec's output-event domain type.
  */
-export interface ClientTransportOptions<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> {
+export interface ClientTransportOptions<TInput, TOutput> {
   /** The Ably channel to publish on and receive from. The transport subscribes its own listener on `connect()`; the channel itself stays caller-owned (never detached). */
   channel: Ably.RealtimeChannel;
-  /** The wire tier of the codec: its encoder serializes inputs to the wire and its decoder classifies inbound messages. Any full `Codec` satisfies it. */
+  /** The wire tier of the codec: its encoder serializes inputs to the wire and its decoder classifies inbound messages. */
   codec: WireCodec<TInput, TOutput>;
-  /** The publishing client's Ably `clientId`, stamped as `run-client-id` on inputs. When omitted (anonymous), the header is not stamped and the local echo's `clientId` is `undefined`. */
+  /** The publishing client's Ably `clientId`, stamped as `run-client-id` on inputs. When omitted (anonymous), the header is not stamped and a receiver reads `WireMeta.clientId` as `undefined`. */
   clientId?: string;
   /** Wire-message limit per `channel.history()` round trip in {@link ClientTransport.history}. Defaults to 100. */
   historyPageSize?: number;
@@ -84,16 +75,10 @@ export interface ClientTransportOptions<TInput extends CodecInputEvent, TOutput 
   logger?: Logger;
 }
 
-/**
- * An input references an existing message (`regenerate`, or any non-user input
- * pinning its own `codecMessageId`) rather than introducing new local content,
- * so it gets no optimistic echo — the referenced content either does not
- * materialise on this side or already exists to be amended when the wire echoes.
- * @param input - The input to classify.
- * @returns True when the input is wire-only.
- */
-const isWireOnlyInput = (input: CodecInputEvent): boolean =>
-  input.kind !== 'user-message' && (input.kind === 'regenerate' || input.codecMessageId !== undefined);
+/** The unwatch for a publish that registered no runId watch. */
+const noopUnwatch = (): void => {
+  /* nothing to deregister */
+};
 
 /**
  * Merge user-provided headers into an outgoing Ably message's own
@@ -112,18 +97,17 @@ const stampUserHeaders = (msg: Ably.Message, userHeaders: Record<string, string>
 };
 
 /** Default {@link ClientTransport}. See the file header for the composition. */
-class DefaultClientTransport<
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-> implements ClientTransport<TInput, TOutput> {
+class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput, TOutput> {
   private readonly _channel: Ably.RealtimeChannel;
   private readonly _codec: WireCodec<TInput, TOutput>;
   private readonly _clientId: string | undefined;
   private readonly _historyPageSize: number;
   private readonly _logger: Logger;
-  /** The one decoder shared by the live fold and the history scan, so a stream spanning the attach boundary is never double-decoded. */
+  /** The one decoder shared by the live merge and the history scan, so a stream spanning the attach boundary is never double-decoded. */
   private readonly _decoder: Decoder<TInput, TOutput>;
   private readonly _receiver: ReceiveTransport<TInput, TOutput>;
+  /** The public `on`, forwarding to the receiver via the shared dispatch. */
+  readonly on: TransportReceiver<TInput, TOutput>['on'];
   private readonly _connectGuard = new ConnectGuard();
   /** The channel listener — one bound reference so `close()` can unsubscribe it. */
   private readonly _onMessage: (message: Ably.InboundMessage) => void;
@@ -131,7 +115,7 @@ class DefaultClientTransport<
   private readonly _steer: SteerCoordinator<TInput>;
   /**
    * Pending {@link PublishInputResult.runId} watches, keyed by the publish's
-   * codec-message-id. An array per key: repeat publishes under one pinned id
+   * transport-message-id. An array per key: repeat publishes under one pinned id
    * each get their own promise, all resolved by the same run-start. Entries
    * resolve on the first matching `ai-run-start` and reject on `close()` or
    * continuity loss; an input that triggers no run leaves its watch pending
@@ -151,19 +135,8 @@ class DefaultClientTransport<
    */
   private _hasAttachedOnce: boolean;
   private _closed = false;
-  /**
-   * The shared backward history cursor, opened lazily on the first `history()`
-   * call (capturing the attach serial then) and advanced by one caller at a
-   * time under {@link _historyTail}.
-   */
-  private _historyCursor: HistoryPagesCursor | undefined;
-  /**
-   * Tail of the single-flight history chain. Each `history()` links behind the
-   * current tail so the cursor is never paged concurrently. A link's failure
-   * is its own to throw — the tail stores a settled void promise, so a
-   * follower is isolated from a prior link's rejection.
-   */
-  private _historyTail: Promise<void> = Promise.resolve();
+  /** The lazily opened, single-flight history pager behind {@link history}. Decode failures surface on the receive stream's `error`, matching the live merge. */
+  private readonly _historyPager: HistoryPager<TInput, TOutput>;
 
   constructor(options: ClientTransportOptions<TInput, TOutput>) {
     this._channel = options.channel;
@@ -175,6 +148,16 @@ class DefaultClientTransport<
     });
     this._decoder = this._codec.createDecoder();
     this._receiver = createReceiveTransport<TInput, TOutput>(this._decoder, this._logger);
+    this.on = forwardReceiverOn(this._receiver);
+    this._historyPager = new HistoryPager({
+      channel: this._channel,
+      pageSize: this._historyPageSize,
+      decoder: this._decoder,
+      logger: this._logger,
+      onDecodeError: (err) => {
+        this._receiver.emitError(err);
+      },
+    });
     this._onMessage = (message: Ably.InboundMessage) => {
       if (this._closed) return;
       // A failed decode drops the message (the receiver emitted `error`); its
@@ -185,7 +168,7 @@ class DefaultClientTransport<
       if (delivery.outcome === 'classified') this._resolveRunIdWatches(delivery.event);
       this._receiver.deliverAblyMessage(message);
       // Feed the steer ledger every delivered message: it matches steer echoes
-      // (for the publish serial), accumulates `steer-codec-message-ids`
+      // (for the publish serial), accumulates `steer-transport-message-ids`
       // stamps, and resolves steer outcomes on run-suspend / run-end.
       this._steer.observeMessage(message);
     };
@@ -193,13 +176,13 @@ class DefaultClientTransport<
       publish: async (input, opts) => {
         const encoder = this._codec.createEncoder(this._channel);
         try {
-          await encoder.publishInput(input, opts);
+          return await encoder.publishInput(input, opts);
         } finally {
           await encoder.close();
         }
       },
       clientId: () => this._clientId,
-      isSessionClosed: () => this._closed,
+      isTransportClosed: () => this._closed,
       logger: this._logger,
     });
     this._hasAttachedOnce = this._channel.state === 'attached';
@@ -226,74 +209,25 @@ class DefaultClientTransport<
     return this._receiver.on('event', handler);
   }
 
-  on(event: 'event', handler: (e: TransportEvent<TInput, TOutput>) => void): () => void;
-  on(event: 'ably-message', handler: (msg: Ably.InboundMessage) => void): () => void;
-  on(event: 'error', handler: (err: Ably.ErrorInfo) => void): () => void;
-  on(
-    event: 'event' | 'ably-message' | 'error',
-    handler:
-      | ((e: TransportEvent<TInput, TOutput>) => void)
-      | ((msg: Ably.InboundMessage) => void)
-      | ((err: Ably.ErrorInfo) => void),
-  ): () => void {
-    switch (event) {
-      case 'event': {
-        // CAST: the public overloads pair each event name with its handler
-        // type; TypeScript cannot correlate the union members in the
-        // implementation signature.
-        return this._receiver.on(event, handler as (e: TransportEvent<TInput, TOutput>) => void);
-      }
-      case 'ably-message': {
-        // CAST: see the 'event' case.
-        return this._receiver.on(event, handler as (msg: Ably.InboundMessage) => void);
-      }
-      case 'error': {
-        // CAST: see the 'event' case.
-        return this._receiver.on(event, handler as (err: Ably.ErrorInfo) => void);
-      }
-    }
-  }
-
   async publishInput(event: TInput, opts?: PublishInputOptions): Promise<PublishInputResult> {
     this._logger.trace('ClientTransport.publishInput();');
     await this._requireOpen('publishInput');
 
-    // codec-message-id precedence: explicit option, then an input that pins its
-    // own id (a tool resolution amending an assistant), then a fresh id.
-    const codecMessageId = opts?.codecMessageId ?? event.codecMessageId ?? crypto.randomUUID();
+    // transport-message-id: the explicit option (an input amending an existing
+    // message), or a fresh id. The options are the one source of addressing —
+    // the input body carries none.
+    const transportMessageId = opts?.transportMessageId ?? crypto.randomUUID();
     const eventId = crypto.randomUUID();
-
-    // Structure fields: the input's own `parent` overrides the option; a
-    // `regenerate` maps its `target` to the `msg-regenerate` header.
-    const parent = event.parent ?? opts?.parent;
-    const forkOf = opts?.forkOf;
-    const regenerates = event.kind === 'regenerate' ? event.target : opts?.regenerates;
 
     const headers = buildTransportHeaders({
       role: 'user',
       runId: opts?.runId,
-      codecMessageId,
+      transportMessageId,
       runClientId: this._clientId,
-      ...(parent !== undefined && { parent }),
-      ...(forkOf !== undefined && { forkOf }),
-      ...(regenerates !== undefined && { regenerates }),
       inputEventId: eventId,
     });
 
     const userHeaders = opts?.headers;
-
-    // Optimistic echo for fresh local content only; emitted before the publish
-    // so the sender sees its own input without the round-trip. It carries the
-    // same user headers the publish will stamp, so the echo and the wire echo
-    // surface identical metadata.
-    if (!isWireOnlyInput(event)) {
-      this._receiver.emitEvent({
-        kind: 'message',
-        meta: wireMetaFromLocalEcho(headers, this._clientId, userHeaders ?? {}),
-        inputs: [event],
-        outputs: [],
-      });
-    }
 
     const encoder = this._codec.createEncoder(
       this._channel,
@@ -305,11 +239,18 @@ class DefaultClientTransport<
           }
         : undefined,
     );
-    // Watch before the publish so a run-start racing the publish's own ack can
-    // never slip past; a failed publish removes the watch again.
-    const { runId, unwatch } = this._watchRunId(codecMessageId);
+    // The run's id: a continuation already names it in the options, so it
+    // resolves immediately — an addressed run answers with `ai-run-resume`,
+    // which carries no input-transport-message-id for a watch to match. A fresh
+    // publish watches for the `ai-run-start` that will name it. Watch before
+    // the publish so a run-start racing the publish's own ack can never slip
+    // past; a failed publish removes the watch again.
+    const { runId, unwatch } =
+      opts?.runId === undefined
+        ? this._watchRunId(transportMessageId)
+        : { runId: Promise.resolve(opts.runId), unwatch: noopUnwatch };
     try {
-      await encoder.publishInput(event, { extras: { headers }, messageId: codecMessageId });
+      await encoder.publishInput(event, { extras: { headers }, messageId: transportMessageId });
     } catch (error) {
       unwatch();
       const cause = errorCause(error);
@@ -326,14 +267,18 @@ class DefaultClientTransport<
       await encoder.close();
     }
 
-    this._logger.debug('ClientTransport.publishInput(); published', { codecMessageId, eventId });
-    return { codecMessageId, eventId, runId };
+    this._logger.debug('ClientTransport.publishInput(); published', { transportMessageId, eventId });
+    return { transportMessageId, eventId, runId };
   }
 
-  async cancel(runId: string): Promise<void> {
-    this._logger.trace('ClientTransport.cancel();', { runId });
+  async cancel(runId: string | Promise<string>): Promise<void> {
+    this._logger.trace('ClientTransport.cancel();', {
+      runId: typeof runId === 'string' ? runId : '(pending promise)',
+    });
     await this._requireOpen('cancel');
-    await this._channel.publish(buildCancelMessage({ runId }));
+    // A promise-valued runId (e.g. a fresh publishInput result's) resolves
+    // from the run's ai-run-start; the cancel publishes once it does.
+    await this._channel.publish(buildCancelMessage({ runId: await runId }));
   }
 
   steer(runId: string | Promise<string>, event: TInput): SteerResult {
@@ -341,7 +286,7 @@ class DefaultClientTransport<
       runId: typeof runId === 'string' ? runId : '(pending promise)',
     });
     // .then(): steer() returns its promise pair synchronously, so the open
-    // guard folds into the runId promise the coordinator awaits instead of
+    // guard merges into the runId promise the coordinator awaits instead of
     // being awaited here. A promise-valued runId (e.g. a publishInput
     // result's) flattens through the .then, so the coordinator always awaits
     // one Promise<string>.
@@ -352,22 +297,7 @@ class DefaultClientTransport<
   async history(opts?: TransportHistoryOptions): Promise<TransportHistoryResult<TInput, TOutput>> {
     this._logger.trace('ClientTransport.history();');
     await this._requireOpen('history');
-
-    // Link behind the tail so the shared cursor is advanced by one caller at a
-    // time; a prior link's failure is its own to throw.
-    const prev = this._historyTail;
-    const mine = (async (): Promise<TransportHistoryResult<TInput, TOutput>> => {
-      await prev;
-      return this._walkHistory(opts);
-    })();
-    this._historyTail = (async (): Promise<void> => {
-      try {
-        await mine;
-      } catch {
-        /* a link's failure is its own caller's to observe */
-      }
-    })();
-    return mine;
+    return this._historyPager.next(opts);
   }
 
   close(): void {
@@ -378,37 +308,6 @@ class DefaultClientTransport<
     this._channel.off(this._onChannelStateChange);
     this._steer.drainClosed();
     this._drainRunIdWatches(this._closedError('await run start'));
-  }
-
-  /**
-   * Fetch and classify the next older slice of channel history via the shared
-   * {@link walkHistoryBatch}, on the lazily opened cursor and the live
-   * stream's decoder. A decode failure is surfaced on the receive stream's
-   * `error`, matching the live fold.
-   * @param opts - The caller's batch bounds.
-   * @returns The batch of classified events and the exhaustion flag.
-   */
-  private async _walkHistory(
-    opts: TransportHistoryOptions | undefined,
-  ): Promise<TransportHistoryResult<TInput, TOutput>> {
-    if (this._historyCursor === undefined) {
-      this._historyCursor = await loadHistoryPages(this._channel, {
-        pageLimit: this._historyPageSize,
-        untilAttach: true,
-        logger: this._logger,
-      });
-    }
-    return walkHistoryBatch(
-      {
-        cursor: this._historyCursor,
-        decoder: this._decoder,
-        logger: this._logger,
-        onDecodeError: (err) => {
-          this._receiver.emitError(err);
-        },
-      },
-      opts,
-    );
   }
 
   /**
@@ -432,53 +331,53 @@ class DefaultClientTransport<
     });
     this._steer.drainContinuityLost(continuityLostError(stateChange, 'await steer outcome'));
     this._drainRunIdWatches(continuityLostError(stateChange, 'await run start'));
+    // Surface the loss on the error stream too: a consumer merging events (or
+    // holding a run's chunk stream open) can silently miss messages after the
+    // loss, so it needs the signal — the drained promises above only reach
+    // callers that were awaiting them.
+    this._receiver.emitError(continuityLostError(stateChange, 'deliver events'));
   }
 
   /**
    * Register a {@link PublishInputResult.runId} watch for a publish under
-   * `codecMessageId`. The returned promise carries a pre-attached no-op
+   * `transportMessageId`. The returned promise carries a pre-attached no-op
    * rejection handler, so a caller that never observes it cannot leak an
    * unhandled rejection when the watch is drained.
-   * @param codecMessageId - The publish's codec-message-id to match against
-   *   incoming run-starts' `input-codec-message-id`.
+   * @param transportMessageId - The publish's transport-message-id to match against
+   *   incoming run-starts' `input-transport-message-id`.
    * @returns The runId promise and an `unwatch` to deregister it (used when
    *   the publish itself fails).
    */
-  private _watchRunId(codecMessageId: string): { runId: Promise<string>; unwatch: () => void } {
-    let resolve!: (runId: string) => void;
-    let reject!: (err: Ably.ErrorInfo) => void;
-    const runId = new Promise<string>((res, rej) => {
-      resolve = res;
-      reject = rej;
-    });
+  private _watchRunId(transportMessageId: string): { runId: Promise<string>; unwatch: () => void } {
+    const { promise: runId, resolve, reject } = Promise.withResolvers<string>();
     runId.catch(() => {
       /* the caller may ignore runId entirely */
     });
     const entry = { resolve, reject };
-    const entries = this._runIdWatches.get(codecMessageId) ?? [];
+    const entries = this._runIdWatches.get(transportMessageId) ?? [];
     entries.push(entry);
-    this._runIdWatches.set(codecMessageId, entries);
+    this._runIdWatches.set(transportMessageId, entries);
     return {
       runId,
       unwatch: () => {
-        const current = this._runIdWatches.get(codecMessageId);
+        const current = this._runIdWatches.get(transportMessageId);
         if (!current) return;
         const idx = current.indexOf(entry);
         if (idx !== -1) current.splice(idx, 1);
-        if (current.length === 0) this._runIdWatches.delete(codecMessageId);
+        if (current.length === 0) this._runIdWatches.delete(transportMessageId);
       },
     };
   }
 
   /**
    * Resolve pending runId watches from a classified live event: the first
-   * `ai-run-start` whose `input-codec-message-id` matches a watched publish's
-   * codec-message-id resolves every watch under that key with the run's id.
+   * `ai-run-start` whose `input-transport-message-id` matches a watched publish's
+   * transport-message-id resolves every watch under that key with the run's id.
    * @param event - The classified transport event to inspect.
    */
   private _resolveRunIdWatches(event: TransportEvent<TInput, TOutput>): void {
     if (event.kind !== 'run-lifecycle' || event.event.type !== 'start') return;
-    const key = event.event.inputCodecMessageId;
+    const key = event.event.inputTransportMessageId;
     if (key === undefined) return;
     const entries = this._runIdWatches.get(key);
     if (!entries) return;
@@ -486,7 +385,7 @@ class DefaultClientTransport<
     const startedRunId = event.event.runId;
     this._logger.debug('ClientTransport._resolveRunIdWatches(); run started for published input', {
       runId: startedRunId,
-      inputCodecMessageId: key,
+      inputTransportMessageId: key,
     });
     for (const { resolve } of entries) resolve(startedRunId);
   }
@@ -533,6 +432,6 @@ class DefaultClientTransport<
  * @param options - See {@link ClientTransportOptions}.
  * @returns The client transport.
  */
-export const createClientTransport = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent>(
+export const createClientTransport = <TInput, TOutput>(
   options: ClientTransportOptions<TInput, TOutput>,
 ): ClientTransport<TInput, TOutput> => new DefaultClientTransport(options);

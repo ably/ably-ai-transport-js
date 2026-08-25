@@ -24,7 +24,7 @@ describe('LinearMessageList', () => {
     );
     expect(screen.queryAllByTestId('message')).toHaveLength(0);
     // The intro card's default heading is shown.
-    expect(screen.getByText('ClientSession over Ably')).toBeTruthy();
+    expect(screen.getByText('AI chat over Ably')).toBeTruthy();
   });
 
   it('renders each message in a role/id/state-tagged wrapper around a bubble', () => {

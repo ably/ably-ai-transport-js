@@ -1,57 +1,46 @@
 'use client';
 
 import { ChatTransportProvider } from '@ably/ai-transport/vercel/react';
-import type { UIMessage } from 'ai';
 import { Chat } from './components/chat';
 import { Providers, useAblyReady, generateChannelSlug, generateClientName } from '@ably-ai-demos/frontend';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
+import { useChatHydration } from './hooks/use-chat-hydration';
 
 const CHANNEL_NAMESPACE = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ai:';
 
 /**
- * Fetch the persisted conversation, then mount the seeded chat. The seed is
- * fetched before mount so `useChat` reads it synchronously at init. The agent
- * persists every completed run, so no per-request flag is needed.
+ * Hydrate the conversation under the provider, then mount the chat. The hook
+ * connects the transport, merges the database seed with the channel-history
+ * gap, and seeds the useChat adapter's wire indices — so `useChat` reads the
+ * full conversation synchronously at init and a suspended run can resume
+ * across the reload.
  */
-function SeededChatWhenLoaded({ channelName, clientId }: { channelName: string; clientId?: string }) {
-  const [seed, setSeed] = useState<UIMessage[] | null>(null);
+function HydratedChat({ channelName, clientId }: { channelName: string; clientId?: string }) {
+  const state = useChatHydration({ channelName });
 
-  useEffect(() => {
-    let cancelled = false;
-    const load = async (): Promise<void> => {
-      try {
-        const response = await fetch(`/api/messages?conversationId=${encodeURIComponent(channelName)}`);
-        const data: unknown = await response.json();
-        // CAST: trust boundary — the /api/messages body is our own persisted
-        // UIMessage[], narrowed by the Array.isArray guard.
-        if (!cancelled) setSeed(Array.isArray(data) ? (data as UIMessage[]) : []);
-      } catch {
-        if (!cancelled) setSeed([]);
-      }
-    };
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [channelName]);
-
-  if (seed === null) {
+  if (state.status === 'loading') {
     return (
-      <div className="flex h-dvh items-center justify-center text-sm text-muted-foreground">
-        Loading saved conversation…
+      <div className="flex h-dvh items-center justify-center text-sm text-muted-foreground">Loading conversation…</div>
+    );
+  }
+
+  if (state.status === 'error') {
+    return (
+      <div className="flex h-dvh items-center justify-center text-sm text-destructive">
+        Failed to load conversation: {state.error.message}
       </div>
     );
   }
 
   return (
-    <ChatTransportProvider channelName={channelName}>
-      <Chat
-        chatId={channelName}
-        clientId={clientId}
-        seed={seed}
-      />
-    </ChatTransportProvider>
+    <Chat
+      chatId={channelName}
+      clientId={clientId}
+      chatTransport={state.chatTransport}
+      initialMessages={state.initialMessages}
+      initialHasOlder={state.hasOlder}
+    />
   );
 }
 
@@ -62,11 +51,21 @@ function ChatWhenReady({ channelName, clientId }: { channelName: string; clientI
     return <div className="flex h-dvh items-center justify-center text-sm text-muted-foreground">Connecting...</div>;
   }
 
+  // ChatTransportProvider creates and connects the client transport plus the
+  // useChat adapter, and wraps its children in ably-js's ChannelProvider for
+  // the same channel — the shell's presence avatars resolve it from there. It
+  // must mount inside the ready gate: Providers only supplies the AblyProvider
+  // context once its client exists.
   return (
-    <SeededChatWhenLoaded
+    <ChatTransportProvider
       channelName={channelName}
       clientId={clientId}
-    />
+    >
+      <HydratedChat
+        channelName={channelName}
+        clientId={clientId}
+      />
+    </ChatTransportProvider>
   );
 }
 

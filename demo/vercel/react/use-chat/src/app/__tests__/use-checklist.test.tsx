@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { renderHook, cleanup, waitFor, act } from '@testing-library/react';
+import type { RealtimeObject } from 'ably/liveobjects';
 import { FakeRoot } from './fake-root';
-import { useChecklist, type ObjectSession } from '../hooks/use-checklist';
+import { useChecklist } from '../hooks/use-checklist';
 
 afterEach(() => {
   // vitest isn't configured with globals, so @testing-library/react's
@@ -12,11 +13,9 @@ afterEach(() => {
   cleanup();
 });
 
-function sessionFor(fake: FakeRoot): ObjectSession {
-  return {
-    // CAST: structural fake of the RealtimeObject surface the hook uses.
-    object: { get: async () => fake } as unknown as ObjectSession['object'],
-  };
+function objectFor(fake: FakeRoot): RealtimeObject {
+  // CAST: structural fake of the RealtimeObject surface the hook uses.
+  return { get: async () => fake } as unknown as RealtimeObject;
 }
 
 describe('useChecklist', () => {
@@ -25,7 +24,7 @@ describe('useChecklist', () => {
       '2': { text: 'Second', status: 'pending', updatedAt: 20 },
       '1': { text: 'First', status: 'active', updatedAt: 10 },
     });
-    const { result } = renderHook(() => useChecklist(sessionFor(fake)));
+    const { result } = renderHook(() => useChecklist(objectFor(fake)));
 
     await waitFor(() => expect(result.current.steps.length).toBe(2));
     expect(result.current.steps.map((s) => s.index)).toEqual([1, 2]);
@@ -34,7 +33,7 @@ describe('useChecklist', () => {
 
   it('re-snapshots on object subscription events', async () => {
     const fake = new FakeRoot({});
-    const { result } = renderHook(() => useChecklist(sessionFor(fake)));
+    const { result } = renderHook(() => useChecklist(objectFor(fake)));
 
     await waitFor(() => expect(result.current.steps).toEqual([]));
 
@@ -49,11 +48,11 @@ describe('useChecklist', () => {
   });
 
   it('surfaces an error when the root cannot be resolved', async () => {
-    const session: ObjectSession = {
-      // CAST: structural fake of the RealtimeObject surface the hook uses.
-      object: { get: async () => Promise.reject(new Error('missing plugin')) } as unknown as ObjectSession['object'],
-    };
-    const { result } = renderHook(() => useChecklist(session));
+    // CAST: structural fake of the RealtimeObject surface the hook uses.
+    const object = {
+      get: async () => Promise.reject(new Error('missing plugin')),
+    } as unknown as RealtimeObject;
+    const { result } = renderHook(() => useChecklist(object));
 
     await waitFor(() => expect(result.current.error?.message).toBe('missing plugin'));
     expect(result.current.steps).toEqual([]);
@@ -61,7 +60,7 @@ describe('useChecklist', () => {
 
   it('unsubscribes on unmount', async () => {
     const fake = new FakeRoot({});
-    const { result, unmount } = renderHook(() => useChecklist(sessionFor(fake)));
+    const { result, unmount } = renderHook(() => useChecklist(objectFor(fake)));
 
     await waitFor(() => expect(result.current.steps).toEqual([]));
     unmount();

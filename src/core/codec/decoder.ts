@@ -11,7 +11,7 @@
  * Domain decoders call `createDecoderCore(hooks, options)` and provide hooks
  * for stream classification, event building, and discrete decoding. Hooks
  * return a flat `TEvent[]` — no event-vs-message union. Per-message routing
- * concerns (`codec-message-id`) are handled by the SDK via `ReducerMeta`, not
+ * concerns (`transport-message-id`) are surfaced by the transport via `WireMeta`, not
  * here.
  */
 
@@ -184,7 +184,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
    *   the mutation it describes is already incorporated (a history aggregate
    *   covered by live deltas, a resume retransmission, a whole-wire replay).
    * - The tracker is closed — the stream has ended and its accumulated text
-   *   has been dropped, so nothing further can fold into it. In-contract
+   *   has been dropped, so nothing further can merge into it. In-contract
    *   replays are already covered by the version check; this catches
    *   out-of-contract version-less deliveries for an ended stream.
    *
@@ -321,7 +321,7 @@ class DefaultDecoderCore<TEvent> implements DecoderCore<TEvent> {
     if (!tracker) {
       // An append is the one action whose `name` the platform does not echo, so
       // a foreign append — an application streaming its own message on a
-      // channel it shares with a session — is identified by the absence of the
+      // channel it shares with a transport — is identified by the absence of the
       // SDK's `extras.ai` envelope. It decodes to nothing, and says so at
       // debug: it is expected traffic, not the out-of-contract case below.
       if (!hasAiEnvelope(message)) {

@@ -10,7 +10,7 @@
  */
 
 /** Which activity of the durable turn this event describes. */
-export type ActivityKind = 'open' | 'inference' | 'tool' | 'cleanup';
+export type ActivityKind = 'open' | 'inference' | 'tool' | 'terminal' | 'cleanup';
 
 /** The activity's lifecycle phase: it just started, or it finished. A throw emits nothing — the panel infers a dead attempt from a stuck `running` superseded by a later attempt. */
 export type ActivityPhase = 'running' | 'done';
@@ -37,13 +37,13 @@ export interface ActivityEvent {
 export const WDK_ACTIVITY_EVENT = 'activity';
 
 /**
- * The sidecar channel carrying activity telemetry for a session, derived from
- * the chat channel so it sits within the same token-capability namespace. Kept
- * separate from the chat channel so it never folds into the AIT conversation
- * Tree.
- * @param sessionName - The chat/session channel name.
+ * The sidecar channel carrying activity telemetry for a conversation, derived
+ * from the chat channel so it sits within the same token-capability
+ * namespace. Kept separate from the chat channel so it never decodes as AIT
+ * conversation traffic.
+ * @param channelName - The conversation's chat channel name.
  * @returns The sidecar channel name.
  */
-export function wdkActivityChannel(sessionName: string): string {
-  return `${sessionName}:wdk`;
+export function wdkActivityChannel(channelName: string): string {
+  return `${channelName}:wdk`;
 }

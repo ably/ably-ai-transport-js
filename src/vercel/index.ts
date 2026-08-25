@@ -1,14 +1,13 @@
 // Vercel AI SDK codec
-//
-// `ForkSeed` is intentionally NOT re-exported here: it is an internal fork
-// reconstruction detail (see `createToolResultFork`), not part of the public
-// surface. The approval-response payload is likewise kept internal.
 export type {
+  VercelApprovalDecision,
+  VercelApprovalInput,
+  VercelChunkInput,
   VercelInput,
+  VercelMessageInput,
   VercelOutput,
-  VercelProjection,
-  VercelToolResultErrorPayload,
-  VercelToolResultPayload,
+  VercelRegenerateInput,
+  VercelToolOutputChunk,
 } from './codec/index.js';
 export { createUIMessageCodec } from './codec/index.js';
 
@@ -16,17 +15,10 @@ export { createUIMessageCodec } from './codec/index.js';
 export type {
   ChatTransport,
   ChatTransportOptions,
-  SendMessagesRequestContext,
-  VercelAgentSessionContext,
-  VercelAgentSessionOptions,
-  VercelClientSessionOptions,
-  VercelWithAgentSessionOptions,
+  VercelAgentTransportOptions,
+  VercelClientTransportOptions,
 } from './transport/index.js';
-export { createAgentSession, createChatTransport, createClientSession, withAgentSession } from './transport/index.js';
-
-// Client tool-result forking (for callers that drive `view.send` directly)
-export type { ToolCallResolution } from './transport/fork-tool-result.js';
-export { createToolResultFork } from './transport/fork-tool-result.js';
+export { createAgentTransport, createChatTransport, createClientTransport } from './transport/index.js';
 
 // Vercel-shaped helpers
 export type { VercelRunOutcome } from './run-end-reason.js';

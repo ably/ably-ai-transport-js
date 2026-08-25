@@ -2,32 +2,31 @@ import type { UIMessage } from 'ai';
 
 /**
  * An in-memory stand-in for the conversation database an app would persist
- * completed runs to, keyed by conversation id (the channel name, which the
- * agent sees as `invocation.sessionName`). It is module-scoped, so it persists
- * across requests within one Node process — enough for the demo's dev server —
- * and is lost on restart. A real app swaps this for a durable store.
+ * completed turns to, keyed by conversation id (the channel name). It is
+ * module-scoped, so it persists across requests within one Node process —
+ * enough for the demo's dev server — and is lost on restart. A real app swaps
+ * this for a durable store.
  *
  * It holds only **domain `UIMessage`s** (never the transport's internal
- * `codecMessageId`): the domain `message.id` is the only id shared between the
- * store and the channel, which is what makes the seam-walk reconciliation on
- * hydrate work (see the seeded chat / `useMessageSync`).
+ * `transportMessageId`): the domain `message.id` is the only id shared between the
+ * store and the channel, which is what lets hydration page the history gap
+ * back to the newest stored message and merge without duplication (see
+ * `lib/hydrate.ts`).
  */
 const store = new Map<string, UIMessage[]>();
 
 /**
- * Append a terminal run's whole turn, **idempotent by domain `message.id`**.
- * Re-persisting a run (same ids) updates in place rather than duplicating, and
- * chronological (oldest-first) order is preserved: existing ids keep their
- * position, genuinely new ids append at the end. This mirrors the API's
- * whole-run, atomic, id-keyed persistence contract, so the union of every
- * run's messages reconstructs the conversation with no gaps or duplicates.
+ * Append a completed turn, **idempotent by domain `message.id`**.
+ * Re-persisting a turn (same ids) updates in place rather than duplicating,
+ * and chronological (oldest-first) order is preserved: existing ids keep their
+ * position, genuinely new ids append at the end. The union of every turn's
+ * messages therefore reconstructs the conversation with no gaps or duplicates.
  *
  * Modelled as async — it resolves once the write is durable, as a real store
- * would. The agent awaits it before ending the run, so the run-end completion
- * signal never races ahead of the persisted run.
+ * would.
  * @param conversationId - The conversation key (the channel name).
- * @param messages - This run's whole turn (`run.messages`).
- * @returns A promise that resolves once the run is persisted.
+ * @param messages - The completed turn's messages, oldest-first.
+ * @returns A promise that resolves once the turn is persisted.
  */
 export async function appendMessages(conversationId: string, messages: UIMessage[]): Promise<void> {
   const byId = new Map((store.get(conversationId) ?? []).map((message) => [message.id, message]));
@@ -37,8 +36,8 @@ export async function appendMessages(conversationId: string, messages: UIMessage
 
 /**
  * Load the persisted conversation for a key, oldest-first, or `[]` when none is
- * stored. This is the seed a client hydrates from before reconciling with the
- * live channel.
+ * stored. This is the seed a client hydrates from before paging the
+ * channel-history gap.
  * @param conversationId - The conversation key (the channel name).
  * @returns The persisted messages, oldest-first.
  */

@@ -9,15 +9,13 @@ const config = [
   ...coreWebVitals,
   ...typescript,
   {
-    // These two files run effects that synchronise React with an external
-    // system — exactly what effects are for: providers.tsx creates the
-    // browser-only Ably client (and tears it down on cleanup) and chat.tsx
-    // appends a transition entry whenever useChat's status changes. The
-    // React-Compiler rule react-hooks/set-state-in-effect can't tell these
-    // apart from accidental cascading setState, and a lazy useState initialiser
-    // can't run the client teardown. Scope the rule off to just these files
-    // rather than suppress inline.
-    files: ['src/app/providers.tsx', 'src/app/chat.tsx'],
+    // chat.tsx runs an effect that synchronises React with an external system —
+    // exactly what effects are for: it appends a transition entry whenever
+    // useChat's status changes. The React-Compiler rule
+    // react-hooks/set-state-in-effect can't tell this apart from accidental
+    // cascading setState. Scope the rule off to just this file rather than
+    // suppress inline.
+    files: ['src/app/chat.tsx'],
     rules: { 'react-hooks/set-state-in-effect': 'off' },
   },
 ];

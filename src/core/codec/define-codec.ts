@@ -1,13 +1,11 @@
 /**
  * `defineCodec` — composition packaging for a codec.
  *
- * A codec author supplies only its **parts** — a reducer, a per-direction
- * descriptor table (the `output` and `input` builder functions), a `factories`
- * selector naming which well-known input factories the codec exposes, an
- * optional decode lifecycle policy, and an optional agent identifier — and
- * `defineCodec` assembles a fully-formed {@link Codec}: the generic
- * encoder/decoder skeletons (built here, codec-agnostic), the reducer methods,
- * and the factory subset the `factories` selector returns.
+ * A codec author supplies only its **parts** — a per-direction descriptor
+ * table (the `output` and `input` builder functions), an optional decode
+ * lifecycle policy, and an optional agent identifier — and `defineCodec`
+ * assembles a fully-formed {@link WireCodec}: the generic encoder/decoder
+ * skeletons, built here, codec-agnostic.
  *
  * Both directions are declarative descriptor tables driven by the generic
  * encode/decode drivers. `defineCodec` hands each table a direction-scoped
@@ -36,20 +34,14 @@ import { createOutputDescriptorEncoder, type OutputDescriptorEncoder } from './o
 import { type OutputBuilder, outputBuilder, type OutputDescriptor } from './output-descriptors.js';
 import type {
   ChannelWriter,
-  Codec,
-  CodecEvent,
-  CodecInputEvent,
-  CodecMessage,
-  CodecOutputEvent,
   DecodedMessage,
   Decoder,
   Encoder,
   MessagePayload,
-  ReducerMeta,
   StreamSequenceState,
+  WireCodec,
   WriteOptions,
 } from './types.js';
-import { type DefinedCodecFactories, type WellKnownInputFactories, wellKnownInputs } from './well-known-inputs.js';
 
 // Re-exported so codec descriptor tables (e.g. the Vercel `inputs.ts` / `outputs.ts`)
 // can type their builder parameter without reaching into the descriptor modules directly.
@@ -91,39 +83,23 @@ export interface LifecyclePolicy<TOutput> {
 // ---------------------------------------------------------------------------
 
 /**
- * The reducer parts a codec supplies. `TProjection` and `TMessage` infer from
- * these, so `defineCodec` callers need not spell them out.
- * @template TInput - The codec's input union.
- * @template TOutput - The codec's output union.
- * @template TProjection - The per-node projection the reducer folds into.
- * @template TMessage - The per-message domain type.
- */
-export interface CodecReducer<TInput, TOutput, TProjection, TMessage> {
-  /** Build an empty projection for a node. */
-  init: () => TProjection;
-  /** Fold one direction-tagged input or output event into the projection. */
-  fold: (state: TProjection, event: CodecEvent<TInput, TOutput>, meta: ReducerMeta) => TProjection;
-  /** Extract the per-message list (each paired with its codec-message-id). */
-  getMessages: (projection: TProjection) => CodecMessage<TMessage>[];
-}
-
-/**
  * The parts a codec supplies to {@link defineCodec}.
+ *
+ * The `kind` / `type` constraints bind ONLY this declarative authoring
+ * helper, never the transports: {@link WireCodec} and everything generic that
+ * consumes it are unconstrained, carry events opaquely, and read no event
+ * content (pinned by the opaque-codec transport tests). The descriptor tables
+ * here dispatch each event to its wire form by a typed discriminant, and
+ * `kind` / `type` are the field names that dispatch keys on — mirroring how
+ * every provider SDK discriminates its own unions. A provider whose events
+ * discriminate differently wraps them, or implements {@link WireCodec}
+ * directly without this helper.
  * @template TInput - The codec's input union.
  * @template TOutput - The codec's output union.
- * @template TProjection - The per-node projection the reducer folds into.
- * @template TMessage - The per-message domain type.
  */
-export interface DefineCodecConfig<
-  TInput extends { kind: string },
-  TOutput extends { type: string },
-  TProjection,
-  TMessage,
-> {
+export interface DefineCodecConfig<TInput extends { kind: string }, TOutput extends { type: string }> {
   /** Optional Ably-Agent identifier registered on the channel; omit to opt out. */
   adapterTag?: string;
-  /** Reducer parts; `TProjection` / `TMessage` infer from here. */
-  reducer: CodecReducer<TInput, TOutput, TProjection, TMessage>;
   /**
    * The declarative output (`ai-output`) descriptor table, returned from the
    * injected `{ event, stream, drop }` builder (curried on `TOutput`).
@@ -135,17 +111,6 @@ export interface DefineCodecConfig<
    */
   input: (b: InputBuilder<TInput>) => readonly InputDescriptor<TInput>[];
   /**
-   * Selects the well-known input factories this codec exposes. Receives the
-   * full set of factory bodies (payload-typed to `TInput`) and returns the
-   * subset the codec supports: `createUserMessage` and `createRegenerate` are
-   * mandatory, and each tool factory may be included only when `TInput` carries
-   * the matching variant — the return type {@link DefinedCodecFactories}
-   * forbids exposing a factory the codec's `TInput` cannot represent. A full
-   * codec returns the set unchanged; a text-only codec returns just the two
-   * mandatory factories.
-   */
-  factories: (base: WellKnownInputFactories<TInput>) => DefinedCodecFactories<TInput>;
-  /**
    * Factory for a fresh decoder synthesise-lifecycle policy per decoder instance
    * (the policy's closures capture a fresh, per-decoder lifecycle tracker). Omit
    * for a codec with no mid-stream-join repair.
@@ -153,32 +118,11 @@ export interface DefineCodecConfig<
   decoderSynthesiseLifecycle?: () => LifecyclePolicy<TOutput>;
 }
 
-/**
- * A codec assembled by {@link defineCodec}: a conforming {@link Codec} whose
- * well-known input factory properties are typed by {@link DefinedCodecFactories}
- * — `createUserMessage`/`createRegenerate` always present, and each tool factory
- * present only when `TInput` carries the matching variant. Their payload types
- * come from {@link WellKnownInputFactories} (against `UserMessageOf<TInput>` /
- * `ToolResultPayloadOf<TInput>` — equal to the codec's `TMessage` / payloads for
- * every real codec, but not provably so to the generic type system). At a
- * concrete call site a `DefinedCodec` is assignable to the corresponding
- * `Codec` — including for a partial codec, because a tool factory `TInput`
- * cannot represent is typed absent, so a text-only codec satisfies `Codec`'s
- * optional tool factories rather than over-promising them.
- */
-export type DefinedCodec<
-  TInput extends CodecInputEvent,
-  TOutput extends CodecOutputEvent,
-  TProjection,
-  TMessage,
-> = Omit<Codec<TInput, TOutput, TProjection, TMessage>, keyof WellKnownInputFactories<TInput>> &
-  DefinedCodecFactories<TInput>;
-
 // ---------------------------------------------------------------------------
 // Generic encoder
 // ---------------------------------------------------------------------------
 
-class DefaultCodecEncoder<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> implements Encoder<
+class DefaultCodecEncoder<TInput extends { kind: string }, TOutput extends { type: string }> implements Encoder<
   TInput,
   TOutput
 > {
@@ -199,11 +143,11 @@ class DefaultCodecEncoder<TInput extends CodecInputEvent, TOutput extends CodecO
     this._inputEncoder = inputEncoder;
   }
 
-  async publishInput(input: TInput, options?: WriteOptions): Promise<void> {
+  async publishInput(input: TInput, options?: WriteOptions): Promise<Ably.PublishResult> {
     // No `messageId` threads into inputs — user-message parts carry no
-    // transport codec-message-id today; inputs rely on opts.messageId stamped
-    // by the client session.
-    await this._inputEncoder.encode(input, this._core, { opts: options });
+    // transport transport-message-id today; inputs rely on opts.messageId stamped
+    // by the transport.
+    return this._inputEncoder.encode(input, this._core, { opts: options });
   }
 
   async publishOutput(output: TOutput, options?: WriteOptions): Promise<void> {
@@ -276,7 +220,7 @@ const buildHooks = <TInput extends { kind: string }, TOutput extends { type: str
   decodeDiscrete: (payload) => decodeDiscretePayload(payload, outputDecoder, inputDecoder, lifecycle),
 });
 
-class DefaultCodecDecoder<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> implements Decoder<
+class DefaultCodecDecoder<TInput extends { kind: string }, TOutput extends { type: string }> implements Decoder<
   TInput,
   TOutput
 > {
@@ -450,20 +394,17 @@ const validateTables = <TInput, TOutput>(
 // ---------------------------------------------------------------------------
 
 /**
- * Assemble a fully-formed {@link Codec} from a codec's parts. Curried on the
- * input/output unions so `TProjection` / `TMessage` infer from `config.reducer`
- * — a caller writes `defineCodec<TInput, TOutput>()({ ... })` and never spells
- * out the projection or message types.
+ * Assemble a fully-formed {@link WireCodec} from a codec's parts. Curried on
+ * the input/output unions — a caller writes `defineCodec<TInput, TOutput>()({
+ * ... })`.
  * @template TInput - The codec's input union.
  * @template TOutput - The codec's output union.
  * @returns A function taking the codec's parts and returning the assembled codec.
  */
 export const defineCodec =
-  <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent>() =>
-  <TProjection, TMessage>(
-    config: DefineCodecConfig<TInput, TOutput, TProjection, TMessage>,
-  ): DefinedCodec<TInput, TOutput, TProjection, TMessage> => {
-    const { reducer, decoderSynthesiseLifecycle } = config;
+  <TInput extends { kind: string }, TOutput extends { type: string }>() =>
+  (config: DefineCodecConfig<TInput, TOutput>): WireCodec<TInput, TOutput> => {
+    const { decoderSynthesiseLifecycle } = config;
     // Build the direction-scoped builders, hand them to the codec's table
     // functions, and collect the descriptor arrays the drivers consume.
     const outputs = config.output(outputBuilder<TOutput>());
@@ -476,25 +417,17 @@ export const defineCodec =
     const outputDecoder = createOutputDescriptorDecoder(outputs);
     const inputDecoder = createInputDescriptorDecoder(inputs);
     return {
-      // adapterTag is optional on Codec; only set it when supplied so a codec
-      // can opt out of Ably-Agent registration.
+      // adapterTag is optional on WireCodec; only set it when supplied so a
+      // codec can opt out of Ably-Agent registration.
       ...(config.adapterTag === undefined ? {} : { adapterTag: config.adapterTag }),
-      init: reducer.init,
-      fold: reducer.fold,
-      getMessages: reducer.getMessages,
       createEncoder: (writer, options = {}) => new DefaultCodecEncoder(writer, options, outputEncoder, inputEncoder),
       createDecoder: () =>
         new DefaultCodecDecoder<TInput, TOutput>(
           // The lifecycle policy (and its tracker) stays per-decoder: each
           // decoder instance gets independent per-run phase state. No options
-          // thread through: Codec.createDecoder takes none, so accepting any
-          // here would be unreachable surface.
+          // thread through: WireCodec.createDecoder takes none, so accepting
+          // any here would be unreachable surface.
           createDecoderCore(buildHooks(outputDecoder, inputDecoder, decoderSynthesiseLifecycle?.()), {}),
         ),
-      // The codec's factories selector picks, from the full well-known set, the
-      // subset its TInput supports; spreading its result means a partial codec
-      // carries only the factories it exposes — so there is no cast here and no
-      // runtime factory the typed surface denies.
-      ...config.factories(wellKnownInputs<TInput>()),
     };
   };

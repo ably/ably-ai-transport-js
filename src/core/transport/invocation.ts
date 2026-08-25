@@ -9,22 +9,21 @@
  * ```ts
  * const data = (await req.json()) as InvocationData;
  * const invocation = Invocation.fromJSON(data);
- * const run = session.createRun(invocation, { signal: req.signal });
- * while (run.view.hasOlder()) await run.view.loadOlder(); // page channel history for context
- * await run.start();
- * const messages = run.view.getMessages().map((m) => m.message);
+ * const channel = client.channels.get(invocation.channelName);
+ * const transport = createAgentTransport({ channel, codec });
+ * await transport.connect();
+ * const located = await transport.locateInput(invocation.inputEventId);
  * ```
  *
  * The body carries only what the agent needs out-of-band before the channel
- * is observable: the session/channel name and the `inputEventId` that triggered
+ * is observable: the channel name and the `inputEventId` that triggered
  * the invocation. The agent mints the `invocationId` itself (one per HTTP
  * request) and returns it on the HTTP response, so it is not a body field. Run
  * identity also lives on the channel: the agent mints the `runId` for a fresh
  * run and reads the existing `runId` off the triggering input event for a
  * continuation — so the body carries no run-id either. Per-message metadata —
- * `clientId`, `parent`, `forkOf`, continuation status — likewise lives on the
- * channel and is resolved by the agent from the triggering input event, not
- * from the body. The `inputClientId` the agent re-stamps on its own publishes
+ * `clientId`, continuation status — likewise lives on the channel and is
+ * resolved by the agent from the triggering input event, not from the body. The `inputClientId` the agent re-stamps on its own publishes
  * comes from the publisher's Ably `clientId` on the matched input event, not
  * from a body field.
  */
@@ -45,8 +44,8 @@ export interface InvocationData {
    * a fresh run), so run identity is resolved from the channel, not the body.
    */
   inputEventId: string;
-  /** Logical name of the session (chat) — used as the Ably channel name. */
-  sessionName: string;
+  /** The conversation's Ably channel name. */
+  channelName: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,12 +65,12 @@ export class Invocation {
    * (or minted), not from the body.
    */
   readonly inputEventId: string;
-  /** Logical name of the session (chat). Used as the Ably channel name. */
-  readonly sessionName: string;
+  /** The conversation's Ably channel name. */
+  readonly channelName: string;
 
   private constructor(data: InvocationData) {
     this.inputEventId = data.inputEventId;
-    this.sessionName = data.sessionName;
+    this.channelName = data.channelName;
   }
 
   /**
@@ -92,7 +91,7 @@ export class Invocation {
   toJSON(): InvocationData {
     return {
       inputEventId: this.inputEventId,
-      sessionName: this.sessionName,
+      channelName: this.channelName,
     };
   }
 }

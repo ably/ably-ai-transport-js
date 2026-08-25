@@ -47,18 +47,12 @@ export const COMMON_SCENARIOS: readonly Scenario[] = [
     blurb: 'Both tabs share the same Ably channel. Messages, streams, and run state stay in sync.',
   },
   {
-    id: 'edit',
-    tag: 'Branching',
-    title: 'Edit (branch)',
-    gesture: 'hover a user message, click Edit',
-    blurb: 'Re-sends as a forked branch rooted at the edited message.',
-  },
-  {
     id: 'regenerate',
-    tag: 'Branching',
-    title: 'Regenerate (branch)',
+    tag: 'Regenerate',
+    title: 'Regenerate',
     gesture: 'hover an assistant reply, click Regenerate',
-    blurb: 'Forks a new branch from that point. The previous branch is kept — the tree remembers both.',
+    blurb:
+      'Publishes a regenerate signal over Ably; the agent replies again, and the channel history holds both replies.',
   },
   {
     id: 'cancel',
@@ -75,13 +69,12 @@ export const COMMON_SCENARIOS: readonly Scenario[] = [
   },
 ];
 
-const DEFAULT_TITLE = 'ClientSession over Ably';
+const DEFAULT_TITLE = 'AI chat over Ably';
 const DEFAULT_DESCRIPTION =
-  'A chat wired directly to the Ably AI Transport ClientSession API. The session subscribes to a single Ably ' +
-  'channel and exposes a branching conversation tree, a paginated view, and write operations (send, regenerate, ' +
-  "edit, cancel). Sessions stay in sync across a user's devices and across multiple participants, with a " +
-  'bidirectional channel between user and agent for cancellation and steering. Each item below exercises a ' +
-  'specific feature — try them in order to see what it does.';
+  'A chat wired to the Ably AI Transport. Inputs and streamed outputs travel over a single Ably channel, so the ' +
+  "conversation stays in sync across a user's devices and across multiple participants, with a bidirectional " +
+  'channel between user and agent for cancellation and steering. Each item below exercises a specific feature — ' +
+  'try them in order to see what it does.';
 
 /** The intro-line body for a scenario: its rich `action`, else its prompt, else its gesture. */
 function ScenarioAction({ scenario }: { scenario: Scenario }) {
@@ -100,8 +93,8 @@ function ScenarioAction({ scenario }: { scenario: Scenario }) {
  * The intro shown at the top of an empty conversation: a heading, a blurb, and a
  * numbered walkthrough of the scenarios to try.
  * @param scenarios - The walkthrough scenarios. Defaults to the shared baseline.
- * @param title - Heading for the card. Defaults to the generic ClientSession heading.
- * @param description - Intro blurb under the heading. Defaults to the generic ClientSession blurb.
+ * @param title - Heading for the card. Defaults to the generic heading.
+ * @param description - Intro blurb under the heading. Defaults to the generic blurb.
  */
 export function IntroCard({
   scenarios = COMMON_SCENARIOS,

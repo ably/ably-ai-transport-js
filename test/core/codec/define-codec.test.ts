@@ -4,23 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { EVENT_AI_INPUT, EVENT_AI_OUTPUT } from '../../../src/constants.js';
 import { defineCodec } from '../../../src/core/codec/define-codec.js';
 import { strField } from '../../../src/core/codec/fields.js';
-import type {
-  ChannelWriter,
-  CodecEvent,
-  CodecInputEvent,
-  CodecMessage,
-  ReducerMeta,
-} from '../../../src/core/codec/types.js';
-import type { WellKnownInputFactories } from '../../../src/core/codec/well-known-inputs.js';
+import type { ChannelWriter } from '../../../src/core/codec/types.js';
 import { ErrorCode } from '../../../src/errors.js';
-
-// These fixtures exercise descriptor routing and validation, not the well-known
-// input factories, and their input unions carry no well-known variants — so
-// they expose only the two mandatory factories `defineCodec` requires.
-const mandatoryFactories = <TInput extends CodecInputEvent>(base: WellKnownInputFactories<TInput>) => ({
-  createUserMessage: base.createUserMessage,
-  createRegenerate: base.createRegenerate,
-});
 
 // ---------------------------------------------------------------------------
 // Fixture codec
@@ -37,27 +22,11 @@ interface QuirkyOutput {
 
 interface NoopInput {
   kind: 'noop';
-  codecMessageId: string;
+  transportMessageId: string;
   payload: Record<string, never>;
 }
 
-// A minimal real reducer so the wiring tests can prove `init`/`fold`/`getMessages`
-// are threaded from the supplied parts: it records every folded event and surfaces
-// them through `getMessages`.
-interface FixtureProjection {
-  folded: (NoopInput | QuirkyOutput)[];
-}
-
 const codec = defineCodec<NoopInput, QuirkyOutput>()({
-  reducer: {
-    init: (): FixtureProjection => ({ folded: [] }),
-    fold: (state: FixtureProjection, event: CodecEvent<NoopInput, QuirkyOutput>): FixtureProjection => {
-      state.folded.push(event.event);
-      return state;
-    },
-    getMessages: (state: FixtureProjection): CodecMessage<NoopInput | QuirkyOutput>[] =>
-      state.folded.map((message, i) => ({ codecMessageId: `cm-${String(i)}`, message })),
-  },
   output: ({ event }) => [
     event('quirky', {
       fields: [],
@@ -66,9 +35,8 @@ const codec = defineCodec<NoopInput, QuirkyOutput>()({
       data: { encode: () => '', decode: () => ({ kind: 'looks-like-input' }) },
     }),
   ],
-  // A single event with no fields/data rebuilds to the { kind, codecMessageId, payload } envelope.
+  // A single event with no fields/data rebuilds to the { kind, transportMessageId, payload } envelope.
   input: ({ event }) => [event('noop')],
-  factories: mandatoryFactories,
 });
 
 const aiMessage = (name: string, codecHeaders: Record<string, string>): Ably.InboundMessage =>
@@ -114,10 +82,9 @@ describe('defineCodec — decoder direction routing', () => {
 
     const { inputs, outputs } = decoder.decode(aiMessage(EVENT_AI_OUTPUT, { kind: 'quirky' }));
 
-    // The decoded event is { type: 'quirky', kind: 'looks-like-input' }. The old
-    // `'kind' in event` check would have placed it in `inputs`; routing by the wire
-    // name keeps it in `outputs`. The domain `kind` field is reconstructed by the
-    // data decoder and is distinct from the `kind` wire dispatch header.
+    // The decoded event is { type: 'quirky', kind: 'looks-like-input' }: a
+    // domain `kind` field must not be mistaken for the `kind` wire dispatch
+    // header — routing goes by the wire name, so this stays in `outputs`.
     expect(outputs).toEqual([{ type: 'quirky', kind: 'looks-like-input' }]);
     expect(inputs).toEqual([]);
   });
@@ -127,7 +94,7 @@ describe('defineCodec — decoder direction routing', () => {
 
     const { inputs, outputs } = decoder.decode(aiMessage(EVENT_AI_INPUT, { kind: 'noop' }));
 
-    expect(inputs).toEqual([{ kind: 'noop', codecMessageId: '', payload: {} }]);
+    expect(inputs).toEqual([{ kind: 'noop', payload: {} }]);
     expect(outputs).toEqual([]);
   });
 
@@ -145,7 +112,7 @@ describe('defineCodec — decoder direction routing', () => {
 // Foreign messages
 //
 // An application may publish its own messages on a channel it shares with a
-// session — a chat message, a presence-adjacent notification, its own streamed
+// transport — a chat message, a presence-adjacent notification, its own streamed
 // content. None of it carries the SDK's wire names or `extras.ai` envelope, and
 // every action it can arrive under must decode to nothing.
 // ---------------------------------------------------------------------------
@@ -211,7 +178,7 @@ describe('defineCodec — encoder wiring', () => {
     const writer = createMockWriter();
     const encoder = codec.createEncoder(writer);
 
-    await encoder.publishInput({ kind: 'noop', codecMessageId: 'cm-1', payload: {} });
+    await encoder.publishInput({ kind: 'noop', transportMessageId: 'cm-1', payload: {} });
 
     expect(writer.published).toHaveLength(1);
     const msg = writer.published[0];
@@ -257,12 +224,6 @@ type CuratedOutput =
   | { type: 'fam-end'; id: string };
 
 const curatedCodec = defineCodec<NoopInput, CuratedOutput>()({
-  reducer: {
-    init: (): FixtureProjection => ({ folded: [] }),
-    // The reducer is irrelevant to these encode-side tests.
-    fold: (state: FixtureProjection): FixtureProjection => state,
-    getMessages: (): CodecMessage<NoopInput | CuratedOutput>[] => [],
-  },
   output: ({ event, stream, drop }) => [
     event('kept'),
     drop('dropped'),
@@ -281,7 +242,6 @@ const curatedCodec = defineCodec<NoopInput, CuratedOutput>()({
     drop('fam-start'),
   ],
   input: ({ event }) => [event('noop')],
-  factories: mandatoryFactories,
 });
 
 describe('defineCodec — dropped output types', () => {
@@ -336,14 +296,8 @@ describe('defineCodec — dropped output types', () => {
 
 describe('defineCodec — wire-controlled kind robustness', () => {
   const lifecycleCodec = defineCodec<NoopInput, QuirkyOutput>()({
-    reducer: {
-      init: (): FixtureProjection => ({ folded: [] }),
-      fold: (state: FixtureProjection): FixtureProjection => state,
-      getMessages: (): CodecMessage<NoopInput | QuirkyOutput>[] => [],
-    },
     output: ({ event }) => [event('quirky', { data: { encode: () => '', decode: () => ({ kind: 'decoded' }) } })],
     input: ({ event }) => [event('noop')],
-    factories: mandatoryFactories,
     decoderSynthesiseLifecycle: () => ({
       onDiscrete: { quirky: () => [{ type: 'quirky', kind: 'lead-in' }] },
     }),
@@ -407,7 +361,7 @@ type NoteOutput =
 
 interface PingInput {
   kind: 'ping';
-  codecMessageId: string;
+  transportMessageId: string;
   payload: Record<string, never>;
 }
 
@@ -418,10 +372,6 @@ interface PostInput {
 
 type ValidationInput = PingInput | PostInput;
 
-interface ValidationProjection {
-  folded: (ValidationInput | NoteOutput)[];
-}
-
 // A defineCodec call with a noop reducer — validation runs before any
 // encode/decode, so only the descriptor tables matter.
 const defineWith = (
@@ -429,14 +379,8 @@ const defineWith = (
   input: Parameters<ReturnType<typeof defineCodec<ValidationInput, NoteOutput>>>[0]['input'],
 ): unknown =>
   defineCodec<ValidationInput, NoteOutput>()({
-    reducer: {
-      init: (): ValidationProjection => ({ folded: [] }),
-      fold: (state: ValidationProjection): ValidationProjection => state,
-      getMessages: (): CodecMessage<ValidationInput | NoteOutput>[] => [],
-    },
     output,
     input,
-    factories: mandatoryFactories,
   });
 
 const noteStream = {
@@ -611,49 +555,5 @@ describe('defineCodec — table validation', () => {
         ],
       ),
     ).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
-  });
-});
-
-const reducerMeta = (serial: string, messageId: string): ReducerMeta => ({ serial, messageId });
-
-describe('defineCodec — reducer wiring', () => {
-  it('threads init / fold / getMessages from the supplied reducer parts', () => {
-    let state = codec.init();
-    // init produces the fixture's empty projection; getMessages reads it back.
-    expect(codec.getMessages(state)).toEqual([]);
-
-    const output: QuirkyOutput = { type: 'quirky', kind: 'k' };
-    const input: NoopInput = { kind: 'noop', codecMessageId: 'cm-x', payload: {} };
-    state = codec.fold(state, { direction: 'output', event: output }, reducerMeta('s1', 'm1'));
-    state = codec.fold(state, { direction: 'input', event: input }, reducerMeta('s2', 'm2'));
-
-    // The fixture reducer records each folded event and getMessages surfaces them,
-    // proving all three reducer methods are wired through the factory.
-    expect(codec.getMessages(state)).toEqual([
-      { codecMessageId: 'cm-0', message: output },
-      { codecMessageId: 'cm-1', message: input },
-    ]);
-  });
-});
-
-describe('defineCodec — factory spread', () => {
-  // The `codec` fixture's `factories` builder returns only the two mandatory
-  // factories (mandatoryFactories). These assertions pin the spread contract at
-  // the layer that implements it: defineCodec spreads exactly the subset the
-  // builder returns — the mandatory factories are present and real, and the tool
-  // factories the builder omitted are absent at runtime, not merely type-hidden.
-  it('exposes the mandatory factories the builder returned', () => {
-    expect(typeof codec.createUserMessage).toBe('function');
-    expect(codec.createRegenerate('assistant-1', 'user-1')).toEqual({
-      kind: 'regenerate',
-      target: 'assistant-1',
-      parent: 'user-1',
-    });
-  });
-
-  it('does not spread the tool factories the builder omitted', () => {
-    expect(codec.createToolResult).toBeUndefined();
-    expect(codec.createToolResultError).toBeUndefined();
-    expect(codec.createToolApprovalResponse).toBeUndefined();
   });
 });

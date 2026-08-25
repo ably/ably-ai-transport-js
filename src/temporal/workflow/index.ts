@@ -24,8 +24,8 @@
 import { type ActivityOptions, CancellationScope, proxyActivities, workflowInfo } from '@temporalio/workflow';
 
 import type { InvocationData } from '../../core/transport/invocation.js';
-import type { RunIdentity } from '../../core/transport/types/agent.js';
 import type { RunEndReason } from '../../core/transport/types/shared.js';
+import type { RunIdentity } from '../../core/transport/types/transport.js';
 import type { FramingActivities } from './activity-types.js';
 
 /**
@@ -54,7 +54,7 @@ export interface OpenRunOptions {
    * Whatever is passed must be stable across retries and distinct per turn, so
    * the default only holds where one workflow serves one turn. A workflow
    * serving several turns keeps one workflow id across all of them, and must
-   * pass a per-turn id here or every turn folds onto the first one's run.
+   * pass a per-turn id here or every turn merges onto the first one's run.
    */
   invocationId?: string;
   /** Per-activity timeouts and retry policies. */
@@ -64,8 +64,8 @@ export interface OpenRunOptions {
 /**
  * A handle on an open run, held in workflow state.
  *
- * Carries plain data plus calls that schedule activities. It never holds a live
- * Ably session — each activity builds and tears down its own.
+ * Carries plain data plus calls that schedule activities. It never holds a
+ * live Ably client — each activity builds and tears down its own.
  */
 export interface RunHandle {
   /** The run's identity, to thread through the application's own activities. */

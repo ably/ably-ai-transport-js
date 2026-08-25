@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { EVENT_AI_INPUT, HEADER_CODEC_MESSAGE_ID } from '../../../src/constants.js';
+import { EVENT_AI_INPUT, HEADER_TRANSPORT_MESSAGE_ID } from '../../../src/constants.js';
 import { strField } from '../../../src/core/codec/fields.js';
 import { createInputDescriptorDecoder } from '../../../src/core/codec/input-descriptor-decoder.js';
 import { createInputDescriptorEncoder } from '../../../src/core/codec/input-descriptor-encoder.js';
@@ -34,9 +34,9 @@ interface DocMessage {
 }
 
 type FixtureInput =
-  | { kind: 'tool-result-like'; codecMessageId: string; payload: ToolResultLikePayload }
+  | { kind: 'tool-result-like'; transportMessageId: string; payload: ToolResultLikePayload }
   | { kind: 'signal' }
-  | { kind: 'doc'; codecMessageId?: string; message: DocMessage };
+  | { kind: 'doc'; transportMessageId?: string; message: DocMessage };
 
 // ---------------------------------------------------------------------------
 // Fields
@@ -147,10 +147,10 @@ describe('input descriptor drivers', () => {
 
   // -- payload-nested event ------------------------------------------------
 
-  it('round-trips a payload-nested event and rebuilds the envelope + codecMessageId', async () => {
+  it('round-trips a payload-nested event and rebuilds the envelope', async () => {
     const core = createMockCore();
     await encoder.encode(
-      { kind: 'tool-result-like', codecMessageId: 'cm-1', payload: { toolCallId: 't1', output: { ok: true } } },
+      { kind: 'tool-result-like', transportMessageId: 'cm-1', payload: { toolCallId: 't1', output: { ok: true } } },
       core,
       { opts: undefined },
     );
@@ -165,17 +165,17 @@ describe('input descriptor drivers', () => {
       codecKind: 'tool-result-like',
       data: payload.data,
       codecHeaders: codecHeadersOf(payload),
-      transportHeaders: { [HEADER_CODEC_MESSAGE_ID]: 'cm-1' },
+      transportHeaders: { [HEADER_TRANSPORT_MESSAGE_ID]: 'cm-1' },
     });
-    expect(decoded).toEqual([
-      { kind: 'tool-result-like', codecMessageId: 'cm-1', payload: { toolCallId: 't1', output: { ok: true } } },
-    ]);
+    // Addressing never rides the decoded envelope — the transport surfaces
+    // the transport-message-id on WireMeta instead.
+    expect(decoded).toEqual([{ kind: 'tool-result-like', payload: { toolCallId: 't1', output: { ok: true } } }]);
   });
 
-  it('reconstructs an empty codecMessageId when the transport header is absent', async () => {
+  it('decodes without stamping any addressing on the envelope', async () => {
     const core = createMockCore();
     await encoder.encode(
-      { kind: 'tool-result-like', codecMessageId: '', payload: { toolCallId: 't2', output: 1 } },
+      { kind: 'tool-result-like', transportMessageId: '', payload: { toolCallId: 't2', output: 1 } },
       core,
       { opts: undefined },
     );
@@ -186,9 +186,7 @@ describe('input descriptor drivers', () => {
       codecHeaders: codecHeadersOf(payload),
       transportHeaders: {},
     });
-    expect(decoded).toEqual([
-      { kind: 'tool-result-like', codecMessageId: '', payload: { toolCallId: 't2', output: 1 } },
-    ]);
+    expect(decoded).toEqual([{ kind: 'tool-result-like', payload: { toolCallId: 't2', output: 1 } }]);
   });
 
   // -- wire-only -----------------------------------------------------------
@@ -214,7 +212,7 @@ describe('input descriptor drivers', () => {
     await encoder.encode(
       {
         kind: 'doc',
-        codecMessageId: 'cm-doc',
+        transportMessageId: 'cm-doc',
         message: {
           id: 'm1',
           parts: [
@@ -248,7 +246,7 @@ describe('input descriptor drivers', () => {
     expect(at(payloads, 2).data).toEqual({ n: 7 });
 
     // each part decodes back to a one-part input; the driver stamps `kind` (a batch is
-    // not codec-message-id-addressed), and `assemble` reconstructs the message id + origin
+    // not transport-message-id-addressed), and `assemble` reconstructs the message id + origin
     // from the per-message headers
     const decodedText = decoder.decode({
       codecKind: 'doc',
@@ -279,7 +277,7 @@ describe('input descriptor drivers', () => {
 
   it('guarantees at least one wire event when explode yields nothing', async () => {
     const core = createMockCore();
-    await encoder.encode({ kind: 'doc', codecMessageId: 'cm-empty', message: { id: 'm0', parts: [] } }, core, {
+    await encoder.encode({ kind: 'doc', transportMessageId: 'cm-empty', message: { id: 'm0', parts: [] } }, core, {
       opts: undefined,
     });
 
@@ -327,7 +325,7 @@ describe('input descriptor drivers', () => {
       codecKind: 'tool-result-like',
       data: { output: undefined },
       codecHeaders: { kind: 'tool-result-like', toolCallId: 't9' },
-      transportHeaders: { [HEADER_CODEC_MESSAGE_ID]: 'cm-9' },
+      transportHeaders: { [HEADER_TRANSPORT_MESSAGE_ID]: 'cm-9' },
     });
     if (decoded?.kind !== 'tool-result-like') throw new Error('expected a tool-result-like input');
     // Absent and undefined are indistinguishable on the wire; the rebuild seam

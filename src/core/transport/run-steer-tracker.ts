@@ -1,42 +1,42 @@
 /**
- * Per-Run steer state for the agent's iteration loop. Tracks which steers
- * have folded into the Run's projection but not yet been observed by
- * `Run.hasInput()`, and which have been drained since the previous step
- * attempt opened (the per-attempt delta the agent stamps as
- * `steer-codec-message-ids`).
+ * Per-run steer state for the agent's iteration loop. Tracks which steers
+ * have been observed for the run but not yet drained by
+ * `AgentRunTransport.hasInput()`, and which have been drained since the
+ * previous step attempt opened (the per-attempt delta the agent stamps as
+ * `steer-transport-message-ids`).
  *
- * Identity-based: works on codec-message-ids, not channel serials, so
+ * Identity-based: works on transport-message-ids, not channel serials, so
  * cross-publisher delivery order does not affect outcome resolution.
  */
 export class RunSteerTracker {
   /**
-   * Codec-message-ids of steers folded into the Run's projection that have
-   * NOT yet been drained by `hasInput()`. Populated by the Tree-output
-   * listener as steer messages arrive; drained into
-   * {@link _recentlyProcessed} on each `hasInput()` call.
+   * Transport-message-ids of steers observed for the run that have NOT yet been
+   * drained by `hasInput()`. Populated as steering messages arrive on the
+   * channel; drained into {@link _recentlyProcessed} on each `hasInput()`
+   * call.
    */
   private readonly _pending = new Set<string>();
 
   /**
-   * Codec-message-ids drained from {@link _pending} by `hasInput()` since
+   * Transport-message-ids drained from {@link _pending} by `hasInput()` since
    * the previous step attempt opened. {@link consumeRecentlyProcessed}
    * returns the contents and clears the set — the next step attempt stamps
-   * the returned ids on its assistant outputs as `steer-codec-message-ids`.
+   * the returned ids on its assistant outputs as `steer-transport-message-ids`.
    */
   private readonly _recentlyProcessed = new Set<string>();
 
   /**
-   * Record a steer's codec-message-id as folded into the Run's projection
-   * but not yet drained. Set semantics dedup repeated adds for the same id.
-   * @param codecMessageId - The folded steer's codec-message-id.
+   * Record a steer's transport-message-id as observed for the run but not yet
+   * drained. Set semantics dedup repeated adds for the same id.
+   * @param transportMessageId - The observed steer's transport-message-id.
    */
-  addPending(codecMessageId: string): void {
-    this._pending.add(codecMessageId);
+  addPending(transportMessageId: string): void {
+    this._pending.add(transportMessageId);
   }
 
   /**
    * Whether any pending steer is waiting to be drained.
-   * @returns True iff at least one codec-message-id has been added since
+   * @returns True iff at least one transport-message-id has been added since
    *   the last `drainPending()` call.
    */
   hasPending(): boolean {
@@ -54,30 +54,14 @@ export class RunSteerTracker {
   }
 
   /**
-   * Return the codec-message-ids drained since the previous step attempt,
+   * Return the transport-message-ids drained since the previous step attempt,
    * then clear the internal set. The caller stamps these on the next
    * attempt's output headers; each id appears on exactly one attempt.
-   * @returns The codec-message-ids to stamp (empty when nothing new).
+   * @returns The transport-message-ids to stamp (empty when nothing new).
    */
   consumeRecentlyProcessed(): string[] {
     const ids = [...this._recentlyProcessed];
     this._recentlyProcessed.clear();
     return ids;
-  }
-
-  /**
-   * Whether a steer has folded into the Run but no output has responded to it
-   * yet: it is still pending, or drained but not yet stamped on an attempt's
-   * outputs. Once stamped ({@link consumeRecentlyProcessed} clears it), the
-   * responding output carries a higher serial than the steer, so serial order
-   * already places the steer correctly and it is no longer deferred.
-   *
-   * Used by the run's projection flatten to move an as-yet-unresponded steer to
-   * the tail so the inference prompt ends on a user message.
-   * @param codecMessageId - The candidate steer's codec-message-id.
-   * @returns True iff the id is a steer awaiting a response.
-   */
-  isUnrespondedSteer(codecMessageId: string): boolean {
-    return this._pending.has(codecMessageId) || this._recentlyProcessed.has(codecMessageId);
   }
 }

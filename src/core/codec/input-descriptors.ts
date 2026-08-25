@@ -31,9 +31,9 @@ export type ResolveInput<U extends { kind: string }, K extends U['kind']> = Extr
 
 /**
  * The payload an input `event`'s `fields` / `data` operate on. Inputs nest their
- * domain data under `payload` (the `{ kind, codecMessageId, payload }` envelope of
- * the well-known input variants), so a single event's spec is authored against the
- * payload, and the driver wraps/unwraps the envelope. A member with no `payload`
+ * domain body under `payload` (the `{ kind, payload }` envelope), so a single
+ * event's spec is authored against the payload, and the driver wraps/unwraps
+ * the envelope. A member with no `payload`
  * (a `wireOnly` signal) resolves to `never` — such an event declares no `fields` /
  * `data`, so the payload type is never used.
  * @template C - The narrowed input member.
@@ -77,7 +77,7 @@ export interface InputEncoderCore {
 
 /** Per-write context passed to the input encode driver. */
 export interface InputEncodeContext {
-  /** Per-write overrides (the wire codec-message-id is stamped here by the client session). */
+  /** Per-write overrides (the wire transport-message-id is stamped here by the transport). */
   opts: WriteOptions | undefined;
 }
 
@@ -89,7 +89,7 @@ export interface InputDecodeContext {
   data: unknown;
   /** The inbound codec-tier headers. */
   codecHeaders: Record<string, string>;
-  /** The inbound transport-tier headers (role, codec-message-id, discrete marker). */
+  /** The inbound transport-tier headers (role, transport-message-id, discrete marker). */
   transportHeaders: Record<string, string>;
 }
 
@@ -107,7 +107,7 @@ export type InputEventSpecFor<C> = [PayloadOf<C>] extends [never]
 /**
  * A single-event input descriptor spec, narrowed to input member `C`. `fields`
  * and `data` operate on the member's {@link PayloadOf payload}; the driver wraps
- * the `{ kind, codecMessageId, payload }` envelope on decode and unwraps it on
+ * the `{ kind, transportMessageId, payload }` envelope on decode and unwraps it on
  * encode. A `wireOnly` event carries no payload (kind only).
  * @template C - The narrowed input member.
  */
@@ -128,7 +128,7 @@ export interface InputEventSpec<C> {
  * A per-part wire mapping inside a {@link BatchSpec}, narrowed to part member `Q`.
  * `fields` and `data` operate on the selected part; the batch driver fans the
  * domain message out into one wire event per part and reassembles them in the
- * reducer (merge by codec-message-id).
+ * consumer (merge by transport-message-id).
  * @template Q - The narrowed part member.
  */
 export interface PartSpec<Q> {
@@ -187,7 +187,7 @@ export interface BatchAssembleContext {
 
 /**
  * A multi-part input descriptor spec: one domain message decomposed into many
- * atomic wire events sharing the input member's `kind` and codec-message-id, each
+ * atomic wire events sharing the input member's `kind` and transport-message-id, each
  * carrying a `partType` sub-discriminator. The part union `P` is inferred from
  * `explode`'s return type and threaded into `parts`'s curried `p` and `assemble`,
  * so all three are cast-free in author code.
@@ -209,8 +209,8 @@ export interface BatchSpec<C, P extends { type: string }> {
    */
   messageHeaders?: (input: C) => BatchMessageHeaders;
   /**
-   * DECODE: shape one decoded wire part into a one-part input (the reducer merges
-   * parts by codec-message-id). `ctx` exposes the inbound header tiers so the
+   * DECODE: shape one decoded wire part into a one-part input (a consumer merges
+   * parts by transport-message-id). `ctx` exposes the inbound header tiers so the
    * shared per-message metadata stamped by `messageHeaders` can be read back.
    * The driver stamps only `kind`; the per-message identity rides the
    * transport header and is recovered through `ctx` when needed.

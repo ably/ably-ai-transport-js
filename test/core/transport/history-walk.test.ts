@@ -3,15 +3,14 @@
  *
  * `walkHistoryBatch` is the history batch walk behind both transports'
  * `history()`: it pages a caller-owned `HistoryPagesCursor` newest-first,
- * classifies each page's wires in chronological order on the caller's decoder,
- * and reverses the page order at the end so the returned batch is
- * chronological throughout. These tests pin the walk contract independently of
- * either transport:
+ * collects the fetched pages raw, then classifies the whole span in
+ * chronological order on the caller's decoder. These tests pin the walk
+ * contract independently of either transport:
  *
- *  - the whole history folds into one chronological batch; `exhausted`
- *    mirrors `cursor.hasNext()`
- *  - `limit` pauses at page granularity; another walk on the same cursor
- *    resumes with the remainder
+ *  - with no limit, one page per call; `exhausted` mirrors `cursor.hasNext()`
+ *  - `limit` spans pages at page granularity, and the decoder sees the whole
+ *    span oldest-first; another walk on the same cursor resumes with the
+ *    remainder
  *  - an already-aborted signal throws `OperationCancelled` before any page
  *    is fetched
  *  - an undecodable message is wrapped, handed to `onDecodeError`, and
@@ -63,18 +62,48 @@ const texts = (events: TransportEvent<TestInput, TestOutput>[]): (string | undef
   events.map((e) => (e.kind === 'message' ? e.outputs[0]?.text : undefined));
 
 describe('walkHistoryBatch', () => {
-  it('returns the whole history as one chronological batch and reports exhaustion', async () => {
+  it('fetches one page per call with no limit, each batch chronological within', async () => {
     // Two pages, newest page first, newest-first within each page.
     const cursor = makeHistoryCursor([
       [outputMsg('s4', 'four'), outputMsg('s3', 'three')],
       [outputMsg('s2', 'two'), outputMsg('s1', 'one')],
     ]);
+    const decoder = createDecoder();
 
-    const result = await walkHistoryBatch({ cursor, decoder: createDecoder() }, {});
+    const first = await walkHistoryBatch({ cursor, decoder }, {});
+    expect(texts(first.events)).toEqual(['three', 'four']);
+    expect(first.exhausted).toBe(false);
+    expect(cursor.nextCalls()).toBe(1);
 
+    const second = await walkHistoryBatch({ cursor, decoder }, {});
+    expect(texts(second.events)).toEqual(['one', 'two']);
+    expect(second.exhausted).toBe(true);
+    expect(cursor.nextCalls()).toBe(2);
+  });
+
+  it('decodes a limit-spanned batch oldest-first across pages', async () => {
+    // A limit above one page's size makes the batch span both pages; the
+    // decoder is stateful, so it must see the wires oldest-first across the
+    // page boundary, not page-by-page newest-first.
+    const cursor = makeHistoryCursor([
+      [outputMsg('s4', 'four'), outputMsg('s3', 'three')],
+      [outputMsg('s2', 'two'), outputMsg('s1', 'one')],
+    ]);
+    const seen: (string | undefined)[] = [];
+    const inner = createDecoder();
+    const decoder: Decoder<TestInput, TestOutput> = {
+      decode: (msg) => {
+        const result = inner.decode(msg);
+        seen.push(result.outputs[0]?.text);
+        return result;
+      },
+    };
+
+    const result = await walkHistoryBatch({ cursor, decoder }, { limit: 4 });
+
+    expect(seen).toEqual(['one', 'two', 'three', 'four']);
     expect(texts(result.events)).toEqual(['one', 'two', 'three', 'four']);
     expect(result.exhausted).toBe(true);
-    expect(cursor.nextCalls()).toBe(2);
   });
 
   it('pauses at the limit (page granular); the same cursor resumes with the remainder', async () => {

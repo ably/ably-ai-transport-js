@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { CodecInputEvent, Encoder, WriteOptions } from '../../../src/core/codec/types.js';
+import type { Encoder, WriteOptions } from '../../../src/core/codec/types.js';
 import { pipeStream } from '../../../src/core/transport/pipe-stream.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-interface TestInput extends CodecInputEvent {
+interface TestInput {
   kind: 'test-input';
 }
 
@@ -30,9 +30,8 @@ const createMockEncoder = (): MockEncoder => {
     closed: false,
     streamsCancelled: false,
 
-    publishInput: vi.fn(async () => {
-      /* unused — pipeStream only invokes publishOutput */
-    }),
+    // eslint-disable-next-line @typescript-eslint/require-await -- mock resolves immediately
+    publishInput: vi.fn(async () => ({ serials: [] })),
     // eslint-disable-next-line @typescript-eslint/require-await -- mock
     publishOutput: vi.fn(async (output: TestEvent, opts?: WriteOptions) => {
       mock.appendedEvents.push(output);

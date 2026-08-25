@@ -34,11 +34,10 @@ Every exported function and every non-trivial internal module gets its own test 
 
 ### Style
 
-- Mock writers that record calls (`createMockWriter`, `createMockChannel`)
+- Mock writers that record calls (the mock channel helper records every publish for synchronous assertion)
 - `flushMicrotasks()` instead of `setTimeout` — never use timeouts in tests
-- `mockFetch.nextCall()` / `mockFetch.waitForCalls(n)` to await fire-and-forget POSTs
-- `mockChannel.waitForPublishes(n)` to await encoder publish operations
-- `simulateMessage()` for synchronous channel event simulation
+- Stub global `fetch` with a vi mock that mints a fresh `Response` per call
+- Deliver inbound messages by invoking the listener the mock channel captured at subscribe
 - For streams that stay open, simulate a terminal event (`finish`) to close deterministically, then drain with `reader.read()`
 
 ### What to unit test
@@ -58,7 +57,7 @@ Prove the system works over real Ably. Don't duplicate unit-test edge cases. Eac
 Integration tests can be written at two levels:
 
 - **Codec level**: Test encode/decode roundtrips over a real Ably channel without standing up a full transport. A codec-level test publishes encoded messages to a channel and verifies the decoder reconstructs the expected output. This validates the wire format and Ably message serialization without transport machinery.
-- **Transport level**: Test the full send → stream → receive lifecycle through `ClientSession` and `AgentSession`. This validates the complete system including run management, stream routing, and history hydration.
+- **Transport level**: Test the full send → stream → receive lifecycle through `ClientTransport` and `AgentTransport`. This validates the complete system including run management, stream routing, and history paging.
 
 ### Environment
 
@@ -85,18 +84,18 @@ Independently, setting `ABLY_LOCAL_SANDBOX_URL` (e.g. `http://localhost:9010`) p
 
 Happy-path scenarios that validate the wire protocol and real Ably behavior:
 
-1. Text response roundtrip (codec level)
+1. Text response roundtrip (codec level, merged through the provider's own reducer)
 2. Tool call roundtrip (codec level)
 3. Full transport: send -> stream -> receive
 4. Tool call through transport
 5. Cancel chain: client cancel -> server abort -> stream closes
 6. Multi-run sequential
 7. Concurrent runs
-8. History hydration: stream a run, new client hydrates conversation state from channel history
-9. Reconnect / resume: client disconnects mid-stream, reconnects, receives the rest
-10. Conversation tree / branching: send, regenerate (fork), verify tree from history
-11. Error propagation: server error mid-stream, client receives and stream closes cleanly
-12. Multi-client sync: two clients on the same channel both see the streamed response
+8. History paging: stream a run, a fresh client pages the channel to chronological batches
+9. Attach boundary: a run streaming across the attach point merges to one message (the shared live/history decoder), not a duplicated prefix
+10. Error propagation: server error mid-stream, client receives and stream closes cleanly
+11. Multi-client sync: two clients on the same channel both see the streamed response
+12. Durable cross-process re-entry: a second transport adopts the run via `adoptRun` and publishes only the terminal
 
 ### What NOT to integration test
 

@@ -1,31 +1,19 @@
 /**
- * Type-level tests: the Vercel wrapper threads the AI SDK's `UIMessage` generic
+ * Type-level tests: the Vercel wrappers thread the AI SDK's `UIMessage` generic
  * parameters (metadata / data parts / tools) end to end, so a consumer that
- * supplies concrete types gets them back from `view.getMessages()` and the
- * chat/react surface rather than the SDK defaults (`metadata: unknown`).
+ * supplies concrete types gets them back from the codec's unions and the
+ * chat-transport surface rather than the SDK defaults (`metadata: unknown`).
  *
  * The assertions are checked by `pnpm run typecheck` (which includes `test/`);
- * they fail to compile against a non-generic wrapper — `createClientSession`
- * taking no type argument, or `getMessages` yielding `unknown` metadata. The
- * runtime bodies keep the cases live under `pnpm test`.
+ * the runtime bodies keep the cases live under `pnpm test`.
  */
 
 import type * as AI from 'ai';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import type { CodecMessage, DefinedCodec } from '../../src/core/codec/index.js';
-import type { ClientSession } from '../../src/core/transport/types.js';
-import {
-  type ChatTransport,
-  createChatTransport,
-  createClientSession,
-  createUIMessageCodec,
-  type SendMessagesRequestContext,
-  type VercelInput,
-  type VercelOutput,
-  type VercelProjection,
-} from '../../src/vercel/index.js';
-import type { UseMessagesWithSeedOptions, UseMessageSyncOptions } from '../../src/vercel/react/index.js';
+import type { WireCodec } from '../../src/core/codec/types.js';
+import { createUIMessageCodec, type VercelInput, type VercelOutput } from '../../src/vercel/index.js';
+import { type ChatTransport, createChatTransport } from '../../src/vercel/transport/chat-transport.js';
 
 interface MyMetadata {
   userId: string;
@@ -37,65 +25,29 @@ type MyDataParts = AI.UIDataTypes & { chart: { points: number[] } };
 type MyTools = AI.UITools & { getWeather: { input: { city: string }; output: { tempC: number } } };
 type MyMessage = AI.UIMessage<MyMetadata, MyDataParts, MyTools>;
 
-type MySession = ClientSession<
-  VercelInput<MyMetadata, MyDataParts, MyTools>,
-  VercelOutput<MyMetadata, MyDataParts>,
-  VercelProjection<MyMetadata, MyDataParts, MyTools>,
-  MyMessage
->;
-
 describe('Vercel UIMessage generic threading', () => {
-  it('createUIMessageCodec threads the message type into getMessages and createUserMessage', () => {
+  it('createUIMessageCodec threads the message type into the input union', () => {
     const codec = createUIMessageCodec<MyMetadata, MyDataParts, MyTools>();
 
-    // getMessages surfaces the consumer's typed message (metadata + data + tools).
-    expectTypeOf<ReturnType<typeof codec.getMessages>>().toEqualTypeOf<CodecMessage<MyMessage>[]>();
-    // createUserMessage accepts the consumer's typed message.
-    expectTypeOf<Parameters<typeof codec.createUserMessage>[0]>().toEqualTypeOf<MyMessage>();
-
-    // Runtime: the factory still wraps a message as a user-message input.
-    const message: MyMessage = { id: 'u1', role: 'user', metadata: { userId: 'a' }, parts: [] };
-    expect(codec.createUserMessage(message).kind).toBe('user-message');
+    // The codec's encoder accepts the consumer's typed message input.
+    type Input = Parameters<ReturnType<typeof codec.createEncoder>['publishInput']>[0];
+    expectTypeOf<Extract<Input, { kind: 'message' }>['payload']>().toEqualTypeOf<MyMessage>();
+    expect(codec.createDecoder()).toBeDefined();
   });
 
-  it('createClientSession threads metadata/data/tools to view.getMessages (not widened to unknown)', () => {
-    // Instantiation expression (not called) — proves createClientSession is generic
-    // over the three UIMessage params and returns a session typed to the message.
-    expectTypeOf(createClientSession<MyMetadata, MyDataParts, MyTools>).returns.toEqualTypeOf<MySession>();
-
-    type Messages = ReturnType<MySession['view']['getMessages']>;
-    expectTypeOf<Messages>().toEqualTypeOf<CodecMessage<MyMessage>[]>();
-    // The headline fix: metadata carries the consumer's type, not `unknown`.
-    expectTypeOf<Messages[number]['message']['metadata']>().toEqualTypeOf<MyMetadata | undefined>();
-    expectTypeOf<Messages[number]['message']['metadata']>().not.toBeUnknown();
-  });
-
-  it('createChatTransport and its request context preserve the message type', () => {
+  it('createChatTransport preserves the message type', () => {
     expectTypeOf(createChatTransport<MyMetadata, MyDataParts, MyTools>).returns.toEqualTypeOf<
       ChatTransport<MyMetadata, MyDataParts, MyTools>
     >();
-    // The prepare-request context carries the typed history/messages.
-    expectTypeOf<SendMessagesRequestContext<MyMetadata, MyDataParts, MyTools>['messages']>().toEqualTypeOf<
-      MyMessage[]
-    >();
+    // sendMessages accepts the typed message list.
+    expectTypeOf<
+      Parameters<ChatTransport<MyMetadata, MyDataParts, MyTools>['sendMessages']>[0]['messages']
+    >().toEqualTypeOf<MyMessage[]>();
   });
 
-  it('the react imperative hooks preserve the message type', () => {
-    expectTypeOf<UseMessageSyncOptions<MyMetadata, MyDataParts, MyTools>['messages']>().toEqualTypeOf<
-      MyMessage[] | undefined
-    >();
-    expectTypeOf<UseMessagesWithSeedOptions<MyMetadata, MyDataParts, MyTools>['seed']>().toEqualTypeOf<MyMessage[]>();
-    // The setMessages updater receives and returns the typed overlay.
-    expectTypeOf<Parameters<UseMessageSyncOptions<MyMetadata, MyDataParts, MyTools>['setMessages']>[0]>()
-      .parameter(0)
-      .toEqualTypeOf<MyMessage[]>();
-  });
-
-  it('createUIMessageCodec with no type arguments falls back to the SDK defaults', () => {
+  it('the codec factory with no type arguments falls back to the SDK defaults', () => {
     // Passing no type parameters preserves today's inference — the codec
-    // resolves to the all-defaults instantiation (bare VercelInput/Output/Projection).
-    expectTypeOf(createUIMessageCodec()).toEqualTypeOf<
-      DefinedCodec<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>
-    >();
+    // resolves to the all-defaults instantiation (bare VercelInput/Output).
+    expectTypeOf(createUIMessageCodec()).toEqualTypeOf<WireCodec<VercelInput, VercelOutput>>();
   });
 });

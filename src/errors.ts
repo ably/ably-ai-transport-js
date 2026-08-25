@@ -15,9 +15,14 @@ export enum ErrorCode {
   InvalidArgument = 40003,
 
   /**
-   * The operation was cancelled (Ably 40033) — the run was cancelled, the
-   * caller's abort signal fired, or the session began closing while the
-   * operation was in flight.
+   * The requested resource does not exist (Ably 40400) — e.g. the input event
+   * an invocation was woken for is not present in the scanned channel history.
+   */
+  NotFound = 40400,
+
+  /**
+   * The operation was cancelled (Ably 40033) — the run was cancelled, or the
+   * caller's abort signal fired while the operation was in flight.
    */
   OperationCancelled = 40033,
 
@@ -45,7 +50,7 @@ export enum ErrorCode {
   StreamedMessageFinalizeFailed = 104000,
 
   /**
-   * The session could not subscribe to and attach its channel during
+   * The transport could not subscribe to and attach its channel during
    * `connect()`. Nothing sends or receives until the attach succeeds; whether a
    * retry helps depends on the `cause` (a transient disconnect clears, a
    * capability or auth rejection does not).
@@ -68,15 +73,13 @@ export enum ErrorCode {
   RunLifecycleEventPublishFailed = 104003,
 
   /**
-   * An operation was attempted on a session, view, or encoder that has already
+   * An operation was attempted on a transport or encoder that has already
    * been closed.
    */
   SessionClosed = 104004,
 
   /**
-   * A send failed — the channel publish failed, or (in the Vercel chat
-   * transport) the HTTP POST to the agent endpoint failed (network error or
-   * non-2xx response).
+   * A send failed — the channel publish of an input or steer failed.
    */
   SessionSendFailed = 104005,
 
@@ -87,12 +90,6 @@ export enum ErrorCode {
    * all events.
    */
   SessionContinuityNotGuaranteed = 104006,
-
-  /**
-   * An operation was attempted but the channel is not in a usable state
-   * (not ATTACHED or ATTACHING).
-   */
-  SessionChannelNotReady = 104007,
 
   /**
    * An error occurred while piping a response stream to the channel — either
@@ -111,12 +108,11 @@ export enum ErrorCode {
   SessionMessageProcessingFailed = 104009,
 
   /**
-   * A fresh process adopting an open run via {@link AdoptedRun.load} waited for
-   * that run's `ai-run-start` to be observed on the channel — across the live
-   * subscription and the bounded history scan — but the `timeoutMs` bound lapsed
-   * (or the channel exhausted) without seeing it. Retryable: a workflow-ordering
-   * error where the open activity's run-start has not yet propagated. Any
-   * history-fetch failure is preserved as `cause`.
+   * A required event was not found in channel history — a durable
+   * invocation's triggering input event (an `AgentTransport.locateInput`
+   * miss), or the opening lifecycle event of a run a continuing process
+   * re-enters. Retryable: an ordering condition where the event has not yet
+   * propagated to history.
    */
   AdoptedRunStartNotObserved = 104010,
 

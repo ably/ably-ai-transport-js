@@ -122,7 +122,7 @@ On success `withRun` publishes nothing — see below.
 `invocationId` defaults to the workflow id, which is right when you start one
 workflow per POST, as the demo does. Pass it explicitly when one workflow serves
 several turns: the workflow id is the same for all of them, so every turn would
-otherwise fold onto the first one's run. Whatever you pass must be the id the
+otherwise merge onto the first one's run. Whatever you pass must be the id the
 client was handed. Nothing validates it, and if the two diverge a retry opens a
 second parallel run on the same channel.
 

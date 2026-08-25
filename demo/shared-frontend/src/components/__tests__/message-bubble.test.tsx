@@ -5,7 +5,7 @@ import type * as AI from 'ai';
 import { MessageBubble } from '../message-bubble';
 
 // MessageBubble is a pure renderer: the list glue derives per-message run and
-// step attribution from the View and passes it as primitive props. These tests
+// step attribution from the app's own merge and passes it as primitive props. These tests
 // pin the thinking loader, the debug badges (including the step badge), and the
 // approval wiring that hands the tool part back to the container.
 

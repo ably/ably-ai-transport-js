@@ -1,11 +1,11 @@
 /**
  * The per-run step write path — the output-producing surface of an agent run
- * (`run.pipe` and `run.createStep`). Extracted from the session's run object so the
- * agent session COMPOSES it rather than embedding it, keeping `agent-session.ts`
- * focused on the run lifecycle (open / resolve / suspend / end) and channel
- * plumbing. Owns the per-run step bookkeeping (the default `stepId` index, the
- * previous step's id/reason for in-process retry coalescing, and the sticky
- * `stepClientId` cursor) and the shared pipe-to-channel path.
+ * (`run.pipe` and `run.createStep`). The agent transport COMPOSES it rather
+ * than embedding it, keeping the transport focused on the run lifecycle
+ * (open / resolve / suspend / end) and channel plumbing. Owns the per-run step
+ * bookkeeping (the default `stepId` index, the previous step's id/reason for
+ * in-process retry coalescing, and the sticky `stepClientId` cursor) and the
+ * shared pipe-to-channel path.
  *
  * The run object delegates `pipe`/`createStep` to the writer and supplies its
  * dependencies through {@link RunStepWriterContext}. The callback seams —
@@ -13,25 +13,24 @@
  * late-resolved structural anchors) — let the run object own how a run opens and
  * resolves, so the writer stays agnostic of those policies. The writer never
  * ends the run: a cancelled pipe closes only its own step bracket, and the run
- * terminal is the run object's (`run.end()` / `session.end()`).
+ * terminal is the run object's (`run.end()`).
  */
 
 import * as Ably from 'ably';
 
-import { HEADER_STEER_CODEC_MESSAGE_IDS, HEADER_STEP_START_SERIAL } from '../../constants.js';
+import { HEADER_STEER_TRANSPORT_MESSAGE_IDS, HEADER_STEP_START_SERIAL } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { errorCause } from '../../utils.js';
-import type { CodecInputEvent, CodecOutputEvent, WireCodec } from '../codec/types.js';
+import type { WireCodec } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
 import { publishLifecycleEvent } from './lifecycle-publish.js';
 import { pipeStream } from './pipe-stream.js';
 import type { RunManager, StepClientScopes } from './run-manager.js';
 import type {
+  OpenRunHooks,
   PipeSource,
   RunEndReason,
-  RunHooks,
-  RunStep,
   StepEndParams,
   StepEndReason,
   StepLifecycleEvent,
@@ -65,15 +64,15 @@ interface StepStartSerialRef {
 }
 
 /**
- * A mutable holder for the steer codec-message-ids a pass stamps under
- * `steer-codec-message-ids`. Set per-pipe (in `doPipe` / `doSend`, which drain
+ * A mutable holder for the steer transport-message-ids a pass stamps under
+ * `steer-transport-message-ids`. Set per-pipe (in `doPipe` / `doSend`, which drain
  * {@link RunStepWriterContext.consumeSteerStampIds}) rather than once at step
  * open, so a step carrying more than one pipe stamps each steering message on
  * the pass that answers it. Read live by the composed encoder `onAblyMessage`,
  * so it is threaded through this ref rather than baked into the encoder up front.
  */
 interface SteerIdsRef {
-  /** The steer codec-message-ids to stamp; empty until a pipe drains them (or when no steer was drained). */
+  /** The steer transport-message-ids to stamp; empty until a pipe drains them (or when no steer was drained). */
   value: string[];
 }
 
@@ -84,16 +83,10 @@ interface SteerIdsRef {
  * them at construction.
  */
 export interface StepWriterAnchors {
-  /** The reply run's structural-parent fallback (its triggering input node), or undefined before the run resolves. */
-  parentFallback: string | undefined;
-  /** The run's `forkOf` anchor (an edit run's source), stamped on every output. */
-  forkOf: string | undefined;
-  /** The run's `msg-regenerate` anchor, echoed on every output so an early reader can populate the regenerate link. */
-  regenerates: string | undefined;
   /** The triggering input's publisher client-id, re-stamped as `input-client-id` on the agent's own publishes. */
   inputClientId: string | undefined;
-  /** The triggering input's codec-message-id, stamped as `input-codec-message-id`. */
-  inputCodecMessageId: string | undefined;
+  /** The triggering input's transport-message-id, stamped as `input-transport-message-id`. */
+  inputTransportMessageId: string | undefined;
 }
 
 /**
@@ -102,7 +95,7 @@ export interface StepWriterAnchors {
  * (`assertPublishable` / `getAnchors`) keep the run's open / resolve policy in
  * the run object while the writer owns the step + pipe mechanics.
  */
-export interface RunStepWriterContext<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> {
+export interface RunStepWriterContext<TInput, TOutput> {
   /** The run's id, read live (a continuation re-keys it as the run opens). */
   getRunId(): string;
   /** The run's invocation-id (stable), scoping the default `stepId` and stamped on every publish. */
@@ -115,29 +108,19 @@ export interface RunStepWriterContext<TInput extends CodecInputEvent, TOutput ex
   runManager: RunManager;
   /**
    * Seed an optimistic step-lifecycle event locally, so a subscriber sees the
-   * step-start / step-end bracket before the wire echo arrives. The Tree-backed
-   * agent session folds it into its Tree; a standalone consumer re-emits it on
-   * its receive stream. Called once at each step open and close.
+   * step-start / step-end bracket before the wire echo arrives. The agent
+   * transport re-emits it on its receive stream. Called once at each step
+   * open and close.
    * @param event - The optimistic step-start / step-end event (its `serial` is `undefined`).
    */
   emitStepLifecycle(event: StepLifecycleEvent): void;
-  /**
-   * The sticky `stepClientId` to inherit for a run's next step: the
-   * `step-client-id` of the run's latest preceding step, re-derived from durable
-   * channel state. Backs the second rung of {@link resolveStepClientId}'s ladder
-   * so a fresh adopting process (whose in-process cursor is empty) still inherits
-   * the run's prior step's client rather than resetting to the default.
-   * @param runId - The run whose prior step's client to read.
-   * @returns The latest preceding step's client, or `undefined` when the run has no prior step yet.
-   */
-  getPriorStepClientId(runId: string): string | undefined;
   /** The run's callbacks — `onAblyMessage` (per published message), `onCancelled` (final write on cancel), `onError`. */
-  hooks: RunHooks<TOutput>;
+  hooks: OpenRunHooks<TOutput>;
   /** The run's composite abort signal (internal controller composed with any external signal). */
   signal: AbortSignal;
   /** The run's logger, if any. */
   logger: Logger | undefined;
-  /** Await the channel being connected before a publish; rejects if the session is unusable. */
+  /** Await the channel being connected before a publish; rejects if the transport is unusable. */
   requireConnected(method: string): Promise<void>;
   /**
    * Throw if the run is not open for publishing — and, for `step`, if it has
@@ -157,8 +140,8 @@ export interface RunStepWriterContext<TInput extends CodecInputEvent, TOutput ex
    */
   markOutputProduced?(): void;
   /**
-   * Return the codec-message-ids of steers drained since the previous step
-   * attempt opened, to stamp under `steer-codec-message-ids` on this attempt's
+   * Return the transport-message-ids of steers drained since the previous step
+   * attempt opened, to stamp under `steer-transport-message-ids` on this attempt's
    * assistant outputs (the header is omitted when the array is empty). Called
    * once per attempt at open, draining the run's per-attempt delta. Optional;
    * omitted when the run has no steer loop.
@@ -166,15 +149,60 @@ export interface RunStepWriterContext<TInput extends CodecInputEvent, TOutput ex
   consumeSteerStampIds?(): string[];
 }
 
+/**
+ * The writer's step handle: one step attempt's write surface, including the
+ * explicit `start()` the transport's lazy-starting wrapper drives. Output
+ * published through it is stamped with the step's `step-id` and its attempt's
+ * `step-start-serial`, so a retry supersedes the prior attempt's output.
+ * @template TOutput - The codec output type carried by the step's streams.
+ */
+export interface WriterStep<TOutput> {
+  /** This step's id — stable across retry attempts of the same step. */
+  readonly stepId: string;
+  /**
+   * The run's AbortSignal; there is no per-step abort. Fires when a cancel
+   * arrives for this run.
+   */
+  readonly abortSignal: AbortSignal;
+  /**
+   * Publish `ai-step-start`, opening the step for output. Idempotent — a
+   * second call is a no-op. Rejects if another step is already active on the
+   * run (only one step may be open at a time), or if the run has ended.
+   */
+  start(): Promise<void>;
+  /**
+   * Pipe an output stream through the encoder to the channel, stamping every
+   * output with this step's identity. A stream error returns
+   * `{ reason: 'error' }` (it does NOT throw) and marks the step `failed`
+   * when {@link WriterStep.end} closes it.
+   * @param source - The output source to pipe (see {@link PipeSource}).
+   * @returns The {@link StreamResult} for this pipe.
+   */
+  pipe(source: PipeSource<TOutput>): Promise<StreamResult>;
+  /**
+   * Publish a single discrete output as one assistant message, stamped with
+   * this step's identity. The step must be active (started, not ended).
+   * @param output - The single codec output to publish.
+   */
+  send(output: TOutput): Promise<void>;
+  /**
+   * Publish `ai-step-end`, closing the step. Idempotent. Omit `params` to
+   * derive the reason from the step's piped output (`failed` if any pipe
+   * errored, else `complete`).
+   * @param params - Optional {@link StepEndParams}.
+   */
+  end(params?: StepEndParams): Promise<void>;
+}
+
 /** The output-producing surface of an agent run: stream piping and explicit step handles. */
-export interface RunStepWriter<TOutput extends CodecOutputEvent> {
-  /** Pipe an output source to the channel as the run's output (stepless). See {@link AgentRun.pipe}. */
+export interface RunStepWriter<TOutput> {
+  /** Pipe an output source to the channel as the run's output (stepless). See {@link AgentRunTransport.pipe}. */
   pipe: (source: PipeSource<TOutput>) => Promise<StreamResult>;
-  /** Create an explicit step handle that brackets its output with `ai-step-start` / `ai-step-end`. See {@link AgentRun.createStep}. */
-  createStep: (options?: StepOptions) => RunStep<TOutput>;
-  /** True while a step is open (started, not ended) — for {@link AgentRun.suspend}'s reject-while-active guard. */
+  /** Create an explicit step handle that brackets its output with `ai-step-start` / `ai-step-end`. See {@link AgentRunTransport.createStep}. */
+  createStep: (options?: StepOptions) => WriterStep<TOutput>;
+  /** True while a step is open (started, not ended) — for {@link AgentRunTransport.suspend}'s reject-while-active guard. */
   hasActiveStep: () => boolean;
-  /** Best-effort close the open step (if any) with `reason` — for {@link AgentRun.end}'s auto-close. Idempotent. */
+  /** Best-effort close the open step (if any) with `reason` — for {@link AgentRunTransport.end}'s auto-close. Idempotent. */
   closeActiveStep: (reason: StepEndReason) => Promise<void>;
 }
 
@@ -184,7 +212,7 @@ export interface RunStepWriter<TOutput extends CodecOutputEvent> {
  * @param ctx - The run's dependencies (see {@link RunStepWriterContext}).
  * @returns The run's {@link RunStepWriter}.
  */
-export const createRunStepWriter = <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent>(
+export const createRunStepWriter = <TInput, TOutput>(
   ctx: RunStepWriterContext<TInput, TOutput>,
 ): RunStepWriter<TOutput> => {
   const { codec, channel, runManager, signal, logger, invocationId } = ctx;
@@ -203,7 +231,7 @@ export const createRunStepWriter = <TInput extends CodecInputEvent, TOutput exte
   let lastStepClientId: string | undefined;
 
   // At most one step may be open on a run at a time. The handle has no lexical
-  // bracket like the prior closure, so the writer tracks the open step
+  // bracket, so the writer tracks the open step
   // explicitly: run.end auto-closes it (closeActiveStep) and run.suspend rejects
   // while it is open (hasActiveStep). Holds the active step's settle fn, or
   // undefined when no step is open.
@@ -212,7 +240,7 @@ export const createRunStepWriter = <TInput extends CodecInputEvent, TOutput exte
   // latched: start()'s mid-publish window, and a run.pipe's whole duration (its
   // implicit step opens lazily at first output, so there is no single publish to
   // bracket). Lets the guard reject a concurrent start()/pipe before the latch is
-  // set, and is folded into hasActiveStep() so run.suspend rejects across that
+  // set, and is merged into hasActiveStep() so run.suspend rejects across that
   // window too.
   let opening = false;
 
@@ -254,11 +282,7 @@ export const createRunStepWriter = <TInput extends CodecInputEvent, TOutput exte
    * cursor:
    *   1. an explicit {@link StepOptions.stepClientId} (the steer seam populates) wins;
    *   2. else inherit the prior step's client — STICKY — from the in-process
-   *      cursor (the provisioned/serverless fast-path), falling back to
-   *      re-deriving it from durable channel state
-   *      ({@link RunStepWriterContext.getPriorStepClientId}) so a fresh-process
-   *      step with no cursor still inherits the run's prior step's client rather
-   *      than resetting to the default;
+   *      cursor;
    *   3. else (no prior step — the run's FIRST step) default to the triggering
    *      input's publisher (`input-client-id`), NOT the run owner: the two coincide
    *      on a fresh turn but diverge on a non-owner continuation, and the input's
@@ -267,8 +291,7 @@ export const createRunStepWriter = <TInput extends CodecInputEvent, TOutput exte
    * @returns The resolved step client (empty string when nothing resolves a value).
    */
   const resolveStepClientId = (explicit?: string): string => {
-    const resolved =
-      explicit ?? lastStepClientId ?? ctx.getPriorStepClientId(ctx.getRunId()) ?? ctx.getAnchors().inputClientId ?? '';
+    const resolved = explicit ?? lastStepClientId ?? ctx.getAnchors().inputClientId ?? '';
     lastStepClientId = resolved;
     return resolved;
   };
@@ -340,7 +363,7 @@ export const createRunStepWriter = <TInput extends CodecInputEvent, TOutput exte
     lastStepId = stepId;
     lastStepReason = reason;
     if (stepStartSerial === undefined) {
-      logger?.warn('Run.closeStep(); no step-start-serial for step, skipping step-end', { runId, stepId });
+      logger?.warn('RunStepWriter.closeStep(); no step-start-serial for step, skipping step-end', { runId, stepId });
       return;
     }
     const scopes = stepScopes(stepClientId);
@@ -364,19 +387,19 @@ export const createRunStepWriter = <TInput extends CodecInputEvent, TOutput exte
 
   /**
    * Build the per-message encoder for one assistant-message publish under a
-   * step. Each publish is its own message (a fresh `codecMessageId`), so
+   * step. Each publish is its own message (a fresh `transportMessageId`), so
    * `pipe` and `send` both call this per invocation — the encoder itself is
    * short-lived, not a per-step long-lived object. Extracted so `doPipe` and
    * `doSend` share one path for header composition and the composed
    * `onAblyMessage` that stamps the step attempt's `step-start-serial` (live via
-   * {@link StepStartSerialRef}) and its drained `steer-codec-message-ids` (live via
+   * {@link StepStartSerialRef}) and its drained `steer-transport-message-ids` (live via
    * {@link SteerIdsRef}) — both known only after `ai-step-start` publishes,
    * which for `run.pipe`'s lazy implicit step is AFTER this encoder is created.
    * @param step - The step to stamp the message under.
    * @param step.stepId - The step's id, stamped on the message.
    * @param step.stepStartSerialRef - Holds the step attempt's `step-start-serial`, stamped on the message once known.
    * @param step.stepClientId - The step's resolved client, stamped as `step-client-id`.
-   * @param step.steerIdsRef - Holds the steer codec-message-ids this attempt stamps under `steer-codec-message-ids`.
+   * @param step.steerIdsRef - Holds the steer transport-message-ids this attempt stamps under `steer-transport-message-ids`.
    * @returns The encoder (single message; caller must publish then `close()`).
    */
   const createMessageEncoder = (step: {
@@ -389,29 +412,20 @@ export const createRunStepWriter = <TInput extends CodecInputEvent, TOutput exte
     const anchors = ctx.getAnchors();
     const runOwnerClientId = runManager.getClientId(runId);
 
-    const codecMessageId = crypto.randomUUID();
+    const transportMessageId = crypto.randomUUID();
     // The default headers carry no attempt identity: `step-start-serial` and the
-    // drained `steer-codec-message-ids` are both known only after the step-start
+    // drained `steer-transport-message-ids` are both known only after the step-start
     // publishes (for the lazy implicit step, inside `onFirstOutput` — after this
     // encoder is created), so they are injected per-message by the composed
     // `onAblyMessage` rather than baked in here.
     const defaultHeaders = buildTransportHeaders({
       role: 'assistant',
       runId,
-      codecMessageId,
+      transportMessageId,
       runClientId: runOwnerClientId,
-      // Resolved from the triggering input once at run-start. Owning it here
-      // means agent routes don't have to thread the parent to keep tree
-      // threading correct.
-      parent: anchors.parentFallback,
-      forkOf: anchors.forkOf,
       invocationId,
       inputClientId: anchors.inputClientId,
-      inputCodecMessageId: anchors.inputCodecMessageId,
-      // Echo `msg-regenerate` on the assistant message so a client receiving
-      // the assistant chunk before `ai-run-start` can still populate
-      // `RunNode.regeneratesCodecMessageId` from headers.
-      regenerates: anchors.regenerates,
+      inputTransportMessageId: anchors.inputTransportMessageId,
       stepId: step.stepId,
       stepClientId: step.stepClientId,
     });
@@ -429,7 +443,7 @@ export const createRunStepWriter = <TInput extends CodecInputEvent, TOutput exte
       if (stepStartSerial !== undefined) transport[HEADER_STEP_START_SERIAL] = stepStartSerial;
       // Stamp the steers this attempt drained (steering client outcome
       // resolution is set-membership on this array), omitted when empty.
-      if (steerIds.length > 0) transport[HEADER_STEER_CODEC_MESSAGE_IDS] = JSON.stringify(steerIds);
+      if (steerIds.length > 0) transport[HEADER_STEER_TRANSPORT_MESSAGE_IDS] = JSON.stringify(steerIds);
     };
     return codec.createEncoder(channel, {
       extras: { headers: defaultHeaders },
@@ -437,25 +451,25 @@ export const createRunStepWriter = <TInput extends CodecInputEvent, TOutput exte
         stampAttempt(message);
         runOnAblyMessage?.(message);
       },
-      messageId: codecMessageId,
+      messageId: transportMessageId,
     });
   };
 
   /**
    * Pipe a stream through a fresh encoder to the channel, always within a step
    * bracket. Shared by {@link RunStepWriter.pipe} (an implicit step opened
-   * LAZILY at first output via `step.onFirstOutput`) and {@link RunStep.pipe}
+   * LAZILY at first output via `step.onFirstOutput`) and {@link WriterStep.pipe}
    * (an explicit step the caller already opened eagerly, so it omits
    * `onFirstOutput`). It does NOT end the run on cancel — the run terminal is
-   * the outer layer's responsibility (`run.end()`, or `session.end()` for an
-   * open run at teardown); a cancelled pipe closes only its own step bracket
+   * the outer layer's responsibility (`run.end()`); a cancelled pipe closes
+   * only its own step bracket
    * (the caller's close-iff-opened / `step.end()`).
    * @param source - The output source to pipe.
    * @param step - The step to stamp output under.
    * @param step.stepId - The step's id, stamped on every output.
    * @param step.stepStartSerialRef - Holds the step attempt's `step-start-serial`, stamped on every output once known.
    * @param step.stepClientId - The step's resolved client, stamped as `step-client-id` on every output.
-   * @param step.steerIdsRef - Holds the steer codec-message-ids this attempt stamps under `steer-codec-message-ids`.
+   * @param step.steerIdsRef - Holds the steer transport-message-ids this attempt stamps under `steer-transport-message-ids`.
    * @param step.onFirstOutput - Optional hook fired once before the first output (the lazy implicit-step open); omitted when the step is already open.
    * @returns The {@link StreamResult}.
    */
@@ -481,7 +495,7 @@ export const createRunStepWriter = <TInput extends CodecInputEvent, TOutput exte
     // Drain the steers this pass answers and stamp them on THIS pipe's outputs.
     // Done per-pipe (not once at step open) so a step carrying more than one
     // pipe — the agent loops another inference pass into the same step for a
-    // steering message that folded in mid-stream — stamps each steering message
+    // steering message that merged in mid-stream — stamps each steering message
     // on the pipe that answers it. hasInput() moves a pending steering message
     // into the "recently processed" set this consume reads.
     step.steerIdsRef.value = ctx.consumeSteerStampIds?.() ?? [];
@@ -498,11 +512,11 @@ export const createRunStepWriter = <TInput extends CodecInputEvent, TOutput exte
         500,
         errorCause(result.error),
       );
-      logger?.error('Run.pipe(); stream error', { runId });
+      logger?.error('RunStepWriter.pipe(); stream error', { runId });
       runOnError?.(errInfo);
     }
 
-    logger?.debug('Run.pipe(); stream finished', { runId, reason: result.reason });
+    logger?.debug('RunStepWriter.pipe(); stream finished', { runId, reason: result.reason });
     return result;
   };
 
@@ -515,7 +529,7 @@ export const createRunStepWriter = <TInput extends CodecInputEvent, TOutput exte
    * @param step.stepId - The step's id, stamped on the output.
    * @param step.stepStartSerialRef - Holds the step attempt's `step-start-serial`, stamped on the output.
    * @param step.stepClientId - The step's resolved client, stamped as `step-client-id`.
-   * @param step.steerIdsRef - Holds the steer codec-message-ids this attempt stamps under `steer-codec-message-ids`.
+   * @param step.steerIdsRef - Holds the steer transport-message-ids this attempt stamps under `steer-transport-message-ids`.
    */
   const doSend = async (
     output: TOutput,
@@ -537,13 +551,13 @@ export const createRunStepWriter = <TInput extends CodecInputEvent, TOutput exte
       await encoder.close();
     }
 
-    logger?.debug('RunStep.send(); output sent', { runId: ctx.getRunId(), stepId: step.stepId });
+    logger?.debug('WriterStep.send(); output sent', { runId: ctx.getRunId(), stepId: step.stepId });
   };
 
   // Spec: AIT-ST6, AIT-ST6a, AIT-ST6b, AIT-ST6b1, AIT-ST6b2, AIT-ST6b3, AIT-ST6c
   const pipe = async (source: PipeSource<TOutput>): Promise<StreamResult> => {
     const runId = ctx.getRunId();
-    logger?.trace('Run.pipe();', { runId });
+    logger?.trace('RunStepWriter.pipe();', { runId });
 
     // run.pipe respects the one-active-step latch: an explicit step open on this
     // run must be ended first.
@@ -587,7 +601,7 @@ export const createRunStepWriter = <TInput extends CodecInputEvent, TOutput exte
       const stepState = { opened: false, settled: false };
 
       // Idempotent close that clears the latch if this step holds it, so
-      // run.end's auto-close (run.end -> closeActiveStep, e.g. from session.end)
+      // run.end's auto-close (run.end -> closeActiveStep)
       // and the close-iff-opened below never double-publish `ai-step-end`.
       const settle = async (reason: StepEndReason): Promise<void> => {
         if (stepState.settled) return;
@@ -610,7 +624,7 @@ export const createRunStepWriter = <TInput extends CodecInputEvent, TOutput exte
 
       // Close the implicit step iff it opened: a cancel closes it `cancelled`, a
       // stream error `failed`, anything else `complete`. Idempotent, so if
-      // run.end (or session.end) already auto-closed this step via
+      // run.end already auto-closed this step via
       // closeActiveStep (the same reason mapping) this is a no-op.
       if (stepState.opened) {
         // Best-effort, like the explicit step's close: a fire-and-forget run.pipe
@@ -620,7 +634,7 @@ export const createRunStepWriter = <TInput extends CodecInputEvent, TOutput exte
         try {
           await settle(stepEndReasonFor(result.reason));
         } catch {
-          logger?.error('Run.pipe(); failed to close implicit step', { runId, stepId });
+          logger?.error('RunStepWriter.pipe(); failed to close implicit step', { runId, stepId });
         }
       }
       return result;
@@ -629,12 +643,12 @@ export const createRunStepWriter = <TInput extends CodecInputEvent, TOutput exte
     }
   };
 
-  const createStep = (options?: StepOptions): RunStep<TOutput> => {
+  const createStep = (options?: StepOptions): WriterStep<TOutput> => {
     const runId = ctx.getRunId();
-    logger?.trace('Run.createStep();', { runId });
+    logger?.trace('RunStepWriter.createStep();', { runId });
 
     // Resolve the step id SYNCHRONOUSLY (createStep does no I/O — only start()
-    // publishes; see StepOptions.stepId / the Run.createStep contract): an
+    // publishes; see StepOptions.stepId / the AgentRunTransport.createStep contract): an
     // explicit id wins; else reuse the previous step's id if it failed
     // (in-process retry coalescing); else mint the next index. The default is
     // scoped to THIS invocation's id so steps from different invocations of the
@@ -676,7 +690,7 @@ export const createRunStepWriter = <TInput extends CodecInputEvent, TOutput exte
       state = 'settled';
       if (activeStep?.settle === settle) activeStep = undefined;
       await closeStep(stepId, stepStartSerialRef.value, reason, stepClientId);
-      logger?.debug('RunStep.end(); step closed', { runId, stepId, reason });
+      logger?.debug('WriterStep.end(); step closed', { runId, stepId, reason });
     };
 
     return {
@@ -687,7 +701,7 @@ export const createRunStepWriter = <TInput extends CodecInputEvent, TOutput exte
         return signal;
       },
       start: async (): Promise<void> => {
-        logger?.trace('RunStep.start();', { runId, stepId });
+        logger?.trace('WriterStep.start();', { runId, stepId });
         if (state !== 'initialized') return; // idempotent: already started or settled
         if (activeStep !== undefined || opening) {
           throw new Ably.ErrorInfo(

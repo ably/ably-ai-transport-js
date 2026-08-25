@@ -25,7 +25,7 @@ afterEach(() => {
 });
 
 describe('<AvatarStack>', () => {
-  it('enters presence on the session channel', () => {
+  it('enters presence on the conversation channel', () => {
     render(<AvatarStack channelName="ai:demo" />);
     expect(enterPresence).toHaveBeenCalledWith('ai:demo');
   });

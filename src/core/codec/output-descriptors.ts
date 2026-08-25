@@ -404,7 +404,7 @@ export interface OutputBuilder<U extends { type: string }> {
   /**
    * Declare an output `type` the codec deliberately keeps off the wire — the
    * codec's wire-curation policy. A dropped event is redundant on the wire — no
-   * projection folds it and no decode policy reads it — so the encoder publishes
+   * consumer merges it and no decode policy reads it — so the encoder publishes
    * nothing for it, silently. Each entry should carry a
    * comment saying why the event is redundant (e.g. a lifecycle opener whose
    * snapshot re-echoes the request envelope no consumer reads). Any output type

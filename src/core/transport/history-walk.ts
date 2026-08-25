@@ -5,7 +5,7 @@
  * {@link TransportEvent}, returning one chronological batch per call.
  *
  * Each transport owns its cursor and decoder (both share their live stream's
- * decoder, so a stream spanning the attach boundary folds once) and the
+ * decoder, so a stream spanning the attach boundary merges once) and the
  * single-flight serialisation of concurrent calls — this module owns only the
  * walk itself.
  */
@@ -14,10 +14,10 @@ import * as Ably from 'ably';
 
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
-import type { CodecInputEvent, CodecOutputEvent, Decoder } from '../codec/types.js';
+import type { Decoder } from '../codec/types.js';
+import { wrapMessageProcessingError } from './channel-support.js';
 import type { HistoryPagesCursor } from './load-history-pages.js';
 import { classifyWireMessage } from './receive-transport.js';
-import { wrapMessageProcessingError } from './session-support.js';
 import type { TransportEvent, TransportHistoryOptions, TransportHistoryResult } from './types/transport.js';
 
 /**
@@ -26,7 +26,7 @@ import type { TransportEvent, TransportHistoryOptions, TransportHistoryResult } 
  * @template TInput - The codec's input-event domain type.
  * @template TOutput - The codec's output-event domain type.
  */
-export interface WalkHistoryBatchContext<TInput extends CodecInputEvent, TOutput extends CodecOutputEvent> {
+export interface WalkHistoryBatchContext<TInput, TOutput> {
   /** The backward page cursor to advance. The caller keeps it across calls so each batch resumes where the last stopped. */
   cursor: HistoryPagesCursor;
   /** The decoder to classify wires on. Advancing it here mutates its per-stream state, so the caller decides which decoder the walk shares. */
@@ -43,36 +43,51 @@ export interface WalkHistoryBatchContext<TInput extends CodecInputEvent, TOutput
 }
 
 /**
- * Fetch and classify the next older slice of channel history. Pages are
- * fetched newest-first; each page's wires are classified in chronological
- * order (advancing the decoder exactly as a live fold would), and the page
- * order is reversed at the end so the returned batch is chronological
- * throughout. A single undecodable message is skipped (logged, and passed to
+ * Fetch and classify the next older slice of channel history. With no `limit`,
+ * one Ably page is fetched per call — the caller's own loop is the pager, so a
+ * caller counting calls counts pages. A `limit` keeps fetching pages until at
+ * least that many wire messages have been scanned (page granular).
+ *
+ * All fetched pages are collected raw first, then classified in chronological
+ * order across the whole batch: the decoder is stateful, so it must never see
+ * a newer wire before an older one within a batch. Across calls the batches
+ * themselves arrive newest-first (the cursor pages backwards); each batch is
+ * classified as a chronological unit, and a stream whose opener lies in a
+ * not-yet-fetched older batch is repaired by the decoder's mid-stream-join
+ * synthesis within the batch that first shows it.
+ *
+ * A single undecodable message is skipped (logged, and passed to
  * `onDecodeError` when supplied) rather than failing the whole batch.
  * @param ctx - The caller's cursor, decoder, and failure surface.
  * @param opts - The caller's batch bounds.
  * @returns The batch of classified events and the exhaustion flag.
  */
-export const walkHistoryBatch = async <TInput extends CodecInputEvent, TOutput extends CodecOutputEvent>(
+export const walkHistoryBatch = async <TInput, TOutput>(
   ctx: WalkHistoryBatchContext<TInput, TOutput>,
   opts: TransportHistoryOptions | undefined,
 ): Promise<TransportHistoryResult<TInput, TOutput>> => {
   const { cursor, decoder, logger } = ctx;
 
-  const pages: TransportEvent<TInput, TOutput>[][] = [];
-  let collected = 0;
-  while (cursor.hasNext() && (opts?.limit === undefined || collected < opts.limit)) {
+  const rawPages: (readonly Ably.InboundMessage[])[] = [];
+  let scanned = 0;
+  while (cursor.hasNext() && (opts?.limit === undefined ? rawPages.length === 0 : scanned < opts.limit)) {
     if (opts?.signal?.aborted) {
       throw new Ably.ErrorInfo('unable to load history; signal aborted', ErrorCode.OperationCancelled, 400);
     }
     const chunk = await cursor.next();
+    opts?.onPage?.();
     // `next()` returning undefined means the cursor is permanently spent —
     // genuine exhaustion.
     if (!chunk) break;
-    const pageEvents: TransportEvent<TInput, TOutput>[] = [];
-    // Ably returns pages newest-first; classify in chronological order so the
-    // decoder's projections build oldest-to-newest within the page.
-    for (const wire of chunk.toReversed()) {
+    scanned += chunk.length;
+    rawPages.push(chunk);
+  }
+
+  // Classify the collected span oldest-to-newest throughout: pages arrive
+  // newest-first and are newest-first within, so both levels reverse.
+  const events: TransportEvent<TInput, TOutput>[] = [];
+  for (const page of rawPages.toReversed()) {
+    for (const wire of page.toReversed()) {
       let event: TransportEvent<TInput, TOutput> | undefined;
       try {
         event = classifyWireMessage(decoder, wire);
@@ -85,15 +100,13 @@ export const walkHistoryBatch = async <TInput extends CodecInputEvent, TOutput e
         ctx.onDecodeError?.(err);
         continue;
       }
-      if (event) pageEvents.push(event);
+      if (event) events.push(event);
     }
-    collected += pageEvents.length;
-    pages.push(pageEvents);
   }
 
   logger?.debug('walkHistoryBatch(); batch collected', {
-    events: collected,
+    events: events.length,
     exhausted: !cursor.hasNext(),
   });
-  return { events: pages.toReversed().flat(), exhausted: !cursor.hasNext() };
+  return { events, exhausted: !cursor.hasNext() };
 };

@@ -1,27 +1,27 @@
 /**
  * Client-side steer state machine.
  *
- * Owns every piece of state involved in the `session.view.send(...)` →
- * `run.steer(...)` → lifecycle-event lifecycle:
- *   - {@link _pendingEchoes} — steers awaiting their own channel echo (so
- *     the SDK can read the Ably-assigned publish serial and surface it via
- *     `published`).
+ * Owns every piece of state involved in the `ClientTransport.steer(...)` →
+ * lifecycle-event lifecycle:
  *   - {@link _inflightSteers} — outcome handlers awaiting a lifecycle
- *     event on the targeted Run.
- *   - {@link _consumedByRunId} — accumulator of `steer-codec-message-ids`
- *     stamps observed on the Run's response messages.
- *   - {@link _deadRunIds} — runs whose `run-end` the SDK has folded;
- *     subsequent `steer()` calls reject synchronously.
+ *     event on the targeted run. `published` needs no such state: it
+ *     resolves from the publish acknowledgement's serial, so it works even
+ *     for a client that receives no echo of its own publishes
+ *     (`echoMessages: false`).
+ *   - {@link _consumedByRunId} — accumulator of `steer-transport-message-ids`
+ *     stamps observed on the run's response messages.
+ *   - {@link _deadRunIds} — runs whose `run-end` the SDK has merged (with
+ *     the terminal reason); subsequent `steer()` calls reject synchronously,
+ *     and a publish that raced the terminal resolves not-consumed.
  *
- * Hosting sessions wire it up by:
+ * The hosting client transport wires it up by:
  *   1. constructing it with a publish callback, a clientId resolver, and
  *      a closed predicate;
- *   2. calling `observeMessage(msg)` from their channel listener for every
+ *   2. calling `observeMessage(msg)` from its channel listener for every
  *      inbound message;
- *   3. exposing `steer(runIdPromise, input)` as the {@link ClientRun.steer}
- *      method;
+ *   3. exposing `steer(runIdPromise, input)` as `ClientTransport.steer`;
  *   4. calling `drainContinuityLost(err)` on a channel discontinuity;
- *   5. calling `drainClosed()` on session close.
+ *   5. calling `drainClosed()` on transport close.
  */
 
 import * as Ably from 'ably';
@@ -29,38 +29,38 @@ import * as Ably from 'ably';
 import {
   EVENT_RUN_END,
   EVENT_RUN_SUSPEND,
-  HEADER_CODEC_MESSAGE_ID,
   HEADER_RUN_ID,
   HEADER_RUN_REASON,
-  HEADER_STEER_CODEC_MESSAGE_IDS,
+  HEADER_STEER_TRANSPORT_MESSAGE_IDS,
 } from '../../constants.js';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import { errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
-import type { CodecInputEvent, WriteOptions } from '../codec/types.js';
+import type { WriteOptions } from '../codec/types.js';
 import { buildTransportHeaders } from './headers.js';
 import type { RunEndReason } from './types/shared.js';
 import type { SteerOutcome, SteerResult } from './types/steer.js';
 
 /** Constructor options for {@link SteerCoordinator}. */
-export interface SteerCoordinatorOptions<TInput extends CodecInputEvent> {
+export interface SteerCoordinatorOptions<TInput> {
   /**
-   * Publish a steer input on the channel. Wraps the session-level
+   * Publish a steer input on the channel. Wraps the transport's
    * `Encoder<TInput, _>.publishInput` so the coordinator does not need
-   * to know about TOutput.
+   * to know about TOutput. Resolves with the publish acknowledgement —
+   * the Ably-assigned serials — which is what resolves `published`.
    */
-  publish: (input: TInput, opts: WriteOptions) => Promise<void>;
+  publish: (input: TInput, opts: WriteOptions) => Promise<Ably.PublishResult>;
   /**
    * Resolve the publisher's `clientId` at publish time. Stamped on each
    * steer's `run-client-id` header.
    */
   clientId: () => string | undefined;
   /**
-   * Whether the hosting session is closed. Checked once after the
-   * `runIdPromise` resolves so a session-close-during-await rejects
-   * cleanly instead of publishing into a dead session.
+   * Whether the hosting transport is closed. Checked once after the
+   * `runIdPromise` resolves so a close-during-await rejects cleanly
+   * instead of publishing into a dead transport.
    */
-  isSessionClosed: () => boolean;
+  isTransportClosed: () => boolean;
   /** Logger for malformed-header / parse-failure warnings. */
   logger: Logger;
 }
@@ -70,79 +70,73 @@ export interface SteerCoordinatorOptions<TInput extends CodecInputEvent> {
  * {@link SteerCoordinator}'s per-runId bucket.
  */
 interface InflightSteer {
-  /** The steer's codec-message-id; matched against the accumulated consumed set. */
-  steerCodecMessageId: string;
+  /** The steer's transport-message-id; matched against the accumulated consumed set. */
+  steerTransportMessageId: string;
   /** Resolve the outcome promise (called on every lifecycle event the entry survives to). */
   resolve: (outcome: SteerOutcome) => void;
-  /** Reject the outcome promise (continuity loss, session close). */
+  /** Reject the outcome promise (continuity loss, transport close). */
   reject: (e: Ably.ErrorInfo) => void;
 }
 
 /**
- * Pending steer awaiting its own channel echo. Keyed by the
- * client-minted codec-message-id stamped on the publish; the matching
- * inbound message carries it back as `codec-message-id`.
- */
-interface PendingSteerEcho {
-  /** The agent-minted run-id the steer is targeting. */
-  runId: string;
-  /** Resolve `published` with the publish's Ably-assigned serial. */
-  resolvePublished: (value: { serial: string | undefined }) => void;
-  /** Resolve the outcome (used by the run-end drain when the echo never landed). */
-  resolveOutcome: (outcome: SteerOutcome) => void;
-  /** Reject the outcome (continuity loss, session close). */
-  rejectOutcome: (e: Ably.ErrorInfo) => void;
-}
-
-/**
- * Owns the client-side steer lifecycle for one {@link ClientSession}. See the
- * module doc for the state it holds and how a session wires it in.
+ * Owns the client-side steer lifecycle for one client transport. See the
+ * module doc for the state it holds and how the transport wires it in.
  * @template TInput - The codec's input event type.
  */
-export class SteerCoordinator<TInput extends CodecInputEvent> {
-  private readonly _publish: (input: TInput, opts: WriteOptions) => Promise<void>;
+export class SteerCoordinator<TInput> {
+  private readonly _publish: (input: TInput, opts: WriteOptions) => Promise<Ably.PublishResult>;
   private readonly _clientId: () => string | undefined;
-  private readonly _isSessionClosed: () => boolean;
+  private readonly _isTransportClosed: () => boolean;
   private readonly _logger: Logger;
 
   /** In-flight steer outcomes awaiting resolution, keyed by run-id. */
   private readonly _inflightSteers = new Map<string, InflightSteer[]>();
 
   /**
-   * Per-run union of codec-message-ids the agent has stamped as consumed on
-   * its response messages (`steer-codec-message-ids` header). Cleared on
+   * Per-run union of transport-message-ids the agent has stamped as consumed on
+   * its response messages (`steer-transport-message-ids` header). Cleared on
    * `run-end` after resolving the matching in-flight bucket, and on close.
    */
   private readonly _consumedByRunId = new Map<string, Set<string>>();
 
-  /** Steers awaiting their own channel echo, keyed by codec-message-id. */
-  private readonly _pendingEchoes = new Map<string, PendingSteerEcho>();
+  /**
+   * Runs the SDK has observed a `run-end` for, with the terminal reason.
+   * Subsequent `steer()` calls targeting these reject without publishing,
+   * and a steer whose publish was in flight when the terminal landed
+   * resolves not-consumed with this reason.
+   */
+  private readonly _deadRunIds = new Map<string, RunEndReason | undefined>();
 
   /**
-   * Run-ids the SDK has observed a `run-end` for. Subsequent `steer()`
-   * calls targeting these reject synchronously without publishing.
+   * Bumped by each drain, with the drain's error retained. A steer whose
+   * publish was in flight when a drain ran must not register an in-flight
+   * entry afterwards (nothing would ever settle it), so the publish path
+   * rejects its outcome with the drain's error instead.
    */
-  private readonly _deadRunIds = new Set<string>();
+  private _drainEpoch = 0;
+  private _lastDrainError: Ably.ErrorInfo | undefined;
 
   constructor(options: SteerCoordinatorOptions<TInput>) {
     this._publish = options.publish;
     this._clientId = options.clientId;
-    this._isSessionClosed = options.isSessionClosed;
+    this._isTransportClosed = options.isTransportClosed;
     this._logger = options.logger.withContext({ component: 'SteerCoordinator' });
   }
 
   /**
    * Publish a steering user-message targeting `runId`. Awaits the caller's
    * `runIdPromise` so a steer attempted before `ai-run-start` lands is
-   * delayed (not rejected) until the agent has minted the id. Registers a
-   * pending-echo entry keyed by the steer's codec-message-id; when the
-   * channel delivers the echo via {@link observeMessage}, the coordinator
-   * resolves `published` with the Ably-assigned serial and moves the
-   * outcome handler to `_inflightSteers` under the resolved `runId`.
+   * delayed (not rejected) until the agent has minted the id. `published`
+   * resolves with the publish acknowledgement's serial — no channel echo is
+   * involved, so it works for a client with `echoMessages: false` — and the
+   * outcome handler registers in `_inflightSteers` under the resolved
+   * `runId` once the publish is acknowledged.
    *
-   * Dead-handle: if the SDK has already folded a `run-end` for the run
+   * Dead-handle: if the SDK has already merged a `run-end` for the run
    * (recorded in {@link _deadRunIds}), or if `runIdPromise` rejects, both
-   * returned promises reject without any channel publish.
+   * returned promises reject without any channel publish. A run-end that
+   * lands while the publish is in flight resolves the outcome not-consumed
+   * with the terminal reason.
    * @param runIdPromise - The handle's `runId` promise (may be unresolved).
    * @param input - The codec input event to publish, in the codec's input shape.
    * @returns The {@link SteerResult} pair.
@@ -150,20 +144,14 @@ export class SteerCoordinator<TInput extends CodecInputEvent> {
   steer(runIdPromise: Promise<string>, input: TInput): SteerResult {
     // Build the published/outcome promise pair up front so we can return
     // them synchronously. The publish lifecycle runs in an async IIFE
-    // below; `published`'s serial only resolves once we observe the
-    // channel echo of our own publish.
-    let resolvePublished!: (value: { serial: string | undefined }) => void;
-    let rejectPublished!: (e: Ably.ErrorInfo) => void;
-    let resolveOutcome!: (outcome: SteerOutcome) => void;
-    let rejectOutcome!: (e: Ably.ErrorInfo) => void;
-    const published = new Promise<{ serial: string | undefined }>((res, rej) => {
-      resolvePublished = res;
-      rejectPublished = rej;
-    });
-    const outcome = new Promise<SteerOutcome>((res, rej) => {
-      resolveOutcome = res;
-      rejectOutcome = rej;
-    });
+    // below; `published`'s serial resolves from the publish
+    // acknowledgement.
+    const {
+      promise: published,
+      resolve: resolvePublished,
+      reject: rejectPublished,
+    } = Promise.withResolvers<{ serial: string | undefined }>();
+    const { promise: outcome, resolve: resolveOutcome, reject: rejectOutcome } = Promise.withResolvers<SteerOutcome>();
     // Suppress unhandled-rejection warnings for callers that only await one.
     published.catch(() => {
       /* observed via published, if at all */
@@ -193,7 +181,7 @@ export class SteerCoordinator<TInput extends CodecInputEvent> {
         return;
       }
 
-      // Dead-handle: refuse to publish into a Run we've already folded
+      // Dead-handle: refuse to publish into a Run we've already merged
       // `run-end` for.
       if (this._deadRunIds.has(resolvedRunId)) {
         const err = new Ably.ErrorInfo(
@@ -206,43 +194,31 @@ export class SteerCoordinator<TInput extends CodecInputEvent> {
         return;
       }
 
-      if (this._isSessionClosed()) {
-        const err = new Ably.ErrorInfo('unable to steer; session is closed', ErrorCode.SessionClosed, 400);
+      if (this._isTransportClosed()) {
+        const err = new Ably.ErrorInfo('unable to steer; transport is closed', ErrorCode.SessionClosed, 400);
         rejectPublished(err);
         rejectOutcome(err);
         return;
       }
 
-      const codecMessageId = crypto.randomUUID();
+      const transportMessageId = crypto.randomUUID();
       const inputEventId = crypto.randomUUID();
       const headers = buildTransportHeaders({
         role: 'user',
         runId: resolvedRunId,
-        codecMessageId,
+        transportMessageId,
         runClientId: this._clientId(),
         inputEventId,
       });
 
-      // Register the pending-echo entry BEFORE publishing so the channel
-      // delivery (which races publish completion) finds it.
-      this._pendingEchoes.set(codecMessageId, {
-        runId: resolvedRunId,
-        resolvePublished,
-        resolveOutcome,
-        rejectOutcome,
-      });
-
-      // The steer publishes on `ai-input` with the `run-id` header set,
-      // which the Tree routes into the addressed Run's projection via
-      // `_applyRunMessage`. Callers pass the same shape `view.send` accepts
-      // (typically `codec.createUserMessage(...)`).
+      // The steer publishes on `ai-input` with the `run-id` header set — the
+      // marker the agent transport routes onto the run's steer tracking, and
+      // a consumer merges like any other input.
+      const epoch = this._drainEpoch;
+      let ack: Ably.PublishResult;
       try {
-        await this._publish(input, { extras: { headers }, messageId: codecMessageId });
+        ack = await this._publish(input, { extras: { headers }, messageId: transportMessageId });
       } catch (error) {
-        // Publish failed — pull the pending-echo entry and reject both
-        // promises. The channel never observed the publish, so the echo
-        // path will never fire for this codec-message-id.
-        this._pendingEchoes.delete(codecMessageId);
         const cause = errorCause(error);
         const isPermission = cause?.statusCode === 401 || cause?.statusCode === 403;
         const err = new Ably.ErrorInfo(
@@ -255,55 +231,67 @@ export class SteerCoordinator<TInput extends CodecInputEvent> {
         );
         rejectPublished(err);
         rejectOutcome(err);
+        return;
       }
+      resolvePublished({ serial: ack.serials[0] ?? undefined });
+
+      // A drain (continuity loss, close) ran while the publish was in
+      // flight: the state it would register into was cleared, so settle the
+      // outcome with the drain's error rather than leaving it to hang.
+      if (this._drainEpoch !== epoch) {
+        rejectOutcome(
+          this._lastDrainError ??
+            new Ably.ErrorInfo('unable to await steer outcome; transport is closed', ErrorCode.SessionClosed, 400),
+        );
+        return;
+      }
+
+      // The run's terminal can land while the publish is in flight; the
+      // in-flight registration below would never resolve, so settle the
+      // outcome from the recorded terminal instead.
+      if (this._deadRunIds.has(resolvedRunId)) {
+        const terminalReason = this._deadRunIds.get(resolvedRunId);
+        resolveOutcome(
+          terminalReason === undefined ? { consumed: false } : { consumed: false, runTerminalReason: terminalReason },
+        );
+        return;
+      }
+
+      // Register the outcome handler on the run's bucket. The next
+      // `run-suspend`/`run-end` for this run resolves it by checking whether
+      // `steerTransportMessageId` is in the accumulated consumed set.
+      const entry: InflightSteer = {
+        steerTransportMessageId: transportMessageId,
+        resolve: resolveOutcome,
+        reject: rejectOutcome,
+      };
+      const bucket = this._inflightSteers.get(resolvedRunId);
+      if (bucket === undefined) this._inflightSteers.set(resolvedRunId, [entry]);
+      else bucket.push(entry);
     })();
 
     return { published, outcome };
   }
 
   /**
-   * Process an inbound channel message. The coordinator inspects three
+   * Process an inbound channel message. The coordinator inspects two
    * orthogonal facets:
-   *   1. Echo match — if the message's codec-message-id matches a pending
-   *      steer publish, resolve `published` with the Ably-assigned serial
-   *      and move the outcome handler into `_inflightSteers`.
-   *   2. Stamp accumulation — if the message carries
-   *      `steer-codec-message-ids`, union the listed ids into the run's
+   *   1. Stamp accumulation — if the message carries
+   *      `steer-transport-message-ids`, union the listed ids into the run's
    *      consumed set.
-   *   3. Lifecycle resolution — on `ai-run-suspend` / `ai-run-end`,
+   *   2. Lifecycle resolution — on `ai-run-suspend` / `ai-run-end`,
    *      resolve in-flight outcomes for the run by membership.
    * @param msg - The inbound Ably message just delivered to the channel.
    */
   observeMessage(msg: Ably.InboundMessage): void {
     const headers = getTransportHeaders(msg);
 
-    // (1) Echo match: this inbound is our own steer's channel delivery.
-    const codecMessageId = headers[HEADER_CODEC_MESSAGE_ID];
-    if (codecMessageId !== undefined) {
-      const pending = this._pendingEchoes.get(codecMessageId);
-      if (pending) {
-        this._pendingEchoes.delete(codecMessageId);
-        pending.resolvePublished({ serial: msg.serial });
-        // Register the outcome handler on the resolved run-id's bucket.
-        // The next `run-suspend`/`run-end` for this run will resolve it by
-        // checking whether `steerCodecMessageId` is in the consumed set.
-        const entry: InflightSteer = {
-          steerCodecMessageId: codecMessageId,
-          resolve: pending.resolveOutcome,
-          reject: pending.rejectOutcome,
-        };
-        const bucket = this._inflightSteers.get(pending.runId);
-        if (bucket === undefined) this._inflightSteers.set(pending.runId, [entry]);
-        else bucket.push(entry);
-      }
-    }
-
-    // (2) Stamp accumulation: union the `steer-codec-message-ids` delta
+    // (1) Stamp accumulation: union the `steer-transport-message-ids` delta
     // for the run. Lifecycle events do NOT carry this header in the agent
     // implementation, but the parse is gated on its presence so an
     // accidental stamp would just be a harmless union.
     const runIdHeader = headers[HEADER_RUN_ID];
-    const steerIdsStamp = headers[HEADER_STEER_CODEC_MESSAGE_IDS];
+    const steerIdsStamp = headers[HEADER_STEER_TRANSPORT_MESSAGE_IDS];
     if (runIdHeader !== undefined && steerIdsStamp !== undefined) {
       try {
         // CAST: trust boundary — the agent always stamps a JSON array of
@@ -318,19 +306,19 @@ export class SteerCoordinator<TInput extends CodecInputEvent> {
           }
           for (const id of parsed) if (typeof id === 'string') bucket.add(id);
         } else {
-          this._logger.warn('SteerCoordinator.observeMessage(); ignoring non-array steer-codec-message-ids', {
+          this._logger.warn('SteerCoordinator.observeMessage(); ignoring non-array steer-transport-message-ids', {
             runId: runIdHeader,
           });
         }
       } catch (error) {
-        this._logger.warn('SteerCoordinator.observeMessage(); failed to parse steer-codec-message-ids', {
+        this._logger.warn('SteerCoordinator.observeMessage(); failed to parse steer-transport-message-ids', {
           runId: runIdHeader,
           error: errorMessage(error),
         });
       }
     }
 
-    // (3) Lifecycle resolution.
+    // (2) Lifecycle resolution.
     if (msg.name === EVENT_RUN_SUSPEND || msg.name === EVENT_RUN_END) {
       const lifecycleRunId = headers[HEADER_RUN_ID];
       if (lifecycleRunId !== undefined) {
@@ -345,56 +333,39 @@ export class SteerCoordinator<TInput extends CodecInputEvent> {
   }
 
   /**
-   * Drain every in-flight bucket and pending-echo entry on channel
-   * continuity loss. Post-loss the channel will not deliver the steer
-   * echoes or run-end lifecycle events that would have resolved these
-   * promises, so they would otherwise hang until close().
+   * Drain every in-flight bucket on channel continuity loss. Post-loss the
+   * channel will not deliver the run lifecycle events that would have
+   * resolved these promises, so they would otherwise hang until close().
    * @param err - The continuity-loss error to reject outcomes with.
    */
   drainContinuityLost(err: Ably.ErrorInfo): void {
+    this._drainEpoch += 1;
+    this._lastDrainError = err;
     for (const bucket of this._inflightSteers.values()) {
       for (const entry of bucket) entry.reject(err);
     }
     this._inflightSteers.clear();
-    for (const entry of this._pendingEchoes.values()) {
-      entry.resolvePublished({ serial: undefined });
-      entry.rejectOutcome(err);
-    }
-    this._pendingEchoes.clear();
     this._deadRunIds.clear();
     this._consumedByRunId.clear();
   }
 
   /**
-   * Drain on session close. Rejects any in-flight outcomes and pending
-   * echoes so callers awaiting them settle rather than hang. Steers whose
-   * `published` already resolved still see their `outcome` promise reject
-   * here.
+   * Drain on transport close. Rejects any in-flight outcomes so callers
+   * awaiting them settle rather than hang. Steers whose `published` already
+   * resolved still see their `outcome` promise reject here.
    */
   drainClosed(): void {
-    if (this._inflightSteers.size > 0) {
-      const closedErr = new Ably.ErrorInfo(
-        'unable to await steer outcome; session closed',
-        ErrorCode.SessionClosed,
-        400,
-      );
-      for (const bucket of this._inflightSteers.values()) {
-        for (const entry of bucket) entry.reject(closedErr);
-      }
-      this._inflightSteers.clear();
+    const closedErr = new Ably.ErrorInfo(
+      'unable to await steer outcome; transport is closed',
+      ErrorCode.SessionClosed,
+      400,
+    );
+    this._drainEpoch += 1;
+    this._lastDrainError = closedErr;
+    for (const bucket of this._inflightSteers.values()) {
+      for (const entry of bucket) entry.reject(closedErr);
     }
-    if (this._pendingEchoes.size > 0) {
-      const echoClosedErr = new Ably.ErrorInfo(
-        'unable to await steer publish; session closed',
-        ErrorCode.SessionClosed,
-        400,
-      );
-      for (const entry of this._pendingEchoes.values()) {
-        entry.resolvePublished({ serial: undefined });
-        entry.rejectOutcome(echoClosedErr);
-      }
-      this._pendingEchoes.clear();
-    }
+    this._inflightSteers.clear();
     this._deadRunIds.clear();
     this._consumedByRunId.clear();
   }
@@ -416,7 +387,7 @@ export class SteerCoordinator<TInput extends CodecInputEvent> {
     if (bucket !== undefined && bucket.length > 0) {
       const remaining: InflightSteer[] = [];
       for (const entry of bucket) {
-        const consumed = consumedSet?.has(entry.steerCodecMessageId) ?? false;
+        const consumed = consumedSet?.has(entry.steerTransportMessageId) ?? false;
         if (consumed) {
           entry.resolve(
             terminalReason === undefined ? { consumed: true } : { consumed: true, runTerminalReason: terminalReason },
@@ -435,23 +406,11 @@ export class SteerCoordinator<TInput extends CodecInputEvent> {
       else this._inflightSteers.set(runId, remaining);
     }
     if (isEnd) {
-      this._deadRunIds.add(runId);
+      // Record the terminal (with its reason) so a steer whose publish is
+      // still in flight resolves not-consumed instead of registering an
+      // in-flight entry nothing will ever settle.
+      this._deadRunIds.set(runId, terminalReason);
       this._consumedByRunId.delete(runId);
-      // Drain any pending-echo entries targeting this Run too: their
-      // channel echo never landed before the terminal lifecycle event, so
-      // the codec-message-id couldn't be matched against the accumulated
-      // consumed set. Resolve `published` with a missing serial (the echo
-      // will not be observed) and resolve `outcome` as not-consumed with
-      // the terminal reason. Without this drain a run-end racing ahead of
-      // a steer's own publish echo would orphan its outcome promise.
-      for (const [codecMessageId, pending] of this._pendingEchoes) {
-        if (pending.runId !== runId) continue;
-        this._pendingEchoes.delete(codecMessageId);
-        pending.resolvePublished({ serial: undefined });
-        pending.resolveOutcome(
-          terminalReason === undefined ? { consumed: false } : { consumed: false, runTerminalReason: terminalReason },
-        );
-      }
     }
   }
 }

@@ -4,17 +4,16 @@
  *
  * Rebuilds inputs from one inbound `ai-input` message, dispatching on the codec
  * `kind` header. A single `event` rebuilds its fields (and `data`) and wraps
- * it into the `{ kind, codecMessageId, payload }` envelope; `wireOnly` events
- * decode to `[]`. A
- * `batch` reads the `partType` sub-discriminator, rebuilds the part via its
+ * it into the `{ kind, payload }` envelope; `wireOnly` events decode to `[]`.
+ * A `batch` reads the `partType` sub-discriminator, rebuilds the part via its
  * sub-table, `assemble`s it into a one-part input, and the driver stamps the
- * `kind` plus the codec-message-id reconstructed from the transport header.
+ * `kind`. Addressing (the transport-message-id, parent, and regenerate headers)
+ * never rides the decoded input — the transport surfaces it on `WireMeta`.
  *
- * Returns bare `TInput[]`, never `CodecEvent[]` — direction tagging is
- * core-owned, downstream at the decode→fold boundary.
+ * Returns bare `TInput[]` — the events carry no direction tag; the wire name
+ * fixes the direction of everything decoded from one message.
  */
 
-import { HEADER_CODEC_MESSAGE_ID } from '../../constants.js';
 import { stripUndefined } from '../../utils.js';
 import { PART_TYPE_HEADER, partFor, readFields } from './header-fields.js';
 import type {
@@ -52,14 +51,13 @@ export const createInputDescriptorDecoder = <U extends { kind: string }>(
     const bag = readFields(descriptor.fields, ctx.codecHeaders);
     if (descriptor.data) Object.assign(bag, descriptor.data.decode(ctx.data));
 
-    const codecMessageId = ctx.transportHeaders[HEADER_CODEC_MESSAGE_ID] ?? '';
     // The payload bag is stripped of undefined-valued props — the same rule
     // every rebuild boundary applies to its innermost bag (absent and undefined
     // are indistinguishable on the wire). The envelope keys are always defined.
     // CAST: the rebuild boundary — `bag` is assembled from the descriptor's declared
-    // fields and data codec onto the payload, so the `{ kind, codecMessageId, payload }`
+    // fields and data codec onto the payload, so the `{ kind, payload }`
     // envelope conforms to the matched member by construction.
-    return [{ kind: descriptor.kind, codecMessageId, payload: stripUndefined(bag) } as unknown as U];
+    return [{ kind: descriptor.kind, payload: stripUndefined(bag) } as unknown as U];
   };
 
   const decodeBatch = (descriptor: BatchDescriptor<U>, ctx: InputDecodeContext): U[] => {
@@ -80,9 +78,8 @@ export const createInputDescriptorDecoder = <U extends { kind: string }>(
       transportHeaders: ctx.transportHeaders,
     });
     // CAST: the driver stamps the shared `kind` onto the assembled one-part input; together
-    // they complete the matched member. A batch creates a new message (not addressed by a
-    // codec-message-id, unlike single `event`s), so none is stamped — the per-message
-    // identity rides the transport header and is recovered by `assemble` when needed.
+    // they complete the matched member. The per-message identity rides the
+    // transport header and is recovered by `assemble` when needed.
     return [{ kind: descriptor.kind, ...partial } as unknown as U];
   };
 

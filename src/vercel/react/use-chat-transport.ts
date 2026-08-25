@@ -1,160 +1,54 @@
 /**
- * useChatTransport: reads a ChatTransport and its underlying ClientSession from
- * the nearest ChatTransportProvider.
- *
- * The chat transport is created by ChatTransportProvider, which wraps the subtree
- * with ClientSessionProvider. The Ably Realtime client is read from the
- * surrounding `<AblyProvider>`. This hook is a thin context reader — it does
- * not create or manage any session/transport state.
- *
- * Pass `channelName` to look up a specific provider by name. Omit to use the nearest
- * provider in the tree. Pass `skip: true` to defer (e.g. when auth is not yet resolved)
- * — returns stubs whose properties throw with a descriptive error.
+ * useChatTransport: read the {@link ChatTransport} useChat adapter and the
+ * {@link ClientTransport} beneath it from the nearest (or a named)
+ * {@link import('./contexts/chat-transport-provider.js').ChatTransportProvider}.
+ * A thin context reader — it creates no state and manages no lifecycle.
  */
 
 import * as Ably from 'ably';
-import type * as AI from 'ai';
 import { useContext } from 'react';
 
-import type { ClientSession } from '../../core/transport/types.js';
+import type { ClientTransport } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
-import { makeSkippedClientSession } from '../../react/internal/skipped-session.js';
-import type { VercelInput, VercelOutput, VercelProjection } from '../codec/index.js';
-import type { ChatTransport } from '../transport/index.js';
+import type { VercelInput, VercelOutput } from '../codec/events.js';
+import type { ChatTransport } from '../transport/chat-transport.js';
 import { ChatTransportContext } from './contexts/chat-transport-context.js';
-
-const SKIPPED_CHAT_TRANSPORT: ChatTransport = {
-  sendMessages: (): never => {
-    throw new Ably.ErrorInfo('unable to send messages; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  reconnectToStream: (): never => {
-    throw new Ably.ErrorInfo('unable to reconnect to stream; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  close: (): never => {
-    throw new Ably.ErrorInfo('unable to close; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  get streaming(): never {
-    throw new Ably.ErrorInfo('unable to access streaming; hook is skipped', ErrorCode.InvalidArgument, 400);
-  },
-  onStreamingChange: (): never => {
-    throw new Ably.ErrorInfo(
-      'unable to subscribe to streaming changes; hook is skipped',
-      ErrorCode.InvalidArgument,
-      400,
-    );
-  },
-};
 
 /** Options for {@link useChatTransport}. */
 export interface UseChatTransportOptions {
-  /** Channel name to look up; omit to use the nearest {@link ChatTransportProvider}. */
+  /** The channel name of the provider to read. Omit to use the nearest enclosing provider. */
   channelName?: string;
-  /** When `true`, return stubs that throw on any access. */
-  skip?: boolean;
 }
 
 /**
- * The value returned by {@link useChatTransport}.
- * Provides both the underlying {@link ClientSession} and the {@link ChatTransport}
- * adapter for Vercel's useChat hook.
+ * What {@link useChatTransport} returns: the useChat adapter, the client
+ * transport beneath it, and any construction error.
  */
 export interface ChatTransportHandle {
-  /**
-   * The underlying client session, also available via {@link useClientSession}.
-   * A throwing stub when `skip` is `true`, when no matching {@link ClientSessionProvider}
-   * was found in the tree, or when session construction failed. Check `sessionError` before use.
-   */
-  session: ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
-
-  /**
-   * The chat transport adapter for use with Vercel's `useChat` hook.
-   *
-   * A throwing stub when `skip` is `true` or when no matching
-   * {@link ChatTransportProvider} was found in the tree. When a provider is found
-   * but the underlying {@link ClientSession} failed to construct, this is the real
-   * transport and `sessionError` is set instead. Check `chatTransportError` and
-   * `sessionError` before use.
-   */
-  chatTransport: ChatTransport;
-
-  /**
-   * Set when no matching {@link ClientSessionProvider} was found, when session
-   * construction failed, and `skip` is `false`.
-   * `undefined` when the session resolved successfully or when `skip` is `true`.
-   */
-  sessionError?: Ably.ErrorInfo | undefined;
-  /**
-   * Set only when no matching {@link ChatTransportProvider} was found and `skip` is
-   * `false`.
-   * `undefined` when the chat transport resolved successfully (even if session
-   * construction failed — see `sessionError`) or when `skip` is `true`.
-   */
-  chatTransportError?: Ably.ErrorInfo | undefined;
+  /** The provider's client transport, or `undefined` when construction failed. */
+  transport: ClientTransport<VercelInput, VercelOutput> | undefined;
+  /** The useChat adapter over {@link transport}, or `undefined` when construction failed. */
+  chatTransport: ChatTransport | undefined;
+  /** The construction error, or `undefined` when the pair exists. */
+  error: Ably.ErrorInfo | undefined;
 }
 
 /**
- * Access a {@link ChatTransport} and {@link ClientSession} from the nearest {@link ChatTransportProvider}.
- *
- * When `channelName` is omitted, the innermost `ChatTransportProvider` in the tree is used.
- * When `skip` is `true`, returns stubs whose every property and method throws
- * an {@link Ably.ErrorInfo} — safe to hold in state before conditions are ready.
- * When no provider is found, returns stubs with `chatTransportError` set instead of throwing.
- * @param props - Options for selecting the chat transport.
- * @param props.channelName - The channel name passed to the enclosing `ChatTransportProvider`. Omit to use the nearest.
- * @param props.skip - When `true`, return stubs that throw on any access instead of reading from context.
- * @returns The `ChatTransportHandle` containing both the chat transport adapter and the underlying client session.
+ * Read the pair registered by an enclosing
+ * {@link import('./contexts/chat-transport-provider.js').ChatTransportProvider}.
+ * @param options - Optional provider lookup; see {@link UseChatTransportOptions}.
+ * @returns The adapter, the transport, and any error; see {@link ChatTransportHandle}.
+ * @throws {Ably.ErrorInfo} InvalidArgument when no matching provider encloses the caller.
  */
-export const useChatTransport = ({ channelName, skip }: UseChatTransportOptions = {}): ChatTransportHandle => {
-  const { nearest, providers } = useContext(ChatTransportContext);
-
-  if (skip) {
-    return {
-      session: makeSkippedClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>(),
-      chatTransport: SKIPPED_CHAT_TRANSPORT,
-    };
-  }
-
-  if (channelName !== undefined) {
-    const slot = providers[channelName];
-    if (slot) {
-      return { session: slot.session, chatTransport: slot.chatTransport, sessionError: slot.sessionError };
-    }
-    return {
-      session: makeSkippedClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>(),
-      chatTransport: SKIPPED_CHAT_TRANSPORT,
-      sessionError: new Ably.ErrorInfo(
-        `unable to use client session; no ClientSessionProvider found for channelName "${channelName}"`,
-        ErrorCode.BadRequest,
-        400,
-      ),
-      chatTransportError: new Ably.ErrorInfo(
-        `unable to use chat transport; no ChatTransportProvider found for channelName "${channelName}"`,
-        ErrorCode.BadRequest,
-        400,
-      ),
-    };
-  }
-
-  if (nearest) {
-    return {
-      session: nearest.session,
-      chatTransport: nearest.chatTransport,
-      sessionError: nearest.sessionError,
-    };
-  }
-
-  return {
-    session: makeSkippedClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>(),
-    chatTransport: SKIPPED_CHAT_TRANSPORT,
-    sessionError: new Ably.ErrorInfo(
-      'unable to use session; no ClientSessionProvider found in the tree',
-      ErrorCode.BadRequest,
+export const useChatTransport = (options: UseChatTransportOptions = {}): ChatTransportHandle => {
+  const context = useContext(ChatTransportContext);
+  const slot = options.channelName === undefined ? context.nearest : context.providers[options.channelName];
+  if (!slot) {
+    throw new Ably.ErrorInfo(
+      'unable to resolve chat transport; no matching ChatTransportProvider encloses this component',
+      ErrorCode.InvalidArgument,
       400,
-    ),
-    chatTransportError: new Ably.ErrorInfo(
-      'unable to use chat transport; no ChatTransportProvider found in the tree',
-      ErrorCode.BadRequest,
-      400,
-    ),
-  };
+    );
+  }
+  return { transport: slot.transport, chatTransport: slot.chatTransport, error: slot.error };
 };

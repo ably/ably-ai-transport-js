@@ -1,46 +1,57 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
 import type * as AI from 'ai';
+import { FakeClientTransport, userEvent } from '../../lib/__tests__/helpers';
 
-// jsdom doesn't implement Element.prototype.scrollIntoView; MessageList's
-// auto-scroll effect calls it whenever the message list grows.
+// jsdom doesn't implement Element.prototype.scrollIntoView; the message list's
+// auto-scroll effect calls it whenever the list grows.
 Element.prototype.scrollIntoView = () => {};
 
 // ---------------------------------------------------------------------------
-// Mock surface — the Chat is glue over useChat + the SDK's
-// useMessageSync/useChatTransport/useAblyMessages. The mocks let us exercise
-// the linear render, the send path, and the tool wiring without an Ably client
-// or the AI SDK runtime.
+// Mock surface — the Chat is glue over useChat and the SDK's provider hooks.
+// The mocks let us exercise the render, the send path, the tool wiring, and
+// the persist gate without an Ably client or the AI SDK runtime. useChat's
+// options are captured so tests can drive the callbacks the Chat registers.
 // ---------------------------------------------------------------------------
 
 const mockSendMessage = vi.fn();
 const mockStop = vi.fn(async () => {});
-const mockConnect = vi.fn(async () => {});
-const mockAddToolResult = vi.fn();
+const mockSetMessages = vi.fn();
+const mockAddToolOutput = vi.fn();
 const mockAddToolApprovalResponse = vi.fn();
 
 let mockMessages: AI.UIMessage[] = [];
 let mockStatus = 'ready';
+let capturedUseChatOptions: Record<string, unknown> = {};
 
 vi.mock('@ai-sdk/react', () => ({
-  useChat: () => ({
-    messages: mockMessages,
-    setMessages: vi.fn(),
-    sendMessage: mockSendMessage,
-    stop: mockStop,
-    status: mockStatus,
-    error: undefined,
-    addToolResult: mockAddToolResult,
-    addToolApprovalResponse: mockAddToolApprovalResponse,
-  }),
+  useChat: (options: Record<string, unknown>) => {
+    capturedUseChatOptions = options;
+    return {
+      messages: mockMessages,
+      setMessages: mockSetMessages,
+      sendMessage: mockSendMessage,
+      stop: mockStop,
+      status: mockStatus,
+      error: undefined,
+      addToolOutput: mockAddToolOutput,
+      addToolApprovalResponse: mockAddToolApprovalResponse,
+    };
+  },
 }));
+
+const fakeTransport = new FakeClientTransport();
+const fakeChatTransport = { seed: vi.fn(), close: vi.fn() };
 
 vi.mock('@ably/ai-transport/vercel/react', () => ({
   useChatTransport: () => ({
-    chatTransport: { sendMessages: vi.fn() },
-    session: { connect: mockConnect },
+    transport: fakeTransport,
+    chatTransport: fakeChatTransport,
+    error: undefined,
   }),
-  useMessageSync: () => {},
+}));
+
+vi.mock('@ably/ai-transport/react', () => ({
   useAblyMessages: () => [],
 }));
 
@@ -52,30 +63,13 @@ vi.mock('ably/react', () => ({
 }));
 
 // Chat must be imported AFTER vi.mock so it picks up the mocked modules.
-import { Chat } from '../chat';
+import { Chat, type ChatProps } from '../chat';
 
 function userMsg(id: string, text: string): AI.UIMessage {
   return { id, role: 'user', parts: [{ type: 'text', text }] };
 }
 function assistantMsg(id: string, text: string): AI.UIMessage {
   return { id, role: 'assistant', parts: [{ type: 'text', text }] };
-}
-
-// An assistant message carrying a client-executable tool call awaiting input.
-function locationToolCall(id: string, toolCallId: string): AI.UIMessage {
-  return {
-    id,
-    role: 'assistant',
-    parts: [
-      {
-        type: 'dynamic-tool',
-        toolName: 'getLocation',
-        toolCallId,
-        state: 'input-available',
-        input: { highAccuracy: false },
-      },
-    ],
-  };
 }
 
 // An assistant message carrying an approval-gated tool call awaiting approval.
@@ -96,106 +90,74 @@ function forecastApproval(id: string, toolCallId: string, approvalId: string): A
   };
 }
 
+function renderChat(overrides: Partial<ChatProps> = {}) {
+  return render(
+    <Chat
+      chatId="ai:test"
+      // CAST: the fake implements the seed/close surface the Chat touches.
+      chatTransport={fakeChatTransport as unknown as ChatProps['chatTransport']}
+      initialMessages={mockMessages}
+      initialHasOlder={false}
+      {...overrides}
+    />,
+  );
+}
+
 describe('<Chat>', () => {
   beforeEach(() => {
     mockSendMessage.mockClear();
     mockStop.mockClear();
-    mockConnect.mockClear();
-    mockAddToolResult.mockClear();
+    mockSetMessages.mockClear();
+    mockAddToolOutput.mockClear();
     mockAddToolApprovalResponse.mockClear();
+    fakeChatTransport.seed.mockClear();
+    fakeTransport.historyBatches = [];
+    fakeTransport.historyCount = 0;
     mockStatus = 'ready';
     mockMessages = [];
+    capturedUseChatOptions = {};
   });
 
   afterEach(() => {
     cleanup();
+    vi.unstubAllGlobals();
   });
 
-  it('renders the seeded conversation linearly and connects the channel', async () => {
+  it('renders the hydrated conversation linearly and resumes an in-flight run', () => {
     mockMessages = [userMsg('u1', 'hi'), assistantMsg('a1', 'hello')];
-    render(
-      <Chat
-        chatId="ai:test"
-        seed={mockMessages}
-      />,
-    );
+    renderChat();
 
-    await waitFor(() => expect(mockConnect).toHaveBeenCalled());
-
-    // The shell renders only once connect() resolves and the channel attaches.
-    const items = await screen.findAllByTestId('message');
+    const items = screen.getAllByTestId('message');
     expect(items.map((el) => el.getAttribute('data-id'))).toEqual(['u1', 'a1']);
     expect(screen.getByText('hi')).toBeTruthy();
     expect(screen.getByText('hello')).toBeTruthy();
+
+    // useChat is the sole live message state: it initializes from the
+    // hydrated conversation and reconnects a still-streaming run.
+    expect(capturedUseChatOptions.messages).toEqual(mockMessages);
+    expect(capturedUseChatOptions.resume).toBe(true);
+    expect(capturedUseChatOptions.transport).toBe(fakeChatTransport);
   });
 
-  it('sends the typed message via sendMessage once connected', async () => {
-    render(
-      <Chat
-        chatId="ai:test"
-        seed={[]}
-      />,
-    );
+  it('sends the typed message via sendMessage', async () => {
+    renderChat();
 
-    // The composer appears only after connect() resolves.
-    const input = await screen.findByPlaceholderText('Type a message...');
+    const input = screen.getByPlaceholderText('Type a message...');
     fireEvent.change(input, { target: { value: 'new turn' } });
     const form = input.closest('form');
     if (!form) throw new Error('expected the composer input to be inside a form');
     fireEvent.submit(form);
 
     await waitFor(() => expect(mockSendMessage).toHaveBeenCalledWith({ text: 'new turn' }));
-  });
-
-  it('marks the last assistant response streaming and earlier ones completed', async () => {
-    mockStatus = 'streaming';
-    mockMessages = [
-      userMsg('u1', 'hi'),
-      assistantMsg('a1', 'first'),
-      userMsg('u2', 'again'),
-      assistantMsg('a2', 'second'),
-    ];
-    render(
-      <Chat
-        chatId="ai:test"
-        seed={mockMessages}
-      />,
-    );
-
-    const items = await screen.findAllByTestId('message');
-    const states = items.map((el) => el.getAttribute('data-state'));
-    // user messages carry no state; the earlier assistant is complete, the
-    // last (in-flight) assistant is streaming.
-    expect(states).toEqual([null, 'complete', null, 'streaming']);
-  });
-
-  it('shows Stop while streaming and calls stop() on click', async () => {
-    mockStatus = 'streaming';
-    mockMessages = [userMsg('u1', 'hi')];
-    render(
-      <Chat
-        chatId="ai:test"
-        seed={mockMessages}
-      />,
-    );
-
-    const stopButton = await screen.findByRole('button', { name: 'Stop' });
-    fireEvent.click(stopButton);
-    expect(mockStop).toHaveBeenCalledTimes(1);
-    expect(screen.queryByRole('button', { name: 'Send' })).toBeNull();
+    expect(mockStop).not.toHaveBeenCalled();
   });
 
   it('cancels the streaming response before sending a concurrent message', async () => {
     mockStatus = 'streaming';
     mockMessages = [userMsg('u1', 'hi')];
-    render(
-      <Chat
-        chatId="ai:test"
-        seed={mockMessages}
-      />,
-    );
+    renderChat();
 
-    const input = await screen.findByPlaceholderText('Type a message...');
+    const input = screen.getByPlaceholderText('Type a message...');
     fireEvent.change(input, { target: { value: 'concurrent' } });
     // The InputBar hides Send while streaming; submit the form directly.
     const form = input.closest('form');
@@ -206,51 +168,101 @@ describe('<Chat>', () => {
     await waitFor(() => expect(mockSendMessage).toHaveBeenCalledWith({ text: 'concurrent' }));
   });
 
-  it('auto-executes a client-side tool call and reports its result via addToolResult', async () => {
-    // Provide a geolocation stub so getLocation resolves deterministically.
-    const getCurrentPosition = vi.fn((success: PositionCallback) => {
-      success({ coords: { latitude: 51.5, longitude: -0.12 } } as GeolocationPosition);
-    });
-    vi.stubGlobal('navigator', { geolocation: { getCurrentPosition } });
-
-    mockMessages = [userMsg('u1', "what's the weather like?"), locationToolCall('a1', 'call-1')];
-    render(
-      <Chat
-        chatId="ai:test"
-        seed={mockMessages}
-      />,
-    );
-
-    await waitFor(() =>
-      expect(mockAddToolResult).toHaveBeenCalledWith({
-        tool: 'getLocation',
-        toolCallId: 'call-1',
-        output: { latitude: 51.5, longitude: -0.12 },
-      }),
-    );
-
-    vi.unstubAllGlobals();
-  });
-
-  it('approves and denies an approval-gated tool call via addToolApprovalResponse', async () => {
+  it('approves and denies an approval-gated tool call via addToolApprovalResponse', () => {
     mockMessages = [userMsg('u1', 'forecast?'), forecastApproval('a1', 'call-1', 'approval-1')];
-    render(
-      <Chat
-        chatId="ai:test"
-        seed={mockMessages}
-      />,
-    );
+    renderChat();
 
-    const approve = await screen.findByRole('button', { name: /Approve/i });
-    fireEvent.click(approve);
+    fireEvent.click(screen.getByRole('button', { name: /Approve/i }));
     expect(mockAddToolApprovalResponse).toHaveBeenCalledWith({ id: 'approval-1', approved: true });
 
-    const deny = screen.getByRole('button', { name: /Deny/i });
-    fireEvent.click(deny);
+    fireEvent.click(screen.getByRole('button', { name: /Deny/i }));
     expect(mockAddToolApprovalResponse).toHaveBeenCalledWith({
       id: 'approval-1',
       approved: false,
       reason: 'User denied',
     });
+  });
+
+  it('executes a client tool from onToolCall and reports the output via addToolOutput', async () => {
+    const getCurrentPosition = vi.fn((success: PositionCallback) => {
+      success({ coords: { latitude: 51.5, longitude: -0.12 } } as GeolocationPosition);
+    });
+    vi.stubGlobal('navigator', { geolocation: { getCurrentPosition } });
+    renderChat();
+
+    const onToolCall = capturedUseChatOptions.onToolCall as (options: { toolCall: unknown }) => Promise<void>;
+    await onToolCall({
+      toolCall: { toolName: 'getLocation', toolCallId: 'call-1', input: { highAccuracy: false } },
+    });
+
+    await waitFor(() =>
+      expect(mockAddToolOutput).toHaveBeenCalledWith({
+        tool: 'getLocation',
+        toolCallId: 'call-1',
+        output: { latitude: 51.5, longitude: -0.12 },
+      }),
+    );
+  });
+
+  it('ignores server tools in onToolCall', async () => {
+    renderChat();
+
+    const onToolCall = capturedUseChatOptions.onToolCall as (options: { toolCall: unknown }) => Promise<void>;
+    await onToolCall({ toolCall: { toolName: 'getWeather', toolCallId: 'call-1', input: {} } });
+
+    expect(mockAddToolOutput).not.toHaveBeenCalled();
+  });
+
+  it('persists the completed turn from onFinish, sliced from the last user message', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+    renderChat();
+
+    const older = [userMsg('u1', 'earlier'), assistantMsg('a1', 'earlier reply')];
+    const turn = [userMsg('u2', 'hi'), assistantMsg('a2', 'hello')];
+    const onFinish = capturedUseChatOptions.onFinish as (options: Record<string, unknown>) => void;
+    onFinish({
+      message: turn[1],
+      messages: [...older, ...turn],
+      isAbort: false,
+      isError: false,
+      finishReason: 'stop',
+    });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/messages');
+    expect(JSON.parse(String(init.body))).toEqual({ conversationId: 'ai:test', messages: turn });
+  });
+
+  it('does not persist a suspended, aborted, or errored turn', () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    renderChat();
+
+    const onFinish = capturedUseChatOptions.onFinish as (options: Record<string, unknown>) => void;
+    const suspended = forecastApproval('a1', 'call-1', 'approval-1');
+    onFinish({ message: suspended, messages: [userMsg('u1', 'q'), suspended], isAbort: false, isError: false });
+    const complete = assistantMsg('a2', 'done');
+    onFinish({ message: complete, messages: [userMsg('u1', 'q'), complete], isAbort: true, isError: false });
+    onFinish({ message: complete, messages: [userMsg('u1', 'q'), complete], isAbort: false, isError: true });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('loads an older history page and prepends messages the list does not hold', async () => {
+    mockMessages = [userMsg('u2', 'current')];
+    fakeTransport.historyBatches = [{ events: [userEvent('wire-u1', 'u1', 'older')], exhausted: true }];
+    renderChat({ initialHasOlder: true });
+
+    fireEvent.click(screen.getByRole('button', { name: /Load older/i }));
+
+    await waitFor(() => expect(mockSetMessages).toHaveBeenCalledTimes(1));
+    const updater = mockSetMessages.mock.calls[0][0] as (current: AI.UIMessage[]) => AI.UIMessage[];
+    const updated = updater(mockMessages);
+    expect(updated.map((m) => m.id)).toEqual(['u1', 'u2']);
+
+    // The batch was exhausted, so the affordance disappears.
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Load older/i })).toBeNull());
   });
 });

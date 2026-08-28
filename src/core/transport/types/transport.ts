@@ -246,7 +246,9 @@ export interface TransportHistoryOptions {
   /**
    * Called after each page fetch completes, before the next fetch begins. A
    * durable consumer uses it as a heartbeat while a long scan pages the
-   * channel; it observes progress only, and its return value is ignored.
+   * channel; it observes progress only, and its return value is ignored. A
+   * throw is logged and the walk continues — the callback cannot fail the
+   * call it is reporting on.
    */
   onPage?: () => void;
 }
@@ -559,6 +561,16 @@ export interface OpenRunOptions {
   inputCodecMessageId?: string;
 }
 
+/** Options for {@link AgentTransport.adoptRun}. */
+export interface AdoptRunOptions {
+  /**
+   * Reuse a fixed invocation-id, so the adopted handle publishes under the
+   * invocation that owns the run — thread it from the orchestration's own
+   * state (see {@link RunIdentity.invocationId}). Omit to mint a fresh one.
+   */
+  invocationId?: string;
+}
+
 /**
  * Per-run callbacks and abort signal accepted by {@link AgentTransport.openRun}
  * — how a run behaves.
@@ -705,12 +717,23 @@ export interface AgentTransport<TInput, TOutput> extends TransportReceiver<TInpu
    * decides from channel history whether there is anything left to do (the
    * transport holds no run state, so that gate is the caller's), then acts.
    * Requires {@link connect}.
+   *
+   * The handle publishes under an invocation id, stamped on its output, step
+   * brackets, suspend, and end. Pin it via
+   * {@link AdoptRunOptions.invocationId} so a continuing process publishes
+   * under the invocation that owns the run — a Tree consumer discards a
+   * suspend whose invocation-id differs from the run's latest resume,
+   * treating it as a retired invocation's late suspend — and omit it to mint
+   * a fresh one. The structure options stay on {@link openRun}: an adopted
+   * run publishes no opening event, so nothing would stamp them. A
+   * continuation is an `openRun` naming the run, not an adopt.
    * @param runId - The id of the run to adopt. Must be non-empty.
+   * @param opts - Optional invocation-id pin; see {@link AdoptRunOptions}.
    * @param hooks - Optional per-run callbacks and external AbortSignal; see
    *   {@link OpenRunHooks}.
    * @returns A handle to drive the adopted run's output and lifecycle.
    */
-  adoptRun(runId: string, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput>;
+  adoptRun(runId: string, opts?: AdoptRunOptions, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput>;
   /**
    * Scan channel history for the input event whose `event-id` header matches
    * `eventId`, returning its {@link WireMeta} and decoded inputs — so a

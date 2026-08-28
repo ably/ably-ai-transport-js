@@ -1,6 +1,7 @@
 // Shared types
 export type {
   AdoptedRun,
+  AdoptRunOptions,
   AgentRun,
   AgentRunTransport,
   AgentSession,

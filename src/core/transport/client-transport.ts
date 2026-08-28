@@ -386,6 +386,14 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
   private async _walkHistory(
     opts: TransportHistoryOptions | undefined,
   ): Promise<TransportHistoryResult<TInput, TOutput>> {
+    // Check before the cursor is opened, so an already-aborted call costs no
+    // attach and no page fetch. The signal is deliberately not bound to the
+    // cursor: it is shared across calls, and an aborted signal would wedge its
+    // `hasNext()` at false, making a later `history()` report `exhausted` for a
+    // channel it never finished walking.
+    if (opts?.signal?.aborted) {
+      throw new Ably.ErrorInfo('unable to load history; signal aborted', ErrorCode.OperationCancelled, 400);
+    }
     if (this._historyCursor === undefined) {
       this._historyCursor = await loadHistoryPages(this._channel, {
         pageLimit: this._historyPageSize,

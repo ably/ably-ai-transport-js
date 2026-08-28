@@ -121,6 +121,26 @@ export const wrapMessageProcessingError = (error: unknown): Ably.ErrorInfo =>
   );
 
 /**
+ * Invoke a caller's per-page progress callback inside an error bracket. The
+ * callback reports progress and nothing more, so a throw from it is logged and
+ * the walk carries on: failing the scan it is reporting on would turn a
+ * heartbeat bug into a lost history read, and there is no error surface a
+ * progress-only callback belongs on. Every history walk reports through here so
+ * the isolation cannot drift between them.
+ * @param onPage - The caller's callback, or undefined when none was supplied.
+ * @param site - The reporting walk's name, for the log line.
+ * @param logger - Optional logger for the throw.
+ */
+export const reportPage = (onPage: (() => void) | undefined, site: string, logger?: Logger): void => {
+  if (!onPage) return;
+  try {
+    onPage();
+  } catch (error) {
+    logger?.error('reportPage(); onPage callback threw', { site, error: errorMessage(error) });
+  }
+};
+
+/**
  * Run a session's per-message processing inside the shared error bracket: a
  * throw is wrapped via {@link wrapMessageProcessingError} and handed to
  * `onError` so one bad message can't kill the subscription. Both sessions route

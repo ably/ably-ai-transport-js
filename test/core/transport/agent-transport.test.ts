@@ -928,6 +928,42 @@ describe('createAgentTransport', () => {
         message: 'unable to adopt run; runId must be non-empty',
       });
     });
+
+    it('stamps a pinned invocation-id on the events it publishes', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.adoptRun('run-adopted', { invocationId: 'inv-pinned' });
+      await run.end({ reason: 'complete' });
+
+      const end = channel.publishCalls.find((m) => m.name === 'ai-run-end');
+      if (!end) throw new Error('expected ai-run-end');
+      // CAST: the mock captured the outbound message; only its extras are read.
+      expect(getTransportHeaders(end as Ably.InboundMessage)[HEADER_INVOCATION_ID]).toBe('inv-pinned');
+    });
+
+    it('mints an invocation-id when none is pinned', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.adoptRun('run-adopted');
+      await run.end({ reason: 'complete' });
+
+      const end = channel.publishCalls.find((m) => m.name === 'ai-run-end');
+      if (!end) throw new Error('expected ai-run-end');
+      // CAST: the mock captured the outbound message; only its extras are read.
+      expect(getTransportHeaders(end as Ably.InboundMessage)[HEADER_INVOCATION_ID]).toMatch(/\S/);
+    });
+
+    it('claims no input anchor, so its terminal carries no bracket receipt', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.adoptRun('run-adopted');
+      await run.pipe(streamOf({ type: 'text', text: 'hi' }));
+      await run.end({ reason: 'complete' });
+
+      // The anchor names the input that openRun answered; an adopt answers
+      // none, so it claims none.
+      expect(receiptOf(channel, 'ai-run-end')).toBeUndefined();
+    });
   });
 
   describe('output', () => {
@@ -1165,6 +1201,35 @@ describe('createAgentTransport', () => {
         ErrorCode.OperationCancelled,
       );
     });
+
+    it('rejects an already-aborted scan before fetching any page', async () => {
+      const { transport, channel } = await setup({
+        decoded: [{ kind: 'user-message' }],
+        historyPages: [[wireMsg({ [HEADER_EVENT_ID]: 'evt-0' })]],
+      });
+      channel.history.mockClear();
+
+      await expect(transport.locateInput('evt-0', { signal: AbortSignal.abort() })).rejects.toBeErrorInfoWithCode(
+        ErrorCode.OperationCancelled,
+      );
+      expect(channel.history).not.toHaveBeenCalled();
+    });
+
+    it('keeps scanning when onPage throws', async () => {
+      const decoded: TestInput[] = [{ kind: 'user-message', content: 'located' }];
+      const { transport } = await setup({
+        decoded,
+        historyPages: [[wireMsg({ [HEADER_EVENT_ID]: 'evt-0' })], [wireMsg({ [HEADER_EVENT_ID]: 'evt-1' })]],
+      });
+
+      const located = await transport.locateInput('evt-1', {
+        onPage: () => {
+          throw new Error('heartbeat exploded');
+        },
+      });
+
+      expect(located?.inputs).toEqual(decoded);
+    });
   });
 
   describe('history', () => {
@@ -1196,6 +1261,30 @@ describe('createAgentTransport', () => {
       expect(texts).toEqual(['one', 'two']);
       // Batches never pass through the live stream.
       expect(events).toHaveLength(0);
+    });
+
+    it('rejects an already-aborted call before fetching any page', async () => {
+      const { transport, channel } = await setup({ historyPages: [[outputMsg('s1', 'one')]] });
+      channel.history.mockClear();
+
+      await expect(transport.history({ signal: AbortSignal.abort() })).rejects.toBeErrorInfoWithCode(
+        ErrorCode.OperationCancelled,
+      );
+      expect(channel.history).not.toHaveBeenCalled();
+    });
+
+    it('still pages after an aborted call, so the shared cursor is not wedged', async () => {
+      const { transport } = await setup({
+        historyPages: [[outputMsg('s2', 'two')], [outputMsg('s1', 'one')]],
+      });
+
+      await expect(transport.history({ signal: AbortSignal.abort() })).rejects.toBeErrorInfoWithCode(
+        ErrorCode.OperationCancelled,
+      );
+
+      const after = await transport.history();
+      expect(after.events.map((e) => (e.kind === 'message' ? e.outputs[0]?.text : undefined))).toEqual(['one', 'two']);
+      expect(after.exhausted).toBe(true);
     });
 
     it('keeps its cursor across calls, so a second call resumes where the first paused', async () => {

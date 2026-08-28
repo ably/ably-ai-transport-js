@@ -17,6 +17,7 @@ import * as Ably from 'ably';
 
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
+import { reportPage } from './channel-support.js';
 
 /**
  * The part of a run this needs. A structural upper bound so callers do not have
@@ -52,7 +53,8 @@ export interface PageUntilLocatedOptions {
   triggerWaitMs?: number;
   /**
    * Called once per page fetched. Use it to heartbeat a long paging run so the
-   * framework can tell slow from hung.
+   * framework can tell slow from hung. A throw is logged and the paging
+   * continues.
    */
   onPage?: () => void;
   /** Logger for the paging diagnostics. */
@@ -96,7 +98,7 @@ export const pageUntilLocated = async (run: LocatableRun, options: PageUntilLoca
   let pages = 0;
   while (!state.located && run.view.hasOlder() && pages < maxPages) {
     pages++;
-    options.onPage?.();
+    reportPage(options.onPage, 'pageUntilLocated', logger);
     await Promise.race([run.view.loadOlder(pageSize), locatedTag]);
   }
 

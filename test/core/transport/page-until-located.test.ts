@@ -124,6 +124,21 @@ describe('pageUntilLocated', () => {
     expect(onPage).toHaveBeenCalledTimes(3);
   });
 
+  it('keeps paging when onPage throws', async () => {
+    const run = createRun({ historyPages: 20, locateAfterPages: 3 });
+
+    await expect(
+      pageUntilLocated(run, {
+        inputEventId: 'evt-1',
+        onPage: () => {
+          throw new Error('heartbeat exploded');
+        },
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(run.pagesLoaded).toBe(3);
+  });
+
   it('propagates a located rejection', async () => {
     const failure = new Ably.ErrorInfo('unable to locate input event; session closed', ErrorCode.SessionClosed, 400);
     const run: LocatableRun = {

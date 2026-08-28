@@ -7,6 +7,7 @@ import {
   continuityLostError,
   handleWireMessage,
   isContinuityLost,
+  reportPage,
   subscribeAndAttach,
   wrapMessageProcessingError,
 } from '../../../src/core/transport/channel-support.js';
@@ -297,5 +298,48 @@ describe('handleWireMessage', () => {
       statusCode: 500,
       message: 'unable to process channel message; bad message',
     });
+  });
+});
+
+describe('reportPage', () => {
+  it('invokes the callback when one is supplied', () => {
+    const onPage = vi.fn();
+    reportPage(onPage, 'locateInput', silentLogger);
+    expect(onPage).toHaveBeenCalledOnce();
+  });
+
+  it('is a no-op when no callback is supplied', () => {
+    expect(() => {
+      reportPage(undefined, 'locateInput', silentLogger);
+    }).not.toThrow();
+  });
+
+  it('swallows a callback throw and logs it at error', () => {
+    const logged: { message: string; level: LogLevel }[] = [];
+    const logHandler: LogHandler = (message: string, level: LogLevel) => {
+      logged.push({ message, level });
+    };
+    const logger = makeLogger({ logLevel: LogLevel.Error, logHandler });
+
+    expect(() => {
+      reportPage(
+        () => {
+          throw new Error('heartbeat exploded');
+        },
+        'locateInput',
+        logger,
+      );
+    }).not.toThrow();
+    expect(
+      logged.some((l) => l.level === LogLevel.Error && l.message.includes('reportPage(); onPage callback threw')),
+    ).toBe(true);
+  });
+
+  it('swallows a callback throw with no logger', () => {
+    expect(() => {
+      reportPage(() => {
+        throw new Error('heartbeat exploded');
+      }, 'locateInput');
+    }).not.toThrow();
   });
 });

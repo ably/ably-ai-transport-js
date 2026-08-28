@@ -1,6 +1,7 @@
 // Core transport
 export type {
   AdoptedRun,
+  AdoptRunOptions,
   AgentRun,
   AgentRunTransport,
   AgentSession,

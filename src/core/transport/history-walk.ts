@@ -15,7 +15,7 @@ import * as Ably from 'ably';
 import { ErrorCode } from '../../errors.js';
 import type { Logger } from '../../logger.js';
 import type { Decoder } from '../codec/types.js';
-import { wrapMessageProcessingError } from './channel-support.js';
+import { reportPage, wrapMessageProcessingError } from './channel-support.js';
 import type { HistoryPagesCursor } from './load-history-pages.js';
 import { classifyWireMessage } from './receive-transport.js';
 import type { TransportEvent, TransportHistoryOptions, TransportHistoryResult } from './types/transport.js';
@@ -66,7 +66,7 @@ export const walkHistoryBatch = async <TInput, TOutput>(
       throw new Ably.ErrorInfo('unable to load history; signal aborted', ErrorCode.OperationCancelled, 400);
     }
     const chunk = await cursor.next();
-    opts?.onPage?.();
+    reportPage(opts?.onPage, 'walkHistoryBatch', logger);
     // `next()` returning undefined means the cursor is permanently spent —
     // genuine exhaustion.
     if (!chunk) break;

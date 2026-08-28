@@ -709,6 +709,41 @@ describe('createClientTransport', () => {
       expect(second.exhausted).toBe(true);
     });
 
+    it('rejects an already-aborted call before fetching any page', async () => {
+      const { transport, channel } = await setup({ pages: [[outputMsg('s1', 'one')]] });
+      channel.history.mockClear();
+
+      await expect(transport.history({ signal: AbortSignal.abort() })).rejects.toBeErrorInfoWithCode(
+        ErrorCode.OperationCancelled,
+      );
+      expect(channel.history).not.toHaveBeenCalled();
+    });
+
+    it('still pages after an aborted call, so the shared cursor is not wedged', async () => {
+      const { transport } = await setup({ pages: [[outputMsg('s2', 'two')], [outputMsg('s1', 'one')]] });
+
+      await expect(transport.history({ signal: AbortSignal.abort() })).rejects.toBeErrorInfoWithCode(
+        ErrorCode.OperationCancelled,
+      );
+
+      const after = await transport.history();
+      expect(after.events.map((e) => (e.kind === 'message' ? e.outputs[0]?.text : undefined))).toEqual(['one', 'two']);
+      expect(after.exhausted).toBe(true);
+    });
+
+    it('completes the batch when onPage throws', async () => {
+      const { transport } = await setup({ pages: [[outputMsg('s2', 'two')], [outputMsg('s1', 'one')]] });
+
+      const result = await transport.history({
+        onPage: () => {
+          throw new Error('heartbeat exploded');
+        },
+      });
+
+      expect(result.events.map((e) => (e.kind === 'message' ? e.outputs[0]?.text : undefined))).toEqual(['one', 'two']);
+      expect(result.exhausted).toBe(true);
+    });
+
     it('filters wire-only carriers and routes an undecodable message onto error', async () => {
       const { transport, errors } = await setup({
         pages: [[outputMsg('s3', 'kept'), boomMsg('s2'), noiseMsg('s1')]],

@@ -16,6 +16,7 @@
  *    is fetched
  *  - an undecodable message is wrapped, handed to `onDecodeError`, and
  *    skipped without failing the batch
+ *  - a throwing `onPage` is isolated: the batch completes as if it had not
  *  - a wire-only carrier (empty decode, no run-id) is filtered from the batch
  */
 
@@ -120,6 +121,22 @@ describe('walkHistoryBatch', () => {
     expect(errors).toHaveLength(1);
     // The decoder throw arrives wrapped as the shared message-processing error.
     expect(errors[0]).toBeErrorInfoWithCode(ErrorCode.SessionMessageProcessingFailed);
+  });
+
+  it('completes the batch when onPage throws', async () => {
+    const cursor = makeHistoryCursor([[outputMsg('s2', 'two')], [outputMsg('s1', 'one')]]);
+
+    const result = await walkHistoryBatch(
+      { cursor, decoder: createDecoder() },
+      {
+        onPage: () => {
+          throw new Error('heartbeat exploded');
+        },
+      },
+    );
+
+    expect(texts(result.events)).toEqual(['one', 'two']);
+    expect(result.exhausted).toBe(true);
   });
 
   it('filters a wire-only carrier from the batch', async () => {

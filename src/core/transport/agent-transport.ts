@@ -38,7 +38,7 @@ import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
 import type { WireCodec } from '../codec/types.js';
 import { readCancelTarget } from './cancel-envelope.js';
-import { ConnectGuard, subscribeAndAttach } from './channel-support.js';
+import { ConnectGuard, reportPage, subscribeAndAttach } from './channel-support.js';
 import { walkHistoryBatch } from './history-walk.js';
 import { evictOldestIfFull } from './internal/bounded-map.js';
 import { type HistoryPagesCursor, loadHistoryPages } from './load-history-pages.js';
@@ -47,6 +47,7 @@ import { createRunManager } from './run-manager.js';
 import { RunSteerTracker } from './run-steer-tracker.js';
 import { createRunStepWriter, stepEndReasonFor } from './run-step-writer.js';
 import type {
+  AdoptRunOptions,
   AgentRunTransport,
   AgentTransport,
   CancelRequest,
@@ -486,12 +487,16 @@ export const createAgentTransport = <TInput, TOutput>(
     );
   };
 
-  const adoptRun = (runId: string, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput> => {
+  const adoptRun = (
+    runId: string,
+    opts?: AdoptRunOptions,
+    hooks?: OpenRunHooks<TOutput>,
+  ): AgentRunTransport<TOutput> => {
     assertCanOpen('adoptRun');
     if (runId === '') {
       throw new Ably.ErrorInfo('unable to adopt run; runId must be non-empty', ErrorCode.InvalidArgument, 400);
     }
-    const invocationId = crypto.randomUUID();
+    const invocationId = opts?.invocationId ?? crypto.randomUUID();
     logger.trace('AgentTransport.adoptRun();', { runId, invocationId });
     return createRun({ runId, invocationId, open: 'adopt' }, hooks);
   };
@@ -872,6 +877,14 @@ export const createAgentTransport = <TInput, TOutput>(
   const walkHistory = async (
     opts: TransportHistoryOptions | undefined,
   ): Promise<TransportHistoryResult<TInput, TOutput>> => {
+    // Check before the cursor is opened, so an already-aborted call costs no
+    // attach and no page fetch. The signal is deliberately not bound to the
+    // cursor: it is shared across calls, and an aborted signal would wedge its
+    // `hasNext()` at false, making a later `history()` report `exhausted` for a
+    // channel it never finished walking.
+    if (opts?.signal?.aborted) {
+      throw new Ably.ErrorInfo('unable to load history; signal aborted', ErrorCode.OperationCancelled, 400);
+    }
     historyCursor ??= await loadHistoryPages(channel, {
       pageLimit: historyPageSize,
       untilAttach: true,
@@ -919,14 +932,26 @@ export const createAgentTransport = <TInput, TOutput>(
     // A throwaway decoder so the history scan never perturbs the live receive
     // stream's dedup state, keeping the 1:1 decoder-per-stream invariant.
     const scanDecoder = codec.createDecoder();
-    const cursor = await loadHistoryPages(channel, { pageLimit: historyPageSize, logger });
+    // The scan cursor is per-call and thrown away, so binding the caller's
+    // signal to it is safe: it aborts the eager first fetch and the retry
+    // backoffs, and the loop below turns the abort into a rejection.
+    const cursor = await loadHistoryPages(channel, {
+      pageLimit: historyPageSize,
+      signal: opts?.signal,
+      logger,
+    });
     let scanned = 0;
-    while (cursor.hasNext() && (opts?.limit === undefined || scanned < opts.limit)) {
+    // The abort check precedes `hasNext()`: a bound signal makes the cursor
+    // report no further pages, so reading it first would end the scan quietly
+    // and return `undefined` where the caller is owed a rejection.
+    for (;;) {
       if (opts?.signal?.aborted) {
         throw new Ably.ErrorInfo('unable to locate input; signal aborted', ErrorCode.OperationCancelled, 400);
       }
+      if (!cursor.hasNext()) break;
+      if (opts?.limit !== undefined && scanned >= opts.limit) break;
       const page = await cursor.next();
-      opts?.onPage?.();
+      reportPage(opts?.onPage, 'locateInput', logger);
       if (!page) break;
       scanned += page.length;
       for (const msg of page) {

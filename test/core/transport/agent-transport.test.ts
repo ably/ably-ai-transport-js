@@ -826,15 +826,67 @@ describe('createAgentTransport', () => {
       expect(getTransportHeaders(startMsg as Ably.InboundMessage)[HEADER_RUN_ID]).toBe(run.runId);
     });
 
-    it('publishes ai-run-resume for a continuation naming an existing run-id', async () => {
+    it('opens a fresh run under a pinned runId (the pin is not a continuation signal)', async () => {
       const { transport, channel } = await setup();
 
-      const run = transport.openRun({ runId: 'run-existing' });
+      const run = transport.openRun({ runId: 'run-pinned' });
+      await run.end({ reason: 'complete' });
+
+      expect(run.runId).toBe('run-pinned');
+      expect(channel.publishNames()).toContain('ai-run-start');
+      expect(channel.publishNames()).not.toContain('ai-run-resume');
+    });
+
+    it('publishes ai-run-resume for an explicit continuation of an existing run-id', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({ runId: 'run-existing', continuation: true });
       await run.end({ reason: 'complete' });
 
       expect(run.runId).toBe('run-existing');
       expect(channel.publishNames()).toContain('ai-run-resume');
       expect(channel.publishNames()).not.toContain('ai-run-start');
+    });
+
+    it('throws when continuation is supplied without a runId', async () => {
+      const { transport } = await setup();
+
+      expect(() => transport.openRun({ continuation: true })).toThrowErrorInfo({
+        code: ErrorCode.InvalidArgument,
+        message: 'unable to open run; continuation requires a runId',
+      });
+    });
+
+    it('accepts a continuation flag that agrees with the input', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun({ input: locatedInput({ [HEADER_RUN_ID]: 'run-continued' }), continuation: true });
+      await run.end({ reason: 'complete' });
+
+      expect(run.runId).toBe('run-continued');
+      expect(channel.publishNames()).toContain('ai-run-resume');
+    });
+
+    it('throws when continuation: false contradicts an input carrying a run-id', async () => {
+      const { transport } = await setup();
+
+      expect(() =>
+        transport.openRun({ input: locatedInput({ [HEADER_RUN_ID]: 'run-1' }), continuation: false }),
+      ).toThrowErrorInfo({
+        code: ErrorCode.InvalidArgument,
+        message: "unable to open run; the continuation flag contradicts the input's run-id header",
+      });
+    });
+
+    it('throws when continuation: true contradicts an input without a run-id', async () => {
+      const { transport } = await setup();
+
+      expect(() => transport.openRun({ input: locatedInput({}), runId: 'run-1', continuation: true })).toThrowErrorInfo(
+        {
+          code: ErrorCode.InvalidArgument,
+          message: "unable to open run; the continuation flag contradicts the input's run-id header",
+        },
+      );
     });
 
     it('stamps parent structure on the run-start', async () => {
@@ -963,6 +1015,35 @@ describe('createAgentTransport', () => {
       // The anchor names the input that openRun answered; an adopt answers
       // none, so it claims none.
       expect(receiptOf(channel, 'ai-run-end')).toBeUndefined();
+    });
+  });
+
+  describe('opened', () => {
+    it('resolves once the opening publish lands', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.openRun();
+      await run.opened;
+
+      expect(channel.publishNames()).toContain('ai-run-start');
+    });
+
+    it('rejects when the opening publish fails', async () => {
+      const { transport, channel } = await setup();
+      channel.publish.mockRejectedValueOnce(new Ably.ErrorInfo('publish refused', 50000, 500));
+
+      const run = transport.openRun({ runId: 'run-1' });
+
+      await expect(run.opened).rejects.toBeErrorInfo({ message: 'publish refused' });
+    });
+
+    it('resolves for an adopted run without publishing', async () => {
+      const { transport, channel } = await setup();
+
+      const run = transport.adoptRun('run-adopted');
+      await run.opened;
+
+      expect(channel.publishNames()).toEqual([]);
     });
   });
 

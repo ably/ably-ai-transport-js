@@ -219,7 +219,13 @@ export interface PublishInputResult {
   /** The per-publish `event-id` stamped on the wire — distinct from `codecMessageId`, this is what an agent's `locateInput` matches to find the input that woke an invocation. */
   eventId: string;
   /**
-   * The run-id of the run this input triggers. Resolves when the transport
+   * The run-id of the run this input triggers.
+   *
+   * When the publish named a run (`opts.runId`, a continuation), this is
+   * already resolved with that id: the caller chose the run, and the agent
+   * answers a continuation with `ai-run-resume` rather than a run-start.
+   *
+   * Otherwise the agent mints the id, so this resolves when the transport
    * observes the first `ai-run-start` whose `input-codec-message-id` header
    * matches this publish's {@link codecMessageId} — stamped when the agent
    * opens its run with `inputCodecMessageId`, the same threading cancel
@@ -537,12 +543,26 @@ export interface OpenRunOptions {
    */
   input?: LocatedInput<unknown>;
   /**
-   * Reuse a fixed run-id. Without an {@link input}, supplying it marks the
-   * open as a continuation of that run. With an input, it is the fresh-run
-   * pin only — a durable agent supplies a stable id so a fresh-process retry
-   * re-enters the same run — and a continuation's id comes from the input.
+   * Reuse a fixed run-id — a pure pin: the opening event publishes under this
+   * id instead of a mint. A durable agent supplies a stable value so a
+   * fresh-process retry re-enters the same run. The pin never decides the
+   * opening event: whether the open is a fresh `ai-run-start` or a re-entry
+   * is decided by the {@link input}'s run-id header when an input is
+   * supplied, or by {@link continuation} when not. A continuation's id comes
+   * from the input when one is supplied.
    */
   runId?: string;
+  /**
+   * Mark the open as a re-entry of {@link runId}, publishing `ai-run-resume`
+   * instead of `ai-run-start` — for a caller that skips
+   * {@link AgentTransport.locateInput} and knows from its own invocation
+   * payload that the run already exists. Requires {@link runId} when no
+   * {@link input} is supplied. May accompany an input only in agreement: the
+   * input's run-id header stays authoritative, and a flag that contradicts
+   * it throws. Omitted or false, an input-less open publishes a fresh
+   * `ai-run-start`.
+   */
+  continuation?: boolean;
   /** Reuse a fixed invocation-id. Omit to mint a fresh one (one per HTTP request). */
   invocationId?: string;
   /** Structure: the codec-message-id of the parent message. Omit for a root run. */
@@ -699,8 +719,9 @@ export interface AgentTransport<TInput, TOutput> extends TransportReceiver<TInpu
    * opening event — a continuation re-enters that run with `ai-run-resume`, a
    * fresh send opens with `ai-run-start` — and the input's metadata defaults
    * the anchor and structure options (see {@link OpenRunOptions.input}).
-   * Without a located input, a supplied `opts.runId` marks a continuation and
-   * a fresh open publishes `ai-run-start`. The run is registered for cancel
+   * Without a located input, the open publishes a fresh `ai-run-start` —
+   * under `opts.runId` when pinned — and `opts.continuation` marks it a
+   * re-entry publishing `ai-run-resume`. The run is registered for cancel
    * routing until it ends; a cancel already buffered for
    * `opts.inputCodecMessageId` is honoured immediately. Requires
    * {@link connect}.
@@ -785,6 +806,22 @@ export interface AgentTransport<TInput, TOutput> extends TransportReceiver<TInpu
 export interface AgentRunTransport<TOutput> {
   /** This run's id — minted at `openRun`, or the reused continuation id. */
   readonly runId: string;
+  /**
+   * Settles with the run's opening publish: resolved once the opening event
+   * (`ai-run-start` / `ai-run-resume`) is accepted onto the channel, rejected
+   * when that publish fails. An adopted run publishes no opening event, so
+   * its `opened` settles once the transport's connect gate passes. Await or
+   * race it wherever the caller must not proceed on a failed open — a
+   * durable activity that only observes the channel would otherwise wait for
+   * an echo that cannot arrive. The rejection is pre-handled internally, so
+   * a holder that ignores `opened` sees no unhandled rejection; awaiting it
+   * still rejects with the publish failure (a pre-attached handler marks the
+   * promise handled, it does not consume the failure for other awaiters).
+   * The output verbs (`pipe`, `send`, `end`) await the same result
+   * internally, so a caller that goes straight to output needs no explicit
+   * await here.
+   */
+  readonly opened: Promise<void>;
   /**
    * Fires when a cancel signal routes to this run and is accepted (see
    * {@link OpenRunHooks.onCancel}), or when the external

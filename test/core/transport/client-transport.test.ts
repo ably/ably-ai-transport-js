@@ -472,6 +472,31 @@ describe('createClientTransport', () => {
       await expect(sent.runId).resolves.toBe('run-9');
     });
 
+    it('resolves immediately with the caller-supplied runId, watching nothing', async () => {
+      const fixture = await setup();
+      // A continuation names its run, and the agent answers it with
+      // `ai-run-resume`, which no run-start watch would ever match.
+      const sent = await fixture.transport.publishInput(
+        { kind: 'user-message', content: 'tool result' },
+        { runId: 'run-continued', codecMessageId: 'm-1' },
+      );
+
+      await expect(sent.runId).resolves.toBe('run-continued');
+    });
+
+    it('leaves no watch behind for a continuation, so close rejects nothing', async () => {
+      const fixture = await setup();
+      const sent = await fixture.transport.publishInput(
+        { kind: 'user-message', content: 'tool result' },
+        { runId: 'run-continued' },
+      );
+      fixture.transport.close();
+
+      // Still the supplied id: a leaked watch would have been drained to a
+      // SessionClosed rejection by close().
+      await expect(sent.runId).resolves.toBe('run-continued');
+    });
+
     it('stays pending on run-starts attributed to other inputs, or to none', async () => {
       const fixture = await setup();
       const sent = await fixture.transport.publishInput({ kind: 'user-message', content: 'hi' });

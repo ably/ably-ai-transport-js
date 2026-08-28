@@ -51,9 +51,6 @@ export interface FramingActivitiesOptions<TInput, TOutput> {
   historyPageSize?: number;
 }
 
-/** The latest lifecycle state of a run, folded from channel history. */
-type RunState = 'start' | 'suspend' | 'resume' | 'end';
-
 /**
  * Build the framing activities, bound to a codec and a client factory.
  *
@@ -115,36 +112,6 @@ export const createFramingActivities = <TInput, TOutput>(
   };
 
   /**
-   * Fold the run's latest lifecycle state from channel history, paging
-   * backwards until the run is seen, the channel is exhausted, or the page
-   * bound is hit. `undefined` means the run was not found in the pages read —
-   * a paging artefact, not a fact about the run; each activity decides what
-   * that means for its own retry semantics.
-   * @param transport - The connected transport whose history to page.
-   * @param runId - The run to classify.
-   * @returns The run's latest lifecycle state, or `undefined` when not found.
-   */
-  const latestRunState = async (
-    transport: AgentTransport<TInput, TOutput>,
-    runId: string,
-  ): Promise<RunState | undefined> => {
-    for (let page = 0; options.maxHistoryPages === undefined || page < options.maxHistoryPages; page++) {
-      const batch = await transport.history({ ...(onPage && { onPage }) });
-      // Each batch is older than the last, and chronological within — so the
-      // first batch mentioning the run holds its latest state at that batch's
-      // newest matching event.
-      for (let i = batch.events.length - 1; i >= 0; i--) {
-        const event = batch.events[i];
-        if (event?.kind === 'run-lifecycle' && event.event.runId === runId) {
-          return event.event.type;
-        }
-      }
-      if (batch.exhausted) return undefined;
-    }
-    return undefined;
-  };
-
-  /**
    * Resolve once the run's opening event (`ai-run-start` / `ai-run-resume`)
    * echoes back on the receive stream — the confirmation that the open reached
    * the wire, so the activity can report success and hand off. Rejects when
@@ -160,17 +127,26 @@ export const createFramingActivities = <TInput, TOutput>(
     signal: AbortSignal,
   ): Promise<void> =>
     new Promise((resolve, reject) => {
+      // An already-aborted signal never fires `abort`, so check it before
+      // subscribing: otherwise this promise never settles and the activity
+      // stalls to its startToClose timeout instead of failing fast.
+      if (signal.aborted) {
+        reject(activityCancelled());
+        return;
+      }
+      const onAbort = (): void => {
+        unsubscribe();
+        reject(activityCancelled());
+      };
       const unsubscribe = transport.subscribe((event) => {
         if (event.kind !== 'run-lifecycle' || event.event.runId !== runId) return;
         if (event.event.type === 'start' || event.event.type === 'resume') {
+          signal.removeEventListener('abort', onAbort);
           unsubscribe();
           resolve();
         }
       });
-      signal.addEventListener('abort', () => {
-        unsubscribe();
-        reject(new Ably.ErrorInfo('unable to open run; activity cancelled', ErrorCode.OperationCancelled, 400));
-      });
+      signal.addEventListener('abort', onAbort);
     });
 
   return {
@@ -212,11 +188,25 @@ export const createFramingActivities = <TInput, TOutput>(
           },
           { signal: cancelSignal },
         );
-        // Await the opening event's own channel echo before returning, so the
-        // hand-off happens strictly after the open is on the wire. Subscribing
-        // after openRun is safe: no await separates them, so the echo cannot
-        // be delivered in between.
-        await awaitRunOpen(transport, run.runId, cancelSignal);
+        // The opening publish is fire-and-forget inside openRun, so its
+        // failure surfaces only through the handle's `opened`. Race the echo
+        // against that rejection: a failed open fails this activity fast for
+        // retry instead of stalling until the activity timeout, while a
+        // successful open still waits for the echo, so the hand-off happens
+        // strictly after the open is on the wire. Subscribing after openRun
+        // is safe: no await separates them, so the echo cannot be delivered
+        // in between.
+        const { promise: openFailed, reject: failOpen } = Promise.withResolvers<never>();
+        // .catch(): the race observes the rejection; without a pre-attached
+        // handler, a rejection landing after the echo had already won the
+        // race would surface as an unhandled rejection.
+        openFailed.catch(() => {
+          /* observed via the race */
+        });
+        // .catch(): rejection-only view — `opened` resolving must not settle
+        // the race, only the echo may.
+        run.opened.catch(failOpen);
+        await Promise.race([awaitRunOpen(transport, run.runId, cancelSignal), openFailed]);
 
         return { runId: run.runId, invocationId: input.invocationId };
       });
@@ -225,8 +215,10 @@ export const createFramingActivities = <TInput, TOutput>(
     endRun: async (input: EndRunInput): Promise<void> => {
       const cancelSignal = Context.current().cancellationSignal;
       await inTransport(input.invocation, async ({ transport }) => {
-        const state = await gateOpenRun(transport, input.ids.runId, latestRunState);
-        if (state !== 'ok') return rejectGate(state, input.ids.runId);
+        // No wire-state check: this activity adopts and publishes. A retry
+        // after a crash that already published puts a second `ai-run-end` on
+        // the channel, which readers absorb by respecting the first terminal
+        // in serial order.
         const run = transport.adoptRun(
           input.ids.runId,
           { invocationId: input.ids.invocationId },
@@ -246,8 +238,7 @@ export const createFramingActivities = <TInput, TOutput>(
     suspendRun: async (input: SuspendRunInput): Promise<void> => {
       const cancelSignal = Context.current().cancellationSignal;
       await inTransport(input.invocation, async ({ transport }) => {
-        const state = await gateOpenRun(transport, input.ids.runId, latestRunState);
-        if (state !== 'ok') return rejectGate(state, input.ids.runId);
+        // No wire-state check, as in `endRun`: adopt and publish.
         const run = transport.adoptRun(
           input.ids.runId,
           { invocationId: input.ids.invocationId },
@@ -261,11 +252,10 @@ export const createFramingActivities = <TInput, TOutput>(
       // No cancellation signal: this is the cleanup arm, so it must still run
       // while the workflow itself is being cancelled.
       await inTransport(input.invocation, async ({ transport }) => {
-        const state = await gateOpenRun(transport, input.ids.runId, latestRunState);
-        // A suspended run is a client's to resume; an ended run needs nothing;
-        // a run not found in the pages read has nothing this best-effort arm
-        // can safely do. Only a still-open run is ended.
-        if (state !== 'ok') return;
+        // No wire-state check: the cleanup arm publishes its error terminal
+        // unconditionally. When the run already ended, this adds a second
+        // `ai-run-end` that readers ignore in favour of the first, so the
+        // cost is channel noise rather than a wrong state.
         const run = transport.adoptRun(input.ids.runId, { invocationId: input.ids.invocationId });
         await run.end({
           reason: 'error',
@@ -276,51 +266,10 @@ export const createFramingActivities = <TInput, TOutput>(
   };
 };
 
-/** The gate's verdict: `ok` to proceed, or why not. */
-type GateResult = 'ok' | 'suspended' | 'ended' | 'not-found';
-
 /**
- * Classify whether the run is still open — the shared gate the terminal
- * activities run before adopting the run via `adoptRun`.
- * @template TInput - The codec's input-event domain type.
- * @template TOutput - The codec's output-event domain type.
- * @param transport - The connected transport whose history to page.
- * @param runId - The run to gate on.
- * @param latestRunState - The history fold to classify with.
- * @returns The gate's verdict.
+ * The error an open-echo wait rejects with when the activity is cancelled,
+ * whether the signal aborts mid-wait or was already aborted on entry.
+ * @returns The cancellation error.
  */
-const gateOpenRun = async <TInput, TOutput>(
-  transport: AgentTransport<TInput, TOutput>,
-  runId: string,
-  latestRunState: (transport: AgentTransport<TInput, TOutput>, runId: string) => Promise<RunState | undefined>,
-): Promise<GateResult> => {
-  const state = await latestRunState(transport, runId);
-  if (state === undefined) return 'not-found';
-  if (state === 'suspend') return 'suspended';
-  if (state === 'end') return 'ended';
-  return 'ok';
-};
-
-/**
- * Throw the gate's failure as the error the old adopt path raised, so the
- * workflow-side retry semantics are unchanged: a suspended or ended run is a
- * non-retryable misuse, a run not found in the pages read is retryable.
- * @param state - The gate's non-`ok` verdict.
- * @param runId - The gated run, for the message.
- */
-const rejectGate = (state: Exclude<GateResult, 'ok'>, runId: string): never => {
-  if (state === 'not-found') {
-    throw new Ably.ErrorInfo(
-      `unable to adopt run ${runId}; its opening event was not found in channel history`,
-      ErrorCode.NotFound,
-      404,
-    );
-  }
-  throw new Ably.ErrorInfo(
-    state === 'suspended'
-      ? `unable to adopt run ${runId}; the run is suspended — resume it via a fresh openRun`
-      : `unable to adopt run ${runId}; the run has already ended`,
-    ErrorCode.InvalidArgument,
-    400,
-  );
-};
+const activityCancelled = (): Ably.ErrorInfo =>
+  new Ably.ErrorInfo('unable to open run; activity cancelled', ErrorCode.OperationCancelled, 400);

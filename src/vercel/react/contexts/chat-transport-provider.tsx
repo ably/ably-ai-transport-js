@@ -5,13 +5,16 @@
  * and layers the {@link ChatTransport} useChat adapter over it.
  *
  * The adapter holds no conversation state, so it is created once per
- * transport (a channel-name change recreates both) and closed alongside it.
- * Descendants read the pair with
+ * transport (a channel-name change recreates both). A superseded adapter is
+ * closed from an effect when the transport is recreated, and the current one
+ * is closed on a true unmount via a microtask-deferred close that React
+ * Strict Mode's synchronous remount cancels — the same lifecycle the generic
+ * provider gives the transport itself. Descendants read the pair with
  * {@link import('../use-chat-transport.js').useChatTransport} and hand
  * `chatTransport` straight to `useChat({ transport })`.
  */
 
-import { type PropsWithChildren, type ReactNode, useContext, useMemo } from 'react';
+import { type PropsWithChildren, type ReactNode, useContext, useEffect, useMemo, useRef } from 'react';
 
 import type { ClientTransportProviderProps } from '../../../react/index.js';
 import { ClientTransportProvider, useClientTransport } from '../../../react/index.js';
@@ -27,9 +30,17 @@ import { ChatTransportContext } from './chat-transport-context.js';
  */
 export interface ChatTransportProviderProps
   extends Omit<ClientTransportProviderProps<VercelInput, VercelOutput>, 'codec'>, PropsWithChildren {
-  /** The chat route URL the adapter POSTs the invocation pointer to. Defaults to `/api/chat`. */
+  /**
+   * The chat route URL the adapter POSTs the invocation pointer to. Defaults
+   * to `/api/chat`. Must stay constant for the provider's lifetime: the
+   * adapter is recreated only when the transport is.
+   */
   api?: string;
-  /** Page bound for the adapter's `reconnectToStream` history scan. Defaults to 5 pages. */
+  /**
+   * Page bound for the adapter's `reconnectToStream` history scan. Defaults
+   * to 5 pages. Must stay constant for the provider's lifetime, like
+   * {@link api}.
+   */
   reconnectScanPages?: number;
 }
 
@@ -51,19 +62,59 @@ const ChatTransportBridge = ({
 }: PropsWithChildren<{ channelName: string; api?: string; reconnectScanPages?: number }>): ReactNode => {
   const { transport, error } = useClientTransport<VercelInput, VercelOutput>();
 
-  const slot = useMemo<ChatTransportSlot>(() => {
-    if (!transport) return { transport: undefined, chatTransport: undefined, error };
-    return {
-      transport,
-      chatTransport: createChatTransport({
+  const adapterRef = useRef<ChatTransportSlot['chatTransport']>(undefined);
+  const adapterTransportRef = useRef<ChatTransportSlot['transport']>(undefined);
+  const adaptersToCloseRef = useRef<NonNullable<ChatTransportSlot['chatTransport']>[]>([]);
+  const pendingCloseRef = useRef(false);
+
+  // Recreate the adapter when the transport it wraps changes (the generic
+  // provider recreates the transport on a channelName change), queueing the
+  // superseded adapter for the close effect below.
+  if (transport !== adapterTransportRef.current) {
+    adapterTransportRef.current = transport;
+    if (adapterRef.current) {
+      adaptersToCloseRef.current.push(adapterRef.current);
+      adapterRef.current = undefined;
+    }
+    if (transport) {
+      adapterRef.current = createChatTransport({
         transport,
         channelName,
         ...(api === undefined ? {} : { api }),
         ...(reconnectScanPages === undefined ? {} : { reconnectScanPages }),
-      }),
-      error: undefined,
+      });
+    }
+  }
+  const chatTransport = adapterRef.current;
+
+  const slot = useMemo<ChatTransportSlot>(() => {
+    if (!transport) return { transport: undefined, chatTransport: undefined, error };
+    return { transport, chatTransport, error: undefined };
+  }, [transport, chatTransport, error]);
+
+  // Close adapters superseded by a transport change. The render path above
+  // queues the stale adapter; this effect's cleanup — which runs on the next
+  // transport change or on unmount — closes every queued one.
+  useEffect(
+    () => () => {
+      for (const adapter of adaptersToCloseRef.current) adapter.close();
+      adaptersToCloseRef.current = [];
+    },
+    [transport],
+  );
+
+  // Close the adapter when the component truly unmounts, mirroring the
+  // generic provider's transport close: deferred a microtask so Strict
+  // Mode's synchronous remount resets the flag and cancels it.
+  useEffect(() => {
+    pendingCloseRef.current = false;
+    return () => {
+      pendingCloseRef.current = true;
+      void Promise.resolve().then(() => {
+        if (pendingCloseRef.current) adapterRef.current?.close();
+      });
     };
-  }, [transport, error, channelName, api, reconnectScanPages]);
+  }, []);
 
   const parentContext = useContext(ChatTransportContext);
   const contextValue = useMemo(

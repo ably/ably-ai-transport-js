@@ -461,10 +461,28 @@ export const createAgentTransport = <TInput, TOutput>(
   const openRun = (opts?: OpenRunOptions, hooks?: OpenRunHooks<TOutput>): AgentRunTransport<TOutput> => {
     assertCanOpen('openRun');
     const inputMeta = opts?.input?.meta;
+    // A redundant flag that agrees with the input is harmless; only a
+    // contradiction is a caller mistake worth failing fast on.
+    if (
+      opts?.continuation !== undefined &&
+      opts.input !== undefined &&
+      opts.continuation !== (inputMeta?.runId !== undefined)
+    ) {
+      throw new Ably.ErrorInfo(
+        "unable to open run; the continuation flag contradicts the input's run-id header",
+        ErrorCode.InvalidArgument,
+        400,
+      );
+    }
+    if (opts?.input === undefined && opts?.continuation === true && opts.runId === undefined) {
+      throw new Ably.ErrorInfo('unable to open run; continuation requires a runId', ErrorCode.InvalidArgument, 400);
+    }
     // The opening event: with a located input, its run-id header decides — a
     // continuation re-enters the run the client stamped, a fresh send starts
-    // one. Without one, a supplied runId is the continuation signal.
-    const continuation = opts?.input === undefined ? opts?.runId !== undefined : inputMeta?.runId !== undefined;
+    // one. Without one, the explicit continuation flag decides and runId is a
+    // pure pin, so a forgotten input opens a fresh pinned run rather than
+    // publishing a phantom resume for a run that may not exist.
+    const continuation = opts?.input === undefined ? opts?.continuation === true : inputMeta?.runId !== undefined;
     // Run-id precedence: the input's continuation id, else the caller's pin
     // (a durable agent's stable fresh-run id), else minted.
     const runId = inputMeta?.runId ?? opts?.runId ?? crypto.randomUUID();
@@ -667,10 +685,11 @@ export const createAgentTransport = <TInput, TOutput>(
         continuation: params.open === 'resume',
       });
     })();
-    // Swallow a rejection here so an opened-but-never-piped run cannot surface
-    // an unhandled rejection; the failure still propagates to any `pipe` / `end`
-    // await site through the same promise. A run whose open failed receives no
-    // signals, so drop its registration.
+    // Pre-handle the rejection so an opened-but-never-awaited run cannot
+    // surface an unhandled rejection. This marks the promise handled without
+    // consuming the failure: the handle's `opened` and the `pipe` / `end`
+    // await sites all still reject with it. A run whose open failed receives
+    // no signals, so drop its registration.
     openPromise.catch(() => {
       logger.error('AgentTransport.openRun(); open publish failed', { runId });
       deregister();
@@ -778,6 +797,9 @@ export const createAgentTransport = <TInput, TOutput>(
     return {
       get runId() {
         return runId;
+      },
+      get opened() {
+        return openPromise;
       },
       get abortSignal() {
         return signal;

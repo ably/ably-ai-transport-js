@@ -21,6 +21,7 @@ import {
   FakeClientTransport,
   messageEvent,
   runEndEvent,
+  runResumeEvent,
   runStartEvent,
   runSuspendEvent,
 } from './helpers.js';
@@ -344,6 +345,93 @@ describe('ChatTransport', () => {
 
       fake.emit(runEndEvent('run-9'));
       expect(await readAll(stream)).toEqual([]);
+    });
+
+    it('re-POSTs the pending wake when a retry finds nothing left to publish', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('network down'))
+        .mockResolvedValueOnce(Response.json({ runId: 'run-9' }, { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const { fake, chat } = setup(approvalGapEvents('run-9'));
+      const send = sendOptions([userMessage('u1', 'forecast please'), approvalRespondedOverlay(true)]);
+
+      // First send: the approval publishes, the wake-up POST fails.
+      await expect(chat.sendMessages(send)).rejects.toThrow('network down');
+      expect(fake.published).toHaveLength(1);
+
+      // Retry: the resolution is already on the wire, so nothing publishes,
+      // but the wake is still owed — the POST retries with the recorded
+      // pointer and a live stream opens.
+      const stream = await chat.sendMessages(send);
+      expect(fake.published).toHaveLength(1);
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        '/api/chat',
+        expect.objectContaining({
+          body: JSON.stringify({ channelName: 'ai:test', eventId: 'ev-1', runId: 'run-9' }),
+        }),
+      );
+      fake.emit(runEndEvent('run-9'));
+      expect(await readAll(stream)).toEqual([]);
+
+      // The wake cleared with the successful POST: a further identical send
+      // has nothing to do and does not POST again.
+      const done = await chat.sendMessages(send);
+      expect(await readAll(done)).toEqual([]);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not re-POST a wake owed to a run the conversation has moved past', async () => {
+      const fetchMock = vi.fn().mockRejectedValueOnce(new Error('network down'));
+      vi.stubGlobal('fetch', fetchMock);
+      const { fake, chat } = setup(approvalGapEvents('run-9'));
+
+      // The approval publishes, the wake-up POST fails: a wake is owed to run-9.
+      await expect(
+        chat.sendMessages(sendOptions([userMessage('u1', 'forecast please'), approvalRespondedOverlay(true)])),
+      ).rejects.toThrow('network down');
+
+      // The conversation moves on to run-10, whose assistant needs nothing
+      // published. The owed wake belongs to run-9, so it must not fire here:
+      // run-9's terminal is behind us, and waking it would hand useChat a
+      // stream waiting for an end that cannot arrive.
+      fake.emit(
+        messageEvent(
+          { codecMessageId: 'wire-a2', runId: 'run-10', role: 'assistant' },
+          { outputs: [{ type: 'start', messageId: 'a2' }] },
+        ),
+      );
+      const stream = await chat.sendMessages(
+        sendOptions([
+          userMessage('u1', 'forecast please'),
+          approvalRespondedOverlay(true),
+          { id: 'a2', role: 'assistant', parts: [{ type: 'text', text: 'done' }] },
+        ]),
+      );
+
+      expect(await readAll(stream)).toEqual([]);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['resume', runResumeEvent],
+      ['end', runEndEvent],
+    ])('discharges an owed wake when its run is seen to %s', async (_type, lifecycle) => {
+      const fetchMock = vi.fn().mockRejectedValueOnce(new Error('network down'));
+      vi.stubGlobal('fetch', fetchMock);
+      const { fake, chat } = setup(approvalGapEvents('run-9'));
+      const send = sendOptions([userMessage('u1', 'forecast please'), approvalRespondedOverlay(true)]);
+
+      await expect(chat.sendMessages(send)).rejects.toThrow('network down');
+
+      // The run moved without this client's POST: another client's wake landed,
+      // or this one's did and only its response was lost. Either way nothing is
+      // owed, so a later retry publishes nothing and POSTs nothing.
+      fake.emit(lifecycle('run-9'));
+      const stream = await chat.sendMessages(send);
+
+      expect(await readAll(stream)).toEqual([]);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
     it('publishes the provider tool-output chunk for a client-executed tool', async () => {

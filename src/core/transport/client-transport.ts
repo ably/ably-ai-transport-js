@@ -300,13 +300,26 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
           }
         : undefined,
     );
-    // Watch before the publish so a run-start racing the publish's own ack can
-    // never slip past; a failed publish removes the watch again.
-    const { runId, unwatch } = this._watchRunId(codecMessageId);
+    // A publish under a known run (a continuation) needs no watch: the caller
+    // already named the run, and the agent answers it with `ai-run-resume`,
+    // which the watch resolver does not accept. Watching would leave a promise
+    // that never settles and a map entry that never clears.
+    //
+    // Otherwise watch before the publish, so a run-start racing the publish's
+    // own ack can never slip past; a failed publish removes the watch again.
+    let runId: Promise<string>;
+    let unwatch: (() => void) | undefined;
+    if (opts?.runId === undefined) {
+      const watch = this._watchRunId(codecMessageId);
+      runId = watch.runId;
+      unwatch = watch.unwatch;
+    } else {
+      runId = Promise.resolve(opts.runId);
+    }
     try {
       await encoder.publishInput(event, { extras: { headers }, messageId: codecMessageId });
     } catch (error) {
-      unwatch();
+      unwatch?.();
       const cause = errorCause(error);
       const isPermission = cause?.statusCode === 401 || cause?.statusCode === 403;
       throw new Ably.ErrorInfo(

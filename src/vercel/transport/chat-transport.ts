@@ -172,6 +172,18 @@ class DefaultChatTransport<
   private readonly _wireIdentityByMessageId = new Map<string, WireIdentity>();
   /** Tool calls an action has already been published for (by any client, or seeded from history). */
   private readonly _publishedToolCallIds = new Set<string>();
+  /**
+   * A wake-up POST still owed: set when a continuation's publishes land but
+   * its POST fails. The resolutions are then on the wire, so a retry derives
+   * nothing left to publish; this pointer is what it re-POSTs instead of
+   * returning a closed stream.
+   *
+   * Scoped to its run. It is only re-POSTed while that same run is the one
+   * being continued, so a record owed to run A can never wake run B after the
+   * conversation has moved on. Cleared by the next successful continuation
+   * POST, and discharged when the wire shows its run resume or end.
+   */
+  private _pendingWake: { eventId: string; runId: string } | undefined;
   /** The newest assistant's wire identity, for a regenerate that names no message. */
   private _newestAssistant: WireIdentity | undefined;
   /** Active run-stream collectors fed from the live event subscription. */
@@ -396,18 +408,38 @@ class DefaultChatTransport<
   ): Promise<ReadableStream<AI.UIMessageChunk>> {
     const continuation = this._deriveContinuation(messages);
     if (continuation === undefined) {
-      // Every tool part is already resolved on the wire (e.g. another client
-      // answered first) — nothing to publish, so hand useChat a closed stream.
-      return new ReadableStream<AI.UIMessageChunk>({
-        start(controller) {
-          controller.close();
-        },
-      });
+      const pending = this._pendingWake;
+      // Only re-POST a wake owed to the run being continued now. A record for
+      // an earlier run would otherwise wake a run the conversation has moved
+      // past, whose terminal is already behind us, leaving the returned stream
+      // waiting for an end that cannot come.
+      if (pending === undefined || pending.runId !== this._runOfLastAssistant(messages)) {
+        // Every tool part is already resolved on the wire (e.g. another client
+        // answered first) — nothing to publish, so hand useChat a closed stream.
+        return new ReadableStream<AI.UIMessageChunk>({
+          start(controller) {
+            controller.close();
+          },
+        });
+      }
+      // The resolutions reached the wire on an earlier send whose wake-up
+      // POST failed, so there is nothing left to publish but the agent is
+      // still asleep: retry just the POST with the recorded pointer.
+      const collector = this._openRunStream(abortSignal);
+      try {
+        const response = await this._postChat(pending);
+        this._pendingWake = undefined;
+        collector.setRunId(response.runId);
+      } catch (error) {
+        collector.dispose();
+        throw error;
+      }
+      return collector.stream;
     }
     const { actions, runId } = continuation;
     const collector = this._openRunStream(abortSignal);
+    let eventId = '';
     try {
-      let eventId = '';
       for (const action of actions) {
         const sent = await this._transport.publishInput(action.input, {
           codecMessageId: action.codecMessageId,
@@ -417,8 +449,12 @@ class DefaultChatTransport<
         eventId = sent.eventId;
       }
       const response = await this._postChat({ eventId, runId });
+      this._pendingWake = undefined;
       collector.setRunId(response.runId);
     } catch (error) {
+      // With a publish already on the wire, a retry derives nothing to
+      // publish; record the wake still owed so the retry re-POSTs it.
+      if (eventId !== '') this._pendingWake = { eventId, runId };
       collector.dispose();
       throw error;
     }
@@ -467,6 +503,55 @@ class DefaultChatTransport<
       throw error;
     }
     return collector.stream;
+  }
+
+  /**
+   * Drop an owed wake once its run no longer needs one.
+   *
+   * `resume` is the precise signal: the agent woke for that run, which is
+   * exactly what the wake was owed for, whether this client's POST landed
+   * after all or another client's did. `end` covers the rest — a run that has
+   * terminated cannot be woken.
+   *
+   * Garbage collection, not correctness. The run comparison in
+   * {@link _sendContinuation} is what stops a record reaching the wrong run,
+   * so a discharge that arrives late (or never, on a disconnected client)
+   * costs nothing.
+   * @param type - The lifecycle event's type.
+   * @param runId - The run the lifecycle event belongs to.
+   */
+  private _dischargePendingWake(type: 'start' | 'suspend' | 'resume' | 'end', runId: string): void {
+    if (type !== 'resume' && type !== 'end') return;
+    if (this._pendingWake?.runId !== runId) return;
+    this._pendingWake = undefined;
+  }
+
+  /**
+   * The run of the newest assistant message with a known wire identity — the
+   * run a continuation of this message list is about, whether or not anything
+   * still needs publishing.
+   *
+   * Scans backwards, because the oldest assistant carrying tool parts is a
+   * finished turn in any conversation past its first, while the suspended one
+   * awaiting resolution is the newest.
+   *
+   * This can disagree with {@link _deriveContinuation}'s run, which is the
+   * first assistant in list order holding an *unpublished* resolved part, when
+   * an older assistant's tool is resolved out of order. The disagreement is
+   * safe in the direction that matters: a mismatch skips the pending wake and
+   * returns a closed stream, which is the behaviour with no record at all. It
+   * can never route a wake to the wrong run.
+   * @param messages - useChat's current message list.
+   * @returns The run id, or `undefined` when no assistant has a known run.
+   */
+  private _runOfLastAssistant(messages: AI.UIMessage<TMetadata, TDataParts, TTools>[]): string | undefined {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i];
+      if (message?.role !== 'assistant') continue;
+      const runId = this._wireIdentityByMessageId.get(message.id)?.runId;
+      if (runId !== undefined) return runId;
+    }
+    return undefined;
   }
 
   /**
@@ -560,10 +645,14 @@ class DefaultChatTransport<
    * Index one wire event: record the domain-id to wire-identity pairing every
    * message event already carries, and mark tool calls whose resolution is on
    * the wire (published by any client) so a continuation never re-publishes
-   * them.
+   * them. Run lifecycle discharges an owed wake for its run.
    * @param event - The classified transport event.
    */
   private _indexEvent(event: AdapterEvent<TMetadata, TDataParts, TTools>): void {
+    if (event.kind === 'run-lifecycle') {
+      this._dischargePendingWake(event.event.type, event.event.runId);
+      return;
+    }
     if (event.kind !== 'message') return;
     // Skip the optimistic local echo of this client's own publishes (no serial
     // yet); the send paths index their own publishes from the publish result,

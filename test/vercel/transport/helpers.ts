@@ -104,6 +104,16 @@ export const runSuspendEvent = (runId: string): Event => ({
 });
 
 /**
+ * A run-lifecycle `resume` event for a run.
+ * @param runId - The run's id.
+ * @returns The event.
+ */
+export const runResumeEvent = (runId: string): Event => ({
+  kind: 'run-lifecycle',
+  event: { type: 'resume', runId, clientId: 'agent', invocationId: '', serial: 'serial-resume' },
+});
+
+/**
  * A fake `ClientTransport` for driving the chat transport under test: records
  * `publishInput` and `cancel` calls, exposes {@link emit} so a test can push
  * classified events into the subscription like the channel would, and serves

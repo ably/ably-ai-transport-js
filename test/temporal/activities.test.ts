@@ -10,7 +10,7 @@
 
 import '../helper/expectations.js';
 
-import type * as Ably from 'ably';
+import * as Ably from 'ably';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { WireCodec } from '../../src/core/codec/types.js';
@@ -33,9 +33,12 @@ vi.mock('../../src/core/transport/agent-transport.js', () => ({
   createAgentTransport: vi.fn(),
 }));
 
+/** The activity cancellation signal the Context stub hands out; reset per test. */
+let mockCancellationSignal: AbortSignal = new AbortController().signal;
+
 vi.mock('@temporalio/activity', () => ({
   Context: {
-    current: vi.fn(() => ({ cancellationSignal: new AbortController().signal, heartbeat: vi.fn() })),
+    current: () => ({ cancellationSignal: mockCancellationSignal, heartbeat: vi.fn() }),
   },
 }));
 
@@ -59,6 +62,7 @@ const codec = { adapterTag: 'test' } as unknown as WireCodec<TestInput, TestOutp
 
 interface StubRunHandle {
   runId: string;
+  opened: Promise<void>;
   end: ReturnType<typeof vi.fn<(params: { reason: string; error?: unknown }) => Promise<void>>>;
   suspend: ReturnType<typeof vi.fn>;
 }
@@ -129,6 +133,7 @@ beforeEach(() => {
   const handlers = new Set<(event: Event) => void>();
   runHandle = {
     runId: 'run-1',
+    opened: Promise.resolve(),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
     end: vi.fn(() => Promise.resolve()),
     // eslint-disable-next-line @typescript-eslint/promise-function-async -- mock
@@ -165,6 +170,9 @@ beforeEach(() => {
   };
   client = { close: vi.fn(), channels: { get: vi.fn(() => ({ name: invocation.sessionName })) } };
   createClient = vi.fn(() => client);
+  // A live (un-aborted) signal, restoring the default for any test that
+  // swapped in an already-aborted one.
+  mockCancellationSignal = new AbortController().signal;
   // CAST: the stub implements only what the activities call.
   vi.mocked(createAgentTransport).mockImplementation(
     () => transport as unknown as ReturnType<typeof createAgentTransport>,
@@ -185,6 +193,34 @@ describe('openRun', () => {
       expect.anything(),
     );
     expect(result).toEqual({ runId: 'wf-1', invocationId: 'wf-1' });
+  });
+
+  it('rejects fast when the opening publish fails', async () => {
+    const failure = new Ably.ErrorInfo('publish refused', 50000, 500);
+    transport.openRun.mockImplementationOnce(() => {
+      // A failed opening publish: `opened` rejects and no echo ever arrives.
+      runHandle.opened = Promise.reject(failure);
+      // .catch(): pre-handled, matching the transport's own guarantee, so the
+      // stub cannot surface an unhandled rejection of its own.
+      runHandle.opened.catch(() => {
+        /* observed via the activity's race */
+      });
+      return runHandle;
+    });
+
+    await expect(activities().openRun({ invocation, invocationId: 'wf-1' })).rejects.toBeErrorInfo({
+      message: 'publish refused',
+    });
+  });
+
+  it('rejects fast when the activity is already cancelled', async () => {
+    // An already-aborted signal never fires `abort`, so the open-echo wait
+    // must check it up front rather than waiting for an event that cannot come.
+    mockCancellationSignal = AbortSignal.abort();
+
+    await expect(activities().openRun({ invocation, invocationId: 'wf-1' })).rejects.toBeErrorInfoWithCode(
+      ErrorCode.OperationCancelled,
+    );
   });
 
   it('re-enters the run a continuation trigger names', async () => {
@@ -228,7 +264,7 @@ describe('openRun', () => {
 });
 
 describe('endRun', () => {
-  it('gates on the history fold, adopts without publishing, and ends with the reason', async () => {
+  it('adopts the run and ends it with the reason', async () => {
     await activities().endRun({ ids, invocation, reason: 'complete' });
 
     expect(transport.adoptRun).toHaveBeenCalledWith('run-1', { invocationId: 'wf-1' }, expect.anything());
@@ -236,10 +272,15 @@ describe('endRun', () => {
     expect(runHandle.end).toHaveBeenCalledWith({ reason: 'complete' });
   });
 
+  it('reads no history: the terminal publishes unconditionally', async () => {
+    await activities().endRun({ ids, invocation, reason: 'complete' });
+
+    expect(transport.history).not.toHaveBeenCalled();
+  });
+
   it('wraps the error message when the reason is error', async () => {
     await activities().endRun({ ids, invocation, reason: 'error', errorMessage: 'model exploded' });
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- asymmetric matcher for the wrapped error
     const wrapped: unknown = expect.objectContaining({
       message: 'model exploded',
       code: ErrorCode.RunResponseStreamFailed,
@@ -247,86 +288,50 @@ describe('endRun', () => {
     expect(runHandle.end).toHaveBeenCalledWith({ reason: 'error', error: wrapped });
   });
 
-  it('rejects a suspended run without publishing', async () => {
+  it('ends a run the wire already shows as suspended', async () => {
     transport.history.mockResolvedValue({ events: [lifecycle('suspend', 'run-1')], exhausted: true });
 
-    await expect(activities().endRun({ ids, invocation, reason: 'complete' })).rejects.toBeErrorInfoWithCode(
-      ErrorCode.InvalidArgument,
-    );
-    expect(transport.adoptRun).not.toHaveBeenCalled();
-  });
-
-  it('rejects an already-ended run without publishing', async () => {
-    transport.history.mockResolvedValue({ events: [lifecycle('end', 'run-1')], exhausted: true });
-
-    await expect(activities().endRun({ ids, invocation, reason: 'complete' })).rejects.toBeErrorInfoWithCode(
-      ErrorCode.InvalidArgument,
-    );
-    expect(transport.adoptRun).not.toHaveBeenCalled();
-  });
-
-  it('rejects retryably when the run is not found in the pages read', async () => {
-    transport.history.mockResolvedValue({ events: [], exhausted: true });
-
-    await expect(activities().endRun({ ids, invocation, reason: 'complete' })).rejects.toBeErrorInfoWithCode(
-      ErrorCode.NotFound,
-    );
-  });
-
-  it('reads the latest lifecycle state, not the first', async () => {
-    // The run started, suspended, and resumed: the latest state is open.
-    transport.history.mockResolvedValue({
-      events: [lifecycle('start', 'run-1'), lifecycle('suspend', 'run-1'), lifecycle('resume', 'run-1')],
-      exhausted: true,
-    });
-
+    // No gate: the activity publishes regardless of what the wire holds.
     await activities().endRun({ ids, invocation, reason: 'complete' });
 
     expect(runHandle.end).toHaveBeenCalledWith({ reason: 'complete' });
   });
 
-  it('pages older history until the run is found', async () => {
-    transport.history
-      .mockResolvedValueOnce({ events: [lifecycle('start', 'run-other')], exhausted: false })
-      .mockResolvedValueOnce({ events: [lifecycle('start', 'run-1')], exhausted: false });
+  it('ends a run the wire already shows as ended, leaving a duplicate terminal', async () => {
+    transport.history.mockResolvedValue({ events: [lifecycle('end', 'run-1')], exhausted: true });
 
+    // A retry of a publish-then-crashed attempt puts a second `ai-run-end` on
+    // the channel. Readers absorb it by respecting the first terminal in
+    // serial order, so the activity does not need to check first.
     await activities().endRun({ ids, invocation, reason: 'complete' });
 
-    expect(transport.history).toHaveBeenCalledTimes(2);
-    expect(runHandle.end).toHaveBeenCalled();
-  });
-
-  it('gives up at the page bound and rejects retryably', async () => {
-    transport.history.mockResolvedValue({ events: [], exhausted: false });
-
-    await expect(
-      activities({ maxHistoryPages: 2 }).endRun({ ids, invocation, reason: 'complete' }),
-    ).rejects.toBeErrorInfoWithCode(ErrorCode.NotFound);
-    expect(transport.history).toHaveBeenCalledTimes(2);
+    expect(runHandle.end).toHaveBeenCalledWith({ reason: 'complete' });
   });
 });
 
 describe('suspendRun', () => {
-  it('gates on the history fold, adopts without publishing, and suspends', async () => {
+  it('adopts the run and suspends it', async () => {
     await activities().suspendRun({ ids, invocation });
 
     expect(transport.adoptRun).toHaveBeenCalledWith('run-1', { invocationId: 'wf-1' }, expect.anything());
     expect(runHandle.suspend).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects a run that is already suspended', async () => {
-    transport.history.mockResolvedValue({ events: [lifecycle('suspend', 'run-1')], exhausted: true });
+  it('reads no history: the suspend publishes unconditionally', async () => {
+    transport.history.mockResolvedValue({ events: [lifecycle('end', 'run-1')], exhausted: true });
 
-    await expect(activities().suspendRun({ ids, invocation })).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+    await activities().suspendRun({ ids, invocation });
+
+    expect(transport.history).not.toHaveBeenCalled();
+    expect(runHandle.suspend).toHaveBeenCalledTimes(1);
   });
 });
 
 describe('cleanupRun', () => {
-  it('ends a still-open run as error with the failure message', async () => {
+  it('ends the run as error with the failure message', async () => {
     await activities().cleanupRun({ ids, invocation, errorMessage: 'workflow blew up' });
 
     expect(transport.adoptRun).toHaveBeenCalledWith('run-1', { invocationId: 'wf-1' });
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- asymmetric matcher for the wrapped error
     const wrapped: unknown = expect.objectContaining({ message: 'workflow blew up' });
     expect(runHandle.end).toHaveBeenCalledWith({ reason: 'error', error: wrapped });
   });
@@ -334,21 +339,16 @@ describe('cleanupRun', () => {
   it.each([
     ['suspended', lifecycle('suspend', 'run-1')],
     ['ended', lifecycle('end', 'run-1')],
-  ])('returns early for a %s run', async (_desc, event) => {
+  ])('publishes its error terminal even for a %s run', async (_desc, event) => {
     transport.history.mockResolvedValue({ events: [event], exhausted: true });
 
+    // The cleanup arm reads no history. For an already-ended run this adds a
+    // second `ai-run-end` that readers ignore in favour of the first.
     await activities().cleanupRun({ ids, invocation });
 
-    expect(transport.adoptRun).not.toHaveBeenCalled();
-    expect(runHandle.end).not.toHaveBeenCalled();
-  });
-
-  it('returns early when the run is not found in the pages read', async () => {
-    transport.history.mockResolvedValue({ events: [], exhausted: true });
-
-    await activities().cleanupRun({ ids, invocation });
-
-    expect(transport.adoptRun).not.toHaveBeenCalled();
+    const wrapped: unknown = expect.objectContaining({ code: ErrorCode.RunResponseStreamFailed });
+    expect(transport.history).not.toHaveBeenCalled();
+    expect(runHandle.end).toHaveBeenCalledWith({ reason: 'error', error: wrapped });
   });
 
   it('always tears down the transport and the client', async () => {

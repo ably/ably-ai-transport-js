@@ -3,7 +3,7 @@ import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { useEffect, useState, type ReactNode } from 'react';
 import type * as AI from 'ai';
 import type { BranchHandle, ClientSession, RunInfo } from '@ably/ai-transport';
-import type { ChatTransport, VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
+import type { ChatTransport, VercelOutput, VercelProjection, VercelSessionInput } from '@ably/ai-transport/vercel';
 
 // jsdom doesn't implement Element.prototype.scrollIntoView; MessageList's
 // auto-scroll effect calls it whenever the message list grows.
@@ -40,7 +40,7 @@ const mockChatTransport: ChatTransport = {
 const mockSession = {
   close: vi.fn(async () => {}),
   on: vi.fn(() => () => {}),
-} as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+} as unknown as ClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
 const emptyBranchHandle = (): BranchHandle<AI.UIMessage> => ({
   hasSiblings: false,

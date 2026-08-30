@@ -1,10 +1,10 @@
 import type { ClientRun } from '@ably/ai-transport';
-import type { VercelInput } from '@ably/ai-transport/vercel';
+import type { VercelSessionInput } from '@ably/ai-transport/vercel';
 import type { UIMessage } from 'ai';
 
 /**
  * Construct a user UIMessage from a text string. Callers wrap it for the
- * wire at the call site, e.g. `view.send(createUIMessageCodec().createUserMessage(userMessage(text)))`.
+ * wire at the call site, e.g. `view.send(createUIMessageSessionCodec().createUserMessage(userMessage(text)))`.
  */
 export function userMessage(text: string): UIMessage {
   return {
@@ -36,7 +36,7 @@ interface WakeAgentResult {
  * @returns The agent-minted run-id and invocation-id read back from the response.
  * @throws If the endpoint responds with a non-JSON body (e.g. an error page).
  */
-export async function wakeAgent(api: string, run: ClientRun<VercelInput, UIMessage>): Promise<WakeAgentResult> {
+export async function wakeAgent(api: string, run: ClientRun<VercelSessionInput, UIMessage>): Promise<WakeAgentResult> {
   const response = await fetch(api, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

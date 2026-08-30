@@ -75,6 +75,12 @@ export {
 // Channel modes
 export { OBJECT_MODES } from './core/channel-options.js';
 
+// The session codec contract the sessions and the Tree consume. The generic
+// bounds are named by public signatures — `createAblyTransportPlugin` on
+// `@ably/ai-transport/temporal` constrains its parameters by them — and
+// `CodecMessage` is the shape every `getMessages` read returns.
+export type { CodecInputEvent, CodecMessage, CodecOutputEvent } from './core/transport/session-codec.js';
+
 // Core codec
 export type {
   BatchAssembleContext,

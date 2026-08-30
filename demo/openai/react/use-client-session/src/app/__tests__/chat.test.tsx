@@ -4,7 +4,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import * as Ably from 'ably';
 import { ErrorCode, Invocation } from '@ably/ai-transport';
 import type { BranchHandle, ClientRun, RunInfo, SendOptions } from '@ably/ai-transport';
-import type { OpenAIInput, OpenAIMessage } from '@ably/ai-transport/openai';
+import type { OpenAIMessage, OpenAISessionInput } from '@ably/ai-transport/openai';
 import { turnText, userTurn } from '../helpers';
 import { Chat } from '../components/chat';
 
@@ -31,7 +31,10 @@ const mockState = vi.hoisted(() => ({
   runOf: (() => undefined) as (codecMessageId: string) => RunInfo | undefined,
   cancel: vi.fn(async () => {}),
   send: vi.fn<
-    (input: OpenAIInput | OpenAIInput[], opts?: SendOptions) => Promise<ClientRun<OpenAIInput, OpenAIMessage>>
+    (
+      input: OpenAISessionInput | OpenAISessionInput[],
+      opts?: SendOptions,
+    ) => Promise<ClientRun<OpenAISessionInput, OpenAIMessage>>
   >(),
 }));
 
@@ -124,7 +127,7 @@ const assistantTurn = (text: string): OpenAIMessage => ({
   ],
 });
 
-const clientRunStub = (): ClientRun<OpenAIInput, OpenAIMessage> => ({
+const clientRunStub = (): ClientRun<OpenAISessionInput, OpenAIMessage> => ({
   inputCodecMessageId: 'input-1',
   // The agent mints the run-id, so `runId` is empty until `started` resolves.
   runId: '',

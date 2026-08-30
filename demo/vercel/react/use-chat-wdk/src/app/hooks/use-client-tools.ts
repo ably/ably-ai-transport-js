@@ -22,7 +22,7 @@
 import { useEffect, useRef } from 'react';
 import { getToolName, isToolUIPart, type ChatAddToolOutputFunction, type UIMessage } from 'ai';
 import type { ClientSession, CodecMessage, RunInfo } from '@ably/ai-transport';
-import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
+import type { VercelOutput, VercelProjection, VercelSessionInput } from '@ably/ai-transport/vercel';
 import type { ClientToolLogEntry } from '@ably-ai-demos/frontend';
 
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
@@ -53,7 +53,7 @@ const clientTools: Record<string, ClientToolExecutor> = {
 };
 
 export function useClientTools(
-  session: ClientSession<VercelInput, VercelOutput, VercelProjection, UIMessage>,
+  session: ClientSession<VercelSessionInput, VercelOutput, VercelProjection, UIMessage>,
   messages: CodecMessage<UIMessage>[],
   addToolResult: ChatAddToolOutputFunction<UIMessage>,
   runOf: (codecMessageId: string) => RunInfo | undefined,

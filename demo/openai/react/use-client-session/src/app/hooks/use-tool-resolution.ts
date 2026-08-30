@@ -26,7 +26,7 @@
 import { useCallback, useRef } from 'react';
 import type { ClientRun } from '@ably/ai-transport';
 import type { ViewHandle } from '@ably/ai-transport/react';
-import type { OpenAIInput, OpenAIMessage } from '@ably/ai-transport/openai';
+import type { OpenAIMessage, OpenAISessionInput } from '@ably/ai-transport/openai';
 import { unansweredCalls } from '@ably/ai-transport/openai';
 
 /** One tool call's resolution: the input to publish and the call it answers. */
@@ -36,15 +36,15 @@ export interface ToolResolution {
   /** The `call_id` this resolution answers. */
   callId: string;
   /** The input to publish — a tool result, a tool error, or an approval decision. */
-  input: OpenAIInput;
+  input: OpenAISessionInput;
 }
 
 /** Options for {@link useToolResolution}. */
 export interface UseToolResolutionOptions {
   /** The client view to publish the resolution on and to read run state from. */
-  view: ViewHandle<OpenAIInput, OpenAIMessage>;
+  view: ViewHandle<OpenAISessionInput, OpenAIMessage>;
   /** Wakes the agent for a run, POSTing its invocation pointer to the agent endpoint. */
-  onWake: (run: ClientRun<OpenAIInput, OpenAIMessage>) => void;
+  onWake: (run: ClientRun<OpenAISessionInput, OpenAIMessage>) => void;
 }
 
 /**

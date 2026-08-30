@@ -1,7 +1,7 @@
 'use client';
 
 import { createSessionHooks } from '@ably/ai-transport/react';
-import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
+import type { VercelOutput, VercelProjection, VercelSessionInput } from '@ably/ai-transport/vercel';
 import type * as AI from 'ai';
 
 /**
@@ -10,4 +10,4 @@ import type * as AI from 'ai';
  * and pairs them with the codec-agnostic `Providers` in `./ably-provider` and
  * `ThemeProvider` in `./theme-provider`.
  */
-export const SessionHooks = createSessionHooks<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>();
+export const SessionHooks = createSessionHooks<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>();

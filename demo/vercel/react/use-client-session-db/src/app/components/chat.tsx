@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ClientRun, RunStatus } from '@ably/ai-transport';
 import { isToolUIPart, type UIMessage } from 'ai';
-import { createUIMessageCodec, type VercelInput } from '@ably/ai-transport/vercel';
+import { createUIMessageSessionCodec, type VercelSessionInput } from '@ably/ai-transport/vercel';
 import { useMessagesWithSeed } from '@ably/ai-transport/vercel/react';
 import {
   ChatShell,
@@ -24,7 +24,7 @@ import {
 import { useClientTools } from '../hooks/use-client-tools';
 
 const { useClientSession, useAblyMessages, useTree } = SessionHooks;
-const uiMessageCodec = createUIMessageCodec();
+const uiMessageCodec = createUIMessageSessionCodec();
 
 // The scenarios this linear database-hydration demo can drive. The three tool
 // scenarios plus multi-tab and cancel are shared, authored once in
@@ -126,13 +126,13 @@ export function Chat({ chatId, clientId, seed, api }: ChatProps) {
   // target the live one. Cleaned up on run-end via the tree.on('run') hook
   // below. A ref instead of state — only the steer call site reads it, and
   // re-rendering is unnecessary.
-  const activeRunsRef = useRef<Map<string, ClientRun<VercelInput, UIMessage>>>(new Map());
+  const activeRunsRef = useRef<Map<string, ClientRun<VercelSessionInput, UIMessage>>>(new Map());
 
   // Wake the agent for a freshly-sent run by POSTing its invocation pointer.
   // The core session never sends HTTP — the app owns the trigger. Send sites
   // pass the `view.send*` promise; a POST failure is surfaced in the log.
   const wake = useCallback(
-    (runPromise: Promise<ClientRun<VercelInput, UIMessage>>) => {
+    (runPromise: Promise<ClientRun<VercelSessionInput, UIMessage>>) => {
       void runPromise
         .then(async (run) => {
           // Register the handle for /steer once the agent has minted the

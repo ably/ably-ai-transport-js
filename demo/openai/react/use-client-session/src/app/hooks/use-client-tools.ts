@@ -25,8 +25,8 @@
 
 import { useEffect, useRef } from 'react';
 import type { ViewHandle } from '@ably/ai-transport/react';
-import type { OpenAIInput, OpenAIItem, OpenAIMessage } from '@ably/ai-transport/openai';
-import { ResponsesCodec, resolvedCallIds } from '@ably/ai-transport/openai';
+import type { OpenAIItem, OpenAIMessage, OpenAISessionInput } from '@ably/ai-transport/openai';
+import { ResponsesSessionCodec, resolvedCallIds } from '@ably/ai-transport/openai';
 
 import { isClientTool } from '../api/chat/tools';
 import type { ToolResolution } from './use-tool-resolution';
@@ -75,7 +75,7 @@ function parseArgs(argumentsJson: string): Record<string, unknown> {
  * @param onLog - Optional callback to surface each execution in the demo's debug log.
  */
 export function useClientTools(
-  view: ViewHandle<OpenAIInput, OpenAIMessage>,
+  view: ViewHandle<OpenAISessionInput, OpenAIMessage>,
   clientId: string | undefined,
   resolve: ResolveToolCall,
   onLog?: (summary: string) => void,
@@ -131,17 +131,17 @@ async function executeClientTool(
 
   // Compute the resolution input first so an executor failure produces a
   // tool-result-error without entangling the publish/wake error handling.
-  let input: OpenAIInput;
+  let input: OpenAISessionInput;
   try {
     const output = await executor(parseArgs(call.arguments));
-    input = ResponsesCodec.createToolResult(codecMessageId, {
+    input = ResponsesSessionCodec.createToolResult(codecMessageId, {
       call_id: call.call_id,
       output: JSON.stringify(output),
     });
     onLog?.(`${call.name} done`);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'client tool execution failed';
-    input = ResponsesCodec.createToolResultError(codecMessageId, { call_id: call.call_id, message });
+    input = ResponsesSessionCodec.createToolResultError(codecMessageId, { call_id: call.call_id, message });
     onLog?.(`${call.name} error: ${message}`);
   }
 

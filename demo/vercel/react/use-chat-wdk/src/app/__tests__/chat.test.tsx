@@ -3,7 +3,7 @@ import type * as AI from 'ai';
 import { useEffect, useState, type ReactNode, type RefObject } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ChatTransport, VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
+import type { ChatTransport, VercelOutput, VercelProjection, VercelSessionInput } from '@ably/ai-transport/vercel';
 import type { BranchHandle, ClientSession } from '@ably/ai-transport';
 
 import { Chat } from '../chat';
@@ -27,7 +27,7 @@ const { mockSendMessages, mockChatTransport, mockSession } = vi.hoisted(() => {
   };
   // CAST: minimal ClientSession stub — only the members the happy-path render reaches.
   const session = { close: async () => {}, on: () => () => {} } as unknown as ClientSession<
-    VercelInput,
+    VercelSessionInput,
     VercelOutput,
     VercelProjection,
     AI.UIMessage

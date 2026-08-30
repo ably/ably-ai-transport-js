@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ClientRun } from '@ably/ai-transport';
-import type { OpenAIInput, OpenAIMessage } from '@ably/ai-transport/openai';
-import { ResponsesCodec } from '@ably/ai-transport/openai';
+import type { OpenAIMessage, OpenAISessionInput } from '@ably/ai-transport/openai';
+import { ResponsesSessionCodec } from '@ably/ai-transport/openai';
 import { ChatShell } from '@ably-ai-demos/frontend/components/chat-shell';
 
 import { userTurn, wakeAgent } from '../helpers';
@@ -59,7 +59,7 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
   // Wake the agent for a run by POSTing its invocation pointer. The core session
   // never sends HTTP — the app owns the trigger.
   const wakeRun = useCallback(
-    (run: ClientRun<OpenAIInput, OpenAIMessage>) => {
+    (run: ClientRun<OpenAISessionInput, OpenAIMessage>) => {
       void wakeAgent(api, run).catch(reportError);
     },
     [api, reportError],
@@ -68,7 +68,7 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
   // The same wake for send sites, which hold the `view.send*` promise rather
   // than the run. A publish or POST failure is surfaced in the log.
   const wake = useCallback(
-    (runPromise: Promise<ClientRun<OpenAIInput, OpenAIMessage>>) => {
+    (runPromise: Promise<ClientRun<OpenAISessionInput, OpenAIMessage>>) => {
       void runPromise.then(wakeRun).catch(reportError);
     },
     [wakeRun, reportError],
@@ -154,7 +154,7 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
       void resolveToolCall({
         codecMessageId,
         callId,
-        input: ResponsesCodec.createToolApprovalResponse(codecMessageId, { call_id: callId, approved: true }),
+        input: ResponsesSessionCodec.createToolApprovalResponse(codecMessageId, { call_id: callId, approved: true }),
       });
     },
     [resolveToolCall],
@@ -165,7 +165,7 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
       void resolveToolCall({
         codecMessageId,
         callId,
-        input: ResponsesCodec.createToolApprovalResponse(codecMessageId, {
+        input: ResponsesSessionCodec.createToolApprovalResponse(codecMessageId, {
           call_id: callId,
           approved: false,
           reason: 'User denied',
@@ -192,7 +192,7 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
           onLoadOlder={() => void loadOlder()}
           onRegenerate={(codecMessageId) => wake(view.regenerate(codecMessageId))}
           onEdit={(codecMessageId, text) =>
-            wake(view.edit(codecMessageId, [ResponsesCodec.createUserMessage(userTurn(text))]))
+            wake(view.edit(codecMessageId, [ResponsesSessionCodec.createUserMessage(userTurn(text))]))
           }
           scrollToEndRef={scrollToEndRef}
           onApproveTool={handleToolApprove}
@@ -215,7 +215,7 @@ export function Chat({ chatId, clientId, historyLimit, api }: ChatProps) {
       onInputChange={setInput}
       inputRef={inputRef}
       onSend={(text) => {
-        wake(view.send(ResponsesCodec.createUserMessage(userTurn(text))));
+        wake(view.send(ResponsesSessionCodec.createUserMessage(userTurn(text))));
         scrollToEndRef.current?.();
       }}
       onStop={() => {

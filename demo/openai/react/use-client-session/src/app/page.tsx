@@ -2,7 +2,7 @@
 
 import { Providers, useAblyReady } from '@ably-ai-demos/frontend/ably-provider';
 import { SessionHooks } from './providers';
-import { ResponsesCodec } from '@ably/ai-transport/openai';
+import { ResponsesSessionCodec } from '@ably/ai-transport/openai';
 import { Chat } from './components/chat';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
@@ -22,7 +22,7 @@ function ChatWhenReady({ channelName, clientId, limit }: { channelName: string; 
   return (
     <ClientSessionProvider
       channelName={channelName}
-      codec={ResponsesCodec}
+      codec={ResponsesSessionCodec}
     >
       <Chat
         chatId={channelName}

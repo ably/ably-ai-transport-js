@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import type { ClientRun } from '@ably/ai-transport';
-import type { VercelInput } from '@ably/ai-transport/vercel';
+import type { VercelSessionInput } from '@ably/ai-transport/vercel';
 import type { UIMessage } from 'ai';
 
 import { userMessage, wakeAgent } from '../index';
@@ -40,7 +40,7 @@ describe('wakeAgent', () => {
     // ClientRun surface it touches and assert the type.
     const run = {
       toInvocation: () => ({ toJSON: () => ({ inputEventId: 'ev-1', sessionName: 'demo' }) }),
-    } as unknown as ClientRun<VercelInput, UIMessage>;
+    } as unknown as ClientRun<VercelSessionInput, UIMessage>;
 
     const result = await wakeAgent('/api/chat', run);
 

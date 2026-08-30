@@ -3,7 +3,7 @@
  * runs the OpenAI Responses model, and streams the reply back over Ably.
  *
  * Uses the generic, codec-agnostic transport (`createAgentSession` from
- * `@ably/ai-transport`) parameterized by the OpenAI `ResponsesCodec`; there is
+ * `@ably/ai-transport`) parameterized by the OpenAI `ResponsesSessionCodec`; there is
  * no OpenAI-specific transport layer. Continuation handling lives in the SDK:
  * draining `run.view` yields the LLM-ready conversation as `OpenAIMessage[]`,
  * which `toResponsesInput` flattens into the `/responses` `input` array.
@@ -31,7 +31,7 @@ import Ably from 'ably';
 import { createAgentSession } from '@ably/ai-transport';
 import type { InvocationData } from '@ably/ai-transport';
 import { Invocation } from '@ably/ai-transport';
-import { ResponsesCodec, toResponsesInput } from '@ably/ai-transport/openai';
+import { ResponsesSessionCodec, toResponsesInput } from '@ably/ai-transport/openai';
 
 import { runAgentLoop } from './agent-stream';
 
@@ -55,7 +55,11 @@ export async function POST(req: Request) {
     ...(process.env.ABLY_ENDPOINT ? { endpoint: process.env.ABLY_ENDPOINT } : {}),
   });
 
-  const session = createAgentSession({ client: ably, channelName: invocation.sessionName, codec: ResponsesCodec });
+  const session = createAgentSession({
+    client: ably,
+    channelName: invocation.sessionName,
+    codec: ResponsesSessionCodec,
+  });
   await session.connect();
   // No identity is pinned: this run is not retried, so a generated run-id and
   // invocation-id are correct.

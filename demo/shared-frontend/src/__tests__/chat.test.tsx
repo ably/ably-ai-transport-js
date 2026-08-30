@@ -4,7 +4,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import type * as AI from 'ai';
 import { Invocation } from '@ably/ai-transport';
 import type { BranchHandle, ClientRun, ClientSession, RunInfo, SendOptions } from '@ably/ai-transport';
-import type { VercelInput, VercelOutput, VercelProjection } from '@ably/ai-transport/vercel';
+import type { VercelOutput, VercelProjection, VercelSessionInput } from '@ably/ai-transport/vercel';
 
 // jsdom doesn't implement Element.prototype.scrollIntoView; shim it so a test
 // render never throws if a component reaches for it.
@@ -25,7 +25,10 @@ let setMockViewMessages: ((messages: AI.UIMessage[]) => void) | null = null;
 let mockRunOf: (codecMessageId: string) => RunInfo | undefined = () => undefined;
 
 const mockSend = vi.fn(
-  (_input: VercelInput | VercelInput[], _opts?: SendOptions): Promise<ClientRun<VercelInput, AI.UIMessage>> =>
+  (
+    _input: VercelSessionInput | VercelSessionInput[],
+    _opts?: SendOptions,
+  ): Promise<ClientRun<VercelSessionInput, AI.UIMessage>> =>
     Promise.resolve({
       // The triggering input's codec-message-id — the synchronous routing
       // handle the client owns the moment it publishes.
@@ -53,7 +56,7 @@ const mockSession = {
   cancel: vi.fn(async () => {}),
   close: vi.fn(async () => {}),
   on: vi.fn(() => () => {}),
-} as unknown as ClientSession<VercelInput, VercelOutput, VercelProjection, AI.UIMessage>;
+} as unknown as ClientSession<VercelSessionInput, VercelOutput, VercelProjection, AI.UIMessage>;
 
 const emptyBranchHandle = (): BranchHandle<AI.UIMessage> => ({
   hasSiblings: false,

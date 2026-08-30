@@ -25,16 +25,16 @@ import { getToolName, isToolUIPart, type DynamicToolUIPart, type ToolUIPart, typ
 import type { CodecMessage, TreeHandle, ViewHandle } from '@ably/ai-transport/react';
 import {
   createToolResultFork,
-  createUIMessageCodec,
+  createUIMessageSessionCodec,
   type ToolCallResolution,
-  type VercelInput,
   type VercelProjection,
+  type VercelSessionInput,
 } from '@ably/ai-transport/vercel';
 
 import { wakeAgent } from '../helpers';
 import type { ClientToolLogEntry } from '../components/debug-pane';
 
-const uiMessageCodec = createUIMessageCodec();
+const uiMessageCodec = createUIMessageSessionCodec();
 
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
 
@@ -63,7 +63,7 @@ const clientTools: Record<string, ClientToolExecutor> = {
 };
 
 export function useClientTools(
-  view: ViewHandle<VercelInput, UIMessage>,
+  view: ViewHandle<VercelSessionInput, UIMessage>,
   getRunNode: TreeHandle<VercelProjection>['getRunNode'],
   clientId: string | undefined,
   api: string,
@@ -143,7 +143,7 @@ export function useClientTools(
 // same tool call, their answers land on segregated sibling branches instead of
 // colliding — and sequential tool calls keep their prior context.
 async function executeClientTool(
-  view: ViewHandle<VercelInput, UIMessage>,
+  view: ViewHandle<VercelSessionInput, UIMessage>,
   api: string,
   runMessages: CodecMessage<UIMessage>[],
   parentCodecMessageId: string,

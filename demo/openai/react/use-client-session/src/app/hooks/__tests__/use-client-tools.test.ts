@@ -2,11 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor } from '@testing-library/react';
 import type { CodecMessage, RunInfo } from '@ably/ai-transport';
 import type { ViewHandle } from '@ably/ai-transport/react';
-import type { OpenAIInput, OpenAIMessage } from '@ably/ai-transport/openai';
+import type { OpenAIMessage, OpenAISessionInput } from '@ably/ai-transport/openai';
 
 import { useClientTools } from '../use-client-tools';
 
-type Handle = ViewHandle<OpenAIInput, OpenAIMessage>;
+type Handle = ViewHandle<OpenAISessionInput, OpenAIMessage>;
 
 // An assistant turn holding an unresolved getLocation client-tool call (no
 // function_call_output yet), addressed to codec-message-id `cm-0`.

@@ -31,15 +31,15 @@ import type { ClientView } from '@ably/ai-transport';
 import type { CodecMessage, TreeHandle } from '@ably/ai-transport/react';
 import {
   createToolResultFork,
-  createUIMessageCodec,
+  createUIMessageSessionCodec,
   type ToolCallResolution,
-  type VercelInput,
   type VercelProjection,
+  type VercelSessionInput,
 } from '@ably/ai-transport/vercel';
 
 import { wakeAgent, type ClientToolLogEntry } from '@ably-ai-demos/frontend';
 
-const uiMessageCodec = createUIMessageCodec();
+const uiMessageCodec = createUIMessageSessionCodec();
 
 type ClientToolExecutor = (input: unknown) => Promise<unknown>;
 
@@ -68,7 +68,7 @@ const clientTools: Record<string, ClientToolExecutor> = {
 };
 
 export function useClientTools(
-  view: ClientView<VercelInput, UIMessage>,
+  view: ClientView<VercelSessionInput, UIMessage>,
   getRunNode: TreeHandle<VercelProjection>['getRunNode'],
   clientId: string | undefined,
   api: string,
@@ -159,7 +159,7 @@ export function useClientTools(
 // same tool call, their answers land on segregated sibling branches instead of
 // colliding — and sequential tool calls keep their prior context.
 async function executeClientTool(
-  view: ClientView<VercelInput, UIMessage>,
+  view: ClientView<VercelSessionInput, UIMessage>,
   api: string,
   runMessages: CodecMessage<UIMessage>[],
   parentCodecMessageId: string,

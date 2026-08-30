@@ -2,12 +2,12 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import type { ClientRun, CodecMessage, RunInfo } from '@ably/ai-transport';
 import type { ViewHandle } from '@ably/ai-transport/react';
-import type { OpenAIInput, OpenAIMessage } from '@ably/ai-transport/openai';
-import { ResponsesCodec } from '@ably/ai-transport/openai';
+import type { OpenAIMessage, OpenAISessionInput } from '@ably/ai-transport/openai';
+import { ResponsesSessionCodec } from '@ably/ai-transport/openai';
 
 import { useToolResolution } from '../use-tool-resolution';
 
-type Handle = ViewHandle<OpenAIInput, OpenAIMessage>;
+type Handle = ViewHandle<OpenAISessionInput, OpenAIMessage>;
 
 /** A gated function_call item awaiting a decision. */
 const gatedCall = (callId: string) => ({
@@ -25,7 +25,7 @@ const gatedCall = (callId: string) => ({
  * it answered.
  */
 const makeView = (callIds: string[]): { view: Handle; send: ReturnType<typeof vi.fn> } => {
-  const send = vi.fn(async () => ({ runId: 'r1' }) as unknown as ClientRun<OpenAIInput, OpenAIMessage>);
+  const send = vi.fn(async () => ({ runId: 'r1' }) as unknown as ClientRun<OpenAISessionInput, OpenAIMessage>);
   const message: OpenAIMessage = {
     role: 'assistant',
     items: callIds.map(gatedCall),
@@ -40,8 +40,8 @@ const makeView = (callIds: string[]): { view: Handle; send: ReturnType<typeof vi
   return { view, send };
 };
 
-const approval = (callId: string): OpenAIInput =>
-  ResponsesCodec.createToolApprovalResponse('cm-0', { call_id: callId, approved: true });
+const approval = (callId: string): OpenAISessionInput =>
+  ResponsesSessionCodec.createToolApprovalResponse('cm-0', { call_id: callId, approved: true });
 
 const setup = (callIds: string[]) => {
   const { view, send } = makeView(callIds);

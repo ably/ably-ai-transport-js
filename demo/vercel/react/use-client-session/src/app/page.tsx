@@ -11,7 +11,7 @@ import {
   type Scenario,
 } from '@ably-ai-demos/frontend';
 import { OBJECT_MODES } from '@ably/ai-transport/react';
-import { createUIMessageCodec } from '@ably/ai-transport/vercel';
+import { createUIMessageSessionCodec } from '@ably/ai-transport/vercel';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useState } from 'react';
 import { ChecklistSlot } from './components/checklist-slot';
@@ -19,7 +19,7 @@ import { ChecklistSlot } from './components/checklist-slot';
 const { ClientSessionProvider } = SessionHooks;
 
 const CHANNEL_NAMESPACE = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ai:';
-const uiMessageCodec = createUIMessageCodec();
+const uiMessageCodec = createUIMessageSessionCodec();
 
 // Base scenarios plus the LiveObjects checklist entry this demo demonstrates.
 // The base list is shared across demos; the checklist row is specific here. One

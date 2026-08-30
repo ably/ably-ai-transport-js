@@ -7,7 +7,7 @@ import {
   generateChannelSlug,
   generateClientName,
 } from '@ably-ai-demos/frontend';
-import { createUIMessageCodec } from '@ably/ai-transport/vercel';
+import { createUIMessageSessionCodec } from '@ably/ai-transport/vercel';
 import type { UIMessage } from 'ai';
 import { Chat } from './components/chat';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -16,7 +16,7 @@ import { Suspense, useEffect, useState } from 'react';
 const { ClientSessionProvider } = SessionHooks;
 
 const CHANNEL_NAMESPACE = process.env.NEXT_PUBLIC_ABLY_CHANNEL_NAMESPACE ?? 'ai:';
-const uiMessageCodec = createUIMessageCodec();
+const uiMessageCodec = createUIMessageSessionCodec();
 
 const AGENT_API = 'api/chat';
 

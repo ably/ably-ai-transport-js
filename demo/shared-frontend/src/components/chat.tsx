@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { ClientRun } from '@ably/ai-transport';
 import type { DynamicToolUIPart, ToolUIPart, UIMessage } from 'ai';
-import { createUIMessageCodec, type VercelInput } from '@ably/ai-transport/vercel';
+import { createUIMessageSessionCodec, type VercelSessionInput } from '@ably/ai-transport/vercel';
 
 import { userMessage, wakeAgent } from '../helpers';
 import { useClientTools } from '../hooks/use-client-tools';
@@ -18,7 +18,7 @@ import { ChatShell, type HeaderLink } from './chat-shell';
 import { SessionHooks } from '../providers';
 
 const { useClientSession, useView, useAblyMessages, useTree } = SessionHooks;
-const uiMessageCodec = createUIMessageCodec();
+const uiMessageCodec = createUIMessageSessionCodec();
 
 interface ChatProps {
   /** Ably channel name this session is bound to. */
@@ -99,13 +99,13 @@ export function Chat({
   // the live one. Cleaned up on run-end via the tree.on('run') hook below. A ref
   // instead of state — only the steer call site reads it, and re-rendering on
   // registration is unnecessary.
-  const activeRunsRef = useRef<Map<string, ClientRun<VercelInput, UIMessage>>>(new Map());
+  const activeRunsRef = useRef<Map<string, ClientRun<VercelSessionInput, UIMessage>>>(new Map());
 
   // Wake the agent for a freshly-sent run by POSTing its invocation pointer. The
   // core session never sends HTTP — the app owns the trigger. Send sites pass the
   // `view.send*` promise; a POST failure is surfaced in the log.
   const wake = useCallback(
-    (runPromise: Promise<ClientRun<VercelInput, UIMessage>>) => {
+    (runPromise: Promise<ClientRun<VercelSessionInput, UIMessage>>) => {
       void runPromise
         .then(async (run) => {
           // Register the handle for /steer once the agent has minted the run-id.

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react';
 import type * as AI from 'ai';
 import type { CodecMessage, RunInfo, SendOptions } from '@ably/ai-transport';
-import type { VercelInput } from '@ably/ai-transport/vercel';
+import type { VercelSessionInput } from '@ably/ai-transport/vercel';
 
 // jsdom doesn't implement Element.prototype.scrollIntoView; MessageList's
 // auto-scroll effect calls it whenever the message list grows.
@@ -34,7 +34,7 @@ const { mockSend, mockSteer, mockCancel, mockWakeAgent, runsHolder, viewMessages
   }));
   const mockSend = vi.fn<
     (
-      events: VercelInput | VercelInput[],
+      events: VercelSessionInput | VercelSessionInput[],
       opts?: SendOptions,
     ) => Promise<{ runId: string; started: Promise<void>; steer: typeof mockSteer }>
   >(async () => ({ runId: 'run-1', started: Promise.resolve(), steer: mockSteer }));

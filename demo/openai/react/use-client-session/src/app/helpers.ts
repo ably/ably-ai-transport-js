@@ -1,11 +1,11 @@
 import type { ClientRun } from '@ably/ai-transport';
-import type { OpenAIInput, OpenAIMessage } from '@ably/ai-transport/openai';
+import type { OpenAIMessage, OpenAISessionInput } from '@ably/ai-transport/openai';
 
 import { toDisplayParts } from './display';
 
 /**
  * Construct a user turn from a text string. Callers wrap it for the wire at the
- * call site, e.g. `view.send(ResponsesCodec.createUserMessage(userTurn(text)))`.
+ * call site, e.g. `view.send(ResponsesSessionCodec.createUserMessage(userTurn(text)))`.
  * A user turn is a single input message carrying one `input_text` content part
  * (the shape the OpenAI input codec expects — see the codec's `inputs` table).
  */
@@ -51,7 +51,10 @@ interface WakeAgentResult {
  * @returns The agent-minted run-id and invocation-id read back from the response.
  * @throws If the endpoint responds with a non-JSON body (e.g. an error page).
  */
-export async function wakeAgent(api: string, run: ClientRun<OpenAIInput, OpenAIMessage>): Promise<WakeAgentResult> {
+export async function wakeAgent(
+  api: string,
+  run: ClientRun<OpenAISessionInput, OpenAIMessage>,
+): Promise<WakeAgentResult> {
   const response = await fetch(api, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

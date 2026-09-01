@@ -36,7 +36,6 @@ Every exported function and every non-trivial internal module gets its own test 
 
 - Mock writers that record calls (`createMockWriter`, `createMockChannel`)
 - `flushMicrotasks()` instead of `setTimeout` — never use timeouts in tests
-- `mockFetch.nextCall()` / `mockFetch.waitForCalls(n)` to await fire-and-forget POSTs
 - `mockChannel.waitForPublishes(n)` to await encoder publish operations
 - `simulateMessage()` for synchronous channel event simulation
 - For streams that stay open, simulate a terminal event (`finish`) to close deterministically, then drain with `reader.read()`

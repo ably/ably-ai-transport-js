@@ -1,14 +1,21 @@
 /**
  * A `ChatTransport` for `useChat`, built directly on the standalone
- * {@link ClientTransport}. It holds no conversation state and folds nothing:
- * the UI is driven exclusively through useChat, and this adapter turns the
- * channel's decoded event stream into the `ReadableStream<UIMessageChunk>`
- * useChat consumes, and turns useChat's sends into channel publishes plus an
- * HTTP POST that wakes the agent route.
+ * {@link ClientTransport}. useChat owns the message store; the adapter keeps
+ * no store of its own.
  *
- * The adapter's whole job is to decide which stream a chunk belongs on. It
- * forwards chunks unchanged and in wire order, and it reads no chunk content:
- * every decision below is made on transport metadata alone.
+ * It has two jobs.
+ *
+ * On the **streaming path** it turns the channel's decoded event stream into
+ * the `ReadableStream<UIMessageChunk>`s useChat consumes, and turns useChat's
+ * sends into channel publishes plus an HTTP POST that wakes the agent route.
+ * Here it only decides which stream a chunk belongs on: chunks are forwarded
+ * unchanged and in wire order, routed on transport metadata alone.
+ *
+ * On the **hydration path** it does read content. {@link ChatTransport.readSince}
+ * walks channel history and folds it into `UIMessage`s through the provider's
+ * own reducer, and holds the events of any run that has not ended so
+ * {@link ChatTransport.reconnectToStream} can replay them. That retention is
+ * the one piece of conversation state the adapter carries, and it is bounded.
  *
  * Send paths, chosen from what useChat passes:
  *
@@ -41,7 +48,7 @@ import { ErrorCode, errorInfoIs } from '../../errors.js';
 import { EventEmitter } from '../../event-emitter.js';
 import type { Logger } from '../../logger.js';
 import { LogLevel, makeLogger } from '../../logger.js';
-import { errorCause, errorMessage } from '../../utils.js';
+import { errorMessage } from '../../utils.js';
 import type { VercelInput, VercelOutput } from '../codec/events.js';
 import { isToolPart } from '../tool-part.js';
 
@@ -51,6 +58,22 @@ import { isToolPart } from '../tool-part.js';
  * agent that died without publishing `ai-run-end`.
  */
 const RETAINED_RUN_LIMIT = 8;
+
+/**
+ * Cap on the live events held for a later replay. The buffer runs from
+ * construction so nothing published before the hydration walk is lost, and an
+ * application that never hydrates would otherwise accumulate every event on
+ * the channel for the life of the page.
+ */
+const LIVE_BUFFER_LIMIT = 2000;
+
+/**
+ * How long a send waits for the channel to name its run before giving up.
+ * Nothing else bounds that wait: a route that answers 200 and then dies, or an
+ * agent that opens its run without threading the triggering input, would
+ * otherwise leave the stream open and useChat streaming for ever.
+ */
+const RUN_ID_TIMEOUT_MS = 30_000;
 
 /** One classified event off the client transport, at the adapter's instantiation. */
 type AdapterEvent<TMetadata, TDataParts extends AI.UIDataTypes, TTools extends AI.UITools> = TransportEvent<
@@ -139,8 +162,9 @@ export interface ChatTransport<
    * {@link reconnectToStream}, so exactly one producer builds each message and
    * useChat's reducer never accumulates the same text twice.
    *
-   * Call it before {@link reconnectToStream}; reconnecting before the walk has
-   * run returns `null`.
+   * Call it before {@link reconnectToStream} on the hydration path. With no
+   * hint and no run seen open since construction, reconnecting before the walk
+   * has run returns `null`.
    * @param latestSerial - The channel serial of the newest message the application's store holds. Every message at or before it must be complete in the store. Omit to walk to the channel start.
    * @returns The walked messages and whether the walk reached the channel start.
    */
@@ -213,6 +237,59 @@ interface RunCollector<TMetadata, TDataParts extends AI.UIDataTypes, TTools exte
  * @param stepId - The step attempt's id.
  * @returns A key unique to the run-and-step pair.
  */
+/**
+ * Reject when a promise has not settled within the bound.
+ *
+ * The run id arrives over the channel and nothing else bounds that wait: a
+ * route that answers 200 and then dies, or an agent that opens its run without
+ * threading the triggering input, would otherwise leave the stream open and
+ * useChat streaming for ever.
+ * @param promise - The promise to bound.
+ * @param ms - How long to wait.
+ * @returns The promise's value.
+ * @throws {@link Ably.ErrorInfo} with {@link ErrorCode.RunResponseStreamFailed} when the bound elapses.
+ */
+const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            new Ably.ErrorInfo(
+              `unable to stream the run; no run started within ${String(ms)}ms of the send`,
+              ErrorCode.RunResponseStreamFailed,
+              504,
+            ),
+          );
+        }, ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+};
+
+/**
+ * Coerce a thrown value into an `Ably.ErrorInfo` without losing it.
+ *
+ * `errorCause` only propagates a value that is already an `ErrorInfo`, so a
+ * plain `Error` — which is what `fetch` and the AI SDK throw — would otherwise
+ * reach the consumer as a bare message with no chain. Wrapping it first gives
+ * the chain something to carry.
+ * @param error - The thrown value.
+ * @param code - The code to report when the value is not already an `ErrorInfo`.
+ * @param statusCode - The status to report alongside `code`.
+ * @param operation - Names the failed operation in the message.
+ * @returns The value itself when it is an `ErrorInfo`, otherwise a wrapper carrying it as `cause`.
+ */
+const asErrorInfo = (error: unknown, code: ErrorCode, statusCode: number, operation: string): Ably.ErrorInfo => {
+  if (error instanceof Ably.ErrorInfo) return error;
+  const cause = error instanceof Error ? new Ably.ErrorInfo(error.message, code, statusCode) : undefined;
+  return new Ably.ErrorInfo(`unable to ${operation}; ${errorMessage(error)}`, code, statusCode, cause);
+};
+
 const attemptKey = (runId: string | undefined, stepId: string): string => `${runId ?? ''}\u0000${stepId}`;
 
 /**
@@ -232,14 +309,25 @@ const dropSupersededAttempts = <TMetadata, TDataParts extends AI.UIDataTypes, TT
   events: AdapterEvent<TMetadata, TDataParts, TTools>[],
 ): AdapterEvent<TMetadata, TDataParts, TTools>[] => {
   const canonical = new Map<string, string>();
+  const note = (k: string, serial: string): void => {
+    const best = canonical.get(k);
+    // Ably serials sort lexicographically, so the highest string is the latest.
+    if (best === undefined || serial > best) canonical.set(k, serial);
+  };
   for (const event of events) {
+    if (event.kind === 'step-lifecycle') {
+      // A retained `step-start` is the only evidence a later attempt exists
+      // when that attempt's own output is not in the replay yet. Reading only
+      // message events would leave the dead attempt looking canonical.
+      if (event.event.type === 'step-start' && event.event.serial !== undefined) {
+        note(attemptKey(event.event.runId, event.event.stepId), event.event.serial);
+      }
+      continue;
+    }
     if (event.kind !== 'message') continue;
     const { runId, stepId, stepStartSerial } = event.meta;
     if (stepId === undefined || stepStartSerial === undefined) continue;
-    const k = attemptKey(runId, stepId);
-    const best = canonical.get(k);
-    // Ably serials sort lexicographically, so the highest string is the latest.
-    if (best === undefined || stepStartSerial > best) canonical.set(k, stepStartSerial);
+    note(attemptKey(runId, stepId), stepStartSerial);
   }
   if (canonical.size === 0) return events;
   return events.filter((event) => {
@@ -317,13 +405,20 @@ class DefaultChatTransport<
   private readonly _streamFailers = new Set<(error: Ably.ErrorInfo) => void>();
   /** Per-open-stream close hooks, so `close()` terminates a reader useChat still holds. */
   private readonly _streamClosers = new Set<() => void>();
-  /** The run ids this adapter currently has streams open on, newest last. */
-  private readonly _openRunIds = new Set<string>();
+  /** The run ids this adapter is currently streaming, in run-id settle order. */
+  private readonly _streamingRunIds = new Set<string>();
 
-  /** Live events observed since {@link readSince} subscribed, awaiting a reconnect. */
-  private _walkBuffered: AdapterEvent<TMetadata, TDataParts, TTools>[] | undefined;
-  /** The buffer collector {@link readSince} installs; `reconnectToStream` takes it over. */
-  private _walkCollector: ((event: AdapterEvent<TMetadata, TDataParts, TTools>) => void) | undefined;
+  /**
+   * Recent live events, oldest first, bounded by {@link LIVE_BUFFER_LIMIT}.
+   *
+   * Runs from construction, because the decoder hands each wire message out
+   * exactly once and the walk shares it — an event dropped before a collector
+   * exists cannot be recovered from history. A reconnect reads its run's
+   * events out of here; it never drains the buffer, so a run this client only
+   * observed (rather than started) can still be resumed with its opening
+   * content intact.
+   */
+  private readonly _liveBuffer: AdapterEvent<TMetadata, TDataParts, TTools>[] = [];
   /**
    * Events of messages {@link readSince} withheld, keyed by the run that had
    * not ended. Insertion order is load-bearing in two places: the newest key
@@ -332,11 +427,11 @@ class DefaultChatTransport<
    */
   private readonly _retained = new Map<string, AdapterEvent<TMetadata, TDataParts, TTools>[]>();
   /**
-   * Runs seen starting on the live subscription with no end yet, newest last.
-   * This is what lets a reconnect go live on a run the walk never saw — the
-   * run another participant started after this client hydrated.
+   * Runs seen open on the channel — a `run-lifecycle` start with no end yet,
+   * newest last. This is what lets a reconnect go live on a run the walk never
+   * saw: the run another participant started after this client hydrated.
    */
-  private readonly _liveOpenRuns = new Set<string>();
+  private readonly _unendedRunIds = new Set<string>();
 
   private readonly _foreign = new Set<(runId: string) => void>();
   private readonly _emitter: EventEmitter<StreamingEvents>;
@@ -354,16 +449,8 @@ class DefaultChatTransport<
     });
     this._emitter = new EventEmitter<StreamingEvents>(this._logger);
 
-    // Buffer from construction rather than from `readSince`. The decoder hands
-    // each wire message out exactly once, and the walk shares it, so an event
-    // dropped before the walk installs a collector cannot be recovered from
-    // history — the version and duplicate-create guards decode it to nothing.
-    this._walkBuffered = [];
-    this._walkCollector = (event) => {
-      this._walkBuffered?.push(event);
-    };
-    this._collectors.add(this._walkCollector);
     this._unsubscribe = this._transport.subscribe((event) => {
+      this._recordLive(event);
       this._trackOpenRun(event);
       for (const collector of this._collectors) collector(event);
       this._notifyForeignRun(event);
@@ -409,18 +496,17 @@ class DefaultChatTransport<
     this._collectors.clear();
     this._streamFailers.clear();
     this._streamClosers.clear();
-    this._openRunIds.clear();
-    this._liveOpenRuns.clear();
+    this._streamingRunIds.clear();
+    this._unendedRunIds.clear();
     this._retained.clear();
-    this._walkCollector = undefined;
-    this._walkBuffered = undefined;
+    this._liveBuffer.length = 0;
     // Every closer ran `finish()` above, which decremented the counter and
     // emitted the transition at zero, so there is nothing left to reset here.
   }
 
   async cancel(): Promise<void> {
     this._logger.trace('ChatTransport.cancel();');
-    const runId = [...this._openRunIds].at(-1);
+    const runId = [...this._streamingRunIds].at(-1);
     if (runId === undefined) return;
     this._logger.debug('ChatTransport.cancel(); cancelling open run', { runId });
     await this._transport.cancel(runId);
@@ -462,14 +548,11 @@ class DefaultChatTransport<
     }
     this._logger.trace('ChatTransport.readSince();', { latestSerial });
 
-    // The buffer has been running since construction, so everything published
-    // between attach and here is already held. history() is bounded at the
-    // attach point and shares the live decoder, so the buffered events are
-    // strictly newer than every page and the seam needs no reconciling.
-    // A second walk keeps the buffer: those events still belong to whoever
-    // reconnects next. The overlap a re-walk creates is removed by serial at
-    // hand-off.
-    if (this._walkBuffered === undefined) this._installWalkBuffer();
+    // The live buffer has been running since construction, so everything
+    // published between attach and here is already held. history() is bounded
+    // at the attach point and shares the live decoder, so the buffered events
+    // are strictly newer than every page; a re-walk's overlap is removed by
+    // serial at hand-off.
 
     let all: AdapterEvent<TMetadata, TDataParts, TTools>[] = [];
     let exhausted = false;
@@ -518,23 +601,20 @@ class DefaultChatTransport<
     const runId =
       hinted ??
       [...this._retained.keys()].at(-1) ??
-      [...this._liveOpenRuns].findLast((id) => !this._openRunIds.has(id));
+      [...this._unendedRunIds].findLast((id) => !this._streamingRunIds.has(id));
     if (runId === undefined) {
-      // Nothing to resume, so the walk's hand-off window is over. Releasing the
-      // buffer here is what stops it accumulating every event on the channel
-      // for the life of the page on the commonest hydration path.
-      this._clearWalkBuffer();
+      this._logger.debug('ChatTransport.reconnectToStream(); nothing to resume');
       // eslint-disable-next-line unicorn/no-null -- null is required by the AI SDK ChatTransport contract
       return null;
     }
 
     const retained = this._retained.get(runId) ?? [];
-    const buffered = this._walkBuffered ?? [];
-    // The collector's own subscription takes over from the walk's buffer, so
-    // every live event lands exactly once: in `buffered` (walk-time), or in the
-    // collector (from here on).
+    // Only this run's events: the buffer is shared and is not drained, so a
+    // later reconnect on another run still finds its own opening content.
+    const buffered = this._liveBuffer.filter((event) =>
+      event.kind === 'message' ? event.meta.runId === runId : event.event.runId === runId,
+    );
     const collector = this._openRunStream();
-    this._clearWalkBuffer();
     this._retained.delete(runId);
 
     // Replay the withheld message on a reducer that holds nothing for it, then
@@ -736,7 +816,11 @@ class DefaultChatTransport<
     for (const event of walked) {
       if (event.kind === 'run-lifecycle') {
         seen.add(event.event.runId);
-        if (event.event.type === 'end') ended.add(event.event.runId);
+        // A suspended run publishes no end, so treating it as open would
+        // withhold its message for a stream that can never terminate. Nothing
+        // in this adapter suspends a run — every input opens a fresh one — so
+        // a suspend means the agent stopped, and the message is the walk's.
+        if (event.event.type === 'end' || event.event.type === 'suspend') ended.add(event.event.runId);
         continue;
       }
       if (event.kind === 'message' && event.meta.runId !== undefined) seen.add(event.meta.runId);
@@ -757,20 +841,10 @@ class DefaultChatTransport<
       if (!openRuns.has(runId)) this._retained.delete(runId);
     }
     for (const runId of openRuns) {
-      const events = walked.filter((event) =>
-        event.kind === 'message' ? event.meta.runId === runId : event.event.runId === runId,
+      this._retain1(
+        runId,
+        walked.filter((event) => (event.kind === 'message' ? event.meta.runId === runId : event.event.runId === runId)),
       );
-      // Delete-then-set re-seats the key as newest. Insertion order is what
-      // `reconnectToStream` reads to pick the newest withheld run, and what the
-      // cap below reads to evict the oldest.
-      this._retained.delete(runId);
-      this._retained.set(runId, events);
-    }
-    // A run that never ends never releases its retention, so bound the map.
-    while (this._retained.size > RETAINED_RUN_LIMIT) {
-      const oldest = this._retained.keys().next();
-      if (oldest.done === true) break;
-      this._retained.delete(oldest.value);
     }
   }
 
@@ -840,28 +914,31 @@ class DefaultChatTransport<
   // -------------------------------------------------------------------------
 
   /**
-   * Start buffering live events for a later hand-off to `reconnectToStream`.
+   * Retain one run's events for a later replay, re-seating the key as newest
+   * and evicting past the bound.
+   *
+   * Insertion order is load-bearing: the newest key is the run
+   * {@link reconnectToStream} resumes, and the oldest is what the cap evicts.
+   * @param runId - The run the events belong to.
+   * @param events - Its events, oldest first.
    */
-  private _installWalkBuffer(): void {
-    const live: AdapterEvent<TMetadata, TDataParts, TTools>[] = [];
-    const buffer = (event: AdapterEvent<TMetadata, TDataParts, TTools>): void => {
-      live.push(event);
-    };
-    this._collectors.add(buffer);
-    this._walkCollector = buffer;
-    this._walkBuffered = live;
+  private _retain1(runId: string, events: AdapterEvent<TMetadata, TDataParts, TTools>[]): void {
+    this._retained.delete(runId);
+    this._retained.set(runId, events);
+    while (this._retained.size > RETAINED_RUN_LIMIT) {
+      const oldest = this._retained.keys().next();
+      if (oldest.done === true) break;
+      this._retained.delete(oldest.value);
+    }
   }
 
   /**
-   * Drop the walk's live buffer and its subscription.
-   *
-   * The buffer and the collector that fills it are one thing in two fields, so
-   * every teardown site clears both together.
+   * Hold a live event for a later replay, dropping the oldest past the bound.
+   * @param event - The classified transport event.
    */
-  private _clearWalkBuffer(): void {
-    if (this._walkCollector) this._collectors.delete(this._walkCollector);
-    this._walkCollector = undefined;
-    this._walkBuffered = undefined;
+  private _recordLive(event: AdapterEvent<TMetadata, TDataParts, TTools>): void {
+    this._liveBuffer.push(event);
+    if (this._liveBuffer.length > LIVE_BUFFER_LIMIT) this._liveBuffer.shift();
   }
 
   /**
@@ -874,16 +951,19 @@ class DefaultChatTransport<
   private _trackOpenRun(event: AdapterEvent<TMetadata, TDataParts, TTools>): void {
     if (event.kind !== 'run-lifecycle') return;
     const { runId, type } = event.event;
-    if (type === 'end') {
-      this._liveOpenRuns.delete(runId);
-      // A retained run that has since ended must not stay resumable: replaying
-      // it would leave a stream waiting for a terminal that already passed.
-      this._retained.delete(runId);
+    if (type === 'end' || type === 'suspend') {
+      this._unendedRunIds.delete(runId);
+      // Keep the retention and append the terminal rather than dropping it: a
+      // run that ends between the walk and the reconnect still has a withheld
+      // message to deliver, and replaying its own end is what closes that
+      // stream. Dropping it here lost the message until a page reload.
+      const retained = this._retained.get(runId);
+      if (retained) retained.push(event);
       return;
     }
     // Re-seat the id so the set's iteration order stays newest-last.
-    this._liveOpenRuns.delete(runId);
-    this._liveOpenRuns.add(runId);
+    this._unendedRunIds.delete(runId);
+    this._unendedRunIds.add(runId);
   }
 
   /**
@@ -898,7 +978,7 @@ class DefaultChatTransport<
     if (event.kind !== 'run-lifecycle' || event.event.type !== 'start') return;
     if (this.streaming) return;
     const { runId } = event.event;
-    if (this._openRunIds.has(runId)) return;
+    if (this._streamingRunIds.has(runId)) return;
     for (const callback of this._foreign) {
       try {
         callback(runId);
@@ -941,7 +1021,7 @@ class DefaultChatTransport<
       this._collectors.delete(handleEvent);
       this._streamFailers.delete(failStream);
       this._streamClosers.delete(closeStream);
-      if (runId !== undefined) this._openRunIds.delete(runId);
+      if (runId !== undefined) this._streamingRunIds.delete(runId);
       this._openStreams--;
       if (this._openStreams === 0) this._emitter.emit('streaming', false);
     };
@@ -972,8 +1052,7 @@ class DefaultChatTransport<
         });
         // Hand the run's events to the retention so the consumer's repair —
         // drop the damaged message and resume — has something to replay.
-        this._retained.delete(id);
-        this._retained.set(id, [...delivered, event]);
+        this._retain1(id, [...delivered, event]);
         finish();
         controller?.error(
           new Ably.ErrorInfo(
@@ -1006,7 +1085,10 @@ class DefaultChatTransport<
     const handleEvent = (event: AdapterEvent<TMetadata, TDataParts, TTools>): void => {
       if (closed) return;
       if (runId === undefined) {
+        // Bounded: until the run is named there is no terminal to close on, so
+        // an unbounded buffer would grow for as long as the wait lasts.
         buffered.push(event);
+        if (buffered.length > LIVE_BUFFER_LIMIT) buffered.shift();
         return;
       }
       deliver(event, runId);
@@ -1063,7 +1145,7 @@ class DefaultChatTransport<
         const settle = (resolved: string): void => {
           if (closed) return;
           runId = resolved;
-          this._openRunIds.add(resolved);
+          this._streamingRunIds.add(resolved);
           // An abort that landed before the id was known still has to reach the
           // agent, so re-check rather than relying on the listener alone.
           if (abortSignal?.aborted) cancelRun(resolved);
@@ -1084,26 +1166,22 @@ class DefaultChatTransport<
           return;
         }
         // A run that never starts must fail the stream rather than hang it.
-        // Resolving either way keeps this promise a flush barrier, not an
-        // error channel: the failure reaches the consumer on the stream.
-        await id.then(settle, (error: unknown) => {
+        // This promise settles either way: it is a flush barrier, not an error
+        // channel, and the failure reaches the consumer on the stream.
+        let resolved: string;
+        try {
+          resolved = await withTimeout(id, RUN_ID_TIMEOUT_MS);
+        } catch (error) {
           if (closed) return;
           this._logger.error('ChatTransport._openRunStream(); run never started, failing stream', { error });
           finish();
           // Not a send failure: the publish and the POST both succeeded and
           // the run never started, which is the run's response stream failing
           // before it produced anything.
-          controller?.error(
-            error instanceof Ably.ErrorInfo
-              ? error
-              : new Ably.ErrorInfo(
-                  `unable to stream the run; ${errorMessage(error)}`,
-                  ErrorCode.RunResponseStreamFailed,
-                  500,
-                  errorCause(error),
-                ),
-          );
-        });
+          controller?.error(asErrorInfo(error, ErrorCode.RunResponseStreamFailed, 500, 'stream the run'));
+          return;
+        }
+        settle(resolved);
       },
       dispose: (): void => {
         finish();
@@ -1129,12 +1207,10 @@ class DefaultChatTransport<
         body: JSON.stringify({ channelName: this._channelName, eventId }),
       });
     } catch (error) {
-      throw new Ably.ErrorInfo(
-        `unable to send; the POST to ${this._api} failed: ${errorMessage(error)}`,
-        ErrorCode.SessionSendFailed,
-        500,
-        errorCause(error),
-      );
+      // `fetch` rejects with a plain TypeError whose own `cause` carries the
+      // transport reason (ECONNREFUSED, DNS, and so on), and `errorCause` drops
+      // anything that is not already an ErrorInfo — so wrap rather than lose it.
+      throw asErrorInfo(error, ErrorCode.SessionSendFailed, 500, `send; the POST to ${this._api} failed`);
     }
     if (!response.ok) {
       throw new Ably.ErrorInfo(

@@ -708,8 +708,8 @@ export interface AgentTransport<TInput, TOutput> extends TransportReceiver<TInpu
    * fresh send opens with `ai-run-start` — and the input's metadata defaults
    * the anchor and structure options (see {@link OpenRunOptions.input}).
    * Without a located input, the open publishes a fresh `ai-run-start` —
-   * under `opts.runId` when pinned — and `opts.continuation` marks it a
-   * re-entry publishing `ai-run-resume`. The run is registered for cancel
+   * under `opts.runId` when pinned. A re-entry requires a located input whose
+   * run-id header names the run to resume. The run is registered for cancel
    * routing until it ends; a cancel already buffered for
    * `opts.inputCodecMessageId` is honoured immediately. Requires
    * {@link connect}.

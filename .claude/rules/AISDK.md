@@ -17,6 +17,13 @@ so a chunk type added by a future major is silently dropped rather than failing
 the build. `test/vercel/codec/reducer.test.ts` pins the set this codec knowingly
 does not project, so a new variant surfaces in review instead of going unnoticed.
 
+**The fold is the SDK's, not ours.** Hydration replays chunks through the
+provider's own reducer (`readUIMessageStream`) rather than reimplementing it;
+the adapter only does the demultiplexing a reducer cannot do for itself. That
+makes `ai` a runtime dependency of `src/`, not a types-only peer, so any value
+imported from it must exist with the same signature in both supported majors.
+`test-ai-peer-range` in CI is the only thing checking that.
+
 **Do not assert the AI SDK's internal accounting.** Callback call-counts, log
 output and similar implementation details move between AI SDK releases —
 including within a single major, via patch bumps. Assert the property that

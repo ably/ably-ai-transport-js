@@ -826,17 +826,6 @@ describe('createAgentTransport', () => {
       expect(getTransportHeaders(startMsg as Ably.InboundMessage)[HEADER_RUN_ID]).toBe(run.runId);
     });
 
-    it('opens a fresh run under a pinned runId (the pin is not a continuation signal)', async () => {
-      const { transport, channel } = await setup();
-
-      const run = transport.openRun({ runId: 'run-pinned' });
-      await run.end({ reason: 'complete' });
-
-      expect(run.runId).toBe('run-pinned');
-      expect(channel.publishNames()).toContain('ai-run-start');
-      expect(channel.publishNames()).not.toContain('ai-run-resume');
-    });
-
     it('publishes a fresh ai-run-start for an input-less open under a pinned run-id', async () => {
       const { transport, channel } = await setup();
 

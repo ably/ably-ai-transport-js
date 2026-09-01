@@ -6,9 +6,9 @@
  *
  * These tests instantiate a concrete `AbstractChat` subclass (what useChat
  * wraps) whose message state is mutated ONLY by the Chat's own state
- * callbacks, and drive the adapter's three send-side paths: a fresh send, a
- * tool resolution (which opens a new run), and a reload that walks history and
- * resumes the run still in flight.
+ * callbacks, and drive two of the adapter's send paths — a fresh send and a
+ * tool resolution, which opens a new run — plus a reload that walks history
+ * and resumes the run still in flight.
  */
 
 import type * as AI from 'ai';

@@ -173,7 +173,8 @@ export const createFramingActivities = <TInput, TOutput>(
           // transport-side default, so requiring both would silently ignore a
           // caller who set only the bound. `limit` counts events while
           // `historyPageSize` bounds wire messages, so the product is an
-          // approximation of the page count either way.
+          // exact page bound: `limit` caps the wire messages scanned, page
+          // granular, so the product bounds the pages the scan fetches.
           ...(options.maxHistoryPages !== undefined && {
             limit: options.maxHistoryPages * (options.historyPageSize ?? DEFAULT_LOCATE_PAGE_SIZE),
           }),
@@ -209,12 +210,6 @@ export const createFramingActivities = <TInput, TOutput>(
         // is safe: no await separates them, so the echo cannot be delivered
         // in between.
         const { promise: openFailed, reject: failOpen } = Promise.withResolvers<never>();
-        // .catch(): the race observes the rejection; without a pre-attached
-        // handler, a rejection landing after the echo had already won the
-        // race would surface as an unhandled rejection.
-        openFailed.catch(() => {
-          /* observed via the race */
-        });
         // .catch(): rejection-only view — `opened` resolving must not settle
         // the race, only the echo may.
         run.opened.catch(failOpen);

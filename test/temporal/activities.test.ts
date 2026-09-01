@@ -3,9 +3,9 @@
  *
  * `createAgentTransport` is mocked: the transport is covered by its own tests,
  * and mocking it leaves exactly what these activities own observable — how a
- * run is located and opened, the history fold that gates the terminal
- * activities, what they publish, and that the client and transport they built
- * are always torn down.
+ * run is located and opened, that the terminal activities publish
+ * unconditionally without reading the wire, what they publish, and that the
+ * client and transport they built are always torn down.
  */
 
 import '../helper/expectations.js';
@@ -82,7 +82,7 @@ interface StubTransport {
 }
 
 /**
- * A run-lifecycle history event.
+ * A run-lifecycle event, used as the open echo and as history-stub content.
  * @param type - The lifecycle type.
  * @param runId - The run's id.
  * @returns The event.
@@ -90,7 +90,7 @@ interface StubTransport {
 const lifecycle = (type: 'start' | 'suspend' | 'resume' | 'end', runId: string): Event =>
   ({
     kind: 'run-lifecycle',
-    // CAST: only kind/runId/type are read by the fold under test.
+    // CAST: only kind/runId/type are read by the open-echo wait.
     event: { type, runId, clientId: '', invocationId: '', serial: `s-${type}` },
   }) as Event;
 

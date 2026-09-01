@@ -34,7 +34,7 @@ import type { ClientTransportOptions } from '../../core/transport/client-transpo
 import { createClientTransport } from '../../core/transport/client-transport.js';
 import type { ClientTransport } from '../../core/transport/types.js';
 import { ErrorCode } from '../../errors.js';
-import { errorCause, errorMessage } from '../../utils.js';
+import { errorMessage } from '../../utils.js';
 import type { ClientTransportSlot } from './client-transport-context.js';
 import { ClientTransportContext } from './client-transport-context.js';
 
@@ -131,6 +131,9 @@ export const ClientTransportProvider = <TInput, TOutput>({
         channelName,
         error,
       });
+      // `errorCause` only propagates a value that is already an ErrorInfo, and
+      // `client.channels.get()` throws a plain Error — so wrap it to give the
+      // chain something to carry rather than passing an always-undefined cause.
       constructionErrorRef.current =
         error instanceof Ably.ErrorInfo
           ? error
@@ -138,7 +141,7 @@ export const ClientTransportProvider = <TInput, TOutput>({
               `unable to create client transport; ${errorMessage(error)}`,
               ErrorCode.InternalError,
               500,
-              errorCause(error),
+              error instanceof Error ? new Ably.ErrorInfo(error.message, ErrorCode.InternalError, 500) : undefined,
             );
     }
   }

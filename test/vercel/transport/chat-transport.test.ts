@@ -2,9 +2,10 @@
  * ChatTransport unit tests — the useChat adapter over the standalone
  * ClientTransport.
  *
- * The adapter holds no conversation state and folds nothing. It decides which
- * stream a chunk belongs on and forwards it unchanged, reading transport
- * metadata only. These tests drive it against a fake ClientTransport, covering
+ * On the streaming path the adapter decides which stream a chunk belongs on
+ * and forwards it unchanged, reading transport metadata only; on the hydration
+ * path it folds walked history into messages and retains an unfinished run's
+ * events. These tests drive it against a fake ClientTransport, covering
  * the three send paths, the run id arriving over the channel, the hydration
  * walk and the reconnect that pairs with it, step supersede, and the terminal
  * rules for a stream the adapter has handed out.
@@ -201,11 +202,12 @@ describe('ChatTransport', () => {
       stubChatFetchFailure(new TypeError('network down'));
       const { chat } = setup('run-1');
 
-      // A plain Error is not an ErrorInfo, so `errorCause` yields no cause and
-      // the original survives in the message instead.
+      // The plain Error is wrapped so the chain carries it, rather than being
+      // dropped by `errorCause` and surviving only in the message.
       await expect(chat.sendMessages(sendOptions([userMessage('u1', 'hello')]))).rejects.toBeErrorInfo({
         code: ErrorCode.SessionSendFailed,
-        message: 'unable to send; the POST to /api/chat failed: network down',
+        message: 'unable to send; the POST to /api/chat failed; network down',
+        cause: { message: 'network down' },
       });
     });
 
@@ -235,6 +237,38 @@ describe('ChatTransport', () => {
       await expect(chat.sendMessages(sendOptions([userMessage('u1', 'hi')]))).rejects.toBeErrorInfoWithCode(
         ErrorCode.SessionClosed,
       );
+    });
+
+    it('refuses to walk once closed', async () => {
+      const { chat } = setup();
+      chat.close();
+
+      await expect(chat.readSince()).rejects.toBeErrorInfoWithCode(ErrorCode.SessionClosed);
+    });
+
+    it('resumes nothing once closed', async () => {
+      const { fake, chat } = setup();
+      fake.historyBatches = [{ events: [runStartEvent('run-1', 'serial-10')], exhausted: true }];
+      await chat.readSince();
+      chat.close();
+
+      // eslint-disable-next-line unicorn/no-null -- the SDK contract is null
+      expect(await chat.reconnectToStream({ chatId: 'ai:test' })).toBe(null);
+    });
+
+    it('stops reporting streaming transitions after unsubscribe', async () => {
+      stubChatFetch();
+      const { fake, chat } = setup('run-1');
+      const seen: boolean[] = [];
+      const off = chat.onStreamingChange((v) => seen.push(v));
+      off();
+
+      const stream = await chat.sendMessages(sendOptions([userMessage('u1', 'hi')]));
+      await Promise.resolve();
+      fake.emit(runEndEvent('run-1'));
+      await readAll(stream);
+
+      expect(seen).toEqual([]);
     });
   });
 
@@ -403,8 +437,9 @@ describe('ChatTransport', () => {
       expect(fake.cancelled).toEqual([]);
 
       fake.resolveRunId('run-1');
-      await Promise.resolve();
-      expect(fake.cancelled).toEqual(['run-1']);
+      await vi.waitFor(() => {
+        expect(fake.cancelled).toEqual(['run-1']);
+      });
     });
 
     it('cancel() reaches the agent for the open run', async () => {
@@ -499,6 +534,40 @@ describe('ChatTransport', () => {
       await chat.sendMessages(sendOptions([userMessage('u1', 'hi'), assistant], { messageId: assistant.id }));
 
       expect(fake.published[0]?.opts).not.toHaveProperty('runId');
+    });
+
+    it('publishes every resolved part in order and POSTs the last one', async () => {
+      const fetchMock = stubChatFetch();
+      const { fake, chat } = setup('run-2');
+      const assistant: AI.UIMessage = {
+        id: 'a1',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'tool-getWeather',
+            toolCallId: 'tc-1',
+            state: 'output-available',
+            input: { city: 'Berlin' },
+            output: { tempC: 4 },
+          },
+          {
+            type: 'tool-getTime',
+            toolCallId: 'tc-2',
+            state: 'approval-responded',
+            input: {},
+            approval: { id: 'ap-1', approved: true },
+          },
+        ],
+      };
+
+      await chat.sendMessages(sendOptions([userMessage('u1', 'hi'), assistant], { messageId: assistant.id }));
+
+      expect(fake.published.map((p) => p.event.kind)).toEqual(['chunk', 'approval']);
+      expect(fake.published.every((p) => p.opts?.codecMessageId === 'a1')).toBe(true);
+      // The POST points at the last publish: the earlier actions are already
+      // on the channel ahead of it when the agent locates this one.
+      const init = fetchMock.mock.calls[0]?.[1] as { body?: string } | undefined;
+      expect((JSON.parse(init?.body ?? '{}') as { eventId: string }).eventId).toBe('ev-2');
     });
 
     it('rejects when the named message has no resolved tool parts', async () => {
@@ -713,6 +782,59 @@ describe('ChatTransport', () => {
     });
   });
 
+  // -- a second walk ---------------------------------------------------------
+
+  describe('a second readSince', () => {
+    it('drops a retention the new walk no longer reports open', async () => {
+      const { fake, chat } = setup();
+      fake.historyBatches = [
+        {
+          events: [
+            runStartEvent('run-1', 'serial-10'),
+            outputEvent('run-1', 'wire-a1', [{ type: 'start', messageId: 'a1' }], 'serial-11'),
+          ],
+          exhausted: true,
+        },
+      ];
+      await chat.readSince();
+
+      // The second walk sees the run ended, so its message is the store's now
+      // and nothing is withheld for a stream.
+      fake.historyBatches = [
+        {
+          events: [
+            runStartEvent('run-1', 'serial-10'),
+            outputEvent('run-1', 'wire-a1', assistantChunks('a1', 'done'), 'serial-11'),
+            runEndEvent('run-1'),
+          ],
+          exhausted: true,
+        },
+      ];
+      const { messages } = await chat.readSince();
+
+      expect(messages.map((m) => m.id)).toEqual(['a1']);
+      // eslint-disable-next-line unicorn/no-null -- the SDK contract is null
+      expect(await chat.reconnectToStream({ chatId: 'ai:test' })).toBe(null);
+    });
+
+    it('delivers an event once when a re-walk overlaps the live buffer', async () => {
+      const { fake, chat } = setup();
+      const opener = outputEvent('run-1', 'wire-a1', [{ type: 'start', messageId: 'a1' }], 'serial-11');
+      // The same event reaches the adapter live and then again from history.
+      fake.emit(runStartEvent('run-1', 'serial-10'));
+      fake.emit(opener);
+      fake.historyBatches = [{ events: [runStartEvent('run-1', 'serial-10'), opener], exhausted: true }];
+      await chat.readSince();
+
+      const stream = await chat.reconnectToStream({ chatId: 'ai:test' });
+      fake.emit(runEndEvent('run-1'));
+
+      // Delivered once, not twice: a duplicated opener would build the message
+      // twice in useChat's reducer, which nothing can undo.
+      expect(await readAll(stream as ReadableStream<AI.UIMessageChunk>)).toEqual([{ type: 'start', messageId: 'a1' }]);
+    });
+  });
+
   // -- reconnect -----------------------------------------------------------
 
   describe('reconnectToStream', () => {
@@ -884,7 +1006,7 @@ describe('ChatTransport', () => {
       expect(await readAll(stream as ReadableStream<AI.UIMessageChunk>)).toEqual(assistantChunks('af', 'their reply'));
     });
 
-    it('does not resume a retained run that has since ended', async () => {
+    it('still delivers a withheld message whose run ended before the reconnect', async () => {
       const { fake, chat } = setup();
       fake.historyBatches = [
         {
@@ -905,8 +1027,13 @@ describe('ChatTransport', () => {
       await readAll(first as ReadableStream<AI.UIMessageChunk>);
       fake.emit(runEndEvent('run-a'));
 
-      // eslint-disable-next-line unicorn/no-null -- the SDK contract is null
-      expect(await chat.reconnectToStream({ chatId: 'ai:test' })).toBe(null);
+      // run-a's message was withheld from the walk, so the stream is its only
+      // producer. Losing it here would lose it until a page reload; the
+      // replay carries the run's own end, so it closes cleanly.
+      const second = await chat.reconnectToStream({ chatId: 'ai:test' });
+      expect(second).not.toBeNull();
+      expect(await readAll(second as ReadableStream<AI.UIMessageChunk>)).toEqual([{ type: 'start', messageId: 'aa' }]);
+      expect(chat.streaming).toBe(false);
     });
 
     it('buffers events published before the walk runs', async () => {
@@ -998,6 +1125,19 @@ describe('ChatTransport', () => {
       fake.emit(runStartEvent('run-someone-else'));
 
       expect(seen).toEqual([]);
+    });
+
+    it('keeps notifying when one callback throws', () => {
+      const { fake, chat } = setup();
+      const seen: string[] = [];
+      chat.onForeignRun(() => {
+        throw new Error('subscriber blew up');
+      });
+      chat.onForeignRun((runId) => seen.push(runId));
+
+      fake.emit(runStartEvent('run-someone-else'));
+
+      expect(seen).toEqual(['run-someone-else']);
     });
 
     it('unsubscribes', () => {

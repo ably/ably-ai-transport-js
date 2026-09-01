@@ -8,6 +8,8 @@
  * useTransportEvents and useAblyMessages wrap its streams in effects.
  */
 
+import '../helper/expectations.js';
+
 import { act, render, renderHook } from '@testing-library/react';
 import * as Ably from 'ably';
 import { createElement, type ReactNode, StrictMode } from 'react';
@@ -30,6 +32,14 @@ const flushMicrotasks = async (): Promise<void> => {
     queueMicrotask(resolve);
   });
 };
+
+/**
+ * A provider tree on one channel, for asserting what a channelName change does.
+ * @param channelName - The channel the provider resolves.
+ * @returns The element to render.
+ */
+const providerTree = (channelName: string): ReactNode =>
+  createElement(ClientTransportProvider, { channelName, codec: {} as never, children: undefined });
 
 /** Inert unsubscribe for the fake's unhandled events. */
 const noopUnsubscribe = (): void => {
@@ -198,6 +208,56 @@ describe('ClientTransportProvider', () => {
     await act(flushMicrotasks);
 
     expect(fake.closeCalls).toBe(1);
+  });
+
+  it('recreates the transport on a channelName change and closes the superseded one', async () => {
+    const first = createFakeTransport();
+    const second = createFakeTransport();
+    createClientTransportMock.mockImplementationOnce(() => first).mockImplementationOnce(() => second);
+
+    const view = render(providerTree('ai:one'));
+    expect(createClientTransportMock).toHaveBeenCalledTimes(1);
+
+    view.rerender(providerTree('ai:two'));
+    await act(flushMicrotasks);
+
+    // A second transport is built for the new channel, and the superseded one
+    // is closed — leaving it open would leak an attached channel.
+    expect(createClientTransportMock).toHaveBeenCalledTimes(2);
+    expect(first.closeCalls).toBe(1);
+    expect(second.connectCalls).toBe(1);
+
+    view.unmount();
+    await act(flushMicrotasks);
+  });
+
+  it('survives a connect() rejection and leaves the tree standing', async () => {
+    const fake = createFakeTransport();
+    // eslint-disable-next-line @typescript-eslint/promise-function-async -- rejects synchronously
+    fake.connect = () => Promise.reject(new Ably.ErrorInfo('nope', ErrorCode.SessionClosed, 500));
+    createClientTransportMock.mockImplementation(() => fake);
+
+    const { result } = renderHook(() => useClientTransport(), { wrapper: wrapDefault });
+    await act(flushMicrotasks);
+
+    // connect() failure reaches the consumer on the transport's own error
+    // stream, not by tearing the React tree down.
+    expect(result.current.transport).toBe(fake);
+  });
+
+  it('wraps a non-ErrorInfo construction throw, keeping the original as the cause', () => {
+    createClientTransportMock.mockImplementation(() => {
+      throw new Error('channels.get exploded');
+    });
+
+    const { result } = renderHook(() => useClientTransport(), { wrapper: wrapDefault });
+
+    expect(result.current.transport).toBeUndefined();
+    expect(result.current.error).toBeErrorInfo({
+      code: ErrorCode.InternalError,
+      message: 'unable to create client transport; channels.get exploded',
+      cause: { message: 'channels.get exploded' },
+    });
   });
 
   it('surfaces a construction throw as the handle error without crashing the tree', () => {

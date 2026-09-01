@@ -67,9 +67,9 @@ const worker = await Worker.create({
 `createClient` is required: the SDK never reads your environment or builds Ably
 clients for you. It is called once per activity, and the client is closed before
 the activity returns. A client per activity is a correctness requirement, not
-tidiness — a session takes its channel from `client.channels.get(name)`, which
-caches per name, and detaching a session detaches that channel, so two sessions
-sharing a client on one channel would break each other.
+tidiness — a transport takes its channel from `client.channels.get(name)`, which
+caches per name, and detaching that channel detaches it for every holder, so two
+transports sharing a client on one channel would break each other.
 
 Other options: `logger`, `heartbeat` (off by default; turn it on if conversations
 are long enough that paging history could look like a hang), `maxHistoryPages`
@@ -153,13 +153,13 @@ cleanup cannot hold up a terminate.
 Both styles are safe. They differ only in cost.
 
 **Inside the activity that ran the work (cheapest).** Your inference activity
-already has the run loaded, so `run.end(...)` or `run.suspend()` there costs
-nothing extra. This is what the `use-client-session-temporal` demo does.
+already holds the run handle, so `run.end(...)` or `run.suspend()` there costs
+nothing extra. This is what the `temporal-agent` demo does.
 
 **From the workflow, via the handle.** `run.end({ reason })` and `run.suspend()`
 put the whole lifecycle in one place and show every terminal in the Temporal
-history. Each call is a fresh process, so it pays a new connection, adopt and
-`load()`. That is a bounded cost, not one that grows with response length: a
+history. Each call is a fresh process, so it pays a new connection and an
+`adoptRun`. That is a bounded cost, not one that grows with response length: a
 streamed response is a single Ably message that grows by append, so paging back
 to the run's start stays a handful of messages per turn.
 
@@ -175,7 +175,7 @@ webpack can bundle two copies. Temporal's runtime classes use private fields, so
 a `CancellationScope` built by one copy cannot be read by the other
 ("Cannot read private member #cancelRequested"). Alias the package to one copy in
 `bundlerOptions.webpackConfigHook`; see
-`demo/temporal/use-client-session-temporal/src/worker/bundler.ts`. Installing from
+`demo/temporal/temporal-agent/src/worker/bundler.ts`. Installing from
 npm never hits this, because the peer dependency resolves to a single copy.
 
 ## `stepIdFor`

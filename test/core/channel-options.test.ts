@@ -3,8 +3,8 @@
  *
  * Covers: opt-out (undefined when no extra modes), union with the base set,
  * de-duplication, canonical ordering, and determinism across calls — the
- * properties the sessions and the React provider rely on to request identical
- * modes and avoid spurious reattaches.
+ * properties `<ClientTransportProvider>` and the `<ChannelProvider>` it renders
+ * rely on to request identical modes and avoid spurious reattaches.
  */
 
 import type * as Ably from 'ably';

@@ -14,11 +14,10 @@
  * {@link AIT_BASE_MODES} is exactly the server default, so opting into extra
  * modes adds the extras and changes nothing else.
  *
- * Every place that resolves channel options for an AI Transport channel —
- * the React `<ClientTransportProvider>` and the ably-js `<ChannelProvider>`
- * it renders — must funnel through
- * {@link resolveChannelModes} so they all request the SAME modes in the SAME
- * order. ably-js compares modes order- and duplicate-sensitively when deciding
+ * Every place that resolves channel options for an AI Transport channel — the
+ * React `<ClientTransportProvider>` and the ably-js `<ChannelProvider>` it
+ * renders — must funnel through {@link resolveChannelModes} so they all
+ * request the SAME modes in the SAME order. ably-js compares modes order- and duplicate-sensitively when deciding
  * whether a `setOptions` call needs a reattach; identical arrays compare equal,
  * so consistent resolution avoids both spurious reattaches and silent mode
  * reversion when one writer omits modes another set.

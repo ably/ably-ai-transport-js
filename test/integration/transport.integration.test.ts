@@ -463,9 +463,22 @@ describe('standalone transport integration', () => {
         c.close();
       },
     });
+    // Wait for the first half to actually land, not for a fixed delay: a raw
+    // listener on a throwaway client tells us the append is on the channel, so
+    // the client below is guaranteed to attach mid-stream. A sleep here would
+    // let a slow run attach after the whole stream and pass without ever
+    // exercising the boundary this test is named for.
+    const watcherRealtime = ablyRealtimeClient();
+    const watcherChannel = watcherRealtime.channels.get(channelName);
+    const firstHalfLanded = new Promise<void>((resolve) => {
+      void watcherChannel.subscribe((message) => {
+        if (typeof message.data === 'string' && message.data.includes('first half')) resolve();
+      });
+    });
+    await watcherChannel.attach();
+
     const pipePromise = run.pipe(source);
-    // Give the first half time to land on the channel.
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await firstHalfLanded;
 
     // The client attaches mid-stream, subscribes, then hydrates the gap.
     const clientRealtime = ablyRealtimeClient();

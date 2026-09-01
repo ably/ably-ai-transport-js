@@ -5,7 +5,9 @@ import * as Ably from 'ably';
  */
 export enum ErrorCode {
   /**
-   * The request was invalid.
+   * The request was invalid (Ably 40000). No SDK code path throws it; it is
+   * here because the platform can deliver it inbound and consumers switch on
+   * this enum to classify the errors they receive, not only the ones we mint.
    */
   BadRequest = 40000,
 
@@ -100,10 +102,10 @@ export enum ErrorCode {
   RunResponseStreamFailed = 104008,
 
   /**
-   * Processing an inbound channel message threw — the codec folding it into
-   * session state, or a session-level subscription callback. The subscription
-   * survives and the session keeps sending and receiving; only that one
-   * message's processing failed. The thrown value is the `cause`.
+   * Processing an inbound channel message threw — the codec decoding it, or a
+   * subscriber callback. The subscription survives and the transport keeps
+   * sending and receiving; only that one message's processing failed. The
+   * thrown value is the `cause`.
    */
   SessionMessageProcessingFailed = 104009,
 

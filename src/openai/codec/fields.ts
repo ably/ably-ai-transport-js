@@ -14,7 +14,8 @@ import { boolField, jsonField, strField } from '../../core/codec/index.js';
 
 /**
  * Owner item id, re-stamped on every streamed phase (the transport stream id is
- * opaque, so the decoded start / deltas carry this for the reducer to route on).
+ * opaque, so the decoded start / deltas carry this for a consumer's fold to
+ * route on).
  */
 export const fItemId = strField('item_id');
 /** The item's position in the response's output array. */
@@ -61,8 +62,8 @@ export const fReason = strField('reason');
 
 /**
  * Per-slot stream id for the content-part groups: item_id + content_index.
- * Purely the transport uniqueness handle — the reducer never parses it (it routes
- * on the re-stamped item_id / content_index fields).
+ * Purely the transport uniqueness handle — a consumer's fold never parses it
+ * (it routes on the re-stamped item_id / content_index fields).
  * @param c - The chunk carrying the item id and content index.
  * @param c.item_id - The owner item id.
  * @param c.content_index - The content-part slot index.

@@ -492,8 +492,7 @@ export const createRunStepWriter = <TInput, TOutput>(
    * (an explicit step the caller already opened eagerly, so it omits
    * `onFirstOutput`). It does NOT end the run on cancel — the run terminal is
    * the outer layer's responsibility (`run.end()`); a cancelled pipe closes
-   * only its own step bracket
-   * (the caller's close-iff-opened / `step.end()`).
+   * only its own step bracket (the caller's close-iff-opened / `step.end()`).
    * @param source - The output source to pipe.
    * @param step - The step to stamp output under.
    * @param step.stepId - The step's id, stamped on every output.

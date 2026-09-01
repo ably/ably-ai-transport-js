@@ -44,6 +44,7 @@ interface RunLifecycleBase {
  */
 export type RunLifecycleEvent =
   | (RunLifecycleBase & {
+      /** The run opened. */
       type: 'start';
       /**
        * Ably channel serial of the run-start message, or `undefined` for an
@@ -79,6 +80,7 @@ export type RunLifecycleEvent =
       inputCodecMessageId?: string;
     })
   | (RunLifecycleBase & {
+      /** The run paused without ending; a resume may re-open it. */
       type: 'suspend';
       /**
        * Ably channel serial of the run-suspend message, or `undefined` for an
@@ -88,6 +90,7 @@ export type RunLifecycleEvent =
       serial: string | undefined;
     })
   | (RunLifecycleBase & {
+      /** A later invocation re-opened a suspended run. */
       type: 'resume';
       /**
        * Ably channel serial of the run-resume message, or `undefined` for an
@@ -97,6 +100,7 @@ export type RunLifecycleEvent =
       serial: string | undefined;
     })
   | (RunLifecycleBase & {
+      /** The run reached its terminal; nothing more publishes under it. */
       type: 'end';
       /**
        * Ably channel serial of the run-end message, or `undefined` for an

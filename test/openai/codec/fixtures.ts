@@ -16,7 +16,7 @@ import type { OpenAIMessage, OpenAIOutput } from '../../../src/openai/codec/inde
 
 // CAST: tests read only `status` (and `error.message` on failure); the rest of
 // Response is irrelevant, so a minimal stub stands in for the full shape.
-export const minimalResponse = (
+const minimalResponse = (
   status: Responses.ResponseStatus,
   error?: { code: string; message: string },
 ): Responses.Response =>
@@ -266,7 +266,7 @@ export const reasoningItem = (
   ...(encryptedContent === undefined ? {} : { encrypted_content: encryptedContent }),
 });
 
-export const reasoningSummaryPartAdded = (
+const reasoningSummaryPartAdded = (
   itemId: string,
   summaryIndex = 0,
   text = '',
@@ -292,7 +292,7 @@ export const reasoningSummaryPartDone = (
   part: { type: 'summary_text', text },
   sequence_number: 0,
 });
-export const reasoningSummaryTextDelta = (
+const reasoningSummaryTextDelta = (
   itemId: string,
   delta: string,
   summaryIndex = 0,
@@ -305,7 +305,7 @@ export const reasoningSummaryTextDelta = (
   delta,
   sequence_number: 0,
 });
-export const reasoningSummaryTextDone = (
+const reasoningSummaryTextDone = (
   itemId: string,
   text: string,
   summaryIndex = 0,
@@ -319,19 +319,14 @@ export const reasoningSummaryTextDone = (
   sequence_number: 0,
 });
 
-export const fnArgsDelta = (itemId: string, delta: string, outputIndex = 0): Responses.ResponseStreamEvent => ({
+const fnArgsDelta = (itemId: string, delta: string, outputIndex = 0): Responses.ResponseStreamEvent => ({
   type: 'response.function_call_arguments.delta',
   item_id: itemId,
   output_index: outputIndex,
   delta,
   sequence_number: 0,
 });
-export const fnArgsDone = (
-  itemId: string,
-  args: string,
-  name: string,
-  outputIndex = 0,
-): Responses.ResponseStreamEvent => ({
+const fnArgsDone = (itemId: string, args: string, name: string, outputIndex = 0): Responses.ResponseStreamEvent => ({
   type: 'response.function_call_arguments.done',
   item_id: itemId,
   output_index: outputIndex,

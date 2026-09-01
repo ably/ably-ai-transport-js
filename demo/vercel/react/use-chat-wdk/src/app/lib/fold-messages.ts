@@ -52,10 +52,10 @@ interface Bucket {
 /** The `toolCallId` a chunk carries, read structurally so the check tracks the installed `ai` major. */
 /**
  * Recursively sort object keys so two values that differ only in key order
- * serialise the same. An optimistic local echo is the caller's own object; its
- * wire echo comes back from the codec's decode with the fields in the
- * decoder's order, and a plain `JSON.stringify` comparison reads those as two
- * different parts.
+ * serialise the same. A redelivered wire event comes back through the codec's
+ * decode with its fields in the decoder's order, which need not match the
+ * order the publisher wrote them in, and a plain `JSON.stringify` comparison
+ * reads those as two different parts.
  * @param value - The value to canonicalise.
  * @returns The value with every nested object's keys in sorted order.
  */
@@ -78,7 +78,7 @@ const partKey = (part: UIMessage['parts'][number]): string => JSON.stringify(can
  * — the codec fans one wire event per part under a single codec-message-id —
  * so replacing rather than merging would keep only the last part of a
  * multi-part turn. Parts already present are dropped, which is what folds an
- * optimistic echo and its wire echo into one message.
+ * redelivery of a part already held into the message that has it.
  * @param existing - The message merged so far, or `undefined` for the first carrier.
  * @param incoming - The next carrier's message.
  * @returns The merged message.

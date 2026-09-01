@@ -498,6 +498,19 @@ describe('OpenAI codec roundtrip (offline)', () => {
     ).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
   });
 
+  it('rejects an input JSON.stringify throws on, with the same coded error', async () => {
+    const { writer } = createBridge();
+    const encoder = ResponsesCodec.createEncoder(writer);
+
+    // The other failure mode: stringify throws rather than returning
+    // undefined. Both are the caller's mistake, so both carry the same code —
+    // a raw TypeError here would be rewrapped as an internal fault.
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+
+    await expect(encoder.publishInput(circular)).rejects.toBeErrorInfoWithCode(ErrorCode.InvalidArgument);
+  });
+
   it('decodes a foreign ai-input (no extras.ai envelope) to nothing', () => {
     // CAST: minimal InboundMessage stub — only the fields the decoder reads.
     const foreign = {
@@ -523,7 +536,25 @@ describe('OpenAI codec roundtrip (offline)', () => {
       extras: { ai: { transport: {} } },
     } as unknown as Ably.InboundMessage;
 
-    expect(() => decodeInputs([malformed])).toThrow();
+    // The peer sent a bad body, so it is InvalidArgument — not the
+    // internal-fault code a raw SyntaxError would be wrapped as.
+    expect(() => decodeInputs([malformed])).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
+  });
+
+  it('throws on a non-string input wire body', () => {
+    // CAST: minimal InboundMessage stub — only the fields the decoder reads.
+    const notAString = {
+      action: 'message.create',
+      serial: 's1',
+      version: { serial: 's1' },
+      name: EVENT_AI_INPUT,
+      data: { already: 'an object' },
+      extras: { ai: { transport: {} } },
+    } as unknown as Ably.InboundMessage;
+
+    // Coercing this with String() would produce "[object Object]" and then
+    // fail the parse for the wrong reason.
+    expect(() => decodeInputs([notAString])).toThrowErrorInfoWithCode(ErrorCode.InvalidArgument);
   });
 });
 

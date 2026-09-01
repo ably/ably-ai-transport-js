@@ -67,7 +67,7 @@ export interface ClientTransportOptions<TInput, TOutput> {
   channel: Ably.RealtimeChannel;
   /** The wire tier of the codec: its encoder serializes inputs to the wire and its decoder classifies inbound messages. */
   codec: WireCodec<TInput, TOutput>;
-  /** The publishing client's Ably `clientId`, stamped as `run-client-id` on inputs. When omitted (anonymous), the header is not stamped and the local echo's `clientId` is `undefined`. */
+  /** The publishing client's Ably `clientId`, stamped as `run-client-id` on inputs. When omitted (anonymous), the header is not stamped. */
   clientId?: string;
   /** Wire-message limit per `channel.history()` round trip in {@link ClientTransport.history}. Defaults to 100. */
   historyPageSize?: number;
@@ -165,9 +165,10 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
       if (delivery.outcome === 'failed') return;
       if (delivery.outcome === 'classified') this._resolveRunIdWatches(delivery.event);
       this._receiver.deliverAblyMessage(message);
-      // Feed the steer ledger every delivered message: it matches steer echoes
-      // (for the publish serial), accumulates `steer-codec-message-ids`
-      // stamps, and resolves steer outcomes on run-suspend / run-end.
+      // Feed the steer ledger every delivered message: it accumulates
+      // `steer-codec-message-ids` stamps and resolves steer outcomes on
+      // run-suspend / run-end. The publish serial comes from the publish
+      // acknowledgement, not from here.
       this._steer.observeMessage(message);
     };
     this._steer = new SteerCoordinator<TInput>({
@@ -313,8 +314,8 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
 
   /**
    * Drain in-flight steers on a continuity-breaking channel state change:
-   * post-loss the channel will not deliver the steer echoes or lifecycle
-   * events that would resolve their promises, so they would otherwise hang
+   * post-loss the channel will not deliver the lifecycle events that would
+   * resolve their promises, so they would otherwise hang
    * until `close()`. State changes before the first attach are ignored —
    * there is no continuity to lose yet.
    * @param stateChange - The channel state change to classify.

@@ -114,7 +114,7 @@ describe('OpenAI wire-codec integration', () => {
 
     await waitFor(
       () => eventsOfType(buckets.get('asst-1')?.outputs ?? [], 'response.output_item.done').length === 1,
-      'the expected wire events',
+      'the reconstructed output_item.done',
     );
 
     const outputs = buckets.get('asst-1')?.outputs ?? [];
@@ -150,7 +150,7 @@ describe('OpenAI wire-codec integration', () => {
 
     await waitFor(
       () => eventsOfType(buckets.get('asst-1')?.outputs ?? [], 'function_call_output').length === 1,
-      'the expected wire events',
+      'the function_call_output item',
     );
 
     const outputs = buckets.get('asst-1')?.outputs ?? [];

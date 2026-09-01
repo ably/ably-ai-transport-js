@@ -89,8 +89,8 @@ const foldMessages = async (events: Event[]): Promise<AI.UIMessage[]> => {
     for (const input of event.inputs) {
       // A chunk-shaped action folds through the provider reducer with the
       // outputs; a message body is already whole — merge its parts (the wire
-      // fans one part out per event) and dedupe the optimistic echo against
-      // the wire echo by part equality.
+      // fans one part out per event), deduped by part equality so a
+      // redelivered event adds nothing.
       if (input.kind === 'chunk') {
         bucket.chunks.push(input.payload);
       } else if (input.kind === 'message') {
@@ -245,8 +245,8 @@ describe('standalone transport integration', () => {
     await expect(sent.runId).resolves.toBe(runId);
 
     const messages = await foldMessages(events);
-    // First-seen bucket order is conversation order: the user's echo, then the wire
-    // echo of the same message (same bucket), then the assistant.
+    // First-seen bucket order is conversation order: the user's own input
+    // coming back off the channel, then the assistant.
     expect(messages).toHaveLength(2);
     expect(textOf(messages[0])).toBe('hello agent');
     expect(textOf(messages[1])).toBe('Hello human');
@@ -345,6 +345,50 @@ describe('standalone transport integration', () => {
     await waitForEvents(events, (all) => lifecycleOf(all).some((e) => e.type === 'end'));
     const end = lifecycleOf(events).find((e) => e.type === 'end');
     expect(end).toMatchObject({ type: 'end', reason: 'cancelled' });
+  }, 45_000);
+
+  it('steering settles for a client that never receives its own publishes', async () => {
+    // The reason `published` resolves from the publish acknowledgement rather
+    // than the steer's own channel echo: with echoMessages off there is no
+    // echo to wait for, and the old design would have hung here.
+    const channelName = uniqueChannelName('t-steer-noecho');
+    const clientRealtime = ablyRealtimeClient({ echoMessages: false });
+    const agentRealtime = ablyRealtimeClient();
+    const client = createClientTransport<VercelInput, VercelOutput>({
+      channel: clientRealtime.channels.get(channelName),
+      codec,
+    });
+    const agent = createAgentTransport<VercelInput, VercelOutput>({
+      channel: agentRealtime.channels.get(channelName),
+      codec,
+      clientId: 'agent',
+    });
+    await client.connect();
+    await agent.connect();
+    // The client's own subscription never sees its publishes here, so the
+    // agent's is what confirms the steer reached the channel at all.
+    const agentEvents: Event[] = [];
+    agent.subscribe((event) => agentEvents.push(event));
+
+    const run = agent.openRun();
+    await run.pipe(textResponseStream('a1', 't1', 'thinking'));
+
+    const steer = client.steer(run.runId, {
+      kind: 'message',
+      payload: { id: 'u-steer', role: 'user', parts: [{ type: 'text', text: 'be brief' }] },
+    });
+
+    // This is the assertion the redesign exists for: with no echo coming
+    // back, `published` can only settle from the publish acknowledgement.
+    const published = await steer.published;
+    expect(published.serial).toBeDefined();
+
+    await waitForEvents(agentEvents, (all) => all.some((e) => e.kind === 'message' && e.inputs.length > 0), 20_000);
+
+    // The outcome settles off the run's next lifecycle bracket, which the
+    // agent publishes — so the client does receive that one.
+    await run.end({ reason: 'complete' });
+    await expect(steer.outcome).resolves.toBeDefined();
   }, 45_000);
 
   it('multi-run sequential: two turns land as two runs with disjoint events', async () => {

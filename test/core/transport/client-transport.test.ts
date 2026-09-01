@@ -5,9 +5,9 @@
  * attaches the channel, live wires classify onto the `subscribe`/`on('event')`
  * stream (typed event before raw `ably-message`; a decode failure drops the
  * one message onto `error`). `publishInput` stamps `user` transport headers,
- * publishes through the codec encoder, and emits an optimistic local echo
- * (serial / versionSerial `undefined`) for fresh content; a wire-only input
- * gets no echo. Its result carries a `runId` promise, resolved from the first
+ * publishes through the codec encoder, and emits nothing locally — the
+ * sender's own input comes back as the ordinary channel delivery, keyed by
+ * the returned `codecMessageId`. Its result carries a `runId` promise, resolved from the first
  * `ai-run-start` whose `input-codec-message-id` matches the publish and
  * rejected on close or continuity loss. `history()` returns older events as chronological batches
  * without emitting them — the batch walk itself is pinned in
@@ -15,7 +15,7 @@
  * wiring: no live emission, a cursor kept across calls, and decode failures
  * routed onto `error`. `cancel` publishes a stateless `ai-cancel` envelope.
  * `steer` publishes a steering user input into an open run: `published`
- * resolves on the steer's own channel echo, `outcome` by membership of the
+ * resolves from the publish acknowledgement's serial, `outcome` by membership of the
  * steer's codec-message-id in the `steer-codec-message-ids` stamps at the
  * run's next lifecycle bracket; close and continuity loss drain in-flight
  * steers. The steer state machine itself is pinned in
@@ -465,7 +465,7 @@ describe('createClientTransport', () => {
       fixture.transport.close();
 
       // Still the supplied id: a leaked watch would have been drained to a
-      // SessionClosed rejection by close().
+      // TransportClosed rejection by close().
       await expect(sent.runId).resolves.toBe('run-continued');
     });
 

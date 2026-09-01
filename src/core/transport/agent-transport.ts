@@ -125,8 +125,6 @@ interface RegisteredRun {
   onCancel?: (request: CancelRequest) => Promise<boolean>;
   /** The run's error hook, from {@link OpenRunHooks.onError}; a cancel-hook failure delivers here instead of the transport's `error` stream. */
   onError?: (error: Ably.ErrorInfo) => void;
-  /** The triggering input's codec-message-id, from {@link OpenRunOptions.inputCodecMessageId}. */
-  inputCodecMessageId?: string;
   /**
    * Called with a live steering message's codec-message-id — a client input
    * observed under this run's run-id. The run's closure tracks it (skipping
@@ -172,10 +170,12 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
   /** Cancels whose target run is not registered yet (a cancel can race its run's `openRun`), for `openRun` to pull. */
   private readonly _deferredCancelsByRunId = new Map<string, Ably.InboundMessage>();
   /**
-   * Run-ids this process has registered at least once. A cancel for one of
+   * Run-ids this process has opened and finished with. A cancel for one of
    * them is never buffered: the run existed here and has since ended, so
    * holding the cancel would abort a later `adoptRun` of the same id — which
-   * is exactly how a durable agent re-enters a run under a stable id.
+   * is exactly how a durable agent re-enters a run under a stable id. An id
+   * whose opening publish failed is removed again, because that run never ran
+   * and its retry still needs the cancel.
    */
   private readonly _seenRunIds = new Map<string, true>();
   /** Steering-message codec-message-ids observed before their run was opened, keyed by run-id. */
@@ -432,7 +432,6 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
       controller,
       onCancel: hooks?.onCancel,
       onError: hooks?.onError,
-      inputCodecMessageId,
       onSteerMessage: (codecMessageId) => {
         if (trackSteer(codecMessageId)) notifySteer();
       },
@@ -526,6 +525,10 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
     openPromise.catch((error: unknown) => {
       this._logger.error('AgentTransport._createRun(); open publish failed', { runId });
       deregister();
+      // This run never reached the wire, so it is not "already ended" — a
+      // retry under the same pinned id is expected, and a cancel arriving in
+      // between must still buffer for it. Forgetting the id restores that.
+      this._seenRunIds.delete(runId);
       const onError = hooks?.onError;
       if (!onError) return;
       const errInfo = new Ably.ErrorInfo(

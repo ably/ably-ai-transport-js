@@ -61,10 +61,10 @@ const toolCallIdOf = (chunk: UIMessageChunk): string | undefined =>
 
 /**
  * Recursively sort object keys so two values that differ only in key order
- * serialise the same. An optimistic local echo is the caller's own object; its
- * wire echo comes back from the codec's decode with the fields in the
- * decoder's order, and a plain `JSON.stringify` comparison reads those as two
- * different parts.
+ * serialise the same. A redelivered wire event comes back through the codec's
+ * decode with its fields in the decoder's order, which need not match the
+ * order the publisher wrote them in, and a plain `JSON.stringify` comparison
+ * reads those as two different parts.
  * @param value - The value to canonicalise.
  * @returns The value with every nested object's keys in sorted order.
  */

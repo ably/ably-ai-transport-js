@@ -52,10 +52,10 @@ const isToolPart = (part: UIMessage['parts'][number]): part is ToolPart =>
 
 /**
  * Recursively sort object keys so two values that differ only in key order
- * serialise the same. An optimistic local echo is the caller's own object; its
- * wire echo comes back from the codec's decode with the fields in the
- * decoder's order, and a plain `JSON.stringify` comparison reads those as two
- * different parts.
+ * serialise the same. A redelivered wire event comes back through the codec's
+ * decode with its fields in the decoder's order, which need not match the
+ * order the publisher wrote them in, and a plain `JSON.stringify` comparison
+ * reads those as two different parts.
  * @param value - The value to canonicalise.
  * @returns The value with every nested object's keys in sorted order.
  */
@@ -76,8 +76,8 @@ const partKey = (part: UIMessage['parts'][number]): string => JSON.stringify(can
 /**
  * Merge a whole-message input into the bucket. The first one is taken as the
  * base; later carriers of the same codec-message-id contribute only parts not
- * already present, so a multi-part turn reassembles and the optimistic echo
- * and its wire echo fold to one message.
+ * already present, so a multi-part turn reassembles and a redelivered wire
+ * event folds into the message it already contributed to.
  * @param bucket - The bucket to merge into.
  * @param payload - The carrier's message.
  */

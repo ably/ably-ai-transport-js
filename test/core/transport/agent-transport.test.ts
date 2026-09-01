@@ -4,9 +4,8 @@
  * The transport owns its receive path: `connect()` subscribes its listener and
  * attaches the channel, after which live wires classify onto the
  * `subscribe`/`on('event')` stream and `ai-cancel` envelopes route onto the
- * matching run handle's `abortSignal` (by run-id, by the triggering input's
- * codec-message-id, or from the deferred buffer when the cancel beat its
- * `openRun`). `openRun` publishes `ai-run-start` (or `ai-run-resume` for a
+ * matching run handle's `abortSignal` (by run-id, or from the deferred buffer
+ * when the cancel beat its `openRun`). `openRun` publishes `ai-run-start` (or `ai-run-resume` for a
  * continuation) and returns a run handle whose `pipe` / `createStep` stream
  * output between an `ai-step-start` / `ai-step-end` bracket; the writer's
  * optimistic step-lifecycle seed is emitted on the transport's own receive
@@ -352,12 +351,11 @@ describe('createAgentTransport', () => {
       expect(adopted.abortSignal.aborted).toBe(false);
     });
 
-    it('buffers a cancel carrying both ids under each of them', async () => {
+    it('ignores a stray input-codec-message-id and buffers by run-id', async () => {
       const { transport, channel } = await setup();
 
-      // A continuation's openRun resolves its own input-codec-message-id,
-      // which need not be the one this cancel names — so a run-id-only pull
-      // has to find it too.
+      // A cancel addresses a run by its run-id. An extra input header is not
+      // an address any more, so it must neither route nor block the buffer.
       channel.listener?.(cancelMsg({ [HEADER_RUN_ID]: 'run-later', [HEADER_INPUT_CODEC_MESSAGE_ID]: 'in-other' }));
       await flushMicrotasks();
       const run = transport.openRun({ runId: 'run-later' });
@@ -982,6 +980,31 @@ describe('createAgentTransport', () => {
       channel.listener?.(cancelMsg({ [HEADER_RUN_ID]: 'run-1' }));
       await flushMicrotasks();
       expect(run.abortSignal.aborted).toBe(false);
+    });
+
+    it('still buffers a cancel for a run whose opening publish failed, so the retry honours it', async () => {
+      const { transport, channel } = await setup();
+      channel.publish.mockRejectedValueOnce(new Ably.ErrorInfo('publish refused', 40160, 401));
+
+      transport.openRun(
+        { runId: 'run-1' },
+        {
+          onError: () => {
+            /* observed by the sibling test */
+          },
+        },
+      );
+      for (let tick = 0; tick < 4; tick++) await flushMicrotasks();
+
+      channel.listener?.(cancelMsg({ [HEADER_RUN_ID]: 'run-1' }));
+      await flushMicrotasks();
+
+      // The failed run never ran, so this is not the already-ended case: the
+      // retry under the same pinned id has to inherit the cancel, or it runs
+      // uncancellable.
+      const retry = transport.openRun({ runId: 'run-1' });
+      await flushMicrotasks();
+      expect(retry.abortSignal.aborted).toBe(true);
     });
 
     it('publishes ai-run-start with a minted run-id and returns the run handle', async () => {

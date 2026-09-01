@@ -25,9 +25,9 @@ export interface ExistingMessages {
   messages: ThreadMessage[];
   /**
    * The channel serial of the newest event included, or `undefined` for an
-   * empty conversation. A hydrating client uses it as the seam: everything at
-   * or before this serial is already in `events`, so its own gap walk keeps
-   * only newer events.
+   * empty conversation. The model-context reader ignores it; the hydration
+   * reader takes its seam from {@link seedableEvents} instead, which moves it
+   * back past any run still streaming.
    */
   latestSerial: string | undefined;
 }
@@ -40,6 +40,44 @@ export interface ExistingMessages {
  */
 export const serialOf = (event: ThreadEvent): string | undefined =>
   event.kind === 'message' ? event.meta.serial : event.event.serial;
+
+/**
+ * The events a hydrating client can safely be seeded with, and the seam that
+ * goes with them.
+ *
+ * A run that has not ended is deliberately withheld. Its output is still
+ * arriving, and the client is already receiving it live — but the two sides
+ * decode it with different decoder instances, and a decoder's first contact
+ * with a stream in progress synthesises the whole accumulated prefix as one
+ * delta. Seeding that prefix as well as receiving it live counts the text
+ * twice, with nothing downstream able to tell the two apart. Leaving the open
+ * run out means the client's own history walk and live subscription own it
+ * end to end, decoded once.
+ *
+ * The seam moves back accordingly: it is the newest serial among the events
+ * that ARE seeded, so the client's gap walk picks the open run up.
+ * @param events - Every decoded event, oldest first.
+ * @returns The seedable events and the serial they run up to.
+ */
+export const seedableEvents = (events: ThreadEvent[]): { events: ThreadEvent[]; latestSerial: string | undefined } => {
+  const endedRuns = new Set<string>();
+  for (const event of events) {
+    if (event.kind === 'run-lifecycle' && event.event.type === 'end') endedRuns.add(event.event.runId);
+  }
+  const runOf = (event: ThreadEvent): string | undefined =>
+    event.kind === 'message' ? event.meta.runId : event.event.runId;
+  const seedable = events.filter((event) => {
+    const runId = runOf(event);
+    return runId === undefined || endedRuns.has(runId);
+  });
+
+  let latestSerial: string | undefined;
+  for (let i = seedable.length - 1; i >= 0 && latestSerial === undefined; i--) {
+    const event = seedable[i];
+    if (event) latestSerial = serialOf(event);
+  }
+  return { events: seedable, latestSerial };
+};
 
 /**
  * Page the whole existing conversation off the channel and fold it.

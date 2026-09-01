@@ -25,7 +25,10 @@ interface ChatProps {
 }
 
 export function Chat({ chatId, clientId, api }: ChatProps) {
-  const { transport, error: transportError } = useClientTransport<OpenAIInput, OpenAIOutput>();
+  // The codec's input direction is a passthrough, so decoded inputs arrive as
+  // `unknown`; `OpenAIInput` is the demo's own publish-side vocabulary and is
+  // narrowed by the fold, not by the transport.
+  const { transport, error: transportError } = useClientTransport<unknown, OpenAIOutput>();
 
   const [callbackLog, setCallbackLog] = useState<CallbackLogEntry[]>([]);
   const [statusLog, setStatusLog] = useState<{ time: number; status: string }[]>([]);
@@ -91,7 +94,7 @@ export function Chat({ chatId, clientId, api }: ChatProps) {
   }, [status]);
 
   // Surface run lifecycle events and transport errors in the debug pane's log.
-  useTransportEvents<OpenAIInput, OpenAIOutput>((event) => {
+  useTransportEvents<unknown, OpenAIOutput>((event) => {
     if (event.kind !== 'run-lifecycle') return;
     const lifecycle = event.event;
     const head = `runId=${lifecycle.runId.slice(0, 8)}`;

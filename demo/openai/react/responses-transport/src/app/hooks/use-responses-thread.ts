@@ -28,8 +28,6 @@ import { type ExistingMessages, serialOf } from '../lib/get-existing-messages';
 export interface UseResponsesThreadOptions {
   /** The conversation's channel name, passed to the messages endpoint. */
   channelName: string;
-  /** The messages endpoint hydration is fetched from. Defaults to `/api/messages`. */
-  historyApi?: string;
   /**
    * Called with each error the fold raises for an event it cannot apply (and
    * with a hydration failure). The event is skipped; folding continues.
@@ -75,7 +73,6 @@ const emptyState = (): ThreadState => ({
 export function useResponsesThread(options: UseResponsesThreadOptions): ResponsesThreadHandle {
   const { transport } = useClientTransport<unknown, OpenAIOutput>();
   const { channelName } = options;
-  const historyApi = options.historyApi ?? '/api/messages';
 
   const foldRef = useRef<ThreadFold>(createThreadFold());
   const bufferRef = useRef<TransportEvent<unknown, OpenAIOutput>[]>([]);
@@ -134,7 +131,7 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
       // connect() is single-flight and idempotent, so this either joins the
       // provider's own connect or starts it — history() requires it first.
       const [response] = await Promise.all([
-        fetch(`${historyApi}?channelName=${encodeURIComponent(channelName)}`),
+        fetch(`/api/messages?channelName=${encodeURIComponent(channelName)}`),
         transport.connect(),
       ]);
       if (!response.ok) {
@@ -144,23 +141,27 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
       const seed = (await response.json()) as Pick<ExistingMessages, 'events' | 'latestSerial'>;
       const seam = seed.latestSerial;
 
+      // Newer than the seam. An event with no serial is kept: only a locally
+      // synthesised event lacks one, and the seed never carries those, so it
+      // cannot be a duplicate of anything already applied.
+      const newerThanSeam = (event: TransportEvent<unknown, OpenAIOutput>): boolean => {
+        if (seam === undefined) return true;
+        const serial = serialOf(event);
+        // Ably serials order lexicographically.
+        return serial === undefined || serial > seam;
+      };
+
       // The gap: everything the endpoint's read did not cover, up to this
-      // client's own attach point. Page backwards and keep only events newer
-      // than the seam (Ably serials order lexicographically); a batch that
-      // reaches the seam (or exhaustion) ends the walk.
+      // client's own attach point. Page backwards until a batch actually
+      // contains an event at or before the seam — not until one is merely
+      // shorter after filtering, which a serial-less event would also cause.
       const gap: TransportEvent<unknown, OpenAIOutput>[] = [];
       let exhausted = false;
       let reachedSeam = false;
       while (!exhausted && !reachedSeam && !disposed) {
         const batch = await transport.history();
-        const fresh =
-          seam === undefined
-            ? batch.events
-            : batch.events.filter((event) => {
-                const serial = serialOf(event);
-                return serial !== undefined && serial > seam;
-              });
-        reachedSeam = seam !== undefined && fresh.length < batch.events.length;
+        const fresh = batch.events.filter((event) => newerThanSeam(event));
+        reachedSeam = batch.events.some((event) => !newerThanSeam(event));
         // Each batch is older than the previous one, so prepend.
         gap.unshift(...fresh);
         exhausted = batch.exhausted;
@@ -168,7 +169,13 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
       if (disposed) return;
       for (const event of seed.events) applyEvent(event);
       for (const event of gap) applyEvent(event);
-      for (const event of bufferRef.current) applyEvent(event);
+      // The live buffer starts at this client's attach point, which is EARLIER
+      // than the endpoint read's own attach — the two connects race. Anything
+      // the seed already covered has to be filtered out here too, or the
+      // overlap is applied twice.
+      for (const event of bufferRef.current) {
+        if (newerThanSeam(event)) applyEvent(event);
+      }
       bufferRef.current = [];
       hydratedRef.current = true;
       publish(true);
@@ -187,7 +194,7 @@ export function useResponsesThread(options: UseResponsesThreadOptions): Response
     return () => {
       disposed = true;
     };
-  }, [transport, publish, applyEvent, channelName, historyApi]);
+  }, [transport, publish, applyEvent, channelName]);
 
   return state;
 }

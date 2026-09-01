@@ -10,7 +10,7 @@
 
 import type { Responses } from 'openai/resources/responses/responses';
 
-import { boolField, jsonField, strField } from '../../core/codec/index.js';
+import { jsonField, strField } from '../../core/codec/index.js';
 
 /**
  * Owner item id, re-stamped on every streamed phase (the transport stream id is
@@ -44,7 +44,7 @@ export const fPartDiscriminant = jsonField<{ type: string }, 'part'>('part');
  */
 export const fItem = jsonField<Responses.ResponseOutputItem, 'item'>('item');
 
-// --- client-driven tool bindings (shared by the tool input/output descriptors) ---
+// --- client-driven tool bindings (used by the output descriptors) ---
 
 /**
  * A tool call's `call_id` — the pairing key between a `function_call`, its
@@ -55,10 +55,6 @@ export const fItem = jsonField<Responses.ResponseOutputItem, 'item'>('item');
 export const fCallId = strField('call_id', '');
 /** The tool name, carried on an approval request — defaulted to total. */
 export const fName = strField('name', '');
-/** Whether the user approved a gated tool — defaulted to total so an absent header reads `false`. */
-export const fApproved = boolField('approved', false);
-/** Optional human-readable reason on a tool-approval response. */
-export const fReason = strField('reason');
 
 /**
  * Per-slot stream id for the content-part groups: item_id + content_index.

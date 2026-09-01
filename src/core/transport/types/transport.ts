@@ -223,8 +223,8 @@ export interface PublishInputResult {
    * triggering input. A fresh publish resolves when the transport observes
    * the first `ai-run-start` whose `input-codec-message-id` header matches
    * this publish's {@link codecMessageId} — stamped when the agent opens its
-   * run with `inputCodecMessageId`, the same threading cancel routing relies
-   * on. Never resolves for a fresh input that triggers no run. Rejects on
+   * run with `inputCodecMessageId`. Never resolves for a fresh input that
+   * triggers no run. Rejects on
    * {@link ClientTransport.close} and on channel continuity loss; a rejection
    * handler is pre-attached, so a caller that ignores `runId` never sees an
    * unhandled rejection.
@@ -558,11 +558,12 @@ export interface OpenRunOptions {
   /**
    * The triggering input's codec-message-id (thread it from
    * {@link AgentTransport.locateInput}'s `meta.codecMessageId`, or the trigger
-   * payload). Supplying it lets a fresh-send cancel — one the client keyed by
-   * input before it learned the run-id — route to this run, including a cancel
-   * that arrived before this `openRun`; it also stamps the
-   * `input-codec-message-id` anchor on the run's outputs. Without it, only
-   * cancels naming the run-id route here.
+   * payload). It stamps the `input-codec-message-id` anchor on the run's
+   * opening event, its outputs and its lifecycle receipt — which is how a
+   * client that published the input resolves
+   * {@link PublishInputResult.runId} — and excludes the trigger itself from
+   * the run's steer tracking. Cancels address a run by its run-id and do not
+   * read this.
    */
   inputCodecMessageId?: string;
 }
@@ -709,8 +710,8 @@ export interface AgentTransport<TInput, TOutput> extends TransportReceiver<TInpu
    * Without a located input, the open publishes a fresh `ai-run-start` —
    * under `opts.runId` when pinned. A re-entry requires a located input whose
    * run-id header names the run to resume. The run is registered for cancel
-   * routing until it ends; a cancel already buffered for
-   * `opts.inputCodecMessageId` is honoured immediately. Requires
+   * routing until it ends; a cancel already buffered for this run's run-id is
+   * honoured immediately. Requires
    * {@link connect}.
    * @param opts - Optional located input, run identity and structure; see {@link OpenRunOptions}.
    * @param hooks - Optional per-run callbacks and external AbortSignal; see

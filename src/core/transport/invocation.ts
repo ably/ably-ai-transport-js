@@ -29,6 +29,10 @@
  * from a body field.
  */
 
+import * as Ably from 'ably';
+
+import { ErrorCode } from '../../errors.js';
+
 // ---------------------------------------------------------------------------
 // Wire shape
 // ---------------------------------------------------------------------------
@@ -76,10 +80,24 @@ export class Invocation {
 
   /**
    * Build an Invocation from its JSON wire shape.
+   *
+   * Both fields are validated, because this is a trust boundary in two
+   * directions: the body arrives over HTTP from a client, and — under a
+   * durable framework — out of a workflow history written by an older SDK.
+   * A payload missing either field would otherwise reach
+   * `client.channels.get(undefined)` deep inside an activity, resolving the
+   * wrong channel or throwing somewhere that says nothing about why.
    * @param data - Parsed JSON body matching {@link InvocationData}.
    * @returns A new Invocation exposing the same fields.
+   * @throws {@link Ably.ErrorInfo} with `InvalidArgument` when either field is missing or empty.
    */
   static fromJSON(data: InvocationData): Invocation {
+    if (typeof data.channelName !== 'string' || data.channelName === '') {
+      throw new Ably.ErrorInfo('unable to build invocation; channelName is missing', ErrorCode.InvalidArgument, 400);
+    }
+    if (typeof data.inputEventId !== 'string' || data.inputEventId === '') {
+      throw new Ably.ErrorInfo('unable to build invocation; inputEventId is missing', ErrorCode.InvalidArgument, 400);
+    }
     return new Invocation(data);
   }
 

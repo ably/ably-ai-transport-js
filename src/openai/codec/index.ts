@@ -26,18 +26,18 @@
 import * as Ably from 'ably';
 
 import { EVENT_AI_INPUT } from '../../constants.js';
-import { createEncoderCore } from '../../core/codec/encoder.js';
-import { defineCodec } from '../../core/codec/index.js';
-import type {
-  ChannelWriter,
-  Decoder,
-  Encoder,
-  EncoderOptions,
-  WireCodec,
-  WriteOptions,
-} from '../../core/codec/types.js';
+import {
+  type ChannelWriter,
+  createEncoderCore,
+  type Decoder,
+  defineCodec,
+  type Encoder,
+  type EncoderOptions,
+  type WireCodec,
+  type WriteOptions,
+} from '../../core/codec/index.js';
 import { ErrorCode } from '../../errors.js';
-import { hasAiEnvelope } from '../../utils.js';
+import { errorMessage, hasAiEnvelope } from '../../utils.js';
 import { createResponsesDecodeLifecycle } from './decode-lifecycle.js';
 import { outputs } from './descriptors.js';
 import type { OpenAIOutput } from './events.js';
@@ -59,8 +59,14 @@ const outputCodec = defineCodec<never, OpenAIOutput>()({
  * Outputs are OpenAI's own stream events plus the codec's two authored
  * events; inputs pass through as JSON (see the module header).
  */
+/**
+ * The codec's wire tag, stamped by the encoder and read by
+ * {@link channelAgent}. One constant so the two can never diverge silently.
+ */
+const ADAPTER_TAG = 'openai-responses';
+
 export const ResponsesCodec: WireCodec<unknown, OpenAIOutput> = {
-  adapterTag: 'openai-responses',
+  adapterTag: ADAPTER_TAG,
 
   createEncoder: (channel: ChannelWriter, options?: EncoderOptions): Encoder<unknown, OpenAIOutput> => {
     const inner = outputCodec.createEncoder(channel, options);
@@ -70,17 +76,32 @@ export const ResponsesCodec: WireCodec<unknown, OpenAIOutput> = {
     const inputCore = createEncoderCore(channel, options ?? {});
     return {
       publishInput: async (input: unknown, opts?: WriteOptions): Promise<Ably.PublishResult> => {
-        // CAST: TypeScript's lib types JSON.stringify as always returning a
-        // string, but it returns undefined for undefined / function / symbol
-        // inputs — the case the guard below rejects.
-        const data = JSON.stringify(input) as string | undefined;
-        if (data === undefined) {
+        // `JSON.stringify` fails two ways on a body it cannot serialise: it
+        // returns undefined (undefined / function / symbol) and it throws
+        // (circular structure, BigInt). Both are the caller's mistake, so both
+        // become the same coded error rather than a raw TypeError the publish
+        // path would rewrap as an internal fault.
+        // `JSON.stringify` is typed as always returning a string, but it
+        // returns undefined for undefined / function / symbol. Reading the
+        // result through `unknown` is what lets the guard below narrow it.
+        let raw: unknown;
+        try {
+          raw = JSON.stringify(input);
+        } catch (error) {
+          throw new Ably.ErrorInfo(
+            `unable to publish input; the input must be JSON-serialisable; ${errorMessage(error)}`,
+            ErrorCode.InvalidArgument,
+            400,
+          );
+        }
+        if (typeof raw !== 'string') {
           throw new Ably.ErrorInfo(
             'unable to publish input; the input must be JSON-serialisable',
             ErrorCode.InvalidArgument,
             400,
           );
         }
+        const data = raw;
         return inputCore.publishDiscrete({ name: EVENT_AI_INPUT, data, codecHeaders: {} }, opts);
       },
       publishOutput: async (output: OpenAIOutput, opts?: WriteOptions): Promise<void> =>
@@ -99,12 +120,29 @@ export const ResponsesCodec: WireCodec<unknown, OpenAIOutput> = {
       decode: (msg: Ably.InboundMessage): { inputs: unknown[]; outputs: OpenAIOutput[] } => {
         // The passthrough input path: our own `ai-input` wires carry the
         // published body as JSON. A same-named message without the SDK's
-        // `extras.ai` envelope is foreign and decodes to nothing. Malformed
-        // JSON throws at this trust boundary — the receive path drops the one
-        // message and surfaces an error.
+        // `extras.ai` envelope is foreign and decodes to nothing. A malformed
+        // body throws at this trust boundary — the receive path drops the one
+        // message and surfaces the error. It is the peer's mistake, not ours,
+        // so it carries InvalidArgument rather than the internal-fault code a
+        // raw SyntaxError would be wrapped as.
         if (msg.name === EVENT_AI_INPUT) {
           if (!hasAiEnvelope(msg)) return { inputs: [], outputs: [] };
-          return { inputs: [JSON.parse(String(msg.data)) as unknown], outputs: [] };
+          if (typeof msg.data !== 'string') {
+            throw new Ably.ErrorInfo(
+              'unable to decode input; the wire body is not a JSON string',
+              ErrorCode.InvalidArgument,
+              400,
+            );
+          }
+          try {
+            return { inputs: [JSON.parse(msg.data) as unknown], outputs: [] };
+          } catch (error) {
+            throw new Ably.ErrorInfo(
+              `unable to decode input; the wire body is not valid JSON; ${errorMessage(error)}`,
+              ErrorCode.InvalidArgument,
+              400,
+            );
+          }
         }
         return inner.decode(msg);
       },
@@ -113,4 +151,3 @@ export const ResponsesCodec: WireCodec<unknown, OpenAIOutput> = {
 };
 
 export type { FunctionCallOutputEvent, ModelledOutputItem, OpenAIOutput, ToolApprovalRequestEvent } from './events.js';
-export { isModelledOutputItem } from './events.js';

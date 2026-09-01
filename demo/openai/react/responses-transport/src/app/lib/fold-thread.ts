@@ -36,9 +36,10 @@
  * The codec's two non-OpenAI output events (`function_call_output`,
  * `tool-approval-request`) and the client input bodies (`message`, `item`,
  * `approval`) apply as small steps onto the per-message items and
- * `toolCallStates`. A `message` input arrives part-by-part on the wire under
- * one codec-message-id, so its content parts merge with identical parts
- * deduplicated.
+ * `toolCallStates`. A `message` input arrives whole — the passthrough codec
+ * publishes the body as one discrete `ai-input` — so the merge exists for
+ * redelivery, folding a repeated body into the message it already
+ * contributed to rather than duplicating its parts.
  */
 
 import type { RunStatus, TransportEvent, WireMeta } from '@ably/ai-transport';
@@ -139,10 +140,10 @@ interface MessageFold {
 
 /**
  * Recursively sort object keys so two values that differ only in key order
- * serialise the same. The optimistic local echo is the caller's own object,
- * while the wire echo comes back from the codec's decode with its fields in
- * the decoder's order — a plain `JSON.stringify` comparison reads those as two
- * different parts and the sender sees their own text twice.
+ * serialise the same. A redelivered wire event comes back through the codec's
+ * decode with its fields in the decoder's order, which need not match the
+ * order the publisher wrote them in — a plain `JSON.stringify` comparison
+ * reads those as two different parts and the text appears twice.
  * @param value - The value to canonicalise.
  * @returns The value with every nested object's keys in sorted order.
  */
@@ -175,11 +176,10 @@ const appendFunctionCallOutput = (fold: MessageFold, item: Responses.ResponseInp
 };
 
 /**
- * Merge a `message`-kind input body into the fold. Each wire event carries
- * one content part under the shared codec-message-id. Message items merge
- * into one item per fold with identical parts deduplicated (a redelivered
- * event repeats parts verbatim); any other item type appends with a
- * whole-item dedupe.
+ * Merge a `message`-kind input body into the fold. The body arrives whole on
+ * one wire event; message items merge into one item per fold with identical
+ * parts deduplicated, so a redelivery of the same body adds nothing. Any
+ * other item type appends with a whole-item dedupe.
  */
 const mergeTurn = (fold: MessageFold, payload: OpenAIMessage): void => {
   for (const item of payload.items) {

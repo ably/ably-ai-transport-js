@@ -212,7 +212,6 @@ describe('SteerCoordinator', () => {
       const { coord } = h;
       const { outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
       await flush();
-      lastSteerCodecMessageId(h);
       coord.observeMessage(ablyMsg(EVENT_RUN_SUSPEND, { [HEADER_RUN_ID]: 'run-1' }));
       const sentinel = Symbol('pending');
       const result = await Promise.race([outcome, Promise.resolve(sentinel)]);
@@ -243,7 +242,6 @@ describe('SteerCoordinator', () => {
       const { coord } = h;
       const { outcome } = coord.steer(Promise.resolve('run-1'), { kind: 'user-message', text: 'hi' });
       await flush();
-      lastSteerCodecMessageId(h);
       coord.observeMessage(
         ablyMsg('ai-output', { [HEADER_RUN_ID]: 'run-1', [HEADER_STEER_CODEC_MESSAGE_IDS]: 'not-json' }),
       );

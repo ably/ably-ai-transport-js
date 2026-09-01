@@ -57,7 +57,7 @@ const main = async (): Promise<void> => {
 
     const client = new Client({ connection });
     const args: [FixtureInput] = [
-      { invocation: { inputEventId: 'evt-1', sessionName: 'ai:test' }, invocationId: 'wf-1' },
+      { invocation: { inputEventId: 'evt-1', channelName: 'ai:test' }, invocationId: 'wf-1' },
     ];
 
     await worker.runUntil(

@@ -29,7 +29,7 @@ export interface OpenRunInput {
 export interface EndRunInput {
   /** The open run's identity, as returned by `openRun`. */
   ids: RunIdentity;
-  /** The invocation this activity serves; only its `sessionName` is read, to resolve the channel. */
+  /** The invocation this activity serves; only its `channelName` is read, to resolve the channel. */
   invocation: InvocationData;
   /** The terminal reason to publish. */
   reason: RunEndReason;
@@ -41,7 +41,7 @@ export interface EndRunInput {
 export interface SuspendRunInput {
   /** The open run's identity, as returned by `openRun`. */
   ids: RunIdentity;
-  /** The invocation this activity serves; only its `sessionName` is read, to resolve the channel. */
+  /** The invocation this activity serves; only its `channelName` is read, to resolve the channel. */
   invocation: InvocationData;
 }
 
@@ -49,7 +49,7 @@ export interface SuspendRunInput {
 export interface CleanupRunInput {
   /** The open run's identity, as returned by `openRun`. */
   ids: RunIdentity;
-  /** The invocation this activity serves; only its `sessionName` is read, to resolve the channel. */
+  /** The invocation this activity serves; only its `channelName` is read, to resolve the channel. */
   invocation: InvocationData;
   /** Message for the published error; a default is used when omitted. */
   errorMessage?: string;

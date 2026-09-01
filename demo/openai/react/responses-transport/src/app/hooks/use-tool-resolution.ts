@@ -56,8 +56,12 @@ export interface ToolResolutionWake {
 
 /** Options for {@link useToolResolution}. */
 export interface UseToolResolutionOptions {
-  /** The client transport to publish the resolution on. */
-  transport: ClientTransport<OpenAIInput, OpenAIOutput> | undefined;
+  /**
+   * The client transport to publish the resolution on. Its input parameter is
+   * `unknown` because the codec's input direction is a passthrough; the
+   * `OpenAIInput` typing lives on the values published, not on the transport.
+   */
+  transport: ClientTransport<unknown, OpenAIOutput> | undefined;
   /** The folded thread, read to find the run's still-unanswered calls. */
   messages: ThreadMessage[];
   /** Wakes the agent for a run, POSTing the resolution's pointer to the agent endpoint. */

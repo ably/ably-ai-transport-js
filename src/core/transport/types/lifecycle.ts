@@ -28,9 +28,10 @@ interface RunLifecycleBase {
    */
   invocationId: string;
   /**
-   * Ably server timestamp (epoch ms) of the lifecycle message; absent for an
-   * optimistic local event. A consumer tracking run activity reads it as the
-   * run's last-activity time.
+   * Ably server timestamp (epoch ms) of the lifecycle message. A consumer
+   * tracking run activity reads it as the run's last-activity time. Optional
+   * because a step-lifecycle event the writer seeds locally has none; every
+   * run-lifecycle event is wire-delivered and carries one.
    */
   timestamp?: number;
 }
@@ -47,9 +48,10 @@ export type RunLifecycleEvent =
       /** The run opened. */
       type: 'start';
       /**
-       * Ably channel serial of the run-start message, or `undefined` for an
-       * optimistic local event (no serial assigned yet). A consumer ordering
-       * sibling runs reads it as the run's start serial.
+       * Ably channel serial of the run-start message. A consumer ordering
+       * sibling runs reads it as the run's start serial. Typed optional for
+       * the union's sake; a run-lifecycle event is always wire-delivered, so
+       * in practice it is present.
        */
       serial: string | undefined;
       /** The codec-message-id of the parent message, if known. Omitted for root runs. */
@@ -83,9 +85,8 @@ export type RunLifecycleEvent =
       /** The run paused without ending; a resume may re-open it. */
       type: 'suspend';
       /**
-       * Ably channel serial of the run-suspend message, or `undefined` for an
-       * optimistic local event. A consumer reads it as the serial at which
-       * the run paused.
+       * Ably channel serial of the run-suspend message — the serial at which
+       * the run paused. Present in practice; see the run-start note.
        */
       serial: string | undefined;
     })
@@ -93,9 +94,9 @@ export type RunLifecycleEvent =
       /** A later invocation re-opened a suspended run. */
       type: 'resume';
       /**
-       * Ably channel serial of the run-resume message, or `undefined` for an
-       * optimistic local event. A resume re-enters an existing run; the
-       * original run-start keeps the run's start serial.
+       * Ably channel serial of the run-resume message. A resume re-enters an
+       * existing run; the original run-start keeps the run's start serial.
+       * Present in practice; see the run-start note.
        */
       serial: string | undefined;
     })
@@ -103,8 +104,8 @@ export type RunLifecycleEvent =
       /** The run reached its terminal; nothing more publishes under it. */
       type: 'end';
       /**
-       * Ably channel serial of the run-end message, or `undefined` for an
-       * optimistic local event. A consumer reads it as the run's end serial.
+       * Ably channel serial of the run-end message — the run's end serial.
+       * Present in practice; see the run-start note.
        */
       serial: string | undefined;
     } & (

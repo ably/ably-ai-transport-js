@@ -351,7 +351,8 @@ const dedupeBySerial = <TMetadata, TDataParts extends AI.UIDataTypes, TTools ext
   const seen = new Set<string>();
   return events.filter((event) => {
     const serial = event.kind === 'message' ? event.meta.serial : event.event.serial;
-    // An event with no serial is a local optimistic one; it cannot collide.
+    // Only a locally synthesised event lacks a serial, and the transport
+    // publishes none; keep it rather than treat it as a duplicate.
     if (serial === undefined) return true;
     if (seen.has(serial)) return false;
     seen.add(serial);

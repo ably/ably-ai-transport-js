@@ -12,7 +12,7 @@
  */
 
 import type { Responses } from 'openai/resources/responses/responses';
-import { isModelledOutputItem, type ModelledOutputItem } from '@ably/ai-transport/openai';
+import type { ModelledOutputItem } from '@ably/ai-transport/openai';
 
 // ---------------------------------------------------------------------------
 // Stored message model
@@ -237,5 +237,5 @@ export const approvedUnexecutedCalls = (messages: OpenAIMessage[]): Responses.Re
   return calls;
 };
 
-/** Re-exported so demo modules import the modelled-item helpers alongside this model. */
-export { isModelledOutputItem, type ModelledOutputItem };
+/** Re-exported so demo modules take the item type from this model, not the SDK. */
+export type { ModelledOutputItem };

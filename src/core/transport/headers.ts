@@ -3,7 +3,7 @@
  *
  * Single source of truth for which transport headers every transport
  * message carries. Used by the agent's output path (pipe) and by
- * the client's optimistic message stamping.
+ * the client's input publish path.
  */
 
 import * as Ably from 'ably';

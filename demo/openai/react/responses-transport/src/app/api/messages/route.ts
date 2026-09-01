@@ -3,7 +3,8 @@
  *
  * Answers a GET with the conversation so far: the decoded transport events
  * (oldest first) plus the channel serial of the newest one, read through the
- * same `getExistingMessages` the chat route folds model context from. The
+ * same `getExistingMessages` the chat route folds model context from — minus
+ * any run that has not ended, which the client owns end to end. The
  * client folds the returned events itself, then pages its own transport's
  * history only for the gap newer than `latestSerial` — the seam between what
  * this response covered and where the client's live subscription attached.
@@ -15,7 +16,7 @@ import Ably from 'ably';
 import { channelAgent, createAgentTransport } from '@ably/ai-transport';
 import { ResponsesCodec } from '@ably/ai-transport/openai';
 
-import { getExistingMessages } from '../../lib/get-existing-messages';
+import { getExistingMessages, seedableEvents } from '../../lib/get-existing-messages';
 
 export async function GET(req: Request) {
   const channelName = new URL(req.url).searchParams.get('channelName');
@@ -40,11 +41,21 @@ export async function GET(req: Request) {
     const transport = createAgentTransport({ channel, codec: ResponsesCodec });
     await transport.connect();
     try {
-      const { events, latestSerial } = await getExistingMessages(transport);
+      const all = await getExistingMessages(transport);
+      // A run still streaming is left for the client's own walk and live
+      // subscription to own; seeding it as well would count its accumulated
+      // prefix twice. See `seedableEvents`.
+      const { events, latestSerial } = seedableEvents(all.events);
       return Response.json({ events, latestSerial });
     } finally {
       transport.close();
     }
+  } catch (error) {
+    // Without this the rejection escapes as an opaque 500 and the client
+    // quietly degrades to live-only, showing an empty conversation with no
+    // sign that hydration failed at all.
+    const message = error instanceof Error ? error.message : String(error);
+    return Response.json({ error: `unable to read the conversation; ${message}` }, { status: 500 });
   } finally {
     ably.close();
   }

@@ -346,11 +346,11 @@ describe('createThreadFold', () => {
     expect(messages[0].clientId).toBe('client-a');
   });
 
-  it('dedupes the two echoes when the wire echo comes back with its keys in a different order', () => {
-    // The optimistic echo is the caller's own object; the wire echo is the
-    // codec's decode, which builds its fields in its own order. A serialised
-    // comparison reads those as two parts and the sender sees "hihi".
-    const optimistic = userTurnInput('hi');
+  it('dedupes two deliveries whose keys come back in a different order', () => {
+    // A redelivered wire event comes back through the codec's decode, which
+    // builds its fields in its own order. A serialised comparison reads the
+    // two deliveries as two parts and the text renders as "hihi".
+    const first = userTurnInput('hi');
     const decoded: OpenAIInput = {
       kind: 'message',
       // CAST: the same shape as userTurnInput's, with the part's keys reversed.
@@ -360,7 +360,7 @@ describe('createThreadFold', () => {
       },
     };
     const events = [
-      inputEvent('m0', [optimistic], { serial: undefined, clientId: 'client-a' }),
+      inputEvent('m0', [first], { serial: 's-1', clientId: 'client-a' }),
       inputEvent('m0', [decoded], { serial: 's-2', clientId: 'client-a' }),
     ];
 
@@ -372,7 +372,7 @@ describe('createThreadFold', () => {
     expect(turnText(messages[0])).toBe('hi');
   });
 
-  it('appends distinct parts of the same message across wire echoes', () => {
+  it('appends distinct parts of the same message across deliveries', () => {
     const events = [inputEvent('m0', [userTurnInput('part one. ')]), inputEvent('m0', [userTurnInput('part two.')])];
     const item = foldAll(events).messages()[0].items[0];
     if (item?.type !== 'message') throw new Error('expected a message item');

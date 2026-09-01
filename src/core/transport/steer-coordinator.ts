@@ -95,8 +95,8 @@ interface PendingSteerEcho {
 }
 
 /**
- * Owns the client-side steer lifecycle for one {@link ClientSession}. See the
- * module doc for the state it holds and how a session wires it in.
+ * Owns the client-side steer lifecycle for one `ClientTransport`. See the
+ * module doc for the state it holds and how the transport wires it in.
  * @template TInput - The codec's input event type.
  */
 export class SteerCoordinator<TInput> {

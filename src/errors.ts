@@ -92,12 +92,6 @@ export enum ErrorCode {
   SessionContinuityNotGuaranteed = 104006,
 
   /**
-   * An operation was attempted but the channel is not in a usable state
-   * (not ATTACHED or ATTACHING).
-   */
-  SessionChannelNotReady = 104007,
-
-  /**
    * An error occurred while piping a response stream to the channel — either
    * the source event stream threw (e.g. LLM provider rate limit, model error,
    * network failure) or an underlying publish failed mid-stream. Also the
@@ -114,15 +108,6 @@ export enum ErrorCode {
   SessionMessageProcessingFailed = 104009,
 
   /**
-   * A required event was not found in channel history — a durable
-   * invocation's triggering input event (an `AgentTransport.locateInput`
-   * miss), or the opening lifecycle event of a run a continuing process
-   * re-enters. Retryable: an ordering condition where the event has not yet
-   * propagated to history.
-   */
-  AdoptedRunStartNotObserved = 104010,
-
-  /**
    * Channel history pagination failed after bounded retry — either the initial
    * `channel.history()` call or a subsequent `page.next()` exhausted its
    * retry budget. Also used when a history load fails with an error that is
@@ -137,13 +122,6 @@ export enum ErrorCode {
    * folded in by then, so the run is unaffected — only the notification failed.
    */
   RunSteerHandlerFailed = 104012,
-
-  /**
-   * Routing an inbound cancel message to its target run failed. Not a fault in
-   * a developer-supplied hook: the dispatch itself could not complete, so the
-   * cancel was neither honoured nor rejected and the run keeps running.
-   */
-  RunCancelRoutingFailed = 104013,
 
   /**
    * A step attempt this stream had already forwarded output for started again,

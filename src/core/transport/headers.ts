@@ -74,7 +74,7 @@ import type { RunEndReason, RunLifecycleEvent, StepEndReason, StepLifecycleEvent
  *   `inputClientId`, so the client can correlate any of those events back to
  *   the originating input by the id it owned at send time.
  * @param opts.stepId - The owning step's id, when the output is published within
- *   a `RunStep`. See {@link HEADER_STEP_ID}.
+ *   a `RunStepTransport`. See {@link HEADER_STEP_ID}.
  * @param opts.stepStartSerial - The owning step attempt's `step-start-serial` (the channel
  *   serial of its `ai-step-start`), back-referenced on the output so it
  *   attributes to the right attempt. See {@link HEADER_STEP_START_SERIAL}.

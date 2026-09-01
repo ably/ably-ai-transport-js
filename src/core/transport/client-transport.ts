@@ -277,7 +277,12 @@ class DefaultClientTransport<TInput, TOutput> implements ClientTransport<TInput,
     await this._requireOpen('cancel');
     // A promise-valued runId (e.g. a fresh publishInput result's) resolves
     // from the run's ai-run-start; the cancel publishes once it does.
-    await this._channel.publish(buildCancelMessage({ runId: await runId }));
+    const resolved = await runId;
+    // Re-check after the await: a cancel parked on a pending id can outlive
+    // the transport, and publishing from a closed one is worse than dropping
+    // it — the caller has already torn down.
+    await this._requireOpen('cancel');
+    await this._channel.publish(buildCancelMessage({ runId: resolved }));
   }
 
   steer(runId: string | Promise<string>, event: TInput): SteerResult {

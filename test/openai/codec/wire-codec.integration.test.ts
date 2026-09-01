@@ -14,13 +14,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { HEADER_TRANSPORT_MESSAGE_ID } from '../../../src/constants.js';
 import type { OpenAIOutput } from '../../../src/openai/codec/index.js';
 import { createResponsesCodec } from '../../../src/openai/codec/index.js';
-
-// The codec under test, at its untyped default input instantiation.
-const responsesCodec = createResponsesCodec();
 import { getTransportHeaders } from '../../../src/utils.js';
 import { uniqueChannelName } from '../../helper/identifier.js';
 import { ablyRealtimeClient, closeAllClients } from '../../helper/realtime-client.js';
 import { eventsOfType, functionCallArgsRun, stampHeaders, textRun } from './fixtures.js';
+
+// The codec under test, at its untyped default input instantiation.
+const responsesCodec = createResponsesCodec();
 
 /** One decoded bucket: the outputs and inputs decoded under a transport-message-id. */
 interface Bucket {

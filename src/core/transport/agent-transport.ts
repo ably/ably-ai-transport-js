@@ -89,8 +89,8 @@ const PRE_OPEN_STEER_LIMIT = 200;
 
 /**
  * The resolved parameters `_createRun` builds a run handle from. The public
- * verbs (`openRun`, `adoptRun`) own all identity and input resolution and
- * hand the result here verbatim.
+ * verbs (`openRun`, `adoptRun`) own all identity and located-input resolution
+ * and hand the result here verbatim.
  */
 interface CreateRunParams {
   /** The run's resolved id. */
@@ -125,22 +125,6 @@ interface RegisteredRun {
    * the trigger and already-answered steers) and fires its `onSteer` hint.
    */
   onSteerMessage: (transportMessageId: string) => void;
-}
-
-/**
- * The resolved parameters `_createRun` builds a run handle from. The public
- * verbs (`openRun`, `adoptRun`) own all identity and located-input resolution
- * and hand the result here verbatim.
- */
-interface CreateRunParams {
-  /** The run's resolved id. */
-  runId: string;
-  /** The invocation's resolved id. */
-  invocationId: string;
-  /** The opening action: publish `ai-run-start`, publish `ai-run-resume`, or adopt without publishing. */
-  open: 'start' | 'resume' | 'adopt';
-  /** The triggering input's transport-message-id, when known. */
-  inputTransportMessageId?: string;
 }
 
 /**
@@ -355,9 +339,9 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
    * Build a run handle from resolved parameters: register it for cancel and
    * steer routing, fire the opening publish (`'start'` / `'resume'`) or seed
    * the run-manager owner entry without publishing (`'adopt'`), and wire the
-   * step writer. All identity and structure resolution belongs to the public
+   * step writer. All identity and located-input resolution belongs to the public
    * verbs; this method consumes the resolved values verbatim.
-   * @param params - The resolved run identity, open mode, anchor and structure.
+   * @param params - The resolved run identity, open mode and input anchors.
    * @param hooks - The caller's per-run callbacks and external AbortSignal.
    * @returns The run's write handle.
    */
@@ -693,7 +677,7 @@ class DefaultAgentTransport<TInput, TOutput> implements AgentTransport<TInput, T
           );
         }
         // A pure re-entry signal: republish `ai-run-resume` under the same run-id
-        // with no structure headers (continuation). The gate re-opens only once
+        // as a bare re-entry signal (continuation). The gate re-opens only once
         // the publish succeeds, so a failed resume leaves the run suspended.
         await this._runManager.startRun(runId, this._clientId, { invocationId, continuation: true });
         state = 'open';

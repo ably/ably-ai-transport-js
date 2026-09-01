@@ -306,10 +306,11 @@ export class FakeClientTransport implements ClientTransport<VercelInput, VercelO
     };
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await -- fake resolves immediately
-  async cancel(runId: string): Promise<void> {
-    this.cancelled.push(runId);
-    return;
+  async cancel(runId: string | Promise<string>): Promise<void> {
+    // The real transport accepts a pending id and publishes once it settles;
+    // the fake has to await it too or a Stop pressed before `ai-run-start`
+    // would look like a no-op here and pass.
+    this.cancelled.push(await runId);
   }
 
   steer(): SteerResult {

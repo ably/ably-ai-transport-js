@@ -5,7 +5,7 @@
  * message. It carries the two raw header tiers (`transport` and `codec`)
  * verbatim so any consumer rebuilds conversation state off
  * the public event with no privileged access to the wire, plus a typed
- * convenience projection of the transport tier's identity and structure fields.
+ * convenience projection of the transport tier's identity fields.
  */
 
 import type * as Ably from 'ably';
@@ -28,7 +28,7 @@ import type { WireMeta } from './types/transport.js';
  * Read one inbound Ably message into its {@link WireMeta}. Populates the raw
  * `transport` / `codec` header buckets verbatim, then projects the typed
  * convenience fields off the transport tier and the message's own Ably fields.
- * Never interprets the structure fields — it copies them through.
+ * Never interprets the projected fields — it copies them through.
  * @param rawMsg - The inbound Ably wire message.
  * @returns The message's transport-tier metadata.
  */

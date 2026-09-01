@@ -408,6 +408,16 @@ class DefaultChatTransport<
   private readonly _streamClosers = new Set<() => void>();
   /** The run ids this adapter is currently streaming, in run-id settle order. */
   private readonly _streamingRunIds = new Set<string>();
+  /**
+   * Run-id promises for streams opened but not yet settled, in open order.
+   *
+   * {@link cancel} needs these because a user can press Stop before the
+   * `ai-run-start` that names the run has landed. Without them the cancel has
+   * no id to address and is silently dropped, leaving the agent generating
+   * against a UI that has moved on. `ClientTransport.cancel` accepts the
+   * promise and publishes once it settles.
+   */
+  private readonly _pendingRunIds = new Set<Promise<string>>();
 
   /**
    * Recent live events, oldest first, bounded by {@link LIVE_BUFFER_LIMIT}.
@@ -498,6 +508,7 @@ class DefaultChatTransport<
     this._streamFailers.clear();
     this._streamClosers.clear();
     this._streamingRunIds.clear();
+    this._pendingRunIds.clear();
     this._unendedRunIds.clear();
     this._retained.clear();
     this._liveBuffer.length = 0;
@@ -507,10 +518,17 @@ class DefaultChatTransport<
 
   async cancel(): Promise<void> {
     this._logger.trace('ChatTransport.cancel();');
-    const runId = [...this._streamingRunIds].at(-1);
-    if (runId === undefined) return;
-    this._logger.debug('ChatTransport.cancel(); cancelling open run', { runId });
-    await this._transport.cancel(runId);
+    // A settled id first; failing that, the newest stream still waiting for
+    // one. Stop pressed before `ai-run-start` lands has to reach the agent
+    // too, and the transport publishes the cancel when the promise settles.
+    const settled = [...this._streamingRunIds].at(-1);
+    const target = settled ?? [...this._pendingRunIds].at(-1);
+    if (target === undefined) {
+      this._logger.debug('ChatTransport.cancel(); nothing open to cancel');
+      return;
+    }
+    this._logger.debug('ChatTransport.cancel(); cancelling open run', { pending: settled === undefined });
+    await this._transport.cancel(target);
   }
 
   async sendMessages(
@@ -1003,6 +1021,9 @@ class DefaultChatTransport<
    */
   private _openRunStream(abortSignal?: AbortSignal): RunCollector<TMetadata, TDataParts, TTools> {
     let runId: string | undefined;
+    // The unsettled run-id promise, so `cancel()` can address this stream
+    // before its `ai-run-start` arrives.
+    let pendingRunId: Promise<string> | undefined;
     let closed = false;
     // Read through a call so control-flow narrowing does not assume `closed`
     // is still false after `deliver` (which can close via `finish`).
@@ -1023,6 +1044,7 @@ class DefaultChatTransport<
       this._streamFailers.delete(failStream);
       this._streamClosers.delete(closeStream);
       if (runId !== undefined) this._streamingRunIds.delete(runId);
+      if (pendingRunId !== undefined) this._pendingRunIds.delete(pendingRunId);
       this._openStreams--;
       if (this._openStreams === 0) this._emitter.emit('streaming', false);
     };
@@ -1144,6 +1166,10 @@ class DefaultChatTransport<
         replay?: AdapterEvent<TMetadata, TDataParts, TTools>[],
       ): Promise<void> => {
         const settle = (resolved: string): void => {
+          if (pendingRunId !== undefined) {
+            this._pendingRunIds.delete(pendingRunId);
+            pendingRunId = undefined;
+          }
           if (closed) return;
           runId = resolved;
           this._streamingRunIds.add(resolved);
@@ -1166,6 +1192,8 @@ class DefaultChatTransport<
           settle(id);
           return;
         }
+        pendingRunId = id;
+        this._pendingRunIds.add(id);
         // A run that never starts must fail the stream rather than hang it.
         // This promise settles either way: it is a flush barrier, not an error
         // channel, and the failure reaches the consumer on the stream.

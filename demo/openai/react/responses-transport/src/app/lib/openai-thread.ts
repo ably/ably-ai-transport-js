@@ -91,7 +91,15 @@ export interface OpenAIMessageInput {
   payload: OpenAIMessage;
 }
 
-/** A regeneration signal. Carries no body: the structure rides the transport's publish options. */
+/**
+ * A regeneration signal, carrying no body.
+ *
+ * This linear demo never publishes one — it offers no Regenerate gesture. The
+ * member exists because the channel is shared: `asOpenAIInput` is the runtime
+ * validator behind the codec's type assertion, so a foreign publisher's
+ * regenerate has to narrow cleanly and contribute nothing rather than fall
+ * through as an unrecognised body.
+ */
 export interface OpenAIRegenerateInput {
   /** Discriminator. */
   kind: 'regenerate';

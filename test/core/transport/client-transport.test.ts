@@ -540,6 +540,21 @@ describe('createClientTransport', () => {
       await expect(transport.cancel(Promise.reject(new Error('no run')))).rejects.toThrow('no run');
       expect(channel.publishCalls).toHaveLength(0);
     });
+
+    it('does not publish a cancel parked on a pending id once the transport closes', async () => {
+      const { transport, channel } = await setup();
+      const { promise, resolve } = Promise.withResolvers<string>();
+
+      const cancelled = transport.cancel(promise);
+      await flushMicrotasks();
+      transport.close();
+      resolve('run-2');
+
+      // The caller has already torn the transport down; publishing from a
+      // closed one is worse than dropping the cancel.
+      await expect(cancelled).rejects.toBeErrorInfoWithCode(ErrorCode.TransportClosed);
+      expect(channel.publishCalls).toHaveLength(0);
+    });
   });
 
   describe('steer', () => {

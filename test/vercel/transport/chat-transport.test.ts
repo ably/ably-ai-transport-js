@@ -428,7 +428,10 @@ describe('ChatTransport', () => {
       await Promise.resolve();
       controller.abort();
 
-      expect(fake.cancelled).toEqual(['run-1']);
+      // The cancel publish is fire-and-forget from the abort listener.
+      await vi.waitFor(() => {
+        expect(fake.cancelled).toEqual(['run-1']);
+      });
     });
 
     it('cancels once the run id lands, when the abort beat it', async () => {
@@ -453,6 +456,25 @@ describe('ChatTransport', () => {
       await Promise.resolve();
 
       await chat.cancel();
+
+      expect(fake.cancelled).toEqual(['run-1']);
+    });
+
+    it('cancel() reaches the agent when Stop beats the run id', async () => {
+      stubChatFetch();
+      const { fake, chat } = setup();
+
+      await chat.sendMessages(sendOptions([userMessage('u1', 'hi')]));
+      await Promise.resolve();
+
+      // No `ai-run-start` yet, so there is no id to address — the cancel has
+      // to ride the pending promise or the agent keeps generating against a
+      // UI that has already stopped.
+      const cancelled = chat.cancel();
+      expect(fake.cancelled).toEqual([]);
+
+      fake.resolveRunId('run-1');
+      await cancelled;
 
       expect(fake.cancelled).toEqual(['run-1']);
     });

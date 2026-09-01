@@ -27,8 +27,8 @@ import { type ChatTransportEvent, mergeMessages } from '../lib/merge-messages';
 // The scenarios this linear demo can drive: the shared baseline entries whose
 // completion it can detect from a plain message list (server/client/approval
 // tools and cancel), plus the intro-only Observability entry (no id). The
-// branching scenarios (multi-tab, edit, regenerate) are excluded — this demo
-// renders `useChat`'s linear messages with no branch navigation.
+// multi-tab scenario is excluded — this demo renders `useChat`'s linear
+// messages for one client.
 const DRIVEN_IDS = new Set<DemoStepId>(['server-weather', 'client-weather', 'approval-forecast', 'cancel']);
 const SCENARIOS: readonly Scenario[] = COMMON_SCENARIOS.filter((s) => s.id === undefined || DRIVEN_IDS.has(s.id));
 

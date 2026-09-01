@@ -23,7 +23,8 @@ import type { RunEndReason, StepEndReason } from './types.js';
 
 /**
  * Per-invocation metadata carried on a run's opening lifecycle event. A
- * continuation (re-entering an existing run) sets `continuation`.
+ * continuation (re-entering an existing run) sets `continuation`, which
+ * publishes `ai-run-resume` in place of `ai-run-start`.
  */
 interface StartRunMetadata {
   /** Agent-minted invocation id, carried on the lifecycle event. */

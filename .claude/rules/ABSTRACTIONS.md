@@ -24,7 +24,7 @@ The entry points are listed here for orientation; the authoritative list is
 | `@ably/ai-transport/react`             | Generic React hooks and providers for any codec                            | `ably`, `react`         |
 | `@ably/ai-transport/vercel`            | Vercel AI SDK codec, convenience factories, and the chat-transport adapter | `ably`, `ai`            |
 | `@ably/ai-transport/vercel/react`      | React hooks for Vercel's `useChat`                                         | `ably`, `ai`, `react`   |
-| `@ably/ai-transport/openai`            | OpenAI Responses codec (`createResponsesCodec`)                            | `ably`, `openai`        |
+| `@ably/ai-transport/openai`            | OpenAI Responses codec                                                     | `ably`, `openai`        |
 | `@ably/ai-transport/temporal`          | Worker-side durable execution: framing activities and the plugin           | `ably`, `@temporalio/*` |
 | `@ably/ai-transport/temporal/workflow` | Workflow-side helpers                                                      | `@temporalio/workflow`  |
 
@@ -199,3 +199,13 @@ wire up the internal classes. Consumers never call `new Default*` directly.
     projection type. The application demultiplexes a batch's `message` events
     by their transport-message-id and merges each bucket with the provider's own
     machinery.
+12. **No conversation structure on the wire** — the transport stamps no parent,
+    fork or regenerate headers. Branch structure is the application's to model,
+    by either route: put it in the codec's own input vocabulary (Vercel's
+    `regenerate` input names the message it redoes, as domain data the
+    transport never reads), or ride `PublishInputOptions.headers`, which
+    round-trips on `WireMeta.headers`, and join through the run's
+    `inputTransportMessageId` anchor. Note the one narrowing that implies:
+    `onAblyMessage` excludes run and step lifecycle messages, so an
+    application cannot put its own headers on `ai-run-start` — the join has to
+    go through the input.

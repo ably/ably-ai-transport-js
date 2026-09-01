@@ -200,7 +200,8 @@ export async function mergeMessages(events: WdkTransportEvent[], opts?: MergeMes
           break;
         }
         case 'regenerate':
-          // A wire-only structure signal; it carries no content to merge.
+          // 'regenerate' names the message the client asked to redo; the agent acts
+          // on it and the merge contributes nothing.
           break;
       }
     }

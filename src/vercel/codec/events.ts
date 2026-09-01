@@ -13,9 +13,11 @@
  *   through one code path. The approval decision is the one action with no
  *   provider-typed body, so the codec defines a small body of its own.
  *
- * Addressing never rides an input: the transport's publish options carry the
- * `transportMessageId` (and a continuation's `runId`), and `WireMeta` reports
- * them on the way back.
+ * Transport addressing never rides an input body: the publish options carry
+ * the `transportMessageId` (and a continuation's `runId`), and `WireMeta`
+ * reports them on the way back. A body may still name a message as domain
+ * data — `regenerate` carries the id it redoes — but the transport does not
+ * read it, and it addresses nothing.
  */
 
 import type * as AI from 'ai';

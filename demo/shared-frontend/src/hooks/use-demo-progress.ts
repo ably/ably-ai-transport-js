@@ -15,8 +15,6 @@
  * - checklist: a turn produced an updateChecklist output (LiveObjects)
  * - multi-tab: more than one distinct run-client-id appears across
  *   ai-run-start messages
- * - regenerate: a wire message carries the msg-regenerate transport header
- * - edit: a wire message carries the fork-of transport header
  * - cancel: an ai-cancel event appears on the channel
  *
  * A scenario with no `id` (e.g. the Observability walkthrough entry) is shown

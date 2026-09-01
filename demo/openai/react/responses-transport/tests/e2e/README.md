@@ -9,7 +9,7 @@ mid-stream, which must merge to one message), and multi-tab sync.
 
 This demo drives the client transport directly (`transport.publishInput` plus
 an explicit `wakeAgent` POST) with the generic, codec-agnostic transport
-parameterized by the OpenAI `ResponsesCodec`, and merges the decoded events
+parameterized by the demo's `responsesCodec`, and merges the decoded events
 through OpenAI's own `accumulateResponse`. The thread is linear — there is no
 branch navigation.
 

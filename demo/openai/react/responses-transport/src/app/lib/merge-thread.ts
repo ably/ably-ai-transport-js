@@ -222,7 +222,8 @@ const applyInput = (merge: MessageMerge, input: OpenAIInput): void => {
       break;
     }
     case 'regenerate': {
-      // This linear demo never publishes it; a foreign one merges to nothing.
+      // This linear demo never publishes one; a foreign publisher's
+      // contributes nothing to the thread.
       break;
     }
   }

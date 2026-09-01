@@ -201,7 +201,8 @@ export async function mergeMessages(events: ChatTransportEvent[]): Promise<Merge
           bucket.approvals.push(input.payload);
           break;
         }
-        // 'regenerate' carries no body; the structure rides the wire headers.
+        // 'regenerate' names the message the client asked to redo; the agent acts
+        // on it and the merge contributes nothing.
       }
     }
     for (const output of event.outputs) pushChunk(bucket, output);

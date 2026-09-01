@@ -49,25 +49,25 @@ import type { OpenAIOutput } from './events.js';
  * empty (`never`): the passthrough wrapper below owns the input direction and
  * intercepts `ai-input` wires before this decoder sees them.
  */
-const outputCodec = defineCodec<never, OpenAIOutput>()({
-  adapterTag: 'openai-responses',
-  output: outputs,
-  input: () => [],
-  decoderSynthesiseLifecycle: createResponsesDecodeLifecycle,
-});
-
 /**
  * The codec's wire tag, stamped by the encoder and read by `channelAgent`.
  * One constant so the two can never diverge silently.
  */
 const ADAPTER_TAG = 'openai-responses';
 
+const outputCodec = defineCodec<never, OpenAIOutput>()({
+  adapterTag: ADAPTER_TAG,
+  output: outputs,
+  input: () => [],
+  decoderSynthesiseLifecycle: createResponsesDecodeLifecycle,
+});
+
 /**
  * Build an OpenAI Responses codec implementing `WireCodec<TInput, OpenAIOutput>`.
  * Outputs are OpenAI's own stream events plus the codec's two authored
  * events; inputs pass through as JSON typed by the application's `TInput`
  * (see the module header).
- * @template TInput - The application's input-event type. Defaults to `unknown` when not declared.
+ * @template TInput - The application's input-event type. Asserted at decode, never validated — on a channel you share, validate the decoded body yourself.
  * @returns The codec.
  */
 export const createResponsesCodec = <TInput = unknown>(): WireCodec<TInput, OpenAIOutput> => ({
@@ -157,4 +157,3 @@ export const createResponsesCodec = <TInput = unknown>(): WireCodec<TInput, Open
 });
 
 export type { FunctionCallOutputEvent, ModelledOutputItem, OpenAIOutput, ToolApprovalRequestEvent } from './events.js';
-export { isModelledOutputItem } from './events.js';

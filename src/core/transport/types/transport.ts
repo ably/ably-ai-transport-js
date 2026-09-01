@@ -37,7 +37,7 @@ import type { SteerResult } from './steer.js';
 export interface WireMeta {
   /**
    * The complete `extras.ai.transport` header tier, verbatim. The transport
-   * writes and reads run/step/structure headers here; a consumer merges a
+   * writes and reads run and step headers here; a consumer merges a
    * message by reading this bucket. Empty object when the wire carried no
    * transport tier.
    */
@@ -718,9 +718,8 @@ export interface AgentTransport<TInput, TOutput> extends TransportReceiver<TInpu
    * conversation state discards a suspend whose invocation-id differs from
    * the run's latest resume, treating it as a retired invocation's late
    * suspend — and omit it to mint
-   * a fresh one. The structure options stay on {@link openRun}: an adopted
-   * run publishes no opening event, so nothing would stamp them. A
-   * continuation is an `openRun` naming the run, not an adopt.
+   * a fresh one. A continuation is an `openRun` naming the run, not an
+   * adopt.
    * @param runId - The id of the run to adopt. Must be non-empty.
    * @param opts - Optional invocation-id pin; see {@link AdoptRunOptions}.
    * @param hooks - Optional per-run callbacks and external AbortSignal; see
@@ -842,7 +841,8 @@ export interface AgentRunTransport<TOutput> {
   suspend(): Promise<void>;
   /**
    * Publish `ai-run-resume`, re-entering the run. A pure re-entry signal — it
-   * carries no structure headers. Re-opens a suspended handle's publish
+   * is a pure re-entry signal, distinguished from `ai-run-start` by its
+   * message name. Re-opens a suspended handle's publish
    * surface once the publish succeeds. Throws once the run has ended.
    */
   resume(): Promise<void>;

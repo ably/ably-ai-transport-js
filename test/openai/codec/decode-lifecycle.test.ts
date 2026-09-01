@@ -20,9 +20,6 @@ import { describe, expect, it } from 'vitest';
 import { HEADER_STREAM } from '../../../src/constants.js';
 import type { OpenAIOutput } from '../../../src/openai/codec/index.js';
 import { createResponsesCodec } from '../../../src/openai/codec/index.js';
-
-// The codec under test, at its untyped default input instantiation.
-const responsesCodec = createResponsesCodec();
 import { getTransportHeaders } from '../../../src/utils.js';
 import {
   completed,
@@ -46,6 +43,9 @@ import {
   textDone,
   textRun,
 } from './fixtures.js';
+
+// The codec under test, at its untyped default input instantiation.
+const responsesCodec = createResponsesCodec();
 
 const transportOf = (m: Ably.InboundMessage): Record<string, string> => getTransportHeaders(m);
 

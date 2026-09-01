@@ -1158,12 +1158,15 @@ describe('Vercel decoder', () => {
       expect(messages[0]?.parts).toEqual([{ type: 'text', text: 'no marker' }]);
     });
 
-    it('decodes ai-input regenerate wires into zero events (routing lives on transport headers)', () => {
+    it('decodes an ai-input regenerate wire into the message it regenerates from', () => {
       const decoder = createDecoder();
-      const msg = withHeaders({ name: EVENT_AI_INPUT, data: '' }, { [HEADER_STREAM]: 'false', kind: 'regenerate' });
+      const msg = withHeaders(
+        { name: EVENT_AI_INPUT, data: '' },
+        { [HEADER_STREAM]: 'false', kind: 'regenerate', messageId: 'asst-3' },
+      );
 
       const { inputs, outputs } = decoder.decode(msg);
-      expect(inputs).toHaveLength(0);
+      expect(inputs).toEqual([{ kind: 'regenerate', payload: { messageId: 'asst-3' } }]);
       expect(outputs).toHaveLength(0);
     });
   });

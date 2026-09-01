@@ -77,25 +77,30 @@ import { after } from 'next/server';
 import { streamText, convertToModelMessages } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import * as Ably from 'ably';
-import { Invocation } from '@ably/ai-transport';
-import { createAgentSession, vercelRunOutcome } from '@ably/ai-transport/vercel';
+import { createAgentTransport, vercelRunOutcome } from '@ably/ai-transport/vercel';
 
 const ably = new Ably.Realtime({ key: process.env.ABLY_API_KEY });
 
 export async function POST(req: Request) {
-  // The POST only triggers the agent. Tokens reach every subscribed client
-  // over the session, so the response body carries nothing but the run ids.
-  const invocation = Invocation.fromJSON(await req.json());
+  // The POST only wakes the agent. Tokens reach every subscribed client over
+  // the channel, so the response body carries nothing the client reads.
+  const { channelName, eventId } = (await req.json()) as { channelName: string; eventId: string };
 
-  const session = createAgentSession({ client: ably, channelName: invocation.sessionName });
-  await session.connect();
-  const run = session.createRun(invocation, { signal: req.signal });
+  // Attach per request: history pages backwards from the attach point, so a
+  // transport attached before the client published could never locate it.
+  const transport = createAgentTransport({ channel: ably.channels.get(channelName) });
+  await transport.connect();
+
+  const located = await transport.locateInput(eventId);
+  if (!located) return new Response('input not found', { status: 404 });
+
+  // Opening from the located input is what anchors the run to its trigger, so
+  // the client can resolve the run id off the channel.
+  const run = transport.openRun({ input: located }, { signal: req.signal });
 
   after(async () => {
-    // Page in the conversation so far, then open the run on the session.
-    while (run.view.hasOlder()) await run.view.loadOlder();
-    await run.start();
-    const conversation = run.view.getMessages().map(({ message }) => message);
+    // Your own store owns the conversation; the transport holds no state.
+    const conversation = await getStoredMessages(channelName);
 
     const result = streamText({
       model: anthropic('claude-sonnet-4-6'),
@@ -106,15 +111,13 @@ export async function POST(req: Request) {
 
     const pipeResult = await run.pipe(result.toUIMessageStream());
     const outcome = await vercelRunOutcome(pipeResult, result.finishReason);
-    if (outcome.reason === 'suspend') {
-      await run.suspend(); // Paused on a client-executed tool or an approval
-    } else {
-      await run.end(outcome);
-    }
-    await session.end();
+    // A turn that produced tool calls is still terminal: end the run and let
+    // the client's resolution wake a new one.
+    await run.end(outcome.reason === 'suspend' ? { reason: 'complete' } : outcome);
+    transport.close();
   });
 
-  return Response.json({ runId: run.runId, invocationId: run.invocationId });
+  return new Response('', { status: 202 });
 }
 ```
 
@@ -127,7 +130,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import * as Ably from 'ably';
 import { AblyProvider } from 'ably/react';
 import { useChat } from '@ai-sdk/react';
-import { ChatTransportProvider, useChatTransport, useMessageSync } from '@ably/ai-transport/vercel/react';
+import { ChatTransportProvider, useChatTransport } from '@ably/ai-transport/vercel/react';
 
 export default function Page() {
   return (
@@ -141,16 +144,27 @@ export default function Page() {
 
 function Chat() {
   const [input, setInput] = useState('');
-  const { session, chatTransport } = useChatTransport();
-  const { messages, setMessages, sendMessage, status } = useChat({ transport: chatTransport });
+  const { chatTransport } = useChatTransport();
+  const { messages, setMessages, sendMessage, resumeStream, status, stop } = useChat({ transport: chatTransport });
 
-  // Anything the agent publishes, and anything the user sends from another
-  // device, arrives over the session rather than in a fetch response.
-  useMessageSync({ setMessages });
+  // Hydration: read your store, then let the adapter walk the channel for
+  // anything published since, and resume whatever run is still in flight.
+  useEffect(() => {
+    if (!chatTransport) return;
+    void (async () => {
+      const { messages: stored, latestSerial } = await fetchStoredConversation();
+      setMessages(stored);
+      const { messages: walked } = await chatTransport.readSince(latestSerial);
+      setMessages([...stored, ...walked]);
+      await resumeStream();
+    })();
+  }, [chatTransport, setMessages, resumeStream]);
 
-  const stop = () => {
-    const active = session.view.runs().find((run) => run.status === 'active');
-    if (active) void session.cancel(active.runId);
+  // `useChat.stop()` settles the local status; only the transport's own cancel
+  // reaches the agent, and it is the only thing that can stop a resumed run.
+  const onStop = () => {
+    void stop();
+    void chatTransport?.cancel();
   };
 
   return (
@@ -173,7 +187,7 @@ function Chat() {
       {status === 'submitted' || status === 'streaming' ? (
         <button
           type="button"
-          onClick={stop}
+          onClick={onStop}
         >
           Stop
         </button>

@@ -729,9 +729,10 @@ export interface AgentTransport<TInput, TOutput> extends TransportReceiver<TInpu
    * The handle publishes under an invocation id, stamped on its output, step
    * brackets, suspend, and end. Pin it via
    * {@link AdoptRunOptions.invocationId} so a continuing process publishes
-   * under the invocation that owns the run — a Tree consumer discards a
-   * suspend whose invocation-id differs from the run's latest resume,
-   * treating it as a retired invocation's late suspend — and omit it to mint
+   * under the invocation that owns the run — a consumer reconstructing
+   * conversation state discards a suspend whose invocation-id differs from
+   * the run's latest resume, treating it as a retired invocation's late
+   * suspend — and omit it to mint
    * a fresh one. The structure options stay on {@link openRun}: an adopted
    * run publishes no opening event, so nothing would stamp them. A
    * continuation is an `openRun` naming the run, not an adopt.

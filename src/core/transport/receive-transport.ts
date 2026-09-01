@@ -203,7 +203,7 @@ class DefaultReceiveTransport<TInput, TOutput> implements ReceiveTransport<TInpu
 /**
  * Create a {@link ReceiveTransport} over one codec decoder. The decoder must be
  * unique to this receiver so its stream-tracker state cannot leak across
- * consumers, mirroring the 1:1 decoder-per-Tree invariant.
+ * consumers, mirroring the 1:1 decoder-per-consumer invariant.
  * @param decoder - The codec decoder to classify non-lifecycle messages with.
  * @param logger - Logger for diagnostics.
  * @returns The receive transport.

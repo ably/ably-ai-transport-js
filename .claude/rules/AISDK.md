@@ -8,14 +8,15 @@ behave correctly on either major.
 
 **Never name a chunk or part type that exists in only one major.** Naming a v7
 variant in a `switch` is a compile error on v6 (`TS2678`), and the reverse holds
-for anything v7 drops. Narrow structurally instead — see `isDataChunk` in
-`src/vercel/codec/fold-data.ts`, which tests the `data-` prefix rather than
-enumerating everything that is _not_ a data part.
+for anything v7 drops. Narrow structurally instead — the `data-*` wildcard descriptor in
+`src/vercel/codec/outputs.ts` and the `part.type.startsWith('data-')` test in
+`src/vercel/codec/inputs.ts` both key on the prefix rather than enumerating
+everything that is _not_ a data part.
 
-The trade-off is deliberate: a prefix test cannot give exhaustiveness checking,
-so a chunk type added by a future major is silently dropped rather than failing
-the build. `test/vercel/codec/reducer.test.ts` pins the set this codec knowingly
-does not project, so a new variant surfaces in review instead of going unnoticed.
+Exhaustiveness comes from the descriptor table, not from a `switch`: an output
+type that is neither described nor an explicit `drop` throws at encode
+(`src/core/codec/output-descriptor-encoder.ts`), so a variant a future major
+adds fails loudly at runtime rather than being dropped silently.
 
 **The fold is the SDK's, not ours.** Hydration replays chunks through the
 provider's own reducer (`readUIMessageStream`) rather than reimplementing it;
@@ -41,9 +42,11 @@ and will break on an upgrade that changed nothing here.
   It is NOT present on `tool-output-available` or `tool-output-error` chunks.
 - `streamText()` has no `maxSteps` — multi-step tool use is automatic.
 - Do not discriminate an input event from an output chunk by the presence of
-  `kind`. Codec inputs carry `kind`, but so does v7's `custom` output chunk. The
-  wire separates them by message name (`ai-input` / `ai-output`) and the reducer
-  by the `direction` field on `CodecEvent`; use those.
+  `kind`. Codec inputs carry `kind`, but so does v7's `custom` output chunk.
+  The wire separates them by message name (`EVENT_AI_INPUT` / `EVENT_AI_OUTPUT`
+  in `src/constants.ts`), and `defineCodec` binds each direction's descriptor
+  table to its own name — so direction is resolved at decode by the message
+  name, never by probing for `kind`.
 - Getting a `AI.UIMessageChunk` stream from `streamText()` differs by major: v6
   offers `result.toUIMessageStream()`, which v7 deprecates in favour of the
   standalone `toUIMessageStream({ stream })`. Demos pin a single major and may

@@ -7,7 +7,7 @@
 - **No `unknown`** where a concrete type is available. Use the actual return type from SDK methods (e.g. `Promise<Ably.ChannelStateChange | null>` not `Promise<unknown>`). Exception: a promise awaited purely as a synchronisation barrier — its resolved value is never read, only its settling is awaited for ordering — may be typed `Promise<unknown>`. Document at the declaration that the value is intentionally discarded.
 - **No `!` non-null assertions.** Use explicit narrowing (destructure into a local variable, add a runtime guard, or restructure to avoid the need).
 - **No `@ts-ignore`, `@ts-expect-error`, `@ts-nocheck`**, or `eslint-disable` directives in source, example, or demo code.
-- Use `AI.isDataUIPart()` to narrow `data-*` parts — never cast with `as { id?; data? }`.
+- Narrow `data-*` parts structurally by prefix (see `src/vercel/codec/inputs.ts` and the `data-*` wildcard descriptor in `outputs.ts`), never by casting to a hand-written shape like `as { id?; data? }`. `AI.isDataUIPart()` is fine where a real `UIMessage` part is in hand.
 
 ## Import types from dependencies, don't redefine them
 

@@ -39,7 +39,13 @@ import { type Logger, LogLevel, makeLogger } from '../../logger.js';
 import { errorCause, errorMessage, getTransportHeaders } from '../../utils.js';
 import type { WireCodec } from '../codec/types.js';
 import { readCancelTarget } from './cancel-envelope.js';
-import { ConnectGuard, reportPage, subscribeAndAttach } from './channel-support.js';
+import {
+  ConnectGuard,
+  continuityLostError,
+  isContinuityLost,
+  reportPage,
+  subscribeAndAttach,
+} from './channel-support.js';
 import { walkHistoryBatch } from './history-walk.js';
 import { evictOldestIfFull } from './internal/bounded-map.js';
 import { type HistoryPagesCursor, loadHistoryPages } from './load-history-pages.js';
@@ -390,12 +396,42 @@ export const createAgentTransport = <TInput, TOutput>(
     await connectGuard.requireConnected(method);
   };
 
+  let hasAttachedOnce = false;
+
+  /**
+   * React to a continuity-breaking channel state change.
+   *
+   * Post-loss the channel may silently drop messages, and an `ai-cancel`
+   * published during the gap never arrives — so an in-flight run would keep
+   * driving the model, publishing into a channel with a hole in it, and could
+   * no longer be cancelled. Abort every registered run and surface the loss so
+   * the agent can decide what to do. State changes before the first attach are
+   * ignored: there is no continuity to lose yet.
+   * @param stateChange - The channel state change to classify.
+   */
+  const handleChannelStateChange = (stateChange: Ably.ChannelStateChange): void => {
+    if (closed) return;
+    if (!hasAttachedOnce) {
+      if (stateChange.current === 'attached') hasAttachedOnce = true;
+      return;
+    }
+    if (!isContinuityLost(stateChange)) return;
+    logger.warn('AgentTransport.handleChannelStateChange(); channel continuity lost, aborting registered runs', {
+      current: stateChange.current,
+      resumed: stateChange.resumed,
+      runs: registeredRuns.size,
+    });
+    for (const registration of registeredRuns.values()) registration.controller.abort();
+    receiver.emitError(continuityLostError(stateChange, 'deliver events'));
+  };
+
   // eslint-disable-next-line @typescript-eslint/promise-function-async -- preserve reference equality across calls
   const connect = (): Promise<void> => {
     if (closed) {
       return Promise.reject(closedError('connect'));
     }
     logger.trace('AgentTransport.connect();');
+    channel.on(handleChannelStateChange);
     return connectGuard.connect(async () =>
       subscribeAndAttach(channel, onMessage, logger, 'AgentTransport', (error) => {
         receiver.emitError(error);
@@ -435,6 +471,7 @@ export const createAgentTransport = <TInput, TOutput>(
     if (closed) return;
     logger.info('AgentTransport.close();');
     closed = true;
+    channel.off(handleChannelStateChange);
     channel.unsubscribe(onMessage);
   };
 
@@ -770,11 +807,18 @@ export const createAgentTransport = <TInput, TOutput>(
      */
     const createStep = (stepOpts?: StepOptions): RunStepTransport<TOutput> => {
       const step = stepWriter.createStep(stepOpts);
-      let started = false;
+      // A single in-flight start, shared by every verb, so two concurrent
+      // sends open the step once. Recorded only once `start()` resolves: a
+      // failed step-start publish must not leave the wrapper believing the
+      // step is open, because the writer would then reject every later verb
+      // with advice ("call start() first") this surface does not expose.
+      let starting: Promise<void> | undefined;
       const ensureStarted = async (): Promise<void> => {
-        if (started) return;
-        started = true;
-        await step.start();
+        starting ??= step.start().catch((error: unknown) => {
+          starting = undefined;
+          throw error;
+        });
+        await starting;
       };
       return {
         get stepId() {

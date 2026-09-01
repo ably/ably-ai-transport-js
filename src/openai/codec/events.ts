@@ -320,6 +320,17 @@ export interface OpenAIMessage {
    * neither, so every entry in `items` stays a valid `ResponseInputItem` and
    * `toResponsesInput` ignores this field. Present only when the message has at
    * least one such call; a renderer reads a call's state by its `call_id`.
+   *
+   * **The SDK does not populate this — a consumer's own fold does.** The
+   * transport carries events and holds no conversation state, so an
+   * application that wants {@link toResponsesInput}, `unansweredCalls` or
+   * `approvedUnexecutedCalls` to work must maintain the map itself while
+   * folding, keyed by `call_id`:
+   *
+   * - a `tool-approval-request` input sets `approval` to `'pending'`;
+   * - a `tool-approval-response` sets it to `'approved'` or `'denied'`;
+   * - a `tool-result` sets `result` to `'ok'`, a `tool-result-error` to
+   *   `'failed'`.
    */
   toolCallStates?: Record<string, OpenAIToolCallState>;
 }

@@ -34,11 +34,9 @@ Every exported function and every non-trivial internal module gets its own test 
 
 ### Style
 
-- Mock writers that record calls (`createMockWriter`, `createMockChannel`)
+- Mock the channel and the writer rather than the Ably SDK; shared mocks live in `test/helper/`
 - `flushMicrotasks()` instead of `setTimeout` — never use timeouts in tests
-- `mockChannel.waitForPublishes(n)` to await encoder publish operations
-- `simulateMessage()` for synchronous channel event simulation
-- For streams that stay open, simulate a terminal event (`finish`) to close deterministically, then drain with `reader.read()`
+- For streams that stay open, simulate a terminal event (`finish`) to close deterministically, then drain the reader
 
 ### What to unit test
 
@@ -57,7 +55,7 @@ Prove the system works over real Ably. Don't duplicate unit-test edge cases. Eac
 Integration tests can be written at two levels:
 
 - **Codec level**: Test encode/decode roundtrips over a real Ably channel without standing up a full transport. A codec-level test publishes encoded messages to a channel and verifies the decoder reconstructs the expected output. This validates the wire format and Ably message serialization without transport machinery.
-- **Transport level**: Test the full send → stream → receive lifecycle through `ClientSession` and `AgentSession`. This validates the complete system including run management, stream routing, and history hydration.
+- **Transport level**: exercise send → stream → receive through `ClientTransport` and `AgentTransport` over a real channel — run lifecycle, stream routing, steering, cancel, and history paging. See `test/integration/transport.integration.test.ts`.
 
 ### Environment
 
@@ -91,9 +89,9 @@ Happy-path scenarios that validate the wire protocol and real Ably behavior:
 5. Cancel chain: client cancel -> server abort -> stream closes
 6. Multi-run sequential
 7. Concurrent runs
-8. History hydration: stream a run, new client hydrates conversation state from channel history
+8. History paging: a fresh client pages backwards and receives chronological batches of classified events
 9. Reconnect / resume: client disconnects mid-stream, reconnects, receives the rest
-10. Conversation tree / branching: send, regenerate (fork), verify tree from history
+10. Durable cross-process re-entry: a second transport adopts an open run and ends it
 11. Error propagation: server error mid-stream, client receives and stream closes cleanly
 12. Multi-client sync: two clients on the same channel both see the streamed response
 

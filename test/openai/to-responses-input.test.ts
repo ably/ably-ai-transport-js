@@ -42,7 +42,7 @@ describe('toResponsesInput', () => {
   });
 
   it('feeds only the message items to the model, keeping out-of-band toolCallStates out of the input', () => {
-    // A denied gated call: the reducer records the decision in toolCallStates
+    // A denied gated call: the decision is recorded in toolCallStates
     // (out-of-band, for the client to render) and writes a rejection
     // function_call_output into items (valid model input). Only the item may
     // reach /responses — toolCallStates is not a ResponseInputItem and must not.

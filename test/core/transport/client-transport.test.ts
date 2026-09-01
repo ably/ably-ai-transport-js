@@ -1,5 +1,5 @@
 /**
- * createClientTransport unit tests — the self-contained, Tree-free client
+ * createClientTransport unit tests — the self-contained client
  * transport.
  *
  * The transport owns its receive path: `connect()` subscribes its listener and

@@ -1,5 +1,5 @@
 /**
- * createAgentTransport unit tests — the standalone, Tree-free agent transport.
+ * createAgentTransport unit tests — the standalone agent transport.
  *
  * The transport owns its receive path: `connect()` subscribes its listener and
  * attaches the channel, after which live wires classify onto the
@@ -785,6 +785,40 @@ describe('createAgentTransport', () => {
       await run.end({ reason: 'complete' });
 
       expect(receiptOf(channel, 'ai-run-end')).toBe(JSON.stringify(['steer-1']));
+    });
+  });
+
+  describe('channel continuity', () => {
+    it('aborts every registered run and surfaces the loss', async () => {
+      const { transport, channel, errors } = await setup();
+      const run = transport.openRun({ runId: 'run-1' });
+      const aborted: string[] = [];
+      run.abortSignal.addEventListener('abort', () => aborted.push(run.runId));
+
+      // Establish continuity, then break it.
+      channel.emitStateChange({ current: 'attached', previous: 'attaching', resumed: false });
+      channel.emitStateChange({ current: 'suspended', previous: 'attached', resumed: false });
+
+      // Post-loss the channel can silently drop messages, so an `ai-cancel`
+      // published during the gap never lands — an in-flight run would keep
+      // driving the model and could no longer be cancelled.
+      expect(aborted).toEqual(['run-1']);
+      expect(errors.at(-1)).toBeErrorInfoWithCode(ErrorCode.SessionContinuityNotGuaranteed);
+    });
+
+    it('ignores state changes before the first attach', async () => {
+      const { transport, channel, errors } = await setup();
+      const run = transport.openRun({ runId: 'run-1' });
+      let aborted = false;
+      run.abortSignal.addEventListener('abort', () => {
+        aborted = true;
+      });
+
+      // There is no continuity to lose before the channel has ever attached.
+      channel.emitStateChange({ current: 'suspended', previous: 'attaching', resumed: false });
+
+      expect(aborted).toBe(false);
+      expect(errors).toHaveLength(0);
     });
   });
 

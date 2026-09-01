@@ -21,7 +21,10 @@
  *
  * This policy is the repair, and it is part of the decoder's contract: the
  * synthesised openers are what make the sequences the decoder hands out well
- * formed, and so safe to hand to a strict fold. On each stream start it
+ * formed at the part level. They do not make the sequence safe to hand
+ * straight to OpenAI's own `accumulateResponse`, which pushes on every
+ * `output_item.added` and reads content positionally — see the two
+ * obligations below. On each stream start it
  * synthesises the missing `output_item.added` and prepends it, so the item
  * exists before the part opener folds. The `synthesise*` helpers build the
  * minimal part-container shell: a `message` for `output_text` / `refusal`
@@ -42,6 +45,11 @@
  * its slot at the real `content_index`, so when the first part received sits
  * above index 0 the item's positional content has a leading hole until the
  * earlier indices hydrate from history (AIT-1160).
+ *
+ * So a consumer's fold owes two things this decoder deliberately does not do
+ * for it: treat `output_item.added` as find-or-create keyed on the item id
+ * rather than appending, and tolerate a positional hole in an item's content
+ * rather than indexing straight into it.
  */
 
 import type { Responses } from 'openai/resources/responses/responses';

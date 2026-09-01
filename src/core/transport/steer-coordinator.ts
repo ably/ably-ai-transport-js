@@ -18,7 +18,7 @@
  *      a closed predicate;
  *   2. calling `observeMessage(msg)` from their channel listener for every
  *      inbound message;
- *   3. exposing `steer(runIdPromise, input)` as the {@link ClientRun.steer}
+ *   3. exposing `steer(runIdPromise, input)` as the {@link ClientTransport.steer}
  *      method;
  *   4. calling `drainContinuityLost(err)` on a channel discontinuity;
  *   5. calling `drainClosed()` on session close.
@@ -232,10 +232,10 @@ export class SteerCoordinator<TInput> {
         rejectOutcome,
       });
 
-      // The steer publishes on `ai-input` with the `run-id` header set,
-      // which the Tree routes into the addressed Run's projection via
-      // `_applyRunMessage`. Callers pass the same shape `view.send` accepts
-      // (typically `codec.createUserMessage(...)`).
+      // The steer publishes on `ai-input` with the `run-id` header set, so a
+      // consumer folding the run's messages routes it onto that run. Callers
+      // pass the same input shape a send does (typically
+      // `codec.createUserMessage(...)`).
       try {
         await this._publish(input, { extras: { headers }, messageId: codecMessageId });
       } catch (error) {
